@@ -509,6 +509,7 @@ struct AgentSessionState {
     extension_tool_context: Option<(maho_ext_api::ExtensionRuntime, maho_ext_host::wrapper::ToolContextFactory)>,
     extension_tool_backups: BTreeMap<String, Option<(ToolDefinitionEntry, AgentTool)>>,
     extension_lazy_activators: Vec<LazyToolActivator>,
+    native_tool_search_injection_failure_source: Option<maho_ext_api::NativeToolSearchInjectionFailureSource>,
     extension_hint_backups: BTreeMap<String, Option<String>>,
     skills: Vec<crate::skills::Skill>,
     skill_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
@@ -1391,6 +1392,9 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
         session.state().extension_lazy_activators.push(activator.clone());
         session.add_lazy_tool_activator(activator); Ok(())
     }
+    fn register_native_tool_search_injection_failure_source(&self, source: maho_ext_api::NativeToolSearchInjectionFailureSource) -> Result<(), maho_ext_api::ExtensionFailure> {
+        self.session()?.state().native_tool_search_injection_failure_source = Some(source); Ok(())
+    }
     fn get_commands(&self) -> Result<Vec<maho_ext_api::SlashCommandInfo>, maho_ext_api::ExtensionFailure> { Ok(self.session()?.get_commands()) }
     fn set_model(&self, model: Model) -> maho_ext_api::ExtensionFuture<'_, bool> { Box::pin(async move {
         let session = self.session()?;
@@ -1738,6 +1742,7 @@ impl AgentSession {
             extension_tool_context: None,
             extension_tool_backups: BTreeMap::new(),
             extension_lazy_activators: Vec::new(),
+            native_tool_search_injection_failure_source: None,
             extension_hint_backups: BTreeMap::new(),
             skills: Vec::new(),
             skill_diagnostics: Vec::new(),
@@ -2849,27 +2854,109 @@ impl AgentSession {
             error.contains("Lock file is already being held") || error == "invalid_request")
     }
 
+    /// `_willRetryAfterAgentEnd`: whether the agent_end handler will start another attempt.
+    /// The required-compaction branch is not ported: the session keeps no `_requiredCompactionTurnError`.
     async fn will_retry(&self, message: Option<&maho_ai::types::AssistantMessage>) -> bool {
         let Some(message) = message else { return false; };
+        let profile = self.resolve_retry_profile();
+        if !profile.turn.enabled { return false; }
+        if self.state().user_aborted || !self.with_settings_manager(|manager| manager.get_value("retry")
+            .and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true)) { return false; }
+        let turn_max_retries = profile.turn.max_retries;
+        let retryable_error = self.is_retryable_error(message);
+        let probe = maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message);
+        if maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(&probe) { return true; }
+        if maho_ai::utils::overflow::is_cursor_quota_resource_exhausted(&probe, self.model().context_window) {
+            return self.can_try_fallback().await;
+        }
+        if self.is_subscription_same_model_remint_error(message) { return true; }
+        if !retryable_error && self.is_hard_error_fallback_eligible(message).await { return true; }
+        if !retryable_error { return false; }
+        let retry_attempt = self.state().retry_attempt;
+        if maho_ai::utils::stop_details::is_classifier_refusal(message) {
+            return retry_attempt.saturating_add(1) <= turn_max_retries && self.can_try_fallback().await;
+        }
+        if retry_attempt.saturating_add(1) > turn_max_retries { return self.can_try_fallback().await; }
+        let error_message = message.error_message.as_deref().filter(|error| !error.is_empty()).unwrap_or("Unknown error");
+        let Some(provider_delay_ms) = self.get_provider_retry_delay_ms(error_message) else { return true; };
+        if provider_delay_ms <= self.with_settings_manager(|manager| manager.get_provider_retry_settings().max_retry_delay_ms) {
+            return true;
+        }
+        self.can_try_fallback().await
+    }
+
+    /// `retryCanAdmitProvider` in the agent_end handler: whether the retry handler runs at all.
+    /// Unlike `will_retry` it ignores the budget, so an exhausted turn still reaches `auto_retry_end`.
+    async fn retry_can_admit_provider(&self, message: &maho_ai::types::AssistantMessage) -> bool {
         if !self.resolve_retry_profile().turn.enabled { return false; }
         if self.state().user_aborted || !self.with_settings_manager(|manager| manager.get_value("retry")
             .and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true)) { return false; }
-        if message.error_message.as_deref().is_some_and(|error| error.starts_with(
-            maho_ai::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX))
-            || maho_ai::utils::overflow::is_context_overflow(message, Some(self.model().context_window)) { return false; }
-        if maho_ai::utils::retry::is_retryable_assistant_error(message)
-            || maho_ai::utils::retry::is_provider_timeout_error(message)
-            || maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(
-                &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message))
-            || maho_ai::utils::overflow::is_cursor_quota_resource_exhausted(
-                &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message), self.model().context_window)
+        let probe = maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message);
+        self.is_retryable_error(message)
+            || maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(&probe)
+            || maho_ai::utils::overflow::is_cursor_quota_resource_exhausted(&probe, self.model().context_window)
             || self.is_subscription_same_model_remint_error(message)
-            || maho_ai::utils::stop_details::is_classifier_refusal(message) { return true; }
-        message.stop_reason == StopReason::Error
+            || self.is_hard_error_fallback_eligible(message).await
+    }
+
+    async fn can_try_fallback(&self) -> bool {
+        self.retry_fallback.lock().await.as_mut().is_some_and(|controller| controller.can_try_fallback())
+    }
+
+    /// `_isRetryableError`.
+    fn is_retryable_error(&self, message: &maho_ai::types::AssistantMessage) -> bool {
+        if message.error_message.as_deref().is_some_and(|error| error.starts_with(
+            maho_ai::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX)) { return false; }
+        if maho_ai::utils::overflow::is_context_overflow(message, Some(self.model().context_window)) { return false; }
+        if maho_ai::utils::stop_details::is_classifier_refusal(message) { return true; }
+        if message.error_message.as_deref().is_none_or(str::is_empty) { return false; }
+        if message.stop_reason == StopReason::Aborted { return maho_ai::utils::retry::is_provider_timeout_error(message); }
+        maho_ai::utils::retry::is_retryable_assistant_error(message)
+    }
+
+    /// `_isHardErrorFallbackEligible`.
+    async fn is_hard_error_fallback_eligible(&self, message: &maho_ai::types::AssistantMessage) -> bool {
+        let probe = maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message);
+        !message.error_message.as_deref().is_some_and(|error| error.starts_with(
+            maho_ai::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX))
             && !(self.model().provider == "anthropic-subscription"
                 && message.error_message.as_deref() == Some(maho_ai::auth::resolve::provider_not_configured_message("anthropic-subscription").as_str()))
+            && !self.is_subscription_same_model_remint_error(message)
+            && message.stop_reason == StopReason::Error
+            && !maho_ai::utils::overflow::is_context_overflow(message, Some(self.model().context_window))
+            && !maho_ai::utils::overflow::is_cursor_payload_resource_exhausted(&probe, 0)
+            && !maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(&probe)
+            && !maho_ai::utils::stop_details::is_classifier_refusal(message)
             && !message.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_)))
-            && self.retry_fallback.lock().await.as_mut().is_some_and(|controller| controller.can_try_fallback())
+            && self.can_try_fallback().await
+    }
+
+    /// `_takeNativeToolSearchInjectionFailure`: consumes the tool-search service's pending flag.
+    fn take_native_tool_search_injection_failure(&self) -> Option<String> {
+        let source = self.state().native_tool_search_injection_failure_source.clone()?;
+        source()
+    }
+
+    /// `_getProviderRetryDelayMs`.
+    fn get_provider_retry_delay_ms(&self, error_message: &str) -> Option<u64> {
+        maho_ai::utils::retry_hint::parse_retry_after_ms_marker(error_message).or_else(||
+            maho_ai::utils::retry_hint::extract_429_retry_after_ms(
+                &maho_ai::utils::retry_hint::RetryHintInput { body_text: error_message, ..Default::default() },
+                Some(self.fallback_now() as i64),
+            ))
+    }
+
+    /// `_terminalFailureText`: user-facing text for a turn that is really over.
+    async fn terminal_failure_text(&self, message: &maho_ai::types::AssistantMessage, attempts: u32) -> Option<String> {
+        let model = self.model();
+        let has_configured_chain = self.retry_fallback.lock().await.as_mut().is_some_and(|controller| controller.has_configured_chain());
+        maho_ai::utils::provider_failure_description::describe_provider_failure_for_user(message.error_message.as_deref(),
+            &maho_ai::utils::retry::ProviderStallDescriptionOptions {
+                attempts: Some(attempts), model: Some(format!("{}/{}", model.provider, model.id)),
+                recovery: Some(if has_configured_chain { maho_ai::utils::retry::StallRecovery::ChainExhausted }
+                    else { maho_ai::utils::retry::StallRecovery::NoFallbackConfigured }),
+            })
+            .or_else(|| message.error_message.as_deref().map(maho_ai::utils::provider_failure_description::strip_turn_retry_suppression_prefix))
     }
 
     fn retire_failed_retry_assistant(&self, failed: &maho_ai::types::AssistantMessage) -> Result<(), String> {
@@ -3002,7 +3089,7 @@ impl AgentSession {
                 self.agent.continue_run(maho_agent::agent::AgentContinuationOptions { defer_queued_messages: Some(true), ..Default::default() }).await;
                 continue;
             }
-            if !self.will_retry(Some(&message)).await {
+            if !self.retry_can_admit_provider(&message).await {
                 if self.auto_compaction_enabled() && !self.state().user_aborted && !overflow_compacted
                     && message.stop_reason != StopReason::Aborted
                     && !maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
@@ -3064,6 +3151,13 @@ impl AgentSession {
                 maho_ai::utils::retry_profile::types::RetryServerHintPolicy::Override { ceiling, .. } => ceiling.max_delay_ms,
                 maho_ai::utils::retry_profile::types::RetryServerHintPolicy::Tiered { .. } => Some(60_000),
             };
+            // The over-ceiling gate keys off `retry.provider.maxRetryDelayMs`; a profile's override-mode
+            // ceiling owns it instead (`null` bypasses the gate). `cap` stays the final per-wait clamp.
+            let max_retry_delay_ms = self.with_settings_manager(|manager| manager.get_provider_retry_settings().max_retry_delay_ms);
+            let effective_max_retry_delay_ms = match &profile.turn.server_hint {
+                maho_ai::utils::retry_profile::types::RetryServerHintPolicy::Override { ceiling, .. } => ceiling.max_delay_ms,
+                maho_ai::utils::retry_profile::types::RetryServerHintPolicy::Tiered { .. } => Some(max_retry_delay_ms),
+            }.unwrap_or(u64::MAX);
             let cap = settings.get("maxAgentDelayMs").and_then(Value::as_u64).or(profile_cap).unwrap_or(u64::MAX);
             let error = message.error_message.clone().unwrap_or_else(|| "Unknown error".to_owned());
             let hint = parse_retry_after_ms_marker(&error).or_else(||
@@ -3110,10 +3204,16 @@ impl AgentSession {
                 if !result.demote_to_probe_back { hint_delay = Some(result.delay_ms as u64); }
             }
             let needs_fallback = !same_model_remint && (refusal || !transient || attempt > max_attempts ||
-                if tier_routed { hint_delay.is_none() } else { hint.is_some_and(|hint| hint > cap) });
+                if tier_routed { hint_delay.is_none() } else { hint.is_some_and(|hint| hint > effective_max_retry_delay_ms) });
             let mut switched = false;
+            let mut same_model_native_recovery = false;
             let mut probe_selector = None;
-            if needs_fallback {
+            // A rejected native tool-search request is recoverable in place: the adapter is disabled for
+            // the session on the 400, so the SAME model retries once instead of demoting down the chain.
+            if needs_fallback && !refusal && !transient && self.take_native_tool_search_injection_failure().is_some() {
+                same_model_native_recovery = true;
+            }
+            if needs_fallback && !same_model_native_recovery {
                 let reason = if refusal { FallbackReason::Refusal } else if transient { FallbackReason::Transient }
                     else if crate::retry_fallback::billing::is_billing_error_message(Some(&error)) { FallbackReason::Billing }
                     else { FallbackReason::HardError };
@@ -3129,29 +3229,43 @@ impl AgentSession {
                         self.emit(AgentSessionEvent::RetryFallbackExhausted { chain_key, last_error: error.clone() });
                     }
                 }
+                drop(controller);
+                let mut degraded_fail_hint_ms = None;
                 if !switched && tier_routed && attempt <= max_attempts && !refusal {
                     match crate::retry_fallback::hint_policy::degrade_without_fallback(
                         tier, hint.map(|hint| hint as f64), attempt, base_delay, hint_settings.hinted_wait_cap_ms,
                     ) {
                         crate::retry_fallback::hint_policy::DegradedRateLimitAction::InTurn { delay_ms } => hint_delay = Some(delay_ms as u64),
-                        crate::retry_fallback::hint_policy::DegradedRateLimitAction::Fail { .. } => {}
+                        crate::retry_fallback::hint_policy::DegradedRateLimitAction::Fail { hint_ms } => degraded_fail_hint_ms = Some(hint_ms),
                     }
                 }
                 if !switched && hint_delay.is_none() {
-                    let attempt = self.state().retry_attempt;
+                    let previous_attempt = self.state().retry_attempt;
+                    let (attempt, final_error) = if let Some(hint_ms) = degraded_fail_hint_ms {
+                        // `_degradeRateLimitedWithoutFallback`: tier3 waits stay terminal, naming the wait.
+                        (previous_attempt, Some(format!(
+                            "Provider requested a {}s wait before retrying and no usable fallback model is available. {}",
+                            (hint_ms / 1000.0).ceil() as u64, message.error_message.as_deref().unwrap_or(""))))
+                    } else if transient && !refusal && !tier_routed && attempt > max_attempts {
+                        (previous_attempt, self.terminal_failure_text(&message, previous_attempt).await)
+                    } else if transient && !refusal && !tier_routed && let Some(provider_delay_ms) = hint.filter(|hint| *hint > effective_max_retry_delay_ms) {
+                        (attempt, Some(format!("Provider requested retry delay {provider_delay_ms}ms, exceeding configured maximum {max_retry_delay_ms}ms")))
+                    } else {
+                        (previous_attempt, Some(error))
+                    };
                     self.state().retry_attempt = 0;
                     self.reset_hint_tier_state();
-                    self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some(error) });
+                    self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error });
                     return Ok(());
                 }
             }
             if let Some(selector) = probe_selector { self.arm_probe_back(&selector, hint.unwrap_or(0) as f64); }
-            let attempt = if switched { 1 } else { attempt };
+            let attempt = if switched || same_model_native_recovery { 1 } else { attempt };
             self.state().retry_attempt = attempt;
             let local_delay = maho_ai::utils::retry_profile::backoff::retry_backoff_delay_ms(
                 &profile.turn.backoff, attempt, (self.retry_random)(),
             );
-            let delay_ms = if switched { 0 } else {
+            let delay_ms = if switched || same_model_native_recovery { 0 } else {
                 hint_delay.or(hint.filter(|hint| *hint > 0)).unwrap_or(local_delay as u64).min(cap)
             };
             let abort = maho_ai::utils::abort::AbortController::new();
@@ -5815,6 +5929,7 @@ impl AgentSession {
         {
             let mut state = self.state();
             let activators = std::mem::take(&mut state.extension_lazy_activators);
+            state.native_tool_search_injection_failure_source = None;
             state.lazy_tool_activators.retain(|activator| !activators.iter().any(|owned| Arc::ptr_eq(owned, activator)));
             for (name, previous) in std::mem::take(&mut state.extension_hint_backups) {
                 if let Some(previous) = previous { hints.insert(name, previous); } else { hints.remove(&name); }
@@ -12940,6 +13055,98 @@ mod tests {
         }));
         tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded recovery").expect("recovery");
         assert_eq!(*lock(&order), vec!["compacted", "retry"]);
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("recovered"));
+    }
+
+    #[tokio::test]
+    async fn will_retry_reports_false_once_the_budget_or_delay_ceiling_is_spent_without_fallback() {
+        let failed = |error: &str| maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some(error.to_owned()), ..Default::default()
+        });
+        assert!(!retry_session(Vec::new(), 0).will_retry(Some(&failed("overloaded_error"))).await);
+        let session = retry_session(Vec::new(), 1);
+        assert!(session.will_retry(Some(&failed("overloaded_error"))).await);
+        assert!(!session.will_retry(Some(&failed("overloaded_error (retry-after-ms: 120000)"))).await);
+    }
+
+    async fn terminal_retry_error(session: &AgentSession, error: &str) -> (u32, Option<String>) {
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some(error.to_owned()), ..Default::default()
+        });
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
+            manager.append_message(serde_json::to_value(failed).expect("failed"));
+        });
+        session.rebuild_session_context().expect("context");
+        let ends = Arc::new(Mutex::new(Vec::new()));
+        let captured = ends.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error } = event { lock(&captured).push((*attempt, final_error.clone())); }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded retry").expect("retry");
+        let ends = lock(&ends);
+        assert_eq!(ends.len(), 1);
+        ends[0].clone()
+    }
+
+    #[tokio::test]
+    async fn exhausted_transport_drop_ends_with_user_facing_failure_text() {
+        let (attempt, final_error) = terminal_retry_error(&retry_session(Vec::new(), 0), "senpi:no-turn-retry:WebSocket closed 1006 Connection ended").await;
+        assert_eq!(attempt, 0);
+        let final_error = final_error.expect("final error");
+        assert!(final_error.contains("dropped before the reply finished"), "{final_error}");
+        assert!(final_error.contains("No fallback model is configured"), "{final_error}");
+        assert!(!final_error.contains("senpi:no-turn-retry:"));
+    }
+
+    #[tokio::test]
+    async fn provider_delay_above_max_retry_delay_fails_with_the_configured_maximum() {
+        let (attempt, final_error) = terminal_retry_error(&retry_session(Vec::new(), 2), "overloaded_error (retry-after-ms: 120000)").await;
+        assert_eq!((attempt, final_error.as_deref()), (1, Some("Provider requested retry delay 120000ms, exceeding configured maximum 60000ms")));
+    }
+
+    #[tokio::test]
+    async fn rejected_native_tool_search_retries_the_same_model_once() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("recovered", Default::default())], 1);
+        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("fallback provider");
+        let mut model = test_model();
+        model.provider = "anthropic-subscription".to_owned();
+        session.agent.set_model(model);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".to_owned(), serde_json::json!({"enabled":true,"maxRetries":1,"baseDelayMs":0,"modelFallback":true,
+                "fallbackChains":{"anthropic-subscription/faux-1":["faux/faux-1"]}})),
+        ])));
+        let pending = Arc::new(Mutex::new(Some("native tool search rejected".to_owned())));
+        let source = pending.clone();
+        session.state().native_tool_search_injection_failure_source = Some(Arc::new(move || lock(&source).take()));
+        let (attempt, delay_ms) = {
+            let starts = Arc::new(Mutex::new(Vec::new()));
+            let captured = starts.clone();
+            let _subscription = session.subscribe(Arc::new(move |event| {
+                if let AgentSessionEvent::AutoRetryStart { attempt, delay_ms, .. } = event { lock(&captured).push((*attempt, *delay_ms)); }
+            }));
+            let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Error), error_message: Some("400 bad request".to_owned()), ..Default::default()
+            });
+            session.with_session_manager_mut(|manager| {
+                manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
+                manager.append_message(serde_json::to_value(failed).expect("failed"));
+            });
+            session.rebuild_session_context().expect("context");
+            tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded recovery").expect("recovery");
+            let starts = lock(&starts);
+            assert_eq!(starts.len(), 1);
+            starts[0]
+        };
+        assert_eq!((attempt, delay_ms), (1, 0));
+        assert!(lock(&pending).is_none());
+        assert_eq!(session.model().provider, "anthropic-subscription");
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("recovered"));
     }
 
