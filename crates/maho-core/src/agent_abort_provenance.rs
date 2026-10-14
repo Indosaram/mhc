@@ -113,6 +113,11 @@ impl AgentAbortProvenance {
         self.source = None;
     }
 
+    /// The agent_end event `end_agent_end` moved into settlement, carrying any late User join.
+    pub fn settling_agent_end_event(&self) -> Option<&AgentEndEvent> {
+        self.settling_agent_end_event.as_ref()
+    }
+
     pub fn take_late_user_join(&mut self) -> bool {
         let late_user_join = self.late_user_join;
         self.late_user_join = false;
@@ -156,6 +161,17 @@ impl AgentAbortProvenance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_late_user_join_marks_the_settling_agent_end_event() {
+        let mut provenance = AgentAbortProvenance::new();
+        let event = provenance.begin_agent_end(Vec::new(), false, false);
+        provenance.end_agent_end(&event);
+        assert!(provenance.join(AbortSource::User, false).user_owned);
+        let settled = provenance.settling_agent_end_event().cloned();
+        assert_eq!(settled.map(|event| (event.aborted, event.abort_source)), Some((true, Some(AbortSource::User))));
+        assert_eq!(provenance.current_source(), Some(AbortSource::User));
+    }
 
     #[test]
     fn beginning_a_user_abort_is_user_owned() {

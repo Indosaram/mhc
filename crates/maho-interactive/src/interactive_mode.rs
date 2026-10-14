@@ -4109,6 +4109,20 @@ impl InteractiveMode {
         });
     }
 
+    /// senpi `abortedMessageForRendering` over the live `retryAttempt` / `currentAbortSource`.
+    fn aborted_message_for_rendering(&self, message: &maho_ai::types::AssistantMessage) -> maho_ai::types::AssistantMessage {
+        let mut rendered = message.clone();
+        if message.stop_reason != maho_ai::types::StopReason::Aborted { return rendered; }
+        let retry_attempt = self.remote_state_snapshot().map_or_else(|| self.session.retry_attempt() as usize, |state| state.retry_attempt.max(0.0) as usize);
+        let source = self.session.current_abort_source().map(|source| match source {
+            maho_ext_api::AbortSource::User => crate::aborted_error_label::AgentAbortSource::User,
+            maho_ext_api::AbortSource::System => crate::aborted_error_label::AgentAbortSource::System,
+            maho_ext_api::AbortSource::Provider => crate::aborted_error_label::AgentAbortSource::Provider,
+        });
+        rendered.error_message = Some(crate::aborted_error_label::aborted_error_label(message.error_message.as_deref(), retry_attempt, source));
+        rendered
+    }
+
     /// senpi `addContinuityNotice`: a muted single-line notice for degraded session continuity.
     fn add_continuity_notice(&mut self, message: &maho_ai::types::AssistantMessage) {
         let Ok(value) = serde_json::to_value(message) else { return; };
@@ -5183,6 +5197,9 @@ impl InteractiveMode {
             AgentEvent::MessageUpdate { message, .. } | AgentEvent::MessageEnd { message } if message.role() == "assistant" => {
                 if let Some(assistant) = message.as_assistant() {
                     let final_message = matches!(event, AgentEvent::MessageEnd { .. });
+                    // senpi `abortedMessageForRendering(message, session.retryAttempt, session.currentAbortSource)`.
+                    let rendered = final_message.then(|| self.aborted_message_for_rendering(assistant));
+                    let assistant = rendered.as_ref().unwrap_or(assistant);
                     if let AgentEvent::MessageUpdate { assistant_message_event: maho_ai::types::AssistantMessageEvent::ToolcallDelta { content_index, delta, .. }, .. } = event
                         && let Some(maho_ai::types::ContentBlock::ToolCall(call)) = assistant.content.get(*content_index) {
                         self.tool_partial_json.entry(call.id.clone()).or_default().push_str(delta);
@@ -5214,7 +5231,8 @@ impl InteractiveMode {
                 if matches!(event, AgentEvent::MessageEnd { .. }) {
                     self.reveal.stop(); self.streaming = None; self.assistant_segments.clear();
                     if let Some(assistant) = message.as_assistant() {
-                        self.add_continuity_notice(assistant);
+                        let rendered = self.aborted_message_for_rendering(assistant);
+                        self.add_continuity_notice(&rendered);
                         if !matches!(assistant.stop_reason, maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error) { self.maybe_show_cache_miss_notice(assistant); }
                     }
                 }

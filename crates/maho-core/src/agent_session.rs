@@ -2079,9 +2079,13 @@ impl AgentSession {
             }
         }
         if let Some(boundary) = &end_boundary {
+            // senpi mutates the live agent_end event on a late User join (agent-abort-provenance.ts
+            // `join`), so subscribers see the settled owner, not the snapshot taken at begin.
+            let settled = self.state().abort_provenance.settling_agent_end_event().cloned();
+            let (aborted, abort_source) = settled.map_or((boundary.aborted, boundary.abort_source), |event| (event.aborted, event.abort_source));
             self.emit(AgentSessionEvent::AgentEnd {
-                messages: boundary.messages.clone(), aborted: boundary.aborted,
-                will_retry: boundary.will_retry, abort_source: boundary.abort_source,
+                messages: boundary.messages.clone(), aborted,
+                will_retry: boundary.will_retry, abort_source,
             });
         } else {
             self.emit(AgentSessionEvent::Agent(event.clone()));
@@ -2978,6 +2982,9 @@ impl AgentSession {
     }
 
     pub fn retry_attempt(&self) -> u32 { self.state().retry_attempt }
+
+    /// senpi `currentAbortSource`: the abort owner for the current turn boundary, used by renderers.
+    pub fn current_abort_source(&self) -> Option<maho_ext_api::AbortSource> { self.state().abort_provenance.current_source() }
 
     pub fn abort_retry(&self) {
         if let Some(controller) = self.state().retry_abort_controller.as_ref() { controller.abort(None); }
