@@ -90,7 +90,8 @@ async fn registered_callable_enforces_configured_detached_capacity() {
     assert_eq!(first.unwrap().unwrap().details.unwrap()["cells"][0]["status"],"detached");
     let second=second.unwrap().unwrap().details.unwrap();
     assert_eq!(second["isError"],true);
-    assert_eq!(second["cells"][0]["status"],"error");
+    assert_eq!(second["code"],"eval_background_capacity_reached");
+    assert_eq!(second["cells"][0]["status"],"cancelled");
 }
 
 #[tokio::test]
