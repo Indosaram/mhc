@@ -330,6 +330,20 @@ fn run() -> Result<(), String> {
         loaded.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
         let runtime = providers.0.lock().map_err(|error| error.to_string())?.clone();
         // senpi main.ts:1084-1089 `reportDiagnostics`: service, settings and auth diagnostics.
+        // senpi main.ts:1071 passes `extensionFlagValues`, so unknown or value-less extension flags are
+        // reported (`applyExtensionFlagValues`) before the listing, which still runs.
+        let flag_values = parsed.unknown_flags.iter().map(|(name, value)| (name.clone(), match value {
+            maho_cli::cli::args::FlagValue::Boolean(value) => maho_ext_api::FlagValue::Boolean(*value),
+            maho_cli::cli::args::FlagValue::String(value) => maho_ext_api::FlagValue::String(value.clone()),
+        })).collect::<std::collections::BTreeMap<_, _>>();
+        for diagnostic in maho_core::agent_session_services::apply_extension_flag_values(Some(&loaded), (!flag_values.is_empty()).then_some(&flag_values)) {
+            let prefix = match diagnostic.kind {
+                maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Error => "Error: ",
+                maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Warning => "Warning: ",
+                maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Info => "",
+            };
+            eprintln!("{prefix}{}", diagnostic.message);
+        }
         for error in &loaded.errors { eprintln!("Warning: Failed to load extension \"{}\": {}", error.extension_path, error.error); }
         for diagnostic in maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "model listing") { eprintln!("Warning: {}", diagnostic.message); }
         for error in auth_errors { eprintln!("Warning: (model listing, auth storage) {error}"); }
