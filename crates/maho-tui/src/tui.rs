@@ -3404,7 +3404,10 @@ impl TuiBase {
             let previous_kitty_ids = self.state.borrow().previous_kitty_image_ids.clone();
             buffer += &Self::delete_kitty_images(previous_kitty_ids);
             buffer += "\x1b[2J\x1b[H";
-            if clear_scrollback {
+            if clear_scrollback
+                && !self.should_preserve_mux_scrollback()
+                && crate::native_platform::node_platform() != "win32"
+            {
                 buffer += "\x1b[3J";
             }
         } else {
