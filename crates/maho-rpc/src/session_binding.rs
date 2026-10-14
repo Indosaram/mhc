@@ -7,8 +7,8 @@ pub fn session_event_record(event:&maho_ext_api::AgentSessionEvent)->Result<serd
     macro_rules! optional{($record:ident,$key:literal,$value:expr)=>{if let Some(value)=$value{$record[$key]=serde_json::to_value(value)?;}};}
     Ok(match event{
         E::Agent(event)=>serde_json::to_value(event)?,
-        E::AgentEnd{messages,aborted,will_retry,abort_source}=>{let mut record=json!({"type":"agent_end","messages":messages,"willRetry":will_retry});if *aborted{record["aborted"]=true.into();}
-            if let Some(source)=abort_source{record["abortSource"]=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"}.into();}record},
+        // senpi agent-session.ts: subscribers get `{ ...agent_end, willRetry }`; abort provenance is RPC enrichment.
+        E::AgentEnd{messages,will_retry,..}=>json!({"type":"agent_end","messages":messages,"willRetry":will_retry}),
         E::MessageUpdate{message,assistant_message_event}=>json!({"type":"message_update","message":message,"assistantMessageEvent":assistant_message_event}),
         E::AgentSettled=>json!({"type":"agent_settled"}),E::AgentIdle=>json!({"type":"agent_idle"}),E::SessionAbort=>json!({"type":"session_abort"}),
         E::ResumeCompactionRequired{projection,notice}=>json!({"type":"resume_compaction_required","projection":projection,"notice":notice}),
@@ -33,7 +33,8 @@ pub fn session_event_record(event:&maho_ext_api::AgentSessionEvent)->Result<serd
         E::ModelChangeRejected{model,reason,detail,budget:b}=>{let mut record=b.as_ref().map_or_else(||json!({}),budget);record["type"]="model_change_rejected".into();record["model"]=json!(model);record["reason"]=json!(reason);record["detail"]=json!(detail);record},
         E::ModelChangeSkipped{model,budget:b,direction}=>{let mut record=budget(b);record["type"]="model_change_skipped".into();record["model"]=json!(model);record["direction"]=json!(direction);record},
         E::ServiceTierChanged{tier,fast_mode}=>{let mut record=json!({"type":"service_tier_changed","fastMode":fast_mode});if let Some(tier)=tier{record["tier"]=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"}.into();}record},
-        E::ThinkingLevelChanged{level,thinking_selection}=>{let mut record=json!({"type":"thinking_level_changed","level":level});optional!(record,"thinkingSelection",thinking_selection);record},
+        // senpi: core emits `{ type, level }`; `thinkingSelection` is RPC enrichment.
+        E::ThinkingLevelChanged{level,..}=>json!({"type":"thinking_level_changed","level":level}),
         E::HighReasoningWarning{model_id,provider,thinking_level}=>json!({"type":"high_reasoning_warning","modelId":model_id,"provider":provider,"thinkingLevel":thinking_level}),
         E::ServerFallbackAborted{from,to,chain_configured}=>json!({"type":"server_fallback_aborted","from":from,"to":to,"chainConfigured":chain_configured}),
         E::SessionSettingsChanged{steering_mode,follow_up_mode,auto_compaction_enabled}=>json!({"type":"session_settings_changed","steeringMode":steering_mode,"followUpMode":follow_up_mode,"autoCompactionEnabled":auto_compaction_enabled}),

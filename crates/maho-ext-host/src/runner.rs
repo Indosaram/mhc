@@ -743,7 +743,8 @@ impl ExtensionRunner {
                 result = &mut future => return result,
                 () = &mut warn, if self.shutdown_warn_ms > 0 && !warned => {
                     warned = true;
-                    let message = format!("Extension {path} is still running its session_shutdown handler after {}ms.", self.shutdown_warn_ms);
+                    let cap_note = if self.shutdown_timeout_ms > 0 { format!(" (hard cap {}ms)", self.shutdown_timeout_ms) } else { String::new() };
+                    let message = format!("Extension {path} is still running its session_shutdown handler after {}ms{cap_note}.", self.shutdown_warn_ms);
                     if let Some(listener) = &self.warning_listener { listener(&message); }
                     self.warnings.push(message);
                 }
