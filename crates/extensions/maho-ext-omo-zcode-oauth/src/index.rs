@@ -77,10 +77,35 @@ pub fn source_headers_from(env: impl Fn(&str) -> Option<String>) -> BTreeMap<Str
 async fn refresh(context: RefreshModelsContext, headers: BTreeMap<String,String>, runtime: Arc<Mutex<Runtime>>) -> Result<Vec<maho_ext_api::ProviderModelConfig>, maho_ext_api::ExtensionFailure> {
     refresh_from(context,headers,runtime,crate::live_catalog::LIVE_MODELS_URL,crate::models::MODELS_DEV_API_URL).await
 }
+/// glm-zcode/index.ts:53-65 `MODELS`: the static fallback the host keeps when a refresh restores nothing.
+fn static_models() -> Vec<maho_ext_api::ProviderModelConfig> {
+    let mut model = crate::models::model_config("glm-5.3".into(),"GLM-5.3".into()); model.base_url = Some(crate::models::resolve_base_url());
+    vec![model]
+}
+/// glm-zcode/index.ts:68-81 `credentialApiKey`.
+fn credential_api_key(context: &RefreshModelsContext) -> Option<&str> {
+    context.credential.as_ref().and_then(|credential| match credential.get("type").and_then(Value::as_str) { Some("oauth") => credential.get("access").and_then(Value::as_str), Some("api_key") => credential.get("key").and_then(Value::as_str), _ => None }).filter(|key| !key.is_empty())
+}
+/// glm-zcode/index.ts:133-151 `offPeakActiveFor`: window + entitlement + a usable JWT; the ticket warms up in the background.
+async fn off_peak_active_for(context: &RefreshModelsContext, headers: &BTreeMap<String,String>, runtime: &Arc<Mutex<Runtime>>) -> bool {
+    if std::env::var("ZCODE_OFFPEAK_ENABLE").ok().as_deref() != Some("1") { return false; }
+    if !crate::offpeak::is_window(crate::oauth::now_ms()) || !context.allow_network || context.signal.aborted() { return false; }
+    let Some(credential) = context.credential.as_ref().filter(|credential| credential.get("type").and_then(Value::as_str) == Some("oauth")) else { return false; };
+    let (Some(jwt),Some(key)) = (credential.get("zcodeJwtToken").and_then(Value::as_str).filter(|jwt| !jwt.is_empty()),credential_api_key(context)) else { return false; };
+    if !crate::offpeak::TicketClient::new(headers.clone()).availability(jwt,key).await { return false; }
+    tokio::spawn(acquire_ticket(Arc::clone(runtime),headers.clone(),key.to_owned(),jwt.to_owned()));
+    true
+}
 async fn refresh_from(context: RefreshModelsContext, headers: BTreeMap<String,String>, runtime: Arc<Mutex<Runtime>>, live_url: &str, catalog_url: &str) -> Result<Vec<maho_ext_api::ProviderModelConfig>, maho_ext_api::ExtensionFailure> {
+    // glm-zcode/index.ts:89-92 `restoreStored` + :178: an empty restore is `undefined` (the host keeps the
+    // static models); a restored snapshot is routed like any other result.
     let restored = crate::models::stored_to_config(context.stored.as_ref());
-    if !context.allow_network || context.signal.aborted() || (context.force != Some(true) && context.stored.as_ref().and_then(|entry|entry.checked_at).is_some_and(|checked|crate::oauth::now_ms() - checked.to_string().parse::<f64>().unwrap_or(0.0) < 86_400_000.0)) { return Ok(restored); }
-    let key = context.credential.as_ref().and_then(|credential| match credential.get("type").and_then(Value::as_str) { Some("oauth") => credential.get("access").and_then(Value::as_str), Some("api_key") => credential.get("key").and_then(Value::as_str), _ => None }).filter(|key| !key.is_empty());
+    let restore = |active: bool| if restored.is_empty() { static_models() } else { crate::offpeak::route(restored.clone(),active) };
+    if !context.allow_network || context.signal.aborted() || (context.force != Some(true) && context.stored.as_ref().and_then(|entry|entry.checked_at).is_some_and(|checked|crate::oauth::now_ms() - checked.to_string().parse::<f64>().unwrap_or(0.0) < 86_400_000.0)) {
+        if restored.is_empty() { return Ok(static_models()); }
+        return Ok(restore(off_peak_active_for(&context,&headers,&runtime).await));
+    }
+    let key = credential_api_key(&context);
     let client = reqwest::Client::new();
     let mut models = if let Some(key) = key { crate::live_catalog::fetch_live(&client,live_url,key,&headers,&context.signal).await.unwrap_or_default() } else { Vec::new() };
     let from_live = !models.is_empty();
@@ -92,28 +117,21 @@ async fn refresh_from(context: RefreshModelsContext, headers: BTreeMap<String,St
         };
         models = tokio::select! { _ = context.signal.cancelled() => Vec::new(), models = fetched => models.unwrap_or_default() };
     }
-    if models.is_empty() { return Ok(restored); }
-    let mut active = false;
-    if std::env::var("ZCODE_OFFPEAK_ENABLE").ok().as_deref() == Some("1") && crate::offpeak::is_window(crate::oauth::now_ms()) && let Some(credential) = &context.credential && credential.get("type").and_then(Value::as_str) == Some("oauth") && let Some(jwt) = credential.get("zcodeJwtToken").and_then(Value::as_str).filter(|jwt| !jwt.is_empty()) && let Some(key) = key {
-        let tickets = crate::offpeak::TicketClient::new(headers.clone());
-        active = tickets.availability(jwt,key).await;
-        if active {
-            let key = key.to_owned(); let jwt = jwt.to_owned();
-            tokio::spawn(acquire_ticket(runtime,headers.clone(),key,jwt));
-        }
-    }
+    if models.is_empty() && restored.is_empty() { return Ok(static_models()); }
+    let active = off_peak_active_for(&context,&headers,&runtime).await;
+    if models.is_empty() { return Ok(restore(active)); }
     models = crate::offpeak::route(models,active);
     let checked_at = crate::oauth::now_ms().floor().to_string().parse().ok();
     if context.publish(ModelsPublication { persist: Some(Some(ModelsStoreEntry { models: crate::models::persisted(&models), checked_at, ..Default::default() })), update: None }).await.is_err() {
-        if !from_live { return Ok(restored); }
+        if !from_live { return Ok(restore(active)); }
         let fetched = async {
             let response = client.get(catalog_url).timeout(std::time::Duration::from_secs(30)).send().await.ok()?;
             if !response.status().is_success() { return None; }
             response.json::<Value>().await.ok().map(|payload|crate::models::parse_catalog(&payload))
         };
         let fallback = tokio::select! { _ = context.signal.cancelled() => Vec::new(), models = fetched => models.unwrap_or_default() };
-        if fallback.is_empty() { return Ok(restored); }
-        if context.publish(ModelsPublication { persist: Some(Some(ModelsStoreEntry { models: crate::models::persisted(&fallback), checked_at, ..Default::default() })), update: None }).await.is_err() { return Ok(restored); }
+        if fallback.is_empty() { return Ok(restore(active)); }
+        if context.publish(ModelsPublication { persist: Some(Some(ModelsStoreEntry { models: crate::models::persisted(&fallback), checked_at, ..Default::default() })), update: None }).await.is_err() { return Ok(restore(active)); }
         return Ok(crate::offpeak::route(fallback,active));
     }
     Ok(models)
@@ -166,10 +184,9 @@ fn register_with_device(api: &mut ExtensionApi, default_device: Option<String>) 
         api.on(EventKind::BeforeProviderHeaders,Arc::new(move |event,_| { let signing = Arc::clone(&hook_signing); Box::pin(async move { if let ExtensionEvent::BeforeProviderHeaders { headers } = event { for (key,value) in signing.resolve(headers).await { headers.insert(key,Some(value)); } } Ok(EventResult::None) }) }));
         let runtime = Arc::new(Mutex::new(Runtime::default()));
         let headers = source_headers();
-        let mut model = crate::models::model_config("glm-5.3".into(),"GLM-5.3".into()); model.base_url = Some(crate::models::resolve_base_url());
         let auth = Arc::new(maho_ext_host::oauth::ExtensionOAuthAdapter::new(Arc::new(Auth { client: Default::default(), runtime: Arc::clone(&runtime) })));
         let refresh_runtime = Arc::clone(&runtime); let refresh_headers = headers.clone();
-        let config = ProviderConfig { name: Some("GLM ZCode (unofficial)".into()), api: Some("anthropic-messages".into()), auth_header: Some(true), headers: Some(headers.clone()), models: Some(vec![model]), oauth: Some(auth), refresh_models: Some(Arc::new(move |context|Box::pin(refresh(context,refresh_headers.clone(),Arc::clone(&refresh_runtime))))),
+        let config = ProviderConfig { name: Some("GLM ZCode (unofficial)".into()), api: Some("anthropic-messages".into()), auth_header: Some(true), headers: Some(headers.clone()), models: Some(static_models()), oauth: Some(auth), refresh_models: Some(Arc::new(move |context|Box::pin(refresh(context,refresh_headers.clone(),Arc::clone(&refresh_runtime))))),
             stream_simple: Some(Arc::new(move |model,context,options| {
                 if !crate::offpeak::is_routed(Some(model.base_url.as_str())) { return maho_ai::providers::anthropic::stream_simple_anthropic(model,context,options); }
                 let model = model.clone(); let context = context.clone(); let runtime = Arc::clone(&runtime); let headers = headers.clone(); let signing = Arc::clone(&signing);
@@ -304,6 +321,15 @@ mod tests {
             let result = models.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(allow_network), ..Default::default() }).await;
             assert!(result.errors.is_empty()); assert_eq!(observed.lock().unwrap()[0].id,"stored"); assert_eq!(store.read("glm-zcode",None).await.unwrap(),Some(stored));
         }
+    }
+#[tokio::test]
+    async fn empty_restore_keeps_static_default_instead_of_clearing_the_catalog() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { models_store: Some(Arc::new(maho_ai::models_store::InMemoryModelsStore::new())), auth: Some(Arc::new(KeyAuth)) }));
+        models.set_provider(Arc::new(RefreshProvider { urls: ("invalid-live-url".into(),"invalid-catalog-url".into()), observed: observed.clone() }));
+        let result = models.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(false), ..Default::default() }).await;
+        assert!(result.errors.is_empty()); let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(),1); assert_eq!(observed[0].id,"glm-5.3"); assert_eq!(observed[0].base_url.as_deref(),Some(crate::models::resolve_base_url().as_str()));
     }
 #[tokio::test]
     async fn concurrent_ticket_waiters_share_one_acquisition_and_clear_pending() {
