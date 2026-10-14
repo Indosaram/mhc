@@ -137,8 +137,10 @@ async fn publishes_intent_before_effect_and_persists_arguments() {
     let result = publish_tool_intent(
         &lane,
         call,
+        &call(),
         serde_json::json!({"path": "saved"}),
         ToolCallReplay::Safe,
+        false,
         &BACKGROUND_CONTEXT,
     )
     .await
@@ -170,7 +172,7 @@ async fn replay_clears_old_checkpoint_and_returns_persisted_arguments() {
     use maho_agent::harness::session::values::{pending_tool_output, set_value};
     let lane = lane(Control::Running);
     let pending = DurableCall::EffectPending { source_index: 0, result_entry_id: "result".into(), replay: ToolCallReplay::Safe };
-    publish_tool_intent(&lane, pending.clone(), serde_json::json!({"path":"saved"}), ToolCallReplay::Safe, &BACKGROUND_CONTEXT).await.unwrap();
+    publish_tool_intent(&lane, pending.clone(), &call(), serde_json::json!({"path":"saved"}), ToolCallReplay::Safe, false, &BACKGROUND_CONTEXT).await.unwrap();
     let checkpoint = maho_agent::types::AgentToolResult { content: vec![maho_ai::types::ContentBlock::text("durable")], details: serde_json::json!({"offset":2}), usage: None, added_tool_names: None, terminate: None, is_error: None };
     let mutation = lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.unwrap();
     mutation.commit(vec![Write::Value(set_value(&pending_tool_output("op", "result"), serde_json::to_value(&checkpoint).unwrap()))], &BACKGROUND_CONTEXT).await.unwrap();
@@ -197,8 +199,10 @@ async fn cancellation_diverts_intent_without_invoking_planner() {
             source_index: 0,
             result_entry_id: "result".into(),
         },
+        &call(),
         serde_json::json!({}),
         ToolCallReplay::Safe,
+        false,
         &BACKGROUND_CONTEXT,
     )
     .await
@@ -249,6 +253,7 @@ async fn cancelled_settlement_clears_memos_and_checkpoint_without_terminating() 
             result_entry_id: "result".into(),
         },
         outcome,
+        false,
         &BACKGROUND_CONTEXT,
     )
     .await
@@ -287,4 +292,46 @@ async fn cancelled_settlement_clears_memos_and_checkpoint_without_terminating() 
             .unwrap()
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn settling_planned_call_emits_tool_start_with_args_then_tool_end_with_result() {
+    use maho_agent::harness::context::BACKGROUND_CONTEXT;
+    use maho_agent::harness::events::HarnessEventPayload;
+    use maho_agent::harness::session::types::{Control, ToolCall as DurableCall};
+    use std::sync::Arc;
+    let lane = lane(Control::Running);
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut subscriptions = Vec::new();
+    for kind in ["tool_start", "tool_end"] {
+        let sender = sender.clone();
+        subscriptions.push(lane.events.on(kind, Arc::new(move |event, _| {
+            let _ = sender.send(event);
+            Box::pin(async {})
+        })));
+    }
+    let mut tool_call = call();
+    tool_call.arguments.insert("path".into(), serde_json::json!("a.txt"));
+    let outcome = truncated_outcome(tool_call, 10);
+    let expected_content = outcome.message.content.clone();
+    publish_tool_outcome(
+        &lane,
+        DurableCall::Planned { source_index: 0, result_entry_id: "result".into() },
+        outcome,
+        false,
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .unwrap();
+    let timeout = std::time::Duration::from_secs(5);
+    let start = tokio::time::timeout(timeout, receiver.recv()).await.unwrap().unwrap();
+    let HarnessEventPayload::ToolStart { tool_call_id, args, .. } = start.payload else { panic!("expected tool_start, got {:?}", start.payload) };
+    assert_eq!(tool_call_id, "call");
+    assert_eq!(args, serde_json::json!({"path": "a.txt"}));
+    let end = tokio::time::timeout(timeout, receiver.recv()).await.unwrap().unwrap();
+    let HarnessEventPayload::ToolEnd { result, is_error, terminate, .. } = end.payload else { panic!("expected tool_end, got {:?}", end.payload) };
+    assert_eq!(result.content, expected_content);
+    assert!(is_error);
+    assert!(!terminate);
+    drop(subscriptions);
 }
