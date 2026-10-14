@@ -30,9 +30,6 @@ impl Component for LinesBuffer {
 /// the policy in `core/shared-host-policy.ts`.
 pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession, parsed: &super::args::Args) -> Option<SharedHostMount> {
     let env = maho_core::config::current_env();
-    if is_truthy_env_flag(maho_core::brand::env_value("DISABLE_SHARED_HOST", &env).as_deref()) {
-        maho_core::output_guard::maho_write_stderr("DISABLE_SHARED_HOST is obsolete: the shared session host is now off by default. Enable the experimental.sharedHost setting (or set the brand-prefixed ENABLE_SHARED_HOST=1 env flag) to opt in.\n");
-    }
     let enable_env = is_truthy_env_flag(
         maho_core::brand::env_value(SHARED_HOST_ENABLE_ENV_SUFFIX, &env).as_deref(),
     );

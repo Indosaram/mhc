@@ -297,6 +297,7 @@ fn run() -> Result<(), String> {
         if let Some(flags) = help_fast_path::cached_help_flags(&argv, grok, &cwd, &agent, version) {
             return output(&help_text(grok, &extension_flags_text(&flags)));
         }
+        report_startup_settings_diagnostics(&cwd)?;
         let trusted = help_fast_path::resolve_help_project_trust(&parsed, &cwd.to_string_lossy(), &agent.to_string_lossy()).unwrap_or(false);
         let help_runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
         let resolved = help_runtime.block_on(async {
@@ -313,12 +314,13 @@ fn run() -> Result<(), String> {
         }
         return output(&help_text(grok, &extension_flags_text(&resolved.flags)));
     }
-    if parsed.list_tips { return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?)); }
+    if parsed.list_tips { report_startup_settings_diagnostics(&std::env::current_dir().map_err(|error| error.to_string())?)?; return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?)); }
     if let Some(search) = parsed.list_models.as_deref() {
         let agent = PathBuf::from(maho_core::config::get_agent_dir());
         let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
         // senpi main.ts:1030: migrations run before any runtime service, model listing included.
         maho_cli::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), &agent).map_err(|error| error.to_string())?;
+        report_startup_settings_diagnostics(&cwd)?;
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default()
         });
@@ -365,6 +367,13 @@ fn run() -> Result<(), String> {
     }
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
     runtime.block_on(maho_cli::cli::runtime::run(parsed, &argv))
+}
+/// senpi main.ts:1032-1034: the startup-cwd settings diagnostics precede the help, list-tips and
+/// list-models answers.
+fn report_startup_settings_diagnostics(cwd: &std::path::Path) -> Result<(), String> {
+    let settings = maho_core::settings_manager::SettingsManager::create(&cwd.to_string_lossy(), &maho_core::config::get_agent_dir(), &maho_core::config::home_dir(), true);
+    maho_cli::cli::runtime::report_startup_settings_diagnostics(&settings);
+    Ok(())
 }
 fn memory_terminal_gate(directory: &std::path::Path, operation: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
     let record = memory_core::locks::create_lock_record("reflection-finalize", Default::default()).map_err(|error| error.to_string())?;
