@@ -810,7 +810,7 @@ impl InteractiveMode {
         } else {
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent, "What's New")), 1, 0)))));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
-            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 0, get_markdown_theme(&self.theme), None, Default::default()))))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 0, self.get_markdown_theme_with_settings(), None, Default::default()))))));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
         }
         self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
@@ -1010,6 +1010,14 @@ impl InteractiveMode {
     fn keybindings(&self) -> maho_tui::keybindings::KeybindingsManager {
         maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone()
     }
+    /// senpi `getMarkdownThemeWithSettings`: the theme's markdown styles plus `markdown.codeBlockIndent`.
+    fn get_markdown_theme_with_settings(&self) -> maho_tui::components::markdown::MarkdownTheme {
+        maho_tui::components::markdown::MarkdownTheme {
+            code_block_indent: Some(self.session.with_settings_manager(|settings| settings.get_code_block_indent())),
+            ..get_markdown_theme(&self.theme)
+        }
+    }
+
     fn output_pad(&self) -> usize { self.session.with_settings_manager(|settings| settings.get_number("outputPad").unwrap_or(1.0) as usize) }
     pub fn new(session: Arc<AgentSession>, theme: Theme, host: Rc<dyn maho_tui::components::editor::EditorTuiHost>) -> Self {
         Self::new_with_options(session, theme, host, InteractiveModeOptions::default())
@@ -1760,17 +1768,17 @@ impl InteractiveMode {
                 self.editor.editor.add_to_history(&text);
             }
             AgentMessage::Custom(CustomAgentMessage::Custom(message)) if message.display => {
-                let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), self.session.extension_message_renderer(&message.custom_type).map(crate::components::custom_message::from_extension_message_renderer), self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad())));
+                let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), self.session.extension_message_renderer(&message.custom_type).map(crate::components::custom_message::from_extension_message_renderer), self.theme.clone(), self.get_markdown_theme_with_settings(), self.output_pad())));
                 component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             AgentMessage::Custom(CustomAgentMessage::BranchSummary(message)) => {
-                let component = Rc::new(RefCell::new(crate::components::branch_summary_message::BranchSummaryMessageComponent::new(message.summary.clone(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"))));
+                let component = Rc::new(RefCell::new(crate::components::branch_summary_message::BranchSummaryMessageComponent::new(message.summary.clone(), self.theme.clone(), self.get_markdown_theme_with_settings(), crate::components::keybinding_hints::key_display_text("app.tools.expand"))));
                 component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             AgentMessage::Custom(CustomAgentMessage::CompactionSummary(message)) => {
-                let component = Rc::new(RefCell::new(crate::components::compaction_summary_message::CompactionSummaryMessageComponent::new(serde_json::to_value(message).expect("summary"), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"))));
+                let component = Rc::new(RefCell::new(crate::components::compaction_summary_message::CompactionSummaryMessageComponent::new(serde_json::to_value(message).expect("summary"), self.theme.clone(), self.get_markdown_theme_with_settings(), crate::components::keybinding_hints::key_display_text("app.tools.expand"))));
                 component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
@@ -2936,7 +2944,7 @@ impl InteractiveMode {
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent,"What's New")),1,0)))));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
-            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(&markdown,1,1,get_markdown_theme(&self.theme),None,Default::default()))))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(&markdown,1,1,self.get_markdown_theme_with_settings(),None,Default::default()))))));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
             return Ok(true);
         }
@@ -3422,7 +3430,7 @@ impl InteractiveMode {
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent,"Keyboard Shortcuts")),1,0)))));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
-            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 1, get_markdown_theme(&self.theme), None, Default::default()))))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 1, self.get_markdown_theme_with_settings(), None, Default::default()))))));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
             return Ok(true);
         }
@@ -4586,14 +4594,14 @@ impl InteractiveMode {
                     let value = serde_json::to_value(message).expect("serializable agent message");
                     let text = value["content"].as_str().map(str::to_owned).unwrap_or_else(|| value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
                     if let Some(block) = maho_core::skill_invocation::parse_skill_block(&text) {
-                        let mut component = crate::components::skill_invocation_message::SkillInvocationMessageComponent::new(block.skills.into_iter().map(|skill| crate::components::skill_invocation_message::InvokedSkill { name:skill.name, content:skill.content }).collect(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"));
+                        let mut component = crate::components::skill_invocation_message::SkillInvocationMessageComponent::new(block.skills.into_iter().map(|skill| crate::components::skill_invocation_message::InvokedSkill { name:skill.name, content:skill.content }).collect(), self.theme.clone(), self.get_markdown_theme_with_settings(), crate::components::keybinding_hints::key_display_text("app.tools.expand"));
                         component.set_expanded(self.tools_expanded);
                         let component = Rc::new(RefCell::new(component)); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                         self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
-                        if let Some(text) = block.user_message { self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))))); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad(), self.markdown_transformers.clone()))))); }
+                        if let Some(text) = block.user_message { self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))))); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), self.get_markdown_theme_with_settings(), self.output_pad(), self.markdown_transformers.clone()))))); }
                         return;
                     }
-                    let component = Rc::new(RefCell::new(UserMessageComponent::new(text.clone(), self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad(), self.markdown_transformers.clone())));
+                    let component = Rc::new(RefCell::new(UserMessageComponent::new(text.clone(), self.theme.clone(), self.get_markdown_theme_with_settings(), self.output_pad(), self.markdown_transformers.clone())));
                     if let Some(frame) = crate::components::ask_user_answer_chip::parse_ask_user_answer_frame(&text) {
                         let entries = self.session.with_session_manager(|manager| manager.entries());
                         let headers = crate::components::ask_user_answer_chip::get_ask_user_answer_headers(&entries, &frame.request_id);
@@ -4602,7 +4610,7 @@ impl InteractiveMode {
                 } else if message.role() == "assistant" {
                     self.assistant_segments.clear();
                     self.reveal.begin(serde_json::to_value(message).expect("assistant"), self.clock.elapsed().as_secs_f64() * 1000.0);
-                    let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", self.output_pad(), self.markdown_transformers.clone(), self.theme.clone())));
+                    let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, self.get_markdown_theme_with_settings(), "Thinking…", self.output_pad(), self.markdown_transformers.clone(), self.theme.clone())));
                     self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Assistant(component.clone()));
                     self.assistant_cards.push(component.clone());
                     component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
@@ -4672,9 +4680,10 @@ impl InteractiveMode {
     fn update_assistant_segment(&mut self, message: &maho_ai::types::AssistantMessage, start: usize, end: usize, final_message: bool) {
         if start == end && start != 0 { return; }
         let output_pad = self.output_pad();
+        let markdown_theme = self.get_markdown_theme_with_settings();
         let component = if start == 0 { self.streaming.clone() } else {
             Some(self.assistant_segments.entry(start).or_insert_with(|| {
-                let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", output_pad, self.markdown_transformers.clone(), self.theme.clone())));
+                let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, markdown_theme, "Thinking…", output_pad, self.markdown_transformers.clone(), self.theme.clone())));
                 component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
                 self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Assistant(component.clone())); self.assistant_cards.push(component.clone()); component
             }).clone())
@@ -4790,7 +4799,7 @@ impl InteractiveMode {
 impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
     fn expanded(&self) -> bool { self.tools_expanded }
     fn add_message(&mut self, message: maho_ai::types::AssistantMessage) {
-        let component = Rc::new(RefCell::new(AssistantMessageComponent::new(Some(serde_json::to_value(message).expect("assistant")), self.reveal.hide_thinking, get_markdown_theme(&self.theme), "Thinking…", self.output_pad(), self.markdown_transformers.clone(), self.theme.clone())));
+        let component = Rc::new(RefCell::new(AssistantMessageComponent::new(Some(serde_json::to_value(message).expect("assistant")), self.reveal.hide_thinking, self.get_markdown_theme_with_settings(), "Thinking…", self.output_pad(), self.markdown_transformers.clone(), self.theme.clone())));
         component.borrow_mut().set_expanded(self.tools_expanded);
         component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
         self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Assistant(component.clone())); self.assistant_cards.push(component);

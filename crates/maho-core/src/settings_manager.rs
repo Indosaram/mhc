@@ -799,6 +799,11 @@ impl SettingsManager {
             .unwrap_or(true)
     }
 
+    /// senpi `getCodeBlockIndent`: `markdown.codeBlockIndent`, defaulting to two spaces.
+    pub fn get_code_block_indent(&self) -> String {
+        self.settings.get("markdown").and_then(|markdown| markdown.get("codeBlockIndent")).and_then(Value::as_str).unwrap_or("  ").to_owned()
+    }
+
     /// senpi `getMermaidRenderingMode`: `markdown.mermaid`, with anything but `off`/`final` read as
     /// `streaming`.
     pub fn get_mermaid_rendering_mode(&self) -> crate::settings_shapes::MermaidRenderingMode {
@@ -1458,6 +1463,12 @@ mod tests {
         assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"mermaid":"final"}}"#), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Final);
         assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"mermaid":"off"}}"#), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Off);
         assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"mermaid":"bogus"}}"#), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Streaming);
+    }
+
+    #[test]
+    fn code_block_indent_defaults_to_two_spaces() {
+        assert_eq!(SettingsManager::in_memory(settings("{}"), false).get_code_block_indent(), "  ");
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"codeBlockIndent":"    "}}"#), false).get_code_block_indent(), "    ");
     }
 
     #[test]
