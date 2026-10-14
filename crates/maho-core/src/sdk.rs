@@ -125,7 +125,7 @@ pub fn built_in_tools_options(
     maho_tools::index::ToolsOptions {
         read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), auto_resize_images: Some(settings.get_image_auto_resize()), ..Default::default() },
         bash: maho_tools::bash::BashToolOptions { command_prefix: settings.get_string("shellCommandPrefix"),
-            shell_path: settings.get_string("shellPath"), shell_env: Some(shell_env.clone()), ..Default::default() },
+            shell_path: settings.get_shell_path(), shell_env: Some(shell_env.clone()), ..Default::default() },
         powershell: maho_tools::bash::BashToolOptions { shell_env: Some(shell_env), ..Default::default() },
         write: maho_tools::write::WriteToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
         edit: maho_tools::edit::EditToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
@@ -271,8 +271,8 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         follow_up_mode: Some(settings.get_follow_up_mode()),
         transport: Some(settings.get_transport()),
         thinking_budgets: settings.get_thinking_budgets(),
-        timeout_ms: settings.get_agent_stream_idle_timeout_ms(),
-        stream_start_timeout_ms: settings.get_agent_stream_start_timeout_ms(),
+        timeout_ms: settings.get_agent_stream_idle_timeout_ms()?,
+        stream_start_timeout_ms: settings.get_agent_stream_start_timeout_ms()?,
         max_retry_delay_ms: Some(provider_retry_settings.max_retry_delay_ms),
         ..Default::default()
     });

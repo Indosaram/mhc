@@ -3341,11 +3341,13 @@ impl InteractiveMode {
             { let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.on_http_idle_timeout_ms_change = Some(Box::new(move |timeout_ms: u64| {
                 let values = [("httpIdleTimeoutMs".into(), serde_json::json!(timeout_ms))].into_iter().collect();
                 match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
-                    Ok(()) => {
-                        let (idle, start) = session.with_settings_manager(|settings| (settings.get_agent_stream_idle_timeout_ms(), settings.get_agent_stream_start_timeout_ms()));
-                        session.agent().set_timeout_ms(idle); session.agent().set_stream_start_timeout_ms(start);
-                        maho_ext_api::ExtensionUi::notify(ui.as_ref(), &format!("HTTP idle timeout: {}", maho_core::http_dispatcher::format_http_idle_timeout_ms(timeout_ms)), maho_ext_api::NotificationType::Info);
-                    }
+                    Ok(()) => match session.with_settings_manager(|settings| Ok::<_, String>((settings.get_agent_stream_idle_timeout_ms()?, settings.get_agent_stream_start_timeout_ms()?))) {
+                        Ok((idle, start)) => {
+                            session.agent().set_timeout_ms(idle); session.agent().set_stream_start_timeout_ms(start);
+                            maho_ext_api::ExtensionUi::notify(ui.as_ref(), &format!("HTTP idle timeout: {}", maho_core::http_dispatcher::format_http_idle_timeout_ms(timeout_ms)), maho_ext_api::NotificationType::Info);
+                        }
+                        Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                    },
                     Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
                 }
             })); }
