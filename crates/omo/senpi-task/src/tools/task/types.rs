@@ -1,6 +1,6 @@
 //! `tools/task/types.ts`: the task tool's resolved spawn items, skills, and details payloads.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::state::{IsolationMergeMode, ResolvedModelRecord, TaskRunStats};
 
@@ -47,14 +47,14 @@ pub struct SkillResolution {
 /// Resolves named skills relative to a cwd.
 pub type SkillLoader = dyn Fn(&[String], &str) -> SkillResolution + Send + Sync;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSkillSummary {
     pub requested: Vec<String>,
     pub resolved: Vec<String>,
     pub missing: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskToolItemDetail {
     pub task_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,14 +81,14 @@ pub struct TaskToolItemDetail {
 }
 
 /// The only task tool mode: `"spawn"`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskToolMode {
     #[default]
     Spawn,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskToolDetails {
     pub task_id: String,
     pub status: String,
