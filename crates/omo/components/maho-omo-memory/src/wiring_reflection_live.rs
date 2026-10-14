@@ -35,7 +35,9 @@ impl MemoryReflectionLiveWiring{
             Box::new(OwnedDeps{contexts,runs})
         }),now)
     }
-    pub fn attach(&mut self,session:&str){self.session=Some(session.into());lock(&self.rpc).attach(session);}
+    /// Upstream builds a fresh reflection-live wiring (and footer) on every `register`, so a
+    /// session attached after a non-final `session_shutdown` gets a live footer again.
+    pub fn attach(&mut self,session:&str){if self.footer.is_disposed(){self.footer=MemoryFooterStatusLive::default();}self.session=Some(session.into());lock(&self.rpc).attach(session);}
     pub fn bind(&mut self,session:&str,context:MemoryIdentityContext,api:&maho_ext_api::ExtensionApi,now:i64,ui:Option<&mut dyn MemoryFooterUi>,live:Option<&mut dyn ReflectionBindLive>)->Result<(),String>{
         let mut ui=ui;let mut drained=false;
         if let Some(live)=live{
@@ -106,5 +108,15 @@ impl MemoryReflectionLiveWiring{
         wiring.on_reflection_launched("agent","run",ActiveReflectionRunDetails{trigger:"manual".into(),category:"quick".into(),model:Some("p/m".into()),started_at:"now".into()},&api,now,Some(&mut ui)).unwrap();assert!(ui.0.last().unwrap().ends_with("reflecting"));
         wiring.on_live_reflection_completed("agent","run",&api,now,Some(&mut ui)).unwrap();assert_eq!(ui.0.last().unwrap(),"mem:agent just now");let events=events.lock().unwrap();assert_eq!(events.len(),3);assert_eq!(events[1]["data"]["reflection"]["activeRun"]["runId"],"run");assert!(events[2]["data"]["reflection"].get("activeRun").is_none());drop(events);
         wiring.shutdown(Some("agent"));assert!(!wiring.active_runs.lock().unwrap().is_active("agent"));let before=ui.0.len();wiring.footer.tick(&mut ui);assert_eq!(before,ui.0.len());
+    }
+    #[test]fn session_attached_after_shutdown_animates_footer_again(){
+        let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");let engine=crate::engine_session::prepare_memory_engine_session("agent",&paths,Default::default()).unwrap();let now=engine.repo.head_commit_timestamp().unwrap().unwrap()*1000;
+        let context=MemoryIdentityContext::new("agent".into(),paths,crate::binding::MemorySessionBinding{identity:"agent".into(),repo_path_hash:"hash".into(),bound_at:0.0});let api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
+        let mut wiring=MemoryReflectionLiveWiring::default();let mut ui=Ui::default();wiring.attach("one");wiring.bind("one",context.clone(),&api,now,Some(&mut ui),None).unwrap();
+        wiring.shutdown(Some("agent"));assert!(wiring.footer.is_disposed());
+        wiring.attach("two");wiring.bind("two",context,&api,now,Some(&mut ui),None).unwrap();
+        wiring.on_reflection_launched("agent","run",ActiveReflectionRunDetails{trigger:"manual".into(),category:"quick".into(),model:None,started_at:"now".into()},&api,now,Some(&mut ui)).unwrap();
+        assert!(wiring.footer.is_animating());assert_eq!(ui.0.last().unwrap(),"mem:agent ⠋ reflecting");
+        wiring.footer.tick(&mut ui);assert_eq!(ui.0.last().unwrap(),"mem:agent ⠙ reflecting");
     }
 }
