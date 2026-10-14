@@ -320,7 +320,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     if progress_active { terminal.set_progress(false); }
     // senpi `stopInteractiveTui`: the "transcript" exit output switches fullscreen to the regular
     // renderer (without starting it) and renders once, so the transcript lands in scrollback.
-    if fullscreen && mode.fullscreen_exit_output() == maho_interactive::components::settings_selector::FullscreenExitOutput::Transcript {
+    if fullscreen && (mode.fatal_runtime_error || mode.fullscreen_exit_output() == maho_interactive::components::settings_selector::FullscreenExitOutput::Transcript) {
         while screen.base().has_overlay() { screen.base_mut().hide_overlay(); }
         let show_hardware_cursor = screen.base().get_show_hardware_cursor();
         let clear_on_shrink = screen.base().get_clear_on_shrink();
@@ -353,6 +353,12 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         maho_core::timings::print_timings();
         result.and(stopped)?;
         std::process::exit(0);
+    }
+    // senpi `handleFatalRuntimeError`: `stop("transcript")` then `process.exit(1)`.
+    if mode.fatal_runtime_error {
+        maho_interactive::interactive_stderr_guard::restore_interactive_stderr();
+        result.and(stopped)?;
+        std::process::exit(1);
     }
     // senpi `shutdown`: after the terminal stops, tell the user how to reopen this session.
     let resume_command = session.with_session_manager(|manager| maho_interactive::interactive_mode::format_resume_command(manager, std::io::IsTerminal::is_terminal(&std::io::stdout())));
