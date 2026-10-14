@@ -457,6 +457,10 @@ struct AgentSessionState {
     custom_system_prompt_source: Option<String>,
     append_system_prompt_sources: Vec<String>,
     context_files_enabled: bool,
+    /// senpi `DefaultResourceLoader.agentsFiles` / `systemPrompt` / `appendSystemPrompt`: resolved
+    /// once per resource load (or source change) and read by every prompt rebuild until `/reload`.
+    loaded_context_files: Option<Vec<crate::system_prompt::ContextFile>>,
+    resolved_system_prompt: Option<(Option<String>, Vec<String>)>,
     system_prompt_override: Option<String>,
     wake_sources: WakeSourceTracker,
     shown_high_reasoning_warning_keys: BTreeSet<String>,
@@ -1231,12 +1235,11 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             },
             disable_model_invocation: skill.disable_model_invocation,
         }).collect();
-        let (custom, append) = session.system_prompt_sources();
-        let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
+        let (custom_prompt, append) = session.resolved_system_prompt();
         let tools = session.get_active_tool_names();
         let (tool_snippets, prompt_guidelines) = session.tool_prompt_contributions(&tools);
         maho_ext_api::BuildSystemPromptOptions { cwd: session.cwd().into(), tools, tool_snippets, prompt_guidelines, skills,
-            custom_prompt: crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
+            custom_prompt,
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: session.project_context_files().into_iter()
                 .map(|file| maho_ext_api::ContextFile { path: file.path, content: file.content }).collect(),
@@ -1726,6 +1729,8 @@ impl AgentSession {
             custom_system_prompt_source: None,
             append_system_prompt_sources: Vec::new(),
             context_files_enabled: true,
+            loaded_context_files: None,
+            resolved_system_prompt: None,
             system_prompt_override: None,
             wake_sources: WakeSourceTracker::default(),
             shown_high_reasoning_warning_keys: BTreeSet::new(),
@@ -4351,6 +4356,8 @@ impl AgentSession {
     /// context reads the new cwd.
     fn rebind_cwd_services(&self) {
         let cwd = self.cwd();
+        // senpi `createRuntime` builds a fresh resource loader for the new cwd.
+        { let mut state = self.state(); state.loaded_context_files = None; state.resolved_system_prompt = None; }
         self.with_settings_manager_mut(|manager| manager.rebind_cwd(&cwd));
         let weak = self.weak_accessor();
         let context: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
@@ -4673,6 +4680,11 @@ impl AgentSession {
         let inputs = self.resource_loader_inputs();
         let settings = self.with_settings_manager(crate::resource_loader::snapshot_settings);
         let loaded = crate::resource_loader::load_resources(&self.cwd(), &self.agent_dir(), settings, &inputs).await?;
+        {
+            let mut state = self.state();
+            state.loaded_context_files = None;
+            state.resolved_system_prompt = None;
+        }
         self.set_prompt_resources_with_diagnostics(loaded.prompts, loaded.skills.skills, loaded.skills.diagnostics);
         self.state().prompt_diagnostics = loaded.prompt_diagnostics;
         self.set_hook_source_paths(loaded.hook_resources, loaded.pre_session_hook_paths);
@@ -4864,9 +4876,7 @@ impl AgentSession {
         let active = self.get_active_tool_names();
         let (snippets, guidelines) = self.tool_prompt_contributions(&active);
         let snippets = snippets.into_iter().collect();
-        let (custom, append) = self.system_prompt_sources();
-        let custom_prompt = crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt");
-        let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
+        let (custom_prompt, append) = self.resolved_system_prompt();
         let base_prompt = custom_prompt.unwrap_or_else(|| crate::dynamic_prompt::build::build_dynamic_system_prompt(
             &crate::dynamic_prompt::build::BuildDynamicSystemPromptOptions {
                 cwd: self.cwd(), selected_tools: active, tool_snippets: snippets, prompt_guidelines: guidelines,
@@ -4919,10 +4929,9 @@ impl AgentSession {
     fn extension_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions {
         let tools = self.get_active_tool_names();
         let (tool_snippets, prompt_guidelines) = self.tool_prompt_contributions(&tools);
-        let (custom, append) = self.system_prompt_sources();
-        let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
+        let (custom_prompt, append) = self.resolved_system_prompt();
         maho_ext_api::BuildSystemPromptOptions {
-            custom_prompt: crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
+            custom_prompt,
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: self.project_context_files().into_iter()
                 .map(|file| maho_ext_api::ContextFile { path: file.path, content: file.content }).collect(),
@@ -5574,21 +5583,35 @@ impl AgentSession {
         let mut state = self.state();
         state.custom_system_prompt_source = custom;
         state.append_system_prompt_sources = append;
+        state.resolved_system_prompt = None;
         drop(state);
         self.rebuild_system_prompt();
     }
 
     pub fn set_context_files_enabled(&self, enabled: bool) {
-        self.state().context_files_enabled = enabled;
+        // senpi's `noContextFiles` is a loader option: changing it re-reads the context files.
+        { let mut state = self.state(); state.context_files_enabled = enabled; state.loaded_context_files = None; }
         self.rebuild_system_prompt();
     }
 
+    /// senpi `resourceLoader.getAgentsFiles()`: the context files loaded by the last resource load.
     pub fn project_context_files(&self) -> Vec<crate::system_prompt::ContextFile> {
-        if self.state().context_files_enabled {
-            crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())
-        } else {
-            Vec::new()
-        }
+        if !self.state().context_files_enabled { return Vec::new(); }
+        if let Some(files) = self.state().loaded_context_files.clone() { return files; }
+        let files = crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir());
+        self.state().loaded_context_files = Some(files.clone());
+        files
+    }
+
+    /// senpi `resourceLoader.getSystemPrompt()` / `getAppendSystemPrompt()`: the `--system-prompt`
+    /// and `--append-system-prompt` inputs resolved once per resource load.
+    pub fn resolved_system_prompt(&self) -> (Option<String>, Vec<String>) {
+        if let Some(resolved) = self.state().resolved_system_prompt.clone() { return resolved; }
+        let (custom, append) = self.system_prompt_sources();
+        let resolved = (crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
+            append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect());
+        self.state().resolved_system_prompt = Some(resolved.clone());
+        resolved
     }
 
     pub fn system_prompt_sources(&self) -> (Option<String>, Vec<String>) {
