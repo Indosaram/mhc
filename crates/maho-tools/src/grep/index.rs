@@ -116,8 +116,10 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
                 for row in matches.iter().filter(|r| !r.is_context) { *counts.entry(row.path.clone()).or_insert(0u32) += 1; }
                 matches.retain(|r| counts.contains_key(&r.path)); file_matches = counts.into_iter().map(|(path,count)| FileMatch { path, count: Some(count) }).collect();
             } else if single_file || !selected.is_empty() { file_matches = result.file_counts.iter().map(|f| FileMatch { path: f.path.clone(), count: f.count }).collect(); }
+            let had_preselection = preselection.is_some();
             let mut scan = preselection.unwrap_or_else(|| result.clone()); scan.missing_paths = missing; scan.elapsed_ms = started.elapsed().as_secs_f64()*1000.0;
             scan.effective_pattern = result.effective_pattern; scan.pattern_kind = result.pattern_kind; scan.regex_engine = result.regex_engine; scan.timed_out |= result.timed_out;
+            if result.timed_out && had_preselection { scan.warnings.extend(result.warnings.iter().cloned()); }
             let partial = scan.timed_out || scan.prefix_searched > 0 || scan.skipped_oversized > 0;
             let engine = if scan.regex_engine == "pcre2" || std::env::var("SENPI_GREP_ENGINE").as_deref() == Ok("rg") { "rg" } else { "native" };
             let details = GrepToolDetails { version: 1, engine: engine.into(), status: if partial { "partial" } else if !file_matches.is_empty() { "ok" } else if skip > 0 { "pageEnd" } else { "noMatch" }.into(),

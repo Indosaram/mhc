@@ -18,6 +18,29 @@ pub enum ToolError {
     Aborted,
 }
 
+/// Re-labels a filesystem error the way Node's `fs` reports it to the model:
+/// `ENOENT: no such file or directory, access '/abs/path'`. The error kind is preserved.
+pub fn node_fs_error(error: std::io::Error, syscall: &str, path: &Path) -> std::io::Error {
+    use std::io::ErrorKind;
+    let code = match (error.raw_os_error(), error.kind()) {
+        (Some(1), _) if cfg!(unix) => Some(("EPERM", "operation not permitted")),
+        (_, ErrorKind::NotFound) => Some(("ENOENT", "no such file or directory")),
+        (_, ErrorKind::PermissionDenied) => Some(("EACCES", "permission denied")),
+        (_, ErrorKind::IsADirectory) => Some(("EISDIR", "illegal operation on a directory")),
+        (_, ErrorKind::NotADirectory) => Some(("ENOTDIR", "not a directory")),
+        (_, ErrorKind::AlreadyExists) => Some(("EEXIST", "file already exists")),
+        (_, ErrorKind::StorageFull) => Some(("ENOSPC", "no space left on device")),
+        (_, ErrorKind::ReadOnlyFilesystem) => Some(("EROFS", "read-only file system")),
+        (_, ErrorKind::ResourceBusy) => Some(("EBUSY", "resource busy or locked")),
+        _ => None,
+    };
+    let message = match code {
+        Some((code, description)) => format!("{code}: {description}, {syscall} '{}'", path.display()),
+        None => format!("{error}, {syscall} '{}'", path.display()),
+    };
+    std::io::Error::new(error.kind(), message)
+}
+
 /// Read-only session surface consumed by the shell environment builder.
 pub trait ToolSessionManager: Send + Sync {
     fn session_id(&self) -> &str;

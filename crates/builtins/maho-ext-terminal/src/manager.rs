@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc,Mutex};
 use std::time::Duration;
 use maho_pty::PtySessionOptions;
 use crate::runtime_session::{TerminalRuntimeSession,RuntimeError};
@@ -18,12 +19,13 @@ pub fn session_id_prefix(command:&str)->String {
     let prefix=prefix.trim_matches('_');
     if prefix.is_empty() {"session".to_owned()} else {prefix.to_owned()}
 }
+type ExitWatch=tokio::sync::watch::Receiver<Option<Result<maho_pty::PtyExit,String>>>;
 /// Await the settled exit for at most `grace`; `false` means it did not settle in time.
 fn wait_for_terminal_session_exit(runtime:&TerminalRuntimeSession,grace:Duration)->Result<bool,RuntimeError> {
     match runtime.wait(grace) {Err(RuntimeError::WaitTimeout)=>Ok(false),Err(RuntimeError::Poisoned)=>Err(RuntimeError::Poisoned),_=>runtime.exited()}
 }
 #[derive(Debug,thiserror::Error)]
-pub enum ManagerError {#[error("Cannot create terminal session: capacity limit ({0}) reached.")] Capacity(usize),#[error(transparent)] Runtime(#[from] RuntimeError)}
+pub enum ManagerError {#[error("Cannot create terminal session: all {0} registry slots are live.")] Capacity(usize),#[error(transparent)] Runtime(#[from] RuntimeError)}
 struct Entry {runtime:TerminalRuntimeSession,created_at:u64,last_used_at:u64,stop_requested:bool,force_killed:bool}
 pub struct TerminalManager {entries:BTreeMap<String,Entry>,monitor_ids:BTreeMap<String,String>,max_sessions:usize,scrollback:usize,id_counters:BTreeMap<String,u64>,sequence:u64,reservations:std::sync::Arc<std::sync::atomic::AtomicUsize>}
 pub struct CapacityReservation(std::sync::Arc<std::sync::atomic::AtomicUsize>);
@@ -69,15 +71,20 @@ impl TerminalManager {
         self.monitor_ids.clear();self.id_counters.clear();
         first_error.map_or(Ok(()),Err)
     }
-    fn stop_entries(&mut self,ids:&[String])->Result<(),RuntimeError> {
+    /// SIGTERM every live, not-yet-stopping entry and hand back its exit watch.
+    fn signal_stop_entries(&mut self,ids:&[String])->(Vec<(String,ExitWatch)>,Option<RuntimeError>) {
         let mut first_error=None;let mut pending=Vec::new();
         for id in ids {
             let Some(entry)=self.entries.get_mut(id) else {continue;};
             if entry.stop_requested {continue;}entry.stop_requested=true;
             match entry.runtime.exited() {Ok(true)=>continue,Ok(false)=>{},Err(error)=>{first_error.get_or_insert(error);continue;}}
-            match entry.runtime.stop() {Ok(())=>pending.push(id.clone()),Err(error)=>{first_error.get_or_insert(error);}}
+            match entry.runtime.stop() {Ok(())=>pending.push((id.clone(),entry.runtime.subscribe_exit())),Err(error)=>{first_error.get_or_insert(error);}}
         }
-        match self.wait_entries_exit(pending,Duration::from_millis(DEFAULT_STOP_EXIT_GRACE_MS)) {
+        (pending,first_error)
+    }
+    fn stop_entries(&mut self,ids:&[String])->Result<(),RuntimeError> {
+        let (pending,mut first_error)=self.signal_stop_entries(ids);
+        match self.wait_entries_exit(pending.into_iter().map(|(id,_)|id).collect(),Duration::from_millis(DEFAULT_STOP_EXIT_GRACE_MS)) {
             Ok(survivors)=>if let Err(error)=self.force_kill_entries(&survivors) {first_error.get_or_insert(error);},
             Err(error)=>{first_error.get_or_insert(error);}
         }
@@ -85,15 +92,20 @@ impl TerminalManager {
     }
     /// registry.ts `forceKillEntry`: SIGKILL once and wait the forced grace; a survivor stays `stopping`.
     fn force_kill_entries(&mut self,ids:&[String])->Result<(),RuntimeError> {
+        let (pending,mut first_error)=self.signal_force_kill_entries(ids);
+        if let Err(error)=self.wait_entries_exit(pending.into_iter().map(|(id,_)|id).collect(),Duration::from_millis(DEFAULT_FORCED_EXIT_GRACE_MS)) {first_error.get_or_insert(error);}
+        first_error.map_or(Ok(()),Err)
+    }
+    /// SIGKILL every live entry not yet force-killed and hand back its exit watch.
+    fn signal_force_kill_entries(&mut self,ids:&[String])->(Vec<(String,ExitWatch)>,Option<RuntimeError>) {
         let mut first_error=None;let mut pending=Vec::new();
         for id in ids {
             let Some(entry)=self.entries.get_mut(id) else {continue;};
             match entry.runtime.exited() {Ok(true)=>continue,Ok(false)=>{},Err(error)=>{first_error.get_or_insert(error);continue;}}
             if entry.force_killed {continue;}entry.force_killed=true;
-            match entry.runtime.kill() {Ok(())=>pending.push(id.clone()),Err(error)=>{first_error.get_or_insert(error);}}
+            match entry.runtime.kill() {Ok(())=>pending.push((id.clone(),entry.runtime.subscribe_exit())),Err(error)=>{first_error.get_or_insert(error);}}
         }
-        if let Err(error)=self.wait_entries_exit(pending,Duration::from_millis(DEFAULT_FORCED_EXIT_GRACE_MS)) {first_error.get_or_insert(error);}
-        first_error.map_or(Ok(()),Err)
+        (pending,first_error)
     }
     /// Wait for every id against one shared deadline (upstream awaits the stops concurrently).
     fn wait_entries_exit(&self,ids:Vec<String>,grace:Duration)->Result<Vec<String>,RuntimeError> {
@@ -101,6 +113,43 @@ impl TerminalManager {
         for id in ids {let Some(entry)=self.entries.get(&id) else {continue;};if !wait_for_terminal_session_exit(&entry.runtime,deadline.saturating_duration_since(std::time::Instant::now()))? {survivors.push(id);}}
         Ok(survivors)
     }
+}
+/// Await every exit watch against one shared deadline (upstream races each stop against its grace
+/// timer); returns the ids that did not settle in time.
+async fn wait_exit_watches(pending:Vec<(String,ExitWatch)>,grace:Duration)->Vec<String> {
+    let deadline=tokio::time::Instant::now()+grace;let mut survivors=Vec::new();
+    for (id,mut exit) in pending {
+        let settled=tokio::time::timeout_at(deadline,exit.wait_for(Option::is_some)).await.is_ok_and(|result|result.is_ok());
+        if !settled {survivors.push(id);}
+    }
+    survivors
+}
+/// SIGTERM wait, then SIGKILL wait for the survivors; the manager lock is only held to signal.
+async fn settle_signalled_shared(manager:&Arc<Mutex<TerminalManager>>,(pending,mut first_error):(Vec<(String,ExitWatch)>,Option<RuntimeError>))->Result<(),RuntimeError> {
+    let survivors=wait_exit_watches(pending,Duration::from_millis(DEFAULT_STOP_EXIT_GRACE_MS)).await;
+    let (pending,error)=manager.lock().map_err(|_|RuntimeError::Poisoned)?.signal_force_kill_entries(&survivors);
+    if let Some(error)=error {first_error.get_or_insert(error);}
+    wait_exit_watches(pending,Duration::from_millis(DEFAULT_FORCED_EXIT_GRACE_MS)).await;
+    first_error.map_or(Ok(()),Err)
+}
+/// registry.ts `stop` for a shared manager: awaits the SIGTERM/SIGKILL graces on the exit watches
+/// without holding the manager lock or blocking the async runtime thread.
+pub async fn stop_shared(manager:&Arc<Mutex<TerminalManager>>,id:&str)->Result<bool,RuntimeError> {
+    let pending={let mut manager=manager.lock().map_err(|_|RuntimeError::Poisoned)?;if !manager.entries.contains_key(id) {return Ok(false);}manager.signal_stop_entries(&[id.to_owned()])};
+    settle_signalled_shared(manager,pending).await?;Ok(true)
+}
+/// registry.ts `teardown` for a shared manager: stop every session, SIGKILL every survivor, then
+/// forget all entries, awaiting each grace off the lock.
+pub async fn teardown_shared(manager:&Arc<Mutex<TerminalManager>>)->Result<(),RuntimeError> {
+    let (ids,pending)={let mut manager=manager.lock().map_err(|_|RuntimeError::Poisoned)?;let ids=manager.entries.keys().cloned().collect::<Vec<_>>();let pending=manager.signal_stop_entries(&ids);(ids,pending)};
+    let mut first_error=settle_signalled_shared(manager,pending).await.err();
+    let (pending,error)=manager.lock().map_err(|_|RuntimeError::Poisoned)?.signal_force_kill_entries(&ids);
+    if let Some(error)=error {first_error.get_or_insert(error);}
+    wait_exit_watches(pending,Duration::from_millis(DEFAULT_FORCED_EXIT_GRACE_MS)).await;
+    let mut manager=manager.lock().map_err(|_|RuntimeError::Poisoned)?;
+    for (_,entry) in std::mem::take(&mut manager.entries) {if let Err(error)=entry.runtime.dispose() {first_error.get_or_insert(error);}}
+    manager.monitor_ids.clear();manager.id_counters.clear();
+    first_error.map_or(Ok(()),Err)
 }
 #[cfg(test)]
 mod tests {
