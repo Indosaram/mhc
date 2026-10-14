@@ -334,12 +334,18 @@ impl Server {
             self.fail_protocol(&connection, error).await;
             return Ok(());
         }
+        // Pinned `disconnect` from `sendMessage`: a failed best-effort frame closes the connection
+        // and signals the serve loop to tear it down.
+        let (disconnect, mut disconnected) = watch::channel(false);
+        let disconnect = Arc::new(disconnect);
         let presentation = Arc::new_cyclic(|this| Presentation {
             this: this.clone(),
             router: self.router.clone(),
             connection: connection.clone(),
             attachment: Mutex::new(None),
             max: self.max_frame_length,
+            on_error: self.on_error.clone(),
+            disconnect: disconnect.clone(),
         });
         // The host attach runs as its own task so a handshake timeout can hand it off without
         // dropping it mid-acquisition (pinned `finishHandshake` keeps awaiting `attachClient`).
@@ -424,22 +430,25 @@ impl Server {
                                 _=>None,
                             };
                             let server=self.clone(); let connection=connection.clone(); let services=services.clone(); let presentation=presentation.clone(); let active=active.clone(); let encoders=encoders.clone();
-                            let subscriptions=subscriptions.clone();
+                            let subscriptions=subscriptions.clone();let disconnect=disconnect.clone();
                             requests.spawn(async move {
                                 let context=Context { cancelled:signal.clone() }; let cancelled=signal;
                                 let publisher_connection=connection.clone(); let max=server.max_frame_length;
                                 let queued=Arc::new(Mutex::new(Some(Vec::<(String,Value)>::new())));
                                 let pending=queued.clone();let publishing_encoders=encoders.clone();let subscribing_id=subscribing.clone();
+                                let publisher_errors=server.on_error.clone();let publisher_disconnect=disconnect.clone();
                                 let publish:Publisher=Arc::new(move |subscription_id,update| {
                                     let connection=publisher_connection.clone();let pending=pending.clone();let encoders=publishing_encoders.clone();let subscribing_id=subscribing_id.clone();
+                                    let on_error=publisher_errors.clone();let disconnect=publisher_disconnect.clone();
                                     Box::pin(async move {
                                         let mut pending=pending.lock().await;
                                         if subscribing_id.as_ref()==Some(&subscription_id) && let Some(updates)=pending.as_mut() { updates.push((subscription_id,update));return Ok(()); }
-                                        let mut encoders=encoders.lock().await;
                                         // Pinned `sendServiceUpdate`: an update without an encoder is dropped.
+                                        let mut encoders=encoders.lock().await;
                                         let Some(encoder)=encoders.get_mut(&subscription_id) else { return Ok(()); };
                                         let update=encoder.update(&update)?;
-                                        send(&connection,&json!({"type":"service_update","subscriptionId":subscription_id,"update":update}),max).await
+                                        send_message(on_error.as_ref(),&connection,&json!({"type":"service_update","subscriptionId":subscription_id,"update":update}),max,&disconnect).await;
+                                        Ok(())
                                     })
                                 });
                                 let invoke=async {
@@ -481,7 +490,7 @@ impl Server {
                                         let mut pending=queued.lock().await;
                                         if let Some(updates)=pending.take() { for (subscription_id,update) in updates {
                                             let mut codecs=encoders.lock().await;let Some(codec)=codecs.get_mut(&subscription_id) else { continue; };
-                                            let update=codec.update(&update)?;send(&connection,&json!({"type":"service_update","subscriptionId":subscription_id,"update":update}),max).await?;
+                                            let update=codec.update(&update)?;send_message(server.on_error.as_ref(),&connection,&json!({"type":"service_update","subscriptionId":subscription_id,"update":update}),max,&disconnect).await;
                                         } }
                                     }
                                     Ok(())
@@ -493,6 +502,7 @@ impl Server {
                 }
                 tokio::select! {
                     _=shutdown.wait_for(|v| *v)=>break,
+                    _=disconnected.wait_for(|v| *v)=>break,
                     result=requests.join_next(),if !requests.is_empty()=>{ if let Some(result)=result { result.map_err(|e| ServerError::new("internal_error",&e.to_string()))??; } },
                     bytes=inbound.recv()=>match bytes {
                         Some(Ok(bytes))=>match decoder.push(&bytes) {
@@ -562,12 +572,41 @@ pub async fn send(
         .map_err(|e| ServerError::new("invalid_request", &e.to_string()))?;
     connection.send(&frame).await
 }
+/// Pinned `sendMessage`: best-effort delivery. A closed connection drops the frame silently; an
+/// encode or send failure is reported, closes the connection and disconnects it. Returns whether
+/// the frame was sent.
+async fn send_message(
+    on_error: Option<&ServerErrorObserver>,
+    connection: &Arc<dyn ByteConnection>,
+    message: &Value,
+    max: u32,
+    disconnect: &watch::Sender<bool>,
+) -> bool {
+    if *disconnect.borrow() || connection.closed() {
+        return false;
+    }
+    let failure = match encode_server_message(message, max) {
+        Err(error) => ServerError::new("internal_error", &error.to_string()),
+        Ok(frame) => match connection.send(&frame).await {
+            Ok(()) => return true,
+            Err(error) => error,
+        },
+    };
+    report_to(on_error, failure);
+    if let Err(error) = connection.close(None).await {
+        report_to(on_error, error);
+    }
+    disconnect.send_replace(true);
+    false
+}
 struct Presentation {
     this: std::sync::Weak<Presentation>,
     router: Arc<SessionRouter>,
     connection: Arc<dyn ByteConnection>,
     attachment: Mutex<Option<Arc<Attachment>>>,
     max: u32,
+    on_error: Option<ServerErrorObserver>,
+    disconnect: Arc<watch::Sender<bool>>,
 }
 impl Presentation {
     /// Release the current attachment without publishing `attachment:null` (connection teardown).
@@ -586,10 +625,8 @@ impl Presentation {
             return Ok(());
         }
         current.take();
-        if self.connection.closed() {
-            return Ok(());
-        }
-        send(&self.connection, &json!({"type":"attachment","attachment":null}), self.max).await
+        send_message(self.on_error.as_ref(), &self.connection, &json!({"type":"attachment","attachment":null}), self.max, &self.disconnect).await;
+        Ok(())
     }
 }
 impl RoutedServerPresentation for Presentation {
@@ -621,12 +658,15 @@ impl RoutedServerPresentation for Presentation {
             if let Some(previous) = current.replace(attachment) {
                 previous.release().await?;
             }
-            send(
+            send_message(
+                self.on_error.as_ref(),
                 &self.connection,
                 &json!({"type":"attachment","attachment":target}),
                 self.max,
+                &self.disconnect,
             )
-            .await
+            .await;
+            Ok(())
         })
     }
     fn detach_session(&self) -> ServerFuture<'_, ()> {
@@ -638,17 +678,15 @@ impl RoutedServerPresentation for Presentation {
                 return Ok(());
             };
             let released = previous.release().await;
-            let published = if self.connection.closed() {
-                Ok(())
-            } else {
-                send(
-                    &self.connection,
-                    &json!({"type":"attachment","attachment":null}),
-                    self.max,
-                )
-                .await
-            };
-            released.and(published)
+            send_message(
+                self.on_error.as_ref(),
+                &self.connection,
+                &json!({"type":"attachment","attachment":null}),
+                self.max,
+                &self.disconnect,
+            )
+            .await;
+            released
         })
     }
     fn prepare_session_removal<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()> {
