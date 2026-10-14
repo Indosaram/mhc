@@ -1051,6 +1051,18 @@ impl SettingsManager {
         }
     }
 
+    /// senpi `getTreeFilterMode`: one of the five tree filters, else `default`.
+    pub fn get_tree_filter_mode(&self) -> String {
+        self.get_value("treeFilterMode").and_then(Value::as_str)
+            .filter(|mode| matches!(*mode, "default" | "no-tools" | "user-only" | "labeled-only" | "all"))
+            .unwrap_or("default").to_owned()
+    }
+
+    /// senpi `getOutputPad`: `0` only when explicitly `0`, otherwise `1`.
+    pub fn get_output_pad(&self) -> u8 {
+        u8::from(self.get_value("outputPad").and_then(Value::as_f64) != Some(0.0))
+    }
+
     /// `getFollowUpMode`: defaults to `one-at-a-time`.
     pub fn get_follow_up_mode(&self) -> maho_agent::types::QueueMode {
         match self.get_value("followUpMode").and_then(Value::as_str) {
