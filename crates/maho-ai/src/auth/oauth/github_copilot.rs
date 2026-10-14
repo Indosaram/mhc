@@ -197,7 +197,7 @@ async fn fetch_json(
 ) -> anyhow::Result<Value> {
     let response = execute(
         transport,
-        HttpRequest { method: method.into(), url: url.into(), headers, body, timeout_ms: Some(REQUEST_TIMEOUT_MS) },
+        HttpRequest { method: method.into(), url: url.into(), headers, body, timeout_ms: None },
         signal,
     )
     .await?;
