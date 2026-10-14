@@ -286,10 +286,11 @@ fn render_cell(cell: &Value, context: &EvalRenderContext, args: &EvalToolRequest
     if let Some(queued)=cell["queuedBehind"].as_array().filter(|v|!v.is_empty()) {
         header.push_str(&format!(" · queued behind {}",queued.iter().filter_map(Value::as_str).map(crate::host_sdk::sanitize_terminal_label).collect::<Vec<_>>().join(", ")));
     }
-    let badge=(!context.is_partial && single && status=="complete").then(||throughput(details)).flatten();
+    let throughput_eligible=!context.is_partial && single && status=="complete" && details["toolCallCount"].is_number();
+    let badge=throughput_eligible.then(||throughput(details)).flatten();
     if let Some(badge)=&badge {header.push_str(&format!(" · {badge}"));}
     let elapsed=if matches!(status,"pending"|"running") {cell["startedAt"].as_f64().map(|start|(context.now-start).max(0.0)).or_else(||cell["durationMs"].as_f64())} else {cell["durationMs"].as_f64()};
-    let elapsed=if badge.is_some() {details["wallDurationMs"].as_f64().or(elapsed)} else {elapsed};
+    let elapsed=if throughput_eligible {details["wallDurationMs"].as_f64().or(elapsed)} else {elapsed};
     if let Some(elapsed)=elapsed {header.push_str(&format!(" · {}",format_duration(elapsed)));}
     if first && let EvalToolRequest::Run(input)=args {
         if input.reset==Some(true) {header.push_str(" · reset");}
