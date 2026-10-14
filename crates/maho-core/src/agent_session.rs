@@ -4611,7 +4611,7 @@ impl AgentSession {
         }
         let (read_files, modified_files) = utils::compute_file_lists(&preparation.file_ops);
         let summary = format!("{}{}{}", branch_summarization::BRANCH_SUMMARY_PREAMBLE,
-            utils::content_text_for_summary(&serde_json::to_value(&response.content).map_err(|error| error.to_string())?, ""),
+            utils::content_text_for_summary(&serde_json::to_value(&response.content).map_err(|error| error.to_string())?, "\n"),
             utils::format_file_operations(&read_files, &modified_files));
         Ok(serde_json::json!({"summary":summary,"usage":response.usage,"details":{"readFiles":read_files,"modifiedFiles":modified_files}}))
     }
@@ -5159,7 +5159,11 @@ impl AgentSession {
         options.session_id = Some(uuid::Uuid::new_v4().to_string());
         options.cache_retention.get_or_insert(maho_ai::types::CacheRetention::None);
         let policy = self.summarization_retry_policy();
-        maho_ai::utils::retry::retry_transient_call(|| {
+        // senpi `completeSummarization`: error-terminated responses retry through `retryAssistantCall`
+        // and the final error response is returned, so the caller labels the failure.
+        let failure: Mutex<Option<String>> = Mutex::new(None);
+        let failure_slot = &failure;
+        let response = maho_ai::utils::retry::retry_assistant_call(|| {
             let mut options = options.clone();
             let caller = caller.clone();
             async move {
@@ -5176,14 +5180,21 @@ impl AgentSession {
                     u64::try_from(stream_watchdog::DEFAULT_SUMMARIZATION_IDLE_TIMEOUT_MS).unwrap_or_default(),
                     Some(duration_ms), caller.as_ref(), || controller.abort(None)).await;
                 if let (Some(signal), Some(listener)) = (caller, listener) { signal.remove_abort_listener(listener); }
-                let response = result.map_err(|error| error.to_string())?;
-                if response.stop_reason == maho_ai::types::StopReason::Error {
-                    return Err(response.error_message.clone().unwrap_or_else(|| "Summarization failed".into()));
+                match result {
+                    Ok(response) => response,
+                    Err(error) => {
+                        let error = error.to_string();
+                        let mut message = maho_ai::utils::lazy::setup_error_message(model, &error);
+                        // Aborted stops the retry loop; the recorded failure is returned below.
+                        message.stop_reason = maho_ai::types::StopReason::Aborted;
+                        *lock(failure_slot) = Some(error);
+                        message
+                    }
                 }
-                Ok(response)
             }
-        }, |error: &String| maho_ai::utils::retry::is_retryable_error_message(error),
-            Some(&policy), caller.as_ref(), callbacks).await.map_err(maho_ai::utils::event_stream::StreamError::new)
+        }, Some(&policy), caller.as_ref(), callbacks).await;
+        if let Some(error) = lock(&failure).take() { return Err(maho_ai::utils::event_stream::StreamError::new(error)); }
+        Ok(response)
     }
 
     /// `settingsManager.getRetrySettings()` as the summarization retry policy.
@@ -12495,7 +12506,10 @@ mod tests {
                 }, ..Default::default()
             }), None)).await;
         session.dispose().await;
-        assert_eq!(result.expect("bounded deterministic error").expect_err("failure").to_string(), "invalid request fixture");
+        let response = result.expect("bounded deterministic error").expect("error response returned");
+        assert_eq!(response.stop_reason, maho_ai::types::StopReason::Error);
+        assert_eq!(crate::compaction::compaction::get_summarization_failure(&response, "Branch summarization").as_deref(),
+            Some("Branch summarization failed: invalid request fixture"));
         let seen = lock(&seen);
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].cache_retention, Some(maho_ai::types::CacheRetention::Short));
