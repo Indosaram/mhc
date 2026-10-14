@@ -333,8 +333,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                 ..Default::default()
             }).await;
             use tokio::io::AsyncReadExt;
-            let stdin = if stdin_tty { None } else { let mut text = String::new(); tokio::io::stdin().read_to_string(&mut text).await.map_err(|error| error.to_string())?; Some(text) };
-            let initial = startup::prepare_initial_message(&mut parsed, &cwd, true, stdin.as_deref()).await?;
+            // senpi main.ts `readPipedStdin`: `data.trim() || undefined`.
+            let stdin = if stdin_tty { None } else {
+                let mut text = String::new();
+                tokio::io::stdin().read_to_string(&mut text).await.map_err(|error| error.to_string())?;
+                Some(text.trim().to_owned()).filter(|text| !text.is_empty())
+            };
+            let initial = startup::prepare_initial_message(&mut parsed, &cwd, session.with_settings_manager(|settings| settings.get_image_auto_resize()), stdin.as_deref()).await?;
             // senpi print-mode.ts `runPrintMode`: the session header, session events (not raw agent
             // events) as JSON lines, fallback diagnostics and the text result all come from the
             // shared native print runner.
@@ -351,7 +356,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                 })
         }
         AppMode::Interactive => {
-            let initial = startup::prepare_initial_message(&mut parsed, &cwd, true, None).await?;
+            let initial = startup::prepare_initial_message(&mut parsed, &cwd, session.with_settings_manager(|settings| settings.get_image_auto_resize()), None).await?;
             super::interactive_entry::run(session.clone(), &parsed, initial, extension_snapshot, widget_requests, migrations.migrated_auth_providers.clone(), model_fallback_message.clone()).await.map(|()| 0)
         },
         AppMode::AppServer => unreachable!("server mode rejected before session creation"),
