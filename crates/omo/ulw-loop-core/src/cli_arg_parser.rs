@@ -24,9 +24,9 @@ const VALUE_FLAGS: [&str; 24] = [
     "--directive-file", "--idempotency-key", "--proposals-json",
 ];
 
-const SUBCOMMANDS: [&str; 10] = [
+const SUBCOMMANDS: [&str; 9] = [
     "create-goals", "status", "complete-goals", "criteria", "record-evidence",
-    "checkpoint", "steer", "add-goal", "record-review-blockers", "help",
+    "checkpoint", "steer", "add-goal", "record-review-blockers",
 ];
 
 pub fn has_flag(argv: &[String], flag: &str) -> bool {
