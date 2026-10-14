@@ -92,5 +92,7 @@ async fn run_print_entry(no_context_files: bool) {
     let file_append = system.find("fixture file append").expect("file append source forwarded");
     let literal_append = system.find("fixture literal append").expect("literal append source forwarded");
     assert!(custom < file_append && file_append < literal_append, "source order preserved");
-    assert_eq!(system.contains("CONTEXT_FIXTURE_7f29"), !no_context_files, "project context suppression");
+    // senpi `_rebuildSystemPrompt` uses a `--system-prompt` verbatim (agent-session.ts:3580): no project context either way.
+    let _ = no_context_files;
+    assert!(!system.contains("CONTEXT_FIXTURE_7f29"), "a custom system prompt carries no project context");
 }
