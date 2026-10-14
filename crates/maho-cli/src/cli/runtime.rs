@@ -47,19 +47,22 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let migrations = if facts_bootstrap { crate::migrations::MigrationResult { migrated_auth_providers: vec![], deprecation_warnings: vec![] } }
     else { indicator.during_surface_write(|| crate::migrations::run_migrations_with_lock(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir),true)).map_err(|error| error.to_string())? };
     if mode == AppMode::Rpc && parsed.multi_session {
-        // senpi main.ts:1119 `resolveSessionRuntime`: stdio hosts default to one isolated worker per
-        // session. The native host has no worker session registry yet, so a worker runtime
-        // degrades to the in-process registry; say so rather than silently ignoring the request.
-        if super::args::resolve_session_runtime(&parsed) == super::args::SessionRuntime::Worker {
-            maho_core::output_guard::maho_write_stderr("Warning: --session-runtime worker is not supported by the native host; sessions run in-process.\n");
-        }
         // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
         // built from the CLI configuration, instead of the single-session command stream. Like
         // upstream it starts only after the stdout takeover and the migrations above, and never
         // returns until its watchdog or empty-exit policy ends it.
         let mut config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
         config.session_dir = resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), None);
-        let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
+        // senpi main.ts:1119-1148 `resolveSessionRuntime`: socket hosts run every session in this
+        // process; stdio hosts (and an explicit `--session-runtime worker`) run one isolated worker
+        // process per session.
+        let core = match super::args::resolve_session_runtime(&parsed) {
+            super::args::SessionRuntime::Worker => {
+                let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+                super::host_runtime::create_worker_host_core(config, &cwd_text, parsed.listen.as_deref(), executable)
+            }
+            super::args::SessionRuntime::InProcess => super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref()),
+        };
         return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
     }
     // senpi `createCliRuntimeFactory`: resolve project trust for the launch cwd (override, saved
