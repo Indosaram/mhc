@@ -2482,6 +2482,8 @@ impl InteractiveMode {
                     self.autocomplete_wrappers.clear();
                     let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
                     self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
+                    // senpi `restoreChatBeforeSessionStart`: `hideThinkingBlock` is re-read before the rebuild.
+                    self.reveal.hide_thinking = self.session.with_settings_manager(|settings| settings.get_bool("hideThinkingBlock").unwrap_or(false));
                     self.rebuild_history();
                     // `this.keybindings.reload()` and `themeController.applyFromSettings()`.
                     // senpi reload: `keybindings.reload()` then `setupExtensionShortcuts(runner)`.
