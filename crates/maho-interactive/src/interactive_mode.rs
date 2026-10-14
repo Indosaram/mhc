@@ -403,6 +403,10 @@ pub struct InteractiveMode {
     active_tool_execution_terminal_title: Option<String>,
     /// senpi `blockingQuestionHeader`.
     blocking_question_header: Option<String>,
+    /// senpi `ExtensionEditorComponent.handleOpenExternalEditor`: the mounted dialog editor and the
+    /// content its Ctrl+G handed to the terminal owner (`TerminalRequest::ExternalEditor`).
+    extension_editor_dialog: Option<std::rc::Weak<RefCell<crate::components::extension_editor::ExtensionEditorComponent>>>,
+    pending_dialog_external_edit: Rc<RefCell<Option<String>>>,
     markdown_transformers: Vec<crate::components::markdown_transform::MarkdownTransformer>,
     /// The theme the Mermaid transformer styles diagrams with; senpi reads its live `theme` proxy.
     mermaid_theme: Rc<RefCell<Theme>>,
@@ -1237,7 +1241,7 @@ impl InteractiveMode {
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
         let invalidate_ui = Arc::downgrade(&extension_ui);
         session.set_before_session_invalidate(Some(Arc::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } })));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None, extension_editor_dialog: None, pending_dialog_external_edit: Default::default() }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -2473,8 +2477,31 @@ impl InteractiveMode {
         Ok(())
     }
 
+    /// senpi `showExtensionEditor`: the dialog editor gets `getExternalEditorCommand()`, and its
+    /// Ctrl+G hands the content to the terminal owner, which stops the TUI around the editor.
+    fn extension_editor_dialog_component(&mut self, title: &str, prefill: Option<&str>, on_submit: Box<dyn FnMut(&str)>, on_cancel: Box<dyn FnMut()>) -> Box<dyn Component> {
+        let command = self.session.with_settings_manager(|settings| settings.get_string("externalEditor")).filter(|command| !command.trim().is_empty());
+        let pending = self.pending_dialog_external_edit.clone();
+        let external_edit: crate::components::extension_editor::ExternalEdit = Box::new(move |content: &str| { *pending.borrow_mut() = Some(content.to_owned()); None });
+        let component = Rc::new(RefCell::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
+            Arc::new(self.keybindings()), title, prefill, on_submit, on_cancel, Default::default(), Some(external_edit), command)));
+        self.extension_editor_dialog = Some(Rc::downgrade(&component));
+        Box::new(SharedDialog(component))
+    }
+
     /// senpi `handleOpenExternalEditor`, run by the terminal owner while the terminal is stopped.
     pub async fn open_external_editor(&mut self) {
+        let dialog_content = self.pending_dialog_external_edit.borrow_mut().take();
+        if let Some(content) = dialog_content {
+            let Some(dialog) = self.extension_editor_dialog.as_ref().and_then(std::rc::Weak::upgrade) else { return; };
+            let command = dialog.borrow().external_editor_command().to_owned();
+            match crate::external_editor::edit_in_external_editor(&command, &content).await {
+                Ok(crate::external_editor::ExternalEditorResult::Complete { content }) => dialog.borrow_mut().editor_mut().set_text(&content),
+                Ok(_) => {}
+                Err(error) => self.show_error(&format!("Failed to open external editor: {error}")),
+            }
+            return;
+        }
         let configured = self.session.with_settings_manager(|settings| settings.get_string("externalEditor")).filter(|command| !command.trim().is_empty());
         let command = configured
             .or_else(|| std::env::var("VISUAL").ok().filter(|value| !value.is_empty()))
@@ -3133,10 +3160,10 @@ impl InteractiveMode {
         let submit_submissions = self.submissions.clone(); let submit_closed = self.ui_reply.clone();
         let cancel_submissions = self.submissions.clone(); let cancel_closed = self.ui_reply.clone();
         let entry = entry_id.to_owned();
-        self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
-            Arc::new(self.keybindings()), title, Some(&content),
+        self.ui_dialog = Some(self.extension_editor_dialog_component(
+            title, Some(&content),
             Box::new(move |text| { *pending.borrow_mut() = Some((entry.clone(), text.to_owned(), expected_leaf.clone())); submit_submissions.borrow_mut().push_back(internal_command("/tree-edit-apply")); submit_closed.borrow_mut().take(); }),
-            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command("/tree")); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command("/tree")); cancel_closed.borrow_mut().take(); })));
     }
 
     /// senpi's `editAssistantMessageFromTree` tail: empty re-opens the tree, an unchanged edit
@@ -3189,10 +3216,10 @@ impl InteractiveMode {
         let submit_submissions = self.submissions.clone(); let submit_closed = self.ui_reply.clone();
         let cancel_submissions = self.submissions.clone(); let cancel_closed = self.ui_reply.clone();
         let entry = entry_id.to_owned(); let submit_entry = entry.clone(); let cancel_entry = entry.clone();
-        self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
-            Arc::new(self.keybindings()), "Custom summarization instructions", None,
+        self.ui_dialog = Some(self.extension_editor_dialog_component(
+            "Custom summarization instructions", None,
             Box::new(move |text| { *pending.borrow_mut() = Some((submit_entry.clone(), true, Some(text.to_owned()))); submit_submissions.borrow_mut().push_back(internal_command("/tree-navigate")); submit_closed.borrow_mut().take(); }),
-            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command(format!("/tree-summary {cancel_entry}"))); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command(format!("/tree-summary {cancel_entry}"))); cancel_closed.borrow_mut().take(); })));
     }
 
     /// senpi `runTreeNavigation`'s committed tail: consume the chosen summary and navigate.
@@ -4828,10 +4855,10 @@ impl InteractiveMode {
             UiRequest::Editor { title, prefill, reply } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone(); let cancelled = selected.clone();
-                self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
-                    Arc::new(self.keybindings()), &title, prefill.as_deref(),
+                self.ui_dialog = Some(self.extension_editor_dialog_component(
+                    &title, prefill.as_deref(),
                     Box::new(move |text| { if let Some(reply) = selected.borrow_mut().take() { drop(reply.send(Some(text.into()))); } }),
-                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), Default::default(), None, None)));
+                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } })));
             }
             UiRequest::WorkingMessage(message) => self.working_message = message,
             UiRequest::WorkingVisible(visible) => self.working_visible = visible,
@@ -5700,6 +5727,7 @@ impl InteractiveMode {
         }
         if let Some(dialog) = &mut self.ui_dialog {
             dialog.handle_input(data);
+            if self.pending_dialog_external_edit.borrow().is_some() { self.terminal_request = Some(TerminalRequest::ExternalEditor); }
             if self.ui_reply.borrow().is_none() && self.custom_ui_reply.is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
             self.drain_auth_ui_events();
             return;
