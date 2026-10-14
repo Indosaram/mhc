@@ -165,8 +165,8 @@ async fn real_python_deadline_reports_preserved_state_and_cleans_worker() {
     eprintln!("cleanup: timeout-state Python worker closed");
     ready.unwrap().unwrap();
     initialized.unwrap();
-    let timed=timed.unwrap().unwrap();
-    assert_eq!(timed.details["isError"],true);
+    let timed=timed.unwrap().unwrap_err();
+    assert!(timed.contains("The kernel remains running; its existing variables are preserved."),"{timed}");
     let retained=retained.unwrap();
     assert_eq!(retained.details["isError"],serde_json::Value::Null);
     assert!(retained.content.iter().any(|part|matches!(part,maho_ext_api::ContentBlock::Text(text) if text.text.trim()=="42")));
@@ -207,8 +207,8 @@ async fn real_js_deadline_reports_restarted_state_and_recovery() {
     let recovered=run_eval_cell(options.clone(),next).await;
     kernel.close().await.unwrap();assert!(kernel.pid().is_none());
     eprintln!("cleanup: timeout-state JS worker closed; pid None");
-    let timed=timed.unwrap().unwrap();
-    assert_eq!(timed.details["isError"],true);
+    let timed=timed.unwrap().unwrap_err();
+    assert!(timed.starts_with("test deadline"),"{timed}");
     let recovered=recovered.unwrap();
     assert!(recovered.content.iter().any(|part|matches!(part,maho_ext_api::ContentBlock::Text(text) if text.text.contains("undefined"))));
     assert_eq!(options.cell_manager.lock().unwrap().peek("timeout-js-state").unwrap().state_retained,Some(false));
@@ -250,7 +250,7 @@ async fn timeout_interrupt_error_does_not_claim_retained_state() {
     let mut call=invocation("failed-interrupt","unused");call.signal=caller.signal();
     let trigger=async {events.recv().await.unwrap();caller.abort(Some(maho_ai::utils::abort::AbortReason::new("TimeoutError","test deadline")));};
     let (result,())=tokio::join!(run_eval_cell(options.clone(),call),trigger);
-    assert_eq!(result.unwrap().details["isError"],true);
+    assert!(result.unwrap_err().contains("Kernel state may have been lost"));
     assert_eq!(options.cell_manager.lock().unwrap().peek("failed-interrupt").unwrap().state_retained,None);
 }
 impl EvalKernelManager for FinalFrameManager {
@@ -361,8 +361,8 @@ async fn caller_abort_settles_while_host_tool_remains_pending() {
     let run=tokio::spawn(run_eval_cell(options,input));
     tokio::time::timeout(std::time::Duration::from_secs(2),events.recv()).await.unwrap().unwrap();
     controller.abort(Some(maho_ai::utils::abort::AbortReason::new("AbortError","caller cancelled")));
-    let result=tokio::time::timeout(std::time::Duration::from_secs(2),run).await.expect("caller abort must not wait for host tool").unwrap().unwrap();
-    assert_eq!(result.details["isError"],true);
+    let result=tokio::time::timeout(std::time::Duration::from_secs(2),run).await.expect("caller abort must not wait for host tool").unwrap();
+    assert_eq!(result.unwrap_err(),"caller cancelled");
 }
 
 #[tokio::test]
