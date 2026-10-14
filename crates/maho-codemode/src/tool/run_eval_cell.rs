@@ -4,7 +4,7 @@ use maho_ext_api::AgentToolResult;
 use super::{eval_tool_options::{CreateEvalToolOptions,EvalCellInvocation},types::{EvalKernelRunInput,TimeoutBehavior},cell_execution::CellExecution,cell_runtime::{CellState,CellResultBuilder},cell_handler::{CellHandler,CellBridgeRuntime},image::EvalOutputOptions,eval_request::eval_timeout_behavior,detached_eval_result::{result_after_detach,result_for_detached_state,EvalBackgroundCapacityError},detached_cell_contract::EvalDetachedCellState,eval_kernel_reset_refused_error::EvalKernelResetRefusedError};
 
 pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCellInvocation) -> Result<AgentToolResult,String> {
-    invocation.signal.throw_if_aborted().map_err(|error|error.to_string())?;
+    invocation.signal.throw_if_aborted().map_err(|reason|super::cell_execution::abort_error(reason).message)?;
     let detaches=eval_timeout_behavior(&invocation.input,&invocation.mode)==TimeoutBehavior::Detach;
     let manager=options.cell_manager.clone();
     let cell=manager.lock().expect("cell manager lock").create(invocation.cell_id.clone(),invocation.input.clone())?;
