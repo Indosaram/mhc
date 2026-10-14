@@ -23,6 +23,8 @@ fn ensure_managed_tool(tool: maho_tools::managed_tools::ManagedTool, on_status: 
 }
 fn run() -> Result<(), String> {
     use std::path::PathBuf;
+    // senpi main.ts `main()`: `resetTimings()` opens the startup phase timeline (`PI_TIMING=1`).
+    maho_core::timings::reset_timings(maho_core::timings::TimingLabel::Main);
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     // senpi rpc-entry.ts: the `<app>-rpc` entry is `main(["--mode", "rpc", ...argv])`; the single native
@@ -258,6 +260,7 @@ fn run() -> Result<(), String> {
     if parsed.version { println!("{}", maho_core::config::display_version(env!("CARGO_PKG_VERSION"))); return Ok(()); }
     for diagnostic in &parsed.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }
     if parsed.diagnostics.iter().any(|d| d.error) { return Err("Invalid CLI arguments".to_owned()); }
+    maho_core::timings::time("parseArgs", maho_core::timings::TimingLabel::Main);
     if let Some(input) = parsed.export.as_deref() {
         // senpi main.ts `parsed.export`: export the session file before any session startup.
         // `exportFromFile` resolves the default (terminal-detected) theme's colors.
@@ -305,6 +308,7 @@ fn run() -> Result<(), String> {
         if help_fast_path::is_plain_help_request(&parsed) {
             let scope = help_fast_path::help_flags_scope(&parsed, &cwd, &agent, trusted);
             maho_cli::cli::help_flags_cache::write_help_flags_cache(&scope, &resolved.flags, &resolved.extension_paths, version);
+            maho_core::timings::print_timings();
         }
         return output(&help_text(grok, &extension_flags_text(&resolved.flags)));
     }
@@ -338,6 +342,20 @@ fn run() -> Result<(), String> {
         loaded.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
         let runtime = providers.0.lock().map_err(|error| error.to_string())?.clone();
         // senpi main.ts:1084-1089 `reportDiagnostics`: service, settings and auth diagnostics.
+        // senpi main.ts:1071 passes `extensionFlagValues`, so unknown or value-less extension flags are
+        // reported (`applyExtensionFlagValues`) before the listing, which still runs.
+        let flag_values = parsed.unknown_flags.iter().map(|(name, value)| (name.clone(), match value {
+            maho_cli::cli::args::FlagValue::Boolean(value) => maho_ext_api::FlagValue::Boolean(*value),
+            maho_cli::cli::args::FlagValue::String(value) => maho_ext_api::FlagValue::String(value.clone()),
+        })).collect::<std::collections::BTreeMap<_, _>>();
+        for diagnostic in maho_core::agent_session_services::apply_extension_flag_values(Some(&loaded), (!flag_values.is_empty()).then_some(&flag_values)) {
+            let prefix = match diagnostic.kind {
+                maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Error => "Error: ",
+                maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Warning => "Warning: ",
+                maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Info => "",
+            };
+            eprintln!("{prefix}{}", diagnostic.message);
+        }
         for error in &loaded.errors { eprintln!("Warning: Failed to load extension \"{}\": {}", error.extension_path, error.error); }
         for diagnostic in maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "model listing") { eprintln!("Warning: {}", diagnostic.message); }
         for error in auth_errors { eprintln!("Warning: (model listing, auth storage) {error}"); }
