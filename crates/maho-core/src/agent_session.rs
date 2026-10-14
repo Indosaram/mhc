@@ -4804,7 +4804,7 @@ impl AgentSession {
         let key = id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         self.state().bash_abort_signals.insert(key.clone(), signal.clone());
         let prefix = self.with_settings_manager(|manager| manager.get_string("shellCommandPrefix"));
-        let shell = self.with_settings_manager(|manager| manager.get_string("shellPath"));
+        let shell = self.with_settings_manager(|manager| manager.get_shell_path());
         let local = maho_tools::bash::create_local_bash_operations(shell.as_deref());
         let resolved = prefix.map_or_else(|| command.to_owned(), |prefix| format!("{prefix}\n{command}"));
         let session = self.clone();
@@ -6201,7 +6201,9 @@ impl AgentSession {
                 };
                 let session = AgentSession { inner };
                 let mut options = options.unwrap_or_default();
-                session.apply_stream_request_settings(&model, &mut options.simple);
+                if let Err(error) = session.apply_stream_request_settings(&model, &mut options.simple) {
+                    output.fail(maho_ai::utils::event_stream::StreamError::new(error)); return;
+                }
                 let header_session = Arc::downgrade(&session.inner);
                 let header_model = model.clone();
                 let header_session_id = options.simple.stream.session_id.clone();
@@ -6287,10 +6289,12 @@ impl AgentSession {
     /// The request-option half of senpi `sdk.ts` `streamFn`. Caller-pinned values win; otherwise
     /// the live settings fill timeout, websocket connect timeout, the provider retry budget (a
     /// provider-declared profile owns it), the retry delay cap and the request service tier.
-    fn apply_stream_request_settings(&self, model: &Model, options: &mut maho_ai::types::SimpleStreamOptions) {
+    /// senpi throws `Invalid <name> setting` from the timeout getters, failing the request.
+    fn apply_stream_request_settings(&self, model: &Model, options: &mut maho_ai::types::SimpleStreamOptions) -> Result<(), String> {
         let (provider_retry, http_idle_timeout_ms, websocket_connect_timeout_ms) = self.with_settings_manager(|manager| (
             manager.get_provider_retry_settings(), manager.get_http_idle_timeout_ms(), manager.get_websocket_connect_timeout_ms(),
         ));
+        let http_idle_timeout_ms = http_idle_timeout_ms?;
         // SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout"; max int32 disables it.
         let effective_timeout_ms = if http_idle_timeout_ms == 0 { i32::MAX as u64 } else { http_idle_timeout_ms };
         let declared_policy = self.model_runtime().get_provider(&model.provider)
@@ -6304,9 +6308,13 @@ impl AgentSession {
         request.timeout_ms = request.timeout_ms.or(provider_retry.timeout_ms).or(Some(effective_timeout_ms));
         request.max_retries = request.max_retries.or(profile_max_retries);
         request.max_retry_delay_ms = request.max_retry_delay_ms.or(Some(provider_retry.max_retry_delay_ms));
-        options.stream.websocket_connect_timeout_ms = options.stream.websocket_connect_timeout_ms.or(websocket_connect_timeout_ms);
+        options.stream.websocket_connect_timeout_ms = match options.stream.websocket_connect_timeout_ms {
+            Some(pinned) => Some(pinned),
+            None => websocket_connect_timeout_ms?,
+        };
         if options.stream.session_id.is_none() { options.stream.session_id = Some(self.session_id()); }
         options.service_tier = options.service_tier.or_else(|| self.resolve_request_service_tier(model));
+        Ok(())
     }
 
     /// senpi `sdk.ts` `resolveRequestServiceTier`: the session's effective tier for the active
@@ -11921,7 +11929,7 @@ mod tests {
             ("retry".into(), serde_json::json!({"provider": {"maxRetries": 4, "maxRetryDelayMs": 9_000}})),
         ])));
         let mut options = maho_ai::types::SimpleStreamOptions::default();
-        session.apply_stream_request_settings(&model, &mut options);
+        session.apply_stream_request_settings(&model, &mut options).expect("valid settings");
         assert_eq!(options.stream.request.timeout_ms, Some(i32::MAX as u64));
         assert_eq!(options.stream.request.max_retries, Some(4));
         assert_eq!(options.stream.request.max_retry_delay_ms, Some(9_000));
@@ -11929,7 +11937,7 @@ mod tests {
         assert_eq!(options.service_tier, Some(ServiceTierPreference::Priority));
         let mut pinned = maho_ai::types::SimpleStreamOptions::default();
         pinned.stream.request.timeout_ms = Some(5);
-        session.apply_stream_request_settings(&model, &mut pinned);
+        session.apply_stream_request_settings(&model, &mut pinned).expect("valid settings");
         assert_eq!(pinned.stream.request.timeout_ms, Some(5));
     }
 
@@ -11946,7 +11954,7 @@ mod tests {
             ..Default::default()
         }).expect("provider");
         let mut options = maho_ai::types::SimpleStreamOptions::default();
-        session.apply_stream_request_settings(&test_model(), &mut options);
+        session.apply_stream_request_settings(&test_model(), &mut options).expect("valid settings");
         assert_eq!(options.stream.request.max_retries, Some(0));
     }
 
