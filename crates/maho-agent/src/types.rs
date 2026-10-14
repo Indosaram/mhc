@@ -185,6 +185,9 @@ pub struct AgentLoopTurnUpdate {
     /// `undefined` leaves the selection unchanged; `Some(None)` clears it.
     pub thinking_selection: Option<Option<ThinkingSelection>>,
     pub abort_server_side_fallback: Option<bool>,
+    /// The preparation failed: senpi's `prepareNextTurn` throws, the loop restores any drained
+    /// queue and rethrows, and the agent ends the run through `handleRunFailure` with this message.
+    pub failure: Option<String>,
 }
 
 pub type ConvertToLlm = Arc<dyn Fn(Vec<AgentMessage>) -> BoxFuture<'static, Vec<Message>> + Send + Sync>;

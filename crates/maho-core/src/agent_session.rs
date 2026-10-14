@@ -489,6 +489,12 @@ struct AgentSessionState {
     /// senpi `_triggerTurnAdmissionAbortGeneration`: the user-abort generation an idle
     /// `triggerTurn` custom message is being admitted under.
     trigger_turn_admission_abort_generation: Option<u64>,
+    /// senpi `_requiredCompactionTurnError`: the message of the `RequiredCompactionError` that
+    /// ended the current run from the next-turn preparation.
+    required_compaction_turn_error: Option<String>,
+    /// senpi `_requiredCompactionAdmissionError`: rethrown by the originating prompt when queued
+    /// input could not be admitted because required compaction failed.
+    required_compaction_admission_error: Option<String>,
     auto_compaction_session_override: Option<bool>,
     turn_index: u64,
     message_replacements: Vec<(AgentMessage, AgentMessage)>,
@@ -1723,6 +1729,8 @@ impl AgentSession {
             prompt_start_pending: false,
             had_cleared_queued_messages: false,
             trigger_turn_admission_abort_generation: None,
+            required_compaction_turn_error: None,
+            required_compaction_admission_error: None,
             auto_compaction_session_override: None,
             turn_index: 0,
             message_replacements: Vec::new(),
@@ -1911,6 +1919,7 @@ impl AgentSession {
             let mut state = self.state();
             match &mut event {
                 AgentEvent::AgentStart => {
+                    state.required_compaction_turn_error = None;
                     state.turn_index = 0;
                     state.message_replacements.clear();
                     state.abort_source = None;
@@ -2288,9 +2297,11 @@ impl AgentSession {
         // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
         // allows it and a configured fallback chain can take over.
         self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
+        self.state().required_compaction_admission_error = None;
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
+        let required_compaction_error = self.state().required_compaction_admission_error.take();
         let title_prompt = match options.session_title_prompt {
             Some(SessionTitlePrompt::Disabled) => None,
             Some(SessionTitlePrompt::Text(prompt)) => Some(prompt),
@@ -2303,6 +2314,8 @@ impl AgentSession {
         drop(_work);
         drop(_admission);
         self.emit_agent_settled().await;
+        // senpi `_promptAgent`: the stored admission rejection surfaces as the prompt rejecting.
+        if let Some(error) = required_compaction_error { return Err(error); }
         Ok(PromptDisposition::Started)
     }
 
@@ -2907,9 +2920,9 @@ impl AgentSession {
     }
 
     /// `_willRetryAfterAgentEnd`: whether the agent_end handler will start another attempt.
-    /// The required-compaction branch is not ported: the session keeps no `_requiredCompactionTurnError`.
     async fn will_retry(&self, message: Option<&maho_ai::types::AssistantMessage>) -> bool {
         let Some(message) = message else { return false; };
+        if self.required_compaction_still_needed(message).unwrap_or(false) { return true; }
         let profile = self.resolve_retry_profile();
         if !profile.turn.enabled { return false; }
         if self.state().user_aborted || !self.with_settings_manager(|manager| manager.get_value("retry")
@@ -3330,6 +3343,28 @@ impl AgentSession {
                 }
                 self.agent.continue_run(maho_agent::agent::AgentContinuationOptions { defer_queued_messages: Some(true), ..Default::default() }).await;
                 continue;
+            }
+            // senpi `retryAfterRequiredCompaction`: a run ended by a failed required compaction runs
+            // threshold recovery with retry; if it is still required and input is queued, the
+            // originating prompt rejects with the stored admission error.
+            if !self.state().user_aborted && self.required_compaction_still_needed(&message)? {
+                let compacted = self.compact_for_model_with_retry(None, &self.model(), "threshold", true, false, None).await.is_ok();
+                if self.is_compaction_delegated() { return Ok(()); }
+                if compacted {
+                    self.state().required_compaction_admission_error = None;
+                    let mut messages = self.messages();
+                    if messages.last().and_then(AgentMessage::as_assistant).is_some_and(|tail| tail.stop_reason == StopReason::Error) {
+                        messages.pop();
+                        self.agent.set_messages(messages);
+                        self.state().message_revision += 1;
+                    }
+                    self.agent.continue_with_queued_messages(Default::default()).await;
+                    continue;
+                }
+                if self.agent.has_queued_messages() && self.required_compaction_still_needed(&message)? {
+                    self.state().required_compaction_admission_error = Some(RequiredCompactionError.to_string());
+                }
+                return Ok(());
             }
             if !self.retry_can_admit_provider(&message).await {
                 if let Some(error) = message.error_message.clone()
@@ -6640,8 +6675,8 @@ impl AgentSession {
     ///
     /// Adaptations: the resident-store rehydration and Cursor admission belong to other parity rows;
     /// the refreshed prompt is the agent's live prompt, which `rebuild_system_prompt` keeps equal to
-    /// `override ?? base`; a required compaction that fails aborts the run, the native equivalent of
-    /// the upstream callback throwing `RequiredCompactionError`.
+    /// `override ?? base`; a required compaction that fails ends the run through the loop's
+    /// preparation failure, the native form of the upstream callback throwing `RequiredCompactionError`.
     fn install_agent_next_turn_refresh(&self) {
         let previous: Option<maho_agent::PrepareNextTurnWithContext> = self.agent.prepare_next_turn_with_context().or_else(|| {
             self.agent.prepare_next_turn().map(|without| -> maho_agent::PrepareNextTurnWithContext {
@@ -6655,7 +6690,10 @@ impl AgentSession {
             Box::pin(async move {
                 let inner = weak.upgrade()?;
                 let session = AgentSession { inner };
-                let compacted_before_callback = session.compact_before_next_admission(&turn).await;
+                let compacted_before_callback = match session.compact_before_next_admission(&turn).await {
+                    Ok(compacted) => compacted,
+                    Err(failure) => return Some(maho_agent::types::AgentLoopTurnUpdate { failure: Some(failure), ..Default::default() }),
+                };
                 let messages = if compacted_before_callback { session.messages() } else { turn.context.messages.clone() };
                 let post_compaction_turn = maho_agent::types::PrepareNextTurnContext {
                     context: maho_agent::types::AgentContext { messages, ..turn.context.clone() }, ..turn.clone()
@@ -6664,10 +6702,14 @@ impl AgentSession {
                     Some(previous) => previous(post_compaction_turn.clone(), signal.clone()).await,
                     None => None,
                 };
+                if previous_snapshot.as_ref().is_some_and(|snapshot| snapshot.failure.is_some()) { return previous_snapshot; }
                 let mut previous_context = previous_snapshot.as_ref().and_then(|snapshot| snapshot.context.clone())
                     .unwrap_or_else(|| post_compaction_turn.context.clone());
                 // The previous callback may await while continuation work is enqueued; re-sample once.
-                let compacted_after_callback = !compacted_before_callback && session.compact_before_next_admission(&turn).await;
+                let compacted_after_callback = !compacted_before_callback && match session.compact_before_next_admission(&turn).await {
+                    Ok(compacted) => compacted,
+                    Err(failure) => return Some(maho_agent::types::AgentLoopTurnUpdate { failure: Some(failure), ..Default::default() }),
+                };
                 if compacted_after_callback {
                     let post_late_compaction_turn = maho_agent::types::PrepareNextTurnContext {
                         context: maho_agent::types::AgentContext { messages: session.messages(), ..turn.context.clone() }, ..turn.clone()
@@ -6686,6 +6728,7 @@ impl AgentSession {
                             thinking_level: late.thinking_level.or(base.thinking_level),
                             thinking_selection: late.thinking_selection.or(base.thinking_selection),
                             abort_server_side_fallback: late.abort_server_side_fallback.or(base.abort_server_side_fallback),
+                            failure: late.failure.or(base.failure),
                         },
                         None => maho_agent::types::AgentLoopTurnUpdate { context: Some(context.clone()), ..base },
                     });
@@ -6702,6 +6745,7 @@ impl AgentSession {
                     thinking_level: Some(state.thinking_level),
                     thinking_selection: Some(state.thinking_selection.clone()),
                     abort_server_side_fallback: previous_snapshot.and_then(|snapshot| snapshot.abort_server_side_fallback),
+                    failure: None,
                 })
             })
         })));
@@ -6710,25 +6754,50 @@ impl AgentSession {
     /// `compactBeforeNextAdmission` inside `_installAgentNextTurnRefresh`: threshold compaction runs
     /// only when this prepare precedes an actual provider admission (a tool continuation or queued
     /// messages). Returns whether a compaction landed.
-    async fn compact_before_next_admission(&self, turn: &maho_agent::types::PrepareNextTurnContext) -> bool {
+    async fn compact_before_next_admission(&self, turn: &maho_agent::types::PrepareNextTurnContext) -> Result<bool, String> {
         let model = self.model();
         // Cursor rebuilds the full conversation each hop; compacting mid-run poisons its conversation id.
         if model.provider == "cursor" || model.provider == "cursor-cli-oauth" || model.context_window == 0 {
-            return false;
+            return Ok(false);
         }
         if turn.tool_results.is_empty() && !self.agent.has_queued_messages() {
-            return false;
+            return Ok(false);
         }
         let latest_compaction = || self.with_session_manager(|manager|
             crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id()))
                 .and_then(|entry| entry.get("id").cloned()));
         let before = latest_compaction();
-        if let Err(error) = self.revalidate_continuation_admission(false).await {
-            self.emit(AgentSessionEvent::ContinuationError { error_message: error.clone() });
-            self.agent.abort(Some(maho_ai::utils::abort::AbortReason::new("RequiredCompactionError", error)));
-            return false;
+        if self.revalidate_continuation_admission(false).await.is_err() {
+            // senpi: the callback throws `RequiredCompactionError`; the run ends with an error
+            // assistant message that the agent_end handler recognises for recovery.
+            let error = RequiredCompactionError.to_string();
+            let mut state = self.state();
+            state.required_compaction_turn_error = Some(error.clone());
+            if self.agent.has_queued_messages() { state.required_compaction_admission_error = Some(error.clone()); }
+            return Err(error);
         }
-        latest_compaction() != before
+        Ok(latest_compaction() != before)
+    }
+
+    /// senpi `_isRequiredCompactionError`.
+    fn is_required_compaction_error(&self, message: &maho_ai::types::AssistantMessage) -> bool {
+        message.stop_reason == StopReason::Error
+            && self.state().required_compaction_turn_error.as_deref().is_some_and(|error| message.error_message.as_deref() == Some(error))
+    }
+
+    /// Whether a required-compaction error turn still needs threshold compaction (senpi
+    /// `_getRequiredAutoCompactionReason` for that turn's error message).
+    fn required_compaction_still_needed(&self, message: &maho_ai::types::AssistantMessage) -> Result<bool, String> {
+        if !self.is_required_compaction_error(message) || !self.auto_compaction_enabled() || self.is_compaction_delegated() {
+            return Ok(false);
+        }
+        let model = self.model();
+        let resolved = self.get_compaction_settings(Some(&model))?;
+        if !resolved.enabled { return Ok(false); }
+        let reserve = if resolved.reserve_scaling_enabled {
+            crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
+        } else { resolved.reserve_tokens as u64 };
+        Ok(self.threshold_context_tokens(message)? > model.context_window.saturating_sub(reserve))
     }
 
     fn install_after_tool_call_hook(&self) {
