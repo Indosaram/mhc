@@ -19,7 +19,7 @@ pub fn register_soul_notice(api:&mut maho_ext_api::ExtensionApi,resolve:crate::p
         let actions=actions.clone(); let resolve=resolve.clone(); let edit_notice=edit_notice.clone();
         Box::pin(async move {
             let maho_ext_api::ExtensionEvent::ToolResult(event)=event else{return Ok(maho_ext_api::EventResult::None);};
-            if !matches!(event.tool_name.as_str(),"mcp_omo-memory_memory"|"mcp_omo-memory_memory_apply_patch")||event.tool_call_id.is_empty(){return Ok(maho_ext_api::EventResult::None);}
+            if !matches!(event.tool_name.as_str(),crate::tool_metadata::MEMORY_MCP_TOOL_NAME|crate::tool_metadata::MEMORY_MCP_APPLY_PATCH_TOOL_NAME)||event.tool_call_id.is_empty(){return Ok(maho_ext_api::EventResult::None);}
             let Some(context)=resolve(context.session_manager.session_id())else{return Ok(maho_ext_api::EventResult::None);};
             if let Some(receipt)=crate::tool_receipts::consume_tool_receipt(&context.identity_paths.tool_receipts,&event.tool_call_id).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?
                 &&edit_notice(&context.identity)&&receipt.affected_paths.iter().any(|path|path=="system/persona.md"||path=="system/identity.md") {
@@ -52,7 +52,7 @@ pub fn on_soul_commit(api:Option<&mut dyn SoulNoticeApi>,edit_notice:bool,commit
 }
 pub fn consume_soul_tool_result(api:&mut dyn SoulNoticeApi,context:&crate::context::MemoryIdentityContext,edit_notice:bool,payload:&serde_json::Value)->Result<(),crate::worker::run_artifacts::ArtifactError>{
     if payload.get("type").and_then(serde_json::Value::as_str)!=Some("tool_result"){return Ok(());}
-    if !matches!(payload.get("toolName").and_then(serde_json::Value::as_str),Some("mcp_omo-memory_memory"|"mcp_omo-memory_memory_apply_patch")){return Ok(());}
+    if !matches!(payload.get("toolName").and_then(serde_json::Value::as_str),Some(crate::tool_metadata::MEMORY_MCP_TOOL_NAME|crate::tool_metadata::MEMORY_MCP_APPLY_PATCH_TOOL_NAME)){return Ok(());}
     let Some(call)=payload.get("toolCallId").and_then(serde_json::Value::as_str).filter(|call|!call.is_empty())else{return Ok(());};
     if let Some(receipt)=crate::tool_receipts::consume_tool_receipt(&context.identity_paths.tool_receipts,call)?{on_soul_commit(Some(api),edit_notice,&SoulUpdatedRecord{sha:receipt.sha,subject:receipt.subject,affected_paths:receipt.affected_paths});}
     Ok(())

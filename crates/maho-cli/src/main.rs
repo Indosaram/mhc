@@ -47,6 +47,9 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let memory_role = argv.first().map(String::as_str);
+    if memory_role == Some(maho_omo_memory::mcp_memory_server::MEMORY_MCP_ENTRY_FLAG) {
+        return maho_omo_memory::mcp_memory_server::run_memory_mcp_stdio_entry();
+    }
     if memory_role == Some("--memory-supervisor") || memory_role == Some("--child-bootstrap") {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
