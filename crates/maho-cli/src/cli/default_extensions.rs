@@ -151,12 +151,13 @@ pub async fn with_user_extensions(
         return Ok(factories);
     }
     let discovery = super::user_extensions::resolve_and_discover(settings, cwd, agent_dir, cli_extension_paths).await.map_err(|error| error.to_string())?;
-    if !discovery.errors.is_empty() {
-        return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
+    // senpi main.ts `collectExtensionLoadDiagnostics`: an extension that cannot load is a warning.
+    for error in &discovery.errors {
+        maho_core::output_guard::maho_write_stderr(&format!("Warning: Failed to load extension \"{}\": {}\n", error.path, error.message));
     }
-    // A discovered port replaces its linked default so it registers once, with the discovered
-    // source provenance, after the builtins.
-    factories.retain(|factory| !discovery.factories.iter().any(|discovered| discovered.path == factory.path));
+    // Discovery applies the settings overrides, package filters and project scope, so it decides
+    // which linked user ports load; each registers once, with the discovered provenance.
+    factories.retain(|factory| !factory.path.starts_with("<user:"));
     factories.extend(discovery.factories);
     Ok(factories)
 }

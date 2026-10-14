@@ -1,6 +1,6 @@
-//! Port of senpi `packages/coding-agent/src/core/package-manager.ts` restricted to resource
-//! packages (skills, prompts, themes); code extensions are native Rust crates (plan D-M5), so the
-//! extension-package branches of the senpi file have no counterpart here.
+//! Port of senpi `packages/coding-agent/src/core/package-manager.ts`. Extension entries resolve to
+//! paths like upstream; code extensions are native Rust crates (plan D-M5), so the CLI maps each
+//! resolved extension path to a statically linked port or reports it as a load failure.
 
 use crate::source_info::SourceScope;
 use crate::source_info::SourceOrigin;
@@ -866,8 +866,6 @@ fn npm_partial_bound(value: &str, upper: bool) -> Option<String> {
     Some(format!("{}.{}.{}", numbers[0], numbers[1], numbers[2]))
 }
 
-const DATA_RESOURCE_TYPES: [ResourceType; 4] = [ResourceType::Skills, ResourceType::Prompts, ResourceType::Themes, ResourceType::Hooks];
-
 #[cfg(test)]
 #[path = "package_manager_tests.rs"]
 mod manager_tests;
@@ -897,7 +895,7 @@ fn resource_files(path: &str, kind: ResourceType) -> Vec<String> {
     match kind {
         ResourceType::Skills => collect_skill_entries(path, SkillDiscoveryMode::Pi, None, None),
         ResourceType::Prompts | ResourceType::Themes | ResourceType::Hooks => collect_files(path, kind, true, None, None),
-        ResourceType::Extensions => Vec::new(),
+        ResourceType::Extensions => collect_auto_extension_entries(path),
     }
 }
 
@@ -915,8 +913,39 @@ fn auto_files(path: &str, kind: ResourceType, mode: SkillDiscoveryMode) -> Vec<S
             }).collect()
         }
         ResourceType::Hooks => collect_files(path, kind, true, None, None),
-        ResourceType::Extensions => Vec::new(),
+        ResourceType::Extensions => collect_auto_extension_entries(path),
     }
+}
+
+/// senpi `resolveExtensionEntries`: a manifest's existing `extensions` entries, else `index.ts`/`index.js`.
+fn resolve_extension_entries(dir: &str) -> Option<Vec<String>> {
+    if let Some(manifest) = crate::pi_manifest::read_pi_manifest(&join_path(dir, "package.json"))
+        && let Some(entries) = manifest.extensions.filter(|entries| !entries.is_empty()) {
+        let entries: Vec<_> = entries.iter().map(|entry| crate::paths::lexical_resolve(&join_path(dir, entry))).filter(|path| Path::new(path).exists()).collect();
+        if !entries.is_empty() { return Some(entries); }
+    }
+    ["index.ts", "index.js"].iter().map(|name| join_path(dir, name)).find(|path| Path::new(path).exists()).map(|path| vec![path])
+}
+
+/// senpi `collectAutoExtensionEntries`.
+fn collect_auto_extension_entries(dir: &str) -> Vec<String> {
+    if !Path::new(dir).exists() { return Vec::new(); }
+    if let Some(entries) = resolve_extension_entries(dir) { return entries; }
+    let mut matcher = crate::skill_discovery::IgnoreMatcher::new();
+    crate::skill_discovery::add_ignore_rules(&mut matcher, dir, dir);
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new(); };
+    let mut result = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name == "node_modules" { continue; }
+        let path = entry.path();
+        let Ok(metadata) = std::fs::metadata(&path) else { continue; };
+        let ignore_path = if metadata.is_dir() { format!("{name}/") } else { name.clone() };
+        if matcher.ignores(&ignore_path) { continue; }
+        if metadata.is_file() && (name.ends_with(".ts") || name.ends_with(".js")) { result.push(path.to_string_lossy().into_owned()); }
+        else if metadata.is_dir() && let Some(entries) = resolve_extension_entries(&path.to_string_lossy()) { result.extend(entries); }
+    }
+    result
 }
 
 fn extglob_regex(pattern: &str) -> Option<String> {
@@ -1135,7 +1164,7 @@ fn add_resource(target: &mut Vec<ResolvedResource>, path: String, enabled: bool,
 }
 
 fn finalize_paths(mut paths: ResolvedPaths) -> ResolvedPaths {
-    for kind in DATA_RESOURCE_TYPES {
+    for kind in RESOURCE_TYPES {
         let target = target_resources(&mut paths, kind);
         target.sort_by_key(|resource| resource_precedence_rank(&resource.metadata));
         let mut seen = std::collections::HashSet::new();
@@ -1149,7 +1178,7 @@ impl DefaultPackageManager<'_> {
         let manifest = crate::pi_manifest::read_pi_manifest(&join_path(root, "package.json"));
         metadata.base_dir = Some(root.to_owned());
         if manifest.as_ref().is_some_and(|manifest| manifest.system == Some(true)) && metadata.scope == SourceScope::Temporary { metadata.scope = SourceScope::System; }
-        for kind in DATA_RESOURCE_TYPES {
+        for kind in RESOURCE_TYPES {
             let entries = manifest.as_ref().and_then(|manifest| manifest_entries(manifest, kind));
             let patterns = filter.and_then(|filter| filter.get(kind.as_str())).map(|value| strings(Some(value)));
             let delta = filter.is_some_and(|filter| filter.get("autoload").and_then(Value::as_bool) == Some(false));
@@ -1205,7 +1234,21 @@ impl DefaultPackageManager<'_> {
             let parsed = parse_source(resolved_source);
             let mut installed = self.installed_path(&parsed, resolved_scope)?;
             match &parsed {
-                ParsedSource::Local(_) => { if !Path::new(&installed).is_dir() { continue; } }
+                // senpi `resolveLocalExtensionSource`: a file is one extension; a directory without a
+                // manifest, filter or resource directory is itself the extension entry.
+                ParsedSource::Local(_) => {
+                    let metadata = PathMetadata { source: source.to_owned(), scope: *scope, origin: SourceOrigin::Package, base_dir: None };
+                    if Path::new(&installed).is_file() {
+                        add_resource(&mut paths.extensions, installed.clone(), true, &PathMetadata { base_dir: Some(parent_path(&installed)), ..metadata });
+                        continue;
+                    }
+                    if !Path::new(&installed).is_dir() { continue; }
+                    if !pkg.is_object() && crate::pi_manifest::read_pi_manifest(&join_path(&installed, "package.json")).is_none()
+                        && !RESOURCE_TYPES.iter().any(|kind| Path::new(&join_path(&installed, kind.as_str())).exists()) {
+                        add_resource(&mut paths.extensions, installed.clone(), true, &PathMetadata { base_dir: Some(installed.clone()), ..metadata });
+                        continue;
+                    }
+                }
                 ParsedSource::Npm { version, .. } | ParsedSource::Git { reference: version, .. } => {
                     let needs_install = !Path::new(&installed).exists() || match &parsed {
                         ParsedSource::Npm { .. } => read_json(&join_path(&installed, "package.json")).and_then(|value| value.get("version").and_then(Value::as_str).map(str::to_owned)).is_none_or(|installed| !npm_matches(&installed, version.as_deref())),
@@ -1254,7 +1297,7 @@ impl DefaultPackageManager<'_> {
             if scope == SourceScope::Project && !self.settings_manager.is_project_trusted() { continue; }
             let settings = if scope == SourceScope::Project { self.settings_manager.get_project() } else { self.settings_manager.get_global() };
             let base = self.base_dir(scope)?;
-            for kind in DATA_RESOURCE_TYPES {
+            for kind in RESOURCE_TYPES {
                 let entries = strings(settings.get(kind.as_str()));
                 let split = split_patterns(&entries);
                 let metadata = PathMetadata { source: "local".into(), scope, origin: SourceOrigin::TopLevel, base_dir: None };
@@ -1289,7 +1332,7 @@ impl DefaultPackageManager<'_> {
         for (base, scope, agents) in locations {
             let settings = if scope == SourceScope::Project { self.settings_manager.get_project() } else { self.settings_manager.get_global() };
             let metadata = PathMetadata { source: "auto".into(), scope, origin: SourceOrigin::TopLevel, base_dir: Some(base.clone()) };
-            for kind in DATA_RESOURCE_TYPES {
+            for kind in RESOURCE_TYPES {
                 if agents.is_some() && kind != ResourceType::Skills { continue; }
                 let overrides: Vec<_> = strings(settings.get(kind.as_str())).into_iter().filter(|entry| is_override_pattern(entry)).collect();
                 for path in auto_files(&join_path(&base, kind.as_str()), kind, agents.unwrap_or(SkillDiscoveryMode::Pi)) {
