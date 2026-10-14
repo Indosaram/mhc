@@ -815,9 +815,12 @@ impl InteractiveMode {
         // A cache that cannot be written must never break a launch.
         let _ = crate::theme::terminal_theme_cache::write_terminal_theme_hint(detected, std::path::Path::new(&self.session.agent_dir()));
         match &detection.auto {
-            Some((light, dark)) => { let name = if detected == crate::theme::TerminalTheme::Light { light.clone() } else { dark.clone() }; self.apply_theme_name(&name, true); }
+            // senpi `applyThemeName` only invalidates the UI; here installing a theme rebuilds the
+            // transcript (dropping transient statuses such as `/reload`'s), so an unchanged theme is
+            // not re-installed.
+            Some((light, dark)) => { let name = if detected == crate::theme::TerminalTheme::Light { light.clone() } else { dark.clone() }; if name != self.theme.name { self.apply_theme_name(&name, true); } }
             None => {
-                if !self.apply_theme_name(detected.name(), false) { return; }
+                if detected.name() != self.theme.name && !self.apply_theme_name(detected.name(), false) { return; }
                 if background_detection.high_confidence {
                     let values: maho_core::settings_manager::Settings = [("theme".to_owned(), serde_json::json!(detected.name()))].into_iter().collect();
                     if let Err(error) = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { self.show_status(error); }
@@ -839,7 +842,11 @@ impl InteractiveMode {
     }
 
     fn install_theme(&mut self, theme: Theme) {
-        self.theme = theme; *self.mermaid_theme.borrow_mut() = self.theme.clone(); self.editor.editor.border_color = editor_theme(&self.theme).border_color; self.editor_border_key = None; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::interactive_extension_ui::extension_theme(&self.theme); self.rebuild_history();
+        self.theme = theme; *self.mermaid_theme.borrow_mut() = self.theme.clone(); self.editor.editor.border_color = editor_theme(&self.theme).border_color; self.editor_border_key = None; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::interactive_extension_ui::extension_theme(&self.theme);
+        // senpi `onThemeChange` -> `ui.invalidate()` + `updateEditorBorderColor()` (interactive-mode.ts:1700-1704): a
+        // theme switch re-renders the existing components; it never rebuilds the transcript, so UI-only status
+        // lines (reload result, notices) survive it.
+        maho_tui::tui::Component::invalidate(self);
     }
 
     /// senpi `applyThemeName` over `setTheme`: load and apply `name`; an unloadable theme falls
@@ -2829,6 +2836,11 @@ impl InteractiveMode {
         if text.trim() == "/reload-run" {
             // `dismissReloadBox` on every outcome.
             let reload = self.host_reload().await;
+            // senpi emits the reload's session events (settings_source_selected, system_prompt_change)
+            // synchronously inside `session.reload()`, so their status lines land BEFORE the final
+            // "Reloaded ..." status (interactive-mode.ts:9017-9024). The native session queues them on
+            // the event channel; drain it here so the reload result stays the last status line.
+            self.drain_events();
             self.reload_box = None;
             match reload {
                 Ok(decision) if decision.cancelled => self.show_warning(decision.reason.as_deref().unwrap_or("Reload blocked by an extension.")),
