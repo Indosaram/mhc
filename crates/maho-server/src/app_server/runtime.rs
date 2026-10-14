@@ -184,7 +184,7 @@ impl AppServerRuntime {
         let send: super::approval_types::SendToThreadSubscribers = Arc::new(move |id,message| {
             let sends = send_recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).map(|clients|clients.values().cloned().collect::<Vec<_>>()).unwrap_or_default();
             let count = sends.len();
-            for send in sends {let message = super::envelope::populate_outbound_notification(message.clone(),chrono::Utc::now().timestamp_millis() as u64);tokio::spawn(async move {if let Err(error) = send(message).await {eprintln!("app-server request delivery: {}",error.message);}});}
+            for send in sends {let delivery = send(super::envelope::populate_outbound_notification(message.clone(),chrono::Utc::now().timestamp_millis() as u64));tokio::spawn(async move {if let Err(error) = delivery.await {eprintln!("app-server request delivery: {}",error.message);}});}
             count
         });
         let approvals = Arc::new(std::sync::Mutex::new(super::approval_bridge::ApprovalBridge::new(send.clone())));
@@ -282,19 +282,23 @@ impl AppServerRuntime {
                     let client_id = context.connection.id.clone();
                     let thread_id = entry.id.clone();
                     let mcp_session = entry.session.clone();
-                    let lifecycle = if method == "thread/start" {json!({"method":"thread/started","params":{"thread":response["thread"]}})} else {json!({"method":"thread/status/changed","params":{"threadId":entry.id,"status":{"type":"idle"}}})};
+                    // senpi `subscribe` (queued terminal flush, then pending approval/user-input replay)
+                    // and the resume `thread/status/changed` broadcast run before the response.
+                    if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
+                        let core = core.read().await;
+                        for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
+                        if let Some(connection) = core.get_connection(&client_id) {
+                            recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
+                            approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                            user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                        }
+                        if method == "thread/resume" && let Err(error) = core.broadcast_notification(json!({"method":"thread/status/changed","params":{"threadId":thread_id,"status":{"type":"idle"}}}),chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
+                    }
+                    let started = (method == "thread/start").then(|| json!({"method":"thread/started","params":{"thread":response["thread"]}}));
                     context.connection.defer_task_until_responded(move || tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
-                            let core = core.read().await;
-                            if let Some(connection) = core.get_connection(&client_id) {
-                                recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
-                                approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
-                                user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
-                            }
-                            if let Err(error) = core.broadcast_notification(lifecycle,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
-                            for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
-                        }
+                        if let Some(started) = started && let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade)
+                            && let Err(error) = core.read().await.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
                         // Sessions are bound at creation (UI, then MCP inventory); an entry whose
                         // inventory was dropped is rebound here in the same order.
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
@@ -340,19 +344,21 @@ impl AppServerRuntime {
                     let client_id = context.connection.id.clone();
                     let thread_id = entry.id.clone();
                     let mcp_session = entry.session.clone();
+                    // senpi `subscribe` runs before the response; only `thread/started` is deferred.
+                    if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
+                        let core = core.read().await;
+                        for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
+                        if let Some(connection) = core.get_connection(&client_id) {
+                            recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
+                            approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                            user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                        }
+                    }
                     let started = json!({"method":"thread/started","params":{"thread":response["thread"]}});
                     context.connection.defer_task_until_responded(move || tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
-                            let core = core.read().await;
-                            if let Some(connection) = core.get_connection(&client_id) {
-                                recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
-                                approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
-                                user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
-                            }
-                            if let Err(error) = core.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
-                            for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
-                        }
+                        if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade)
+                            && let Err(error) = core.read().await.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
                         // Sessions are bound at creation (UI, then MCP inventory); an entry whose
                         // inventory was dropped is rebound here in the same order.
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
