@@ -165,9 +165,9 @@ pub async fn with_user_extensions(
         retain_no_extensions_factories(&mut factories);
     }
     let discovery = super::user_extensions::resolve_and_discover(settings, cwd, agent_dir, cli_extension_paths, no_extensions).await.map_err(|error| error.to_string())?;
-    // A discovered port replaces its linked default so it registers once, with the discovered
-    // source provenance, after the builtins.
-    factories.retain(|factory| !discovery.factories.iter().any(|discovered| discovered.path == factory.path));
+    // Discovery applies the settings overrides, package filters and project scope, so it decides
+    // which linked user ports load; each registers once, with the discovered provenance.
+    factories.retain(|factory| !factory.path.starts_with("<user:"));
     factories.extend(discovery.factories);
     Ok((factories, discovery.errors))
 }
