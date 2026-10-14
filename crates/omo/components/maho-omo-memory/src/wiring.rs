@@ -37,6 +37,20 @@ pub fn spawn_footer_ticker(wiring:std::sync::Arc<tokio::sync::Mutex<MemoryWiring
     if spawned.is_err()&&let Ok(mut guard)=wiring.try_lock(){guard.footer_ticker=false;}
     spawned.map(|_|())
 }
+/// Production settled handler (pin `wiring-static.ts:96-111` agent_settled: journal reconcile, facts, footer).
+fn register_settled_handler(
+    api:&mut maho_ext_api::ExtensionApi,wiring:std::sync::Arc<tokio::sync::Mutex<MemoryWiring>>,handle:std::sync::Arc<maho_ext_api::ExtensionApi>,
+    now:std::sync::Arc<dyn Fn()->f64+Send+Sync>,warn:std::sync::Arc<dyn Fn(&str)+Send+Sync>,
+){
+    api.on(maho_ext_api::EventKind::AgentSettled,std::sync::Arc::new(move|_,context|{
+        let wiring=wiring.clone();let api=handle.clone();let now=now.clone();let warn=warn.clone();
+        Box::pin(async move{
+            let entries=context.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();let mut ui=NativeFooter(context.ui.clone());
+            wiring.lock().await.on_settled(context.session_manager.session_id(),&entries,&api,now() as i64,Some(&mut ui),|session,error|warn(&format!("journal reconcile failed: {session}: {error}"))).map_err(maho_ext_api::ExtensionFailure::new)?;
+            Ok(maho_ext_api::EventResult::None)
+        })
+    }));
+}
 impl MemoryWiring{
     pub fn register_native(
         wiring:std::sync::Arc<tokio::sync::Mutex<Self>>,component:&std::sync::Arc<crate::index::MemoryComponent>,
@@ -46,6 +60,10 @@ impl MemoryWiring{
         let handle=std::sync::Arc::new(maho_ext_api::ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
         let bind_wiring=wiring.clone();let bind_handle=handle.clone();let initial=options.initial_status;let facts=options.facts;let reconcile=options.reconcile;let now=options.now.clone();let journal_warn=options.warn.clone();
         let shutdown_wiring=wiring.clone();let shutdown_now=options.now.clone();let shutdown_warn=options.warn.clone();
+        // Pin `wiring-static.ts:96-111`: the settled journal/facts/footer handler is registered before
+        // the reflection trigger (:183) and dream trigger (:184), so a settle journals its final turn first.
+        let settled_wiring=wiring.clone();let settled_handle=handle.clone();let settled_now=options.now.clone();let settled_warn=options.warn.clone();
+        let register_static=move|api:&mut maho_ext_api::ExtensionApi|{register_settled_handler(api,settled_wiring,settled_handle,settled_now,settled_warn);register_static(api);};
         let registered=component.register(api,crate::index::MemoryComponentHooks{
             after_bind:std::sync::Arc::new(move|session,identity,context|{
                 let wiring=bind_wiring.clone();let api=bind_handle.clone();let identity=identity.clone();let facts=facts(&identity,context);let reconcile=reconcile.clone();let now=now.clone();let warn=journal_warn.clone();let initial=initial.clone();
@@ -82,15 +100,7 @@ impl MemoryWiring{
         wiring.try_lock().map_err(|error|format!("memory wiring locked during registration: {error}"))?.reflection_live.register_rpc(api,std::sync::Arc::new(move||->std::collections::BTreeMap<String,crate::context::MemoryIdentityContext>{
             rpc_component.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|(_,state)|state.enabled).filter_map(|(session,state)|state.context.clone().map(|context|(session.clone(),context))).collect()
         }),std::sync::Arc::new(move||rpc_now() as i64)).map_err(|error|error.to_string())?;
-        let now=options.now;let warn=options.warn;
-        api.on(maho_ext_api::EventKind::AgentSettled,std::sync::Arc::new(move|_,context|{
-            let wiring=wiring.clone();let api=handle.clone();let now=now.clone();let warn=warn.clone();
-            Box::pin(async move{
-                let entries=context.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();let mut ui=NativeFooter(context.ui.clone());
-                wiring.lock().await.on_settled(context.session_manager.session_id(),&entries,&api,now() as i64,Some(&mut ui),|session,error|warn(&format!("journal reconcile failed: {session}: {error}"))).map_err(maho_ext_api::ExtensionFailure::new)?;
-                Ok(maho_ext_api::EventResult::None)
-            })
-        }));Ok(true)
+        Ok(true)
     }
     #[allow(clippy::too_many_arguments)]
     pub async fn after_bind<F:std::future::Future<Output=Result<(),String>>>(
