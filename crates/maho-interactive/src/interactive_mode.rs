@@ -1278,8 +1278,8 @@ impl InteractiveMode {
         }
     }
 
-    async fn host_reload(&self) -> Result<bool, String> {
-        match self.session_host.clone() { Some(host) => host.reload().await, None => self.session.reload().await.map(|decision| !decision.cancelled) }
+    async fn host_reload(&self) -> Result<maho_ext_api::ReloadVetoDecision, String> {
+        match self.session_host.clone() { Some(host) => host.reload().await, None => self.session.reload().await }
     }
 
     /// senpi `clearAllQueues`: the native queue plus the compaction queue, in enqueue order.
@@ -2469,13 +2469,14 @@ impl InteractiveMode {
             // `reload` re-checks internally. A mounted host answers the veto inside its own reload.
             if self.session_host.is_none() {
                 match self.session.check_reload_veto().await {
-                    Ok(decision) if decision.cancelled => { self.show_warning("Reload blocked by an extension."); return Ok(PromptDisposition::Handled); }
+                    Ok(decision) if decision.cancelled => { self.show_warning(decision.reason.as_deref().unwrap_or("Reload blocked by an extension.")); return Ok(PromptDisposition::Handled); }
                     Ok(_) => {}
                     Err(error) => { self.show_error(&format!("Reload failed: {error}")); return Ok(PromptDisposition::Handled); }
                 }
             }
             match self.host_reload().await {
-                Ok(true) => {
+                Ok(decision) if decision.cancelled => self.show_warning(decision.reason.as_deref().unwrap_or("Reload blocked by an extension.")),
+                Ok(_) => {
                     // senpi `resetExtensionUI` once the reload proceeds: the reloaded extensions
                     // re-register their autocomplete wrappers (queued UI requests, drained afterwards).
                     self.autocomplete_wrappers.clear();
@@ -2494,7 +2495,6 @@ impl InteractiveMode {
                     let message = if self.maybe_save_implicit_project_trust_after_reload() { "Reloaded keybindings, extensions, skills, prompts, themes, and context files; saved project trust" } else { "Reloaded keybindings, extensions, skills, prompts, themes, and context files" };
                     self.show_status(message.into());
                 }
-                Ok(false) => self.show_warning("Reload blocked by an extension."),
                 Err(error) => self.show_error(&format!("Reload failed: {error}")),
             }
             return Ok(PromptDisposition::Handled);

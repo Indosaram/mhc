@@ -1953,7 +1953,7 @@ async fn turn_and_session_mutations_route_to_the_mounted_host() {
         fn compact(&self, _instructions: Option<String>) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Ok(()) }) }
         fn navigate_tree(&self, _entry_id: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Ok(maho_core::agent_session::AssistantEditResult::default()) }) }
         fn edit_assistant_message(&self, _entry_id: String, _text: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Ok(maho_core::agent_session::AssistantEditResult::default()) }) }
-        fn reload(&self) -> SessionFuture<'_, Result<bool, String>> { Box::pin(async { Ok(true) }) }
+        fn reload(&self) -> SessionFuture<'_, Result<maho_ext_api::ReloadVetoDecision, String>> { Box::pin(async { Ok(maho_ext_api::ReloadVetoDecision::default()) }) }
         fn execute_bash(&self, _command: String, _exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> { Box::pin(async { Ok(serde_json::json!({})) }) }
         fn set_model(&self, _provider: String, _id: String) -> SessionFuture<'_, Result<(), String>> { let calls = self.calls.clone(); Box::pin(async move { calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("set_model".into()); Ok(()) }) }
         fn set_session_name(&self, _name: String) -> SessionFuture<'_, Result<(), String>> { let calls = self.calls.clone(); Box::pin(async move { calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("set_session_name".into()); Ok(()) }) }
