@@ -41,6 +41,8 @@ use crate::utils::{
 /// whole (senpi's `TERMINAL_WORD_SELECTION_JOINERS`).
 /// Opens a URL from the transcript (Ctrl+click).
 pub type OpenUrlFn = Rc<dyn Fn(&str)>;
+/// senpi's `onRightClickPaste`: handles an unmodified secondary-button press for clipboard paste.
+pub type RightClickPasteFn = Rc<dyn Fn()>;
 /// Styles search-match text.
 pub type MatchStyleFn = Rc<dyn Fn(&str) -> String>;
 
@@ -202,6 +204,7 @@ pub struct TuiAltScreen {
     now_ms: u64,
     copy_on_select: bool,
     open_url: Option<OpenUrlFn>,
+    on_right_click_paste: Option<RightClickPasteFn>,
     copy_selection: Option<CopySelectionHook>,
     pending_copy_results: Vec<std::sync::mpsc::Receiver<bool>>,
     last_click: Option<LastClick>,
@@ -293,6 +296,7 @@ impl TuiAltScreen {
             now_ms: 0,
             copy_on_select: true,
             open_url: None,
+            on_right_click_paste: None,
             copy_selection: None,
             pending_copy_results: Vec::new(),
             last_click: None,
@@ -926,6 +930,21 @@ impl TuiAltScreen {
     }
 
     /// senpi's `handleScrollToEndIndicatorMouseEvent`: a primary press on the pill jumps to the end.
+    /// senpi's `handleRightClickPaste`: an unmodified secondary-button press on Windows (outside
+    /// VS Code's terminal) pastes the clipboard.
+    fn handle_right_click_paste(&mut self, event: &SgrMouseEvent) -> bool {
+        let Some(on_right_click_paste) = self.on_right_click_paste.clone() else { return false; };
+        if !cfg!(windows)
+            || crate::process_env::var("TERM_PROGRAM").is_some_and(|program| program.to_lowercase() == "vscode")
+            || event.release
+            || event.button != 2
+        {
+            return false;
+        }
+        on_right_click_paste();
+        true
+    }
+
     fn handle_scroll_to_end_indicator_mouse_event(&mut self, event: &SgrMouseEvent) -> bool {
         let Some((row, column, width)) = self.scroll_to_end_indicator_rect else {
             return false;
@@ -1540,6 +1559,9 @@ impl TuiAltScreen {
             return;
         }
 
+        if self.handle_right_click_paste(&raw) {
+            return;
+        }
         self.handle_selection_mouse_event(raw, now_ms, terminal);
     }
 
@@ -1999,6 +2021,11 @@ impl TuiAltScreen {
     /// senpi's `openUrl` option: activated by a primary click on an OSC 8 hyperlink.
     pub fn set_open_url(&mut self, open_url: Option<OpenUrlFn>) {
         self.open_url = open_url;
+    }
+
+    /// senpi's `onRightClickPaste` option. Currently enabled on Windows only.
+    pub fn set_on_right_click_paste(&mut self, on_right_click_paste: Option<RightClickPasteFn>) {
+        self.on_right_click_paste = on_right_click_paste;
     }
 
     /// senpi's `copySelection` option. Without it the selection is copied via OSC 52.
