@@ -319,7 +319,9 @@ fn run() -> Result<(), String> {
             let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), trusted);
             let (widget_sender, _widget_requests) = tokio::sync::mpsc::unbounded_channel();
             let factories = maho_cli::cli::default_extensions::assembled_factories(widget_sender, std::sync::Arc::new(std::sync::OnceLock::new()), &settings, &cwd, &agent_dir);
-            let factories = maho_cli::cli::default_extensions::with_user_extensions(factories, &mut settings, &cwd_text, &agent_dir, &config.resolved_extension_paths(), parsed.no_extensions).await?;
+            let (factories, extension_errors) = maho_cli::cli::default_extensions::with_user_extensions(factories, &mut settings, &cwd_text, &agent_dir, &config.resolved_extension_paths(), parsed.no_extensions).await?;
+            // senpi main.ts:129-136 `collectExtensionLoadDiagnostics`: a failed load warns and listing continues.
+            for error in &extension_errors { eprintln!("Warning: {}", maho_cli::cli::default_extensions::extension_load_failure_message(&error.path, &error.message)); }
             Ok::<_, String>((maho_ext_host::loader::load_extensions_async(factories, &cwd, Default::default()).await, settings))
         })?;
         let providers = std::sync::Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(runtime)));

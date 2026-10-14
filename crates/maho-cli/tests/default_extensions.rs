@@ -41,8 +41,13 @@ async fn assembled_factories_preserve_sdk_and_cli_extensions_once() {
         .filter(|id| maho_cli::cli::extension_registry::BUILTIN_EXTENSION_IDS.contains(id)).collect::<Vec<_>>();
     let expected = maho_cli::cli::extension_registry::BUILTIN_EXTENSION_IDS.iter().copied().filter(|id| registered.contains(id)).collect::<Vec<_>>();
     assert_eq!(registered, expected);
-    let defaults = factories.iter().take(4).map(|factory| factory.path.as_str()).collect::<Vec<_>>();
+    // senpi resource-loader.ts:933-949: global defaults load through agent-dir shims after every
+    // builtin, bundled and inline factory.
+    let defaults = factories.iter().rev().take(4).rev().map(|factory| factory.path.as_str()).collect::<Vec<_>>();
     assert_eq!(defaults, ["<builtin:diff>", "<builtin:files>", "<builtin:prompt-url-widget>", "<builtin:tps>"]);
+    let position = |path: &str| factories.iter().position(|factory| factory.path == path).expect(path);
+    assert!(position("<builtin:mcp>") < position("<builtin:diff>"));
+    assert!(position("<builtin:omo>") < position("<builtin:diff>"));
     let loaded = maho_ext_host::loader::load_extensions_async(factories, root.path(), Default::default()).await;
     assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
     assert_eq!(loaded.extensions.len(), paths.len());
@@ -61,6 +66,21 @@ async fn oauth_lanes_sit_before_config_reload_and_mcp_stays_last_builtin() {
     let builtins = factories.iter().filter(|factory| factory.path.strip_prefix("<builtin:").and_then(|id| id.strip_suffix('>'))
         .is_some_and(|id| maho_cli::cli::extension_registry::BUILTIN_EXTENSION_IDS.contains(&id))).collect::<Vec<_>>();
     assert_eq!(builtins.last().map(|factory| factory.path.as_str()), Some("<builtin:mcp>"));
+}
+
+#[tokio::test]
+async fn no_extensions_drops_global_defaults_and_keeps_builtins() {
+    let root = tempfile::tempdir().expect("isolated factory directory");
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let settings = maho_core::settings_manager::SettingsManager::in_memory(Default::default(), false);
+    let mut factories = maho_cli::cli::default_extensions::assembled_factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()), &settings, root.path(), &root.path().to_string_lossy());
+    maho_cli::cli::default_extensions::retain_no_extensions_factories(&mut factories);
+    let paths = factories.iter().map(|factory| factory.path.as_str()).collect::<Vec<_>>();
+    for id in maho_cli::cli::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS {
+        assert!(!paths.contains(&format!("<builtin:{id}>").as_str()), "{paths:?}");
+    }
+    assert!(factories.iter().all(|factory| factory.source_info.source != "user"), "{paths:?}");
+    assert!(paths.contains(&"<builtin:mcp>") && paths.contains(&"<builtin:codemode>") && paths.contains(&"<builtin:omo>"), "{paths:?}");
 }
 
 #[tokio::test]

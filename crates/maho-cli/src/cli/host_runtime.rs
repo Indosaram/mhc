@@ -321,9 +321,15 @@ pub async fn mount_agent_session_runtime(
     let extension_factories = super::default_extensions::assembled_factories_with_mcp_registry(
         widget_sender, task_parent.clone(), mcp_registry, &services.settings_manager, Path::new(&cwd), &config.agent_dir,
     );
-    let extension_factories = super::default_extensions::with_user_extensions(
+    let (extension_factories, extension_errors) = super::default_extensions::with_user_extensions(
         extension_factories, &mut services.settings_manager, &cwd, &config.agent_dir, &config.resolved_extension_paths(), config.no_extensions,
     ).await?;
+    // senpi main.ts:129-136 `collectExtensionLoadDiagnostics`: a failed extension load is a warning
+    // and the session still opens.
+    services.diagnostics.extend(extension_errors.into_iter().map(|error| AgentSessionRuntimeDiagnostic {
+        kind: maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Warning,
+        message: super::default_extensions::extension_load_failure_message(&error.path, &error.message),
+    }));
     let created = maho_core::agent_session_services::create_agent_session_from_services(
         services,
         maho_core::agent_session_services::CreateAgentSessionFromServicesOptions {

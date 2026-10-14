@@ -171,18 +171,11 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     // Builtins with the OAuth provider lanes, filtered by the builtin-extension settings selection.
-    let mut base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone(), &settings, &cwd, &agent_dir));
-    if parsed.no_extensions {
-        base_factories.retain(|factory| factory.source_info.source != "user");
-    } else {
-        let discovery = super::user_extensions::resolve_and_discover(&mut settings, &cwd_text, &agent_dir, &parsed.extensions).await.map_err(|error| error.to_string())?;
-        // senpi main.ts `collectExtensionLoadDiagnostics`: an extension that cannot load is a warning;
-        // startup continues without it.
-        runtime_diagnostics.extend(discovery.errors.into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("Failed to load extension \"{}\": {}", error.path, error.message))));
-        // A discovered port replaces its linked default so it registers once, after the builtins.
-        base_factories.retain(|factory| !discovery.factories.iter().any(|discovered| discovered.path == factory.path));
-        base_factories.extend(discovery.factories);
-    }
+    let base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone(), &settings, &cwd, &agent_dir));
+    // senpi `collectExtensionLoadDiagnostics` (main.ts:129-136): an extension that cannot load is a
+    // warning; startup continues without it. `--no-extensions` keeps only the `-e` paths.
+    let (base_factories, extension_errors) = super::default_extensions::with_user_extensions(base_factories, &mut settings, &cwd_text, &agent_dir, &parsed.extensions, parsed.no_extensions).await?;
+    runtime_diagnostics.extend(extension_errors.into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(super::default_extensions::extension_load_failure_message(&error.path, &error.message))));
     let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
     let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, session_profile.clone())).await;
     let extension_snapshot = extensions.extensions.clone();
