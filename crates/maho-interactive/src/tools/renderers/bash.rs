@@ -108,6 +108,7 @@ impl Component for CachedPreview {
 pub struct ShellRenderers {
     started_at: Option<f64>,
     ended_at: Option<f64>,
+    interval: Option<maho_tui::ui_intervals::UiIntervalId>,
 }
 
 impl ShellRenderers {
@@ -136,11 +137,14 @@ impl ToolRenderers for ShellRenderers {
         theme: &Theme,
         context: &ToolRenderContext<'_>,
     ) -> Option<RenderedComponent> {
-        if self.started_at.is_some() && options.is_partial {
-            (context.invalidate)();
+        if self.started_at.is_some() && options.is_partial && self.interval.is_none() {
+            self.interval = Some(maho_tui::ui_intervals::set_ui_interval(std::time::Duration::from_secs(1), Rc::clone(&context.invalidate)));
         }
         if !options.is_partial || context.is_error {
             self.ended_at.get_or_insert(context.now_ms);
+            if let Some(interval) = self.interval.take() {
+                maho_tui::ui_intervals::clear_ui_interval(interval);
+            }
         }
 
         let mut component = Container::new();

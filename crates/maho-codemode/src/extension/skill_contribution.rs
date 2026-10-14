@@ -1,4 +1,4 @@
-use crate::kernels::shared::runtime_asset::{CodemodeRuntimeAssetEnvironment, resolve_codemode_runtime_asset};
+use crate::kernels::shared::runtime_asset::{CodemodeRuntimeAssetEnvironment, materialize_embedded_runtime_asset, resolve_codemode_runtime_asset};
 use maho_ext_api::{diagnostic, EventKind, EventResult, ExtensionApi, ResourcesDiscoverResult};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
@@ -21,6 +21,9 @@ pub fn bundled_bun_skill_path(base_dir: &Path, environment: &CodemodeRuntimeAsse
     let relative = Path::new("skill/bun-1-4/SKILL.md");
     let candidate = resolve_codemode_runtime_asset(&local, relative, environment);
     if candidate.exists() { return Some(candidate); }
+    // A distributed binary has neither the module-relative skill nor the sidecar; the skill tree is
+    // embedded beside the kernel scripts, as `require_codemode_runtime_asset` does for kernels.
+    if let Some(embedded) = materialize_embedded_runtime_asset(relative) && embedded.exists() { return Some(embedded); }
     if !LOGGED_MISSING_BUN_SKILL.swap(true, Ordering::Relaxed) {
         let sidecar = environment.executable_path.parent().unwrap_or(Path::new(".")).join("node_modules/@code-yeongyu/senpi-codemode/src").join(relative);
         diagnostic(&format!("[senpi-codemode] bundled bun-1-4 skill not found at {} or {}; skipping contribution", local.display(), sidecar.display()));

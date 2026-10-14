@@ -31,6 +31,15 @@ fn resolves_shipped_skill_only_for_bun_kernel() {
     assert!(active_bun_skill_path(Some("1.4.0"), &base, Path::new("/usr/bin/bun")).unwrap().exists());
 }
 
+#[test]
+fn binary_away_from_build_tree_uses_embedded_skill_tree() {
+    let root = tempfile::tempdir().unwrap();
+    let skill = active_bun_skill_path(Some("1.4.0"), &root.path().join("extension"), &root.path().join("mhc")).expect("embedded skill");
+    assert!(skill.ends_with("skill/bun-1-4/SKILL.md"));
+    assert_eq!(std::fs::read_to_string(&skill).unwrap(), include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/SKILL.md")));
+    assert!(skill.with_file_name("references").join("runtime-apis.md").is_file());
+}
+
 use std::path::Path;
 #[tokio::test]
 async fn unbound_execute_tool_propagates_real_api_error() {
