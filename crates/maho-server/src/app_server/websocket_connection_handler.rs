@@ -34,7 +34,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     let slow_close = close_frame.clone();
     // senpi `sendWebSocketMessage`: the frame is queued when `send` is called (like `websocket.send`),
     // so the order of calls is the order on the wire; the returned future resolves on delivery.
-    let send_message: SendMessage = Arc::new(move |message| -> SendFuture {
+    let send_message: SendMessage = Arc::new(move |message: serde_json::Value| -> SendFuture {
         let payload = match serde_json::to_string(&message) { Ok(payload) => payload, Err(error) => return Box::pin(std::future::ready(Err(JsonRpcError::new(-32603, error.to_string())))) };
         let length = payload.len();
         let previous = queued.fetch_add(length, Ordering::SeqCst);
@@ -50,7 +50,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send + 'static {
         }
         Box::pin(async move { result.await.map_err(|_| JsonRpcError::new(-32603, "WebSocket closed"))? })
     });
-    core.write().await.add_connection_input(ConnectionInput { id: id.clone(), transport_kind, send: send_message, close: Some(Arc::new(move |_reason| close_frame())) });
+    core.write().await.add_connection_input(ConnectionInput { id: id.clone(), transport_kind, send: send_message, close: Some(Arc::new(move |_reason: String| close_frame())) });
     let writer = tokio::spawn(async move {
         while let Some((message, resolve, length)) = receive.recv().await {
             let closing = message.is_close();
