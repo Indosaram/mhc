@@ -582,26 +582,16 @@ pub struct TerminalThemeDetection {
     pub detail: String,
     pub high_confidence: bool,
 }
+/// senpi `detectTerminalBackgroundTheme`'s COLORFGBG branch, delegated to the faithful
+/// `getColorFgBgBackgroundIndex` port in [`super::detection`] (a `parseInt` prefix such as `15x`
+/// is accepted).
 pub fn detect_terminal_background_from_env(colorfgbg: Option<&str>) -> TerminalThemeDetection {
-    if let Some(index) = colorfgbg.and_then(|s| {
-        s.split(';')
-            .rev()
-            .find_map(|field| field.trim().parse::<u8>().ok())
-    }) {
-        let rgb = hex_to_rgb(&ansi256_to_hex(index)).unwrap_or([0; 3]);
-        TerminalThemeDetection {
-            theme: get_theme_for_rgb_color(rgb),
-            source: "COLORFGBG",
-            detail: format!("background color index {index}"),
-            high_confidence: true,
-        }
-    } else {
-        TerminalThemeDetection {
-            theme: TerminalTheme::Dark,
-            source: "fallback",
-            detail: "no terminal background hint found".into(),
-            high_confidence: false,
-        }
+    let detection = super::detection::detect_terminal_background_from_env(colorfgbg);
+    TerminalThemeDetection {
+        theme: detection.theme,
+        source: detection.source,
+        detail: detection.detail,
+        high_confidence: detection.confidence == "high",
     }
 }
 pub fn detect_terminal_background_theme(

@@ -320,7 +320,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     if progress_active { terminal.set_progress(false); }
     // senpi `stopInteractiveTui`: the "transcript" exit output switches fullscreen to the regular
     // renderer (without starting it) and renders once, so the transcript lands in scrollback.
-    if fullscreen && mode.fullscreen_exit_output() == maho_interactive::components::settings_selector::FullscreenExitOutput::Transcript {
+    if fullscreen && (mode.fatal_runtime_error || mode.fullscreen_exit_output() == maho_interactive::components::settings_selector::FullscreenExitOutput::Transcript) {
         while screen.base().has_overlay() { screen.base_mut().hide_overlay(); }
         let show_hardware_cursor = screen.base().get_show_hardware_cursor();
         let clear_on_shrink = screen.base().get_clear_on_shrink();
@@ -353,6 +353,12 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         maho_core::timings::print_timings();
         result.and(stopped)?;
         std::process::exit(0);
+    }
+    // senpi `handleFatalRuntimeError`: `stop("transcript")` then `process.exit(1)`.
+    if mode.fatal_runtime_error {
+        maho_interactive::interactive_stderr_guard::restore_interactive_stderr();
+        result.and(stopped)?;
+        std::process::exit(1);
     }
     // senpi `shutdown`: after the terminal stops, tell the user how to reopen this session.
     let resume_command = session.with_session_manager(|manager| maho_interactive::interactive_mode::format_resume_command(manager, std::io::IsTerminal::is_terminal(&std::io::stdout())));
@@ -461,6 +467,9 @@ fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::Interactive
     }
     screen.base_mut().apply_input_focus_rules();
     if root_focused(&*screen) {
+        // senpi `handleTerminalInput`: key release events reach the focused component only when it
+        // opts in with `wantsKeyRelease`.
+        if maho_tui::keys::is_key_release(&data) && !root.borrow().wants_key_release() { return None; }
         return Some(data);
     }
     screen.base_mut().handle_terminal_input(&data, maho_tui::keys::is_key_release(&data));
@@ -525,7 +534,9 @@ async fn resolve_interactive_startup_theme(
     let resolution = super::startup_ui::resolve_startup_theme_with_registered(
         setting, std::env::var("COLORFGBG").ok().as_deref(), &custom_directory, registered.clone(),
     )?;
-    diagnostics.extend(resolution.diagnostics);
+    // senpi `applyFromSettings` reports a configured theme that fails to load in the TUI
+    // (`poll_terminal_theme`), so only the resource diagnostics go to stderr here.
+    diagnostics.extend(resolution.diagnostics.into_iter().filter(|diagnostic| resolution.load_error.as_ref() != Some(diagnostic)));
     for diagnostic in &diagnostics { maho_core::output_guard::maho_write_stderr(&format!("theme: {diagnostic}\n")); }
     Ok((resolution.theme, registered))
 }

@@ -128,6 +128,40 @@ fn is_extension_command_text(text: &str, extension_commands: &[String]) -> bool 
     extension_commands.iter().any(|command| command == name)
 }
 
+/// Marks a submission the mode queued itself (selector picks, dialog answers, key actions) rather
+/// than text the user typed. senpi calls those handlers directly; the port routes them through the
+/// submission queue, so the marker keeps typed text such as `/tree foo` a normal prompt. The editor
+/// strips control characters, so typed input never carries it.
+const INTERNAL_COMMAND_MARKER: char = '\u{0}';
+
+/// Queue `command` as a mode-internal submission (see [`INTERNAL_COMMAND_MARKER`]).
+pub fn internal_command(command: impl Into<String>) -> String {
+    let mut text = String::from(INTERNAL_COMMAND_MARKER);
+    text.push_str(&command.into());
+    text
+}
+
+/// Split a submission into its text and whether the mode queued it itself.
+fn split_internal_command(text: &str) -> (&str, bool) {
+    match text.strip_prefix(INTERNAL_COMMAND_MARKER) { Some(command) => (command, true), None => (text, false) }
+}
+
+/// The continuation commands the port queues for its own selectors and dialogs (senpi calls the
+/// handlers directly). Typed by hand they are ordinary text, as in senpi.
+fn is_internal_only_command(text: &str) -> bool {
+    let with_argument = |command: &str| text.strip_prefix(command).is_some_and(|rest| rest.starts_with(' '));
+    matches!(text, "/import-cancel" | "/paste-clipboard" | "/reload-run" | "/resume-cwd-cancel" | "/tree-edit-apply" | "/tree-navigate" | "/login-auth-type")
+        || ["/import-confirm", "/import-cwd", "/resume", "/resume-cwd", "/fork", "/tree", "/tree-edit", "/tree-summary", "/tree-summary-custom", "/model-select", "/model-search", "/logout-provider", "/login-provider", "/login-select-provider"].into_iter().any(with_argument)
+}
+
+/// The built-in command branches of senpi's `onSubmit` (`interactive-mode.ts:4776-4916`), which
+/// return before any `editor.addToHistory`.
+fn is_builtin_command_submission(text: &str) -> bool {
+    let with_argument = |command: &str| text == command || text.strip_prefix(command).is_some_and(|rest| rest.starts_with(' '));
+    matches!(text, "/settings" | "/favorite-models" | "/scoped-models" | "/share" | "/copy" | "/session" | "/changelog" | "/keybindings" | "/hotkeys" | "/fork" | "/clone" | "/tree" | "/trust" | "/logout" | "/new" | "/reload" | "/debug" | "/arminsayshi" | "/dementedelves" | "/resume" | "/quit" | "/exit")
+        || ["/model", "/export", "/import", "/rename", "/name", "/answer", "/login", "/compact"].into_iter().any(with_argument)
+}
+
 /// A step that needs the terminal released: the loop owning the terminal stops it, performs the
 /// step (`InteractiveMode::open_external_editor` / process suspend), then restarts and force-renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,6 +351,9 @@ pub struct InteractiveMode {
     /// senpi `/hotkeys` Extensions rows: (normalized key, description or extension path).
     extension_shortcut_rows: Vec<(String, String)>,
     pub shutdown_requested: bool,
+    /// senpi `handleFatalRuntimeError`: the host loop stops with the transcript exit output and
+    /// exits the process with status 1.
+    pub fatal_runtime_error: bool,
     pub agent_idle: bool,
     pub extension_ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
     ui_requests: tokio::sync::mpsc::UnboundedReceiver<crate::interactive_extension_ui::UiRequest>,
@@ -400,6 +437,9 @@ pub struct InteractiveMode {
     question_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<maho_ext_api::QuestionResponse>>>>,
     questions: crate::question_registry::QuestionRegistry,
     question_actions: QuestionActions,
+    /// A clicked one-question answer whose submit waits for a frame that paints the selection
+    /// (`Some(true)` once painted).
+    pending_question_click_submit: Option<bool>,
     question_result: Rc<RefCell<Option<maho_ext_api::QuestionResponse>>>,
     blocking_question: bool,
     pending_images: Rc<RefCell<BTreeMap<u64, maho_ai::types::ImageContent>>>,
@@ -469,6 +509,8 @@ pub struct InteractiveMode {
     theme_detection: Option<ThemeDetection>,
     /// A requested `applyFromSettings` (the theme setting to resolve) not yet started.
     pending_theme_setting: Option<Option<String>>,
+    /// `set_theme_setting` already applied the pending setting by name.
+    pending_theme_applied: bool,
     /// senpi `autoSyncEnabled` with its parsed `light/dark` pair from `currentThemeSetting`.
     theme_auto_sync: Option<(String, String)>,
     /// senpi's module-level theme registry with its `themeWatcher`: one long-lived registry that
@@ -640,6 +682,20 @@ impl InteractiveMode {
         self.apply_theme_name(&name, true);
         self.current_theme_setting = Some(setting.clone());
         self.request_terminal_theme_detection(Some(setting));
+        // The setting was applied (and any load failure reported) above; the poll must not reapply it.
+        self.pending_theme_applied = true;
+    }
+
+    /// senpi `themeController.applyFromSettings()` as `/reload` and `setRebindSession` run it: the
+    /// effective `theme` setting is applied (an explicit name by name, reporting a load failure; an
+    /// auto setting re-detected), else the launch selection is re-detected. The launch selection is
+    /// seeded from the settings at startup, so the live settings value is read first.
+    fn apply_theme_from_settings(&mut self) {
+        let setting = self.session.with_settings_manager(|settings| settings.get_string("theme")).or_else(|| self.current_theme_setting.clone());
+        match setting {
+            Some(theme) => self.set_theme_setting(theme),
+            None => self.request_terminal_theme_detection(None),
+        }
     }
 
     /// senpi `InteractiveThemeController.preview`: show a theme while `/settings` browses,
@@ -678,6 +734,7 @@ impl InteractiveMode {
     pub fn request_terminal_theme_detection(&mut self, setting: Option<String>) {
         self.theme_detection = None;
         self.pending_theme_setting = Some(setting);
+        self.pending_theme_applied = false;
     }
 
     /// The poll-driven half of senpi `InteractiveThemeController`: start a requested detection
@@ -687,6 +744,7 @@ impl InteractiveMode {
     pub fn poll_terminal_theme(&mut self, ui: &mut crate::tui_renderer::InteractiveTui, terminal: &mut dyn maho_tui::terminal::Terminal) {
         let now_ms = u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX);
         if let Some(setting) = self.pending_theme_setting.take() {
+            let already_applied = std::mem::take(&mut self.pending_theme_applied);
             let auto = crate::theme::parse_auto_theme_setting(setting.as_deref()).map(|(light, dark)| (light.to_owned(), dark.to_owned()));
             self.theme_auto_sync = auto.clone();
             ui.base_mut().set_terminal_color_scheme_notifications(auto.is_some(), terminal);
@@ -694,6 +752,9 @@ impl InteractiveMode {
             // COLORFGBG) at once, then refine it when the terminal answers.
             let immediate = match &auto { Some((light, dark)) => Some(if self.terminal_theme == crate::theme::TerminalTheme::Light { light.clone() } else { dark.clone() }), None => setting.is_none().then(|| self.terminal_theme.name().to_owned()) };
             if let Some(name) = immediate && name != self.theme.name { self.apply_theme_name(&name, true); }
+            // senpi `applyFromSettings`: an explicit theme setting is applied by name, reporting a
+            // missing or invalid theme in the TUI ("Fell back to dark theme.").
+            if auto.is_none() && let Some(name) = &setting && !already_applied && *name != self.theme.name { self.apply_theme_name(name, true); }
             if auto.is_some() || setting.is_none() {
                 let color_scheme = auto.is_some().then(|| ui.base_mut().query_terminal_color_scheme(terminal, THEME_DETECTION_TIMEOUT_MS, now_ms));
                 let background = ui.base_mut().query_terminal_background_color(terminal, THEME_DETECTION_TIMEOUT_MS, now_ms);
@@ -1136,7 +1197,7 @@ impl InteractiveMode {
         let images = pending_images.clone();
         let queued_images = submission_images.clone();
         let paste_submissions = submissions.clone();
-        editor.on_paste_image = Some(Box::new(move || paste_submissions.borrow_mut().push_back("/paste-clipboard".into())));
+        editor.on_paste_image = Some(Box::new(move || paste_submissions.borrow_mut().push_back(internal_command("/paste-clipboard"))));
         let question_actions: QuestionActions = Rc::new(RefCell::new(std::collections::VecDeque::new()));
         let empty_submit_actions = question_actions.clone();
         editor.editor.on_submit = Some(Box::new(move |text| {
@@ -1176,7 +1237,7 @@ impl InteractiveMode {
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
         let invalidate_ui = Arc::downgrade(&extension_ui);
         session.set_before_session_invalidate(Some(Arc::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } })));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1636,36 +1697,53 @@ impl InteractiveMode {
         let confirm = format!("{confirm_command} \"{path}\""); let cancel = cancel_command.to_owned(); let dismissed = cancel.clone();
         let title = format!("Session cwd not found\n{}", maho_core::session_cwd::format_missing_session_cwd_prompt(issue));
         self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
-            Box::new(move |choice| { submissions.borrow_mut().push_back(if choice == "Yes" { confirm.clone() } else { cancel.clone() }); selected.borrow_mut().take(); }),
-            Box::new(move || { cancel_submissions.borrow_mut().push_back(dismissed.clone()); cancelled.borrow_mut().take(); }), Default::default())));
+            Box::new(move |choice| { submissions.borrow_mut().push_back(internal_command(if choice == "Yes" { confirm.clone() } else { cancel.clone() })); selected.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command(dismissed.clone())); cancelled.borrow_mut().take(); }), Default::default())));
     }
 
     /// senpi `handleResumeSession`: switch, prompting to continue in the current cwd when the
     /// session's recorded cwd no longer exists.
     async fn handle_resume_session(&mut self, path: String, cwd_override: Option<String>) -> Result<(), String> {
+        self.clear_status_indicator(None);
         if cwd_override.is_none() && let Some(issue) = missing_session_cwd_issue(&path, &self.host_cwd()) {
             self.prompt_for_missing_session_cwd(&issue, &path, "/resume-cwd", "/resume-cwd-cancel");
             return Ok(());
         }
         let in_current_cwd = cwd_override.is_some();
-        if self.host_switch_session(path, cwd_override).await? {
-            self.rebuild_history(); self.editor.editor.set_text("");
-            self.show_status(if in_current_cwd { "Resumed session in current cwd" } else { "Resumed session" }.into());
+        match self.host_switch_session(path, cwd_override).await {
+            Ok(true) => {
+                self.rebuild_history(); self.apply_theme_from_settings(); self.editor.editor.set_text("");
+                self.show_status(if in_current_cwd { "Resumed session in current cwd" } else { "Resumed session" }.into());
+            }
+            Ok(false) => {}
+            Err(error) => self.handle_fatal_runtime_error("Failed to resume session", &error),
         }
         Ok(())
+    }
+
+    /// senpi `handleFatalRuntimeError`: show `<prefix>: <message>`, stop the theme watcher, and stop
+    /// the TUI with the transcript exit output; the host loop then exits the process with status 1.
+    fn handle_fatal_runtime_error(&mut self, prefix: &str, error: &str) {
+        self.show_error(&format!("{prefix}: {error}"));
+        if let Some(registry) = self.theme_registry.as_mut() { registry.stop_theme_watcher(); }
+        self.fatal_runtime_error = true;
+        self.shutdown_requested = true;
     }
 
     /// senpi `handleImportCommand` after its confirm: import through the runtime host, prompting
     /// to continue in the current cwd when the imported session's cwd no longer exists.
     async fn handle_import_session(&mut self, path: String, cwd_override: Option<String>) -> Result<(), String> {
+        self.clear_status_indicator(None);
         if cwd_override.is_none() && let Some(issue) = missing_session_cwd_issue(&path, &self.host_cwd()) {
             self.prompt_for_missing_session_cwd(&issue, &path, "/import-cwd", "/import-cancel");
             return Ok(());
         }
         match self.host_import_from_jsonl(path.clone(), cwd_override).await {
-            Ok(true) => { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status(format!("Session imported from: {path}")); Ok(()) }
+            Ok(true) => { self.rebuild_history(); self.apply_theme_from_settings(); self.editor.editor.set_text(""); self.show_status(format!("Session imported from: {path}")); Ok(()) }
             Ok(false) => { self.show_status("Import cancelled".into()); Ok(()) }
-            Err(error) => Err(format!("Failed to import session: {error}")),
+            // senpi `SessionImportFileNotFoundError` is reported without leaving the TUI.
+            Err(error) if error.starts_with("File not found: ") => Err(format!("Failed to import session: {error}")),
+            Err(error) => { self.handle_fatal_runtime_error("Failed to import session", &error); Ok(()) }
         }
     }
 
@@ -2084,7 +2162,7 @@ impl InteractiveMode {
             return;
         }
         if keys.matches(data, "app.editor.external") { self.terminal_request = Some(TerminalRequest::ExternalEditor); return; }
-        if keys.matches(data, "app.session.new") { self.submissions.borrow_mut().push_back("/new".into()); return; }
+        if keys.matches(data, "app.session.new") { self.submissions.borrow_mut().push_back(internal_command("/new")); return; }
         if keys.matches(data, "app.clear") {
             if self.last_clear_ms.is_some_and(|last| now_ms.saturating_sub(last) < 500) { self.shutdown_requested = true; }
             else { self.editor.editor.set_text(""); self.last_clear_ms = Some(now_ms); }
@@ -2122,13 +2200,16 @@ impl InteractiveMode {
             if let Some(text)=copy.filter(|text|!text.is_empty()) {
                 match crate::interactive_clipboard::copy(&text).await {
                     Ok(sequence)=>{if let Some(sequence)=sequence {maho_tui::process_stdio::stdout_write(&sequence);}self.show_status("Copied selected message to clipboard".into());}
-                    Err(error)=>self.show_status(error),
+                    Err(error)=>self.show_error(&error),
                 }
-            }else{self.show_status("Selected entry has no text to copy".into());}
+            }else{self.show_error("Selected entry has no text to copy");}
         }
         let text = self.submissions.borrow_mut().pop_front();
         let text = text?;
-        if text != "/reload-run" { self.editor.editor.add_to_history(&text); }
+        // senpi `onSubmit`: built-in commands return before `addToHistory`, and the selector/dialog
+        // continuations the port queues internally are never typed text.
+        let (typed, internal) = split_internal_command(&text);
+        if !internal && !is_builtin_command_submission(typed.trim()) { self.editor.editor.add_to_history(typed); }
         let images = {
             let mut queued = self.submission_images.borrow_mut();
             queued.iter().position(|(submitted, _)| submitted == &text).and_then(|index| queued.remove(index)).map(|(_, images)| images)
@@ -2558,6 +2639,7 @@ impl InteractiveMode {
 
     /// Start the turn for `text` and return, or route it into a turn that is already in flight.
     async fn submit_start(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        let (text, internal) = split_internal_command(text);
         self.refresh_tool_renderer_snapshots().await;
         if !text.trim_start().starts_with('/') && !text.trim_start().starts_with('!') && let Some(request_id) = self.questions.composer_request_id().map(str::to_owned) {
             let response = self.questions.get(&request_id).map(|entry| to_extension_response(crate::components::ask_user_async_widget::build_comment_response(&entry.request, &entry.draft, text.trim())));
@@ -2567,6 +2649,10 @@ impl InteractiveMode {
                 return Ok(PromptDisposition::Handled);
             }
         }
+        // senpi `onSubmit` matches only its built-in names; the continuation commands the port
+        // queues for its own selectors and dialogs are not commands when typed, so typed text such
+        // as `/tree foo` or `/fork foo` falls through to the prompt like any other message.
+        if !internal && is_internal_only_command(text.trim()) { return self.submit_prompt(text, options).await; }
         if text.trim() == "/copy" {
             if let Some(text) = self.session.get_last_assistant_text().filter(|text|!text.is_empty()) {
                 match crate::interactive_clipboard::copy(&text).await {
@@ -2596,11 +2682,11 @@ impl InteractiveMode {
                 }
                 KeybindingsEditOutcome::LaunchFailed { seeded } => {
                     if seeded { let _ = std::fs::remove_file(&config_path); }
-                    self.show_status(format!("Could not open {} with \"{editor_command}\".", config_path.display()));
+                    self.show_error(&format!("Could not open {} with \"{editor_command}\".", config_path.display()));
                 }
-                KeybindingsEditOutcome::Exited { code } => self.show_status(format!("\"{editor_command}\" exited with code {code}; keybindings were not reloaded.")),
-                KeybindingsEditOutcome::Invalid { message } => self.show_status(format!("Keybindings not reloaded - {} is not valid JSON: {message}", config_path.display())),
-                KeybindingsEditOutcome::IoError { message } => self.show_status(format!("Could not open {} with \"{editor_command}\": {message}", config_path.display())),
+                KeybindingsEditOutcome::Exited { code } => self.show_error(&format!("\"{editor_command}\" exited with code {code}; keybindings were not reloaded.")),
+                KeybindingsEditOutcome::Invalid { message } => self.show_error(&format!("Keybindings not reloaded - {} is not valid JSON: {message}", config_path.display())),
+                KeybindingsEditOutcome::IoError { message } => self.show_error(&format!("Could not open {} with \"{editor_command}\": {message}", config_path.display())),
             }
             return Ok(PromptDisposition::Handled);
         }
@@ -2685,7 +2771,7 @@ impl InteractiveMode {
             reload_box.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
             self.reload_box = Some(reload_box);
             self.editor_host.request_render();
-            self.submissions.borrow_mut().push_back("/reload-run".into());
+            self.submissions.borrow_mut().push_back(internal_command("/reload-run"));
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/reload-run" {
@@ -2702,6 +2788,13 @@ impl InteractiveMode {
                     self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
                     // senpi `restoreChatBeforeSessionStart`: `hideThinkingBlock` is re-read before the rebuild.
                     self.reveal.hide_thinking = self.session.with_settings_manager(|settings| settings.get_bool("hideThinkingBlock").unwrap_or(false));
+                    // senpi `applyRuntimeSettings`: terminal capability overrides and the smooth-streaming
+                    // settings the reveal controllers read live, plus `applySmoothStreamingRenderFps`.
+                    maho_tui::terminal_image::set_capability_overrides(self.session.with_settings_manager(|settings| settings.get_terminal_capability_overrides(&maho_core::config::current_env())));
+                    let (smooth, fps) = self.session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0)));
+                    self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth;
+                    self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps;
+                    self.apply_smooth_streaming_render_fps();
                     self.rebuild_history();
                     // `this.keybindings.reload()` and `themeController.applyFromSettings()`.
                     // senpi reload: `keybindings.reload()` then `setupExtensionShortcuts(runner)`.
@@ -2709,7 +2802,7 @@ impl InteractiveMode {
                     maho_tui::keybindings::set_keybindings(manager.clone());
                     self.editor.set_keybindings(Arc::new(manager));
                     self.setup_extension_shortcuts().await;
-                    if let Some(theme) = self.session.with_settings_manager(|settings| settings.get_string("theme")) { self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SettingChanged("theme".into(), serde_json::json!(theme))); }
+                    self.apply_theme_from_settings();
                     self.setup_autocomplete(); self.register_discovered_themes(); self.refresh_tool_renderer_snapshots().await; self.show_loaded_resources(false, true);
                     self.show_model_runtime_diagnostics(false);
                     let message = if self.maybe_save_implicit_project_trust_after_reload() { "Reloaded keybindings, extensions, skills, prompts, themes, and context files; saved project trust" } else { "Reloaded keybindings, extensions, skills, prompts, themes, and context files" };
@@ -2745,11 +2838,19 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/new" {
-            if self.host_new_session(None).await? {
-                self.rebuild_history();
-                // senpi `handleClearCommand`: the accent confirmation, not a dim status.
-                self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-                self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Accent, "✓ New session started"), 1, 1))));
+            // senpi `handleClearCommand`.
+            self.clear_status_indicator(None);
+            match self.host_new_session(None).await {
+                Ok(true) => {
+                    self.rebuild_history();
+                    // senpi `setRebindSession`: `themeController.applyFromSettings()`.
+                    self.apply_theme_from_settings();
+                    // senpi `handleClearCommand`: the accent confirmation, not a dim status.
+                    self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+                    self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Accent, "✓ New session started"), 1, 1))));
+                }
+                Ok(false) => {}
+                Err(error) => self.handle_fatal_runtime_error("Failed to create session", &error),
             }
             return Ok(PromptDisposition::Handled);
         }
@@ -2757,7 +2858,7 @@ impl InteractiveMode {
             let leaf = self.session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
             if let Some(leaf) = leaf {
                 let result = self.host_fork(leaf, true).await?;
-                if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status("Cloned to new session".into()); }
+                if !result.cancelled { self.rebuild_history(); self.apply_theme_from_settings(); self.editor.editor.set_text(""); self.show_status("Cloned to new session".into()); }
             } else { self.show_status("Nothing to clone yet".into()); }
             return Ok(PromptDisposition::Handled);
         }
@@ -2775,7 +2876,7 @@ impl InteractiveMode {
         if text.trim() == "/resume-cwd-cancel" { self.show_status("Resume cancelled".into()); return Ok(PromptDisposition::Handled); }
         if let Some(id) = text.trim().strip_prefix("/fork ") {
             let result = self.host_fork(id.trim().to_owned(), false).await?;
-            if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(result.editor_text.as_deref().unwrap_or("")); self.show_status("Forked to new session".into()); }
+            if !result.cancelled { self.rebuild_history(); self.apply_theme_from_settings(); self.editor.editor.set_text(result.editor_text.as_deref().unwrap_or("")); self.show_status("Forked to new session".into()); }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim().starts_with("/tree-edit ") {
@@ -2856,6 +2957,12 @@ impl InteractiveMode {
         if text.trim() == "/logout" { self.show_logout_selector().await; return Ok(PromptDisposition::Handled); }
         if let Some(provider_id) = text.trim().strip_prefix("/logout-provider ") { self.logout_provider(provider_id.trim()).await; return Ok(PromptDisposition::Handled); }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
+        self.submit_prompt(text, options).await
+    }
+
+    /// The non-command tail of senpi `onSubmit`: queue during compaction, steer into a live turn,
+    /// or start a new turn.
+    async fn submit_prompt(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
         // senpi queues non-command input during compaction for delivery after it settles.
         if self.host_is_compacting() && !self.is_extension_command(text.trim()) {
             self.queue_compaction_submission(text.trim(), options.images.clone());
@@ -3028,8 +3135,8 @@ impl InteractiveMode {
         let entry = entry_id.to_owned();
         self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
             Arc::new(self.keybindings()), title, Some(&content),
-            Box::new(move |text| { *pending.borrow_mut() = Some((entry.clone(), text.to_owned(), expected_leaf.clone())); submit_submissions.borrow_mut().push_back("/tree-edit-apply".into()); submit_closed.borrow_mut().take(); }),
-            Box::new(move || { cancel_submissions.borrow_mut().push_back("/tree".into()); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
+            Box::new(move |text| { *pending.borrow_mut() = Some((entry.clone(), text.to_owned(), expected_leaf.clone())); submit_submissions.borrow_mut().push_back(internal_command("/tree-edit-apply")); submit_closed.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command("/tree")); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
     }
 
     /// senpi's `editAssistantMessageFromTree` tail: empty re-opens the tree, an unchanged edit
@@ -3039,14 +3146,14 @@ impl InteractiveMode {
         let Some((entry_id, edited, expected_leaf)) = self.pending_tree_edit.borrow_mut().take() else { return Ok(()); };
         if edited.trim().is_empty() {
             self.show_status("Assistant response cannot be empty".into());
-            self.submissions.borrow_mut().push_back(format!("/tree-edit {entry_id}"));
+            self.submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {entry_id}")));
             return Ok(());
         }
         let options = maho_core::agent_session::TreeNavigationOptions { expected_leaf_id: expected_leaf, ..Default::default() };
         let result = self.host_edit_assistant_message(&entry_id, &edited, options).await?;
         if result.unchanged == Some(true) { self.show_status("Assistant response unchanged".into()); return Ok(()); }
         if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
-        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(format!("/tree-edit {entry_id}")); return Ok(()); }
+        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {entry_id}"))); return Ok(()); }
         self.rebuild_history();
         self.show_status("Replaced assistant response with your edit".into());
         Ok(())
@@ -3068,10 +3175,10 @@ impl InteractiveMode {
         let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), "Summarize branch?", vec!["No summary".into(), "Summarize".into(), "Summarize with custom prompt".into()],
             Box::new(move |choice| {
                 selected.borrow_mut().take();
-                if choice == "Summarize with custom prompt" { select_submissions.borrow_mut().push_back(format!("/tree-summary-custom {custom_entry}")); }
-                else { *pending.borrow_mut() = Some((select_entry.clone(), choice == "Summarize", None)); select_submissions.borrow_mut().push_back("/tree-navigate".into()); }
+                if choice == "Summarize with custom prompt" { select_submissions.borrow_mut().push_back(internal_command(format!("/tree-summary-custom {custom_entry}"))); }
+                else { *pending.borrow_mut() = Some((select_entry.clone(), choice == "Summarize", None)); select_submissions.borrow_mut().push_back(internal_command("/tree-navigate")); }
             }),
-            Box::new(move || { cancelled.borrow_mut().take(); cancel_submissions.borrow_mut().push_back(format!("/tree {entry}")); }), self.extension_selector_options(None));
+            Box::new(move || { cancelled.borrow_mut().take(); cancel_submissions.borrow_mut().push_back(internal_command(format!("/tree {entry}"))); }), self.extension_selector_options(None));
         self.ui_dialog = Some(Box::new(component));
     }
 
@@ -3084,8 +3191,8 @@ impl InteractiveMode {
         let entry = entry_id.to_owned(); let submit_entry = entry.clone(); let cancel_entry = entry.clone();
         self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
             Arc::new(self.keybindings()), "Custom summarization instructions", None,
-            Box::new(move |text| { *pending.borrow_mut() = Some((submit_entry.clone(), true, Some(text.to_owned()))); submit_submissions.borrow_mut().push_back("/tree-navigate".into()); submit_closed.borrow_mut().take(); }),
-            Box::new(move || { cancel_submissions.borrow_mut().push_back(format!("/tree-summary {cancel_entry}")); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
+            Box::new(move |text| { *pending.borrow_mut() = Some((submit_entry.clone(), true, Some(text.to_owned()))); submit_submissions.borrow_mut().push_back(internal_command("/tree-navigate")); submit_closed.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command(format!("/tree-summary {cancel_entry}"))); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
     }
 
     /// senpi `runTreeNavigation`'s committed tail: consume the chosen summary and navigate.
@@ -3104,7 +3211,7 @@ impl InteractiveMode {
         let result = self.host_navigate_tree(entry_id, options).await;
         if summarize { self.clear_status_indicator(Some(crate::components::status_indicator::StatusIndicatorKind::BranchSummary)); }
         let result = result?;
-        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(format!("/tree {entry_id}")); return Ok(()); }
+        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(internal_command(format!("/tree {entry_id}"))); return Ok(()); }
         if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
         self.rebuild_history();
         if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); }
@@ -3170,8 +3277,8 @@ impl InteractiveMode {
             self.ui_dialog = Some(Box::new(SessionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()),
                 Box::new(move |on_progress| maho_core::session_manager::SessionManager::list(&cwd, Some(&current_directory), on_progress).into_iter().map(convert).collect()),
                 Box::new(move |on_progress| maho_core::session_manager::SessionManager::list_all((!default_directory).then_some(directory.as_str()), on_progress).into_iter().map(convert).collect()),
-                Box::new(move |path| { submissions.borrow_mut().push_back(format!("/resume \"{path}\"")); selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), Box::new(move || { exit_submissions.borrow_mut().push_back("/quit".into()); exited.borrow_mut().take(); }),
+                Box::new(move |path| { submissions.borrow_mut().push_back(internal_command(format!("/resume \"{path}\""))); selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), Box::new(move || { exit_submissions.borrow_mut().push_back(internal_command("/quit")); exited.borrow_mut().take(); }),
                 Box::new(move || host.request_render()), Some(Box::new(|path, name| { let mut manager = maho_core::session_manager::SessionManager::open(path, None, None, None); manager.append_session_info(name); })), Some(true),
                 self.host_session_file().as_deref(), std::env::var("HOME").ok())));
             return Ok(true);
@@ -3347,7 +3454,7 @@ impl InteractiveMode {
                 let selected = self.ui_reply.clone(); let submissions = self.submissions.clone(); let current = self.host_model();
                 self.ui_dialog = Some(Box::new(FavoriteModelsSelectorComponent::new(&self.theme, keys,
                     FavoriteModelsConfig { all_models:models.into_iter().map(|model| crate::components::model_selector::ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect(), favorite_model_ids:enabled, current_model:Some(crate::components::model_selector::ModelEntry { provider:current.provider, id:current.id, name:current.name }) },
-                    FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model-select {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
+                    FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(internal_command(format!("/model-select {}/{}", model.provider, model.id))); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
             } else {
                 use crate::components::scoped_models_selector::{ScopedModelsSelectorComponent, ModelsConfig, ModelsCallbacks};
                 use crate::theme::ThemeColor;
@@ -3408,13 +3515,13 @@ impl InteractiveMode {
             let mut selector = crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
                 Arc::new(self.keybindings()),
                 tree, leaf.as_deref(), self.editor_host.terminal_rows(),
-                Box::new(move |id| { submissions.borrow_mut().push_back(format!("/tree {id}")); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
+                Box::new(move |id| { submissions.borrow_mut().push_back(internal_command(format!("/tree {id}"))); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
                 Some(Box::new(move |id, label| if let Err(error_message) = session.with_session_manager_mut(|manager| manager.append_label(id, label)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message }); })), None, Some(filter), std::env::var("HOME").ok());
             let copies=self.tree_copies.clone();
             selector.on_copy=Some(Box::new(move |text|copies.borrow_mut().push_back(text.map(str::to_owned))));
             // senpi `selector.onEditMessage`: close the selector, then open the edit flow.
             let edit_submissions=self.submissions.clone(); let edit_closed=self.ui_reply.clone();
-            selector.on_edit_message=Some(Box::new(move |id| { edit_submissions.borrow_mut().push_back(format!("/tree-edit {id}")); edit_closed.borrow_mut().take(); }));
+            selector.on_edit_message=Some(Box::new(move |id| { edit_submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {id}"))); edit_closed.borrow_mut().take(); }));
             self.ui_dialog=Some(Box::new(selector));
             return Ok(true);
         }
@@ -3427,7 +3534,7 @@ impl InteractiveMode {
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
             self.ui_dialog = Some(Box::new(UserMessageSelectorComponent::new(messages,
-                Box::new(move |id| { submissions.borrow_mut().push_back(format!("/fork {id}")); selected.borrow_mut().take(); }),
+                Box::new(move |id| { submissions.borrow_mut().push_back(internal_command(format!("/fork {id}"))); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), initial_selected_id.as_deref(), self.theme.clone())));
             if self.ui_reply.borrow().is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
             return Ok(true);
@@ -3459,7 +3566,7 @@ impl InteractiveMode {
             let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), 0, &models,
                 Some(ModelEntry { provider:current.provider, id:current.id, name:current.name }),
                 scoped,
-                Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model-select {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }),
+                Box::new(move |model| { submissions.borrow_mut().push_back(internal_command(format!("/model-select {}/{}", model.provider, model.id))); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), initial_search.as_deref(),
                 ModelSelectorFavoriteOptions { favorite_model_ids:favorite_ids, on_favorite_change:Some(favorite_callback) }, None);
             let session = self.session.clone(); let ui = self.extension_ui.clone();
@@ -3657,15 +3764,10 @@ impl InteractiveMode {
             let confirm_path = path.clone();
             let title = format!("Import session\nReplace current session with {path}?");
             let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
-                Box::new(move |choice| { submissions.borrow_mut().push_back(if choice == "Yes" { format!("/import-confirm \"{confirm_path}\"") } else { "/import-cancel".to_owned() }); selected.borrow_mut().take(); }),
-                Box::new(move || { cancel_submissions.borrow_mut().push_back("/import-cancel".to_owned()); cancelled.borrow_mut().take(); }), self.extension_selector_options(None));
+                Box::new(move |choice| { submissions.borrow_mut().push_back(internal_command(if choice == "Yes" { format!("/import-confirm \"{confirm_path}\"") } else { "/import-cancel".to_owned() })); selected.borrow_mut().take(); }),
+                Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command("/import-cancel".to_owned())); cancelled.borrow_mut().take(); }), self.extension_selector_options(None));
             self.ui_dialog = Some(Box::new(component));
             return Ok(true);
-        }
-        if let Some(name) = text.split_whitespace().next().and_then(|word| word.strip_prefix('/'))
-            && maho_core::slash_commands::builtin_slash_commands().iter().any(|command| command.name == name)
-        {
-            return Err(format!("/{name} is not yet integrated into the native interactive runtime"));
         }
         Ok(false)
     }
@@ -3862,7 +3964,7 @@ impl InteractiveMode {
         let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
         let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
         self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
-            Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/logout-provider {id}")); selected.borrow_mut().take(); }),
+            Box::new(move |id, _| { submissions.borrow_mut().push_back(internal_command(format!("/logout-provider {id}"))); selected.borrow_mut().take(); }),
             Box::new(move || { cancelled.borrow_mut().take(); }), None)));
     }
 
@@ -3907,7 +4009,7 @@ impl InteractiveMode {
         self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, labels,
             Box::new(move |label| {
                 let method = if label == subscription { "oauth" } else { "api_key" };
-                submissions.borrow_mut().push_back(match &provider_id { Some(id) => format!("/login-provider {id} {method}"), None => format!("/login-select-provider {method}") });
+                submissions.borrow_mut().push_back(internal_command(match &provider_id { Some(id) => format!("/login-provider {id} {method}"), None => format!("/login-select-provider {method}") }));
                 selected.borrow_mut().take();
             }),
             Box::new(move || { cancelled.borrow_mut().take(); }), Default::default())));
@@ -3924,9 +4026,9 @@ impl InteractiveMode {
         let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
         let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone(); let back = self.submissions.clone();
         self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Login, options,
-            Box::new(move |id, kind| { submissions.borrow_mut().push_back(format!("/login-provider {id} {}", match kind { AuthSelectorAuthType::OAuth => "oauth", AuthSelectorAuthType::ApiKey => "api_key" })); selected.borrow_mut().take(); }),
+            Box::new(move |id, kind| { submissions.borrow_mut().push_back(internal_command(format!("/login-provider {id} {}", match kind { AuthSelectorAuthType::OAuth => "oauth", AuthSelectorAuthType::ApiKey => "api_key" }))); selected.borrow_mut().take(); }),
             // Cancelling a typed-provider list returns to the method selector, as pinned.
-            Box::new(move || { if auth_type.is_some() { back.borrow_mut().push_back("/login-auth-type".into()); } cancelled.borrow_mut().take(); }),
+            Box::new(move || { if auth_type.is_some() { back.borrow_mut().push_back(internal_command("/login-auth-type")); } cancelled.borrow_mut().take(); }),
             initial_search)));
     }
 
@@ -4928,7 +5030,12 @@ impl InteractiveMode {
     fn click_shown_question_option(&mut self, option: usize) {
         let index = self.shown_unanswered_index();
         self.expand_shown_question(index);
-        if let Some(question) = &mut self.question { question.click_option(option, true); }
+        // senpi `clickOption`: `tui.renderNow()` paints the selection before `attemptSubmit()`; the
+        // submit runs on the next frame's `tick`, after this frame rendered the highlight.
+        if let Some(question) = &mut self.question && question.select_clicked_option(option, true) {
+            self.pending_question_click_submit = Some(false);
+            self.editor_host.request_render();
+        }
     }
 
     fn cancelled_question_response(&self, request_id: &str) -> maho_ext_api::QuestionResponse {
@@ -5150,6 +5257,7 @@ impl InteractiveMode {
         }
         if let Some(widget) = &mut self.async_question_widget { widget.tick(now_ms.max(0.0) as u64); }
         else if let Some(question) = &mut self.question { question.tick(now_ms.max(0.0) as u64); }
+        if self.pending_question_click_submit == Some(true) { self.pending_question_click_submit = None; if let Some(question) = &mut self.question { question.attempt_submit(); } }
         self.settle_questions();
         maho_tui::ui_intervals::run_due_ui_intervals(std::time::Instant::now());
         for component in &self.tool_cards { let mut component = component.borrow_mut(); component.set_now_ms(now_ms); component.tick(now_ms.max(0.0) as u64); }
@@ -5475,7 +5583,9 @@ impl InteractiveMode {
     pub fn render_split(&mut self, width: usize) -> (Vec<String>, Vec<String>) {
         self.drain_events();
         self.tick(self.clock.elapsed().as_secs_f64() * 1000.0);
-        (self.render_document(width), self.render_dock(width))
+        let rendered = (self.render_document(width), self.render_dock(width));
+        if self.pending_question_click_submit == Some(false) { self.pending_question_click_submit = Some(true); self.editor_host.request_render(); }
+        rendered
     }
     pub(crate) fn render_document(&mut self,width:usize)->Vec<String> {
         let mut lines = self.header_container.render(width);
