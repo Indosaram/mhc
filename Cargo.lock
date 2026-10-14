@@ -3075,6 +3075,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "crossterm",
+ "icu_collator",
  "indexmap",
  "maho-agent",
  "maho-ai",

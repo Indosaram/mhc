@@ -94,6 +94,7 @@ percent-encoding.workspace = true
 base64 = "=0.22.1"
 reqwest = { workspace = true, features = ["rustls-tls"] }
 semver = "=1.0.27"
+icu_collator = "=2.3.1"
 photon-rs = { version = "=0.3.3", default-features = false }
 tempfile.workspace = true
 notify = "=8.2.0"
