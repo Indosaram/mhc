@@ -4119,7 +4119,7 @@ impl AgentSession {
             // resource loader options (package, CLI and auto-discovered resources) for the new cwd.
             if self.state().skills_loaded {
                 self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
-                self.load_resources().await;
+                self.load_resources().await?;
             }
         }
         self.finish_session_replacement(maho_ext_api::SessionReason::Resume, previous).await?;
@@ -4450,13 +4450,14 @@ impl AgentSession {
 
     /// senpi `DefaultResourceLoader.reload()` for skills, prompt templates and hook sources: package
     /// and auto-discovered resources plus the stored CLI inputs, loaded into this session.
-    pub async fn load_resources(&self) {
+    pub async fn load_resources(&self) -> Result<(), String> {
         let inputs = self.resource_loader_inputs();
         let settings = self.with_settings_manager(crate::resource_loader::snapshot_settings);
-        let loaded = crate::resource_loader::load_resources(&self.cwd(), &self.agent_dir(), settings, &inputs).await;
+        let loaded = crate::resource_loader::load_resources(&self.cwd(), &self.agent_dir(), settings, &inputs).await?;
         self.set_prompt_resources_with_diagnostics(loaded.prompts, loaded.skills.skills, loaded.skills.diagnostics);
         self.state().prompt_diagnostics = loaded.prompt_diagnostics;
         self.set_hook_source_paths(loaded.hook_resources, loaded.pre_session_hook_paths);
+        Ok(())
     }
 
     /// The skills this session loaded, with their diagnostics (pinned `resourceLoader.getSkills()`).
@@ -4741,7 +4742,7 @@ impl AgentSession {
         // reloading a clone re-reads models.json for the session's live catalog.
         self.model_runtime().clone().reload_config().await;
         self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
-        self.load_resources().await;
+        self.load_resources().await?;
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
         self.renew_extension_runtime(maho_ext_api::SessionReason::Reload).await?;
