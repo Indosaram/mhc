@@ -1,6 +1,6 @@
 use super::{projection_message_items::{MessageItemNotifier, MessageItemProjector}, projection_turn_diff::TurnDiffTracker, projection_types::{ProjectionResult, ProjectionTurnCompletion, message_id_from_message}, projection_wire_items::*};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::{Arc, Mutex}};
+use std::sync::{Arc, Mutex};
 
 pub struct EventProjector {
     thread_id: String,
@@ -10,7 +10,6 @@ pub struct EventProjector {
     message_counter: usize,
     message_items: MessageItemProjector,
     tool_items: Vec<ActiveToolItem>,
-    completed_ids: BTreeSet<String>,
     turn_diff: TurnDiffTracker,
     compaction_id: Option<String>,
     finalized: bool,
@@ -39,7 +38,7 @@ impl EventProjector {
             completed: Arc::new(move |item| notification(&completed_thread, &completed_turn, "item/completed", json!({"item":build_wire_item(item),"completedAtMs":completed_now()}))),
             notification: Arc::new(move |method, params| notification(&thread, &turn, method, params)),
         });
-        Self { thread_id, turn_id, cwd, active_message_id, message_counter: 0, message_items, tool_items: Vec::new(), completed_ids: BTreeSet::new(), turn_diff: TurnDiffTracker::default(), compaction_id: None, finalized: false, now_ms }
+        Self { thread_id, turn_id, cwd, active_message_id, message_counter: 0, message_items, tool_items: Vec::new(), turn_diff: TurnDiffTracker::default(), compaction_id: None, finalized: false, now_ms }
     }
     fn note_message(&mut self, message: &Value, replace: bool) {
         let mut active = self.active_message_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -58,8 +57,7 @@ impl EventProjector {
         let (item, diff) = tool_wire_projection(tool, status, &self.cwd, result, is_error);
         let id = tool.id.clone();
         let cumulative = self.turn_diff.update(&id, &diff, self.tool_items.iter().map(|tool| tool.id.as_str()));
-        let mut notifications = Vec::new();
-        if self.completed_ids.insert(id) { notifications.push(self.completed(item)); }
+        let mut notifications = vec![self.completed(item)];
         if let Some(diff) = cumulative { notifications.push(self.notify("turn/diff/updated", json!({"diff":diff}))); }
         notifications
     }
@@ -100,7 +98,7 @@ impl EventProjector {
                     let message_id = self.active_message_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_default();
                     let item = provider_native_item(&format!("{message_id}:providerNative:{index}"), &event["message"], content);
                     notifications.push(self.started(item.clone()));
-                    if self.completed_ids.insert(item["id"].as_str().unwrap_or_default().into()) { notifications.push(self.completed(item)); }
+                    notifications.push(self.completed(item));
                 }
             },
             Some("tool_execution_start") => {
@@ -120,7 +118,7 @@ impl EventProjector {
             },
             Some("compaction_end") => {
                 let id = self.compaction_id.take().unwrap_or_else(|| format!("context-compaction:{}", self.message_counter + 1));
-                if self.completed_ids.insert(id.clone()) { notifications.push(self.completed(json!({"type":"contextCompaction","id":id}))); }
+                notifications.push(self.completed(json!({"type":"contextCompaction","id":id})));
             },
             _ => {},
         }

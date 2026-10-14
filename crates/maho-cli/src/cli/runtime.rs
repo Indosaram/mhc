@@ -184,6 +184,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     };
     maho_core::timings::time("createSessionManager", maho_core::timings::TimingLabel::Main);
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
+    let reload_widget_sender = widget_sender.clone();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     // Builtins with the OAuth provider lanes, filtered by the builtin-extension settings selection.
     let base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone(), &settings, std::path::Path::new(&session_cwd), &agent_dir));
@@ -192,6 +193,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let (base_factories, extension_errors) = super::default_extensions::with_user_extensions(base_factories, &mut settings, &session_cwd, &agent_dir, &trust_config.resolved_extension_paths(), parsed.no_extensions).await?;
     runtime_diagnostics.extend(extension_errors.into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(super::default_extensions::extension_load_failure_message(&error.path, &error.message))));
     let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
+    let reload_session_profile = session_profile.clone();
     let mut extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), std::path::Path::new(&session_cwd), session_profile.clone())).await;
     super::extension_registry::mark_hidden_inline_extensions(&mut extensions.extensions);
     let extension_snapshot = extensions.extensions.clone();
@@ -295,6 +297,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     maho_tui::terminal_image::set_capability_overrides(session.with_settings_manager(|settings| settings.get_terminal_capability_overrides(&maho_core::config::current_env())));
     let model_fallback_message = created.model_fallback_message;
     task_parent.set(session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
+    // senpi `reload()` -> `_resourceLoader.reload()`: /reload re-runs the extension decisions.
+    session.set_extension_runtime_factory(super::default_extensions::reloading_runtime_factory(
+        reload_widget_sender, task_parent.clone(), None, trust_config.resolved_extension_paths(), parsed.no_extensions, reload_session_profile,
+    )).await;
     session.set_context_files_enabled(!parsed.no_context_files);
     let runtime_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, mode);
     {

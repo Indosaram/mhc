@@ -43,3 +43,14 @@ fn finalize_completes_dangling_tools_and_compaction_uses_upstream_id() {
     let tool = finalized.iter().find(|notification| notification["params"]["item"]["id"] == "tool").unwrap();
     assert_eq!(tool["params"]["item"]["status"], "completed");
 }
+
+#[test]
+fn repeated_compaction_ids_still_emit_item_completed() {
+    let mut projector = EventProjector::new("thread".into(), "turn".into(), "/tmp".into());
+    for _ in 0..2 {
+        projector.project(&json!({"type":"compaction_start"}));
+        let end = projector.project(&json!({"type":"compaction_end"}));
+        assert_eq!(end.notifications[0]["method"], "item/completed");
+        assert_eq!(end.notifications[0]["params"]["item"]["id"], "context-compaction:1");
+    }
+}

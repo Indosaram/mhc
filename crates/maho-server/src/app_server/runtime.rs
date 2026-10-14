@@ -127,6 +127,7 @@ fn node_platform() -> &'static str {
 impl AppServerRuntime {
     pub async fn new(agent_dir: String, cwd: String, version: String, session_dir: Option<String>, factory: Option<SessionFactory>) -> Self {
         let (thread_notification_sender, mut thread_notifications) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
+        let bridge_notification_sender = thread_notification_sender.clone();
         let shutdown_request = Arc::new(AppServerShutdownRequest::default());
         let registry_slot = Arc::new(std::sync::OnceLock::<std::sync::Weak<ThreadRegistry>>::new());
         let factory = bind_app_server_session_factory(factory.unwrap_or_else(super::thread_registry::default_session_factory), thread_notification_sender, shutdown_request.clone(), registry_slot.clone());
@@ -183,10 +184,17 @@ impl AppServerRuntime {
         let turn_engine_slot=Arc::new(std::sync::OnceLock::<super::turns::TurnEngine>::new());
         let recipients = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String,std::collections::BTreeMap<String,super::notifications::SendMessage>>::new()));
         let send_recipients = recipients.clone();
+        // senpi `sendToSubscribers`: `notifications.toThread`. Notifications (`serverRequest/resolved`)
+        // take the ordered thread consumer, which applies the opt-out/experimental filter and the
+        // enqueue accounting; id-bearing requests bypass the filter like `NotificationRouter.enqueue`.
         let send: super::approval_types::SendToThreadSubscribers = Arc::new(move |id,message| {
             let sends = send_recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).map(|clients|clients.values().cloned().collect::<Vec<_>>()).unwrap_or_default();
             let count = sends.len();
-            for send in sends {let delivery = send(super::envelope::populate_outbound_notification(message.clone(),chrono::Utc::now().timestamp_millis() as u64));tokio::spawn(async move {if let Err(error) = delivery.await {eprintln!("app-server request delivery: {}",error.message);}});}
+            if message.get("id").is_none() {
+                if count > 0 && bridge_notification_sender.send((id.to_owned(),message)).is_err() {eprintln!("app-server request delivery: thread notification consumer closed");}
+                return count;
+            }
+            for send in sends {let delivery = send(message.clone());tokio::spawn(async move {if let Err(error) = delivery.await {eprintln!("app-server request delivery: {}",error.message);}});}
             count
         });
         let approvals = Arc::new(std::sync::Mutex::new(super::approval_bridge::ApprovalBridge::new(send.clone())));
@@ -314,14 +322,14 @@ impl AppServerRuntime {
             }) });
         }
         {
-            let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
+            let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone(); let server_cwd = cwd.clone();
             let notification_core = notification_core.clone();
             let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
             let mcp_inventory = mcp_inventory.clone();
             let ui_agent_dir = ui_agent_dir.clone();
             core.registry.register("thread/fork".into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
-                let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
+                let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone(); let server_cwd = server_cwd.clone();
                 let notification_core = notification_core.clone();
                 let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
@@ -331,7 +339,7 @@ impl AppServerRuntime {
                     let params = &context.request["params"];
                     let source = required_string(params,"threadId")?.to_owned();
                     let requested_cwd = params["cwd"].as_str().map(str::to_owned);
-                    let entry = threads.fork_thread(&source,requested_cwd).await.map_err(|error| JsonRpcError::new(-32603, error))?;
+                    let entry = threads.fork_thread(&source,requested_cwd,&server_cwd).await.map_err(|error| JsonRpcError::new(-32603, error))?;
                     if let Some(engine) = turn_engine_slot.get() { engine.observe_thread(&entry).await; }
                     let mut entry = entry.lock().await;
                     if let Some(lifecycle)=lifecycle_slot.get() {lifecycle.clear_idle_timer(&entry.id);}
