@@ -143,6 +143,11 @@ fn test_derive_requires_marker_whitespace_and_splits_blank_lines() {
         ["First", "Second", "Third"]);
 }
 #[test]
+fn test_derive_uses_js_whitespace_bom_and_nel() {
+    assert_eq!(derive_goal_candidates("\u{FEFF}- Build auth\n- Add tests").into_iter().map(|(_, o)| o).collect::<Vec<_>>(), ["Build auth", "Add tests"]);
+    assert_eq!(derive_goal_candidates("one\u{85}two").into_iter().map(|(_, o)| o).collect::<Vec<_>>(), ["one\u{85}two"]);
+}
+#[test]
 fn test_derive_empty() { assert_eq!(derive_goal_candidates(" \n\t "), vec![("Complete the requested project objective.".into(),"Complete the requested project objective.".into())]); }
 #[test]
 fn test_add_goal_seeds_criteria() -> Result<(),Box<dyn std::error::Error>> { let tmp=tempfile::tempdir()?; create_ulw_loop_plan(tmp.path(),&CreateGoalsOptions{brief:"Build auth".into(),goals:None,codex_goal_mode:None,force:None,validation_batches_json:None},None,None)?; let r=add_ulw_loop_goal(tmp.path(),&AddGoalOptions{title:"Add rate limit".into(),objective:"Throttle login".into(),evidence:None,success_criteria:None},None,None)?; assert_eq!(r.goal.id,"G002-add-rate-limit"); assert_eq!(r.goal.success_criteria.len(),3); Ok(()) }
