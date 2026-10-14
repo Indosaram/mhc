@@ -467,6 +467,9 @@ fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::Interactive
     }
     screen.base_mut().apply_input_focus_rules();
     if root_focused(&*screen) {
+        // senpi `handleTerminalInput`: key release events reach the focused component only when it
+        // opts in with `wantsKeyRelease`.
+        if maho_tui::keys::is_key_release(&data) && !root.borrow().wants_key_release() { return None; }
         return Some(data);
     }
     screen.base_mut().handle_terminal_input(&data, maho_tui::keys::is_key_release(&data));
