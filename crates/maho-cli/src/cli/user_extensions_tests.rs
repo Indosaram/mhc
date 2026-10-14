@@ -77,3 +77,17 @@ fn cli_native_paths_keep_cli_source_and_temporary_trust_scope() {
     assert_eq!(result.factories[0].source_info.source, "cli");
     assert_eq!(result.factories[0].source_info.scope, maho_ext_api::SourceScope::Temporary);
 }
+
+#[test]
+fn missing_local_cli_extension_path_is_reported_and_remote_sources_are_not() {
+    let dir = tempfile::tempdir().expect("cli extension directory");
+    std::fs::write(dir.path().join("present.rs"), "").expect("present extension file");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let errors = super::missing_extension_path_errors(&cwd, &["./typo".into(), "present.rs".into(), "npm:pkg".into()]);
+
+    let resolved = dir.path().join("typo").to_string_lossy().into_owned();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].kind, UserExtensionErrorKind::MissingPath);
+    assert_eq!(errors[0].path, resolved);
+    assert_eq!(errors[0].message, format!("Extension path does not exist: {resolved}"));
+}
