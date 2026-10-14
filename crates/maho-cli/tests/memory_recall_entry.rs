@@ -393,6 +393,10 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
     for path in [&project, &agent, &memory_root, &sessions] {
         std::fs::create_dir_all(path).expect("fixture directory");
     }
+    // Headless startup claims onboarding and sends a bootstrap turn like upstream onboarding/component.ts:41-55;
+    // the marker lives under the agent home (`getOmoNativeStateDir`), so complete it there as print_entry does.
+    std::fs::create_dir_all(agent.join("omo-senpi/omo-native")).expect("fixture directory");
+    std::fs::write(agent.join("omo-senpi/omo-native/onboarding-completed"), "{}\n").expect("onboarding marker");
     // The child's own git reads this fixture HOME, never the developer's.
     std::fs::write(home.join(".gitconfig"), format!("[user]\n\tname = {GIT_NAME}\n\temail = {GIT_EMAIL}\n"))
         .expect("gitconfig");
