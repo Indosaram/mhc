@@ -21,13 +21,15 @@ pub fn parse_endpoint(contents: &str) -> BTreeMap<String, String> {
 pub const STATUS_OWNER_ENV: &str = "ORCA_PI_STATUS_OWNED";
 
 /// Process-global owner pid. Mutating the process environment is `unsafe` in Rust, so the claim is
-/// latched here and child spawners forward it through [`status_owner`] instead.
+/// latched here and published through `maho_ext_api::process_env`, which every child spawner applies.
 static STATUS_OWNER: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
 /// Claim status reporting for `pid` unless the inherited `owner` names another process.
 pub fn claim_status_owner(owner: Option<&str>, pid: u32) -> bool {
     if owner.is_some_and(|owner| !owner.is_empty() && owner != pid.to_string()) { return false; }
-    *STATUS_OWNER.get_or_init(|| pid) == pid
+    let claimed = *STATUS_OWNER.get_or_init(|| pid) == pid;
+    if claimed { maho_ext_api::process_env::set(STATUS_OWNER_ENV, &pid.to_string()); }
+    claimed
 }
 
 /// The pid that owns Orca status reporting in this process, for injection into child environments.
@@ -74,6 +76,7 @@ mod tests {
         assert!(claim_status_owner(Some(""), 7));
         assert!(claim_status_owner(Some("7"), 7));
         assert_eq!(status_owner(), Some(7));
+        assert_eq!(maho_ext_api::process_env::vars().get(STATUS_OWNER_ENV).map(String::as_str), Some("7"));
     }
     #[test] fn text_when_content_parts() { assert_eq!(extract_assistant_text(&json!({"content":[{"type":"text","text":"a"},{"type":"thinking","text":"hidden"},{"type":"text","text":"b"}]})), "ab"); }
     #[test] fn extra_when_payload_key_overridden() { let envelope = HookEnvelope { pane_key:"pane",launch_token:"",tab_id:"",worktree_id:"",env:"",version:"" }; let extra = json!({"hook_event_name":"override"}); let payload = status_payload(&envelope, "start", &Map::new(), extra.as_object().unwrap()); assert_eq!(payload["payload"]["hook_event_name"], "override"); }

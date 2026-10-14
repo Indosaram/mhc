@@ -70,11 +70,46 @@ fn async_factory(resource: &ResolvedResource, extension: Box<dyn Extension>) -> 
     }
 }
 
+/// Packages a native builtin already ports; an installed copy is provided by that builtin.
+const BUILTIN_PORTED_PACKAGES: [&str; 4] = ["pi-rules", "pi-websearch", "pi-webfetch", "pi-goal"];
+
+enum NativeResolution { Port(&'static extension_registry::NativeExtension), Provided, Unresolved }
+
+/// Map one resolved extension path to the linked port that replaces its TypeScript entry: the file
+/// (or `<id>/index.*` directory) name, then the nearest package name. Generated global-default shims
+/// and packages a builtin ports are already provided natively.
+fn native_resolution(path: &str) -> NativeResolution {
+    let file = Path::new(path);
+    if std::fs::read_to_string(file).is_ok_and(|content| maho_core::generated_shim_banner::has_generated_shim_banner(&content)) {
+        return NativeResolution::Provided;
+    }
+    let stem = file.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
+    let named = if stem == "index" { file.parent().and_then(Path::file_name).and_then(|name| name.to_str()).unwrap_or_default() } else { stem };
+    let package = maho_core::package_identity::find_nearest_package_identity(path).map(|identity| identity.package_name);
+    let package = package.as_deref().map(|name| name.rsplit('/').next().unwrap_or(name));
+    if let Some(native) = extension_registry::user_extensions().iter().find(|native| native.id == named || Some(native.id) == package) {
+        return NativeResolution::Port(native);
+    }
+    if package.is_some_and(|package| BUILTIN_PORTED_PACKAGES.contains(&package)) { return NativeResolution::Provided; }
+    NativeResolution::Unresolved
+}
+
 pub fn discover(paths: &ResolvedPaths) -> UserExtensionDiscovery {
     let mut result = UserExtensionDiscovery::default();
     for resource in &paths.extensions {
         if !resource.enabled {
             continue;
+        }
+        match native_resolution(&resource.path) {
+            NativeResolution::Provided => continue,
+            NativeResolution::Port(native) => {
+                if result.factories.iter().any(|factory| factory.path == format!("<user:{}>", native.id)) { continue; }
+                let mut factory = async_factory(resource, (native.factory)());
+                factory.path = format!("<user:{}>", native.id);
+                result.factories.push(factory);
+                continue;
+            }
+            NativeResolution::Unresolved => {}
         }
         let extension = Path::new(&resource.path);
         if let Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") = extension.extension().and_then(|extension| extension.to_str()) {
@@ -85,13 +120,7 @@ pub fn discover(paths: &ResolvedPaths) -> UserExtensionDiscovery {
             report(resource, UserExtensionErrorKind::UnknownNativeExtension, "Extension path has no valid native identifier", &mut result.errors);
             continue;
         };
-        let Some(native) = extension_registry::user_extensions().iter().find(|native| native.id == id || format!("{}.rs", native.id) == Path::new(&resource.path).file_name().and_then(|name| name.to_str()).unwrap_or_default()) else {
-            report(resource, UserExtensionErrorKind::UnknownNativeExtension, format!("No statically registered native extension named '{id}'"), &mut result.errors);
-            continue;
-        };
-        let mut factory = async_factory(resource, (native.factory)());
-        factory.path = format!("<user:{}>", native.id);
-        result.factories.push(factory);
+        report(resource, UserExtensionErrorKind::UnknownNativeExtension, format!("No statically registered native extension named '{id}'"), &mut result.errors);
     }
     result
 }
@@ -190,6 +219,10 @@ pub async fn resolve_and_discover(
     paths.extensions.extend(resolve_cli_extension_paths(&manager, &sources).await?);
     shadow_vendored_builtin_extensions(&mut paths.extensions, &selection);
     let mut discovery = discover(&paths);
+    // `pi-nested-agents-md` is the package the builtin `nested-agents-md` ports; the port yields to it.
+    if selection.is_active("nested-agents-md") {
+        discovery.factories.retain(|factory| factory.path != "<user:pi-nested-agents-md>");
+    }
     // `builtin:<id>` specifiers are linked entries, not filesystem paths.
     discovery.errors.extend(missing_extension_path_errors(cwd, &sources));
     Ok(merge_discovery(discovery, builtins))
@@ -198,9 +231,10 @@ pub async fn resolve_and_discover(
 /// senpi resource-loader.ts:708-715: every local `-e` path that does not exist is reported as an
 /// extension load error, `Extension path does not exist: <resolved>`.
 pub fn missing_extension_path_errors(cwd: &str, cli_extension_paths: &[String]) -> Vec<UserExtensionError> {
+    let home = maho_core::config::home_dir();
     cli_extension_paths.iter()
         .filter(|path| maho_core::paths::is_local_path(path))
-        .map(|path| maho_core::paths::resolve_path(path, cwd, &maho_core::paths::PathInputOptions { trim: true, ..Default::default() }))
+        .map(|path| maho_core::paths::resolve_path(path, cwd, &maho_core::paths::PathInputOptions { trim: true, home_dir: Some(home.clone()), ..Default::default() }))
         .filter(|resolved| !Path::new(resolved).exists())
         .map(|resolved| UserExtensionError {
             message: format!("Extension path does not exist: {resolved}"),

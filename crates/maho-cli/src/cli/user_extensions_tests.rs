@@ -104,3 +104,24 @@ fn builtin_cli_specifiers_resolve_to_linked_factories_and_keep_other_sources() {
     assert_eq!(builtins.errors[0].kind, UserExtensionErrorKind::UnknownNativeExtension);
     assert_eq!(builtins.errors[0].path, "builtin:missing");
 }
+
+#[test]
+fn package_entries_map_to_their_port_and_generated_shims_are_provided() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let package = root.path().join("git/pi-ast-grep");
+    std::fs::create_dir_all(package.join("src")).expect("package dir");
+    std::fs::write(package.join("package.json"), r#"{"name":"pi-ast-grep"}"#).expect("manifest");
+    std::fs::write(package.join("src/index.ts"), "").expect("entry");
+    let rules = root.path().join("git/pi-rules");
+    std::fs::create_dir_all(rules.join("src")).expect("rules dir");
+    std::fs::write(rules.join("package.json"), r#"{"name":"@code-yeongyu/pi-rules"}"#).expect("rules manifest");
+    std::fs::write(rules.join("src/index.ts"), "").expect("rules entry");
+    let shim = root.path().join("diff.js");
+    std::fs::write(&shim, maho_core::generated_shim_banner::generated_shim_banner()).expect("shim");
+    let paths = ResolvedPaths { extensions: [package.join("src/index.ts"), rules.join("src/index.ts"), shim]
+        .iter().map(|path| resource(&path.to_string_lossy(), true)).collect(), ..Default::default() };
+    let result = discover(&paths);
+
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.factories.iter().map(|factory| factory.path.as_str()).collect::<Vec<_>>(), ["<user:pi-ast-grep>"]);
+}

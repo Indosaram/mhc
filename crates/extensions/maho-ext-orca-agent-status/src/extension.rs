@@ -58,7 +58,8 @@ impl Delivery {
         let worker_pending = Arc::clone(&pending);
         let thread = std::thread::spawn(move || {
             let mut endpoints = EndpointCache::default();
-            let client = match reqwest::blocking::Client::builder().timeout(Duration::from_millis(1000)).build() {
+            // Node `fetch` never routes through HTTP_PROXY; the loopback hook must not either.
+            let client = match reqwest::blocking::Client::builder().no_proxy().timeout(Duration::from_millis(1000)).build() {
                 Ok(client) => client,
                 Err(error) => { maho_ext_api::diagnostic(&format!("Orca hook client: {error}")); return; }
             };
@@ -135,7 +136,7 @@ impl AgentEndState {
 pub struct OrcaAgentStatus;
 impl Extension for OrcaAgentStatus {
     fn register(&self, api: &mut ExtensionApi) {
-        let owner = std::env::var(crate::STATUS_OWNER_ENV).ok();
+        let owner = maho_ext_api::process_env::var(crate::STATUS_OWNER_ENV);
         if !crate::claim_status_owner(owner.as_deref(), std::process::id()) { return; }
         let metadata = Arc::new(Mutex::new(Map::new()));
         // Upstream `isOmpRuntime` inspects process.title, env._, argv[1] and argv[0] only; in a native
