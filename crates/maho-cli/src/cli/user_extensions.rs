@@ -126,6 +126,55 @@ pub fn shadow_vendored_builtin_extensions(resources: &mut Vec<ResolvedResource>,
     });
 }
 
+/// `builtin:<id>` names a natively linked entry a parent passes to a child process through
+/// `--extension` (the native stand-in for an on-disk bundle path such as `omo-member.js`).
+pub const BUILTIN_EXTENSION_SPECIFIER_PREFIX: &str = "builtin:";
+
+fn builtin_cli_factory(specifier: &str, id: &str) -> Result<NativeAsyncExtensionFactory, UserExtensionError> {
+    let extension: Arc<dyn Extension> = match id {
+        "task-member" => Arc::new(maho_omo_task::member_extension::TaskMemberExtension),
+        _ => return Err(UserExtensionError { path: specifier.to_owned(), kind: UserExtensionErrorKind::UnknownNativeExtension, message: format!("No natively linked extension named '{id}'") }),
+    };
+    let path = format!("<builtin:{id}>");
+    Ok(NativeAsyncExtensionFactory {
+        source_info: SourceInfo { path: path.clone(), source: "cli".into(), scope: maho_ext_api::SourceScope::Temporary, ..SourceInfo::default() },
+        path,
+        factory: Arc::new(move |api| { extension.register(api); Box::pin(async { Ok(()) }) }),
+    })
+}
+
+/// Splits `builtin:<id>` specifiers off the CLI `--extension` sources; they resolve to linked
+/// factories instead of package-manager paths.
+fn split_builtin_specifiers(cli_extension_paths: &[String]) -> (Vec<String>, UserExtensionDiscovery) {
+    let mut sources = Vec::new();
+    let mut builtins = UserExtensionDiscovery::default();
+    for source in cli_extension_paths {
+        match source.trim().strip_prefix(BUILTIN_EXTENSION_SPECIFIER_PREFIX) {
+            Some(id) => match builtin_cli_factory(source, id) {
+                Ok(factory) => builtins.factories.push(factory),
+                Err(error) => builtins.errors.push(error),
+            },
+            None => sources.push(source.clone()),
+        }
+    }
+    (sources, builtins)
+}
+
+async fn resolve_cli_extension_paths(manager: &DefaultPackageManager<'_>, sources: &[String]) -> Result<Vec<ResolvedResource>, PackageManagerError> {
+    if sources.is_empty() { return Ok(Vec::new()); }
+    let cli_paths = manager.resolve_extension_sources(sources, Some(ResolveSourcesOptions { local: false, temporary: true })).await?;
+    Ok(cli_paths.extensions.into_iter().map(|mut resource| {
+        resource.metadata.source = "cli".into();
+        resource
+    }).collect())
+}
+
+fn merge_discovery(mut discovery: UserExtensionDiscovery, builtins: UserExtensionDiscovery) -> UserExtensionDiscovery {
+    discovery.factories.extend(builtins.factories);
+    discovery.errors.extend(builtins.errors);
+    discovery
+}
+
 pub async fn resolve_and_discover(
     settings_manager: &mut SettingsManager,
     cwd: &str,
@@ -134,23 +183,16 @@ pub async fn resolve_and_discover(
     no_extensions: bool,
 ) -> Result<UserExtensionDiscovery, PackageManagerError> {
     let selection = super::default_extensions::BuiltinExtensionSelection::from_settings(settings_manager);
+    let (sources, builtins) = split_builtin_specifiers(cli_extension_paths);
     let manager = DefaultPackageManager::new(PackageManagerOptions { cwd, agent_dir, settings_manager });
     // senpi resource-loader.ts:701-703: `noExtensions` loads only the CLI extension paths.
     let mut paths = if no_extensions { ResolvedPaths::default() } else { manager.resolve(None).await? };
-    if !cli_extension_paths.is_empty() {
-        let cli_paths = manager.resolve_extension_sources(
-            cli_extension_paths,
-            Some(ResolveSourcesOptions { local: false, temporary: true }),
-        ).await?;
-        paths.extensions.extend(cli_paths.extensions.into_iter().map(|mut resource| {
-            resource.metadata.source = "cli".into();
-            resource
-        }));
-    }
+    paths.extensions.extend(resolve_cli_extension_paths(&manager, &sources).await?);
     shadow_vendored_builtin_extensions(&mut paths.extensions, &selection);
     let mut discovery = discover(&paths);
-    discovery.errors.extend(missing_extension_path_errors(cwd, cli_extension_paths));
-    Ok(discovery)
+    // `builtin:<id>` specifiers are linked entries, not filesystem paths.
+    discovery.errors.extend(missing_extension_path_errors(cwd, &sources));
+    Ok(merge_discovery(discovery, builtins))
 }
 
 /// senpi resource-loader.ts:708-715: every local `-e` path that does not exist is reported as an
