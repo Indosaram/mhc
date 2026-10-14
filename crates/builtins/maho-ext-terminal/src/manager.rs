@@ -184,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn teardown_continues_past_a_session_whose_pty_outlives_sigkill()->Result<(),ManagerError> {
         let mut manager=TerminalManager::new(2);
-        let stuck=manager.create("stuck",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; setsid sleep 20 & printf 'ready\\n'; wait"))?;
+        let stuck=manager.create("stuck",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; setsid sh -c \"printf 'ready\\\\n'; exec sleep 20\" & wait"))?;
         let other=manager.create("other",PtySessionOptions::new("/bin/sh").arg("-c").arg("read value"))?;
         let (history,mut output)=manager.get(&stuck).expect("session").subscribe_output()?;let mut observed=history;
         tokio::time::timeout(Duration::from_secs(5),async {while !observed.contains("ready") {observed.push_str(&output.recv().await.expect("output"));}}).await.expect("ready line");

@@ -778,7 +778,8 @@ async fn reload_reports_the_upstream_resource_message() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
     assert_eq!(mode.submit("/reload", Default::default()).await.expect("reload"), maho_core::agent_session::PromptDisposition::Handled);
-    assert!(mode.render(80).join("\n").contains("Reloading keybindings, extensions, skills, prompts, themes, and context files..."), "the reload box replaces the editor first");
+    // senpi `Text(msg, 1, 0)` pads one column per side, so the 80-column message only fits unwrapped at >= 82.
+    assert!(mode.render(120).join("\n").contains("Reloading keybindings, extensions, skills, prompts, themes, and context files..."), "the reload box replaces the editor first");
     assert_eq!(mode.submit_editor().await.expect("queued reload"), Some(maho_core::agent_session::PromptDisposition::Handled));
     let rendered = mode.render(80).join("\n");
     assert!(!rendered.contains("Reloading keybindings"), "the reload box is dismissed");
