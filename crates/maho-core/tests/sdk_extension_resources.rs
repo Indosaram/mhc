@@ -210,3 +210,56 @@ async fn cancelled_sdk_construction_retires_session_resources() {
         assert_eq!(cleanups.load(Ordering::SeqCst), 1);
     }
 }
+
+#[tokio::test]
+async fn discovered_skill_and_prompt_name_clashes_report_collision_diagnostics() {
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().expect("isolated SDK");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let write = |path: std::path::PathBuf, content: &str| {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&path, content).expect("write");
+        path.to_string_lossy().into_owned()
+    };
+    let cli_skill = write(dir.path().join("cli/same/SKILL.md"), "---\nname: same\ndescription: CLI skill\n---\nCLI.");
+    let cli_prompt = write(dir.path().join("cli/clash.md"), "---\ndescription: CLI prompt\n---\nCLI");
+    let discovered_skill = write(dir.path().join("ext/same/SKILL.md"), "---\nname: same\ndescription: Discovered skill\n---\nExt.");
+    let discovered_prompt = write(dir.path().join("ext/clash.md"), "---\ndescription: Discovered prompt\n---\nExt");
+    let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
+        path: "sdk-collision-fixture".to_owned(), source_info: Default::default(),
+        factory: Arc::new(move |api| {
+            let skill = discovered_skill.clone();
+            let prompt = discovered_prompt.clone();
+            api.on(maho_ext_api::EventKind::ResourcesDiscover, Arc::new(move |_, _| {
+                let skill = skill.clone();
+                let prompt = prompt.clone();
+                Box::pin(async move { Ok(maho_ext_api::EventResult::ResourcesDiscover(maho_ext_api::ResourcesDiscoverResult {
+                    prompt_paths: vec![prompt.into()], skill_paths: vec![skill.into()], ..Default::default()
+                })) })
+            }));
+            Box::pin(async { Ok(()) })
+        }),
+    };
+    let model = serde_json::from_value(serde_json::json!({
+        "id":"fixture","name":"fixture","api":"faux","provider":"faux","baseUrl":"",
+        "reasoning":false,"input":[],"contextWindow":128000,"maxTokens":4096,
+        "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}
+    })).expect("model");
+    let session = tokio::time::timeout(std::time::Duration::from_secs(5), maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+        model: Some(model), session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+        resource_inputs: maho_core::resource_loader::ResourceLoaderInputs {
+            additional_skill_paths: vec![cli_skill.clone()], additional_prompt_template_paths: vec![cli_prompt.clone()], ..Default::default()
+        },
+        extension_factories: vec![factory], ..Default::default()
+    })).await.expect("bounded SDK startup").expect("SDK session").session;
+    let skill_diagnostics = session.loaded_skills().unwrap_or_default().diagnostics;
+    let prompt_diagnostics = session.prompt_diagnostics();
+    session.dispose().await;
+    let skill_collision = skill_diagnostics.iter().find_map(|diagnostic| diagnostic.collision.as_ref()).expect("skill collision");
+    assert_eq!(skill_collision.name, "same");
+    assert_eq!(skill_collision.winner_path, cli_skill);
+    let prompt_collision = prompt_diagnostics.iter().find_map(|diagnostic| diagnostic.collision.as_ref()).expect("prompt collision");
+    assert_eq!(prompt_collision.name, "clash");
+    assert_eq!(prompt_collision.winner_path, cli_prompt);
+}
