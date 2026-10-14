@@ -1,5 +1,7 @@
 use maho_pty::{PtyExit,PtySession,PtySessionOptions};
 use std::sync::{Arc,Condvar,Mutex};
+use std::sync::atomic::{AtomicBool,Ordering};
+use crate::pipe_fallback::{PipeFallbackSession,should_use_pipe_fallback};
 use std::time::Duration;
 use crate::shared::MAX_SESSION_OUTPUT_CHARS;
 
@@ -69,9 +71,12 @@ pub struct TerminalScreenSnapshot {
     pub cursor:(u16,u16),
 }
 
+enum TerminalSessionBackend {Native(PtySession),PipeFallback(PipeFallbackSession)}
+
 pub struct TerminalRuntimeSession {
     pub command:String,
-    session:PtySession,
+    session:TerminalSessionBackend,
+    kill_requested:Arc<AtomicBool>,
     output:Arc<Mutex<OutputState>>,
     exit:ExitState,
     exit_thread:Option<std::thread::JoinHandle<()>>,
@@ -91,7 +96,7 @@ impl TerminalRuntimeSession {
         let listeners=observers.clone();
         let screen=Arc::new(Mutex::new(vt100::Parser::new(options.rows,options.cols,scrollback)));
         let projection=screen.clone();
-        let mut session=PtySession::start(options,move |chunk| {
+        let on_chunk=move |chunk:&[u8]| {
             if let Ok(mut state)=sink.lock() {
                 let decoded=state.ingest(chunk);
                 if let Ok(mut screen)=projection.lock() {screen.process(decoded.as_bytes());}
@@ -99,20 +104,26 @@ impl TerminalRuntimeSession {
                     listeners.retain(|listener|listener.send(decoded.clone()).is_ok());
                 }
             }
-        })?;
-        let waiter=session.wait_in_background()?;
+        };
+        let (session,waiter)=if should_use_pipe_fallback(std::env::var("SENPI_PTY_FORCE_PIPE").ok().as_deref()) {
+            let mut session=PipeFallbackSession::start(&options,on_chunk)?;let waiter=session.wait_in_background()?;(TerminalSessionBackend::PipeFallback(session),waiter)
+        } else {
+            let mut session=PtySession::start(options,on_chunk)?;let waiter=session.wait_in_background()?;(TerminalSessionBackend::Native(session),waiter)
+        };
+        let kill_requested=Arc::new(AtomicBool::new(false));let exit_kill_requested=Arc::clone(&kill_requested);
         let exit:ExitState=Arc::new((Mutex::new(None),Condvar::new()));let settled=Arc::clone(&exit);
         let (exit_sender,exit_signal)=tokio::sync::watch::channel(None);
         let exit_thread=std::thread::spawn(move || {
-            let result=match waiter.join() {Ok(result)=>result.map_err(|e|e.to_string()),Err(_)=>Err("terminal exit waiter panicked".to_owned())};
+            // session-exit.ts `normalizeTerminalExit`: any requested kill (SIGTERM included) marks the exit cancelled.
+            let result=match waiter.join() {Ok(result)=>result.map(|mut exit|{exit.cancelled|=exit_kill_requested.load(Ordering::SeqCst);exit}).map_err(|e|e.to_string()),Err(_)=>Err("terminal exit waiter panicked".to_owned())};
             let (lock,signal)=&*settled;
             if let Ok(mut state)=lock.lock() {*state=Some(result.clone());signal.notify_all();}
             exit_sender.send_replace(Some(result));
         });
-        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen,scrollback})
+        Ok(Self {command:command.to_owned(),session,kill_requested,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen,scrollback})
     }
 
-    pub fn backend(&self)->&'static str {"native"}
+    pub fn backend(&self)->&'static str {match self.session {TerminalSessionBackend::Native(_)=>"native",TerminalSessionBackend::PipeFallback(_)=>"pipe-fallback"}}
     pub fn subscribe_exit(&self)->tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>> {self.exit_signal.clone()}
     pub fn subscribe_output(&self)->Result<(String,tokio::sync::mpsc::UnboundedReceiver<String>),RuntimeError> {
         let state=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;
@@ -139,7 +150,7 @@ impl TerminalRuntimeSession {
     pub fn total_chars(&self)->Result<usize,RuntimeError> {let state=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;Ok(state.dropped_chars+state.buffer.len())}
     pub fn read_delta(&self)->Result<DeltaRead,RuntimeError> {Ok(self.output.lock().map_err(|_|RuntimeError::Poisoned)?.read_delta())}
     pub fn full_output(&self)->Result<String,RuntimeError> {Ok(String::from_utf16_lossy(&self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer))}
-    pub fn write(&mut self,bytes:&[u8])->Result<(),RuntimeError> {self.session.write(bytes)?;Ok(())}
+    pub fn write(&mut self,bytes:&[u8])->Result<(),RuntimeError> {match &mut self.session {TerminalSessionBackend::Native(session)=>session.write(bytes)?,TerminalSessionBackend::PipeFallback(session)=>session.write(bytes)?}Ok(())}
     pub fn snapshot(&self)->Result<TerminalScreenSnapshot,RuntimeError> {
         let mut parser=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
         let screen=parser.screen_mut();let (rows,cols)=screen.size();
@@ -154,7 +165,8 @@ impl TerminalRuntimeSession {
         // `resizeScreen` only touches the screen and its `bash_resize` returns early when
         // `runtime.exited`. Skipping it for a closed session keeps the screen projection resizable
         // instead of failing with "pty session is closed".
-        if !self.exited()? {self.session.resize(cols,rows)?;}
+        // The pipe fallback rejects the resize with a note but the screen projection still resizes.
+        let session_resize=if self.exited()? {Ok(())} else {match &self.session {TerminalSessionBackend::Native(session)=>session.resize(cols,rows),TerminalSessionBackend::PipeFallback(session)=>session.resize(cols,rows)}};
         let retained=String::from_utf16_lossy(&self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer);
         let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
         if retained.is_empty() {
@@ -168,12 +180,23 @@ impl TerminalRuntimeSession {
             rebuilt.process(retained.as_bytes());
             *screen=rebuilt;
         }
-        Ok(())
+        session_resize?;Ok(())
     }
-    pub fn kill(&mut self)->Result<(),RuntimeError> {self.session.kill()?;Ok(())}
+    /// session.ts `stop()`: the default SIGTERM (registry-session.ts `DEFAULT_SIGNAL`), letting the
+    /// process tree clean up before a caller escalates to `kill`.
+    pub fn stop(&mut self)->Result<(),RuntimeError> {self.signal("SIGTERM")}
+    pub fn kill(&mut self)->Result<(),RuntimeError> {self.signal("SIGKILL")}
+    fn signal(&mut self,signal:&str)->Result<(),RuntimeError> {
+        self.kill_requested.store(true,Ordering::SeqCst);
+        let result=match &mut self.session {TerminalSessionBackend::Native(session) if signal=="SIGKILL"=>session.kill(),TerminalSessionBackend::Native(session)=>session.signal(signal),TerminalSessionBackend::PipeFallback(session)=>session.kill(signal)};
+        // A session that exited between the state check and the signal is already stopped.
+        match result {Ok(())=>Ok(()),Err(error) if error.to_string()=="pty session is closed"||error.to_string().contains("No such process") =>Ok(()),Err(_) if self.exited()? =>Ok(()),Err(error)=>Err(error.into())}
+    }
     pub fn dispose(mut self)->Result<(),RuntimeError> {
         if !self.exited()? {self.kill()?;}
-        if let Some(thread)=self.exit_thread.take() {thread.join().map_err(|_|RuntimeError::WaiterPanicked)?;}
+        // Only join a settled waiter: a descendant still holding the PTY keeps the reader (and so the
+        // waiter) blocked, and disposal must not hang on it (upstream dispose never waits).
+        if self.exited()? && let Some(thread)=self.exit_thread.take() {thread.join().map_err(|_|RuntimeError::WaiterPanicked)?;}
         Ok(())
     }
 }
@@ -181,7 +204,7 @@ impl TerminalRuntimeSession {
 impl Drop for TerminalRuntimeSession {
     fn drop(&mut self) {
         match self.exited() {
-            Ok(false)=>{if let Err(error)=self.session.kill() {maho_ext_api::diagnostic(&format!("terminal cleanup failed: {error}"));}}
+            Ok(false)=>{if let Err(error)=self.kill() {maho_ext_api::diagnostic(&format!("terminal cleanup failed: {error}"));}}
             Ok(true)=>{},Err(error)=>maho_ext_api::diagnostic(&format!("terminal cleanup state failed: {error}")),
         }
     }
