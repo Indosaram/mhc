@@ -128,6 +128,40 @@ fn is_extension_command_text(text: &str, extension_commands: &[String]) -> bool 
     extension_commands.iter().any(|command| command == name)
 }
 
+/// Marks a submission the mode queued itself (selector picks, dialog answers, key actions) rather
+/// than text the user typed. senpi calls those handlers directly; the port routes them through the
+/// submission queue, so the marker keeps typed text such as `/tree foo` a normal prompt. The editor
+/// strips control characters, so typed input never carries it.
+const INTERNAL_COMMAND_MARKER: char = '\u{0}';
+
+/// Queue `command` as a mode-internal submission (see [`INTERNAL_COMMAND_MARKER`]).
+pub fn internal_command(command: impl Into<String>) -> String {
+    let mut text = String::from(INTERNAL_COMMAND_MARKER);
+    text.push_str(&command.into());
+    text
+}
+
+/// Split a submission into its text and whether the mode queued it itself.
+fn split_internal_command(text: &str) -> (&str, bool) {
+    match text.strip_prefix(INTERNAL_COMMAND_MARKER) { Some(command) => (command, true), None => (text, false) }
+}
+
+/// The continuation commands the port queues for its own selectors and dialogs (senpi calls the
+/// handlers directly). Typed by hand they are ordinary text, as in senpi.
+fn is_internal_only_command(text: &str) -> bool {
+    let with_argument = |command: &str| text.strip_prefix(command).is_some_and(|rest| rest.starts_with(' '));
+    matches!(text, "/import-cancel" | "/paste-clipboard" | "/reload-run" | "/resume-cwd-cancel" | "/tree-edit-apply" | "/tree-navigate" | "/login-auth-type")
+        || ["/import-confirm", "/import-cwd", "/resume", "/resume-cwd", "/fork", "/tree", "/tree-edit", "/tree-summary", "/tree-summary-custom", "/model-select", "/model-search", "/logout-provider", "/login-provider", "/login-select-provider"].into_iter().any(with_argument)
+}
+
+/// The built-in command branches of senpi's `onSubmit` (`interactive-mode.ts:4776-4916`), which
+/// return before any `editor.addToHistory`.
+fn is_builtin_command_submission(text: &str) -> bool {
+    let with_argument = |command: &str| text == command || text.strip_prefix(command).is_some_and(|rest| rest.starts_with(' '));
+    matches!(text, "/settings" | "/favorite-models" | "/scoped-models" | "/share" | "/copy" | "/session" | "/changelog" | "/keybindings" | "/hotkeys" | "/fork" | "/clone" | "/tree" | "/trust" | "/logout" | "/new" | "/reload" | "/debug" | "/arminsayshi" | "/dementedelves" | "/resume" | "/quit" | "/exit")
+        || ["/model", "/export", "/import", "/rename", "/name", "/answer", "/login", "/compact"].into_iter().any(with_argument)
+}
+
 /// A step that needs the terminal released: the loop owning the terminal stops it, performs the
 /// step (`InteractiveMode::open_external_editor` / process suspend), then restarts and force-renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1136,7 +1170,7 @@ impl InteractiveMode {
         let images = pending_images.clone();
         let queued_images = submission_images.clone();
         let paste_submissions = submissions.clone();
-        editor.on_paste_image = Some(Box::new(move || paste_submissions.borrow_mut().push_back("/paste-clipboard".into())));
+        editor.on_paste_image = Some(Box::new(move || paste_submissions.borrow_mut().push_back(internal_command("/paste-clipboard"))));
         let question_actions: QuestionActions = Rc::new(RefCell::new(std::collections::VecDeque::new()));
         let empty_submit_actions = question_actions.clone();
         editor.editor.on_submit = Some(Box::new(move |text| {
@@ -1636,8 +1670,8 @@ impl InteractiveMode {
         let confirm = format!("{confirm_command} \"{path}\""); let cancel = cancel_command.to_owned(); let dismissed = cancel.clone();
         let title = format!("Session cwd not found\n{}", maho_core::session_cwd::format_missing_session_cwd_prompt(issue));
         self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
-            Box::new(move |choice| { submissions.borrow_mut().push_back(if choice == "Yes" { confirm.clone() } else { cancel.clone() }); selected.borrow_mut().take(); }),
-            Box::new(move || { cancel_submissions.borrow_mut().push_back(dismissed.clone()); cancelled.borrow_mut().take(); }), Default::default())));
+            Box::new(move |choice| { submissions.borrow_mut().push_back(internal_command(if choice == "Yes" { confirm.clone() } else { cancel.clone() })); selected.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command(dismissed.clone())); cancelled.borrow_mut().take(); }), Default::default())));
     }
 
     /// senpi `handleResumeSession`: switch, prompting to continue in the current cwd when the
@@ -2084,7 +2118,7 @@ impl InteractiveMode {
             return;
         }
         if keys.matches(data, "app.editor.external") { self.terminal_request = Some(TerminalRequest::ExternalEditor); return; }
-        if keys.matches(data, "app.session.new") { self.submissions.borrow_mut().push_back("/new".into()); return; }
+        if keys.matches(data, "app.session.new") { self.submissions.borrow_mut().push_back(internal_command("/new")); return; }
         if keys.matches(data, "app.clear") {
             if self.last_clear_ms.is_some_and(|last| now_ms.saturating_sub(last) < 500) { self.shutdown_requested = true; }
             else { self.editor.editor.set_text(""); self.last_clear_ms = Some(now_ms); }
@@ -2128,7 +2162,10 @@ impl InteractiveMode {
         }
         let text = self.submissions.borrow_mut().pop_front();
         let text = text?;
-        if text != "/reload-run" { self.editor.editor.add_to_history(&text); }
+        // senpi `onSubmit`: built-in commands return before `addToHistory`, and the selector/dialog
+        // continuations the port queues internally are never typed text.
+        let (typed, internal) = split_internal_command(&text);
+        if !internal && !is_builtin_command_submission(typed.trim()) { self.editor.editor.add_to_history(typed); }
         let images = {
             let mut queued = self.submission_images.borrow_mut();
             queued.iter().position(|(submitted, _)| submitted == &text).and_then(|index| queued.remove(index)).map(|(_, images)| images)
@@ -2558,6 +2595,7 @@ impl InteractiveMode {
 
     /// Start the turn for `text` and return, or route it into a turn that is already in flight.
     async fn submit_start(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        let (text, internal) = split_internal_command(text);
         self.refresh_tool_renderer_snapshots().await;
         if !text.trim_start().starts_with('/') && !text.trim_start().starts_with('!') && let Some(request_id) = self.questions.composer_request_id().map(str::to_owned) {
             let response = self.questions.get(&request_id).map(|entry| to_extension_response(crate::components::ask_user_async_widget::build_comment_response(&entry.request, &entry.draft, text.trim())));
@@ -2567,6 +2605,10 @@ impl InteractiveMode {
                 return Ok(PromptDisposition::Handled);
             }
         }
+        // senpi `onSubmit` matches only its built-in names; the continuation commands the port
+        // queues for its own selectors and dialogs are not commands when typed, so typed text such
+        // as `/tree foo` or `/fork foo` falls through to the prompt like any other message.
+        if !internal && is_internal_only_command(text.trim()) { return self.submit_prompt(text, options).await; }
         if text.trim() == "/copy" {
             if let Some(text) = self.session.get_last_assistant_text().filter(|text|!text.is_empty()) {
                 match crate::interactive_clipboard::copy(&text).await {
@@ -2685,7 +2727,7 @@ impl InteractiveMode {
             reload_box.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
             self.reload_box = Some(reload_box);
             self.editor_host.request_render();
-            self.submissions.borrow_mut().push_back("/reload-run".into());
+            self.submissions.borrow_mut().push_back(internal_command("/reload-run"));
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/reload-run" {
@@ -2856,6 +2898,12 @@ impl InteractiveMode {
         if text.trim() == "/logout" { self.show_logout_selector().await; return Ok(PromptDisposition::Handled); }
         if let Some(provider_id) = text.trim().strip_prefix("/logout-provider ") { self.logout_provider(provider_id.trim()).await; return Ok(PromptDisposition::Handled); }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
+        self.submit_prompt(text, options).await
+    }
+
+    /// The non-command tail of senpi `onSubmit`: queue during compaction, steer into a live turn,
+    /// or start a new turn.
+    async fn submit_prompt(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
         // senpi queues non-command input during compaction for delivery after it settles.
         if self.host_is_compacting() && !self.is_extension_command(text.trim()) {
             self.queue_compaction_submission(text.trim(), options.images.clone());
@@ -3028,8 +3076,8 @@ impl InteractiveMode {
         let entry = entry_id.to_owned();
         self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
             Arc::new(self.keybindings()), title, Some(&content),
-            Box::new(move |text| { *pending.borrow_mut() = Some((entry.clone(), text.to_owned(), expected_leaf.clone())); submit_submissions.borrow_mut().push_back("/tree-edit-apply".into()); submit_closed.borrow_mut().take(); }),
-            Box::new(move || { cancel_submissions.borrow_mut().push_back("/tree".into()); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
+            Box::new(move |text| { *pending.borrow_mut() = Some((entry.clone(), text.to_owned(), expected_leaf.clone())); submit_submissions.borrow_mut().push_back(internal_command("/tree-edit-apply")); submit_closed.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command("/tree")); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
     }
 
     /// senpi's `editAssistantMessageFromTree` tail: empty re-opens the tree, an unchanged edit
@@ -3039,14 +3087,14 @@ impl InteractiveMode {
         let Some((entry_id, edited, expected_leaf)) = self.pending_tree_edit.borrow_mut().take() else { return Ok(()); };
         if edited.trim().is_empty() {
             self.show_status("Assistant response cannot be empty".into());
-            self.submissions.borrow_mut().push_back(format!("/tree-edit {entry_id}"));
+            self.submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {entry_id}")));
             return Ok(());
         }
         let options = maho_core::agent_session::TreeNavigationOptions { expected_leaf_id: expected_leaf, ..Default::default() };
         let result = self.host_edit_assistant_message(&entry_id, &edited, options).await?;
         if result.unchanged == Some(true) { self.show_status("Assistant response unchanged".into()); return Ok(()); }
         if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
-        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(format!("/tree-edit {entry_id}")); return Ok(()); }
+        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {entry_id}"))); return Ok(()); }
         self.rebuild_history();
         self.show_status("Replaced assistant response with your edit".into());
         Ok(())
@@ -3068,10 +3116,10 @@ impl InteractiveMode {
         let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), "Summarize branch?", vec!["No summary".into(), "Summarize".into(), "Summarize with custom prompt".into()],
             Box::new(move |choice| {
                 selected.borrow_mut().take();
-                if choice == "Summarize with custom prompt" { select_submissions.borrow_mut().push_back(format!("/tree-summary-custom {custom_entry}")); }
-                else { *pending.borrow_mut() = Some((select_entry.clone(), choice == "Summarize", None)); select_submissions.borrow_mut().push_back("/tree-navigate".into()); }
+                if choice == "Summarize with custom prompt" { select_submissions.borrow_mut().push_back(internal_command(format!("/tree-summary-custom {custom_entry}"))); }
+                else { *pending.borrow_mut() = Some((select_entry.clone(), choice == "Summarize", None)); select_submissions.borrow_mut().push_back(internal_command("/tree-navigate")); }
             }),
-            Box::new(move || { cancelled.borrow_mut().take(); cancel_submissions.borrow_mut().push_back(format!("/tree {entry}")); }), self.extension_selector_options(None));
+            Box::new(move || { cancelled.borrow_mut().take(); cancel_submissions.borrow_mut().push_back(internal_command(format!("/tree {entry}"))); }), self.extension_selector_options(None));
         self.ui_dialog = Some(Box::new(component));
     }
 
@@ -3084,8 +3132,8 @@ impl InteractiveMode {
         let entry = entry_id.to_owned(); let submit_entry = entry.clone(); let cancel_entry = entry.clone();
         self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
             Arc::new(self.keybindings()), "Custom summarization instructions", None,
-            Box::new(move |text| { *pending.borrow_mut() = Some((submit_entry.clone(), true, Some(text.to_owned()))); submit_submissions.borrow_mut().push_back("/tree-navigate".into()); submit_closed.borrow_mut().take(); }),
-            Box::new(move || { cancel_submissions.borrow_mut().push_back(format!("/tree-summary {cancel_entry}")); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
+            Box::new(move |text| { *pending.borrow_mut() = Some((submit_entry.clone(), true, Some(text.to_owned()))); submit_submissions.borrow_mut().push_back(internal_command("/tree-navigate")); submit_closed.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command(format!("/tree-summary {cancel_entry}"))); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
     }
 
     /// senpi `runTreeNavigation`'s committed tail: consume the chosen summary and navigate.
@@ -3104,7 +3152,7 @@ impl InteractiveMode {
         let result = self.host_navigate_tree(entry_id, options).await;
         if summarize { self.clear_status_indicator(Some(crate::components::status_indicator::StatusIndicatorKind::BranchSummary)); }
         let result = result?;
-        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(format!("/tree {entry_id}")); return Ok(()); }
+        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(internal_command(format!("/tree {entry_id}"))); return Ok(()); }
         if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
         self.rebuild_history();
         if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); }
@@ -3170,8 +3218,8 @@ impl InteractiveMode {
             self.ui_dialog = Some(Box::new(SessionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()),
                 Box::new(move |on_progress| maho_core::session_manager::SessionManager::list(&cwd, Some(&current_directory), on_progress).into_iter().map(convert).collect()),
                 Box::new(move |on_progress| maho_core::session_manager::SessionManager::list_all((!default_directory).then_some(directory.as_str()), on_progress).into_iter().map(convert).collect()),
-                Box::new(move |path| { submissions.borrow_mut().push_back(format!("/resume \"{path}\"")); selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), Box::new(move || { exit_submissions.borrow_mut().push_back("/quit".into()); exited.borrow_mut().take(); }),
+                Box::new(move |path| { submissions.borrow_mut().push_back(internal_command(format!("/resume \"{path}\""))); selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), Box::new(move || { exit_submissions.borrow_mut().push_back(internal_command("/quit")); exited.borrow_mut().take(); }),
                 Box::new(move || host.request_render()), Some(Box::new(|path, name| { let mut manager = maho_core::session_manager::SessionManager::open(path, None, None, None); manager.append_session_info(name); })), Some(true),
                 self.host_session_file().as_deref(), std::env::var("HOME").ok())));
             return Ok(true);
@@ -3347,7 +3395,7 @@ impl InteractiveMode {
                 let selected = self.ui_reply.clone(); let submissions = self.submissions.clone(); let current = self.host_model();
                 self.ui_dialog = Some(Box::new(FavoriteModelsSelectorComponent::new(&self.theme, keys,
                     FavoriteModelsConfig { all_models:models.into_iter().map(|model| crate::components::model_selector::ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect(), favorite_model_ids:enabled, current_model:Some(crate::components::model_selector::ModelEntry { provider:current.provider, id:current.id, name:current.name }) },
-                    FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model-select {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
+                    FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(internal_command(format!("/model-select {}/{}", model.provider, model.id))); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
             } else {
                 use crate::components::scoped_models_selector::{ScopedModelsSelectorComponent, ModelsConfig, ModelsCallbacks};
                 use crate::theme::ThemeColor;
@@ -3408,13 +3456,13 @@ impl InteractiveMode {
             let mut selector = crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
                 Arc::new(self.keybindings()),
                 tree, leaf.as_deref(), self.editor_host.terminal_rows(),
-                Box::new(move |id| { submissions.borrow_mut().push_back(format!("/tree {id}")); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
+                Box::new(move |id| { submissions.borrow_mut().push_back(internal_command(format!("/tree {id}"))); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
                 Some(Box::new(move |id, label| if let Err(error_message) = session.with_session_manager_mut(|manager| manager.append_label(id, label)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message }); })), None, Some(filter), std::env::var("HOME").ok());
             let copies=self.tree_copies.clone();
             selector.on_copy=Some(Box::new(move |text|copies.borrow_mut().push_back(text.map(str::to_owned))));
             // senpi `selector.onEditMessage`: close the selector, then open the edit flow.
             let edit_submissions=self.submissions.clone(); let edit_closed=self.ui_reply.clone();
-            selector.on_edit_message=Some(Box::new(move |id| { edit_submissions.borrow_mut().push_back(format!("/tree-edit {id}")); edit_closed.borrow_mut().take(); }));
+            selector.on_edit_message=Some(Box::new(move |id| { edit_submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {id}"))); edit_closed.borrow_mut().take(); }));
             self.ui_dialog=Some(Box::new(selector));
             return Ok(true);
         }
@@ -3431,7 +3479,7 @@ impl InteractiveMode {
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
             self.ui_dialog = Some(Box::new(UserMessageSelectorComponent::new(messages,
-                Box::new(move |id| { submissions.borrow_mut().push_back(format!("/fork {id}")); selected.borrow_mut().take(); }),
+                Box::new(move |id| { submissions.borrow_mut().push_back(internal_command(format!("/fork {id}"))); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), initial_selected_id.as_deref(), self.theme.clone())));
             if self.ui_reply.borrow().is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
             return Ok(true);
@@ -3463,7 +3511,7 @@ impl InteractiveMode {
             let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), 0, &models,
                 Some(ModelEntry { provider:current.provider, id:current.id, name:current.name }),
                 scoped,
-                Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model-select {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }),
+                Box::new(move |model| { submissions.borrow_mut().push_back(internal_command(format!("/model-select {}/{}", model.provider, model.id))); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), initial_search.as_deref(),
                 ModelSelectorFavoriteOptions { favorite_model_ids:favorite_ids, on_favorite_change:Some(favorite_callback) }, None);
             let session = self.session.clone(); let ui = self.extension_ui.clone();
@@ -3661,15 +3709,10 @@ impl InteractiveMode {
             let confirm_path = path.clone();
             let title = format!("Import session\nReplace current session with {path}?");
             let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
-                Box::new(move |choice| { submissions.borrow_mut().push_back(if choice == "Yes" { format!("/import-confirm \"{confirm_path}\"") } else { "/import-cancel".to_owned() }); selected.borrow_mut().take(); }),
-                Box::new(move || { cancel_submissions.borrow_mut().push_back("/import-cancel".to_owned()); cancelled.borrow_mut().take(); }), self.extension_selector_options(None));
+                Box::new(move |choice| { submissions.borrow_mut().push_back(internal_command(if choice == "Yes" { format!("/import-confirm \"{confirm_path}\"") } else { "/import-cancel".to_owned() })); selected.borrow_mut().take(); }),
+                Box::new(move || { cancel_submissions.borrow_mut().push_back(internal_command("/import-cancel".to_owned())); cancelled.borrow_mut().take(); }), self.extension_selector_options(None));
             self.ui_dialog = Some(Box::new(component));
             return Ok(true);
-        }
-        if let Some(name) = text.split_whitespace().next().and_then(|word| word.strip_prefix('/'))
-            && maho_core::slash_commands::builtin_slash_commands().iter().any(|command| command.name == name)
-        {
-            return Err(format!("/{name} is not yet integrated into the native interactive runtime"));
         }
         Ok(false)
     }
@@ -3866,7 +3909,7 @@ impl InteractiveMode {
         let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
         let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
         self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
-            Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/logout-provider {id}")); selected.borrow_mut().take(); }),
+            Box::new(move |id, _| { submissions.borrow_mut().push_back(internal_command(format!("/logout-provider {id}"))); selected.borrow_mut().take(); }),
             Box::new(move || { cancelled.borrow_mut().take(); }), None)));
     }
 
@@ -3911,7 +3954,7 @@ impl InteractiveMode {
         self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, labels,
             Box::new(move |label| {
                 let method = if label == subscription { "oauth" } else { "api_key" };
-                submissions.borrow_mut().push_back(match &provider_id { Some(id) => format!("/login-provider {id} {method}"), None => format!("/login-select-provider {method}") });
+                submissions.borrow_mut().push_back(internal_command(match &provider_id { Some(id) => format!("/login-provider {id} {method}"), None => format!("/login-select-provider {method}") }));
                 selected.borrow_mut().take();
             }),
             Box::new(move || { cancelled.borrow_mut().take(); }), Default::default())));
@@ -3928,9 +3971,9 @@ impl InteractiveMode {
         let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
         let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone(); let back = self.submissions.clone();
         self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Login, options,
-            Box::new(move |id, kind| { submissions.borrow_mut().push_back(format!("/login-provider {id} {}", match kind { AuthSelectorAuthType::OAuth => "oauth", AuthSelectorAuthType::ApiKey => "api_key" })); selected.borrow_mut().take(); }),
+            Box::new(move |id, kind| { submissions.borrow_mut().push_back(internal_command(format!("/login-provider {id} {}", match kind { AuthSelectorAuthType::OAuth => "oauth", AuthSelectorAuthType::ApiKey => "api_key" }))); selected.borrow_mut().take(); }),
             // Cancelling a typed-provider list returns to the method selector, as pinned.
-            Box::new(move || { if auth_type.is_some() { back.borrow_mut().push_back("/login-auth-type".into()); } cancelled.borrow_mut().take(); }),
+            Box::new(move || { if auth_type.is_some() { back.borrow_mut().push_back(internal_command("/login-auth-type")); } cancelled.borrow_mut().take(); }),
             initial_search)));
     }
 
