@@ -1079,7 +1079,7 @@ impl InteractiveMode {
         }
     }
 
-    fn output_pad(&self) -> usize { self.session.with_settings_manager(|settings| settings.get_number("outputPad").unwrap_or(1.0) as usize) }
+    fn output_pad(&self) -> usize { usize::from(self.session.with_settings_manager(maho_core::settings_manager::SettingsManager::get_output_pad)) }
     pub fn new(session: Arc<AgentSession>, theme: Theme, host: Rc<dyn maho_tui::components::editor::EditorTuiHost>) -> Self {
         Self::new_with_options(session, theme, host, InteractiveModeOptions::default())
     }
@@ -3068,8 +3068,8 @@ impl InteractiveMode {
                 config.show_images = settings.get_show_images(); config.auto_resize_images = settings.get_image_auto_resize(); config.block_images = settings.get_block_images(); boolean!(enable_skill_commands, "enableSkillCommands");
                 boolean!(hide_thinking_block, "hideThinkingBlock"); boolean!(smooth_streaming, "smoothStreaming"); boolean!(show_cache_miss_notices, "showCacheMissNotices"); boolean!(collapse_changelog, "collapseChangelog");
                 boolean!(enable_install_telemetry, "enableInstallTelemetry"); config.show_hardware_cursor = settings.get_show_hardware_cursor(); boolean!(quiet_startup, "quietStartup"); config.clear_on_shrink = settings.get_clear_on_shrink(); config.show_terminal_progress = settings.get_show_terminal_progress(); boolean!(fullscreen_copy_on_select, "fullscreenCopyOnSelect");
-                config.image_width_cells = settings.get_image_width_cells() as usize; number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); number!(output_pad, "outputPad"); config.autocomplete_max_visible = settings.get_autocomplete_max_visible();
-                string!(steering_mode, "steeringMode"); string!(follow_up_mode, "followUpMode"); string!(transport, "transport"); string!(double_escape_action, "doubleEscapeAction"); string!(tree_filter_mode, "treeFilterMode"); string!(fullscreen_scrollbar, "fullscreenScrollbar");
+                config.image_width_cells = settings.get_image_width_cells() as usize; number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); config.output_pad = settings.get_output_pad(); config.autocomplete_max_visible = settings.get_autocomplete_max_visible();
+                string!(steering_mode, "steeringMode"); string!(follow_up_mode, "followUpMode"); string!(transport, "transport"); string!(double_escape_action, "doubleEscapeAction"); config.tree_filter_mode = settings.get_tree_filter_mode(); string!(fullscreen_scrollbar, "fullscreenScrollbar");
                 use crate::components::settings_selector::{MermaidRenderingMode, TuiMode, FullscreenExitOutput, DefaultProjectTrust};
                 config.terminal_mouse = Some(settings.get_terminal_mouse());
                 config.mermaid_rendering_mode = MermaidRenderingMode::from_name(settings.get_mermaid_rendering_mode().as_str()).unwrap_or(config.mermaid_rendering_mode);
@@ -3281,7 +3281,7 @@ impl InteractiveMode {
             if tree.is_empty() { self.show_status("No entries in session".into()); return Ok(true); }
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone(); let session = self.session.clone();
-            let filter = self.session.with_settings_manager(|settings| settings.get_value("treeFilterMode").and_then(serde_json::Value::as_str).unwrap_or("default").to_owned());
+            let filter = self.session.with_settings_manager(maho_core::settings_manager::SettingsManager::get_tree_filter_mode);
             let filter = match filter.as_str() { "no-tools" => crate::components::tree_selector::FilterMode::NoTools, "user-only" => crate::components::tree_selector::FilterMode::UserOnly, "labeled-only" => crate::components::tree_selector::FilterMode::LabeledOnly, "all" => crate::components::tree_selector::FilterMode::All, _ => crate::components::tree_selector::FilterMode::Default };
             let mut selector = crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
                 Arc::new(self.keybindings()),
