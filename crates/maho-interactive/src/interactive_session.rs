@@ -61,7 +61,8 @@ pub trait InteractiveSession: Send + Sync {
     fn compact(&self, _instructions: Option<String>) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("compact is not implemented for this session host".to_owned()) }) }
     fn navigate_tree(&self, _entry_id: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Err("navigate_tree is not implemented for this session host".to_owned()) }) }
     fn edit_assistant_message(&self, _entry_id: String, _text: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Err("edit_assistant_message is not implemented for this session host".to_owned()) }) }
-    fn reload(&self) -> SessionFuture<'_, Result<bool, String>> { Box::pin(async { Err("reload is not implemented for this session host".to_owned()) }) }
+    /// senpi's `reload`: the `{ cancelled, reason? }` veto decision.
+    fn reload(&self) -> SessionFuture<'_, Result<maho_ext_api::ReloadVetoDecision, String>> { Box::pin(async { Err("reload is not implemented for this session host".to_owned()) }) }
     /// senpi's `clearQueue` proxy arm is synchronous: it returns the mirrored queue and fires the
     /// RPC. A no-op locally (the caller reads the local session's queue directly).
     fn fire_clear_queue(&self, _abort_will_follow: bool) {}
@@ -221,12 +222,12 @@ impl InteractiveSession for LocalInteractiveSession {
         Box::pin(async move { self.session.edit_assistant_message(&entry_id, &text, options).await })
     }
 
-    fn reload(&self) -> SessionFuture<'_, Result<bool, String>> {
-        Box::pin(async move { self.session.reload().await.map(|decision| !decision.cancelled) })
+    fn reload(&self) -> SessionFuture<'_, Result<maho_ext_api::ReloadVetoDecision, String>> {
+        Box::pin(async move { self.session.reload().await })
     }
 
     fn execute_bash(&self, command: String, exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> {
-        Box::pin(async move { self.session.execute_bash(&command, None, exclude_from_context, None, None).await.map(|result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null)) })
+        Box::pin(async move { self.session.execute_user_bash(&command, None, exclude_from_context, None).await.map(|result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null)) })
     }
 
     fn set_model(&self, provider: String, id: String) -> SessionFuture<'_, Result<(), String>> {
@@ -346,8 +347,13 @@ impl InteractiveSession for RemoteInteractiveRuntime {
         Box::pin(async move { Ok(assistant_edit_result_from_wire(&self.proxy().edit_assistant_message(&entry_id, &text, tree_options_to_wire(&options)).await.map_err(|error| error.to_string())?)) })
     }
 
-    fn reload(&self) -> SessionFuture<'_, Result<bool, String>> {
-        Box::pin(async move { self.proxy().reload().await.map(|value| value.get("cancelled").and_then(serde_json::Value::as_bool) != Some(true)).map_err(|error| error.to_string()) })
+    fn reload(&self) -> SessionFuture<'_, Result<maho_ext_api::ReloadVetoDecision, String>> {
+        Box::pin(async move {
+            self.proxy().reload().await.map(|value| maho_ext_api::ReloadVetoDecision {
+                cancelled: value.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true),
+                reason: value.get("reason").and_then(serde_json::Value::as_str).map(str::to_owned),
+            }).map_err(|error| error.to_string())
+        })
     }
 
     fn fire_clear_queue(&self, abort_will_follow: bool) {

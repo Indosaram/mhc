@@ -288,6 +288,19 @@ async fn rename_without_argument_opens_real_input_and_commits_enter() {
 }
 
 #[tokio::test]
+async fn rename_warns_when_the_session_normalizes_the_name_and_skips_an_unchanged_commit() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    mode.submit("/rename a\nb", Default::default()).await.expect("rename");
+    assert!(mode.render(80).join("\n").contains(r#"Session name was normalized from "a\nb" to "a b""#));
+    let entries = || session.with_session_manager(|manager| manager.entries().iter().filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("session_info")).count());
+    let before = entries();
+    mode.submit("/rename", Default::default()).await.expect("dialog");
+    mode.handle_input("\r");
+    assert_eq!(entries(), before, "confirming the unchanged name appends no session_info entry");
+}
+
+#[tokio::test]
 async fn native_footer_reflects_session_name_and_selected_model() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
@@ -640,6 +653,15 @@ async fn armin_says_hi_command_renders_the_easter_egg_instead_of_prompting() {
     assert_eq!(mode.submit("/arminsayshi", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
     assert!(mode.render(80).join("\n").contains("ARMIN SAYS HI"));
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "the command never became a provider turn");
+}
+
+#[tokio::test]
+async fn selecting_opencode_kimi_k2_5_shows_the_daxnuts_card() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode_with_provider(None, "opencode", "kimi-k2.5", false);
+    mode.submit("/model-select opencode/kimi-k2.5", Default::default()).await.expect("select");
+    mode.tick(1_000_000.0);
+    assert!(mode.render(80).join("\n").contains("Free Kimi K2.5 via OpenCode Zen"));
 }
 
 #[tokio::test]
@@ -1438,12 +1460,13 @@ async fn mounted_terminal_renders_native_turn_and_restores_terminal_on_stop() {
 async fn extension_actions_expose_theme_catalog_and_live_working_indicator() {
     use maho_ext_api::ExtensionUi;
     use maho_tui::tui::Component;
-    let (mut mode,_directory) = native_mode();
+    let (mut mode,_directory,session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
     let ui = mode.extension_ui.clone();
     assert!(ui.get_all_themes().expect("themes").iter().any(|theme|theme.name=="light"));
     assert!(ui.set_theme(maho_ext_api::ThemeSelection::Name("light".into())).expect("theme result").success);
     mode.render(80);
     assert_eq!(ui.theme().name.as_deref(),Some("light"));
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("theme")).as_deref(), Some("light"), "an extension theme switch is saved as the global setting");
     ui.set_working_indicator(Some(maho_ext_api::WorkingIndicatorOptions { frames:Some(vec!["frame-a".into(),"frame-b".into()]), interval_ms:Some(10) })).expect("indicator");
     mode.render(80);
     mode.handle_event(&maho_agent::types::AgentEvent::AgentStart);
@@ -1953,7 +1976,7 @@ async fn turn_and_session_mutations_route_to_the_mounted_host() {
         fn compact(&self, _instructions: Option<String>) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Ok(()) }) }
         fn navigate_tree(&self, _entry_id: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Ok(maho_core::agent_session::AssistantEditResult::default()) }) }
         fn edit_assistant_message(&self, _entry_id: String, _text: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Ok(maho_core::agent_session::AssistantEditResult::default()) }) }
-        fn reload(&self) -> SessionFuture<'_, Result<bool, String>> { Box::pin(async { Ok(true) }) }
+        fn reload(&self) -> SessionFuture<'_, Result<maho_ext_api::ReloadVetoDecision, String>> { Box::pin(async { Ok(maho_ext_api::ReloadVetoDecision::default()) }) }
         fn execute_bash(&self, _command: String, _exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> { Box::pin(async { Ok(serde_json::json!({})) }) }
         fn set_model(&self, _provider: String, _id: String) -> SessionFuture<'_, Result<(), String>> { let calls = self.calls.clone(); Box::pin(async move { calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("set_model".into()); Ok(()) }) }
         fn set_session_name(&self, _name: String) -> SessionFuture<'_, Result<(), String>> { let calls = self.calls.clone(); Box::pin(async move { calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("set_session_name".into()); Ok(()) }) }
