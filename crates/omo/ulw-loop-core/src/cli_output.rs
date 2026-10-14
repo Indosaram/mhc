@@ -18,8 +18,7 @@ pub const ULW_LOOP_HELP: &str = "Usage:\n\
   mhc ulw-loop add-goal --title \"...\" --objective \"...\" [--json]\n\
   mhc ulw-loop record-review-blockers --goal-id <id> --title \"...\" --objective \"...\" --evidence \"...\" --codex-goal-json <...> [--json]\n\
 \n\
-Every state subcommand needs a session scope: [--session-id <id>] or the session env (OMO_ULW_LOOP_SESSION_ID / CODEX_SESSION_ID / CODEX_THREAD_ID / PI_SESSION_ID); state lives under .omo/ulw-loop/<id>/ and the unscoped root is never used implicitly. status --json exposes the currentAttemptDir; put all quality-gate artifacts under it.\n\
-Every subcommand accepts --help | -h to print its own usage line.";
+Every state subcommand needs a session scope: [--session-id <id>] or the session env (OMO_ULW_LOOP_SESSION_ID / CODEX_SESSION_ID / CODEX_THREAD_ID / PI_SESSION_ID); state lives under .omo/ulw-loop/<id>/ and the unscoped root is never used implicitly. status --json exposes the currentAttemptDir; put all quality-gate artifacts under it.";
 
 pub fn subcommand_help(subcommand: &str) -> String {
     let prefix = format!("mhc ulw-loop {subcommand}");
