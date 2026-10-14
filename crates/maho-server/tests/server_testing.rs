@@ -325,3 +325,37 @@ async fn failed_detach_release_still_publishes_the_detach_and_surfaces_the_error
     tokio::time::timeout(Duration::from_secs(2),serving).await.unwrap().unwrap().unwrap();
     test.server.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn transport_close_before_hello_is_quiet() {
+    let errors:Arc<std::sync::Mutex<Vec<String>>>=Arc::new(std::sync::Mutex::new(Vec::new()));let captured=errors.clone();
+    let test=create_test_server(TestServerOptions {on_error:Some(Arc::new(move |error:ServerError| captured.lock().unwrap().push(error.message))),..Default::default()}).unwrap();
+    let connection=Arc::new(RecordingConnection::new());
+    let (sender,inbound)=tokio::sync::mpsc::channel(1);let (_shutdown,signal)=tokio::sync::watch::channel(false);
+    drop(sender);
+    tokio::time::timeout(Duration::from_secs(2),test.server.clone().serve(connection.clone(),inbound,signal)).await.unwrap().unwrap();
+    assert!(errors.lock().unwrap().is_empty());
+    assert!(connection.frames().is_empty());
+    test.server.close().await.unwrap();
+}
+
+
+#[tokio::test(start_paused=true)]
+async fn stalled_service_attachment_fails_the_handshake_with_a_timeout() {
+    struct Host;
+    impl ServerHost for Host {
+        fn server_services(&self)->&dyn RoutedServerServiceHost {self}
+        fn resolve_session<'a>(&'a self,_:&'a str)->ServerFuture<'a,serde_json::Value> {Box::pin(async {Err(ServerError::session_not_found(None))})}
+        fn open_session(&self,_:serde_json::Value)->ServerFuture<'_,Arc<dyn RoutedSessionHandle>> {Box::pin(async {Err(ServerError::session_not_found(None))})}
+    }
+    impl RoutedServerServiceHost for Host {
+        fn attach_client(&self,_:Arc<dyn RoutedServerPresentation>)->ServerFuture<'_,Arc<dyn RoutedServerServiceAttachment>> {Box::pin(std::future::pending())}
+    }
+    let test=create_test_server(TestServerOptions {host:Some(Arc::new(Host)),handshake_timeout:Some(Duration::from_millis(50)),..Default::default()}).unwrap();
+    let connection=Arc::new(RecordingConnection::new());
+    let (sender,inbound)=tokio::sync::mpsc::channel(1);let (_shutdown,signal)=tokio::sync::watch::channel(false);
+    sender.send(Ok(client_frame(json!({"type":"hello","version":8})))).await.unwrap();
+    test.server.clone().serve(connection.clone(),inbound,signal).await.unwrap();
+    assert!(connection.frames().is_empty(),"hello_error is the close frame, never a sent frame");
+    test.server.close().await.unwrap();
+}
