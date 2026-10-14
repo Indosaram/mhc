@@ -1,5 +1,6 @@
 //! Goal creation and candidate derivation from brief text.
 
+use regex::Regex;
 use serde_json::Value;
 
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan, UlwLoopSuccessCriterion};
@@ -14,28 +15,33 @@ pub struct GoalSeedOptions {
     pub success_criteria: Option<Vec<Value>>,
 }
 
+/// `/^\s*(?:[-*+]\s+|\d+[.)]\s+)/`: a list marker must be followed by whitespace (JS `\d` is ASCII).
+const LIST_MARKER: &str = r"^\s*(?:[-*+]\s+|[0-9]+[.)]\s+)";
+
+fn list_marker() -> Regex {
+    Regex::new(LIST_MARKER).expect("valid list marker regex")
+}
+
+/// JS `string.length`: UTF-16 code units.
+fn utf16_len(value: &str) -> usize {
+    value.encode_utf16().count()
+}
+
+/// JS `string.slice(0, end)` on UTF-16 units, cut on a char boundary (a surrogate pair straddling
+/// `end` is kept whole, as `maho_tui::components::markdown_lexer::slice_utf16` does).
+fn slice_utf16_prefix(value: &str, end: usize) -> &str {
+    let mut units = 0usize;
+    for (byte, character) in value.char_indices() {
+        if units >= end {
+            return &value[..byte];
+        }
+        units += character.len_utf16();
+    }
+    value
+}
+
 fn clean_line(line: &str) -> String {
-    let trimmed = line.trim_start();
-    if let Some(rest) = trimmed.strip_prefix(|c| c == '-' || c == '*' || c == '+') {
-        return rest.trim().to_string();
-    }
-    let mut chars = trimmed.chars().peekable();
-    let mut num_end = 0;
-    while let Some(c) = chars.peek() {
-        if c.is_ascii_digit() {
-            num_end += 1;
-            chars.next();
-        } else {
-            break;
-        }
-    }
-    if num_end > 0 {
-        let after_digits = &trimmed[num_end..];
-        if after_digits.starts_with('.') || after_digits.starts_with(')') {
-            return after_digits[1..].trim().to_string();
-        }
-    }
-    trimmed.trim().to_string()
+    list_marker().replace(line, "").trim().to_string()
 }
 
 fn normalize_objective(value: &str) -> String {
@@ -52,8 +58,8 @@ fn title_from_objective(objective: &str, fallback: &str) -> String {
         .map(|l| l.trim())
         .find(|l| !l.is_empty())
         .unwrap_or(fallback);
-    if first_line.len() > 72 {
-        let truncated = first_line[..69].trim_end();
+    if utf16_len(first_line) > 72 {
+        let truncated = slice_utf16_prefix(first_line, 69).trim_end();
         format!("{truncated}...")
     } else {
         first_line.to_string()
@@ -95,8 +101,8 @@ fn assert_non_empty(value: &str, label: &str) -> Result<String, UlwLoopError> {
 }
 
 fn truncate_objective(objective: &str) -> String {
-    if objective.len() > 80 {
-        format!("{}...", objective[..77].trim_end())
+    if utf16_len(objective) > 80 {
+        format!("{}...", slice_utf16_prefix(objective, 77).trim_end())
     } else {
         objective.to_string()
     }
@@ -156,22 +162,25 @@ pub fn seed_default_success_criteria(
 }
 
 pub fn derive_goal_candidates(brief: &str) -> Vec<(String, String)> {
-    let mut bullet_goals = Vec::new();
-    for line in brief.lines() {
-        let trimmed_start = line.trim_start();
-        let is_bullet = trimmed_start.starts_with(|c| c == '-' || c == '*' || c == '+')
-            || (trimmed_start.chars().next().is_some_and(|c| c.is_ascii_digit())
-                && (trimmed_start.contains('.') || trimmed_start.contains(')')));
-        if is_bullet {
-            let cleaned = normalize_objective(&clean_line(line));
-            if !cleaned.is_empty() && cleaned.len() <= 1200 && !bullet_goals.contains(&cleaned) {
-                bullet_goals.push(cleaned);
-            }
-        }
-    }
+    let marker = list_marker();
+    let lines: Vec<(&str, String)> = brief
+        .lines()
+        .map(|line| (line, normalize_objective(&clean_line(line))))
+        .filter(|(_, cleaned)| !cleaned.is_empty() && utf16_len(cleaned) <= 1200)
+        .collect();
+    let bullet_goals: Vec<String> = lines
+        .iter()
+        .enumerate()
+        .filter(|(index, (original, cleaned))| {
+            marker.is_match(original)
+                && lines.iter().position(|(_, candidate)| candidate == cleaned) == Some(*index)
+        })
+        .map(|(_, (_, cleaned))| cleaned.clone())
+        .collect();
 
     let mut paragraphs = Vec::new();
-    for p in brief.split("\n\n") {
+    let paragraph_break = Regex::new(r"\n\s*\n").expect("valid paragraph regex");
+    for p in paragraph_break.split(brief) {
         let cleaned = normalize_objective(p);
         if !cleaned.is_empty() && !cleaned.starts_with('#') {
             paragraphs.push(cleaned);
