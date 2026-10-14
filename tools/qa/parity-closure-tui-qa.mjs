@@ -77,6 +77,25 @@ try {
 	const switched = await waitFor("footer shows offline-sonnet", (t) => /offline-sonnet(:\w+)?\s*$/.test(footer(t)), 20000).then(() => true, () => false);
 	snap("model-bare-id");
 	record("model-bare-id", switched && !/requires provider/i.test(screen()), {});
+	// modes-interactive-commands-w3-09: /reload shows the bordered reload box, then dismisses it with the result.
+	await type("/reload"); proc.terminal.write("\r");
+	const boxed = await waitFor("reload box", (t) => /Reloading keybindings, extensions, skills, prompts, themes/.test(t), 10000).then(() => true, () => false);
+	if (boxed) snap("reload-box");
+	const reloaded = await waitFor("reload done", (t) => !/Reloading keybindings/.test(t) && /[Rr]eloaded/.test(t), 20000).then(() => true, (error) => { writeFileSync(join(outDir, "reload-timeout.txt"), String(error)); return false; });
+	snap("reload-done");
+	record("reload-box", reloaded, { boxSeen: boxed });
+	// modes-interactive-commands-w4-01: builtin commands are not recorded in Up-arrow history; prompts are.
+	proc.terminal.write("\x1b[A");
+	const recalled = await waitFor("history recall", (t) => /offline-sonnet|\/reload|\/arminsayshi/.test((t.trimEnd().split("\n").slice(-6).join("\n"))), 3000).then((t) => t, () => screen());
+	const editorTail = recalled.trimEnd().split("\n").slice(-6).join("\n");
+	snap("history-up");
+	record("builtin-not-in-history", !/\/reload|\/arminsayshi/.test(editorTail), { editorTail: editorTail.slice(-200) });
+	proc.terminal.write("\x15");
+	// modes-interactive-commands-w2-06: /rename with a control character warns that the name was normalized.
+	await type("/name a\tb"); proc.terminal.write("\r");
+	const renamed = await waitFor("rename", (t) => /normalized|Session name/i.test(t), 8000).then(() => true, () => false);
+	snap("rename");
+	record("rename-feedback", renamed, {});
 } catch (error) {
 	record("driver-error", false, { error: String(error).slice(0, 800) });
 	snap("error");
