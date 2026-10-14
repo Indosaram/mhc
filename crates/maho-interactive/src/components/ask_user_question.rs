@@ -231,9 +231,18 @@ impl AskUserQuestionComponent {
     }
 
     pub fn click_option(&mut self, index: usize, submit_single_question: bool) {
+        if self.select_clicked_option(index, submit_single_question) {
+            self.attempt_submit();
+        }
+    }
+
+    /// senpi `clickOption` up to `this.options.tui?.renderNow()`: apply the click and report whether
+    /// it submits a one-question answer. A caller that owns the renderer paints the selection
+    /// before calling [`Self::attempt_submit`].
+    pub fn select_clicked_option(&mut self, index: usize, submit_single_question: bool) -> bool {
         let question = self.state.active_question().clone();
         let Some(option) = question.options.get(index) else {
-            return;
+            return false;
         };
         let immediate = submit_single_question
             && self.state.request.questions.len() == 1
@@ -245,9 +254,7 @@ impl AskUserQuestionComponent {
         }
         self.emit_progress();
         self.update_all();
-        if immediate {
-            self.attempt_submit();
-        }
+        immediate
     }
 
     pub fn open_own_answer(&mut self, initial_text: Option<&str>) {
