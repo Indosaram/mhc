@@ -136,8 +136,9 @@ pub fn assembled_factories_with_mcp_registry(
 }
 
 /// senpi resource-loader order after the builtins: discovered user/settings/`-e` extensions are
-/// appended last. `--no-extensions` skips discovery and the linked user ports (senpi `noExtensions`
-/// only skips user and settings paths, never builtins).
+/// appended last. `--no-extensions` skips settings discovery and the linked user ports but still
+/// loads the explicit `-e` entries (senpi `noExtensions` keeps `cliEnabledExtensions`, never
+/// skips builtins).
 pub async fn with_user_extensions(
     mut factories: Vec<NativeAsyncExtensionFactory>,
     settings: &mut maho_core::settings_manager::SettingsManager,
@@ -146,11 +147,12 @@ pub async fn with_user_extensions(
     cli_extension_paths: &[String],
     no_extensions: bool,
 ) -> Result<Vec<NativeAsyncExtensionFactory>, String> {
-    if no_extensions {
-        factories.retain(|factory| factory.source_info.source != "user");
-        return Ok(factories);
-    }
-    let discovery = super::user_extensions::resolve_and_discover(settings, cwd, agent_dir, cli_extension_paths).await.map_err(|error| error.to_string())?;
+    if no_extensions { factories.retain(|factory| factory.source_info.source != "user"); }
+    let discovery = if no_extensions {
+        super::user_extensions::resolve_and_discover_cli_only(settings, cwd, agent_dir, cli_extension_paths).await
+    } else {
+        super::user_extensions::resolve_and_discover(settings, cwd, agent_dir, cli_extension_paths).await
+    }.map_err(|error| error.to_string())?;
     if !discovery.errors.is_empty() {
         return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
     }

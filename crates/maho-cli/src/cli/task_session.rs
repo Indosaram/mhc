@@ -73,7 +73,7 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
         session_id: session.clone(), state_dir: ownership.state_dir.clone(), bounds: ownership.team_bounds,
         omo_config: component.engine.config.clone(), agent_names: component.engine.agents.keys().cloned().collect(),
         member_extension: senpi_task::team::runtime_types::TeamMemberExtensionConfig {
-            entry_path: "builtin:task".into(), inherited_extensions: Some(senpi_task::runners::rpc::parent_extensions::parse_extension_entries(&std::env::args().collect::<Vec<_>>())),
+            entry_path: maho_omo_task::engine::MEMBER_EXTENSION_ENTRY.into(), inherited_extensions: Some(senpi_task::runners::rpc::parent_extensions::parse_extension_entries(&std::env::args().collect::<Vec<_>>())),
         },
         append_task_event: None, now: None, new_message_id: None,
     }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?);

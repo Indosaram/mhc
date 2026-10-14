@@ -172,10 +172,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let task_parent = Arc::new(std::sync::OnceLock::new());
     // Builtins with the OAuth provider lanes, filtered by the builtin-extension settings selection.
     let mut base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone(), &settings, &cwd, &agent_dir));
-    if parsed.no_extensions {
-        base_factories.retain(|factory| factory.source_info.source != "user");
-    } else {
-        let discovery = super::user_extensions::resolve_and_discover(&mut settings, &cwd_text, &agent_dir, &parsed.extensions).await.map_err(|error| error.to_string())?;
+    {
+        if parsed.no_extensions { base_factories.retain(|factory| factory.source_info.source != "user"); }
+        let discovery = if parsed.no_extensions {
+            super::user_extensions::resolve_and_discover_cli_only(&mut settings, &cwd_text, &agent_dir, &parsed.extensions).await
+        } else {
+            super::user_extensions::resolve_and_discover(&mut settings, &cwd_text, &agent_dir, &parsed.extensions).await
+        }.map_err(|error| error.to_string())?;
         // senpi main.ts `collectExtensionLoadDiagnostics`: an extension that cannot load is a warning;
         // startup continues without it.
         runtime_diagnostics.extend(discovery.errors.into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("Failed to load extension \"{}\": {}", error.path, error.message))));
