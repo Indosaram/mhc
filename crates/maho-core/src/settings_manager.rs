@@ -523,6 +523,17 @@ fn resolve_ask_user_timeout_minutes(value: Option<&Value>) -> f64 {
     }
 }
 
+/// senpi `parseTimeoutSetting`: an unset value is `None`; a present value that is not a valid
+/// timeout is an error naming the setting.
+fn parse_timeout_setting(value: Option<&Value>, setting_name: &str) -> Result<Option<u64>, String> {
+    let Some(value) = value else { return Ok(None) };
+    if let Some(timeout_ms) = crate::http_dispatcher::parse_http_idle_timeout_ms(value) {
+        return Ok(Some(timeout_ms));
+    }
+    let shown = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+    Err(format!("Invalid {setting_name} setting: {shown}"))
+}
+
 /// senpi `getAskUserSettings` return shape.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AskUserSettings {
@@ -796,6 +807,19 @@ impl SettingsManager {
 
     pub fn get_string(&self, key: &str) -> Option<String> {
         self.settings.get(key).and_then(Value::as_str).map(str::to_owned)
+    }
+
+    /// senpi `getExperimentalSharedHost`: `experimental.sharedHost === true`.
+    pub fn get_experimental_shared_host(&self) -> bool {
+        self.settings.get("experimental").and_then(|experimental| experimental.get("sharedHost"))
+            .and_then(Value::as_bool) == Some(true)
+    }
+
+    /// senpi `getShellPath`: a non-empty `shellPath` goes through `normalizePath` (`~` expansion,
+    /// `file://` URLs, Windows shell paths).
+    pub fn get_shell_path(&self) -> Option<String> {
+        self.get_string("shellPath").map(|shell_path| if shell_path.is_empty() { shell_path }
+            else { crate::paths::normalize_path(&shell_path, &PathInputOptions::default()) })
     }
 
     pub fn get_bool(&self, key: &str) -> Option<bool> {
@@ -1082,10 +1106,10 @@ impl SettingsManager {
         crate::retry_fallback::settings::resolve_abort_server_side_fallback(self.get_value("retry"))
     }
 
-    /// `getHttpIdleTimeoutMs`. senpi throws on an invalid value; the port treats it as unset.
-    pub fn get_http_idle_timeout_ms(&self) -> u64 {
-        self.get_value("httpIdleTimeoutMs").and_then(crate::http_dispatcher::parse_http_idle_timeout_ms)
-            .unwrap_or(crate::http_dispatcher::DEFAULT_HTTP_IDLE_TIMEOUT_MS)
+    /// `getHttpIdleTimeoutMs`: an invalid value is an error (`Invalid httpIdleTimeoutMs setting: <v>`).
+    pub fn get_http_idle_timeout_ms(&self) -> Result<u64, String> {
+        Ok(parse_timeout_setting(self.get_value("httpIdleTimeoutMs"), "httpIdleTimeoutMs")?
+            .unwrap_or(crate::http_dispatcher::DEFAULT_HTTP_IDLE_TIMEOUT_MS))
     }
 
     /// `getRetrySettings`. The `maxRetries` default is derived from the shipped profile so the one
@@ -1176,28 +1200,29 @@ impl SettingsManager {
 
     /// `getAgentStreamIdleTimeoutMs`: `retry.provider.timeoutMs` wins; otherwise `httpIdleTimeoutMs`,
     /// where 0 ("disabled") disables the reader guard as well.
-    pub fn get_agent_stream_idle_timeout_ms(&self) -> Option<u64> {
+    pub fn get_agent_stream_idle_timeout_ms(&self) -> Result<Option<u64>, String> {
         if let Some(provider_timeout_ms) = self.get_provider_retry_settings().timeout_ms {
-            return Some(provider_timeout_ms);
+            return Ok(Some(provider_timeout_ms));
         }
-        let http_idle_timeout_ms = self.get_http_idle_timeout_ms();
-        (http_idle_timeout_ms != 0).then_some(http_idle_timeout_ms)
+        let http_idle_timeout_ms = self.get_http_idle_timeout_ms()?;
+        Ok((http_idle_timeout_ms != 0).then_some(http_idle_timeout_ms))
     }
 
     /// `getAgentStreamStartTimeoutMs`: `retry.provider.streamStartTimeoutMs` (0 disables), else the
     /// 300s default capped by the idle timeout and disabled together with it.
-    pub fn get_agent_stream_start_timeout_ms(&self) -> Option<u64> {
+    pub fn get_agent_stream_start_timeout_ms(&self) -> Result<Option<u64>, String> {
         let explicit = self.get_value("retry").and_then(|retry| retry.get("provider"))
             .and_then(|provider| provider.get("streamStartTimeoutMs")).and_then(settings_ms);
         if let Some(explicit) = explicit {
-            return (explicit > 0).then_some(explicit);
+            return Ok((explicit > 0).then_some(explicit));
         }
-        self.get_agent_stream_idle_timeout_ms().map(|idle| DEFAULT_STREAM_START_TIMEOUT_MS.min(idle))
+        Ok(self.get_agent_stream_idle_timeout_ms()?.map(|idle| DEFAULT_STREAM_START_TIMEOUT_MS.min(idle)))
     }
 
-    /// `getWebSocketConnectTimeoutMs`. senpi throws on an invalid value; the port treats it as unset.
-    pub fn get_websocket_connect_timeout_ms(&self) -> Option<u64> {
-        self.get_value("websocketConnectTimeoutMs").and_then(crate::http_dispatcher::parse_http_idle_timeout_ms)
+    /// `getWebSocketConnectTimeoutMs`: an invalid value is an error
+    /// (`Invalid websocketConnectTimeoutMs setting: <v>`).
+    pub fn get_websocket_connect_timeout_ms(&self) -> Result<Option<u64>, String> {
+        parse_timeout_setting(self.get_value("websocketConnectTimeoutMs"), "websocketConnectTimeoutMs")
     }
 
     /// `getThinkingBudgets`.
@@ -2003,15 +2028,23 @@ mod tests {
     #[test]
     fn agent_stream_timeouts_follow_http_idle_and_provider_overrides() {
         let manager = SettingsManager::in_memory(Settings::new(), false);
-        assert_eq!(manager.get_agent_stream_idle_timeout_ms(), Some(300_000));
-        assert_eq!(manager.get_agent_stream_start_timeout_ms(), Some(300_000));
+        assert_eq!(manager.get_agent_stream_idle_timeout_ms(), Ok(Some(300_000)));
+        assert_eq!(manager.get_agent_stream_start_timeout_ms(), Ok(Some(300_000)));
         let manager = SettingsManager::in_memory(settings("{\"httpIdleTimeoutMs\":60000}"), false);
-        assert_eq!(manager.get_agent_stream_start_timeout_ms(), Some(60_000));
+        assert_eq!(manager.get_agent_stream_start_timeout_ms(), Ok(Some(60_000)));
         let manager = SettingsManager::in_memory(settings("{\"httpIdleTimeoutMs\":\"disabled\"}"), false);
-        assert_eq!((manager.get_agent_stream_idle_timeout_ms(), manager.get_agent_stream_start_timeout_ms()), (None, None));
+        assert_eq!((manager.get_agent_stream_idle_timeout_ms(), manager.get_agent_stream_start_timeout_ms()), (Ok(None), Ok(None)));
         let manager = SettingsManager::in_memory(settings(
             "{\"retry\":{\"provider\":{\"timeoutMs\":1000,\"streamStartTimeoutMs\":0}}}"), false);
-        assert_eq!((manager.get_agent_stream_idle_timeout_ms(), manager.get_agent_stream_start_timeout_ms()), (Some(1_000), None));
+        assert_eq!((manager.get_agent_stream_idle_timeout_ms(), manager.get_agent_stream_start_timeout_ms()), (Ok(Some(1_000)), Ok(None)));
+    }
+
+    #[test]
+    fn invalid_timeout_settings_are_errors_like_senpi() {
+        let manager = SettingsManager::in_memory(settings("{\"httpIdleTimeoutMs\":\"5m\",\"websocketConnectTimeoutMs\":-1}"), false);
+        assert_eq!(manager.get_http_idle_timeout_ms(), Err("Invalid httpIdleTimeoutMs setting: 5m".to_owned()));
+        assert_eq!(manager.get_agent_stream_idle_timeout_ms(), Err("Invalid httpIdleTimeoutMs setting: 5m".to_owned()));
+        assert_eq!(manager.get_websocket_connect_timeout_ms(), Err("Invalid websocketConnectTimeoutMs setting: -1".to_owned()));
     }
 
     #[test]
@@ -2023,7 +2056,7 @@ mod tests {
         assert!(manager.get_abort_server_side_fallback());
         assert_eq!(manager.get_provider_retry_settings(),
             ProviderRequestRetrySettings { timeout_ms: None, max_retries: None, max_retry_delay_ms: 60_000 });
-        assert_eq!(manager.get_websocket_connect_timeout_ms(), None);
+        assert_eq!(manager.get_websocket_connect_timeout_ms(), Ok(None));
         assert_eq!(manager.get_thinking_budgets(), None);
     }
 

@@ -460,6 +460,10 @@ struct AgentSessionState {
     custom_system_prompt_source: Option<String>,
     append_system_prompt_sources: Vec<String>,
     context_files_enabled: bool,
+    /// senpi `DefaultResourceLoader.agentsFiles` / `systemPrompt` / `appendSystemPrompt`: resolved
+    /// once per resource load (or source change) and read by every prompt rebuild until `/reload`.
+    loaded_context_files: Option<Vec<crate::system_prompt::ContextFile>>,
+    resolved_system_prompt: Option<(Option<String>, Vec<String>)>,
     system_prompt_override: Option<String>,
     wake_sources: WakeSourceTracker,
     shown_high_reasoning_warning_keys: BTreeSet<String>,
@@ -1234,12 +1238,11 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             },
             disable_model_invocation: skill.disable_model_invocation,
         }).collect();
-        let (custom, append) = session.system_prompt_sources();
-        let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
+        let (custom_prompt, append) = session.resolved_system_prompt();
         let tools = session.get_active_tool_names();
         let (tool_snippets, prompt_guidelines) = session.tool_prompt_contributions(&tools);
         maho_ext_api::BuildSystemPromptOptions { cwd: session.cwd().into(), tools, tool_snippets, prompt_guidelines, skills,
-            custom_prompt: crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
+            custom_prompt,
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: session.project_context_files().into_iter()
                 .map(|file| maho_ext_api::ContextFile { path: file.path, content: file.content }).collect(),
@@ -1729,6 +1732,8 @@ impl AgentSession {
             custom_system_prompt_source: None,
             append_system_prompt_sources: Vec::new(),
             context_files_enabled: true,
+            loaded_context_files: None,
+            resolved_system_prompt: None,
             system_prompt_override: None,
             wake_sources: WakeSourceTracker::default(),
             shown_high_reasoning_warning_keys: BTreeSet::new(),
@@ -2082,9 +2087,13 @@ impl AgentSession {
             }
         }
         if let Some(boundary) = &end_boundary {
+            // senpi mutates the live agent_end event on a late User join (agent-abort-provenance.ts
+            // `join`), so subscribers see the settled owner, not the snapshot taken at begin.
+            let settled = self.state().abort_provenance.settling_agent_end_event().cloned();
+            let (aborted, abort_source) = settled.map_or((boundary.aborted, boundary.abort_source), |event| (event.aborted, event.abort_source));
             self.emit(AgentSessionEvent::AgentEnd {
-                messages: boundary.messages.clone(), aborted: boundary.aborted,
-                will_retry: boundary.will_retry, abort_source: boundary.abort_source,
+                messages: boundary.messages.clone(), aborted,
+                will_retry: boundary.will_retry, abort_source,
             });
         } else {
             self.emit(AgentSessionEvent::Agent(event.clone()));
@@ -2981,6 +2990,9 @@ impl AgentSession {
     }
 
     pub fn retry_attempt(&self) -> u32 { self.state().retry_attempt }
+
+    /// senpi `currentAbortSource`: the abort owner for the current turn boundary, used by renderers.
+    pub fn current_abort_source(&self) -> Option<maho_ext_api::AbortSource> { self.state().abort_provenance.current_source() }
 
     pub fn abort_retry(&self) {
         if let Some(controller) = self.state().retry_abort_controller.as_ref() { controller.abort(None); }
@@ -4347,6 +4359,8 @@ impl AgentSession {
     /// context reads the new cwd.
     fn rebind_cwd_services(&self) {
         let cwd = self.cwd();
+        // senpi `createRuntime` builds a fresh resource loader for the new cwd.
+        { let mut state = self.state(); state.loaded_context_files = None; state.resolved_system_prompt = None; }
         self.with_settings_manager_mut(|manager| manager.rebind_cwd(&cwd));
         let weak = self.weak_accessor();
         let context: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
@@ -4684,6 +4698,11 @@ impl AgentSession {
         let inputs = self.resource_loader_inputs();
         let settings = self.with_settings_manager(crate::resource_loader::snapshot_settings);
         let loaded = crate::resource_loader::load_resources(&self.cwd(), &self.agent_dir(), settings, &inputs).await?;
+        {
+            let mut state = self.state();
+            state.loaded_context_files = None;
+            state.resolved_system_prompt = None;
+        }
         self.set_prompt_resources_with_diagnostics(loaded.prompts, loaded.skills.skills, loaded.skills.diagnostics);
         self.state().prompt_diagnostics = loaded.prompt_diagnostics;
         self.set_hook_source_paths(loaded.hook_resources, loaded.pre_session_hook_paths);
@@ -4822,7 +4841,7 @@ impl AgentSession {
         let key = id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         self.state().bash_abort_signals.insert(key.clone(), signal.clone());
         let prefix = self.with_settings_manager(|manager| manager.get_string("shellCommandPrefix"));
-        let shell = self.with_settings_manager(|manager| manager.get_string("shellPath"));
+        let shell = self.with_settings_manager(|manager| manager.get_shell_path());
         let local = maho_tools::bash::create_local_bash_operations(shell.as_deref());
         let resolved = prefix.map_or_else(|| command.to_owned(), |prefix| format!("{prefix}\n{command}"));
         let session = self.clone();
@@ -4875,9 +4894,7 @@ impl AgentSession {
         let active = self.get_active_tool_names();
         let (snippets, guidelines) = self.tool_prompt_contributions(&active);
         let snippets = snippets.into_iter().collect();
-        let (custom, append) = self.system_prompt_sources();
-        let custom_prompt = crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt");
-        let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
+        let (custom_prompt, append) = self.resolved_system_prompt();
         let base_prompt = custom_prompt.unwrap_or_else(|| crate::dynamic_prompt::build::build_dynamic_system_prompt(
             &crate::dynamic_prompt::build::BuildDynamicSystemPromptOptions {
                 cwd: self.cwd(), selected_tools: active, tool_snippets: snippets, prompt_guidelines: guidelines,
@@ -4930,10 +4947,9 @@ impl AgentSession {
     fn extension_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions {
         let tools = self.get_active_tool_names();
         let (tool_snippets, prompt_guidelines) = self.tool_prompt_contributions(&tools);
-        let (custom, append) = self.system_prompt_sources();
-        let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
+        let (custom_prompt, append) = self.resolved_system_prompt();
         maho_ext_api::BuildSystemPromptOptions {
-            custom_prompt: crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
+            custom_prompt,
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: self.project_context_files().into_iter()
                 .map(|file| maho_ext_api::ContextFile { path: file.path, content: file.content }).collect(),
@@ -5593,21 +5609,35 @@ impl AgentSession {
         let mut state = self.state();
         state.custom_system_prompt_source = custom;
         state.append_system_prompt_sources = append;
+        state.resolved_system_prompt = None;
         drop(state);
         self.rebuild_system_prompt();
     }
 
     pub fn set_context_files_enabled(&self, enabled: bool) {
-        self.state().context_files_enabled = enabled;
+        // senpi's `noContextFiles` is a loader option: changing it re-reads the context files.
+        { let mut state = self.state(); state.context_files_enabled = enabled; state.loaded_context_files = None; }
         self.rebuild_system_prompt();
     }
 
+    /// senpi `resourceLoader.getAgentsFiles()`: the context files loaded by the last resource load.
     pub fn project_context_files(&self) -> Vec<crate::system_prompt::ContextFile> {
-        if self.state().context_files_enabled {
-            crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())
-        } else {
-            Vec::new()
-        }
+        if !self.state().context_files_enabled { return Vec::new(); }
+        if let Some(files) = self.state().loaded_context_files.clone() { return files; }
+        let files = crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir());
+        self.state().loaded_context_files = Some(files.clone());
+        files
+    }
+
+    /// senpi `resourceLoader.getSystemPrompt()` / `getAppendSystemPrompt()`: the `--system-prompt`
+    /// and `--append-system-prompt` inputs resolved once per resource load.
+    pub fn resolved_system_prompt(&self) -> (Option<String>, Vec<String>) {
+        if let Some(resolved) = self.state().resolved_system_prompt.clone() { return resolved; }
+        let (custom, append) = self.system_prompt_sources();
+        let resolved = (crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
+            append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect());
+        self.state().resolved_system_prompt = Some(resolved.clone());
+        resolved
     }
 
     pub fn system_prompt_sources(&self) -> (Option<String>, Vec<String>) {
@@ -6227,7 +6257,9 @@ impl AgentSession {
                 };
                 let session = AgentSession { inner };
                 let mut options = options.unwrap_or_default();
-                session.apply_stream_request_settings(&model, &mut options.simple);
+                if let Err(error) = session.apply_stream_request_settings(&model, &mut options.simple) {
+                    output.fail(maho_ai::utils::event_stream::StreamError::new(error)); return;
+                }
                 let header_session = Arc::downgrade(&session.inner);
                 let header_model = model.clone();
                 let header_session_id = options.simple.stream.session_id.clone();
@@ -6313,10 +6345,12 @@ impl AgentSession {
     /// The request-option half of senpi `sdk.ts` `streamFn`. Caller-pinned values win; otherwise
     /// the live settings fill timeout, websocket connect timeout, the provider retry budget (a
     /// provider-declared profile owns it), the retry delay cap and the request service tier.
-    fn apply_stream_request_settings(&self, model: &Model, options: &mut maho_ai::types::SimpleStreamOptions) {
+    /// senpi throws `Invalid <name> setting` from the timeout getters, failing the request.
+    fn apply_stream_request_settings(&self, model: &Model, options: &mut maho_ai::types::SimpleStreamOptions) -> Result<(), String> {
         let (provider_retry, http_idle_timeout_ms, websocket_connect_timeout_ms) = self.with_settings_manager(|manager| (
             manager.get_provider_retry_settings(), manager.get_http_idle_timeout_ms(), manager.get_websocket_connect_timeout_ms(),
         ));
+        let http_idle_timeout_ms = http_idle_timeout_ms?;
         // SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout"; max int32 disables it.
         let effective_timeout_ms = if http_idle_timeout_ms == 0 { i32::MAX as u64 } else { http_idle_timeout_ms };
         let declared_policy = self.model_runtime().get_provider(&model.provider)
@@ -6330,9 +6364,13 @@ impl AgentSession {
         request.timeout_ms = request.timeout_ms.or(provider_retry.timeout_ms).or(Some(effective_timeout_ms));
         request.max_retries = request.max_retries.or(profile_max_retries);
         request.max_retry_delay_ms = request.max_retry_delay_ms.or(Some(provider_retry.max_retry_delay_ms));
-        options.stream.websocket_connect_timeout_ms = options.stream.websocket_connect_timeout_ms.or(websocket_connect_timeout_ms);
+        options.stream.websocket_connect_timeout_ms = match options.stream.websocket_connect_timeout_ms {
+            Some(pinned) => Some(pinned),
+            None => websocket_connect_timeout_ms?,
+        };
         if options.stream.session_id.is_none() { options.stream.session_id = Some(self.session_id()); }
         options.service_tier = options.service_tier.or_else(|| self.resolve_request_service_tier(model));
+        Ok(())
     }
 
     /// senpi `sdk.ts` `resolveRequestServiceTier`: the session's effective tier for the active
@@ -11954,7 +11992,7 @@ mod tests {
             ("retry".into(), serde_json::json!({"provider": {"maxRetries": 4, "maxRetryDelayMs": 9_000}})),
         ])));
         let mut options = maho_ai::types::SimpleStreamOptions::default();
-        session.apply_stream_request_settings(&model, &mut options);
+        session.apply_stream_request_settings(&model, &mut options).expect("valid settings");
         assert_eq!(options.stream.request.timeout_ms, Some(i32::MAX as u64));
         assert_eq!(options.stream.request.max_retries, Some(4));
         assert_eq!(options.stream.request.max_retry_delay_ms, Some(9_000));
@@ -11962,7 +12000,7 @@ mod tests {
         assert_eq!(options.service_tier, Some(ServiceTierPreference::Priority));
         let mut pinned = maho_ai::types::SimpleStreamOptions::default();
         pinned.stream.request.timeout_ms = Some(5);
-        session.apply_stream_request_settings(&model, &mut pinned);
+        session.apply_stream_request_settings(&model, &mut pinned).expect("valid settings");
         assert_eq!(pinned.stream.request.timeout_ms, Some(5));
     }
 
@@ -11979,7 +12017,7 @@ mod tests {
             ..Default::default()
         }).expect("provider");
         let mut options = maho_ai::types::SimpleStreamOptions::default();
-        session.apply_stream_request_settings(&test_model(), &mut options);
+        session.apply_stream_request_settings(&test_model(), &mut options).expect("valid settings");
         assert_eq!(options.stream.request.max_retries, Some(0));
     }
 
