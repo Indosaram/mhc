@@ -58,7 +58,8 @@ impl Delivery {
         let worker_pending = Arc::clone(&pending);
         let thread = std::thread::spawn(move || {
             let mut endpoints = EndpointCache::default();
-            let client = match reqwest::blocking::Client::builder().timeout(Duration::from_millis(1000)).build() {
+            // Node `fetch` never routes through HTTP_PROXY; the loopback hook must not either.
+            let client = match reqwest::blocking::Client::builder().no_proxy().timeout(Duration::from_millis(1000)).build() {
                 Ok(client) => client,
                 Err(error) => { maho_ext_api::diagnostic(&format!("Orca hook client: {error}")); return; }
             };
