@@ -4,7 +4,16 @@ use super::context::{TerminalToolResult,text_result,error_result,resolve_termina
 
 pub const DEFAULT_MONITOR_TIMEOUT_MS:u64=300_000;
 pub const MAX_MONITOR_TIMEOUT_MS:u64=3_600_000;
-pub fn monitor_schema()->Value {json!({"type":"object","properties":{"action":{"type":"string","enum":["create","rearm"]},"description":{"type":"string","minLength":1,"maxLength":200},"command":{"type":"string"},"path":{"type":"string","minLength":1},"event":{"type":"string","enum":["create","modify"]},"filter":{"type":"string"},"timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS},"persistent":{"type":"boolean"},"bash_id":{"type":"string"}}})}
+pub fn monitor_schema()->Value {json!({"type":"object","properties":{
+    "action":{"type":"string","enum":["create","rearm"],"description":"Defaults to create. rearm resumes a monitor paused by the wake budget."},
+    "description":{"type":"string","minLength":1,"maxLength":200,"description":"Create (required): specific label shown with every event, e.g. 'errors in deploy.log'."},
+    "command":{"type":"string","description":"Create, command branch (XOR path): shell command to run and watch in a PTY-backed monitor session."},
+    "path":{"type":"string","minLength":1,"description":"Create, file branch (XOR command): one regular file to watch natively, whose parent directory must already exist; takes no filter."},
+    "event":{"type":"string","enum":["create","modify"],"description":"File branch only: which file event fires the watch (defaults to create)."},
+    "filter":{"type":"string","description":"Only PTY output lines matching this regex become monitor events."},
+    "timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS,"description":"Watcher deadline in milliseconds (default 300000; ignored when persistent)."},
+    "persistent":{"type":"boolean","description":"Standing watch: no deadline, and it survives a session restart (command re-run once, file rescanned and any detached change reported). Expires 7 days after creation; max 5 per session; stop one with kill_bash."},
+    "bash_id":{"type":"string","description":"Rearm: paused monitor id (mon_ or bash_id) to resume; omit for all paused."}}})}
 pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,approved_parent:Option<&std::path::Path>)->TerminalToolResult {
     execute_configured_monitor(manager,registry,input,cwd,approved_parent,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS)
 }

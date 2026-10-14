@@ -11,11 +11,11 @@ pub trait ReadOperations: Send + Sync {
 }
 pub struct LocalReadOperations;
 impl ReadOperations for LocalReadOperations {
-    fn read_file<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<u8>> { Box::pin(async move { Ok(tokio::fs::read(path).await?) }) }
-    fn access<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()> { Box::pin(async move { tokio::fs::File::open(path).await?; Ok(()) }) }
+    fn read_file<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<u8>> { Box::pin(async move { Ok(tokio::fs::read(path).await.map_err(|e| node_fs_error(e, "open", path))?) }) }
+    fn access<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()> { Box::pin(async move { tokio::fs::File::open(path).await.map_err(|e| node_fs_error(e, "access", path))?; Ok(()) }) }
     fn detect_image_mime_type<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Option<String>> { Box::pin(async move {
         use tokio::io::AsyncReadExt;
-        let mut file = tokio::fs::File::open(path).await?; let mut bytes = vec![0;4100];
+        let mut file = tokio::fs::File::open(path).await.map_err(|e| node_fs_error(e, "open", path))?; let mut bytes = vec![0;4100];
         let count = file.read(&mut bytes).await?; bytes.truncate(count);
         Ok(detect_supported_image_mime_type(&bytes).map(str::to_owned))
     }) }
@@ -161,7 +161,7 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
             tokio::select! { result = work => result, () = call.signal.cancelled() => Err(ToolError::Aborted) }
         })
     });
-    let mut tool = ToolDefinition::new("read", "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.", json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"number"},"limit":{"type":"number"}},"required":["path"]}), execute);
+    let mut tool = ToolDefinition::new("read", "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.", json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to read (relative or absolute)"},"offset":{"type":"number","description":"Line number to start reading from (1-indexed)"},"limit":{"type":"number","description":"Maximum number of lines to read"}},"required":["path"]}), execute);
     tool.constrained_sampling = Some(maho_ai::types::ConstrainedSampling::Config(maho_ai::types::ConstrainedSamplingConfig::JsonSchema { strict: maho_ai::types::JsonSchemaStrictness::Prefer }));
     tool.prompt_snippet = Some("Read file contents".into()); tool.prompt_guidelines = Some(vec!["Use read to examine files instead of cat or sed.".into()]); tool
 }

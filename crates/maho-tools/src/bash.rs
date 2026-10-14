@@ -231,7 +231,7 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
             }
         })
     });
-    let mut tool = ToolDefinition::new(&config.name, &format!("Execute a {} command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.", config.shell_name), json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"}},"required":["command"]}), execute);
+    let mut tool = ToolDefinition::new(&config.name, &format!("Execute a {} command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.", config.shell_name), json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"}},"required":["command"]}), execute);
     tool.constrained_sampling = Some(maho_ai::types::ConstrainedSampling::Config(maho_ai::types::ConstrainedSamplingConfig::JsonSchema { strict: maho_ai::types::JsonSchemaStrictness::Prefer }));
     if expose_environment { tool.prompt_guidelines = Some(vec!["You can inspect PI_* environment variables for current model and session details.".into()]); }
     tool.prompt_snippet = Some(config.prompt_snippet); tool.exposure = Some(ToolExposure::Eval); tool
