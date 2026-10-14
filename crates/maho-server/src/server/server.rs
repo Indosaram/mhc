@@ -579,37 +579,46 @@ impl RoutedServerPresentation for Presentation {
                     }
                 }) as ServerFuture<'static, ()>
             }));
-            if let Some(previous) = current.take() {
+            // Pinned `attachClientNow` tracks the new attachment before publishing it, so a
+            // failed release or publish leaves the lease owned and released at disconnect.
+            let target = attachment.target.clone();
+            if let Some(previous) = current.replace(attachment) {
                 previous.release().await?;
             }
             send(
                 &self.connection,
-                &json!({"type":"attachment","attachment":attachment.target}),
+                &json!({"type":"attachment","attachment":target}),
                 self.max,
             )
-            .await?;
-            *current = Some(attachment);
-            Ok(())
+            .await
         })
     }
     fn detach_session(&self) -> ServerFuture<'_, ()> {
         Box::pin(async move {
             let mut current = self.attachment.lock().await;
-            if let Some(previous) = current.take() {
-                previous.release().await?;
+            // Pinned `releaseAttachment`: `attachment:null` is published in `finally`, even
+            // when the lease release fails, and the release error is then surfaced.
+            let Some(previous) = current.take() else {
+                return Ok(());
+            };
+            let released = previous.release().await;
+            let published = if self.connection.closed() {
+                Ok(())
+            } else {
                 send(
                     &self.connection,
                     &json!({"type":"attachment","attachment":null}),
                     self.max,
                 )
-                .await?;
-            }
-            Ok(())
+                .await
+            };
+            released.and(published)
         })
     }
     fn prepare_session_removal<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()> {
         Box::pin(async move {
-            self.detach_session().await?;
+            // Pinned `removeSession` releases only that session's attachments; the router
+            // publishes `attachment:null` to each owning client it detaches.
             self.router.remove(session_id).await
         })
     }
