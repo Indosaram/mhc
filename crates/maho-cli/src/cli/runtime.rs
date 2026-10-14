@@ -179,8 +179,9 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         // senpi main.ts `collectExtensionLoadDiagnostics`: an extension that cannot load is a warning;
         // startup continues without it.
         runtime_diagnostics.extend(discovery.errors.into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("Failed to load extension \"{}\": {}", error.path, error.message))));
-        // A discovered port replaces its linked default so it registers once, after the builtins.
-        base_factories.retain(|factory| !discovery.factories.iter().any(|discovered| discovered.path == factory.path));
+        // Discovery applies the settings overrides, package filters and project scope, so it decides
+        // which linked user ports load; each registers once, after the builtins.
+        base_factories.retain(|factory| !factory.path.starts_with("<user:"));
         base_factories.extend(discovery.factories);
     }
     let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
