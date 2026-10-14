@@ -14,6 +14,7 @@ use super::extension_registry;
 pub enum UserExtensionErrorKind {
     UnsupportedScript,
     UnknownNativeExtension,
+    MissingPath,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,10 +131,12 @@ pub async fn resolve_and_discover(
     cwd: &str,
     agent_dir: &str,
     cli_extension_paths: &[String],
+    no_extensions: bool,
 ) -> Result<UserExtensionDiscovery, PackageManagerError> {
     let selection = super::default_extensions::BuiltinExtensionSelection::from_settings(settings_manager);
     let manager = DefaultPackageManager::new(PackageManagerOptions { cwd, agent_dir, settings_manager });
-    let mut paths = manager.resolve(None).await?;
+    // senpi resource-loader.ts:701-703: `noExtensions` loads only the CLI extension paths.
+    let mut paths = if no_extensions { ResolvedPaths::default() } else { manager.resolve(None).await? };
     if !cli_extension_paths.is_empty() {
         let cli_paths = manager.resolve_extension_sources(
             cli_extension_paths,
@@ -145,7 +148,24 @@ pub async fn resolve_and_discover(
         }));
     }
     shadow_vendored_builtin_extensions(&mut paths.extensions, &selection);
-    Ok(discover(&paths))
+    let mut discovery = discover(&paths);
+    discovery.errors.extend(missing_extension_path_errors(cwd, cli_extension_paths));
+    Ok(discovery)
+}
+
+/// senpi resource-loader.ts:708-715: every local `-e` path that does not exist is reported as an
+/// extension load error, `Extension path does not exist: <resolved>`.
+pub fn missing_extension_path_errors(cwd: &str, cli_extension_paths: &[String]) -> Vec<UserExtensionError> {
+    cli_extension_paths.iter()
+        .filter(|path| maho_core::paths::is_local_path(path))
+        .map(|path| maho_core::paths::resolve_path(path, cwd, &maho_core::paths::PathInputOptions { trim: true, ..Default::default() }))
+        .filter(|resolved| !Path::new(resolved).exists())
+        .map(|resolved| UserExtensionError {
+            message: format!("Extension path does not exist: {resolved}"),
+            path: resolved,
+            kind: UserExtensionErrorKind::MissingPath,
+        })
+        .collect()
 }
 
 #[cfg(test)]

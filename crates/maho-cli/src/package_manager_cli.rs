@@ -132,21 +132,46 @@ async fn command_settings(trust_override: Option<bool>, saved_only: bool, contex
             maho_core::project_trust::AppMode::Interactive
         } else { maho_core::project_trust::AppMode::Print };
         let startup_ui = (global.get_string("theme"), global.get_bool("showHardwareCursor").unwrap_or(false), global.get_bool("clearOnShrink").unwrap_or(false));
+        let select_ui = startup_ui.clone();
+        let selector: std::sync::Arc<crate::cli::project_trust::Selector> = std::sync::Arc::new(move |title: &str, options: &[String]| {
+            match crate::cli::startup_ui::show_startup_selector(select_ui.0.as_deref(), select_ui.1, select_ui.2, title, options) {
+                Ok(selected) => selected,
+                Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+            }
+        });
+        // senpi package-manager-cli.ts:788-818: the pre-trust extensions decide first; their load
+        // and handler failures are reported as `projectTrustWarnings`.
+        let mut project_trust_warnings = Vec::new();
+        let extension_trust = if trust_override.is_none() && maho_core::trust_manager::has_trust_requiring_project_resources(&cwd, None) {
+            let ui = std::sync::Arc::new(crate::cli::project_trust::ProjectTrustUi {
+                mode, has_ui: mode == maho_core::project_trust::AppMode::Interactive, select: selector.clone(),
+                input: std::sync::Arc::new(move |title: &str, placeholder: Option<&str>| {
+                    match crate::cli::startup_ui::show_startup_input(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, placeholder) {
+                        Ok(value) => value,
+                        Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+                    }
+                }),
+            });
+            let resolved = crate::cli::project_trust::resolve_extension_project_trust(&cwd, &agent_dir, &[], false, mode, ui).await;
+            project_trust_warnings.extend(resolved.load_warnings);
+            project_trust_warnings.extend(resolved.trust_warnings);
+            resolved.result
+        } else { None };
+        let emit = move |_: &str| -> Result<Option<maho_ext_api::ProjectTrustEventResult>, maho_ext_api::ExtensionFailure> { Ok(extension_trust.clone()) };
+        let context_selector = selector.clone();
         let context = crate::cli::project_trust::CliProjectTrustContext {
             cwd: cwd.clone(), mode,
             ui_available: mode == maho_core::project_trust::AppMode::Interactive,
-            selector: Box::new(move |title: &str, options: &[String]| {
-                match crate::cli::startup_ui::show_startup_selector(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, options) {
-                    Ok(selected) => selected,
-                    Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
-                }
-            }),
+            selector: Box::new(move |title: &str, options: &[String]| context_selector(title, options)),
         };
-        maho_core::project_trust::resolve_project_trusted(maho_core::project_trust::ResolveProjectTrustedOptions {
+        let trusted = maho_core::project_trust::resolve_project_trusted(maho_core::project_trust::ResolveProjectTrustedOptions {
             cwd: &cwd, trust_store: &store, trust_override,
             default_project_trust: global.get_string("defaultProjectTrust").as_deref().and_then(maho_core::project_trust::DefaultProjectTrust::parse),
-            emit_project_trust: None, project_trust_context: &context, on_extension_error: None,
-        }).await
+            emit_project_trust: Some(&emit), project_trust_context: &context, on_extension_error: None,
+        }).await;
+        // senpi `reportProjectTrustWarnings`.
+        for warning in project_trust_warnings { eprintln!("\x1b[33mWarning: {warning}\x1b[39m"); }
+        trusted
     };
     let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &home, trusted);
     // senpi package-manager-cli.ts `reportSettingsErrors`: settings errors are warnings, labelled with
