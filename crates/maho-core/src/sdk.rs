@@ -159,22 +159,41 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let mut manager = options.session_manager.take().unwrap_or_else(|| SessionManager::create(&cwd, None, None));
     crate::session_cwd::assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
     let context = manager.current_context();
-    let model = options.model.take().or_else(|| context.model.as_ref().and_then(|(provider, id)| registry.find(provider, id)))
-        .or_else(|| settings.get_string("defaultProvider").zip(settings.get_string("defaultModel")).and_then(|(provider,id)| registry.find(&provider,&id)))
-        .or_else(|| registry.get_available().into_iter().next()).ok_or("No model available")?;
+    let mut model_fallback_message: Option<String> = None;
+    let mut model = options.model.take();
+    // senpi sdk.ts:284-299: a resumed session's model is restored only when its provider has
+    // configured auth; otherwise startup warns and falls back.
+    if model.is_none() && !context.messages.is_empty() && let Some((provider, id)) = context.model.as_ref() {
+        model = registry.find(provider, id).filter(|restored| registry.has_configured_auth(restored));
+        if model.is_none() {
+            model_fallback_message = Some(format!("Could not restore model {provider}/{id}"));
+        }
+    }
+    if model.is_none() {
+        model = settings.get_string("defaultProvider").zip(settings.get_string("defaultModel")).and_then(|(provider,id)| registry.find(&provider,&id))
+            .or_else(|| registry.get_available().into_iter().next());
+        // senpi sdk.ts:322-326: no model leaves a model-less session with the login guidance.
+        match &model {
+            None => model_fallback_message = Some(crate::auth_guidance::format_no_models_available_message()),
+            Some(fallback) => if let Some(message) = model_fallback_message.as_mut() {
+                message.push_str(&format!(". Using {}/{}", fallback.provider, fallback.id));
+            },
+        }
+    }
     let has_thinking_entry = manager.current_branch().iter().any(|entry| entry["type"] == "thinking_level_change");
-    let configured_thinking = settings.get_value("modelThinkingLevels")
+    let configured_thinking = model.as_ref().and_then(|model| settings.get_value("modelThinkingLevels")
         .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id))).and_then(serde_json::Value::as_str)
-        .and_then(ModelThinkingLevel::parse)
+        .and_then(ModelThinkingLevel::parse))
         .or_else(|| settings.get_string("defaultThinkingLevel").as_deref().and_then(ModelThinkingLevel::parse));
     let requested_thinking = options.thinking_level.map(ModelThinkingLevel::from)
         .or_else(|| options.thinking_selection.as_ref().map(|selection| selection.level)).or_else(||
         has_thinking_entry.then(|| ModelThinkingLevel::parse(&context.thinking_level)).flatten()).or(configured_thinking)
         .or(Some(ModelThinkingLevel::Medium));
+    // senpi sdk.ts:360-365: without a model the level is "off" (`clamp_thinking_level_to_model(_, None)`).
     let thinking_level = match requested_thinking {
         Some(ModelThinkingLevel::Off) => ModelThinkingLevel::Off,
-        Some(level) => clamp_thinking_level_to_model(serde_json::from_value(serde_json::Value::from(level.as_str())).ok(), Some(&model)),
-        None => clamp_thinking_level_to_model(None, Some(&model)),
+        Some(level) => clamp_thinking_level_to_model(serde_json::from_value(serde_json::Value::from(level.as_str())).ok(), model.as_ref()),
+        None => clamp_thinking_level_to_model(None, model.as_ref()),
     };
     let mut thinking_selection = options.thinking_selection.take().or_else(|| {
         options.thinking_level.map(|_| ThinkingSelection { level: thinking_level,
@@ -221,7 +240,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let active_tools = selected.iter().filter_map(|name| base_tools.get(name).cloned()).collect();
     let runtime_for_stream = runtime.clone();
     let runtime_for_auth = runtime.clone();
-    if context.messages.is_empty() {
+    if context.messages.is_empty() && let Some(model) = &model {
         manager.append_model_change(&model.provider, &model.id, None, None);
     }
     if context.messages.is_empty() || !has_thinking_entry {
@@ -233,7 +252,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
     let provider_retry_settings = settings.get_provider_retry_settings();
     let agent = maho_agent::agent::Agent::new(maho_agent::agent::AgentOptions {
-        initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), thinking_level: Some(thinking_level),
+        initial_state: Some(maho_agent::agent::PartialAgentState { model, thinking_level: Some(thinking_level),
             thinking_selection, messages: Some(messages), tools: Some(active_tools), ..Default::default() }),
         stream_fn: Some(Arc::new(move |model, context, options| runtime_for_stream.stream_simple(model, context, options.map(|options| options.simple)))),
         get_api_key: Some(Arc::new(move |provider| { let runtime = runtime_for_auth.clone(); Box::pin(async move {
@@ -366,7 +385,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
              ))
          }
     }));
-    Ok(CreateAgentSessionResult { session, model_fallback_message: None })
+    Ok(CreateAgentSessionResult { session, model_fallback_message })
 }
 
 /// The default global config directory.

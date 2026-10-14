@@ -278,7 +278,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             no_prompt_templates: parsed.no_prompt_templates, ..Default::default()
         },
         ..Default::default()
-    }).await.map_err(|error| if mode != AppMode::Interactive && error == "No model available" { maho_core::auth_guidance::format_no_models_available_message() } else { error })?;
+    }).await?;
     maho_core::timings::time("createAgentSession", maho_core::timings::TimingLabel::Main);
     // senpi main.ts:1292-1295: print/json/rpc without a usable model exits 1 with the login help.
     let created_model = created.session.model();
