@@ -41,10 +41,10 @@ pub fn select_session(
     let mut terminal = ProcessTerminal::default();
     let mut screen = create_interactive_tui(InteractiveTuiOptions {
         tui_mode: TuiMode::Regular,
-        show_hardware_cursor: settings.get_bool("showHardwareCursor").unwrap_or(false),
+        show_hardware_cursor: settings.get_show_hardware_cursor(),
         bottom_shortcut: String::new(),
     }, theme.clone());
-    screen.base_mut().set_clear_on_shrink(settings.get_bool("clearOnShrink").unwrap_or(false));
+    screen.base_mut().set_clear_on_shrink(settings.get_clear_on_shrink());
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = input.clone();
     screen.before_terminal_start(&mut terminal, false, false);

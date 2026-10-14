@@ -878,12 +878,9 @@ impl SessionExtensionActions {
         self.0.upgrade().map(|inner| AgentSession { inner }).ok_or_else(|| maho_ext_api::ExtensionFailure::new("Session disposed"))
     }
 
-    fn update_retry(&self, update: impl FnOnce(&mut Map<String, Value>)) -> Result<(), maho_ext_api::ExtensionFailure> {
+    fn update_retry(&self, update: impl FnOnce(&mut crate::settings_manager::SettingsManager) -> Result<(), String>) -> Result<(), maho_ext_api::ExtensionFailure> {
         let session = self.session()?;
-        let mut retry = session.with_settings_manager(|manager| manager.get_value("retry").and_then(Value::as_object).cloned()).unwrap_or_default();
-        update(&mut retry);
-        session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
-            &Map::from_iter([("retry".to_owned(), Value::Object(retry))]))).map_err(maho_ext_api::ExtensionFailure::new)
+        session.with_settings_manager_mut(update).map_err(maho_ext_api::ExtensionFailure::new)
     }
 }
 
@@ -896,21 +893,18 @@ impl maho_ext_api::ExtensionSessionSettings for SessionExtensionActions {
                 crate::retry_fallback::settings::FallbackRevertPolicy::CooldownExpiry => maho_ext_api::FallbackRevertPolicy::CooldownExpiry } }
     }
     fn set_fallback_chain<'a>(&'a self, key: &'a str, entries: &'a [String]) -> maho_ext_api::ExtensionFuture<'a, ()> {
-        Box::pin(async move { self.update_retry(|retry| {
-            let mut chains = retry.get("fallbackChains").and_then(Value::as_object).cloned().unwrap_or_default();
-            chains.insert(key.to_owned(), Value::Array(entries.iter().cloned().map(Value::String).collect())); retry.insert("fallbackChains".to_owned(), Value::Object(chains));
-        }) })
+        Box::pin(async move { self.update_retry(|manager| manager.set_fallback_chain(key, entries)) })
     }
     fn remove_fallback_chain<'a>(&'a self, key: &'a str) -> maho_ext_api::ExtensionFuture<'a, ()> { Box::pin(async move {
-        self.update_retry(|retry| { if let Some(chains) = retry.get_mut("fallbackChains").and_then(Value::as_object_mut) { chains.remove(key); } })
+        self.update_retry(|manager| manager.remove_fallback_chain(key))
     }) }
     fn set_model_fallback_enabled(&self, enabled: bool) -> maho_ext_api::ExtensionFuture<'_, ()> { Box::pin(async move {
-        self.update_retry(|retry| { retry.insert("modelFallback".to_owned(), Value::Bool(enabled)); })
+        self.update_retry(|manager| manager.set_model_fallback_enabled(enabled))
     }) }
     fn set_fallback_revert_policy(&self, policy: maho_ext_api::FallbackRevertPolicy) -> maho_ext_api::ExtensionFuture<'_, ()> { Box::pin(async move {
-        self.update_retry(|retry| { retry.insert("fallbackRevertPolicy".to_owned(), Value::String(match policy {
+        self.update_retry(|manager| manager.set_fallback_revert_policy(match policy {
             maho_ext_api::FallbackRevertPolicy::Never => "never", maho_ext_api::FallbackRevertPolicy::CooldownExpiry => "cooldown-expiry",
-        }.to_owned())); })
+        }))
     }) }
     fn reload(&self) -> maho_ext_api::ExtensionFuture<'_, ()> { Box::pin(async move { self.session()?.with_settings_manager_mut(|manager| manager.reload()); Ok(()) }) }
     fn get_fallback_status(&self) -> Option<maho_ext_api::RetryFallbackStatus> {
@@ -1062,11 +1056,10 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         }
     }
     fn get_ask_user_settings(&self) -> maho_ext_api::AskUserSettings {
-        let configured = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("askUser").cloned()));
+        let settings = self.session().ok().map(|session| session.with_settings_manager(|manager| manager.get_ask_user_settings()));
         maho_ext_api::AskUserSettings {
-            enabled: configured.as_ref().and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
-            timeout_minutes: configured.as_ref().and_then(|value| value.get("timeoutMinutes")).and_then(Value::as_f64)
-                .filter(|value| value.is_finite()).map(|value| value.floor().clamp(1.0, 120.0)).unwrap_or(30.0),
+            enabled: settings.is_none_or(|settings| settings.enabled),
+            timeout_minutes: settings.map_or(crate::settings_manager::ASK_USER_DEFAULT_TIMEOUT_MINUTES, |settings| settings.timeout_minutes),
         }
     }
     fn get_image_settings(&self) -> maho_ext_api::ImageSettings {

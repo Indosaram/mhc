@@ -223,7 +223,7 @@ pub async fn resolve_runtime_project_trust_with_warnings(
     let selector: Arc<super::project_trust::Selector> = Arc::from(selector);
     let mut warnings = Vec::new();
     let extension_trust = if should_resolve {
-        let startup_ui = (bootstrap.get_string("theme"), bootstrap.get_bool("showHardwareCursor").unwrap_or(false), bootstrap.get_bool("clearOnShrink").unwrap_or(false));
+        let startup_ui = (bootstrap.get_string("theme"), bootstrap.get_show_hardware_cursor(), bootstrap.get_clear_on_shrink());
         let ui = Arc::new(super::project_trust::ProjectTrustUi {
             mode, has_ui, select: selector.clone(),
             input: Arc::new(move |title: &str, placeholder: Option<&str>| {

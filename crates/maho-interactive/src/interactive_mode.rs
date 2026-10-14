@@ -357,6 +357,8 @@ pub struct InteractiveMode {
     footer_data: Arc<maho_core::footer_data_provider::FooterDataProvider>,
     widgets: Vec<(String, Box<dyn Component>, maho_ext_api::WidgetPlacement)>,
     pub terminal_title: Option<String>,
+    /// senpi `ui.terminal.write("\x07")` on ask-user question arrival, written by the host on the next frame.
+    pending_bell: bool,
     markdown_transformers: Vec<crate::components::markdown_transform::MarkdownTransformer>,
     /// The theme the Mermaid transformer styles diagrams with; senpi reads its live `theme` proxy.
     mermaid_theme: Rc<RefCell<Theme>>,
@@ -542,7 +544,7 @@ impl InteractiveMode {
 
     /// senpi `terminalMouseMode`.
     fn terminal_mouse_mode(&self) -> String {
-        self.session.with_settings_manager(|settings| settings.get_string("terminalMouse")).unwrap_or_else(|| "whilePending".to_owned())
+        self.session.with_settings_manager(|settings| settings.get_terminal_mouse())
     }
 
     /// senpi `syncQuestionMouseCapture`: hold a "pending-question" lease while any ask-user
@@ -645,7 +647,9 @@ impl InteractiveMode {
     pub fn commit_terminal_setting(&mut self) -> bool {
         let Some((key, value)) = self.pending_terminal_setting.take() else { return false; };
         let values: maho_core::settings_manager::Settings = [(key.clone(), value.clone())].into_iter().collect();
-        if let Err(error) = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { self.show_error(&error); return false; }
+        // senpi `setTerminalMouse` writes the nested `terminal.mouse`.
+        let saved = self.session.with_settings_manager_mut(|settings| if key == "terminalMouse" { settings.set_terminal_mouse(value.as_str().unwrap_or_default()) } else { settings.set(maho_core::settings_manager::SettingsScope::Global, &values) });
+        if let Err(error) = saved { self.show_error(&error); return false; }
         if key == "tuiMode" && let Some(mode) = value.as_str() { self.show_status(format!("TUI mode: {mode}")); }
         true
     }
@@ -1011,7 +1015,7 @@ impl InteractiveMode {
     }
 
     pub(crate) fn terminal_settings(&self) -> (bool, bool, bool) {
-        self.session.with_settings_manager(|settings| (settings.get_bool("showHardwareCursor").unwrap_or(false), settings.get_bool("clearOnShrink").unwrap_or(false), settings.get_bool("showTerminalProgress").unwrap_or(true)))
+        self.session.with_settings_manager(|settings| (settings.get_show_hardware_cursor(), settings.get_clear_on_shrink(), settings.get_show_terminal_progress()))
     }
     fn keybindings(&self) -> maho_tui::keybindings::KeybindingsManager {
         maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone()
@@ -1045,7 +1049,7 @@ impl InteractiveMode {
         maho_tui::keybindings::set_keybindings(manager.clone());
         let keys = Arc::new(manager);
         let mut editor = CustomEditor::new(host.clone(), editor_theme(&theme), keys, CustomEditorOptions { embed_working_status: true, ..Default::default() });
-        let (padding, max_visible) = session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
+        let (padding, max_visible) = session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_autocomplete_max_visible()));
         editor.set_padding_x(padding as usize); editor.editor.set_autocomplete_max_visible(max_visible as usize);
         editor.editor.set_autocomplete_provider(Rc::new(RefCell::new(Self::create_base_autocomplete_provider(&session, &session.cwd(), None))));
         let pending_images = Rc::new(RefCell::new(BTreeMap::<u64, maho_ai::types::ImageContent>::new()));
@@ -1104,7 +1108,7 @@ impl InteractiveMode {
             if let Some(session) = blocked_session() { session.emit_extension_event(channel, data); }
         }));
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -2074,7 +2078,7 @@ impl InteractiveMode {
     /// pair. senpi's `processImage` resize/conversion is skipped - the Rust port has no image codec
     /// (see `components/tool_execution_images.rs`) - so only an already-supported format reaches here.
     fn attach_clipboard_image(&mut self, bytes: Vec<u8>, mime_type: String) -> bool {
-        if self.session.with_settings_manager(|settings| settings.get_bool("blockImages").unwrap_or(false)) {
+        if self.session.with_settings_manager(|settings| settings.get_block_images()) {
             self.show_status("Image paste blocked by the images.blockImages setting".into());
             return false;
         }
@@ -2139,6 +2143,13 @@ impl InteractiveMode {
 
     /// The pending terminal hand-off, consumed by the loop that owns the terminal.
     pub fn take_terminal_request(&mut self) -> Option<TerminalRequest> { self.terminal_request.take() }
+    /// A pending terminal bell (BEL) for the loop that owns the terminal.
+    pub fn take_pending_bell(&mut self) -> bool { std::mem::take(&mut self.pending_bell) }
+    /// senpi: `if (opts?.notifyArrival !== false && settingsManager.getAskUserSettings().bell) terminal.write("\x07")`.
+    /// Native questions carry no host `askedAtMs`, so every in-process arrival is new.
+    fn notify_question_arrival(&mut self) {
+        if self.session.with_settings_manager(|settings| settings.get_ask_user_settings().bell) { self.pending_bell = true; }
+    }
     /// A `/settings` `tuiMode`/`terminalMouse` change for the host loop (senpi `switchTuiMode`):
     /// the requested renderer mode and terminal mouse mode. The host either recreates the renderer
     /// and calls [`InteractiveMode::commit_terminal_setting`], or refuses it under an overlay with
@@ -2510,7 +2521,7 @@ impl InteractiveMode {
                     // senpi `resetExtensionUI` once the reload proceeds: the reloaded extensions
                     // re-register their autocomplete wrappers (queued UI requests, drained afterwards).
                     self.autocomplete_wrappers.clear();
-                    let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
+                    let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_autocomplete_max_visible()));
                     self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
                     // senpi `restoreChatBeforeSessionStart`: `hideThinkingBlock` is re-read before the rebuild.
                     self.reveal.hide_thinking = self.session.with_settings_manager(|settings| settings.get_bool("hideThinkingBlock").unwrap_or(false));
@@ -2997,13 +3008,13 @@ impl InteractiveMode {
                 macro_rules! boolean { ($field:ident, $key:literal) => { config.$field = settings.get_bool($key).unwrap_or(config.$field); }; }
                 macro_rules! number { ($field:ident, $key:literal) => { if let Some(value) = settings.get_number($key) { config.$field = value as _; } }; }
                 macro_rules! string { ($field:ident, $key:literal) => { if let Some(value) = settings.get_string($key) { config.$field = value; } }; }
-                boolean!(show_images, "showImages"); boolean!(auto_resize_images, "imageAutoResize"); boolean!(block_images, "blockImages"); boolean!(enable_skill_commands, "enableSkillCommands");
+                config.show_images = settings.get_show_images(); config.auto_resize_images = settings.get_image_auto_resize(); config.block_images = settings.get_block_images(); boolean!(enable_skill_commands, "enableSkillCommands");
                 boolean!(hide_thinking_block, "hideThinkingBlock"); boolean!(smooth_streaming, "smoothStreaming"); boolean!(show_cache_miss_notices, "showCacheMissNotices"); boolean!(collapse_changelog, "collapseChangelog");
-                boolean!(enable_install_telemetry, "enableInstallTelemetry"); boolean!(show_hardware_cursor, "showHardwareCursor"); boolean!(quiet_startup, "quietStartup"); boolean!(clear_on_shrink, "clearOnShrink"); boolean!(show_terminal_progress, "showTerminalProgress"); boolean!(fullscreen_copy_on_select, "fullscreenCopyOnSelect");
-                number!(image_width_cells, "imageWidthCells"); number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); number!(output_pad, "outputPad"); number!(autocomplete_max_visible, "autocompleteMaxVisible");
+                boolean!(enable_install_telemetry, "enableInstallTelemetry"); config.show_hardware_cursor = settings.get_show_hardware_cursor(); boolean!(quiet_startup, "quietStartup"); config.clear_on_shrink = settings.get_clear_on_shrink(); config.show_terminal_progress = settings.get_show_terminal_progress(); boolean!(fullscreen_copy_on_select, "fullscreenCopyOnSelect");
+                config.image_width_cells = settings.get_image_width_cells() as usize; number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); number!(output_pad, "outputPad"); config.autocomplete_max_visible = settings.get_autocomplete_max_visible();
                 string!(steering_mode, "steeringMode"); string!(follow_up_mode, "followUpMode"); string!(transport, "transport"); string!(double_escape_action, "doubleEscapeAction"); string!(tree_filter_mode, "treeFilterMode"); string!(fullscreen_scrollbar, "fullscreenScrollbar");
                 use crate::components::settings_selector::{MermaidRenderingMode, TuiMode, FullscreenExitOutput, DefaultProjectTrust};
-                config.terminal_mouse = settings.get_string("terminalMouse");
+                config.terminal_mouse = Some(settings.get_terminal_mouse());
                 config.mermaid_rendering_mode = MermaidRenderingMode::from_name(settings.get_mermaid_rendering_mode().as_str()).unwrap_or(config.mermaid_rendering_mode);
                 config.tui_mode = settings.get_string("tuiMode").and_then(|value| TuiMode::from_name(&value)).unwrap_or(config.tui_mode);
                 config.fullscreen_exit_output = settings.get_string("fullscreenExitOutput").and_then(|value| FullscreenExitOutput::from_name(&value)).unwrap_or(config.fullscreen_exit_output);
@@ -3020,7 +3031,14 @@ impl InteractiveMode {
                     Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
                 }
             })); }}; }
-            persist!(on_show_images_change, "showImages", bool); persist!(on_image_width_cells_change, "imageWidthCells", usize); persist!(on_auto_resize_images_change, "imageAutoResize", bool); persist!(on_block_images_change, "blockImages", bool); persist!(on_enable_skill_commands_change, "enableSkillCommands", bool);
+            macro_rules! persist_with { ($field:ident, $key:literal, $ty:ty, $set:expr) => {{ let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.$field = Some(Box::new(move |value: $ty| {
+                let set: fn(&mut maho_core::settings_manager::SettingsManager, $ty) -> Result<(), String> = $set;
+                match session.with_settings_manager_mut(|settings| set(settings, value)) {
+                    Ok(()) => { drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::SettingChanged($key.into(), serde_json::json!(value)))); }
+                    Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                }
+            })); }}; }
+            persist_with!(on_show_images_change, "showImages", bool, |settings, value| settings.set_show_images(value)); persist_with!(on_image_width_cells_change, "imageWidthCells", usize, |settings, value| settings.set_image_width_cells(u32::try_from(value).unwrap_or(u32::MAX))); persist_with!(on_auto_resize_images_change, "imageAutoResize", bool, |settings, value| settings.set_image_auto_resize(value)); persist_with!(on_block_images_change, "blockImages", bool, |settings, value| settings.set_block_images(value)); persist!(on_enable_skill_commands_change, "enableSkillCommands", bool);
             persist!(on_theme_change, "theme", String); persist!(on_hide_thinking_block_change, "hideThinkingBlock", bool);
             { let ui = self.extension_ui.clone(); callbacks.on_theme_preview = Some(Box::new(move |setting: String| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::ThemePreview(setting))))); }
             // senpi `onTransportChange`: persist, then `session.agent.transport = transport`.
@@ -3047,11 +3065,11 @@ impl InteractiveMode {
             })); }
             persist!(on_smooth_streaming_change, "smoothStreaming", bool); persist!(on_smooth_streaming_fps_change, "smoothStreamingFps", u32); persist!(on_show_cache_miss_notices_change, "showCacheMissNotices", bool); persist!(on_collapse_changelog_change, "collapseChangelog", bool); persist!(on_enable_install_telemetry_change, "enableInstallTelemetry", bool);
             persist!(on_double_escape_action_change, "doubleEscapeAction", String); persist!(on_tree_filter_mode_change, "treeFilterMode", String); persist!(on_show_hardware_cursor_change, "showHardwareCursor", bool); persist!(on_editor_padding_x_change, "editorPaddingX", usize); persist!(on_output_pad_change, "outputPad", u8); persist!(on_autocomplete_max_visible_change, "autocompleteMaxVisible", usize);
-            persist!(on_quiet_startup_change, "quietStartup", bool); persist!(on_clear_on_shrink_change, "clearOnShrink", bool); persist!(on_show_terminal_progress_change, "showTerminalProgress", bool); persist!(on_fullscreen_scrollbar_change, "fullscreenScrollbar", String); persist!(on_fullscreen_copy_on_select_change, "fullscreenCopyOnSelect", bool);
+            persist!(on_quiet_startup_change, "quietStartup", bool); persist_with!(on_clear_on_shrink_change, "clearOnShrink", bool, |settings, value| settings.set_clear_on_shrink(value)); persist_with!(on_show_terminal_progress_change, "showTerminalProgress", bool, |settings, value| settings.set_show_terminal_progress(value)); persist!(on_fullscreen_scrollbar_change, "fullscreenScrollbar", String); persist!(on_fullscreen_copy_on_select_change, "fullscreenCopyOnSelect", bool);
             // senpi `onTerminalMouseChange`: the host applies it by recreating the renderer, and only
             // when no overlay is open; the setting is persisted once the host accepts the change.
             { let ui = self.extension_ui.clone(); callbacks.on_terminal_mouse_change = Some(Box::new(move |value: String| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::TerminalSetting("terminalMouse".into(), serde_json::json!(value)))))); }
-            let session = self.session.clone(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { session.set_auto_compaction_enabled(enabled); let values = [("compaction".into(), serde_json::json!({"enabled":enabled}))].into_iter().collect(); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
+            let session = self.session.clone(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { session.set_auto_compaction_enabled(enabled); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set_compaction_enabled(enabled)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
             let session = self.session.clone(); callbacks.on_steering_mode_change = Some(Box::new(move |mode| session.set_steering_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
             let session = self.session.clone(); callbacks.on_follow_up_mode_change = Some(Box::new(move |mode| session.set_follow_up_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
             let session = self.session.clone(); callbacks.on_thinking_level_change = Some(Box::new(move |level| session.set_thinking_level(maho_ai::types::ModelThinkingLevel::parse(level.as_str()).expect("selector thinking level"))));
@@ -4329,6 +4347,7 @@ impl InteractiveMode {
                 let request = convert(request);
                 *self.question_reply.borrow_mut() = Some(reply); let answer = self.question_reply.clone();
                 self.blocking_question = true;
+                self.notify_question_arrival();
                 let mut component_options = crate::components::ask_user_question::AskUserQuestionOptions::new(self.theme.clone());
                 component_options.now_ms = self.clock.elapsed().as_millis() as u64;
                 component_options.timeout_ms = options.dialog.timeout_ms;
@@ -4445,7 +4464,7 @@ impl InteractiveMode {
         if reattaching && self.questions.shown_id() == Some(request_id.as_str()) && self.questions.surface == crate::question_registry::QuestionSurface::Expanded { self.collapse_shown_question(); }
         if let Some(existing) = self.questions.get_mut(&request_id) {
             if reattaching { *existing = entry; }
-        } else { self.questions.show(entry); }
+        } else { self.questions.show(entry); self.notify_question_arrival(); }
         if let Some(existing) = self.questions.get_mut(&request_id) { existing.replies.push(reply); }
         self.refresh_async_question_widget();
     }
@@ -4817,7 +4836,7 @@ impl InteractiveMode {
     fn tool_component(&mut self, name: &str, id: &str, args: serde_json::Value) -> Rc<RefCell<ToolExecutionComponent>> {
         let name = self.session.resolve_tool_call_name(name);
         let renderers = self.tool_renderers(&name);
-        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
+        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:Some(settings.get_show_images()), image_width_cells:Some(settings.get_image_width_cells()) });
         self.pending_tools.get(id).cloned().unwrap_or_else(|| {
             let component = Rc::new(RefCell::new(ToolExecutionComponent::new(&name, id, args, options, renderers, &self.host_cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Tool(component.clone()));
@@ -4876,7 +4895,7 @@ impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
     fn create_tool(&mut self, name: &str, id: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolExecutionComponent {
         let name = self.session.resolve_tool_call_name(name);
         let renderers = self.tool_renderers(&name);
-        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
+        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:Some(settings.get_show_images()), image_width_cells:Some(settings.get_image_width_cells()) });
         ToolExecutionComponent::new(&name, id, serde_json::Value::Object(args.clone()), options, renderers, &self.host_cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())
     }
     fn add_pending(&mut self, id: &str, component: Rc<RefCell<ToolExecutionComponent>>) { self.pending_tools.insert(id.into(), component); }
