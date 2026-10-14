@@ -42,6 +42,10 @@ impl TurnEngine {
             let value = match event {
                 maho_ext_api::AgentSessionEvent::Agent(event) => serde_json::to_value(event),
                 maho_ext_api::AgentSessionEvent::AgentEnd { .. } => Ok(json!({"type":"agent_end"})),
+                // senpi `ensureSessionSubscription` forwards every session event; the projector turns
+                // `compaction_start` / `compaction_end` into `contextCompaction` items.
+                maho_ext_api::AgentSessionEvent::CompactionStart { .. } => Ok(json!({"type":"compaction_start"})),
+                maho_ext_api::AgentSessionEvent::CompactionEnd { .. } => Ok(json!({"type":"compaction_end"})),
                 _ => return,
             };
             match value {
@@ -114,7 +118,7 @@ impl TurnEngine {
         let started = now.timestamp_millis() as f64;
         let thread_id = {
             let mut guard = entry.lock().await;
-            guard.active_turn = Some(turn_id.clone());
+            guard.set_active_turn(Some(turn_id.clone()));
             guard.interrupted = false;
             guard.updated_at = now_iso(now);
             guard.pending_turn = Some(PendingTurn { turn_id: turn_id.clone(), started_at_ms: started, interrupted: false, completed: false, resolve: None });
@@ -155,12 +159,34 @@ impl TurnEngine {
         };
         let wire_status = match status { CompleteTurnStatus::Completed => "completed", CompleteTurnStatus::Failed => "failed", CompleteTurnStatus::Interrupted => "interrupted" };
         let turn = build_turn(&pending.turn_id, wire_status, pending.started_at_ms, Some(completion.timestamp_millis() as f64), &items, message.as_deref());
-        { let mut guard = entry.lock().await; guard.active_turn = None; guard.interrupted = false; guard.updated_at = now_iso(completion); }
+        { let mut guard = entry.lock().await; guard.set_active_turn(None); guard.interrupted = false; guard.updated_at = now_iso(completion); }
         if let Some(core) = self.core.upgrade() {
             emit(&core, entry, json!({"method":"thread/status/changed","params":{"threadId":thread_id,"status":{"type":"idle"}}})).await;
             for notification in super::turn_terminal::turn_terminal_notifications(&thread_id, turn) { emit(&core, entry, notification).await; }
         }
         if let Some(resolve) = pending.resolve.take() { let _ = resolve.send(()); }
+    }
+
+    /// senpi `index.ts` `interruptActiveTurns`: `interruptTurn` (abort, then `completeTurn` as
+    /// interrupted, emitting its terminal notifications) for every loaded thread's active turn.
+    pub async fn interrupt_active_turns(&self, threads: &ThreadRegistry) {
+        let mut entries = Vec::new();
+        for thread in threads.list_loaded().await {
+            if let Some(id) = thread["id"].as_str() && let Ok(entry) = threads.get_loaded_thread(id).await { entries.push(entry); }
+        }
+        futures_util::future::join_all(entries.iter().map(|entry| async move {
+            let (session, active) = {
+                let mut guard = entry.lock().await;
+                let Some(active) = guard.active_turn.clone() else { return; };
+                guard.interrupted = true;
+                if let Some(pending) = guard.pending_turn.as_mut() && pending.turn_id == active { pending.interrupted = true; }
+                (guard.session.clone(), active)
+            };
+            session.abort().await;
+            let gate = entry.lock().await.emit_gate.clone();
+            let _gate = gate.lock().await;
+            self.complete_turn(entry, Some(active.as_str()), CompleteTurnStatus::Interrupted, None).await;
+        })).await;
     }
 
     async fn emit_user_message(&self, entry: &Arc<Mutex<ThreadEntry>>, thread_id: &str, turn_id: &str, started_ms: f64, user: Value) {
@@ -222,10 +248,12 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                         if let Some(pending) = guard.pending_turn.as_mut() { pending.interrupted = true; }
                         guard.observer_events.clone()
                     };
-                    context.connection.defer_until_responded(move || {tokio::spawn(async move {
-                        session.abort().await;
+                    // senpi `interruptTurn` awaits `session.abort()` before answering; only the
+                    // terminal notifications are deferred until after the response.
+                    session.abort().await;
+                    context.connection.defer_until_responded(move || {
                         if let Some(observer) = observer && observer.send(ObservedEvent::Complete { turn_id:active, status:CompleteTurnStatus::Interrupted, message:None }).is_err() { eprintln!("app-server thread observer closed"); }
-                    });});
+                    });
                     return Ok(json!({}));
                 }
                 let params = input_params.ok_or_else(||JsonRpcError::new(-32602,"Invalid params"))?;
@@ -258,7 +286,7 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
             let (resolve, completion) = tokio::sync::oneshot::channel::<()>();
             {
                 let mut entry = entry.lock().await;
-                entry.active_turn = Some(turn_id.clone()); entry.interrupted = false; entry.updated_at = now_iso(now);
+                entry.set_active_turn(Some(turn_id.clone())); entry.interrupted = false; entry.updated_at = now_iso(now);
                 entry.pending_turn = Some(PendingTurn { turn_id: turn_id.clone(), started_at_ms: started, interrupted: false, completed: false, resolve: Some(resolve) });
             }
             log.lock().await.record_turn(&id, RecordTurnOptions { turn_id:turn_id.clone(), started_at:now_iso(now), status:None, completed_at:None, error:None });

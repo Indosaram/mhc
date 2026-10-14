@@ -12,3 +12,8 @@ async fn disk_wire_missing_dates_project_as_zero_seconds() {
     assert_eq!(built["updatedAt"].as_f64(), Some(0.0));
     assert_eq!(built["recencyAt"].as_f64(), Some(0.0));
 }
+#[tokio::test]
+async fn disk_wire_active_status_carries_generated_active_flags() {
+    let built = build_disk_wire_thread(&json!({"id":"live","sessionId":"live","cwd":"/work","status":{"type":"active"},"name":null}), "1.0").await.unwrap();
+    assert_eq!(built["status"], json!({"type":"active","activeFlags":[]}));
+}
