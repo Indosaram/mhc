@@ -430,6 +430,8 @@ pub struct InteractiveMode {
     anthropic_subscription_warning_shown: bool,
     /// senpi `externalOwnerCompactionNoticeShown`: one external-owner compaction notice per delegation episode.
     external_owner_compaction_notice_shown: bool,
+    /// senpi `footer.setCompactionDelegated`, applied to the per-frame footer.
+    compaction_delegated: bool,
     /// senpi `fallbackAppliedBeforeRetryStart`.
     fallback_applied_before_retry_start: bool,
     /// senpi `renderSessionItems`' `cacheMisses`, keyed by the assistant message's (timestamp, model),
@@ -1172,7 +1174,7 @@ impl InteractiveMode {
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
         let invalidate_ui = Arc::downgrade(&extension_ui);
         session.set_before_session_invalidate(Some(Arc::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } })));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1776,6 +1778,9 @@ impl InteractiveMode {
     }
 
     pub fn rebuild_history(&mut self) {
+        // senpi `renderInitialMessages`: a full transcript rerender ends the external-owner episode.
+        self.external_owner_compaction_notice_shown = false;
+        self.compaction_delegated = false;
         self.reset_transcript_state();
         // A mounted shared host is authoritative: rebuild from the fetched remote snapshot, never
         // the unrelated local session. Without a host, the local session is the source.
@@ -2697,11 +2702,12 @@ impl InteractiveMode {
             let message_count = self.session.with_session_manager(|manager| manager.entries().iter().filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("message")).count());
             if message_count < 2 { self.show_warning("Nothing to compact (no messages yet)"); return Ok(PromptDisposition::Handled); }
             if self.session_host.is_some() {
-                self.host_compact(text.trim().strip_prefix("/compact ").map(str::to_owned)).await?;
-                self.rebuild_history();
-                self.show_status("Compacted context".into());
+                // senpi `handleCompactCommand`: failures arrive as `compaction_end` events.
+                self.clear_status_indicator(None);
+                drop(self.host_compact(text.trim().strip_prefix("/compact ").map(str::to_owned)).await);
                 return Ok(PromptDisposition::Handled);
             }
+            self.clear_status_indicator(None);
             let session = self.session.clone();
             let compact = session.compact(text.trim().strip_prefix("/compact "));
             tokio::pin!(compact);
@@ -2709,9 +2715,10 @@ impl InteractiveMode {
                 result = &mut compact => break result,
                 Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
                 Some(event) = self.events.recv() => self.handle_session_event(&event),
-            }}?;
-            self.rebuild_history();
-            self.show_status(format!("Compacted from {} tokens", result.tokens_before));
+            }};
+            // senpi ignores the rejection: the outcome is presented by the `compaction_end` event.
+            drop(result);
+            self.drain_events();
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/new" {
@@ -4321,6 +4328,7 @@ impl InteractiveMode {
                 self.set_extension_status(FALLBACK_STATUS_KEY, Some(&format!("fallback: {to}")));
                 // Provider/model failover ends any external-owner delegation episode.
                 self.external_owner_compaction_notice_shown = false;
+                self.compaction_delegated = false;
             }
             AgentSessionEvent::RetryFallbackSucceeded { model, .. } => self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
                 title: format!("✓ Fallback model responded · {model}"), tone: Some(crate::theme::ThemeColor::Success),
@@ -4350,7 +4358,7 @@ impl InteractiveMode {
                 extra: Vec::new(), expanded_line: None,
             }),
             // senpi `model_changed`: the new model does not inherit the delegation episode.
-            AgentSessionEvent::ModelChanged { .. } => self.external_owner_compaction_notice_shown = false,
+            AgentSessionEvent::ModelChanged { .. } => { self.external_owner_compaction_notice_shown = false; self.compaction_delegated = false; }
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
             // senpi `model_change_skipped`.
             AgentSessionEvent::ModelChangeSkipped { model, budget, .. } => {
@@ -4392,9 +4400,9 @@ impl InteractiveMode {
                     }
                 }
             }
-            AgentSessionEvent::CompactionEnd { result, will_retry, accepted, error_message, .. } => {
+            AgentSessionEvent::CompactionEnd { reason, result, aborted, will_retry, accepted, rejection_cause, error_message, .. } => {
                 self.clear_status_indicator(Some(StatusIndicatorKind::Compaction));
-                if let Some(error) = error_message { self.show_status(error.clone()); }
+                self.show_compaction_end(*reason, result.as_ref(), *aborted, *accepted, *rejection_cause, error_message.as_deref());
                 // senpi: every terminal compaction_end resolves the compaction queue.
                 if *accepted == Some(true) || result.is_some() {
                     self.start_compaction_flush(crate::compaction_queue_transfer::TransferOptions { will_retry: *will_retry, defer_admission: false });
@@ -4413,6 +4421,68 @@ impl InteractiveMode {
             AgentSessionEvent::EntryAppended { entry } if entry.kind == "custom" => self.add_custom_entry_to_chat(&entry.data),
             _ => {}
         }
+    }
+
+    /// senpi `compaction_end`'s presentation branches (the queue resolution follows in the caller).
+    fn show_compaction_end(&mut self, reason: maho_ext_api::CompactionReason, result: Option<&maho_ext_api::CompactionResult>, aborted: bool, accepted: Option<bool>, rejection_cause: Option<maho_ext_api::CompactionRejectionCause>, error_message: Option<&str>) {
+        use maho_ext_api::{CompactionReason, CompactionRejectionCause};
+        let manual = reason == CompactionReason::Manual;
+        let add_error_line = |mode: &mut Self, message: &str, spacer: bool| {
+            if spacer { mode.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))); }
+            mode.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(mode.theme.fg(crate::theme::ThemeColor::Error, message), 1, 0))));
+        };
+        // Checked before `aborted`: external-owner rejections carry `aborted: true`.
+        if rejection_cause == Some(CompactionRejectionCause::ExternalOwner) && !manual {
+            if !self.external_owner_compaction_notice_shown {
+                self.external_owner_compaction_notice_shown = true;
+                self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+                self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Muted, "The Claude Agent SDK manages and compacts this session's context natively."), 1, 0))));
+            }
+            self.compaction_delegated = true;
+        } else if aborted {
+            let cancel_message = maho_tui::terminal_text::sanitize_terminal_label(error_message.unwrap_or("Compaction cancelled"));
+            if manual { self.show_error(&cancel_message); }
+            else if error_message.is_some() { add_error_line(self, &cancel_message, true); }
+            else { self.show_status("Auto-compaction cancelled".into()); }
+        } else if let Some(result) = result {
+            if self.session_host.is_some() {
+                // The remote snapshot already carries the compaction summary in its history.
+                self.request_remote_history();
+            } else {
+                self.reset_transcript_state();
+                self.render_session_entries(true);
+                // senpi `createCompactionSummaryMessage(summary, tokensBefore, now, details)`.
+                let summary = maho_agent::harness::messages::CompactionSummaryMessage {
+                    details: result.details.clone(),
+                    ..maho_agent::harness::messages::create_compaction_summary_message(maho_tui::terminal_text::sanitize_terminal_label(&result.summary), i64::try_from(result.tokens_before).unwrap_or(i64::MAX), chrono::Utc::now().timestamp_millis())
+                };
+                self.add_history_message(&maho_agent::types::AgentMessage::Custom(maho_agent::types::CustomAgentMessage::CompactionSummary(summary)));
+                let usage = self.session.with_session_manager(|manager| maho_core::session_manager::build_context_entries(&manager.entries(), manager.leaf_id()))
+                    .first().filter(|entry| entry["type"] == "compaction").and_then(|entry| entry.get("usage").cloned());
+                if let Some(usage) = usage { self.add_compaction_cost_notice(true, &usage); }
+            }
+            // A real compaction landed: the delegation episode (if any) is over.
+            self.external_owner_compaction_notice_shown = false;
+            self.compaction_delegated = false;
+        } else if let Some(error_message) = error_message {
+            let error_message = maho_tui::terminal_text::sanitize_terminal_label(error_message);
+            if crate::provider_error_presentation::is_network_provider_error(Some(&error_message), false) { self.finish_provider_error(&error_message); }
+            else if manual { self.show_error(&error_message); }
+            else { add_error_line(self, &error_message, false); }
+        } else if accepted == Some(false) {
+            let cause = match rejection_cause {
+                Some(CompactionRejectionCause::CancelledByExtension) => "cancelled-by-extension",
+                Some(CompactionRejectionCause::ExternalOwner) => "external-owner",
+                Some(CompactionRejectionCause::WouldOverflow) => "would-overflow",
+                Some(CompactionRejectionCause::CircuitBreaker) => "circuit-breaker",
+                Some(CompactionRejectionCause::PerTurnCap) => "per-turn-cap",
+                Some(CompactionRejectionCause::StaleRevision) => "stale-revision",
+                None => "unknown",
+            };
+            let message = format!("Compaction failed (no result); cause: {cause}");
+            if manual { self.show_error(&message); } else { add_error_line(self, &message, true); }
+        }
+        self.editor_host.request_render();
     }
 
     fn settle_questions(&mut self) {
@@ -5421,6 +5491,7 @@ impl InteractiveMode {
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::BelowEditor { lines.extend(widget.render(width)); } }
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
         footer.set_auto_compact_enabled(self.host_auto_compaction_enabled());
+        footer.set_compaction_delegated(self.compaction_delegated);
         footer.snapshot.extension_statuses = self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         lines.extend(if let Some(custom) = &mut self.footer { custom.render(width) } else { footer.render(width, &self.theme).expect("footer layout") });
         lines
