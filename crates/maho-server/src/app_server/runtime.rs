@@ -192,9 +192,10 @@ impl AppServerRuntime {
         core.approvals = Some(approvals.clone());core.user_input = Some(user_input.clone());
         {
             let (ui_approvals,ui_input,ui_dir) = (approvals.clone(),user_input.clone(),ui_agent_dir.clone());
+            let ui_active_turns = threads.active_turn_ids();
             let ui_factory: super::thread_registry::SessionUiFactory = Arc::new(move |thread_id: &str| -> Option<Arc<dyn maho_ext_api::ExtensionUi>> {
-                let turn_thread_id = thread_id.to_owned();
-                super::approval_ui_context::AppServerUiContext::new(ui_approvals.clone(),ui_input.clone(),thread_id.to_owned(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_dir))
+                let (turn_thread_id, active) = (thread_id.to_owned(), ui_active_turns.clone());
+                super::approval_ui_context::AppServerUiContext::new(ui_approvals.clone(),ui_input.clone(),thread_id.to_owned(),Arc::new(move || super::thread_registry::active_turn_id_or_default(&active,&turn_thread_id)),std::path::Path::new(&ui_dir))
                     .map(|ui| Arc::new(ui) as Arc<dyn maho_ext_api::ExtensionUi>).map_err(|error| eprintln!("app-server UI context: {}",error.message)).ok()
             });
             let binder_inventory = mcp_inventory.clone();
@@ -297,8 +298,8 @@ impl AppServerRuntime {
                         // Sessions are bound at creation (UI, then MCP inventory); an entry whose
                         // inventory was dropped is rebound here in the same order.
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
-                            let turn_thread_id = thread_id.clone();
-                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
+                            let (turn_thread_id, active) = (thread_id.clone(), threads.active_turn_ids());
+                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || super::thread_registry::active_turn_id_or_default(&active,&turn_thread_id)),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                             register_mcp_inventory(&mcp_inventory,&thread_id,&mcp_session).await;
                         }
                     }));
@@ -355,8 +356,8 @@ impl AppServerRuntime {
                         // Sessions are bound at creation (UI, then MCP inventory); an entry whose
                         // inventory was dropped is rebound here in the same order.
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
-                            let turn_thread_id = thread_id.clone();
-                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
+                            let (turn_thread_id, active) = (thread_id.clone(), threads.active_turn_ids());
+                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || super::thread_registry::active_turn_id_or_default(&active,&turn_thread_id)),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                             register_mcp_inventory(&mcp_inventory,&thread_id,&mcp_session).await;
                         }
                     }));
