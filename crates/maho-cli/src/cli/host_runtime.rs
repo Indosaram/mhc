@@ -668,7 +668,7 @@ pub fn host_runtime_factory_with_mcp_registry(config: CliRuntimeConfiguration, m
             let scoped = maho_core::model_resolver::resolve_model_scope_from_models(&config.models, &scope_models);
             let trusted = resolve_runtime_project_trust(&config, &profile.runtime.cwd, to_project_trust_mode(config.app_mode), false, Box::new(|_, _| None)).await;
             let settings = SettingsManager::create(&profile.runtime.cwd, &config.agent_dir, &maho_core::config::home_dir(), trusted);
-            let is_continuing = !session_manager.build_context(session_manager.leaf_id()).messages.is_empty();
+            let is_continuing = !session_manager.current_context().messages.is_empty();
             let initial = resolve_cli_initial_model(creation_model, thinking, is_continuing, &settings, &model_runtime, &scoped.scoped_models).await;
             let session_start_event = initial.provenance.map(|provenance| SessionStartEvent {
                 reason: maho_ext_api::SessionReason::Startup,

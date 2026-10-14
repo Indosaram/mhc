@@ -29,7 +29,7 @@ impl SessionManager for SessionView {
         (self.session)().map_or_else(Vec::new, |session| session.with_session_manager(|manager| manager.entries().into_iter().map(entry).collect()))
     }
     fn get_branch(&self) -> Vec<SessionEntry> {
-        (self.session)().map_or_else(Vec::new, |session| session.with_session_manager(|manager| manager.branch(None).into_iter().map(entry).collect()))
+        (self.session)().map_or_else(Vec::new, |session| session.with_session_manager(|manager| manager.current_branch().into_iter().map(entry).collect()))
     }
     fn get_leaf_id(&self) -> Option<String> {
         (self.session)().and_then(|session| session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)))

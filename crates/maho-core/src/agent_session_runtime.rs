@@ -356,13 +356,13 @@ impl AgentSessionRuntime {
             &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_project_trusted());
         let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
         let target_session_file = manager.session_file().map(str::to_owned);
-        let context = manager.build_context(manager.leaf_id());
+        let context = manager.current_context();
         let restored_model = context.model.as_ref().and_then(|(provider, id)| self.services.model_registry.find(provider, id));
         let launch_model = self.launch_profile.as_ref().and_then(|profile| profile.creation_model.as_ref())
             .and_then(|(provider, id)| self.services.model_registry.find(provider, id));
         let launch_thinking = self.launch_profile.as_ref().and_then(|profile| profile.initial_thinking_level.as_deref())
             .and_then(maho_ai::types::ModelThinkingLevel::parse);
-        let thinking_selection = if manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change") {
+        let thinking_selection = if manager.current_branch().iter().any(|entry| entry["type"] == "thinking_level_change") {
             None
         } else { self.session.thinking_selection() };
         let options = crate::sdk::CreateAgentSessionOptions {
@@ -656,7 +656,7 @@ mod tests {
             assert!(manager.entry(label["id"].as_str().unwrap()).is_none());
             let child = manager.entry(descendant["id"].as_str().unwrap()).unwrap();
             assert_eq!(child["parentId"], target_id);
-            assert_eq!(manager.branch(manager.leaf_id()).iter().filter(|entry| entry["type"] == "message").count(), 2);
+            assert_eq!(manager.current_branch().iter().filter(|entry| entry["type"] == "message").count(), 2);
         });
         assert!(matches!(runtime.import_from_jsonl("/missing-import-fixture.jsonl", None).await.unwrap_err(),
             AgentSessionRuntimeError::ImportFileNotFound(error) if error.to_string() == "File not found: /missing-import-fixture.jsonl"));

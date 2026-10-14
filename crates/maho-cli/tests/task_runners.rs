@@ -76,7 +76,7 @@ fn native_child_transcript_preserves_exact_locator_on_create_and_resume() {
     assert_eq!(manager.session_file(), Some(path.to_string_lossy().as_ref()));
     assert_eq!(resumed.session_file(), manager.session_file());
     assert_eq!(resumed.session_id(), session_id);
-    assert_eq!(resumed.build_context(resumed.leaf_id()).messages.len(), 2);
+    assert_eq!(resumed.current_context().messages.len(), 2);
     assert_eq!(std::fs::read(&path).expect("retained transcript"), before);
     assert_eq!(std::fs::read_dir(&session_dir).expect("child directory").count(), 1);
 }
@@ -248,7 +248,7 @@ async fn converted_child_options_drive_native_provider_and_restore_exact_transcr
     assert_eq!(text.as_deref(), Some("native child response"));
     assert_eq!(provider.get_call_log().len(), 1);
     assert_eq!(restored.session_file(), Some(path.to_string_lossy().as_ref()));
-    assert_eq!(restored.build_context(restored.leaf_id()).messages.len(), 2);
+    assert_eq!(restored.current_context().messages.len(), 2);
 }
 
 #[test]

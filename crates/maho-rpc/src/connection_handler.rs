@@ -323,7 +323,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::AppendUserMessage{content}=>{
             let message=serde_json::json!({"role":"user","content":content,"timestamp":maho_ai::utils::diagnostics::now_ms()});
             session.with_session_manager_mut(|manager|{manager.append_message(message);});
-            let messages=session.with_session_manager(|manager|manager.build_context(None).messages);
+            let messages=session.with_session_manager(|manager|manager.current_context().messages);
             let agent_messages=messages.iter().filter_map(|message|serde_json::from_value(message.clone()).ok()).collect();
             session.agent().set_messages(agent_messages);
             ("append_user_message",Ok(None))

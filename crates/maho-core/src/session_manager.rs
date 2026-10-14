@@ -1411,6 +1411,25 @@ impl SessionManager {
         build_session_path(&self.compact_entries(), leaf_id)
     }
 
+    /// senpi `getBranch()` with no argument: the path to the current leaf. A null leaf (after
+    /// `reset_leaf`) is empty rather than the path of the last-appended entry.
+    pub fn current_branch(&self) -> Vec<Value> {
+        match self.leaf_id.as_deref() {
+            Some(id) => self.branch(Some(id)),
+            None => Vec::new(),
+        }
+    }
+
+    /// senpi `buildContextEntries()`: compaction-aware entries from the current leaf.
+    pub fn current_context_entries(&self) -> Vec<Value> {
+        self.context_entries(Some(self.leaf_id.as_deref().unwrap_or_default()))
+    }
+
+    /// senpi `buildSessionContext()`: the LLM context from the current leaf (empty when null).
+    pub fn current_context(&self) -> SessionContext {
+        self.build_context(Some(self.leaf_id.as_deref().unwrap_or_default()))
+    }
+
     pub fn context_entries(&self, leaf_id: Option<&str>) -> Vec<Value> {
         build_context_entries(&self.compact_entries(), leaf_id)
     }
@@ -2078,11 +2097,23 @@ mod tests {
     }
 
     #[test]
+    fn a_reset_leaf_yields_an_empty_current_context() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        manager.append_message(json!({ "role": "user", "content": "b", "timestamp": 2 }));
+        assert_eq!(manager.current_context().messages.len(), 2);
+        manager.reset_leaf();
+        assert!(manager.current_context().messages.is_empty());
+        assert!(manager.current_branch().is_empty());
+        assert!(manager.current_context_entries().is_empty());
+    }
+
+    #[test]
     fn configuration_updates_carry_the_reasoning_effort_into_context() {
         let mut manager = SessionManager::in_memory("/tmp", None, None);
         let entry = manager.append_configuration_update("high");
         assert_eq!(entry["reasoning"], json!({ "effort": "high" }));
-        let context = manager.build_context(manager.leaf_id());
+        let context = manager.current_context();
         assert_eq!(context.configuration_update, Some(json!({ "effort": "high" })));
         assert_eq!(context.messages[0]["role"], "configurationUpdate");
     }
@@ -2096,7 +2127,7 @@ mod tests {
         assert_eq!(entry["type"], "model_change_rejected");
         assert_eq!(entry["modelId"], "m");
         assert_eq!(entry["contextWindow"], 1000);
-        let context = manager.build_context(manager.leaf_id());
+        let context = manager.current_context();
         assert!(context.messages.is_empty());
         assert_eq!(context.model, None);
     }
