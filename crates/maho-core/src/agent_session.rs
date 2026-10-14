@@ -2622,6 +2622,9 @@ impl AgentSession {
                         .await.map_err(|error| error.to_string())?
                 } else { maho_ext_api::EventResult::None }
             };
+            // senpi hands session_before_compact the controller's own signal (agent-session.ts:6234), so an
+            // extension-side abort is a controller abort and isCurrent() then cancels (lifecycle.ts:139-145).
+            if extension_signal.is_aborted() { controller.abort(); }
             let messages_after_extension = self.messages();
             let diagnostic_messages = if messages_after_extension.starts_with(&messages_before_extension) {
                 messages_after_extension[messages_before_extension.len()..].iter().filter(|message| {
