@@ -111,6 +111,21 @@ impl InteractiveTui {
         if let Self::Fullscreen(tui) = self { tui.tick(now_ms); }
     }
 
+    /// senpi `TuiAltScreen.getCopyOnSelect`; the regular renderer has no app-owned selection.
+    pub fn get_copy_on_select(&self) -> bool {
+        match self { Self::Regular(_) => false, Self::Fullscreen(tui) => tui.get_copy_on_select() }
+    }
+
+    /// senpi `TuiAltScreen.hasActiveSelection`.
+    pub fn has_active_selection(&self) -> bool {
+        match self { Self::Regular(_) => false, Self::Fullscreen(tui) => tui.has_active_selection() }
+    }
+
+    /// senpi `TuiAltScreen.copyActiveSelectionToClipboard`.
+    pub fn copy_active_selection_to_clipboard(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal) -> bool {
+        match self { Self::Regular(_) => false, Self::Fullscreen(tui) => tui.copy_active_selection_to_clipboard(terminal) }
+    }
+
     /// senpi `TuiAltScreen.setCopyOnSelect`; the regular renderer has no app-owned selection.
     pub fn set_copy_on_select(&mut self, enabled: bool) {
         if let Self::Fullscreen(tui) = self { tui.set_copy_on_select(enabled); }

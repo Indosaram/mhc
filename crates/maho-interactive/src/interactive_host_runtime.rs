@@ -400,6 +400,24 @@ impl RemoteSessionProxy {
         handle.spawn(async move { let _ = client.lock().await.clear_queue(Some(abort_will_follow)).await; });
     }
 
+    /// senpi's `setFavoriteModels` proxy arm: the mirror updates synchronously, then the frame is
+    /// fired and a failure reported.
+    pub fn spawn_set_favorite_models(self: &Arc<Self>, models: Value) {
+        self.update(|state| state.favorite_models = models.clone());
+        let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+        let proxy = self.clone();
+        handle.spawn(async move { if let Err(error) = proxy.set_favorite_models(models).await { proxy.report_action_failure("setFavoriteModels", &error); } });
+    }
+
+    /// senpi's `setScopedModels` proxy arm: the mirror updates synchronously, then the frame is
+    /// fired and a failure reported.
+    pub fn spawn_set_scoped_models(self: &Arc<Self>, models: Value) {
+        self.update(|state| state.scoped_models = models.clone());
+        let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+        let proxy = self.clone();
+        handle.spawn(async move { if let Err(error) = proxy.set_scoped_models(models).await { proxy.report_action_failure("setScopedModels", &error); } });
+    }
+
     /// Fetch the host's session stats off the transport, generation-tagged.
     pub fn spawn_fetch_stats(&self, generation: u64, sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Value, String>)>) {
         let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };

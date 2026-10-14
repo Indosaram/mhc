@@ -527,6 +527,11 @@ pub struct InteractiveMode {
     current_theme_setting: Option<String>,
     /// A `tuiMode`/`terminalMouse` change from `/settings` waiting for the host's renderer swap.
     pending_terminal_setting: Option<(String, serde_json::Value)>,
+    /// senpi `handleCopyCommand({ preferSelection })`: a fullscreen selection copy waiting for the
+    /// loop that owns the terminal.
+    pending_selection_copy: bool,
+    /// Whether the host's fullscreen renderer has copy-on-select off and an active selection.
+    selection_copy_available: bool,
     /// senpi keeps `selector` to call `getSettingsList().updateValue` when a change is refused.
     settings_selector: Option<std::rc::Weak<RefCell<crate::components::settings_selector::SettingsSelectorComponent>>>,
 }
@@ -1241,7 +1246,7 @@ impl InteractiveMode {
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
         let invalidate_ui = Arc::downgrade(&extension_ui);
         session.set_before_session_invalidate(Some(Arc::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } })));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None, extension_editor_dialog: None, pending_dialog_external_edit: Default::default() }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, pending_selection_copy:false, selection_copy_available:false, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None, extension_editor_dialog: None, pending_dialog_external_edit: Default::default() }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1614,6 +1619,15 @@ impl InteractiveMode {
             }
         }
         self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into())));
+    }
+
+    /// The receiver of senpi's synchronous session setters (`setSteeringMode`, `setScopedModels`,
+    /// ...): the mounted host's proxy, else the local session.
+    fn session_setter_target(&self) -> Arc<dyn crate::interactive_session::InteractiveSession> {
+        match self.session_host.clone() {
+            Some(host) => host,
+            None => Arc::new(crate::interactive_session::LocalInteractiveSession::new(self.session.clone())),
+        }
     }
 
     /// Fire-and-forget session thinking-level set for the synchronous paths.
@@ -2357,6 +2371,12 @@ impl InteractiveMode {
             // senpi `handleCopyCommand({ flashConfirmation: true })`: the fullscreen UI confirms with
             // `ui.flash("Copied!")` instead of a status line.
             let renderer = self.mounted_renderer.as_ref().and_then(std::rc::Weak::upgrade).filter(|renderer| matches!(&*renderer.borrow(), crate::tui_renderer::InteractiveTui::Fullscreen(_)));
+            // senpi `preferSelection`: with copy-on-select off, an active fullscreen selection is
+            // copied instead of the last assistant message.
+            if self.selection_copy_available || renderer.as_ref().is_some_and(|renderer| { let renderer = renderer.borrow(); !renderer.get_copy_on_select() && renderer.has_active_selection() }) {
+                self.pending_selection_copy = true;
+                return Ok(());
+            }
             if let Some(renderer) = renderer && let Some(text) = self.session.get_last_assistant_text().filter(|text|!text.is_empty()) {
                 let sequence = crate::interactive_clipboard::copy(&text).await?;
                 if let Some(sequence) = sequence { maho_tui::process_stdio::stdout_write(&sequence); }
@@ -2388,6 +2408,11 @@ impl InteractiveMode {
 
     /// The pending terminal hand-off, consumed by the loop that owns the terminal.
     pub fn take_terminal_request(&mut self) -> Option<TerminalRequest> { self.terminal_request.take() }
+    /// The host reports, before routing input, whether its fullscreen renderer would copy the
+    /// active selection (senpi `!ui.getCopyOnSelect() && ui.hasActiveSelection()`).
+    pub fn set_selection_copy_available(&mut self, available: bool) { self.selection_copy_available = available; }
+    /// A pending fullscreen selection copy, consumed by the loop that owns the terminal.
+    pub fn take_pending_selection_copy(&mut self) -> bool { std::mem::take(&mut self.pending_selection_copy) }
     /// A pending terminal bell (BEL) for the loop that owns the terminal.
     pub fn take_pending_bell(&mut self) -> bool { std::mem::take(&mut self.pending_bell) }
     /// senpi: `if (opts?.notifyArrival !== false && settingsManager.getAskUserSettings().bell) terminal.write("\x07")`.
@@ -3384,10 +3409,10 @@ impl InteractiveMode {
             // senpi `onTerminalMouseChange`: the host applies it by recreating the renderer, and only
             // when no overlay is open; the setting is persisted once the host accepts the change.
             { let ui = self.extension_ui.clone(); callbacks.on_terminal_mouse_change = Some(Box::new(move |value: String| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::TerminalSetting("terminalMouse".into(), serde_json::json!(value)))))); }
-            let session = self.session.clone(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { session.set_auto_compaction_enabled(enabled); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set_compaction_enabled(enabled)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
-            let session = self.session.clone(); callbacks.on_steering_mode_change = Some(Box::new(move |mode| session.set_steering_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
-            let session = self.session.clone(); callbacks.on_follow_up_mode_change = Some(Box::new(move |mode| session.set_follow_up_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
-            let session = self.session.clone(); callbacks.on_thinking_level_change = Some(Box::new(move |level| session.set_thinking_level(maho_ai::types::ModelThinkingLevel::parse(level.as_str()).expect("selector thinking level"))));
+            let session = self.session.clone(); let target = self.session_setter_target(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { target.set_auto_compaction(enabled); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set_compaction_enabled(enabled)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
+            let target = self.session_setter_target(); callbacks.on_steering_mode_change = Some(Box::new(move |mode| target.set_steering_mode(mode)));
+            let target = self.session_setter_target(); callbacks.on_follow_up_mode_change = Some(Box::new(move |mode| target.set_follow_up_mode(mode)));
+            let target = self.session_setter_target(); callbacks.on_thinking_level_change = Some(Box::new(move |level| target.set_thinking_level(level.as_str().to_owned())));
             macro_rules! persist_enum { ($field:ident, $key:literal, $ty:ty, $value:expr) => {{ let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.$field = Some(Box::new(move |value: $ty| {
                 let serialized = ($value)(value); let values = [($key.into(), serialized.clone())].into_iter().collect();
                 match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
@@ -3446,7 +3471,7 @@ impl InteractiveMode {
             let enabled = if !entries.is_empty() { Some(entries.iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).collect()) }
                 else if stored.is_empty() { if favorites || configured.is_some() { Some(Vec::new()) } else { None } }
                 else { Some(resolution.pattern_resolutions.iter().flat_map(|item| if item.unresolved { vec![item.pattern.clone()] } else { item.owned_ids.clone() }).collect()) };
-            let session = self.session.clone(); let available = Rc::new(RefCell::new(models.clone())); let footer_data = self.footer_data.clone();
+            let target = self.session_setter_target(); let available = Rc::new(RefCell::new(models.clone())); let footer_data = self.footer_data.clone();
             // senpi `updateSessionModels`: applies the scope over the (refreshable) available snapshot
             // and recomputes the footer's provider count.
             let update_session_models: Rc<dyn Fn(Option<Vec<String>>)> = { let available = available.clone(); Rc::new(move |ids: Option<Vec<String>>| {
@@ -3454,11 +3479,10 @@ impl InteractiveMode {
                 let all_ids: Vec<_> = available.iter().map(|model| format!("{}/{}", model.provider, model.id)).collect();
                 let resolved = maho_core::model_resolver::resolve_model_scope_from_models(ids.as_deref().unwrap_or(&all_ids), &available);
                 let entries = resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.map(|level| serde_json::from_value(serde_json::json!(level.as_str())).expect("resolved thinking level")), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect();
-                if favorites { session.set_favorite_models(entries); return; }
-                else if ids.as_ref().is_some_and(|ids| available.iter().all(|model| ids.contains(&format!("{}/{}", model.provider, model.id)))) { session.set_scoped_models(Vec::new()); }
-                else { session.set_scoped_models(entries); }
+                if favorites { target.set_favorite_models(entries); return; }
+                let scoped = if ids.as_ref().is_some_and(|ids| available.iter().all(|model| ids.contains(&format!("{}/{}", model.provider, model.id)))) { Vec::new() } else { entries };
+                target.set_scoped_models(scoped.clone());
                 // senpi `updateAvailableProviderCount`: the scoped models when narrowed, else the snapshot.
-                let scoped = session.scoped_models();
                 let providers: std::collections::BTreeSet<_> = if scoped.is_empty() { available.iter().map(|model| model.provider.clone()).collect() } else { scoped.into_iter().map(|entry| entry.model.provider).collect() };
                 footer_data.set_available_provider_count(providers.len());
             }) };
@@ -3581,7 +3605,7 @@ impl InteractiveMode {
             let candidate_ids = models.iter().map(ModelEntry::full_id).collect::<Vec<_>>();
             let session_favorites = self.host_favorite_models().into_iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).filter(|id| candidate_ids.contains(id)).collect::<Vec<_>>();
             let favorite_ids = Some(if session_favorites.is_empty() { resolutions.iter().flat_map(|resolution| resolution.owned_ids.clone()).filter(|id| candidate_ids.contains(id)).collect() } else { session_favorites });
-            let session = self.session.clone(); let ui = self.extension_ui.clone();
+            let session = self.session.clone(); let ui = self.extension_ui.clone(); let target = self.session_setter_target();
             let favorite_callback = Box::new(move |ids: crate::components::favorite_model_ids::FavoriteModelIds, candidates: &[ModelEntry], _: &ModelEntry| {
                 let candidate_ids = candidates.iter().map(ModelEntry::full_id).collect::<Vec<_>>();
                 let merged = crate::components::model_favorites::merge_favorite_patterns_for_persist(crate::components::model_favorites::FavoritePatternsForPersist { stored_patterns:&stored, pattern_resolutions:&resolutions, selected_ids:&ids, candidate_ids:&candidate_ids });
@@ -3589,7 +3613,7 @@ impl InteractiveMode {
                 if let Err(error) = session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error); return; }
                 let patterns = merged.unwrap_or_default();
                 let resolved = maho_core::model_resolver::resolve_model_scope_from_models(&patterns, &catalog);
-                session.set_favorite_models(resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.and_then(|level| serde_json::from_value(serde_json::json!(level.as_str())).ok()), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect());
+                target.set_favorite_models(resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.and_then(|level| serde_json::from_value(serde_json::json!(level.as_str())).ok()), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect());
             });
             let scoped = self.host_scoped_models().into_iter().map(|entry| crate::components::model_selector::ScopedModelItem { model:ModelEntry { provider:entry.model.provider, id:entry.model.id, name:entry.model.name }, thinking_level:entry.thinking_level.map(|level| serde_json::to_value(level).expect("thinking level").as_str().expect("string level").to_owned()) }).collect();
             let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), 0, &models,
@@ -3957,7 +3981,7 @@ impl InteractiveMode {
                 options.push(AuthSelectorProvider { id, name: provider.name().to_owned(), auth_type: AuthSelectorAuthType::ApiKey, method_name: Some(api_key.name().to_owned()), login_label: None, method_has_login: api_key.has_login(), status });
             }
         }
-        options.sort_by(|left, right| left.name.cmp(&right.name));
+        options.sort_by(|left, right| locale_compare(&left.name, &right.name));
         options
     }
 
@@ -3979,7 +4003,7 @@ impl InteractiveMode {
                 status: Some(maho_ai::auth::types::AuthCheck { auth_type: maho_ai::auth::types::AuthType::from(auth_type), source: Some("stored credential".to_owned()) }),
             }
         }).collect::<Vec<_>>();
-        options.sort_by(|left, right| left.name.cmp(&right.name));
+        options.sort_by(|left, right| locale_compare(&left.name, &right.name));
         Ok(options)
     }
 
@@ -5523,8 +5547,14 @@ fn get_login_provider_completion_options(provider_options: &[crate::components::
         }
         by_id.push(LoginProviderCompletionOption { id: provider.id.clone(), name: provider.name.clone(), auth_types: vec![provider.auth_type] });
     }
-    by_id.sort_by(|left, right| left.name.cmp(&right.name));
+    by_id.sort_by(|left, right| locale_compare(&left.name, &right.name));
     by_id
+}
+
+/// senpi `String.prototype.localeCompare` (default ICU collation).
+fn locale_compare(left: &str, right: &str) -> std::cmp::Ordering {
+    let collator = icu_collator::Collator::try_new(Default::default(), Default::default()).expect("compiled collation data is available");
+    collator.compare(left, right)
 }
 
 /// senpi `getLoginProviderSearchText`.

@@ -66,6 +66,16 @@ pub trait InteractiveSession: Send + Sync {
     /// senpi's `clearQueue` proxy arm is synchronous: it returns the mirrored queue and fires the
     /// RPC. A no-op locally (the caller reads the local session's queue directly).
     fn fire_clear_queue(&self, _abort_will_follow: bool) {}
+    /// senpi's synchronous `setSteeringMode`/`setFollowUpMode`/`setAutoCompactionEnabled`/
+    /// `setThinkingLevel`/`setScopedModels`/`setFavoriteModels` proxy arms: the remote runtime
+    /// fires the RPC (mirroring the model lists first) and reports a failure; the local session
+    /// applies them directly.
+    fn set_steering_mode(&self, _mode: String) {}
+    fn set_follow_up_mode(&self, _mode: String) {}
+    fn set_auto_compaction(&self, _enabled: bool) {}
+    fn set_thinking_level(&self, _level: String) {}
+    fn set_scoped_models(&self, _models: Vec<maho_core::agent_session::SessionModelEntry>) {}
+    fn set_favorite_models(&self, _models: Vec<maho_core::agent_session::SessionModelEntry>) {}
     fn execute_bash(&self, _command: String, _exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> { Box::pin(async { Err("execute_bash is not implemented for this session host".to_owned()) }) }
     fn set_model(&self, _provider: String, _id: String) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("set_model is not implemented for this session host".to_owned()) }) }
     fn set_session_name(&self, _name: String) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("set_session_name is not implemented for this session host".to_owned()) }) }
@@ -247,6 +257,32 @@ impl InteractiveSession for LocalInteractiveSession {
         Box::pin(async move { self.session.set_session_thinking_level(maho_ai::types::ModelThinkingLevel::parse(&level).unwrap_or(maho_ai::types::ModelThinkingLevel::Off)); Ok(()) })
     }
 
+    fn set_steering_mode(&self, mode: String) {
+        self.session.set_steering_mode(queue_mode(&mode));
+    }
+
+    fn set_follow_up_mode(&self, mode: String) {
+        self.session.set_follow_up_mode(queue_mode(&mode));
+    }
+
+    fn set_auto_compaction(&self, enabled: bool) {
+        self.session.set_auto_compaction_enabled(enabled);
+    }
+
+    fn set_thinking_level(&self, level: String) {
+        if let Some(level) = maho_ai::types::ModelThinkingLevel::parse(&level) {
+            self.session.set_thinking_level(level);
+        }
+    }
+
+    fn set_scoped_models(&self, models: Vec<maho_core::agent_session::SessionModelEntry>) {
+        self.session.set_scoped_models(models);
+    }
+
+    fn set_favorite_models(&self, models: Vec<maho_core::agent_session::SessionModelEntry>) {
+        self.session.set_favorite_models(models);
+    }
+
     fn cycle_thinking_level(&self) -> SessionFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move { Ok(self.session.cycle_thinking_level().map(|level| level.as_str().to_owned())) })
     }
@@ -262,6 +298,25 @@ impl InteractiveSession for LocalInteractiveSession {
     fn export_html(&self, output_path: Option<String>, theme_name: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move { self.session.export_to_html(output_path.as_deref(), theme_name.as_deref()).map(Some) })
     }
+}
+
+fn queue_mode(mode: &str) -> maho_agent::types::QueueMode {
+    if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime }
+}
+
+/// senpi's `void client.<setter>(...).catch(reportActionFailure(action))`.
+fn spawn_proxy_setter<F, Fut>(runtime: &RemoteInteractiveRuntime, action: &'static str, call: F)
+where
+    F: FnOnce(Arc<crate::interactive_host_runtime::RemoteSessionProxy>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(), maho_rpc::rpc_client::RpcClientError>> + Send + 'static,
+{
+    let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+    let proxy = runtime.proxy().clone();
+    handle.spawn(async move {
+        if let Err(error) = call(proxy.clone()).await {
+            proxy.report_action_failure(action, &error);
+        }
+    });
 }
 
 fn remote_outcome(
@@ -360,6 +415,30 @@ impl InteractiveSession for RemoteInteractiveRuntime {
 
     fn fire_clear_queue(&self, abort_will_follow: bool) {
         self.proxy().spawn_clear_queue(abort_will_follow);
+    }
+
+    fn set_steering_mode(&self, mode: String) {
+        spawn_proxy_setter(self, "setSteeringMode", move |proxy| async move { proxy.set_steering_mode(&mode).await });
+    }
+
+    fn set_follow_up_mode(&self, mode: String) {
+        spawn_proxy_setter(self, "setFollowUpMode", move |proxy| async move { proxy.set_follow_up_mode(&mode).await });
+    }
+
+    fn set_auto_compaction(&self, enabled: bool) {
+        spawn_proxy_setter(self, "setAutoCompaction", move |proxy| async move { proxy.set_auto_compaction(enabled).await });
+    }
+
+    fn set_thinking_level(&self, level: String) {
+        spawn_proxy_setter(self, "setThinkingLevel", move |proxy| async move { proxy.set_thinking_level(&level, None).await.map(|_| ()) });
+    }
+
+    fn set_scoped_models(&self, models: Vec<maho_core::agent_session::SessionModelEntry>) {
+        self.proxy().spawn_set_scoped_models(models.iter().map(maho_rpc::connection_handler::session_model_entry_json).collect());
+    }
+
+    fn set_favorite_models(&self, models: Vec<maho_core::agent_session::SessionModelEntry>) {
+        self.proxy().spawn_set_favorite_models(models.iter().map(maho_rpc::connection_handler::session_model_entry_json).collect());
     }
 
     fn execute_bash(&self, command: String, exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> {
