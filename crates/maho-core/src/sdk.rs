@@ -310,7 +310,10 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         inputs.additional_hook_paths.extend(options.additional_hook_paths);
         inputs.hook_resources.extend(options.hook_resources);
         session.set_resource_loader_inputs(inputs);
-        session.load_resources().await;
+        if let Err(error) = session.load_resources().await {
+            session.dispose().await;
+            return Err(error);
+        }
     }
     session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
     if let Err(error) = session.admit_sdk_model(resumed) {

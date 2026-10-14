@@ -301,25 +301,14 @@ pub fn dedupe_prompts(prompts: Vec<PromptTemplate>) -> (Vec<PromptTemplate>, Vec
 /// senpi `DefaultResourceLoader.reload()` for skills, prompt templates and hooks: resolve packages
 /// and auto-discovered resources (`packageManager.resolve()`), resolve the `-e` sources as temporary
 /// packages, then load the enabled paths CLI-first and in package-manager precedence order.
-pub async fn load_resources(cwd: &str, agent_dir: &str, mut settings: SettingsManager, inputs: &ResourceLoaderInputs) -> LoadedResources {
-    let mut diagnostics = Vec::new();
+/// Like upstream (`resolve()` / `installParsedSource` have no catch), a package or `-e` source that
+/// cannot be resolved or installed fails the whole load.
+pub async fn load_resources(cwd: &str, agent_dir: &str, mut settings: SettingsManager, inputs: &ResourceLoaderInputs) -> Result<LoadedResources, String> {
     let (resolved, cli) = {
         let manager = DefaultPackageManager::new(PackageManagerOptions { cwd, agent_dir, settings_manager: &mut settings });
-        let resolved = match manager.resolve(None).await {
-            Ok(paths) => paths,
-            Err(error) => {
-                diagnostics.push(error_diagnostic(format!("Failed to resolve packages: {error}"), None));
-                ResolvedPaths::default()
-            }
-        };
+        let resolved = manager.resolve(None).await.map_err(|error| error.to_string())?;
         let cli = if inputs.additional_extension_paths.is_empty() { ResolvedPaths::default() } else {
-            match manager.resolve_extension_sources(&inputs.additional_extension_paths, Some(ResolveSourcesOptions { local: false, temporary: true })).await {
-                Ok(paths) => paths,
-                Err(error) => {
-                    diagnostics.push(error_diagnostic(format!("Failed to resolve extension sources: {error}"), None));
-                    ResolvedPaths::default()
-                }
-            }
+            manager.resolve_extension_sources(&inputs.additional_extension_paths, Some(ResolveSourcesOptions { local: false, temporary: true })).await.map_err(|error| error.to_string())?
         };
         (resolved, cli)
     };
@@ -363,7 +352,6 @@ pub async fn load_resources(cwd: &str, agent_dir: &str, mut settings: SettingsMa
             skills.diagnostics.push(error_diagnostic("Skill path does not exist".into(), Some(resolved_path)));
         }
     }
-    skills.diagnostics.extend(diagnostics);
 
     let prompt_candidates = if inputs.no_prompt_templates { cli_prompts } else { [cli_prompts, enabled_prompts].concat() };
     let prompt_paths = merge_paths(cwd, prompt_candidates, &inputs.additional_prompt_template_paths);
@@ -382,7 +370,7 @@ pub async fn load_resources(cwd: &str, agent_dir: &str, mut settings: SettingsMa
         }
     }
 
-    LoadedResources { skills, prompts, prompt_diagnostics, hook_resources, pre_session_hook_paths }
+    Ok(LoadedResources { skills, prompts, prompt_diagnostics, hook_resources, pre_session_hook_paths })
 }
 
 #[cfg(test)]
@@ -499,7 +487,7 @@ mod tests {
         write(&agent.join("hooks").join("user.json"), "{}");
         std::fs::create_dir_all(&cwd).expect("cwd");
         let settings = trusted_settings(serde_json::json!({"packages": ["../pkg"]}));
-        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), settings, &ResourceLoaderInputs::default()).await;
+        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), settings, &ResourceLoaderInputs::default()).await.expect("load resources");
         let package_skill = loaded.skills.skills.iter().find(|skill| skill.name == "pkg-skill").expect("package skill");
         assert_eq!(package_skill.source_info.origin, SourceOrigin::Package);
         assert!(loaded.prompts.iter().any(|prompt| prompt.name == "pkg-prompt"));
@@ -518,7 +506,7 @@ mod tests {
         skill(&project.join("skills"), "dup-skill");
         write(&agent.join("prompts").join("dup.md"), "user prompt");
         write(&project.join("prompts").join("dup.md"), "project prompt");
-        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), trusted_settings(serde_json::json!({})), &ResourceLoaderInputs::default()).await;
+        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), trusted_settings(serde_json::json!({})), &ResourceLoaderInputs::default()).await.expect("load resources");
         let winner = loaded.skills.skills.iter().find(|skill| skill.name == "dup-skill").expect("skill");
         assert!(winner.file_path.starts_with(&*project.to_string_lossy()), "{}", winner.file_path);
         let prompt = loaded.prompts.iter().find(|prompt| prompt.name == "dup").expect("prompt");
@@ -537,7 +525,7 @@ mod tests {
         let inputs = ResourceLoaderInputs {
             additional_skill_paths: vec![dir.path().join("cli").to_string_lossy().into_owned()], no_skills: true, ..Default::default()
         };
-        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), trusted_settings(serde_json::json!({})), &inputs).await;
+        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), trusted_settings(serde_json::json!({})), &inputs).await.expect("load resources");
         let names: Vec<&str> = loaded.skills.skills.iter().map(|skill| skill.name.as_str()).collect();
         assert_eq!(names, ["cli-skill"]);
     }
