@@ -169,10 +169,11 @@ impl ThreadRegistry {
         self.deleted.lock().await.remove(&session.session_id());
         Ok(self.register_bound_session(session, cwd, None, ui).await)
     }
-    pub async fn fork_thread(&self, thread_id: &str, cwd: Option<String>) -> Result<Arc<Mutex<ThreadEntry>>, String> {
+    /// senpi `forkThread`; `server_cwd` is the `process.cwd()` base of `resolvePath`.
+    pub async fn fork_thread(&self, thread_id: &str, cwd: Option<String>, server_cwd: &str) -> Result<Arc<Mutex<ThreadEntry>>, String> {
         let source = self.resume_thread(thread_id).await?;
         let (source_cwd, source_file) = {let source = source.lock().await;(source.cwd.clone(),source.session.session_file())};
-        let cwd = maho_core::paths::resolve_path(cwd.as_deref().unwrap_or(&source_cwd),&source_cwd,&Default::default());
+        let cwd = maho_core::paths::resolve_path(cwd.as_deref().unwrap_or(&source_cwd),server_cwd,&Default::default());
         let manager = fork_session_manager(source_file.as_deref(),&cwd,self.session_dir.as_deref())?;
         let ui = self.session_ui(manager.session_id());
         let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), extension_ui: ui.clone(), ..Default::default() }).await?;
