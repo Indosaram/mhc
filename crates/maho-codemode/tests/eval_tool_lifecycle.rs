@@ -84,8 +84,15 @@ async fn resolved_file_and_environment_capacity_is_enforced_by_callable() {
             assert_eq!(admitted.recv().await.unwrap(),format!("capacity-{index}"));
             tokio::time::advance(Duration::from_secs(1)).await;
             let result=call.await.unwrap().unwrap();
-            if index<capacity {assert_eq!(result.details.as_ref().unwrap()["cells"][0]["status"],"detached");} else {assert_eq!(result.details.as_ref().unwrap()["isError"],true);}
+            let details=result.details.as_ref().unwrap();
+            if index<capacity {assert_eq!(details["cells"][0]["status"],"detached");} else {
+                assert_eq!(details["isError"],true);
+                assert_eq!(details["code"],"eval_background_capacity_reached");
+                assert_eq!(details["cells"][0]["status"],"cancelled");
+            }
         }
+        let refused=cells.lock().unwrap().peek(&format!("capacity-{capacity}")).unwrap();
+        assert_eq!(refused.state,maho_codemode::tool::detached_cell_contract::EvalDetachedCellState::Cancelled);
         assert_eq!(cells.lock().unwrap().list().0.len(),capacity);
         EvalDetachedCellManager::dispose(&cells).await.unwrap();
         assert!(cells.lock().unwrap().list().0.is_empty());
