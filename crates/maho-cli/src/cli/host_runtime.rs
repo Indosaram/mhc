@@ -119,6 +119,54 @@ impl CliRuntimeConfiguration {
         }
     }
 
+    /// The configuration a session worker receives in its \`prepare\` (senpi posts the
+    /// \`CliRuntimeConfiguration\` object; a structured clone keeps no shared trust cache, so the
+    /// worker starts its own per-cwd decisions).
+    pub fn to_worker_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "cwd": self.cwd, "agentDir": self.agent_dir, "appMode": self.app_mode.as_str(),
+            "provider": self.provider, "model": self.model, "models": self.models, "thinking": self.thinking,
+            "autoTitleSessions": self.auto_title_sessions, "help": self.help, "listModels": self.list_models, "listTips": self.list_tips,
+            "sessionDir": self.session_dir, "extensions": self.extensions, "noExtensions": self.no_extensions,
+            "skills": self.skills, "promptTemplates": self.prompt_templates, "themes": self.themes, "hooks": self.hooks,
+            "additionalHookPaths": self.additional_hook_paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+            "projectTrustOverride": self.project_trust_override,
+            "extensionFlagValues": self.extension_flag_values.as_ref().map(|flags| flags.iter().map(|(name, value)| (name.clone(), match value {
+                FlagValue::Boolean(value) => serde_json::json!(value),
+                FlagValue::String(value) => serde_json::json!(value),
+            })).collect::<serde_json::Map<_, _>>()),
+        })
+    }
+
+    pub fn from_worker_json(value: &serde_json::Value) -> Result<Self, String> {
+        let text = |key: &str| value.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
+        let list = |key: &str| value.get(key).and_then(serde_json::Value::as_array).map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect::<Vec<_>>()).unwrap_or_default();
+        let flag = |key: &str| value.get(key).and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let app_mode = match text("appMode").as_deref() {
+            Some("interactive") => AppMode::Interactive, Some("print") => AppMode::Print, Some("json") => AppMode::Json,
+            Some("rpc") => AppMode::Rpc, Some("app-server") => AppMode::AppServer,
+            other => return Err(format!("Invalid worker configuration appMode: {other:?}")),
+        };
+        Ok(Self {
+            cwd: text("cwd").ok_or("Invalid worker configuration: cwd")?,
+            agent_dir: text("agentDir").ok_or("Invalid worker configuration: agentDir")?,
+            app_mode,
+            provider: text("provider"), model: text("model"), models: list("models"), thinking: text("thinking"),
+            auto_title_sessions: value.get("autoTitleSessions").and_then(serde_json::Value::as_bool),
+            help: flag("help"), list_models: flag("listModels"), list_tips: flag("listTips"),
+            session_dir: text("sessionDir"), extensions: list("extensions"), no_extensions: flag("noExtensions"),
+            skills: list("skills"), prompt_templates: list("promptTemplates"), themes: list("themes"), hooks: list("hooks"),
+            additional_hook_paths: list("additionalHookPaths").into_iter().map(PathBuf::from).collect(),
+            project_trust_override: value.get("projectTrustOverride").and_then(serde_json::Value::as_bool),
+            project_trust_by_cwd: Arc::default(),
+            extension_flag_values: value.get("extensionFlagValues").and_then(serde_json::Value::as_object).map(|flags| flags.iter().filter_map(|(name, value)| Some((name.clone(), match value {
+                serde_json::Value::Bool(value) => FlagValue::Boolean(*value),
+                serde_json::Value::String(value) => FlagValue::String(value.clone()),
+                _ => return None,
+            }))).collect()),
+        })
+    }
+
     /// senpi `trustPromptMode`: metadata-only launches resolve trust as a print run.
     pub fn trust_prompt_mode(&self) -> AppMode {
         if self.help || self.list_models || self.list_tips { AppMode::Print } else { to_project_trust_mode(self.app_mode) }
@@ -462,6 +510,61 @@ pub fn create_host_core(config: CliRuntimeConfiguration, cwd: &str, listen: Opti
         },
         writer,
     ))
+}
+
+/// senpi main.ts:1112-1154 with \`resolveSessionRuntime(parsed) === "worker"\`: the host passes its
+/// configuration as \`workerConfiguration\`, so \`createHostCore\` selects the worker registry and every
+/// session runs in its own isolated worker process. No shared model runtime is built: each worker
+/// builds its own (an object cannot cross the process boundary).
+pub fn create_worker_host_core(config: CliRuntimeConfiguration, cwd: &str, listen: Option<&str>, executable: PathBuf) -> std::sync::Arc<maho_rpc::multi_session_host::HostCore> {
+    let create_runtime: maho_rpc::multi_session_host::HostRuntimeFactory = Arc::new(|_profile: maho_rpc::session_registry::RpcSessionLaunchProfile| {
+        Box::pin(async { Err("a worker-runtime host opens every session in its own worker".to_owned()) })
+            as Pin<Box<dyn Future<Output = Result<AgentSessionRuntime, String>> + Send>>
+    });
+    let writer = match listen {
+        None | Some("stdio://") => std::sync::Arc::new(maho_rpc::session_event_writer::SessionWriterActor::new(tokio::io::stdout())),
+        Some(_) => std::sync::Arc::new(maho_rpc::session_event_writer::SessionWriterActor::new(tokio::io::sink())),
+    };
+    let close_grace_ms = host_close_grace_ms();
+    let workers = maho_rpc::worker_session_registry::WorkerSessionRegistry::new(config.to_worker_json(), session_worker_spawner(executable), close_grace_ms);
+    std::sync::Arc::new(maho_rpc::multi_session_host::HostCore::new(
+        maho_rpc::multi_session_host::HostCoreOptions {
+            agent_dir: PathBuf::from(&config.agent_dir),
+            cwd: cwd.to_owned(),
+            create_runtime,
+            capabilities: maho_rpc::custom_capability::parse_client_capabilities(
+                maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES", &maho_core::config::current_env()).as_deref(),
+            ),
+            close_grace_ms,
+        },
+        writer,
+    ).with_worker_registry(workers))
+}
+
+/// One isolated session worker: this binary re-entered under the internal rpc-session-worker role
+/// (senpi \`new Worker(session-worker.ts)\`), speaking the worker protocol on stdin/stdout.
+pub fn session_worker_spawner(executable: PathBuf) -> maho_rpc::session_worker_client::SpawnSessionWorker {
+    Arc::new(move || {
+        let mut command = tokio::process::Command::new(&executable);
+        command
+            .env(crate::experimental::process::INTERNAL_PROCESS_ENV, crate::experimental::process::RPC_SESSION_WORKER_ROLE)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true);
+        command.spawn()
+    })
+}
+
+/// senpi \`session-worker.ts\` \`commit\`: \`createCliRuntimeFactory(prepared.configuration)\` inside the worker.
+pub fn session_worker_configuration(value: &serde_json::Value) -> Result<maho_rpc::session_worker::SessionWorkerConfiguration, String> {
+    let config = CliRuntimeConfiguration::from_worker_json(value)?;
+    let model_runtime = host_model_runtime(&config);
+    Ok(maho_rpc::session_worker::SessionWorkerConfiguration {
+        agent_dir: config.agent_dir.clone(),
+        session_dir: config.session_dir.clone(),
+        create_runtime: host_runtime_factory(config, model_runtime),
+    })
 }
 
 /// senpi's shared host model runtime (`hostModelRuntime`): one catalog and one auth store behind
