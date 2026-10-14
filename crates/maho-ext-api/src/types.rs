@@ -1588,7 +1588,10 @@ pub struct EventBusCheckpoint(BusState);
 pub trait Extension: Send + Sync { fn register(&self, api: &mut ExtensionApi); }
 #[derive(Clone)]
 pub struct LoadedExtension {
-    pub identity: ExtensionIdentity, pub source_info: SourceInfo, pub registration_cwd: PathBuf,
+    pub identity: ExtensionIdentity,
+    /// senpi `Extension.hidden` (extensions/types.ts:2573): omitted from the startup Extensions list.
+    pub hidden: bool,
+    pub source_info: SourceInfo, pub registration_cwd: PathBuf,
     pub handlers: BTreeMap<EventKind, Vec<ExtensionHandler>>, pub tools: Vec<RegisteredTool>,
     pub commands: Vec<RegisteredCommand>, pub flags: Vec<ExtensionFlag>, pub message_renderers: BTreeMap<String, MessageRenderer>,
     pub entry_renderers: BTreeMap<String, EntryRenderer>, pub entry_renderer_options: BTreeMap<String, EntryRendererOptions>,
@@ -1605,7 +1608,7 @@ pub struct LoadedExtension {
 }
 impl LoadedExtension {
     pub fn new(path: &str, cwd: PathBuf, source_info: SourceInfo) -> Self {
-        Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
+        Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, hidden: false, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
             shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), native_tool_search_injection_failure_sources: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new(), fast_mode_action: None }

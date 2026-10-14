@@ -192,7 +192,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let (base_factories, extension_errors) = super::default_extensions::with_user_extensions(base_factories, &mut settings, &session_cwd, &agent_dir, &trust_config.resolved_extension_paths(), parsed.no_extensions).await?;
     runtime_diagnostics.extend(extension_errors.into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(super::default_extensions::extension_load_failure_message(&error.path, &error.message))));
     let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
-    let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), std::path::Path::new(&session_cwd), session_profile.clone())).await;
+    let mut extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), std::path::Path::new(&session_cwd), session_profile.clone())).await;
+    super::extension_registry::mark_hidden_inline_extensions(&mut extensions.extensions);
     let extension_snapshot = extensions.extensions.clone();
     // senpi main.ts:1262-1268: every full launch refreshes what `--help` reads.
     super::help_flags_cache::write_help_flags_cache(

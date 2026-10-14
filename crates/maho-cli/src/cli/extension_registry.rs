@@ -270,6 +270,20 @@ pub fn inline_extensions() -> &'static [NativeExtension] {
     &INLINE_FACTORIES
 }
 
+/// senpi `src/extensions/index.ts:4` (`{ name: "llama.cpp", ..., hidden: true }`): inline extensions
+/// omitted from the startup Extensions list.
+static HIDDEN_INLINE_EXTENSION_IDS: [&str; 1] = ["llama.cpp"];
+
+/// senpi resource-loader.ts:1438 `extension.hidden = isNamed && input.hidden`: marks the loaded
+/// hidden inline extensions.
+pub fn mark_hidden_inline_extensions(extensions: &mut [maho_ext_api::LoadedExtension]) {
+    for extension in extensions {
+        if HIDDEN_INLINE_EXTENSION_IDS.iter().any(|id| extension.identity.path == format!("<inline:{id}>")) {
+            extension.hidden = true;
+        }
+    }
+}
+
 fn ferryx_agent_state() -> Box<dyn Extension> {
     Box::new(maho_ext_ferryx_agent_state::FerryxAgentState)
 }
