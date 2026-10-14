@@ -632,6 +632,9 @@ pub struct AgentSessionInner {
     extension_rpc_event_listeners: Mutex<Vec<ExtensionRpcEventListener>>,
     tool_context_disposers: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
     html_theme_resolver: Mutex<Option<HtmlThemeResolver>>,
+    /// senpi `getToolDefinition` over `_baseToolDefinitions`: the built-in tool definitions carry
+    /// renderers (`grep`, `find`) that `/export` uses when no extension registered the tool.
+    html_built_in_tool_renderers: Mutex<Option<crate::export_html::tool_renderer::ToolRendererLookup>>,
 }
 
 pub type HtmlThemeResolver = Arc<dyn Fn(Option<&str>) -> Result<(maho_ext_api::Theme, Option<(BTreeMap<String, String>, BTreeMap<String, String>)>), String> + Send + Sync>;
@@ -1824,6 +1827,7 @@ impl AgentSession {
             extension_rpc_event_listeners: Mutex::new(Vec::new()),
             tool_context_disposers: Mutex::new(Vec::new()),
             html_theme_resolver: Mutex::new(None),
+            html_built_in_tool_renderers: Mutex::new(None),
         }) };
 
         let initial_model = session.agent.state().model;
@@ -5301,6 +5305,11 @@ impl AgentSession {
         *lock(&self.inner.html_theme_resolver) = Some(resolver);
     }
 
+    /// Installs the renderers of the built-in tool definitions for HTML export.
+    pub fn set_html_built_in_tool_renderers(&self, lookup: crate::export_html::tool_renderer::ToolRendererLookup) {
+        *lock(&self.inner.html_built_in_tool_renderers) = Some(lookup);
+    }
+
     pub fn export_to_html_with_theme(
         &self, output_path: Option<&str>, theme_name: Option<&str>, render_theme: maho_ext_api::Theme,
         colors: Option<(std::collections::BTreeMap<String, String>, std::collections::BTreeMap<String, String>)>,
@@ -5314,9 +5323,11 @@ impl AgentSession {
         let renderers = runner.as_ref().map(|runner| runner.get_all_registered_tools().into_iter()
             .filter_map(|tool| runner.get_erased_tool_renderers(&tool.definition.name).map(|renderers| (tool.definition.name, renderers)))
             .collect::<std::collections::HashMap<_, _>>()).unwrap_or_default();
+        let built_in = lock(&self.inner.html_built_in_tool_renderers).clone();
         let mut renderer = crate::export_html::tool_renderer::ToolHtmlRenderer::new(
             crate::export_html::tool_renderer::ToolHtmlRendererDeps {
-                get_tool_renderer: Arc::new(move |name| renderers.get(name).cloned()),
+                get_tool_renderer: Arc::new(move |name| renderers.get(name).cloned()
+                    .or_else(|| built_in.as_ref().and_then(|built_in| built_in(name)))),
                 theme: render_theme, cwd: PathBuf::from(self.cwd()), width: None,
             },
         );
