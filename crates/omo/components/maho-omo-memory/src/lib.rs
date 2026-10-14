@@ -105,6 +105,7 @@ pub mod soul_notice;
 pub mod sandbox_contracts;
 pub mod sandbox_platform;
 pub mod sandbox;
+pub mod mcp_memory_server;
 pub mod tool_receipts;
 pub mod tool_metadata;
 pub mod tools;
