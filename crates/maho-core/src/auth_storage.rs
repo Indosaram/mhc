@@ -615,12 +615,27 @@ impl AuthStorage {
         maho_ai::env_api_keys::get_env_api_key(provider, None)
     }
 
+    /// senpi `list`: stored credential metadata, with every runtime-override provider reported as
+    /// an api-key entry (replacing any stored entry for that provider in place).
     pub fn list(&self) -> Vec<(String, CredentialKind)> {
-        self.data
+        let mut entries: Vec<(String, CredentialKind)> = self.data
             .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter_map(|(provider_id, credential)| credential_kind(credential).map(|kind| (provider_id.clone(), kind)))
-            .collect()
+            .collect();
+        let mut runtime: Vec<String> = self.runtime_overrides
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect();
+        runtime.sort();
+        for provider_id in runtime {
+            match entries.iter_mut().find(|(id, _)| *id == provider_id) {
+                Some(entry) => entry.1 = CredentialKind::ApiKey,
+                None => entries.push((provider_id, CredentialKind::ApiKey)),
+            }
+        }
+        entries
     }
 
     /// Stores a credential for a provider; a None value deletes the entry.
@@ -736,7 +751,9 @@ impl AuthStorage {
         }
     }
 
+    /// senpi `delete`: drops the runtime override as well as the stored credential.
     pub fn delete(&self, provider_id: &str) -> Result<(), String> {
+        self.remove_runtime_api_key(provider_id);
         self.set(provider_id, None)
     }
 
@@ -1318,6 +1335,18 @@ mod tests {
         storage.logout("anthropic").unwrap();
         assert!(!storage.has("anthropic"));
         assert!(!storage.has_runtime_api_key("anthropic"));
+    }
+
+    #[tokio::test]
+    async fn delete_clears_the_runtime_key_and_list_reports_runtime_only_providers() {
+        let storage = AuthStorage::in_memory(AuthStorageData::new());
+        storage.set_runtime_api_key("openai", "runtime");
+        assert_eq!(storage.list(), vec![("openai".to_owned(), CredentialKind::ApiKey)]);
+
+        storage.delete("openai").unwrap();
+        assert!(!storage.has_runtime_api_key("openai"));
+        assert!(storage.list().is_empty());
+        assert_eq!(storage.get_api_key("openai").await.filter(|key| key == "runtime"), None);
     }
 
     #[tokio::test]
