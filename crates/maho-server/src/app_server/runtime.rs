@@ -322,14 +322,14 @@ impl AppServerRuntime {
             }) });
         }
         {
-            let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
+            let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone(); let server_cwd = cwd.clone();
             let notification_core = notification_core.clone();
             let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
             let mcp_inventory = mcp_inventory.clone();
             let ui_agent_dir = ui_agent_dir.clone();
             core.registry.register("thread/fork".into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
-                let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
+                let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone(); let server_cwd = server_cwd.clone();
                 let notification_core = notification_core.clone();
                 let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
@@ -339,7 +339,7 @@ impl AppServerRuntime {
                     let params = &context.request["params"];
                     let source = required_string(params,"threadId")?.to_owned();
                     let requested_cwd = params["cwd"].as_str().map(str::to_owned);
-                    let entry = threads.fork_thread(&source,requested_cwd).await.map_err(|error| JsonRpcError::new(-32603, error))?;
+                    let entry = threads.fork_thread(&source,requested_cwd,&server_cwd).await.map_err(|error| JsonRpcError::new(-32603, error))?;
                     if let Some(engine) = turn_engine_slot.get() { engine.observe_thread(&entry).await; }
                     let mut entry = entry.lock().await;
                     if let Some(lifecycle)=lifecycle_slot.get() {lifecycle.clear_idle_timer(&entry.id);}
