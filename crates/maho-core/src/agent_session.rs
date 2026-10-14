@@ -3211,13 +3211,37 @@ impl AgentSession {
     }
 
     async fn finish_provider_turn(&self) -> Result<(), String> {
+        loop {
+            let mut retry_owned_deferred_queue = false;
+            self.finish_provider_turn_retrying(&mut retry_owned_deferred_queue).await?;
+            // senpi `retryExhaustionAllowsQueuedContinuation`: provider-timeout retries skip their
+            // first queue poll so steering cannot be consumed by another doomed retry request. Once
+            // the retry owner stops retrying, hand that retained queue back to the continuation
+            // path instead of parking it until an unrelated later prompt arrives.
+            let allows_queued_continuation = retry_owned_deferred_queue
+                && !self.state().user_aborted
+                && self.messages().last().and_then(AgentMessage::as_assistant)
+                    .is_some_and(|tail| matches!(tail.stop_reason, StopReason::Error | StopReason::Aborted))
+                && self.agent.has_queued_messages();
+            // A concurrent prompt already owns the agent: a benign takeover (senpi "taken-over").
+            if !allows_queued_continuation || self.agent.signal().is_some() { return Ok(()); }
+            self.agent.continue_with_queued_messages(Default::default()).await;
+        }
+    }
+
+    /// The retry loop of senpi's `agent_end` handling. `retry_owned_deferred_queue` reports whether
+    /// the run that produced the final tail was a retry continuation that deferred queued messages
+    /// (senpi `DEFERRED_RETRY_QUEUE_OWNERS`).
+    async fn finish_provider_turn_retrying(&self, retry_owned_deferred_queue: &mut bool) -> Result<(), String> {
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
         let mut overflow_compacted = false;
         let rate_limit_pattern = regex::Regex::new(r"(?i)rate.?limit|(?:^429\s+\{|(?:\bHTTP/1\.[01]\s+|\bHTTP\s+|\bstatus(?:\s+code)?\s+|\berror\s+|\bcode\s+)429\b)|too many requests|resource.?exhausted")
             .expect("pinned rate limit pattern");
+        let mut deferred_by_retry = false;
         loop {
             self.agent.wait_for_idle().await;
+            *retry_owned_deferred_queue = std::mem::take(&mut deferred_by_retry);
             let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(()); };
             let assistant_pending_persistence = {
                 let state = self.state();
@@ -3533,6 +3557,7 @@ impl AgentSession {
                         .and_then(Value::as_u64).or(Some(30_000)),
                     timeout_ms: self.agent.timeout_ms(), stream_start_timeout_ms: self.agent.stream_start_timeout_ms(),
                 });
+            deferred_by_retry = plan.options.defer_queued_messages == Some(true);
             let continuation = self.agent.continue_run(plan.options);
             if let Some(timeout) = plan.watchdog_timeout_ms {
                 tokio::pin!(continuation);
