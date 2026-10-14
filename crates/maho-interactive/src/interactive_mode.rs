@@ -484,6 +484,10 @@ struct ThemeDetection {
 
 /// senpi's detection timeout for both terminal theme queries.
 const THEME_DETECTION_TIMEOUT_MS: u64 = 100;
+const DEFAULT_RETRY_STATUS_REFRESH_INTERVAL_MS: u64 = 80;
+const LARGE_SESSION_RETRY_STATUS_REFRESH_INTERVAL_MS: u64 = 60_000;
+const DEFAULT_WORKING_STATUS_MESSAGE_ANIMATION_INTERVAL_MS: u64 = 32;
+const LARGE_SESSION_WORKING_STATUS_MESSAGE_INTERVAL_MS: u64 = 1_000;
 
 fn terminal_theme_for_scheme(scheme: maho_tui::terminal_colors::TerminalColorScheme) -> crate::theme::TerminalTheme {
     match scheme {
@@ -2917,21 +2921,14 @@ impl InteractiveMode {
         }
         if text == "/resume" {
             use crate::components::session_selector::SessionSelectorComponent;
-            let (directory, default_directory) = self.session.with_session_manager(|manager| (manager.session_dir().to_owned(), manager.uses_default_session_dir()));
+            let (cwd, directory, default_directory) = self.session.with_session_manager(|manager| (manager.cwd().to_owned(), manager.session_dir().to_owned(), manager.uses_default_session_dir()));
             let current_directory = directory.clone();
-            let all_directory = if default_directory { std::path::Path::new(&self.session.agent_dir()).join("sessions") } else { std::path::PathBuf::from(directory) };
             let convert = |info: maho_core::session_discovery::SessionInfo| crate::components::session_selector_search::SessionInfo { path:info.path, id:info.id, cwd:info.cwd, name:info.name, parent_session_path:info.parent_session_path, modified_ms:info.modified.timestamp_millis(), message_count:info.message_count, first_message:info.first_message, all_messages_text:info.all_messages_text };
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let exited = selected.clone(); let submissions = self.submissions.clone(); let exit_submissions = self.submissions.clone(); let host = self.editor_host.clone();
             self.ui_dialog = Some(Box::new(SessionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()),
-                Box::new(move |_| maho_core::session_discovery::list_sessions_from_dir(&current_directory, None, 0, None).into_iter().map(convert).collect()),
-                Box::new(move |_| {
-                    let mut sessions = maho_core::session_discovery::list_sessions_from_dir(&all_directory.to_string_lossy(), None, 0, None);
-                    if default_directory && let Ok(directories) = std::fs::read_dir(&all_directory) {
-                        for directory in directories.flatten().filter(|entry| entry.path().is_dir()) { sessions.extend(maho_core::session_discovery::list_sessions_from_dir(&directory.path().to_string_lossy(), None, 0, None)); }
-                    }
-                    sessions.into_iter().map(convert).collect()
-                }),
+                Box::new(move |on_progress| maho_core::session_manager::SessionManager::list(&cwd, Some(&current_directory), on_progress).into_iter().map(convert).collect()),
+                Box::new(move |on_progress| maho_core::session_manager::SessionManager::list_all((!default_directory).then_some(directory.as_str()), on_progress).into_iter().map(convert).collect()),
                 Box::new(move |path| { submissions.borrow_mut().push_back(format!("/resume \"{path}\"")); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), Box::new(move || { exit_submissions.borrow_mut().push_back("/quit".into()); exited.borrow_mut().take(); }),
                 Box::new(move || host.request_render()), Some(Box::new(|path, name| { let mut manager = maho_core::session_manager::SessionManager::open(path, None, None, None); manager.append_session_info(name); })), Some(true),
@@ -3972,7 +3969,15 @@ impl InteractiveMode {
 
     fn show_retry_status_indicator(&mut self, attempt: u32, max_attempts: u32, delay_ms: u64, error_message: &str) {
         let trouble = crate::provider_error_presentation::is_network_provider_error(Some(error_message), false);
-        let indicator = crate::components::status_indicator::StatusIndicator::retry(attempt as usize, max_attempts as usize, delay_ms, trouble, &crate::components::keybinding_hints::key_text("app.interrupt"), self.theme.clone(), self.status_indicator_now());
+        // senpi `showRetryStatusIndicatorWithCadence`: large sessions slow the retry refresh.
+        let refresh_interval_ms = crate::working_status::large_session_working_status_interval(
+            self.session.with_session_manager(maho_core::session_manager::SessionManager::get_entry_count),
+            DEFAULT_RETRY_STATUS_REFRESH_INTERVAL_MS,
+            LARGE_SESSION_RETRY_STATUS_REFRESH_INTERVAL_MS,
+        );
+        let cadence = (refresh_interval_ms != DEFAULT_RETRY_STATUS_REFRESH_INTERVAL_MS)
+            .then(|| maho_tui::components::loader::LoaderIndicatorOptions { interval_ms: Some(refresh_interval_ms), ..Default::default() });
+        let indicator = crate::components::status_indicator::StatusIndicator::retry(attempt as usize, max_attempts as usize, delay_ms, cadence, trouble, &crate::components::keybinding_hints::key_text("app.interrupt"), self.theme.clone(), self.status_indicator_now());
         self.show_status_indicator(indicator);
     }
 
@@ -4704,6 +4709,14 @@ impl InteractiveMode {
             let index = (elapsed / options.interval_ms.unwrap_or(80).max(1) as f64) as usize % frames.len();
             return Some(frames[index].clone());
         }
+        // senpi `getWorkingIndicatorOptions().messageIntervalMs`: the message frame only advances
+        // once per interval, which large sessions slow down to bound redraw cost.
+        let message_interval_ms = crate::working_status::large_session_working_status_interval(
+            self.session.with_session_manager(maho_core::session_manager::SessionManager::get_entry_count),
+            DEFAULT_WORKING_STATUS_MESSAGE_ANIMATION_INTERVAL_MS,
+            LARGE_SESSION_WORKING_STATUS_MESSAGE_INTERVAL_MS,
+        ) as f64;
+        let elapsed = (elapsed / message_interval_ms).floor() * message_interval_ms;
         let base = |text: &str| self.theme.fg(crate::theme::ThemeColor::Dim, text);
         let glow = |text: &str| self.theme.fg(crate::theme::ThemeColor::Text, text);
         let highlight = |text: &str| self.theme.bold(&glow(text));
