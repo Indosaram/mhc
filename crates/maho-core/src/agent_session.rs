@@ -4498,12 +4498,13 @@ impl AgentSession {
                     maho_ai::types::CacheRetention::None
                 } else { maho_ai::types::CacheRetention::Short }), ..Default::default()
             };
-            let retry = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
+            // `sessionTitleRetryPolicy(settingsManager.getRetrySettings())`.
+            let retry = self.with_settings_manager(|manager| manager.get_retry_settings());
             let policy = maho_ai::utils::retry::RetryPolicy {
-                enabled: retry.as_ref().and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
-                max_retries: retry.as_ref().and_then(|settings| settings.get("maxRetries")).and_then(Value::as_u64).unwrap_or(3).min(1) as u32,
-                base_delay_ms: retry.as_ref().and_then(|settings| settings.get("baseDelayMs")).and_then(Value::as_u64).unwrap_or(2_000).min(2_000),
-                max_agent_delay_ms: retry.as_ref().and_then(|settings| settings.get("maxAgentDelayMs")).and_then(Value::as_u64),
+                enabled: retry.enabled,
+                max_retries: retry.max_retries.min(1),
+                base_delay_ms: retry.base_delay_ms.min(2_000),
+                max_agent_delay_ms: None,
                 random: Some(self.retry_random.clone()),
             };
             let response = maho_ai::utils::retry::retry_transient_call(|| async {
@@ -4974,14 +4975,8 @@ impl AgentSession {
 
     /// `settingsManager.getRetrySettings()` as the summarization retry policy.
     fn summarization_retry_policy(&self) -> maho_ai::utils::retry::RetryPolicy {
-        let retry = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
-        maho_ai::utils::retry::RetryPolicy {
-            enabled: retry.as_ref().and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
-            max_retries: retry.as_ref().and_then(|settings| settings.get("maxRetries")).and_then(Value::as_u64).unwrap_or(3) as u32,
-            base_delay_ms: retry.as_ref().and_then(|settings| settings.get("baseDelayMs")).and_then(Value::as_u64).unwrap_or(2_000),
-            max_agent_delay_ms: retry.as_ref().and_then(|settings| settings.get("maxAgentDelayMs")).and_then(Value::as_u64),
-            random: Some(self.retry_random.clone()),
-        }
+        let retry = self.with_settings_manager(|manager| manager.get_retry_settings());
+        maho_ai::utils::retry::RetryPolicy { random: Some(self.retry_random.clone()), ..retry }
     }
 
     /// senpi `_summarizationRetryCallbacks`: surface summarization retries as session events.
