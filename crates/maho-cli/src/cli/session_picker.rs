@@ -29,11 +29,11 @@ pub fn select_session(
     let theme = super::startup_ui::resolve_startup_theme(settings.get_string("theme").as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
     let keybindings = Arc::new(maho_core::keybindings::KeybindingsManager::create(Some(&maho_core::config::get_agent_dir())).inner().clone());
     let (current_cwd, current_dir, all_dir) = (cwd.to_owned(), session_dir.map(str::to_owned), session_dir.map(str::to_owned));
-    let current_loader: SessionsLoader = Box::new(move |_| {
-        SessionManager::list(&current_cwd, current_dir.as_deref()).into_iter().map(to_picker_row).collect()
+    let current_loader: SessionsLoader = Box::new(move |on_progress| {
+        SessionManager::list(&current_cwd, current_dir.as_deref(), on_progress).into_iter().map(to_picker_row).collect()
     });
-    let all_loader: SessionsLoader = Box::new(move |_| {
-        SessionManager::list_all(all_dir.as_deref()).into_iter().map(to_picker_row).collect()
+    let all_loader: SessionsLoader = Box::new(move |on_progress| {
+        SessionManager::list_all(all_dir.as_deref(), on_progress).into_iter().map(to_picker_row).collect()
     });
     let outcome: Rc<RefCell<Option<Option<String>>>> = Rc::default();
     let exited = Rc::new(RefCell::new(false));

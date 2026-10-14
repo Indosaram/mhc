@@ -30,9 +30,9 @@ pub enum SessionScope {
 }
 
 /// senpi's SessionListProgress.
-pub type SessionListProgress = Box<dyn FnMut(usize, usize)>;
+pub use maho_core::session_discovery::SessionListProgress;
 /// senpi's SessionsLoader.
-pub type SessionsLoader = Box<dyn FnMut(Option<SessionListProgress>) -> Vec<SessionInfo>>;
+pub type SessionsLoader = Box<dyn FnMut(Option<SessionListProgress<'_>>) -> Vec<SessionInfo>>;
 
 pub type SessionPathHandler = Box<dyn FnMut(&str)>;
 pub type VoidHandler = Box<dyn FnMut()>;
@@ -832,6 +832,7 @@ pub struct SessionSelectorComponent {
     all_sessions: Option<Vec<SessionInfo>>,
     current_sessions_loader: SessionsLoader,
     all_sessions_loader: SessionsLoader,
+    all_load_seq: u64,
     can_rename: bool,
     rename_input: Input,
     mode: SessionSelectorMode,
@@ -887,6 +888,7 @@ impl SessionSelectorComponent {
             all_sessions: None,
             current_sessions_loader,
             all_sessions_loader,
+            all_load_seq: 0,
             can_rename,
             rename_input: Input::new(InputOptions::default()),
             mode: SessionSelectorMode::List,
@@ -970,20 +972,40 @@ impl SessionSelectorComponent {
     /// Load one scope through its loader (senpi's loadScope).
     pub fn load_scope(&mut self, scope: SessionScope) {
         let show_cwd = scope == SessionScope::All;
+        let seq = (scope == SessionScope::All).then(|| {
+            self.all_load_seq += 1;
+            self.all_load_seq
+        });
         self.header.set_scope(scope);
         self.header.set_loading(true);
         (self.request_render)();
 
+        let (active_scope, all_load_seq) = (self.scope, self.all_load_seq);
+        let header = &mut self.header;
+        let request_render = &mut self.request_render;
+        let mut on_progress = |loaded: usize, total: usize| {
+            if scope != active_scope {
+                return;
+            }
+            if seq.is_some_and(|seq| seq != all_load_seq) {
+                return;
+            }
+            header.set_progress(loaded, total);
+            request_render();
+        };
         let loader = match scope {
             SessionScope::Current => &mut self.current_sessions_loader,
             SessionScope::All => &mut self.all_sessions_loader,
         };
-        let sessions = loader(None);
+        let sessions = loader(Some(&mut on_progress));
         match scope {
             SessionScope::Current => self.current_sessions = Some(sessions.clone()),
             SessionScope::All => self.all_sessions = Some(sessions.clone()),
         }
         if scope != self.scope {
+            return;
+        }
+        if seq.is_some_and(|seq| seq != self.all_load_seq) {
             return;
         }
         self.header.set_loading(false);
