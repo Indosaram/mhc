@@ -39,6 +39,7 @@ impl MemoryFooterStatusLive{
     pub fn is_animating(&self)->bool{self.live.is_animating()}
     pub fn stop(&mut self){self.live.stop();}
     pub fn dispose(&mut self){self.live.dispose();}
+    pub fn is_disposed(&self)->bool{self.live.is_disposed()}
 }
 #[cfg(test)]mod tests{
     use super::*;

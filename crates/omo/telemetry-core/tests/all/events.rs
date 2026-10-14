@@ -121,7 +121,7 @@ fn unknown_properties_are_dropped_with_a_diagnostic() {
     assert_eq!(
         recorder.options(),
         [TelemetryTransportOptions {
-            disable_geoip: false,
+            disable_geoip: true,
             disable_remote_config: true,
             enable_exception_autocapture: false,
             enable_local_evaluation: false,
@@ -195,7 +195,7 @@ fn additional_properties_ride_on_shared_block_without_overriding_fixed_keys() {
 }
 
 #[test]
-fn native_events_client_effective_transport_options_disable_geoip_false_while_guards_hold() {
+fn native_events_client_effective_transport_options_disable_geoip_true_while_guards_hold() {
     let fixture = Fixture::new();
     let recorder = Recorder::new();
     let diagnostics = DiagnosticsSink::default();
@@ -243,7 +243,7 @@ fn native_events_client_effective_transport_options_disable_geoip_false_while_gu
     assert_eq!(
         recorder.options(),
         [TelemetryTransportOptions {
-            disable_geoip: false,
+            disable_geoip: true,
             disable_remote_config: true,
             enable_exception_autocapture: false,
             enable_local_evaluation: false,
