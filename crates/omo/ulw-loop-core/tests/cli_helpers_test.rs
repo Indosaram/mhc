@@ -130,6 +130,11 @@ fn returns_joined_positional_args_after_subcommand() {
 }
 
 #[test]
+fn keeps_help_as_brief_text_when_it_is_not_the_subcommand() {
+    assert_eq!(positional_text(&args(&["help", "center", "redesign"])), "help center redesign");
+}
+
+#[test]
 fn parses_inline_json_when_value_looks_like_json() {
     assert_eq!(read_json_input(Some(r#"{"ok":true}"#)).unwrap(), Some(json!({"ok": true})));
 }
