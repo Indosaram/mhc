@@ -43,7 +43,7 @@ pub fn resolve_codemode_runtime_asset(local_path: &Path, package_relative_path: 
     local_path.into()
 }
 
-/// Kernel scripts compiled into the binary, keyed by package-relative path. A distributed binary runs
+/// Kernel scripts and the bun-1-4 skill tree compiled into the binary, keyed by package-relative path. A distributed binary runs
 /// away from the build tree and without the senpi-codemode sidecar, so these are extracted on demand.
 const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
     ("kernels/jl/prelude.jl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/jl/prelude.jl"))),
@@ -72,9 +72,20 @@ const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
     ("kernels/rb/prelude.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/prelude.rb"))),
     ("kernels/rb/runner.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/runner.rb"))),
     ("kernels/rb/workpool.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/workpool.rb"))),
+    ("skill/bun-1-4/SKILL.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/SKILL.md"))),
+    ("skill/bun-1-4/references/breaking-changes.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/breaking-changes.md"))),
+    ("skill/bun-1-4/references/build.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/build.md"))),
+    ("skill/bun-1-4/references/dev-tooling.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/dev-tooling.md"))),
+    ("skill/bun-1-4/references/http-networking.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/http-networking.md"))),
+    ("skill/bun-1-4/references/install.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/install.md"))),
+    ("skill/bun-1-4/references/node-compat-platforms.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/node-compat-platforms.md"))),
+    ("skill/bun-1-4/references/performance.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/performance.md"))),
+    ("skill/bun-1-4/references/runtime-apis.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/runtime-apis.md"))),
+    ("skill/bun-1-4/references/security.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/security.md"))),
+    ("skill/bun-1-4/references/test.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/test.md"))),
 ];
 
-/// Writes every embedded kernel script once into a content-addressed directory (scripts import their
+/// Writes every embedded asset once into a content-addressed directory (scripts import their
 /// siblings) and returns the extracted path for `package_relative_path`, or `None` when it is not embedded
 /// or extraction failed.
 pub fn materialize_embedded_runtime_asset(package_relative_path: &Path) -> Option<PathBuf> {

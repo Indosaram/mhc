@@ -190,10 +190,64 @@ struct EvalCard {
     spinner_frame: Option<usize>,
     theme: Option<Theme>,
     cwd: PathBuf,
+    ticker: std::rc::Rc<LiveTicker>,
+}
+
+const LIVE_ELAPSED_TICK_MS: u64 = 1_000;
+// A live row repaints on every tick, so this many ticks without a render means the row is gone.
+const LIVE_TICKER_MAX_IDLE_TICKS: u32 = 60;
+
+/// senpi `PlainTextComponent.syncLiveTicker`: the host animates no eval row, so while a cell is
+/// non-terminal the card repaints itself once a second to advance the header's elapsed time.
+struct LiveTicker {
+    ticker: std::cell::Cell<Option<maho_tui::ui_intervals::UiIntervalId>>,
+    live: std::cell::Cell<bool>,
+    invalidate: std::rc::Rc<dyn Fn()>,
+    idle_ticks: std::cell::Cell<u32>,
+}
+
+impl LiveTicker {
+    fn new(is_live: bool, invalidate: std::rc::Rc<dyn Fn()>) -> std::rc::Rc<Self> {
+        let ticker=std::rc::Rc::new(Self {ticker:std::cell::Cell::new(None),live:std::cell::Cell::new(false),invalidate,idle_ticks:std::cell::Cell::new(0)});
+        ticker.sync_live_ticker(is_live);
+        ticker
+    }
+    fn sync_live_ticker(self: &std::rc::Rc<Self>, is_live: bool) {
+        self.live.set(is_live);
+        if !is_live {self.stop_live_ticker();return;}
+        self.arm_ticker();
+    }
+    fn stop_live_ticker(&self) {
+        if let Some(id)=self.ticker.take() {maho_tui::ui_intervals::clear_ui_interval(id);}
+    }
+    fn arm_ticker(self: &std::rc::Rc<Self>) {
+        if self.ticker.get().is_some() {return;}
+        let weak=std::rc::Rc::downgrade(self);
+        self.ticker.set(Some(maho_tui::ui_intervals::set_ui_interval(std::time::Duration::from_millis(LIVE_ELAPSED_TICK_MS),std::rc::Rc::new(move ||{if let Some(ticker)=weak.upgrade() {ticker.tick();}}))));
+    }
+    fn tick(&self) {
+        self.idle_ticks.set(self.idle_ticks.get()+1);
+        if self.idle_ticks.get()>=LIVE_TICKER_MAX_IDLE_TICKS {self.stop_live_ticker();return;}
+        (self.invalidate)();
+    }
+    fn rendered(self: &std::rc::Rc<Self>) {
+        self.idle_ticks.set(0);
+        if self.live.get() {self.arm_ticker();}
+    }
+}
+
+impl Drop for LiveTicker {
+    fn drop(&mut self) {self.stop_live_ticker();}
+}
+
+fn has_live_cell(details: &Value) -> bool {
+    details["cells"].as_array().is_some_and(|cells|cells.iter().any(|cell|matches!(cell["status"].as_str(),Some("pending"|"running")) && !cell["startedAt"].is_null()))
 }
 
 impl maho_tui::tui::Component for EvalCard {
+    fn dispose(&mut self) {self.ticker.stop_live_ticker();}
     fn render(&mut self, width: usize) -> Vec<String> {
+        self.ticker.rendered();
         let context=EvalRenderContext {expanded:self.expanded,has_result:self.has_result,is_partial:self.is_partial,is_error:self.is_error,show_images:self.show_images,image_protocol:self.image_protocol.clone(),spinner_frame:self.spinner_frame,
             now:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|elapsed|elapsed.as_secs_f64()*1000.0),theme:self.theme.clone(),cwd:self.cwd.clone()};
         let request=super::eval_request::parse_eval_request(&self.args);
@@ -210,7 +264,9 @@ impl maho_tui::tui::Component for EvalCard {
 fn eval_card(args: &Value, result: Option<&AgentToolResult>, theme: &Theme, context: &maho_ext_api::ToolRenderContext<(), Value>) -> Box<dyn maho_tui::tui::Component> {
     // A host theme that exports no colors (print/json modes) renders like senpi's `theme === undefined`.
     let theme=(!theme.colors.is_empty()).then(||theme.clone());
-    Box::new(EvalCard {args:args.clone(),result:result.cloned(),expanded:context.expanded,has_result:context.has_result.unwrap_or(result.is_some()),
+    let live=result.is_some_and(|result|!result.details.get("action").is_some_and(|action|!action.is_null()) && has_live_cell(&result.details));
+    let ticker=LiveTicker::new(live,context.invalidate.clone());
+    Box::new(EvalCard {ticker,args:args.clone(),result:result.cloned(),expanded:context.expanded,has_result:context.has_result.unwrap_or(result.is_some()),
         is_partial:context.is_partial,is_error:context.is_error,show_images:context.show_images,
         image_protocol:context.image_protocol.map(|protocol|format!("{protocol:?}")),spinner_frame:context.spinner_frame,theme,cwd:context.cwd.clone()})
 }
