@@ -316,7 +316,15 @@ async fn run_loop(
                 let executed_tool_batch = if message.stop_reason == StopReason::Length {
                     fail_tool_calls_from_truncated_message(&tool_calls, &emit).await
                 } else {
-                    execute_tool_calls(&current_context, &message, &config, signal.clone(), &emit).await
+                    execute_tool_calls(
+                        &current_context,
+                        &message,
+                        &provider_tool_results,
+                        &config,
+                        signal.clone(),
+                        &emit,
+                    )
+                    .await
                 };
                 tool_results.extend(executed_tool_batch.messages.iter().cloned());
                 tool_batch_terminated = executed_tool_batch.terminate;
@@ -1013,6 +1021,7 @@ async fn fail_tool_calls_from_truncated_message(
 async fn execute_tool_calls(
     current_context: &AgentContext,
     assistant_message: &AssistantMessage,
+    provider_tool_results: &[ToolResultMessage],
     config: &AgentLoopConfig,
     signal: Option<AbortSignal>,
     emit: &AgentEventSink,
@@ -1021,12 +1030,11 @@ async fn execute_tool_calls(
     // stamped `kCursorExecResolved` was already executed by Cursor's exec
     // channel and its result buffered; running it again would duplicate a
     // side-effecting tool.
-    let provider_tool_results: Vec<ToolResultMessage> = Vec::new();
     let tool_calls: Vec<AgentToolCall> = assistant_message
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::ToolCall(call) if !is_cursor_exec_resolved(call, &provider_tool_results) => Some(call.clone()),
+            ContentBlock::ToolCall(call) if !is_cursor_exec_resolved(call, provider_tool_results) => Some(call.clone()),
             _ => None,
         })
         .collect();

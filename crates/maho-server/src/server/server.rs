@@ -484,7 +484,7 @@ impl Server {
                                 };
                                 if response["ok"]!=true && let Some(subscription_id)=&reserved {subscriptions.lock().await.remove(subscription_id);}
                                 let sent:Result<(),ServerError>=async {
-                                    send(&connection,&response,max).await?;
+                                    if !send_message(server.on_error.as_ref(),&connection,&response,max,&disconnect).await { return Ok(()); }
                                     if response["ok"]==true {
                                         if message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="unsubscribe" { let subscription_id=message["call"]["args"][0].as_str().unwrap_or_default(); encoders.lock().await.remove(subscription_id); subscriptions.lock().await.remove(subscription_id); }
                                         let mut pending=queued.lock().await;
@@ -526,6 +526,9 @@ impl Server {
             Ok(None) => (Ok(()), false),
             Err(error) => (Err(error), false),
         };
+        // Pinned `disconnect` marks the connection disconnected before aborting its requests, so a
+        // response or publish from an in-flight call to a departed peer is dropped silently.
+        disconnect.send_replace(true);
         for (_, (_, cancel)) in active.lock().await.iter() {
             cancel.send_replace(true);
         }
