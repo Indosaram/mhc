@@ -1,8 +1,8 @@
 //! Port of `components/tool-execution-images.ts`.
 //!
-//! senpi converts non-PNG images to PNG for the Kitty protocol through a WASM codec that returns
-//! `null` when the codec is unavailable; the Rust port has no such codec, so conversion always
-//! reports unavailable and the non-PNG Kitty path falls back exactly as senpi's does.
+//! senpi converts non-PNG images to PNG for the Kitty protocol through `utils/image-convert.ts`
+//! (photon); the port uses `maho_core::utils::image_convert::convert_to_png`. senpi's conversion
+//! is a promise; the port converts synchronously, which needs no generation guard.
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -29,13 +29,6 @@ impl Default for ToolExecutionImageOptions {
     fn default() -> Self {
         Self { show_images: true, max_width_cells: 60, show_renderer_fallback: false }
     }
-}
-
-pub fn convert_to_png(base64_data: &str, mime_type: &str) -> Option<(String, String)> {
-    if mime_type == "image/png" {
-        return Some((base64_data.to_owned(), mime_type.to_owned()));
-    }
-    None
 }
 
 pub struct ToolExecutionImages {
@@ -70,6 +63,7 @@ impl ToolExecutionImages {
         self.result = Some(result.clone());
         self.prune_converted_images();
         self.rebuild();
+        self.maybe_convert_images_for_kitty();
     }
 
     fn image_blocks(&self) -> Vec<(String, String)> {
@@ -93,6 +87,27 @@ impl ToolExecutionImages {
         self.converted.retain(|index, (source_data, source_mime, _, _)| {
             blocks.get(*index).is_some_and(|(data, mime)| data == source_data && mime == source_mime)
         });
+    }
+
+    fn maybe_convert_images_for_kitty(&mut self) {
+        if get_capabilities().images != Some(ImageProtocol::Kitty) || self.result.is_none() {
+            return;
+        }
+        let mut changed = false;
+        for (index, (source_data, source_mime_type)) in self.image_blocks().into_iter().enumerate() {
+            if source_data.is_empty() || source_mime_type.is_empty() || source_mime_type == "image/png" {
+                continue;
+            }
+            if self.converted.get(&index).is_some_and(|(data, mime, _, _)| *data == source_data && *mime == source_mime_type) {
+                continue;
+            }
+            let Some(converted) = maho_core::utils::image_convert::convert_to_png(&source_data, &source_mime_type) else { continue; };
+            self.converted.insert(index, (source_data, source_mime_type, converted.data, converted.mime_type));
+            changed = true;
+        }
+        if changed {
+            self.rebuild();
+        }
     }
 
     fn rebuild(&mut self) {

@@ -67,6 +67,9 @@ pub enum UiRequest {
     TerminalSetting(String, serde_json::Value),
     Editor { title: String, prefill: Option<String>, reply: tokio::sync::oneshot::Sender<Option<String>> },
     Question { request: QuestionRequest, options: QuestionOptions, reply: tokio::sync::oneshot::Sender<QuestionResponse> },
+    /// senpi `resetExtensionUI`, queued by the before-session-invalidate hook so it lands ahead of
+    /// the replacement session's own UI registrations.
+    ResetExtensionUi,
 }
 
 pub struct InteractiveExtensionUi {
@@ -101,6 +104,14 @@ impl Drop for BlockedHostDialog {
 
 impl InteractiveExtensionUi {
     fn send(&self, request: UiRequest) { drop(self.sender.send(request)); }
+    /// senpi `setBeforeSessionInvalidate(() => resetExtensionUI())`: the synchronously shared parts
+    /// (`clearExtensionStatuses`, `clearExtensionTerminalInputListeners`) reset at once; the mode-owned
+    /// parts reset when the queued request is drained.
+    pub fn reset_before_session_invalidate(&self) {
+        self.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+        self.terminal_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+        self.send(UiRequest::ResetExtensionUi);
+    }
     /// senpi `withBlockedHostDialog`: announce the open host dialog before it is shown.
     fn block_host_dialog(&self, label: &str) -> Option<BlockedHostDialog> {
         let emit = self.blocked_emitter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()?;

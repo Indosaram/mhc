@@ -601,6 +601,9 @@ pub struct AgentSessionInner {
     /// connection subscribed once keeps receiving across runner recreation (senpi `onRpcEvent`).
     extension_rpc_event_forward: Mutex<Option<maho_ext_api::BusSubscription>>,
     settings_source_subscription: Mutex<Option<crate::settings_manager::SettingsSourceSubscription>>,
+    /// senpi `runtimeHost.setBeforeSessionInvalidate`: runs once a replacement or reload proceeds,
+    /// right before the extension runtime is invalidated and the next `session_start` re-registers UI.
+    before_session_invalidate: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
     user_abort_generation: AtomicU64,
     monitor_generation: AtomicU64,
@@ -1799,6 +1802,7 @@ impl AgentSession {
             wake_source_subscription: Mutex::new(None),
             extension_rpc_event_forward: Mutex::new(None),
             settings_source_subscription: Mutex::new(None),
+            before_session_invalidate: Mutex::new(None),
             settled_delivery: Mutex::new(crate::agent_settled_delivery::AgentSettledDelivery::new()),
             user_abort_generation: AtomicU64::new(0),
             monitor_generation: AtomicU64::new(0),
@@ -6148,7 +6152,14 @@ impl AgentSession {
         Ok(())
     }
 
+    /// senpi `setBeforeSessionInvalidate`.
+    pub fn set_before_session_invalidate(&self, callback: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *lock(&self.before_session_invalidate) = callback;
+    }
+
     async fn invalidate_extension_runtime(&self) {
+        let before = lock(&self.before_session_invalidate).clone();
+        if let Some(before) = before { before(); }
         self.monitor_generation.fetch_add(1, Ordering::SeqCst);
         lock(&self.settled_delivery).cancel();
         if let Some(runner) = self.extension_runner.lock().await.as_ref() {

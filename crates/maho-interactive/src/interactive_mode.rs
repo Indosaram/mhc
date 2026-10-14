@@ -22,6 +22,8 @@ struct ShareInFlight {
     tmp_file: std::path::PathBuf,
 }
 type AuthUiEvents = tokio::sync::mpsc::UnboundedReceiver<AuthUiEvent>;
+/// senpi `FALLBACK_STATUS_KEY`.
+const FALLBACK_STATUS_KEY: &str = "fallback";
 /// A queued tree-edit prefill: `(entryId, editedText, expectedLeafId)`.
 type PendingTreeEdit = (String, String, Option<String>);
 /// A queued tree-navigation choice: `(entryId, summarize, customInstructions)`.
@@ -426,6 +428,15 @@ pub struct InteractiveMode {
     daxnuts_animations: Vec<(Rc<RefCell<crate::components::daxnuts::DaxnutsComponent>>, f64)>,
     /// senpi `anthropicSubscriptionWarningShown`.
     anthropic_subscription_warning_shown: bool,
+    /// senpi `externalOwnerCompactionNoticeShown`: one external-owner compaction notice per delegation episode.
+    external_owner_compaction_notice_shown: bool,
+    /// senpi `fallbackAppliedBeforeRetryStart`.
+    fallback_applied_before_retry_start: bool,
+    /// senpi `renderSessionItems`' `cacheMisses`, keyed by the assistant message's (timestamp, model),
+    /// consumed while a local rebuild replays the transcript.
+    history_cache_misses: Vec<(serde_json::Value, serde_json::Value, maho_core::cache_stats::CacheMiss)>,
+    /// senpi `providerErrors`: the current provider-failure display episode, mounted in the chat.
+    provider_errors: Option<Rc<RefCell<crate::provider_error_presentation::ProviderErrorPresentation>>>,
     /// senpi `continuityNotices`.
     continuity_notices: crate::components::continuity_notice::ContinuityNoticeTracker,
     /// senpi `activeStatusIndicator` for the non-working kinds (retry, compaction, branch summary).
@@ -1079,7 +1090,7 @@ impl InteractiveMode {
         }
     }
 
-    fn output_pad(&self) -> usize { self.session.with_settings_manager(|settings| settings.get_number("outputPad").unwrap_or(1.0) as usize) }
+    fn output_pad(&self) -> usize { usize::from(self.session.with_settings_manager(maho_core::settings_manager::SettingsManager::get_output_pad)) }
     pub fn new(session: Arc<AgentSession>, theme: Theme, host: Rc<dyn maho_tui::components::editor::EditorTuiHost>) -> Self {
         Self::new_with_options(session, theme, host, InteractiveModeOptions::default())
     }
@@ -1159,7 +1170,9 @@ impl InteractiveMode {
             if let Some(session) = blocked_session() { session.emit_extension_event(channel, data); }
         }));
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
+        let invalidate_ui = Arc::downgrade(&extension_ui);
+        session.set_before_session_invalidate(Some(Arc::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } })));
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1168,6 +1181,8 @@ impl InteractiveMode {
     pub fn set_session_host(&mut self, host: Arc<dyn crate::interactive_session::InteractiveSession>) {
         let sender = self.events_sender.clone();
         self.session_host_subscription = host.subscribe_session_events(Arc::new(move |event| { let _ = sender.send(event.clone()); }));
+        let invalidate_ui = Arc::downgrade(&self.extension_ui);
+        host.set_before_session_invalidate(Box::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } }));
         self.session_host = Some(host);
         self.remote_active.store(true, std::sync::atomic::Ordering::SeqCst);
         self.request_remote_history();
@@ -1762,12 +1777,7 @@ impl InteractiveMode {
     }
 
     pub fn rebuild_history(&mut self) {
-        self.chat.clear(); self.pending_tools.clear(); self.streaming = None; self.assistant_segments.clear();
-        self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.reveal.stop();
-        self.assistant_cards.clear(); self.tool_cards.clear(); self.last_status = None;
-        self.history_expansion.clear(); self.armin_animations.clear(); self.daxnuts_animations.clear();
-        // senpi: the rebuilt transcript re-derives continuity notices, so suppression state resets.
-        self.continuity_notices.reset();
+        self.reset_transcript_state();
         // A mounted shared host is authoritative: rebuild from the fetched remote snapshot, never
         // the unrelated local session. Without a host, the local session is the source.
         if self.session_host.is_some() {
@@ -1775,15 +1785,7 @@ impl InteractiveMode {
                 for message in &messages { self.add_history_message(message); }
             }
         } else {
-            // senpi `renderSessionEntries`: custom entries render in their transcript position among
-            // the context messages; messages without a matching entry follow in order.
-            let entries = self.session.with_session_manager(|manager| maho_core::session_manager::build_context_entries(&manager.entries(), manager.leaf_id()));
-            let mut messages = self.session.messages().into_iter();
-            for entry in &entries {
-                if entry["type"] == "custom" { self.add_custom_entry_to_chat(entry); continue; }
-                for message in messages.by_ref().take(maho_core::session_manager::session_entry_to_context_messages(entry).len()) { self.add_history_message(&message); }
-            }
-            for message in messages { self.add_history_message(&message); }
+            self.render_session_entries(false);
             // senpi `renderInitialMessages`: show compaction info if the session was compacted.
             let compaction_count = self.session.with_session_manager(|manager| manager.count_compactions());
             if compaction_count > 0 {
@@ -1791,6 +1793,87 @@ impl InteractiveMode {
                 self.show_status(format!("Session compacted {times}"));
             }
         }
+    }
+
+    /// The transcript state `rebuild_history` and the compaction rebuild both start from.
+    fn reset_transcript_state(&mut self) {
+        self.chat.clear(); self.pending_tools.clear(); self.streaming = None; self.assistant_segments.clear();
+        self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.reveal.stop();
+        self.assistant_cards.clear(); self.tool_cards.clear(); self.last_status = None;
+        self.history_expansion.clear(); self.armin_animations.clear(); self.daxnuts_animations.clear();
+        // senpi: the rebuilt transcript re-derives continuity notices, so suppression state resets.
+        self.continuity_notices.reset();
+        // senpi `renderSessionItems`: `this.providerErrors = undefined`.
+        self.provider_errors = None;
+    }
+
+    /// senpi `renderSessionEntries` over the local session's context entries: custom entries render
+    /// in their transcript position among the context messages; messages without a matching entry
+    /// follow in order. `skip_compaction` drops compaction entries (senpi's compaction_end path
+    /// appends the latest summary below instead). Cache-miss notices are re-derived from the full
+    /// entry list and compaction/branch-summary cost notices follow their summary.
+    fn render_session_entries(&mut self, skip_compaction: bool) {
+        let (all_entries, entries) = self.session.with_session_manager(|manager| { let all = manager.entries(); let context = maho_core::session_manager::build_context_entries(&all, manager.leaf_id()); (all, context) });
+        self.history_cache_misses = self.collect_history_cache_misses(&all_entries);
+        let mut messages = self.session.messages().into_iter();
+        for entry in &entries {
+            if entry["type"] == "custom" { self.add_custom_entry_to_chat(entry); continue; }
+            let count = maho_core::session_manager::session_entry_to_context_messages(entry).len();
+            if skip_compaction && entry["type"] == "compaction" { messages.by_ref().take(count).for_each(drop); continue; }
+            for message in messages.by_ref().take(count) { self.add_history_message(&message); }
+            if count > 0 && let (Some(kind @ ("compaction" | "branch_summary")), Some(usage)) = (entry["type"].as_str(), entry.get("usage")) {
+                self.add_compaction_cost_notice(kind == "compaction", usage);
+            }
+        }
+        for message in messages { self.add_history_message(&message); }
+        self.history_cache_misses.clear();
+    }
+
+    /// senpi `collectCacheMisses` (only when `showCacheMissNotices` is on), keyed by the assistant
+    /// message's timestamp and model.
+    fn collect_history_cache_misses(&self, entries: &[serde_json::Value]) -> Vec<(serde_json::Value, serde_json::Value, maho_core::cache_stats::CacheMiss)> {
+        if !self.show_cache_miss_notices() { return Vec::new(); }
+        let prices = |provider: &str, model: &str| self.host_find_model(provider, model).map(|model| model.cost.cache_read);
+        maho_core::cache_stats::collect_cache_misses(entries, &prices).map(|misses| misses.into_iter().map(|(message, miss)| (message["timestamp"].clone(), message["model"].clone(), miss)).collect()).unwrap_or_default()
+    }
+
+    fn show_cache_miss_notices(&self) -> bool {
+        self.session.with_settings_manager(|settings| settings.get_bool("showCacheMissNotices")).unwrap_or(false)
+    }
+
+    /// senpi `maybeShowCacheMissNotice`: the live check at an assistant `message_end`. The entry
+    /// list is scanned without the message itself, which may already be persisted here.
+    fn maybe_show_cache_miss_notice(&mut self, message: &maho_ai::types::AssistantMessage) {
+        if self.session_host.is_some() || !self.show_cache_miss_notices() { return; }
+        let Ok(value) = serde_json::to_value(message) else { return; };
+        let entries: Vec<serde_json::Value> = self.session.with_session_manager(|manager| manager.entries()).into_iter()
+            .filter(|entry| !(entry["type"] == "message" && entry["message"]["role"] == "assistant" && entry["message"]["timestamp"] == value["timestamp"] && entry["message"]["model"] == value["model"])).collect();
+        let prices = |provider: &str, model: &str| self.host_find_model(provider, model).map(|model| model.cost.cache_read);
+        if let Ok(Some(miss)) = maho_core::cache_stats::detect_cache_miss(&entries, &value, &prices) { self.add_cache_miss_notice(&miss); }
+    }
+
+    /// senpi `addCacheMissNotice`.
+    fn add_cache_miss_notice(&mut self, miss: &maho_core::cache_stats::CacheMiss) {
+        if miss.missed_tokens < 20_000.0 && miss.missed_cost < 0.1 { return; }
+        let cost = if miss.missed_cost >= 0.01 { format!(" (~${:.2})", miss.missed_cost) } else { String::new() };
+        let re_billed = format!("{} tokens re-billed{cost}", crate::components::footer::format_tokens(miss.missed_tokens));
+        let label = if miss.model_changed { "Cache miss after model switch".to_owned() }
+            else if miss.idle_ms >= maho_core::cache_stats::CACHE_TTL_MS as f64 { format!("Cache miss after {}m idle", (miss.idle_ms / 60_000.0).round()) }
+            else { "Cache miss".to_owned() };
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Warning, &format!("{label}: {re_billed}")), 1, 0))));
+    }
+
+    /// senpi `addCompactionCostNotice`: billing usage persisted on a compaction or branch summary.
+    fn add_compaction_cost_notice(&mut self, compaction: bool, usage: &serde_json::Value) {
+        if !self.show_cache_miss_notices() { return; }
+        let number = |key: &str| usage.get(key).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let tokens = number("input") + number("output") + number("cacheRead") + number("cacheWrite");
+        let total = usage.get("cost").and_then(|cost| cost.get("total")).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let cost = if total >= 0.01 { format!(" (~${total:.2})") } else { String::new() };
+        let label = if compaction { "Compaction" } else { "Branch summary" };
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Warning, &format!("{label}: {} tokens billed{cost}", crate::components::footer::format_tokens(tokens))), 1, 0))));
     }
 
     /// senpi `addCustomEntryToChat`: render a custom session entry through its registered entry
@@ -1832,7 +1915,16 @@ impl InteractiveMode {
     pub fn add_history_message(&mut self, message: &maho_agent::types::AgentMessage) {
         use maho_agent::types::{AgentMessage, CustomAgentMessage};
         match message {
-            AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => { crate::replay_assistant_tools::replay_assistant_tools(message, self); self.add_continuity_notice(message); }
+            AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => {
+                crate::replay_assistant_tools::replay_assistant_tools(message, self);
+                if !matches!(message.stop_reason, maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error)
+                    && let Ok(value) = serde_json::to_value(message)
+                    && let Some(index) = self.history_cache_misses.iter().position(|(timestamp, model, _)| *timestamp == value["timestamp"] && *model == value["model"]) {
+                    let (_, _, miss) = self.history_cache_misses.remove(index);
+                    self.add_cache_miss_notice(&miss);
+                }
+                self.add_continuity_notice(message);
+            }
             AgentMessage::Llm(maho_ai::types::Message::ToolResult(message)) => {
                 if let Some(component) = self.pending_tools.remove(&message.tool_call_id) {
                     let value = serde_json::to_value(message).expect("tool result");
@@ -2129,8 +2221,8 @@ impl InteractiveMode {
     }
 
     /// senpi's `attachClipboardImage`: the `blockImages` gate, the compaction drop, and the marker
-    /// pair. senpi's `processImage` resize/conversion is skipped - the Rust port has no image codec
-    /// (see `components/tool_execution_images.rs`) - so only an already-supported format reaches here.
+    /// pair. senpi's `processImage` resize/conversion is skipped here, so only an already-supported
+    /// format reaches here.
     fn attach_clipboard_image(&mut self, bytes: Vec<u8>, mime_type: String) -> bool {
         if self.session.with_settings_manager(|settings| settings.get_block_images()) {
             self.show_status("Image paste blocked by the images.blockImages setting".into());
@@ -3069,8 +3161,8 @@ impl InteractiveMode {
                 config.show_images = settings.get_show_images(); config.auto_resize_images = settings.get_image_auto_resize(); config.block_images = settings.get_block_images(); boolean!(enable_skill_commands, "enableSkillCommands");
                 boolean!(hide_thinking_block, "hideThinkingBlock"); boolean!(smooth_streaming, "smoothStreaming"); boolean!(show_cache_miss_notices, "showCacheMissNotices"); boolean!(collapse_changelog, "collapseChangelog");
                 boolean!(enable_install_telemetry, "enableInstallTelemetry"); config.show_hardware_cursor = settings.get_show_hardware_cursor(); boolean!(quiet_startup, "quietStartup"); config.clear_on_shrink = settings.get_clear_on_shrink(); config.show_terminal_progress = settings.get_show_terminal_progress(); boolean!(fullscreen_copy_on_select, "fullscreenCopyOnSelect");
-                config.image_width_cells = settings.get_image_width_cells() as usize; number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); number!(output_pad, "outputPad"); config.autocomplete_max_visible = settings.get_autocomplete_max_visible();
-                string!(steering_mode, "steeringMode"); string!(follow_up_mode, "followUpMode"); string!(transport, "transport"); string!(double_escape_action, "doubleEscapeAction"); string!(tree_filter_mode, "treeFilterMode"); string!(fullscreen_scrollbar, "fullscreenScrollbar");
+                config.image_width_cells = settings.get_image_width_cells() as usize; number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); config.output_pad = settings.get_output_pad(); config.autocomplete_max_visible = settings.get_autocomplete_max_visible();
+                string!(steering_mode, "steeringMode"); string!(follow_up_mode, "followUpMode"); string!(transport, "transport"); string!(double_escape_action, "doubleEscapeAction"); config.tree_filter_mode = settings.get_tree_filter_mode(); string!(fullscreen_scrollbar, "fullscreenScrollbar");
                 use crate::components::settings_selector::{MermaidRenderingMode, TuiMode, FullscreenExitOutput, DefaultProjectTrust};
                 config.terminal_mouse = Some(settings.get_terminal_mouse());
                 config.mermaid_rendering_mode = MermaidRenderingMode::from_name(settings.get_mermaid_rendering_mode().as_str()).unwrap_or(config.mermaid_rendering_mode);
@@ -3282,7 +3374,7 @@ impl InteractiveMode {
             if tree.is_empty() { self.show_status("No entries in session".into()); return Ok(true); }
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone(); let session = self.session.clone();
-            let filter = self.session.with_settings_manager(|settings| settings.get_value("treeFilterMode").and_then(serde_json::Value::as_str).unwrap_or("default").to_owned());
+            let filter = self.session.with_settings_manager(maho_core::settings_manager::SettingsManager::get_tree_filter_mode);
             let filter = match filter.as_str() { "no-tools" => crate::components::tree_selector::FilterMode::NoTools, "user-only" => crate::components::tree_selector::FilterMode::UserOnly, "labeled-only" => crate::components::tree_selector::FilterMode::LabeledOnly, "all" => crate::components::tree_selector::FilterMode::All, _ => crate::components::tree_selector::FilterMode::Default };
             let mut selector = crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
                 Arc::new(self.keybindings()),
@@ -3891,6 +3983,24 @@ impl InteractiveMode {
         });
     }
 
+    /// senpi `showSettingsSourceSelected`.
+    fn show_settings_source_selected(&mut self, selection: &serde_json::Value) {
+        let path = selection["path"].as_str().unwrap_or_default();
+        let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_owned(), |name| name.to_string_lossy().into_owned());
+        self.show_status(format!("Settings: {name} ({})", selection["format"].as_str().unwrap_or_default().to_uppercase()));
+    }
+
+    /// senpi `showHighReasoningWarning`.
+    fn show_high_reasoning_warning(&mut self, model_id: &str, provider: &str, thinking_level: maho_ai::types::ThinkingLevel) {
+        let content = maho_core::high_reasoning_warning::build_high_reasoning_warning(provider, model_id, thinking_level.into());
+        self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
+            title: content.title, tone: Some(crate::theme::ThemeColor::Error),
+            why: content.body.first().cloned().unwrap_or_else(|| "High reasoning may affect reliability or cost.".into()),
+            extra: content.body.iter().skip(1).map(|text| crate::components::earendil_announcement::NoticeLine { text: text.clone(), tone: Some(crate::theme::ThemeColor::Error) }).collect(),
+            expanded_line: None,
+        });
+    }
+
     /// senpi `maybeWarnAboutAnthropicSubscriptionAuth`: the auth lookup runs off the UI loop (senpi's
     /// `void` promise) and reports back through the auth UI channel; lookup failures are ignored.
     fn maybe_warn_about_anthropic_subscription_auth(&mut self, model: maho_ai::model::Model) {
@@ -3943,6 +4053,24 @@ impl InteractiveMode {
         dialog.show_info(&format!("{} is configured outside {}.", provider.method_name.as_deref().unwrap_or("Authentication"), maho_core::config::app_name()), &[], true);
         maho_tui::tui::Focusable::set_focused(&mut dialog, true);
         self.login_dialog = Some(dialog);
+    }
+
+    /// senpi `getProviderErrors().finish(raw)`: mounts each newly recorded notice in the chat.
+    fn finish_provider_error(&mut self, raw: &str) {
+        let presentation = self.provider_errors.get_or_insert_with(|| Rc::new(RefCell::new(crate::provider_error_presentation::ProviderErrorPresentation::new()))).clone();
+        let before = presentation.borrow().notices.len();
+        presentation.borrow_mut().finish(Some(raw), None);
+        let after = presentation.borrow().notices.len();
+        for index in before..after {
+            self.chat.add_component(Rc::new(RefCell::new(ProviderFailureNoticeSlot { presentation: presentation.clone(), index, theme: self.theme.clone() })));
+        }
+        self.editor_host.request_render();
+    }
+
+    /// senpi `setExtensionStatus`.
+    fn set_extension_status(&mut self, key: &str, text: Option<&str>) {
+        maho_ext_api::ExtensionUi::set_status(self.extension_ui.as_ref(), key, text);
+        self.editor_host.request_render();
     }
 
     fn show_error(&mut self, message: &str) {
@@ -4176,11 +4304,72 @@ impl InteractiveMode {
             }
             AgentSessionEvent::AgentEnd { messages, .. } => self.handle_event(&AgentEvent::AgentEnd { messages: messages.clone() }),
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
-            AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_status(notice.clone()),
+            // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
+            AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
+            // senpi `system_prompt_change`.
+            AgentSessionEvent::SystemPromptChange { system_prompt_name, .. } => self.show_status(system_prompt_name.as_ref().filter(|name| !name.is_empty()).map_or_else(|| "System prompt changed".to_owned(), |name| format!("System prompt: {name}"))),
+            // senpi `settings_source_selected` -> `showSettingsSourceSelected`.
+            AgentSessionEvent::SettingsSourceSelected { selection } => self.show_settings_source_selected(selection),
+            // senpi `queue_update`: the pending-messages rows are derived per frame; repaint.
+            AgentSessionEvent::QueueUpdate { .. } => self.editor_host.request_render(),
+            // senpi `retry_fallback_applied` / `_succeeded` / `_reverted` / `_exhausted` / `server_fallback_aborted`.
+            AgentSessionEvent::RetryFallbackApplied { from, to, reason, .. } => {
+                self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
+                    title: format!("⇄ Model fallback · {from} → {to}"), tone: Some(crate::theme::ThemeColor::Warning),
+                    why: format!("Retry switched models ({reason}); the turn continues on {to}."), extra: Vec::new(), expanded_line: None,
+                });
+                self.fallback_applied_before_retry_start = true;
+                self.set_extension_status(FALLBACK_STATUS_KEY, Some(&format!("fallback: {to}")));
+                // Provider/model failover ends any external-owner delegation episode.
+                self.external_owner_compaction_notice_shown = false;
+            }
+            AgentSessionEvent::RetryFallbackSucceeded { model, .. } => self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
+                title: format!("✓ Fallback model responded · {model}"), tone: Some(crate::theme::ThemeColor::Success),
+                why: "The fallback chain answered; the session stays on it until the revert policy fires.".into(), extra: Vec::new(), expanded_line: None,
+            }),
+            AgentSessionEvent::RetryFallbackReverted { to, .. } => {
+                self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
+                    title: format!("⇄ Reverted to {to}"), tone: Some(crate::theme::ThemeColor::Accent),
+                    why: "The original model is back after its cooldown lapsed.".into(), extra: Vec::new(), expanded_line: None,
+                });
+                self.set_extension_status(FALLBACK_STATUS_KEY, None);
+            }
+            AgentSessionEvent::RetryFallbackExhausted { chain_key, last_error } => {
+                if crate::provider_error_presentation::is_network_provider_error(Some(last_error), false) {
+                    self.finish_provider_error(last_error);
+                } else {
+                    self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
+                        title: format!("✕ Fallback chain exhausted · {chain_key}"), tone: Some(crate::theme::ThemeColor::Error),
+                        why: last_error.clone(), extra: Vec::new(), expanded_line: None,
+                    });
+                }
+                self.set_extension_status(FALLBACK_STATUS_KEY, None);
+            }
+            AgentSessionEvent::ServerFallbackAborted { from, to, chain_configured } => self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
+                title: format!("⚠ Server fallback aborted · {from} → {to}"), tone: Some(crate::theme::ThemeColor::Warning),
+                why: if *chain_configured { "Retrying on your configured fallback chain.".into() } else { "No fallback chain configured — set one with /fallback.".into() },
+                extra: Vec::new(), expanded_line: None,
+            }),
+            // senpi `model_changed`: the new model does not inherit the delegation episode.
+            AgentSessionEvent::ModelChanged { .. } => self.external_owner_compaction_notice_shown = false,
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
+            // senpi `model_change_skipped`.
+            AgentSessionEvent::ModelChangeSkipped { model, budget, .. } => {
+                use crate::components::compaction_summary_message::format_count;
+                let name = if model.name.is_empty() { &model.id } else { &model.name };
+                self.show_warning(&format!("Skipped {name}: current context needs {} more tokens for its {}-token window ({} usability budget).",
+                    format_count(budget.shortfall_tokens), format_count(budget.context_window), budget.safety_margin_profile.as_deref().unwrap_or_default()));
+            }
+            // senpi `high_reasoning_warning` -> `showHighReasoningWarning`.
+            AgentSessionEvent::HighReasoningWarning { model_id, provider, thinking_level } => self.show_high_reasoning_warning(model_id, provider, *thinking_level),
             AgentSessionEvent::ThinkingLevelChanged { level, .. } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
-            AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message),
+            AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => {
+                // senpi `shouldShowRetryIndicator`: a zero-delay retry onto a fallback model shows no countdown.
+                let fallback_applied = std::mem::take(&mut self.fallback_applied_before_retry_start);
+                if *delay_ms != 0 || !fallback_applied { self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message); }
+            }
             AgentSessionEvent::AutoRetryEnd { success, attempt, final_error } => {
+                self.fallback_applied_before_retry_start = false;
                 self.clear_status_indicator(Some(StatusIndicatorKind::Retry));
                 if !*success && final_error.as_deref() != Some("Retry cancelled") {
                     self.show_error(&format!("Retry failed after {attempt} attempts: {}", final_error.as_deref().filter(|error| !error.is_empty()).unwrap_or("Unknown error")));
@@ -4286,10 +4475,32 @@ impl InteractiveMode {
         }
     }
 
+    /// senpi `resetExtensionUI` for the mode-owned extension UI: footer, header, widgets, custom
+    /// editor, autocomplete wrappers, the extension and active-tool terminal titles, and the working
+    /// indicator state. Statuses and terminal-input listeners were cleared by the hook itself.
+    fn reset_extension_ui(&mut self) {
+        use crate::interactive_extension_ui::UiRequest;
+        self.footer = None;
+        self.set_extension_header(None);
+        for (_, mut widget, _) in std::mem::take(&mut self.widgets) { widget.dispose(); }
+        self.autocomplete_wrappers.clear();
+        if self.custom_editor.is_some() { self.handle_ui_request(UiRequest::EditorFactory(None)); }
+        self.setup_autocomplete();
+        self.active_tool_executions.clear();
+        self.active_tool_execution_terminal_title = None;
+        self.terminal_title = None;
+        self.working_message = None;
+        self.working_visible = true;
+        self.working_indicator = None;
+        self.handle_ui_request(UiRequest::HiddenThinkingLabel(None));
+        self.editor_host.request_render();
+    }
+
     pub fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
         use crate::interactive_extension_ui::UiRequest;
         match request {
             UiRequest::WidgetFrame => self.editor_host.request_render(),
+            UiRequest::ResetExtensionUi => self.reset_extension_ui(),
             UiRequest::WidgetFactory(key, factory, options) => {
                 let host = crate::interactive_ui_host::InteractiveUiHost(self.editor_host.clone(),self.terminal_dimensions.clone());
                 let theme = maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref());
@@ -4541,7 +4752,7 @@ impl InteractiveMode {
         let pending_count = self.questions.len();
         self.async_question_widget = Some(crate::components::ask_user_async_widget::AskUserAsyncWidget::new(crate::components::ask_user_async_widget::AskUserAsyncWidgetOptions {
             request, draft, timeout_ms, now_ms,
-            get_deadline_at_ms: deadline.map(|deadline| Box::new(move || deadline()) as Box<dyn Fn() -> u64>), pending_count, theme: self.theme.clone(), env: std::env::vars().collect(), mouse_capture_active: false,
+            get_deadline_at_ms: deadline.map(|deadline| Box::new(move || deadline()) as Box<dyn Fn() -> u64>), pending_count, theme: self.theme.clone(), env: std::env::vars().collect(), mouse_capture_active: self.terminal_mouse_mode() != "off",
             on_option_click: Some(Box::new(move |index| actions.borrow_mut().push_back(QuestionAction::ClickOption(index)))),
             on_own_answer_click: Some(Box::new(move || own_answer_actions.borrow_mut().push_back(QuestionAction::OwnAnswer))),
             on_expand_click: Some(Box::new(move || expand_actions.borrow_mut().push_back(QuestionAction::Expand))),
@@ -4778,7 +4989,10 @@ impl InteractiveMode {
                 }
                 if matches!(event, AgentEvent::MessageEnd { .. }) {
                     self.reveal.stop(); self.streaming = None; self.assistant_segments.clear();
-                    if let Some(assistant) = message.as_assistant() { self.add_continuity_notice(assistant); }
+                    if let Some(assistant) = message.as_assistant() {
+                        self.add_continuity_notice(assistant);
+                        if !matches!(assistant.stop_reason, maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error) { self.maybe_show_cache_miss_notice(assistant); }
+                    }
                 }
             }
             AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
@@ -5128,6 +5342,19 @@ fn to_extension_response(response: crate::components::ask_user_question_state::Q
         answers: response.answers.into_iter().map(|(id, value)| (id, maho_ext_api::QuestionAnswer { selected: value.selected, text: value.text })).collect() }
 }
 
+/// senpi `ProviderFailureNotice` as a chat child: one notice of the shared presentation.
+struct ProviderFailureNoticeSlot {
+    presentation: Rc<RefCell<crate::provider_error_presentation::ProviderErrorPresentation>>,
+    index: usize,
+    theme: Theme,
+}
+impl Component for ProviderFailureNoticeSlot {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        let presentation = self.presentation.borrow();
+        presentation.notices.get(self.index).map(|notice| notice.render(width, &self.theme, &crate::components::keybinding_hints::key_text("app.tools.expand"))).unwrap_or_default()
+    }
+}
+
 impl Component for InteractiveMode {
     fn render(&mut self, width: usize) -> Vec<String> {
         let (mut document, dock) = self.render_split(width);
@@ -5185,6 +5412,7 @@ impl InteractiveMode {
         self.editor.set_working_status_indicator(indicator);
         lines.push(String::new());
         for component in &self.pending_bash_components { lines.extend(component.borrow_mut().render(width)); }
+        lines.extend(self.render_pending_messages(width));
         if let Some(compaction) = compaction { lines.extend(compaction.borrow_mut().render(width)); }
         else if let Some(idle) = &mut self.idle_status { lines.extend(idle.render(width)); }
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
@@ -5196,6 +5424,38 @@ impl InteractiveMode {
         footer.set_auto_compact_enabled(self.host_auto_compaction_enabled());
         footer.snapshot.extension_statuses = self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         lines.extend(if let Some(custom) = &mut self.footer { custom.render(width) } else { footer.render(width, &self.theme).expect("footer layout") });
+        lines
+    }
+
+    /// senpi `getAllQueuedMessages`: the native steering/follow-up queues (the mirrored remote
+    /// queues while a host is mounted), then the in-flight and held compaction messages.
+    fn get_all_queued_messages(&self) -> (Vec<String>, Vec<String>) {
+        let (mut steering, mut follow_up) = match self.remote_state_snapshot() {
+            Some(state) => (state.steering, state.follow_up),
+            None => (self.session.get_steering_messages(), self.session.get_follow_up_messages()),
+        };
+        let compaction = self.compaction_queue.borrow();
+        for message in compaction.in_flight.iter().chain(compaction.queued.iter()) {
+            match message.mode {
+                maho_ext_api::StreamingBehavior::Steer => steering.push(message.text.clone()),
+                maho_ext_api::StreamingBehavior::FollowUp => follow_up.push(message.text.clone()),
+            }
+        }
+        (steering, follow_up)
+    }
+
+    /// senpi `updatePendingMessagesDisplay`: the `pendingMessagesContainer` rows, derived each frame
+    /// from the queues so every enqueue, dequeue, submit and abort is reflected.
+    fn render_pending_messages(&self, width: usize) -> Vec<String> {
+        use maho_tui::components::truncated_text::TruncatedText;
+        let (steering, follow_up) = self.get_all_queued_messages();
+        if steering.is_empty() && follow_up.is_empty() { return Vec::new(); }
+        let mut lines = maho_tui::components::spacer::Spacer::new(1).render(width);
+        let dim = |text: String| self.theme.fg(crate::theme::ThemeColor::Dim, &text);
+        for message in steering { lines.extend(TruncatedText::with_padding(dim(format!("Steering: {message}")), 1, 0).render(width)); }
+        for message in follow_up { lines.extend(TruncatedText::with_padding(dim(format!("Follow-up: {message}")), 1, 0).render(width)); }
+        let dequeue_hint = crate::components::keybinding_hints::key_display_text("app.message.dequeue");
+        lines.extend(TruncatedText::with_padding(dim(format!("↳ {dequeue_hint} to edit all queued messages")), 1, 0).render(width));
         lines
     }
 
