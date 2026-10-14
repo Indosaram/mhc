@@ -13,6 +13,16 @@ fn attempt(result: Result<Value, DagManagerError>) -> Value {
         Err(error) => { let code = match error.code { DagManagerErrorCode::RunNotFound => "run_not_found", DagManagerErrorCode::RunNotOwned => "run_not_owned", DagManagerErrorCode::InvalidArguments => "invalid_arguments", _ => "history_unavailable" }; fail(code, error.message) }
     }
 }
+// TS `errorCode`: only a coded engine rejection keeps its code; an uncoded failure (a journal the
+// store cannot read) degrades to history_unavailable. The Rust store error reaches the manager as
+// invalid_arguments, and every caller-side history argument is validated above before the manager
+// runs, so an invalid_arguments from the history read is that store failure.
+fn attempt_history(result: Result<Value, DagManagerError>) -> Value {
+    match result {
+        Err(error) if error.code == DagManagerErrorCode::InvalidArguments => fail("history_unavailable", error.message),
+        result => attempt(result),
+    }
+}
 fn limit(value: Option<&Value>, default: usize, max: usize) -> Result<usize, String> {
     match value { None => Ok(default), Some(value) => value.as_u64().filter(|limit| *limit > 0).map(|limit| usize::try_from(limit).unwrap_or(usize::MAX).min(max)).ok_or_else(|| "limit must be a positive integer.".into()) }
 }
@@ -61,9 +71,9 @@ pub fn query_dag_rpc(manager: &DagManager, session: Option<String>, name: &str, 
     let Some(session) = session else { return fail("run_not_owned", format!("dag run \"{id}\" belongs to another session")); };
     match name {
         "omo.dag.snapshot" => attempt(manager.snapshot(&id, &session).map(|snapshot| json!(snapshot))),
-        "omo.dag.history" => match params { Some(params) => attempt(manager.history(params).map(|page| json!(page))), None => fail("invalid_arguments", "runId is required.") },
+        "omo.dag.history" => match params { Some(params) => attempt_history(manager.history(params).map(|page| json!(page))), None => fail("invalid_arguments", "runId is required.") },
         "omo.dag.subscribe" => match params {
-            Some(mut params) => match manager.snapshot(&id, &session) { Ok(snapshot) => { let high_water = snapshot.last_seq; params.through_seq = Some(params.through_seq.map_or(high_water, |through| through.min(high_water))); attempt(manager.history(params).map(|page| json!({"schemaVersion":1,"eventName":DAG_EVENT_CHANNEL,"snapshot":snapshot,"highWaterSeq":high_water,"page":page}))) }, Err(error) => attempt(Err(error)) },
+            Some(mut params) => match manager.snapshot(&id, &session) { Ok(snapshot) => { let high_water = snapshot.last_seq; params.through_seq = Some(params.through_seq.map_or(high_water, |through| through.min(high_water))); attempt_history(manager.history(params).map(|page| json!({"schemaVersion":1,"eventName":DAG_EVENT_CHANNEL,"snapshot":snapshot,"highWaterSeq":high_water,"page":page}))) }, Err(error) => attempt(Err(error)) },
             None => fail("invalid_arguments", "runId is required."),
         },
         _ => fail("invalid_arguments", "Unknown dag query."),

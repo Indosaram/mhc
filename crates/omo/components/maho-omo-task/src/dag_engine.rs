@@ -609,6 +609,16 @@ let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::
         if let Some(surfaces) = surfaces { surfaces.status.dispose(); }
     }
 
+    /// The vetoable `session_before_switch` never detaches or suspends DAG work (TS
+    /// `wireDagLifecycle`): only the old session's view is released - bridge subscriptions, live
+    /// activity and the status widget - so the next `session_start` re-attaches the same live runs.
+    pub fn detach_view(&self) {
+        let surfaces = lock(&self.surfaces).clone();
+        if let Some(surfaces) = &surfaces { surfaces.clear_activity(); }
+        if let Some(bridge) = lock(&self.rpc).clone() { bridge.detach(); }
+        if let Some(surfaces) = surfaces { surfaces.status.dispose(); }
+    }
+
     /// TS `runtime.pauseForShutdown()`: retire live schedulers WITHOUT cancelling them, drain their
     /// loops, then persist the pause.
     pub fn pause_for_shutdown(&self, session: &str) -> Result<(), maho_ext_api::ExtensionFailure> {
@@ -710,7 +720,7 @@ let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::
         // start attaches, and a final shutdown handler disposes.
         let detach = Arc::downgrade(self);
         api.on(maho_ext_api::EventKind::SessionBeforeSwitch, Arc::new(move |_, _| { let detach = detach.clone(); Box::pin(async move {
-            if let Some(dag) = detach.upgrade() { dag.detach(); }
+            if let Some(dag) = detach.upgrade() { dag.detach_view(); }
             Ok(maho_ext_api::EventResult::None)
         }) }));
         let attach = Arc::downgrade(self);

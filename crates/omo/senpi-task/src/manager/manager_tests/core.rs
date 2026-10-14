@@ -593,7 +593,11 @@ fn given_cancel_lands_while_runner_start_awaits_when_handle_arrives_then_destroy
         wait_until("delayed handle", || lock(&runner.delayed).is_some());
         lock(&runner.delayed).clone().expect("delayed")
     };
-    wait_until("delayed handle disposed", || delayed.dispose_calls() == 1);
+    // TS `await flush()`: destruction disposes the handle, then forgets it in its `finally`.
+    wait_until("delayed handle disposed and forgotten", || {
+        delayed.dispose_calls() >= 1
+            && !harness.manager.resident_task_ids().contains(&queued.task_id)
+    });
 
     assert!(matches!(cancelled, CancelOutcome::Cancelled { .. }));
     assert_eq!(delayed.abort_calls(), 1);

@@ -108,9 +108,10 @@ fn given_residency_denial_when_manager_start_returns_then_cap_and_resident_summa
 
 #[test]
 fn given_contended_admission_lease_when_manager_starts_then_denial_cause_is_lease() {
-    let harness = default_manager();
+    // TS `withResidentStart`: the admission lease guards only an admission-gated start.
+    let harness = with_admission(SpawnAdmission::Admitted);
     let held = crate::lifecycle::admission_lease::acquire_session_admission_lease(
-        harness.manager.state_dir(), "parent-session", crate::lifecycle::admission_lease::AdmissionLeaseTimingOverrides {
+        harness.manager.state_dir(), &base_spec().parent_session_id, crate::lifecycle::admission_lease::AdmissionLeaseTimingOverrides {
             acquire_timeout_ms: Some(0), ..Default::default()
         },
     ).expect("acquire lease");

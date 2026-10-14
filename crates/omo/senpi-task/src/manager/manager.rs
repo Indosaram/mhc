@@ -984,45 +984,45 @@ impl TaskManager {
         record: &TaskRecord,
         resume_session_path: Option<&Path>,
     ) -> RespawnResult {
-        let mut moved = false;
-        let timestamp = self.inner.now_iso();
-        let stamped = self.inner.store.mutate(&record.task_id, &mut |fresh: &TaskRecord| {
-            moved = (is_terminal_record(fresh) && !is_terminal_record(record))
-                || fresh.killed == Some(true)
-                || fresh.host_pid != record.host_pid
-                || fresh.notification.run_epoch != record.notification.run_epoch;
-            if moved || fresh.started_at.is_some() {
-                fresh.clone()
-            } else {
-                let mut next = fresh.clone();
-                next.started_at = Some(timestamp.clone());
-                next
-            }
-        });
-        match stamped {
-            Ok(Some(_)) if !moved => {}
-            Ok(Some(_)) => {
-                return RespawnResult::Failed {
+        // Respawn bypasses start's status transition; persist the same durable launch boundary
+        // without changing the status or epoch that lifecycle reattachment owns. It is also the last
+        // point before the child runs: a stop, a kill or another owner that landed while the revival
+        // was preparing refuses the launch here (TS `beforeLaunch`).
+        let before_launch = || -> Result<(), RespawnResult> {
+            let mut moved = false;
+            let timestamp = self.inner.now_iso();
+            let stamped = self.inner.store.mutate(&record.task_id, &mut |fresh: &TaskRecord| {
+                moved = (is_terminal_record(fresh) && !is_terminal_record(record))
+                    || fresh.killed == Some(true)
+                    || fresh.host_pid != record.host_pid
+                    || fresh.notification.run_epoch != record.notification.run_epoch;
+                if moved || fresh.started_at.is_some() {
+                    fresh.clone()
+                } else {
+                    let mut next = fresh.clone();
+                    next.started_at = Some(timestamp.clone());
+                    next
+                }
+            });
+            match stamped {
+                Ok(Some(_)) if !moved => Ok(()),
+                Ok(Some(_)) => Err(RespawnResult::Failed {
                     disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
                     code: crate::lifecycle::port::RespawnFailureCode::RespawnFailed,
                     reason: "task was stopped or moved before its respawn launched".to_string(),
-                };
-            }
-            Ok(None) => {
-                return RespawnResult::Failed {
+                }),
+                Ok(None) => Err(RespawnResult::Failed {
                     disposition: crate::lifecycle::port::RespawnDisposition::Unrecoverable,
                     code: crate::lifecycle::port::RespawnFailureCode::SpawnSpecUnavailable,
                     reason: format!("Task record not found before respawn: {}", record.task_id),
-                };
-            }
-            Err(error) => {
-                return RespawnResult::Failed {
+                }),
+                Err(error) => Err(RespawnResult::Failed {
                     disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
                     code: crate::lifecycle::port::RespawnFailureCode::RespawnFailed,
                     reason: error.to_string(),
-                };
+                }),
             }
-        }
+        };
         respawn_managed_task(&RespawnInput {
             record,
             session_path: resume_session_path,
@@ -1030,6 +1030,7 @@ impl TaskManager {
             runners: &self.inner.runners,
             rpc_runner: self.inner.rpc_respawn_runner.as_ref(),
             trusted_launch: self.inner.trusted_respawn_launch.as_ref(),
+            before_launch: &before_launch,
         })
     }
 

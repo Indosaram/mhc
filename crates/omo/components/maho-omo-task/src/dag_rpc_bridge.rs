@@ -71,7 +71,9 @@ impl DagRpcBridge {
     }
     fn flush_snapshot(&self) {
         { let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); state.snapshot_flush = None; if !state.attached { return; } }
-        let Some(Some(session)) = self.read_store("parent session", || (self.deps.parent_session_id)()) else { return; }; let Some(snapshots) = &self.deps.run_snapshots else { return; };
+        // TS reads the parent session directly; only store reads go through `read_store`, whose success
+        // clears the reported faults.
+        let Some(session) = (self.deps.parent_session_id)() else { return; }; let Some(snapshots) = &self.deps.run_snapshots else { return; };
         let snapshots_reader = Arc::clone(snapshots);
         let Some(snapshots) = self.read_store("run snapshot", move || (snapshots_reader.as_ref())()) else { return; };
         let data = dag_updated_payload(&session, &snapshots); let fingerprint = data.to_string();
