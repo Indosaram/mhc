@@ -4199,6 +4199,8 @@ impl InteractiveMode {
             AgentSessionEvent::SystemPromptChange { system_prompt_name, .. } => self.show_status(system_prompt_name.as_ref().filter(|name| !name.is_empty()).map_or_else(|| "System prompt changed".to_owned(), |name| format!("System prompt: {name}"))),
             // senpi `settings_source_selected` -> `showSettingsSourceSelected`.
             AgentSessionEvent::SettingsSourceSelected { selection } => self.show_settings_source_selected(selection),
+            // senpi `queue_update`: the pending-messages rows are derived per frame; repaint.
+            AgentSessionEvent::QueueUpdate { .. } => self.editor_host.request_render(),
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
             // senpi `model_change_skipped`.
             AgentSessionEvent::ModelChangeSkipped { model, budget, .. } => {
@@ -5216,6 +5218,7 @@ impl InteractiveMode {
         self.editor.set_working_status_indicator(indicator);
         lines.push(String::new());
         for component in &self.pending_bash_components { lines.extend(component.borrow_mut().render(width)); }
+        lines.extend(self.render_pending_messages(width));
         if let Some(compaction) = compaction { lines.extend(compaction.borrow_mut().render(width)); }
         else if let Some(idle) = &mut self.idle_status { lines.extend(idle.render(width)); }
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
@@ -5227,6 +5230,38 @@ impl InteractiveMode {
         footer.set_auto_compact_enabled(self.host_auto_compaction_enabled());
         footer.snapshot.extension_statuses = self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         lines.extend(if let Some(custom) = &mut self.footer { custom.render(width) } else { footer.render(width, &self.theme).expect("footer layout") });
+        lines
+    }
+
+    /// senpi `getAllQueuedMessages`: the native steering/follow-up queues (the mirrored remote
+    /// queues while a host is mounted), then the in-flight and held compaction messages.
+    fn get_all_queued_messages(&self) -> (Vec<String>, Vec<String>) {
+        let (mut steering, mut follow_up) = match self.remote_state_snapshot() {
+            Some(state) => (state.steering, state.follow_up),
+            None => (self.session.get_steering_messages(), self.session.get_follow_up_messages()),
+        };
+        let compaction = self.compaction_queue.borrow();
+        for message in compaction.in_flight.iter().chain(compaction.queued.iter()) {
+            match message.mode {
+                maho_ext_api::StreamingBehavior::Steer => steering.push(message.text.clone()),
+                maho_ext_api::StreamingBehavior::FollowUp => follow_up.push(message.text.clone()),
+            }
+        }
+        (steering, follow_up)
+    }
+
+    /// senpi `updatePendingMessagesDisplay`: the `pendingMessagesContainer` rows, derived each frame
+    /// from the queues so every enqueue, dequeue, submit and abort is reflected.
+    fn render_pending_messages(&self, width: usize) -> Vec<String> {
+        use maho_tui::components::truncated_text::TruncatedText;
+        let (steering, follow_up) = self.get_all_queued_messages();
+        if steering.is_empty() && follow_up.is_empty() { return Vec::new(); }
+        let mut lines = maho_tui::components::spacer::Spacer::new(1).render(width);
+        let dim = |text: String| self.theme.fg(crate::theme::ThemeColor::Dim, &text);
+        for message in steering { lines.extend(TruncatedText::with_padding(dim(format!("Steering: {message}")), 1, 0).render(width)); }
+        for message in follow_up { lines.extend(TruncatedText::with_padding(dim(format!("Follow-up: {message}")), 1, 0).render(width)); }
+        let dequeue_hint = crate::components::keybinding_hints::key_display_text("app.message.dequeue");
+        lines.extend(TruncatedText::with_padding(dim(format!("↳ {dequeue_hint} to edit all queued messages")), 1, 0).render(width));
         lines
     }
 
