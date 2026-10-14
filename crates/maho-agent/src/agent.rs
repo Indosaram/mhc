@@ -983,7 +983,8 @@ impl Agent {
         build_provider_context(context, &config, signal.as_ref()).await
     }
 
-    fn stream_function(&self) -> StreamFn {
+    /// `Agent.streamFunction`.
+    pub fn stream_function(&self) -> StreamFn {
         lock(&self.inner.settings).stream_function.clone()
     }
 
