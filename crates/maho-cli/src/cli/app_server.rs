@@ -229,6 +229,12 @@ pub async fn run_app_server_with_signals(
     executable: &Path,
     prefix_args: &[String],
 ) -> Result<i32, String> {
+    // Pinned `index.ts:60-61` installs the SIGINT/SIGTERM handlers inside `runAppServerMode` only;
+    // the daemon verbs and usage errors keep the default signal disposition.
+    if !(is_app_server_command(args) && matches!(parse_cli_args(&args[1..]), CliArgs::Server { .. })) {
+        let outcome = run_app_server_command(args, config, version, session_dir, executable, prefix_args, std::future::pending()).await?;
+        return Ok(if outcome.handled { outcome.exit_code } else { 0 });
+    }
     let mut signals = ShutdownSignals::new();
     let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
     let mut sender = Some(sender);
