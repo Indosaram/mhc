@@ -367,6 +367,10 @@ pub struct CompactionExecutionError {
     pub aborted: bool,
 }
 
+/// senpi `_checkCompaction`: terminal message after the single compact-and-retry still overflows.
+pub const OVERFLOW_RECOVERY_FAILED_MESSAGE: &str =
+    "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RequiredCompactionError;
 
@@ -469,6 +473,10 @@ struct AgentSessionState {
     last_persisted_assistant: Option<(String, u64)>,
     post_compaction_assistant_generation: Option<u64>,
     post_compaction_usage_exempt_entries: BTreeSet<String>,
+    /// senpi `_overflowRecoveryAttempted`: one compact-and-retry per user turn.
+    overflow_recovery_attempted: bool,
+    /// senpi `_compactionSkippedTooSmall`: the last overflow compaction found nothing to compact.
+    compaction_skipped_too_small: bool,
     messages_awaiting_persistence: Vec<(uuid::Uuid, AgentMessage)>,
     steering_messages: Vec<String>,
     follow_up_messages: Vec<String>,
@@ -1702,6 +1710,8 @@ impl AgentSession {
             last_persisted_assistant: None,
             post_compaction_assistant_generation: None,
             post_compaction_usage_exempt_entries: BTreeSet::new(),
+            overflow_recovery_attempted: false,
+            compaction_skipped_too_small: false,
             messages_awaiting_persistence: Vec::new(),
             steering_messages: Vec::new(),
             follow_up_messages: Vec::new(),
@@ -1931,6 +1941,7 @@ impl AgentSession {
         if let AgentEvent::MessageStart { message } = &event
             && message.role() == "user"
         {
+            self.state().overflow_recovery_attempted = false;
             if let Some(controller) = self.retry_fallback.lock().await.as_mut() {
                 controller.reset_turn();
             }
@@ -2071,6 +2082,7 @@ impl AgentSession {
                 && !matches!(assistant.stop_reason, StopReason::Error | StopReason::Aborted)
                 && !maho_ai::utils::stop_details::is_classifier_refusal(assistant)
             {
+                if assistant.stop_reason != StopReason::Length { self.state().overflow_recovery_attempted = false; }
                 let attempt = self.state().retry_attempt;
                 if attempt > 0 {
                     if let Some(fallback) = self.retry_fallback.lock().await.as_ref().and_then(|controller| controller.state.clone()) {
@@ -2174,7 +2186,9 @@ impl AgentSession {
             if let Some(admitted) = &options.prompt_admitted { admitted(PromptDisposition::Queued); }
             return Ok(PromptDisposition::Queued);
         }
-        if self.auto_compaction_enabled() && !self.is_compaction_delegated() && self.pending_model_switch().is_none() {
+        if !self.is_compaction_delegated() && self.pending_model_switch().is_none() && self.check_pre_prompt_overflow().await? {
+            // senpi `_checkCompaction` (inline): the overflow route already settled admission.
+        } else if self.auto_compaction_enabled() && !self.is_compaction_delegated() && self.pending_model_switch().is_none() {
             let model = self.model();
             let resolved = self.get_compaction_settings(Some(&model))?;
             if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens|
@@ -2918,6 +2932,177 @@ impl AgentSession {
         })
     }
 
+    /// senpi `_isCursorPayloadOverflow`.
+    fn is_cursor_payload_overflow(message: &maho_ai::types::AssistantMessage) -> bool {
+        maho_ai::utils::overflow::is_cursor_payload_resource_exhausted(
+            &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message), 0)
+    }
+
+    /// The overflow predicate of senpi `_checkCompaction`: a confirmed context overflow from the same
+    /// source (or while the current context is also at the limit), a recoverable `length` stop from the
+    /// same model, or a Cursor zero-token payload `resource_exhausted`.
+    fn is_overflow_for_compaction(&self, message: &maho_ai::types::AssistantMessage, same_model: bool,
+        current_context_needs_compaction: bool) -> bool
+    {
+        let model = self.model();
+        let recoverable_length = same_model && maho_ai::utils::overflow::is_recoverable_length(message, model.max_tokens);
+        (maho_ai::utils::overflow::is_context_overflow(message, Some(model.context_window))
+            && (same_model || current_context_needs_compaction))
+            || recoverable_length
+            || Self::is_cursor_payload_overflow(message)
+    }
+
+    /// senpi `_truncateAgentMessagesToLastUserTurn`.
+    fn truncate_agent_messages_to_last_user_turn(&self) -> bool {
+        let messages = self.messages();
+        let Some(last_user) = messages.iter().rposition(|message| message.role() == "user") else { return false; };
+        if last_user == 0 { return false; }
+        self.agent.set_messages(messages[last_user..].to_vec());
+        self.state().message_revision += 1;
+        true
+    }
+
+    /// senpi `_isAssistantFromBeforeLatestCompaction`.
+    fn is_assistant_from_before_latest_compaction(&self, assistant: &maho_ai::types::AssistantMessage) -> bool {
+        let Ok(value) = serde_json::to_value(assistant) else { return false; };
+        // An agent message_end still awaiting persistence is necessarily a post-boundary message.
+        if self.state().messages_awaiting_persistence.iter()
+            .any(|(_, pending)| pending.as_assistant() == Some(assistant)) { return false; }
+        self.with_session_manager(|manager| {
+            let Some(compaction) = crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id())) else {
+                return false;
+            };
+            let compaction_order = compaction.get("id").and_then(Value::as_str).and_then(|id| manager.entry_order(id));
+            if let (Some((_, order)), Some(compaction_order)) = (manager.message_entry_position(&value), compaction_order) {
+                return order <= compaction_order;
+            }
+            // Reloaded/reconstructed messages have no append position: keep the timestamp heuristic.
+            compaction.get("timestamp").and_then(Value::as_str)
+                .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+                .is_some_and(|timestamp| assistant.timestamp <= timestamp.timestamp_millis())
+        })
+    }
+
+    /// The runtime context, filtered of context-excluded messages, as compaction values.
+    fn context_message_values(&self) -> Result<Vec<Value>, String> {
+        let messages = self.messages().iter().map(session_message_to_value).collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        Ok(crate::messages::filter_context_excluded_messages(messages))
+    }
+
+    /// senpi `_exceedsPolicyByContentEstimate`: content measured by bytes, ignoring provider usage.
+    fn exceeds_policy_by_content_estimate(&self) -> Result<bool, String> {
+        let model = self.model();
+        let settings = self.threshold_compaction_settings(&model)?;
+        let tokens = estimate_messages_tokens(&self.context_message_values()?);
+        Ok(crate::compaction::should_compact(tokens as f64, model.context_window as f64, &settings))
+    }
+
+    fn threshold_compaction_settings(&self, model: &Model) -> Result<crate::compaction::settings::CompactionSettings, String> {
+        let resolved = self.get_compaction_settings(Some(model))?;
+        Ok(crate::compaction::settings::CompactionSettings {
+            enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens, keep_recent_tokens: resolved.keep_recent_tokens,
+            ideal: crate::compaction::ideal_settings::IdealCompactionSettings {
+                reserve_scaling_enabled: Some(resolved.reserve_scaling_enabled),
+                ..crate::compaction::ideal_settings::default_ideal_compaction_settings()
+            },
+            ..crate::compaction::settings::default_compaction_settings()
+        })
+    }
+
+    /// The context size the threshold branch of senpi `_checkCompaction` measures: direct usage resolved
+    /// against the local transcript (`_resolveThresholdContextTokens`), else the trailing estimate, where
+    /// a stale pre-compaction usage number is dropped in favor of the content estimate.
+    fn threshold_context_tokens(&self, message: &maho_ai::types::AssistantMessage) -> Result<u64, String> {
+        let messages = self.context_message_values()?;
+        let direct = crate::compaction::calculate_context_tokens(&message.usage);
+        if message.stop_reason != StopReason::Error && direct != 0 {
+            let estimate = estimate_messages_tokens(&messages);
+            return Ok(crate::compaction::resolve_threshold_context_tokens(direct as f64, estimate as f64) as u64);
+        }
+        let estimate = crate::compaction::estimate_context_tokens(&messages);
+        if let Some(index) = estimate.last_usage_index
+            && let Ok(usage_message) = serde_json::from_value::<maho_ai::types::AssistantMessage>(messages[index].clone())
+            && self.is_assistant_from_before_latest_compaction(&usage_message)
+        {
+            // Drop only the stale usage number; the messages themselves still count.
+            return Ok(estimate_messages_tokens(&messages));
+        }
+        Ok(estimate.tokens)
+    }
+
+    /// senpi `agent_end`: an unhandled Cursor quota `resource_exhausted` names the likely cause.
+    fn append_cursor_quota_exhaustion_hint(&self, failed: &maho_ai::types::AssistantMessage, error: String) -> String {
+        if failed.error_message.is_none() { return error; }
+        let hinted = format!("{error} (likely provider usage/quota exhaustion: conversation is well below the model context window)");
+        let mut messages = self.messages();
+        let Some(index) = messages.iter().rposition(|message| message.as_assistant() == Some(failed)) else { return hinted; };
+        if let AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) = &mut messages[index] {
+            assistant.error_message = Some(hinted.clone());
+        }
+        self.agent.set_messages(messages);
+        self.state().message_revision += 1;
+        hinted
+    }
+
+    /// The overflow case of senpi `_checkCompaction` on the inline `pre_prompt` route
+    /// (`_enforceCompactionBeforeProvider`): the latest assistant still overflowed, so compact once
+    /// before admitting the prompt. Returns whether the overflow route handled admission.
+    async fn check_pre_prompt_overflow(&self) -> Result<bool, String> {
+        let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(false); };
+        let model = self.model();
+        let upstream_model_id = self.model_runtime().get_compatibility_request_config(&model).upstream_model_id;
+        let same_model = message.provider == model.provider
+            && (message.model == model.id || upstream_model_id.as_deref() == Some(message.model.as_str()));
+        let settings = self.threshold_compaction_settings(&model)?;
+        let current_context_needs_compaction = self.get_context_usage().and_then(|usage| usage.tokens)
+            .is_some_and(|tokens| crate::compaction::should_compact(tokens as f64, model.context_window as f64, &settings));
+        if message.stop_reason == StopReason::Stop
+            || !self.is_overflow_for_compaction(&message, same_model, current_context_needs_compaction)
+            || (!settings.enabled && !crate::compaction::is_turn_stuck_on_context_overflow(&message, model.context_window))
+            || self.is_assistant_from_before_latest_compaction(&message)
+        {
+            return Ok(false);
+        }
+        self.flush_post_compaction_deferred_messages();
+        if self.state().overflow_recovery_attempted {
+            self.emit(AgentSessionEvent::CompactionEnd { reason: maho_ext_api::CompactionReason::Overflow, request_id: None,
+                result: None, aborted: false, will_retry: false, accepted: None, rejection_cause: None,
+                error_message: Some(OVERFLOW_RECOVERY_FAILED_MESSAGE.to_owned()) });
+            return Err(OVERFLOW_RECOVERY_FAILED_MESSAGE.to_owned());
+        }
+        self.state().overflow_recovery_attempted = true;
+        let compacted = self.compact_for_model_with_retry(None, &model, "overflow", true, false, None).await;
+        if self.is_compaction_delegated() { return Ok(true); }
+        match compacted {
+            Ok(_) => {
+                // The failed assistant stays in session history but leaves the retry context.
+                let mut messages = self.messages();
+                if messages.last().and_then(AgentMessage::as_assistant) == Some(&message) {
+                    messages.pop();
+                    self.agent.set_messages(messages);
+                    self.state().message_revision += 1;
+                }
+                Ok(true)
+            }
+            Err(error) => {
+                if maho_ai::utils::overflow::is_context_overflow(&message, Some(model.context_window)) {
+                    self.state().overflow_recovery_attempted = false;
+                }
+                self.state().compaction_skipped_too_small =
+                    maho_ai::utils::overflow::should_retry_overflow_without_compact(false, &error);
+                if self.state().compaction_skipped_too_small {
+                    self.state().compaction_skipped_too_small = false;
+                    if matches!(model.provider.as_str(), "cursor" | "cursor-cli-oauth") {
+                        self.truncate_agent_messages_to_last_user_turn();
+                    }
+                    return Ok(true);
+                }
+                Err(RequiredCompactionError.to_string())
+            }
+        }
+    }
+
     async fn finish_provider_turn(&self) -> Result<(), String> {
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
@@ -2931,27 +3116,9 @@ impl AgentSession {
                 let state = self.state();
                 state.assistant_generation > state.last_persisted_assistant.as_ref().map_or(0, |(_, generation)| *generation)
             };
-            let assistant_before_compaction = !assistant_pending_persistence && self.with_session_manager(|manager| {
-                let branch = manager.branch(manager.leaf_id());
-                let assistant = branch.iter().rposition(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant");
-                let compaction = branch.iter().rposition(|entry| entry["type"] == "compaction");
-                matches!((assistant, compaction), (Some(assistant), Some(compaction)) if assistant < compaction)
-            });
-            if assistant_before_compaction {
-                let model = self.model();
-                let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
-                let configured = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
-                    .transpose().map_err(|error| error.to_string())?;
-                let settings = crate::compaction_settings_resolver::resolve_compaction_settings(configured.as_ref(), Some(
-                    crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
-                ))?;
-                let reserve = crate::compaction::compaction::resolve_effective_reserve_tokens(
-                    model.context_window as f64, settings.reserve_tokens as f64, Some(settings.reserve_scaling_enabled));
-                let content_tokens: u64 = self.messages().iter().map(|message|
-                    session_message_to_value(message).map(|value| crate::compaction::estimate_tokens(&value)))
-                    .sum::<Result<u64, _>>().map_err(|error| error.to_string())?;
-                if !settings.enabled || content_tokens as f64 <= model.context_window as f64 - reserve { return Ok(()); }
-            }
+            let assistant_before_compaction = !assistant_pending_persistence
+                && self.is_assistant_from_before_latest_compaction(&message);
+            if assistant_before_compaction && !self.exceeds_policy_by_content_estimate()? { return Ok(()); }
             if message.stop_reason == StopReason::Stop && !overflow_compacted {
                 let exempt = self.consume_post_compaction_usage_exemption();
                 if exempt {
@@ -2980,16 +3147,29 @@ impl AgentSession {
                 self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens| tokens > model.context_window.saturating_sub(reserve))
             };
             if (self.auto_compaction_enabled() || crate::compaction::is_turn_stuck_on_context_overflow(&message, self.model().context_window))
-                && !self.is_compaction_delegated() && !self.state().user_aborted && !overflow_compacted
-                && (same_overflow_source || current_context_needs_compaction)
-                && maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
+                && !self.is_compaction_delegated() && !self.state().user_aborted
+                && self.is_overflow_for_compaction(&message, same_overflow_source, current_context_needs_compaction)
             {
                 self.flush_post_compaction_deferred_messages();
-                overflow_compacted = true;
                 let will_retry = message.stop_reason != StopReason::Stop;
+                if will_retry && self.state().overflow_recovery_attempted {
+                    self.emit(AgentSessionEvent::CompactionEnd { reason: maho_ext_api::CompactionReason::Overflow, request_id: None,
+                        result: None, aborted: false, will_retry: false, accepted: None, rejection_cause: None,
+                        error_message: Some(OVERFLOW_RECOVERY_FAILED_MESSAGE.to_owned()) });
+                    return Ok(());
+                }
+                overflow_compacted |= will_retry;
+                if will_retry { self.state().overflow_recovery_attempted = true; }
                 let execution = self.compact_for_model_with_retry(None, &self.model(), "overflow", will_retry, false, None).await;
                 if self.is_compaction_delegated() { return Ok(()); }
-                execution?;
+                if let Err(error) = execution {
+                    // senpi blocks the retry when required overflow compaction fails; the too-small flag is
+                    // consumed by the next inline (pre-prompt) overflow check.
+                    self.state().overflow_recovery_attempted = false;
+                    self.state().compaction_skipped_too_small =
+                        maho_ai::utils::overflow::should_retry_overflow_without_compact(false, &error);
+                    return Err(error);
+                }
                 if !will_retry { return Ok(()); }
                 let mut messages = self.messages();
                 if messages.last().and_then(AgentMessage::as_assistant)
@@ -3003,6 +3183,12 @@ impl AgentSession {
                 continue;
             }
             if !self.will_retry(Some(&message)).await {
+                if let Some(error) = message.error_message.clone()
+                    && maho_ai::utils::overflow::is_cursor_quota_resource_exhausted(
+                        &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(&message), model.context_window)
+                {
+                    self.append_cursor_quota_exhaustion_hint(&message, error);
+                }
                 if self.auto_compaction_enabled() && !self.state().user_aborted && !overflow_compacted
                     && message.stop_reason != StopReason::Aborted
                     && !maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
@@ -3028,7 +3214,7 @@ impl AgentSession {
                         crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
                     } else { resolved.reserve_tokens as u64 };
                     let threshold = model.context_window.saturating_sub(reserve);
-                    if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens| tokens > threshold) {
+                    if self.threshold_context_tokens(&message)? > threshold {
                         let result = self.compact_for_model(None, &model, "threshold").await;
                         if !self.is_compaction_delegated() { result?; }
                     }
@@ -3045,7 +3231,7 @@ impl AgentSession {
                 let reserve = if resolved.reserve_scaling_enabled {
                     crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
                 } else { resolved.reserve_tokens as u64 };
-                if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens| tokens > model.context_window.saturating_sub(reserve)) {
+                if self.threshold_context_tokens(&message)? > model.context_window.saturating_sub(reserve) {
                     self.retire_failed_retry_assistant(&message)?;
                     if let Err(error) = self.revalidate_continuation_admission(false).await {
                         let attempt = self.state().retry_attempt;
@@ -3138,6 +3324,7 @@ impl AgentSession {
                     }
                 }
                 if !switched && hint_delay.is_none() {
+                    let error = if quota_exhausted { self.append_cursor_quota_exhaustion_hint(&message, error) } else { error };
                     let attempt = self.state().retry_attempt;
                     self.state().retry_attempt = 0;
                     self.reset_hint_tier_state();
@@ -7908,6 +8095,11 @@ fn user_message_text(message: &AgentMessage) -> String {
         },
         _ => String::new(),
     }
+}
+
+/// senpi `estimateMessagesTokens` (agent-session.ts module helper).
+fn estimate_messages_tokens(messages: &[Value]) -> u64 {
+    messages.iter().map(crate::compaction::estimate_tokens).sum()
 }
 
 pub fn session_message_to_value(message: &AgentMessage) -> Result<Value, serde_json::Error> {
@@ -12825,11 +13017,15 @@ mod tests {
         session.follow_up("retained quota input", None, Default::default()).await.expect("queue");
         let retries = Arc::new(Mutex::new(0));
         let captured = retries.clone();
+        let final_errors = Arc::new(Mutex::new(Vec::new()));
+        let captured_errors = final_errors.clone();
         let _subscription = session.subscribe(Arc::new(move |event| {
             if matches!(event, AgentSessionEvent::AutoRetryStart { .. }) { *lock(&captured) += 1; }
+            if let AgentSessionEvent::AutoRetryEnd { final_error: Some(error), .. } = event { lock(&captured_errors).push(error.clone()); }
         }));
         tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded quota recovery").expect("quota recovery");
         assert_eq!(*lock(&retries), 0);
+        assert_eq!(*lock(&final_errors), vec!["RESOURCE_EXHAUSTED (likely provider usage/quota exhaustion: conversation is well below the model context window)"]);
         assert_eq!(session.get_follow_up_messages(), vec!["retained quota input"]);
         assert!(session.agent.has_queued_messages());
         assert_eq!(session.messages().len(), 1);
@@ -12892,14 +13088,82 @@ mod tests {
         });
         session.with_session_manager_mut(|manager| {
             manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
+            manager.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("prior", Default::default())).expect("prior"));
+            manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"next task"}],"timestamp":1}));
             manager.append_message(serde_json::to_value(failed).expect("failed"));
         });
         session.rebuild_session_context().expect("context");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1})),
+        ])));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:payload-overflow>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            assert_eq!(event.reason, maho_ext_api::CompactionReason::Overflow);
+            let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(), first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                tokens_before: event.preparation.tokens_before, details: None };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { compaction: Some(result), ..Default::default() })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
         let model = session.model();
+        let overflow_starts = Arc::new(Mutex::new(0));
+        let captured = overflow_starts.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::CompactionStart { reason: maho_ext_api::CompactionReason::Overflow, .. }) { *lock(&captured) += 1; }
+        }));
         tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded recovery").expect("recovery");
+        assert_eq!(*lock(&overflow_starts), 1, "a zero-token payload resource_exhausted is overflow");
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("reminted"));
         assert_eq!(session.model().id, model.id);
         assert_eq!(session.model().provider, model.provider);
+    }
+
+    #[tokio::test]
+    async fn repeated_recoverable_length_stops_after_one_compact_and_retry() {
+        let truncated = |text: &str| maho_ai::providers::faux::faux_assistant_message(text, maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Length), ..Default::default()
+        });
+        let session = retry_session(vec![truncated(&"x".repeat(64)), truncated(&"y".repeat(64))], 0);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1,"reserveTokens":0})),
+        ])));
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"previous task","timestamp":0})));
+        session.rebuild_session_context().expect("context");
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:length-recovery>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(), first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                tokens_before: event.preparation.tokens_before, details: None };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { compaction: Some(result), ..Default::default() })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let ends = Arc::new(Mutex::new(Vec::new()));
+        let captured = ends.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::CompactionEnd { reason: maho_ext_api::CompactionReason::Overflow, error_message, .. } = event {
+                lock(&captured).push(error_message.clone());
+            }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt(&"x".repeat(5000), Default::default())).await.expect("bounded recovery").expect("prompt");
+        let ends = lock(&ends).clone();
+        assert_eq!(ends.len(), 2);
+        assert_eq!(ends[0], None);
+        assert_eq!(ends[1].as_deref(), Some(OVERFLOW_RECOVERY_FAILED_MESSAGE));
+    }
+
+    #[tokio::test]
+    async fn truncate_agent_messages_keeps_only_the_last_user_turn() {
+        let session = test_session();
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(serde_json::json!({"role":"user","content":"first","timestamp":0}));
+            manager.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("one", Default::default())).expect("assistant"));
+            manager.append_message(serde_json::json!({"role":"user","content":"second","timestamp":1}));
+        });
+        session.rebuild_session_context().expect("context");
+        assert!(session.truncate_agent_messages_to_last_user_turn());
+        assert_eq!(session.messages().len(), 1);
+        assert_eq!(user_message_text(&session.messages()[0]), "second");
+        assert!(!session.truncate_agent_messages_to_last_user_turn(), "a lone user turn is already minimal");
     }
 
     #[tokio::test]
