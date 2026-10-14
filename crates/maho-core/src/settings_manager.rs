@@ -19,6 +19,7 @@ use crate::lockfile_policy::{
 };
 use crate::nearest_parent_config::find_nearest_parent_config_dir;
 use crate::paths::{PathInputOptions, resolve_path};
+use crate::settings_overrides::without_override;
 use crate::text::strip_bom;
 
 pub const DEFAULT_STREAM_START_TIMEOUT_MS: u64 = 300_000;
@@ -485,10 +486,8 @@ pub fn is_mergeable_object(value: &Value) -> bool {
 
 pub fn deep_merge_objects(base: &Settings, overrides: &Settings) -> Settings {
     let mut result = base.clone();
+    // senpi skips only `undefined`, which JSON cannot express: an explicit `null` replaces the base.
     for (key, override_value) in overrides {
-        if override_value.is_null() {
-            continue;
-        }
         let merged = match (base.get(key), override_value) {
             (Some(Value::Object(base_object)), Value::Object(override_object)) => {
                 Value::Object(deep_merge_objects(base_object, override_object))
@@ -501,8 +500,45 @@ pub fn deep_merge_objects(base: &Settings, overrides: &Settings) -> Settings {
 }
 
 /// Deep merge settings: project/overrides take precedence, nested objects merge recursively.
+/// `retry.fallbackChains` is the exception: an override's chain map replaces the base map wholesale.
 pub fn deep_merge_settings(base: &Settings, overrides: &Settings) -> Settings {
-    deep_merge_objects(base, overrides)
+    let mut result = deep_merge_objects(base, overrides);
+    if let Some(chains) = overrides.get("retry").and_then(|retry| retry.get("fallbackChains"))
+        && let Some(Value::Object(retry)) = result.get_mut("retry")
+    {
+        retry.insert("fallbackChains".to_owned(), chains.clone());
+    }
+    result
+}
+
+/// senpi `ASK_USER_DEFAULT_TIMEOUT_MINUTES` / `ASK_USER_MIN_TIMEOUT_MINUTES` / `ASK_USER_MAX_TIMEOUT_MINUTES`.
+pub const ASK_USER_DEFAULT_TIMEOUT_MINUTES: f64 = 30.0;
+pub const ASK_USER_MIN_TIMEOUT_MINUTES: f64 = 1.0;
+pub const ASK_USER_MAX_TIMEOUT_MINUTES: f64 = 120.0;
+
+fn resolve_ask_user_timeout_minutes(value: Option<&Value>) -> f64 {
+    match value.and_then(Value::as_f64).filter(|value| value.is_finite()) {
+        Some(value) => value.floor().clamp(ASK_USER_MIN_TIMEOUT_MINUTES, ASK_USER_MAX_TIMEOUT_MINUTES),
+        None => ASK_USER_DEFAULT_TIMEOUT_MINUTES,
+    }
+}
+
+/// senpi `getAskUserSettings` return shape.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AskUserSettings {
+    pub enabled: bool,
+    pub timeout_minutes: f64,
+    pub bell: bool,
+}
+
+/// senpi `isTerminalMouseMode`.
+pub fn is_terminal_mouse_mode(value: &str) -> bool {
+    matches!(value, "off" | "whilePending" | "always")
+}
+
+/// senpi `envValue` over the process environment.
+fn process_env_value(suffix: &str) -> Option<String> {
+    crate::brand::env_value(suffix, &std::env::vars().collect())
 }
 
 pub struct SettingsManager {
@@ -636,6 +672,17 @@ impl SettingsManager {
 
     pub fn is_project_trusted(&self) -> bool {
         self.project_trusted
+    }
+
+    /// senpi `getAskUserSettings`.
+    pub fn get_ask_user_settings(&self) -> AskUserSettings {
+        let configured = self.settings.get("askUser");
+        let field = |key: &str| configured.and_then(|configured| configured.get(key));
+        AskUserSettings {
+            enabled: field("enabled").and_then(Value::as_bool).unwrap_or(true),
+            timeout_minutes: resolve_ask_user_timeout_minutes(field("timeoutMinutes")),
+            bell: field("bell").and_then(Value::as_bool).unwrap_or(true),
+        }
     }
 
     /// senpi `setProjectTrusted`: an untrusted project drops its scope; a newly trusted project
@@ -791,12 +838,81 @@ impl SettingsManager {
         maho_tui::terminal_image::CapabilityOverrides { images, true_color: boolean("trueColor", "TRUE_COLOR"), hyperlinks: boolean("hyperlinks", "HYPERLINKS") }
     }
 
+    fn terminal_setting(&self, key: &str) -> Option<&Value> {
+        self.settings.get("terminal").and_then(|terminal| terminal.get(key))
+    }
+
+    /// senpi `getShowImages`: `terminal.showImages`, default true.
+    pub fn get_show_images(&self) -> bool {
+        self.terminal_setting("showImages").and_then(Value::as_bool).unwrap_or(true)
+    }
+
+    /// senpi `setShowImages`.
+    pub fn set_show_images(&mut self, show: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("showImages".into(), Value::Bool(show))]))
+    }
+
+    /// senpi `getImageWidthCells`: `terminal.imageWidthCells` floored to at least 1, default 60.
+    pub fn get_image_width_cells(&self) -> u32 {
+        match self.terminal_setting("imageWidthCells").and_then(Value::as_f64).filter(|width| width.is_finite()) {
+            Some(width) => width.floor().max(1.0).min(f64::from(u32::MAX)) as u32,
+            None => 60,
+        }
+    }
+
+    /// senpi `setImageWidthCells`.
+    pub fn set_image_width_cells(&mut self, width: u32) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("imageWidthCells".into(), Value::from(width.max(1)))]))
+    }
+
+    /// senpi `getTerminalMouse`: `terminal.mouse`, default `whilePending`.
+    pub fn get_terminal_mouse(&self) -> String {
+        self.terminal_setting("mouse").and_then(Value::as_str).filter(|value| is_terminal_mouse_mode(value))
+            .unwrap_or("whilePending").to_owned()
+    }
+
+    /// senpi `setTerminalMouse`.
+    pub fn set_terminal_mouse(&mut self, mouse: &str) -> Result<(), String> {
+        if !is_terminal_mouse_mode(mouse) {
+            return Err("Invalid terminal.mouse".to_owned());
+        }
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("mouse".into(), Value::String(mouse.to_owned()))]))
+    }
+
+    /// senpi `getClearOnShrink`: the setting, then the brand `CLEAR_ON_SHRINK` env value, then false.
+    pub fn get_clear_on_shrink(&self) -> bool {
+        if let Some(enabled) = self.terminal_setting("clearOnShrink").and_then(Value::as_bool) {
+            return enabled;
+        }
+        process_env_value("CLEAR_ON_SHRINK").as_deref() == Some("1")
+    }
+
+    /// senpi `setClearOnShrink`.
+    pub fn set_clear_on_shrink(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("clearOnShrink".into(), Value::Bool(enabled))]))
+    }
+
+    /// senpi `getShowTerminalProgress`: `terminal.showTerminalProgress`, default false.
+    pub fn get_show_terminal_progress(&self) -> bool {
+        self.terminal_setting("showTerminalProgress").and_then(Value::as_bool).unwrap_or(false)
+    }
+
+    /// senpi `setShowTerminalProgress`.
+    pub fn set_show_terminal_progress(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("showTerminalProgress".into(), Value::Bool(enabled))]))
+    }
+
     pub fn get_image_auto_resize(&self) -> bool {
         self.settings
             .get("images")
             .and_then(|images| images.get("autoResize"))
             .and_then(Value::as_bool)
             .unwrap_or(true)
+    }
+
+    /// senpi `setImageAutoResize`.
+    pub fn set_image_auto_resize(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "images", &Settings::from_iter([("autoResize".into(), Value::Bool(enabled))]))
     }
 
     /// senpi `getMermaidRenderingMode`: `markdown.mermaid`, with anything but `off`/`final` read as
@@ -826,6 +942,28 @@ impl SettingsManager {
             .unwrap_or(false)
     }
 
+    /// senpi `setBlockImages`.
+    pub fn set_block_images(&mut self, blocked: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "images", &Settings::from_iter([("blockImages".into(), Value::Bool(blocked))]))
+    }
+
+    /// senpi `setCompactionEnabled`: writes only `compaction.enabled`.
+    pub fn set_compaction_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "compaction", &Settings::from_iter([("enabled".into(), Value::Bool(enabled))]))
+    }
+
+    /// senpi `getShowHardwareCursor`: the setting, then the brand `HARDWARE_CURSOR` env value.
+    pub fn get_show_hardware_cursor(&self) -> bool {
+        self.settings.get("showHardwareCursor").and_then(Value::as_bool)
+            .unwrap_or_else(|| process_env_value("HARDWARE_CURSOR").as_deref() == Some("1"))
+    }
+
+    /// senpi `getAutocompleteMaxVisible`: default 5.
+    pub fn get_autocomplete_max_visible(&self) -> usize {
+        self.settings.get("autocompleteMaxVisible").and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value >= 0.0).map_or(5, |value| value as usize)
+    }
+
     /// senpi accepts only a non-negative integer (`Number.isInteger(value) && value >= 0`).
     pub fn get_max_historical_images(&self) -> Option<usize> {
         let value = self.settings.get("images")?.get("maxHistoricalImages")?;
@@ -839,6 +977,43 @@ impl SettingsManager {
 
     pub fn get_raw_fallback_chains(&self) -> Option<&Value> {
         self.settings.get("retry").and_then(|retry| retry.get("fallbackChains"))
+    }
+
+    /// senpi `setFallbackChain`: replaces one key of the GLOBAL chain map.
+    pub fn set_fallback_chain(&mut self, key: &str, entries: &[String]) -> Result<(), String> {
+        let mut chains = self.get_global_fallback_chains();
+        chains.insert(key.to_owned(), Value::Array(entries.iter().cloned().map(Value::String).collect()));
+        self.set_nested(SettingsScope::Global, "retry", &Settings::from_iter([("fallbackChains".into(), Value::Object(chains))]))
+    }
+
+    /// senpi `removeFallbackChain`.
+    pub fn remove_fallback_chain(&mut self, key: &str) -> Result<(), String> {
+        let mut chains = self.get_global_fallback_chains();
+        if chains.remove(key).is_none() {
+            return Ok(());
+        }
+        self.set_nested(SettingsScope::Global, "retry", &Settings::from_iter([("fallbackChains".into(), Value::Object(chains))]))
+    }
+
+    /// senpi `setModelFallbackEnabled`.
+    pub fn set_model_fallback_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "retry", &Settings::from_iter([("modelFallback".into(), Value::Bool(enabled))]))
+    }
+
+    /// senpi `setFallbackRevertPolicy`: `cooldown-expiry` or `never`.
+    pub fn set_fallback_revert_policy(&mut self, policy: &str) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "retry", &Settings::from_iter([("fallbackRevertPolicy".into(), Value::String(policy.to_owned()))]))
+    }
+
+    /// senpi `getGlobalFallbackChains`: only well-formed string-array chains of the global scope.
+    fn get_global_fallback_chains(&self) -> Map<String, Value> {
+        let Some(Value::Object(chains)) = self.global_settings.get("retry").and_then(|retry| retry.get("fallbackChains")) else {
+            return Map::new();
+        };
+        chains.iter()
+            .filter(|(_, entries)| entries.as_array().is_some_and(|entries| entries.iter().all(Value::is_string)))
+            .map(|(key, entries)| (key.clone(), entries.clone()))
+            .collect()
     }
 
     pub fn get_fallback_chains_scope(&self) -> Option<SettingsScope> {
@@ -991,20 +1166,54 @@ impl SettingsManager {
         self.get_value("thinkingBudgets").cloned().and_then(|value| serde_json::from_value(value).ok())
     }
 
-    /// Writes values into the given scope and recomputes the merged view.
+    /// senpi `markModified(field, nestedKey)` + `persistScopedSettings` for nested fields: writes only
+    /// the given keys of `field`, merged into the scope file's current object, so sibling keys
+    /// (on disk and in memory) survive. A `null` value removes that nested key. The written keys stop
+    /// being overridden for this session.
+    pub fn set_nested(&mut self, scope: SettingsScope, field: &str, nested: &Settings) -> Result<(), String> {
+        let mut write_error: Option<String> = None;
+        let mut apply = |current: Option<&str>| -> Option<String> {
+            let mut parsed = match parse_current_settings(current) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    write_error = Some(error);
+                    return None;
+                }
+            };
+            let object = nested_into(parsed.get(field), nested);
+            parsed.insert(field.to_owned(), Value::Object(object));
+            Some(serialize_settings(&parsed))
+        };
+        self.storage.with_lock(scope, &mut apply)?;
+        if let Some(error) = write_error {
+            return Err(error);
+        }
+        for key in nested.keys() {
+            self.overrides = without_override(&self.overrides, field, Some(key));
+        }
+        let target = match scope {
+            SettingsScope::Global => &mut self.global_settings,
+            SettingsScope::Project => &mut self.project_settings,
+        };
+        let object = nested_into(target.get(field), nested);
+        target.insert(field.to_owned(), Value::Object(object));
+        self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+        self.notify_provider_settings();
+        Ok(())
+    }
+
+    /// Writes values into the given scope and recomputes the merged view. Each written field stops
+    /// being overridden for this session (senpi `markModified` -> `withoutOverride`).
     pub fn set(&mut self, scope: SettingsScope, values: &Settings) -> Result<(), String> {
         let values = values.clone();
         let mut write_error: Option<String> = None;
         let mut apply = |current: Option<&str>| -> Option<String> {
-            let mut parsed = match current {
-                Some(content) => match parse_settings_json(content) {
-                    Ok(parsed) => migrate_settings(parsed),
-                    Err(error) => {
-                        write_error = Some(error);
-                        return None;
-                    }
-                },
-                None => Settings::new(),
+            let mut parsed = match parse_current_settings(current) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    write_error = Some(error);
+                    return None;
+                }
             };
             for (key, value) in &values {
                 if value.is_null() {
@@ -1018,6 +1227,9 @@ impl SettingsManager {
         self.storage.with_lock(scope, &mut apply)?;
         if let Some(error) = write_error {
             return Err(error);
+        }
+        for key in values.keys() {
+            self.overrides = without_override(&self.overrides, key, None);
         }
         match scope {
             SettingsScope::Global => {
@@ -1192,6 +1404,26 @@ fn rekey_by_model_ref(map: &Map<String, Value>) -> Map<String, Value> {
         out.insert(maho_ai::legacy_provider_ids::normalize_model_ref(key), value.clone());
     }
     out
+}
+
+fn parse_current_settings(current: Option<&str>) -> Result<Settings, String> {
+    match current {
+        Some(content) => parse_settings_json(content).map(migrate_settings),
+        None => Ok(Settings::new()),
+    }
+}
+
+/// `{ ...base[field], ...nested }` with `null` removing a nested key.
+fn nested_into(base: Option<&Value>, nested: &Settings) -> Map<String, Value> {
+    let mut object = base.and_then(Value::as_object).cloned().unwrap_or_default();
+    for (key, value) in nested {
+        if value.is_null() {
+            object.remove(key);
+        } else {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    object
 }
 
 fn values_into(base: &Settings, values: &Settings) -> Settings {
@@ -1736,14 +1968,96 @@ mod tests {
     }
 
     #[test]
-    fn merge_ignores_null_overrides_and_keeps_nested_objects() {
+    fn merge_lets_null_overrides_replace_and_keeps_nested_objects() {
         let base = settings("{\"a\":1,\"nested\":{\"x\":1,\"y\":2}}");
         let overrides = settings("{\"a\":null,\"nested\":{\"y\":3}}");
         let merged = deep_merge_settings(&base, &overrides);
-        assert_eq!(merged["a"], 1);
+        assert_eq!(merged["a"], Value::Null);
         assert_eq!(merged["nested"]["x"], 1);
         assert_eq!(merged["nested"]["y"], 3);
         assert!(is_mergeable_object(&merged["nested"]));
         assert!(!is_mergeable_object(&merged["a"]));
+    }
+
+    #[test]
+    fn override_fallback_chains_replace_the_base_chain_map_wholesale() {
+        let base = settings(r#"{"retry":{"modelFallback":true,"fallbackChains":{"a":["x/1"],"b":["x/2"]}}}"#);
+        let overrides = settings(r#"{"retry":{"fallbackChains":{"c":["x/3"]}}}"#);
+        let merged = deep_merge_settings(&base, &overrides);
+        assert_eq!(merged["retry"], json!({"modelFallback":true,"fallbackChains":{"c":["x/3"]}}));
+    }
+
+    #[test]
+    fn set_compaction_enabled_keeps_sibling_compaction_keys_on_disk_and_in_memory() {
+        let mut manager = SettingsManager::in_memory(settings(r#"{"compaction":{"reserveTokens":100,"keepRecentTokens":200}}"#), false);
+        manager.set_compaction_enabled(false).expect("set compaction");
+        let expected = json!({"reserveTokens":100,"keepRecentTokens":200,"enabled":false});
+        assert_eq!(manager.get_value("compaction"), Some(&expected));
+        manager.reload();
+        assert_eq!(manager.get_value("compaction"), Some(&expected));
+    }
+
+    #[test]
+    fn an_explicit_setter_wins_over_a_session_override() {
+        let mut manager = SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()), true);
+        manager.apply_overrides(&settings(r#"{"retry":{"modelFallback":false,"maxRetries":1},"theme":"light"}"#));
+        manager.set_model_fallback_enabled(true).expect("model fallback");
+        assert_eq!(manager.get_value("retry"), Some(&json!({"modelFallback":true,"maxRetries":1})));
+        manager.set(SettingsScope::Global, &settings(r#"{"theme":"dark"}"#)).expect("theme");
+        assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn retry_setters_write_only_their_global_nested_key() {
+        let storage = InMemorySettingsStorage::with_global_content(r#"{"retry":{"maxRetries":4,"fallbackChains":{"a":["x/1"],"bad":[1]}}}"#);
+        let mut manager = SettingsManager::from_storage(Box::new(storage), true);
+        manager.apply_overrides(&settings(r#"{"retry":{"modelFallback":false}}"#));
+        manager.set_fallback_chain("b", &["x/2".to_owned()]).expect("set chain");
+        manager.remove_fallback_chain("a").expect("remove chain");
+        manager.set_fallback_revert_policy("never").expect("policy");
+        assert_eq!(manager.get_global()["retry"], json!({"maxRetries":4,"fallbackChains":{"b":["x/2"]},"fallbackRevertPolicy":"never"}));
+        assert_eq!(manager.get_value("retry").and_then(|retry| retry.get("modelFallback")), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn terminal_and_image_getters_read_nested_keys_with_senpi_defaults() {
+        let defaults = SettingsManager::in_memory(Settings::new(), false);
+        assert!(defaults.get_show_images());
+        assert_eq!(defaults.get_image_width_cells(), 60);
+        assert_eq!(defaults.get_terminal_mouse(), "whilePending");
+        assert!(!defaults.get_show_terminal_progress());
+        assert_eq!(defaults.get_autocomplete_max_visible(), 5);
+        let configured = SettingsManager::in_memory(settings(r#"{"terminal":{"showImages":false,"imageWidthCells":12.7,"mouse":"always","clearOnShrink":true,"showTerminalProgress":true},"autocompleteMaxVisible":9,"showHardwareCursor":true}"#), false);
+        assert!(!configured.get_show_images());
+        assert_eq!(configured.get_image_width_cells(), 12);
+        assert_eq!(configured.get_terminal_mouse(), "always");
+        assert!(configured.get_clear_on_shrink());
+        assert!(configured.get_show_terminal_progress());
+        assert_eq!(configured.get_autocomplete_max_visible(), 9);
+        assert!(configured.get_show_hardware_cursor());
+    }
+
+    #[test]
+    fn terminal_and_image_setters_merge_into_their_nested_objects() {
+        let mut manager = SettingsManager::in_memory(settings(r#"{"terminal":{"images":false},"images":{"maxHistoricalImages":2}}"#), false);
+        manager.set_show_images(false).expect("show images");
+        manager.set_image_width_cells(0).expect("width");
+        manager.set_terminal_mouse("off").expect("mouse");
+        assert!(manager.set_terminal_mouse("bogus").is_err());
+        manager.set_clear_on_shrink(true).expect("shrink");
+        manager.set_show_terminal_progress(true).expect("progress");
+        manager.set_image_auto_resize(false).expect("auto resize");
+        manager.set_block_images(true).expect("block images");
+        assert_eq!(manager.get_global()["terminal"], json!({"images":false,"showImages":false,"imageWidthCells":1,"mouse":"off","clearOnShrink":true,"showTerminalProgress":true}));
+        assert_eq!(manager.get_global()["images"], json!({"maxHistoricalImages":2,"autoResize":false,"blockImages":true}));
+        assert!(!manager.get_image_auto_resize());
+        assert!(manager.get_block_images());
+    }
+
+    #[test]
+    fn ask_user_settings_default_bell_on_and_clamp_the_timeout() {
+        assert_eq!(SettingsManager::in_memory(Settings::new(), false).get_ask_user_settings(), AskUserSettings { enabled: true, timeout_minutes: 30.0, bell: true });
+        let configured = SettingsManager::in_memory(settings(r#"{"askUser":{"enabled":false,"timeoutMinutes":0.5,"bell":false}}"#), false);
+        assert_eq!(configured.get_ask_user_settings(), AskUserSettings { enabled: false, timeout_minutes: 1.0, bell: false });
     }
 }
