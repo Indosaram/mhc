@@ -644,7 +644,7 @@ pub struct AgentSessionInner {
 
 pub type HtmlThemeResolver = Arc<dyn Fn(Option<&str>) -> Result<(maho_ext_api::Theme, Option<(BTreeMap<String, String>, BTreeMap<String, String>)>), String> + Send + Sync>;
 
-struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
+struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>, crate::retry_fallback::log::FallbackLogger);
 
 struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
 
@@ -1567,6 +1567,17 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
     fn is_fallback_eligible(&self, model: &Model) -> bool {
         self.0.upgrade().is_some_and(|inner| inner.model_registry.is_fallback_eligible(model))
     }
+    fn has_configured_auth(&self, model: &Model) -> bool {
+        self.0.upgrade().is_some_and(|inner| inner.model_registry.has_configured_auth(model))
+    }
+    fn log(&mut self, level: crate::retry_fallback::controller::FallbackLogLevel, event: &str, data: &[(&str, Option<&str>)]) {
+        let data: Map<String, Value> = data.iter()
+            .filter_map(|(key, value)| value.map(|value| ((*key).to_owned(), Value::String(value.to_owned())))).collect();
+        match level {
+            crate::retry_fallback::controller::FallbackLogLevel::Debug => self.1.debug(event, Some(&data)),
+            crate::retry_fallback::controller::FallbackLogLevel::Info => self.1.info(event, Some(&data)),
+        }
+    }
     fn switch_model<'a>(&'a mut self, model: Model, thinking: ModelThinkingLevel, revert: bool)
         -> maho_ai::types::BoxFuture<'a, Result<(), String>>
     {
@@ -1667,17 +1678,16 @@ impl AgentSession {
                 crate::settings_manager::SettingsScope::Project => "project",
             })
             .unwrap_or("default");
-        {
-            let mut fallback_logger = crate::retry_fallback::log::FallbackLogger::new(
-                std::path::Path::new(&fallback_logger_dir),
-                None,
-            );
-            for warning in &fallback_validation_warnings {
-                let mut data = Map::new();
-                data.insert("warning".to_owned(), Value::String(warning.clone()));
-                data.insert("source".to_owned(), Value::String(fallback_chains_source.to_owned()));
-                fallback_logger.warn("validation_warning", Some(&data));
-            }
+        // senpi: one fallback logger serves startup validation and the controller's decision trail.
+        let mut fallback_logger = crate::retry_fallback::log::FallbackLogger::new(
+            std::path::Path::new(&fallback_logger_dir),
+            None,
+        );
+        for warning in &fallback_validation_warnings {
+            let mut data = Map::new();
+            data.insert("warning".to_owned(), Value::String(warning.clone()));
+            data.insert("source".to_owned(), Value::String(fallback_chains_source.to_owned()));
+            fallback_logger.warn("validation_warning", Some(&data));
         }
         let agent = config.agent;
         let state = AgentSessionState {
@@ -1903,7 +1913,7 @@ impl AgentSession {
             .unwrap_or_else(|error| panic!("Invalid pinned cooldown pattern: {error}"));
         *session.retry_fallback.try_lock().map_err(|_| MissingModelAccessError)? = Some(
             crate::retry_fallback::controller::RetryFallbackController::new(
-                SessionFallbackDeps(Arc::downgrade(&session.inner)), cooldowns,
+                SessionFallbackDeps(Arc::downgrade(&session.inner), fallback_logger), cooldowns,
             ),
         );
 
@@ -3745,8 +3755,9 @@ impl AgentSession {
         let models = self.model_registry.get_all();
         let oauth = |model: &Model| self.model_registry.is_using_oauth(model);
         let eligible = |model: &Model| self.model_registry.is_fallback_eligible(model);
+        let configured = |model: &Model| self.model_registry.has_configured_auth(model);
         let canonical = crate::retry_fallback::chains::canonicalize_fallback_chains(&chains, &models,
-            &crate::retry_fallback::expansion::FallbackAuthTiers { is_using_oauth: &oauth, has_configured_auth: None, is_fallback_eligible: Some(&eligible) });
+            &crate::retry_fallback::expansion::FallbackAuthTiers { is_using_oauth: &oauth, has_configured_auth: Some(&configured), is_fallback_eligible: Some(&eligible) });
         crate::retry_fallback::chains::resolve_chain_key(&self.model(), Some(self.thinking_level()), &canonical).is_some()
     }
 
@@ -14353,7 +14364,8 @@ mod tests {
         let mut target = test_model();
         target.id = "fallback-small".to_owned();
         target.context_window = 128_000;
-        let mut deps = SessionFallbackDeps(Arc::downgrade(&session.inner));
+        let mut deps = SessionFallbackDeps(Arc::downgrade(&session.inner),
+            crate::retry_fallback::log::FallbackLogger::new(std::path::Path::new(&session.agent_dir()), None));
         crate::retry_fallback::controller::RetryFallbackDeps::switch_model(&mut deps, target.clone(), ModelThinkingLevel::Off, false).await.unwrap();
         assert_eq!(session.model().id, target.id);
         let entries = session.with_session_manager(|manager| manager.entries());
