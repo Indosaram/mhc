@@ -266,7 +266,10 @@ impl ServerListener for UnixListener {
                         biased;
                         _=signal.wait_for(|v| *v)=>break,
                         connection=listener.accept()=>{
-                            let (stream,_)=connection?; let accept=accept.clone(); let stop=connection_signal;
+                            // Pinned `server.on("error", report)`: an accept failure is reported and
+                            // the listener keeps accepting.
+                            let stream=match connection { Ok((stream,_))=>stream, Err(error)=>{ report_to(on_error.as_ref(),error.into()); continue; } };
+                            let accept=accept.clone(); let stop=connection_signal;
                             connections.spawn(async move { serve_socket(accept,stream,stop,options).await });
                         },
                         result=connections.join_next(),if !connections.is_empty()=>{ if let Some(result)=result { match result { Ok(Ok(()))=>{},Ok(Err(error))=>report_to(on_error.as_ref(),error),Err(error)=>report_to(on_error.as_ref(),ServerError::new("internal_error",&error.to_string())) } } }

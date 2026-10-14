@@ -262,21 +262,21 @@ impl Server {
         );
         // A transport failure closes without a frame; a protocol failure (malformed frame or
         // handshake timeout) goes through pinned `failProtocol`.
+        // A clean transport close before hello is quiet (pinned `transportClosed`).
         enum HandshakeFailure {
             Transport(ServerError),
             Protocol(ServerError),
+            Closed,
         }
-        let handshake = tokio::time::timeout(self.handshake_timeout, async {
+        // Pinned `accept` arms the handshake timer once and clears it only after the server
+        // hello is sent, so one deadline covers hello, `attachClient` and the hello send.
+        let handshake_deadline = tokio::time::Instant::now() + self.handshake_timeout;
+        let handshake = tokio::time::timeout_at(handshake_deadline, async {
             loop {
                 let bytes = inbound
                     .recv()
                     .await
-                    .ok_or_else(|| {
-                        HandshakeFailure::Transport(ServerError::new(
-                            "invalid_request",
-                            "Byte transport closed",
-                        ))
-                    })?
+                    .ok_or(HandshakeFailure::Closed)?
                     .map_err(HandshakeFailure::Transport)?;
                 let mut messages = decoder.push(&bytes).map_err(|e| {
                     HandshakeFailure::Protocol(ServerError::new("invalid_request", &e.to_string()))
@@ -303,6 +303,15 @@ impl Server {
             Err(HandshakeFailure::Transport(error)) => {
                 connection.close(None).await?;
                 return Err(error);
+            }
+            Err(HandshakeFailure::Closed) => {
+                if let Err(error) = decoder.end() {
+                    self.report_error(&ServerError::new("invalid_request", &error.to_string()));
+                }
+                if let Err(error) = connection.close(None).await {
+                    self.report_error(&error);
+                }
+                return Ok(());
             }
         };
         let hello_error = if hello["type"] != "hello" {
@@ -332,13 +341,33 @@ impl Server {
             attachment: Mutex::new(None),
             max: self.max_frame_length,
         });
-        let services = match self
-            .host
-            .server_services()
-            .attach_client(presentation.clone())
-            .await {
-                Ok(services)=>services,
-                Err(error)=>{
+        // The host attach runs as its own task so a handshake timeout can hand it off without
+        // dropping it mid-acquisition (pinned `finishHandshake` keeps awaiting `attachClient`).
+        let mut attaching = tokio::spawn({
+            let host = self.host.clone();
+            let presentation: Arc<dyn RoutedServerPresentation> = presentation.clone();
+            async move { host.server_services().attach_client(presentation).await }
+        });
+        let services = match tokio::time::timeout_at(handshake_deadline, &mut attaching)
+        .await {
+                Err(_elapsed)=>{
+                    // Pinned `finishHandshake`: services resolved after the handshake failed are
+                    // released, never leaked.
+                    self.fail_protocol(&connection,ServerError::new("invalid_request","Handshake timeout")).await;
+                    let server=self.clone();
+                    tokio::spawn(async move {
+                        if let Ok(Ok(services))=attaching.await && let Err(error)=services.release().await {server.report_error(&error);}
+                    });
+                    if let Err(release)=presentation.release_silently().await {self.report_error(&release);}
+                    return Ok(());
+                },
+                Ok(Err(join))=>{
+                    let error=ServerError::new("internal_error",&join.to_string());
+                    self.fail_protocol(&connection,self.to_protocol_error(error.clone())).await;
+                    return Err(error);
+                },
+                Ok(Ok(Ok(services)))=>services,
+                Ok(Ok(Err(error)))=>{
                     if let Err(release)=presentation.detach_session().await {self.report_error(&ServerError::new("internal_error",&release.message));}
                     self.fail_protocol(&connection,self.to_protocol_error(error.clone())).await;
                     return Err(error);
@@ -355,11 +384,15 @@ impl Server {
         let subscriptions = Arc::new(Mutex::new(std::collections::BTreeSet::<String>::new()));
         let mut pending = remaining;
         let result=async {
-            if let Err(error)=send(
+            match tokio::time::timeout_at(handshake_deadline,send(
                 &connection,
                 &json!({"type":"hello","version":PROTOCOL_VERSION,"serverId":self.server_id}),
                 self.max_frame_length,
-            ).await { self.report_error(&error); return Err(error); }
+            )).await {
+                Err(_elapsed)=>return Ok(Some(ServerError::new("invalid_request","Handshake timeout"))),
+                Ok(Err(error))=>{ self.report_error(&error); return Err(error); },
+                Ok(Ok(()))=>{},
+            }
             loop {
                 for message in pending.drain(..) {
                     match message["type"].as_str() {
@@ -393,7 +426,7 @@ impl Server {
                             let server=self.clone(); let connection=connection.clone(); let services=services.clone(); let presentation=presentation.clone(); let active=active.clone(); let encoders=encoders.clone();
                             let subscriptions=subscriptions.clone();
                             requests.spawn(async move {
-                                let context=Context { cancelled:signal.clone() }; let mut cancelled=signal;
+                                let context=Context { cancelled:signal.clone() }; let cancelled=signal;
                                 let publisher_connection=connection.clone(); let max=server.max_frame_length;
                                 let queued=Arc::new(Mutex::new(Some(Vec::<(String,Value)>::new())));
                                 let pending=queued.clone();let publishing_encoders=encoders.clone();let subscribing_id=subscribing.clone();
@@ -416,7 +449,9 @@ impl Server {
                                         attachment.invoke(message["call"].clone(),publish,context).await
                                     } else { services.invoke_service(message["call"].clone(),publish,context).await }
                                 };
-                                let result=tokio::select! { result=invoke=>result,_=cancelled.wait_for(|v| *v)=>Err(ServerError::new("cancelled","RPC request cancelled")) };
+                                // Pinned `handleCancel` only aborts the context signal: the call
+                                // runs to completion and the host decides how to honor it.
+                                let result=invoke.await;
                                 let result=match result {
                                     Ok(result) if subscribing.is_some()=>{
                                         let subscription_id=subscribing.as_ref().expect("subscription branch");
@@ -579,37 +614,46 @@ impl RoutedServerPresentation for Presentation {
                     }
                 }) as ServerFuture<'static, ()>
             }));
-            if let Some(previous) = current.take() {
+            // Pinned `attachClientNow` tracks the new attachment before publishing it, so a
+            // failed release or publish leaves the lease owned and released at disconnect.
+            let target = attachment.target.clone();
+            if let Some(previous) = current.replace(attachment) {
                 previous.release().await?;
             }
             send(
                 &self.connection,
-                &json!({"type":"attachment","attachment":attachment.target}),
+                &json!({"type":"attachment","attachment":target}),
                 self.max,
             )
-            .await?;
-            *current = Some(attachment);
-            Ok(())
+            .await
         })
     }
     fn detach_session(&self) -> ServerFuture<'_, ()> {
         Box::pin(async move {
             let mut current = self.attachment.lock().await;
-            if let Some(previous) = current.take() {
-                previous.release().await?;
+            // Pinned `releaseAttachment`: `attachment:null` is published in `finally`, even
+            // when the lease release fails, and the release error is then surfaced.
+            let Some(previous) = current.take() else {
+                return Ok(());
+            };
+            let released = previous.release().await;
+            let published = if self.connection.closed() {
+                Ok(())
+            } else {
                 send(
                     &self.connection,
                     &json!({"type":"attachment","attachment":null}),
                     self.max,
                 )
-                .await?;
-            }
-            Ok(())
+                .await
+            };
+            released.and(published)
         })
     }
     fn prepare_session_removal<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()> {
         Box::pin(async move {
-            self.detach_session().await?;
+            // Pinned `removeSession` releases only that session's attachments; the router
+            // publishes `attachment:null` to each owning client it detaches.
             self.router.remove(session_id).await
         })
     }
