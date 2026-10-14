@@ -73,7 +73,10 @@ impl ConversationRotationStore<fn() -> String> {
 
 impl<F: Fn() -> String> ConversationRotationStore<F> {
     pub fn with_options(options: ConversationRotationStoreOptions<F>) -> Self {
-        let max_records = options.max_records.unwrap_or(MAX_CURSOR_CONVERSATION_ROTATION_RECORDS);
+        let max_records = options
+            .max_records
+            .or_else(|| read_rotation_record_limit(std::env::var("PI_CURSOR_ROTATION_RECORD_LIMIT").ok().as_deref()))
+            .unwrap_or(MAX_CURSOR_CONVERSATION_ROTATION_RECORDS);
         let records = load_records(&options.persist_path);
         Self {
             persist_path: options.persist_path,
@@ -186,6 +189,11 @@ pub fn resolve_conversation_rotation_persist_path(
             format!("{}/.senpi/agent", home.trim_end_matches('/'))
         });
     format!("{}/cursor-conversation-ids.json", agent_dir.trim_end_matches('/'))
+}
+
+fn read_rotation_record_limit(raw: Option<&str>) -> Option<usize> {
+    let parsed = raw?.trim().parse::<f64>().ok()?;
+    (parsed.is_finite() && parsed > 0.0).then(|| parsed.floor() as usize)
 }
 
 fn load_records(persist_path: &Path) -> IndexMap<String, MutableRecord> {
