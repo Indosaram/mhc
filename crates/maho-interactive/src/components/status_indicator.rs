@@ -99,6 +99,7 @@ impl StatusIndicator {
         s.compact_label = format!("Compacting... ({key} to cancel)");
         s
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn retry(
         attempt: usize,
         max: usize,

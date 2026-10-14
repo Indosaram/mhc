@@ -216,13 +216,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     // senpi `createAgentSessionServices({ extensionFlagValues: parsed.unknownFlags })` ->
     // `applyExtensionFlagValues`: registered flags are applied; an unregistered `--flag` or a string
     // flag without a value is a runtime error diagnostic (main.ts `reportDiagnostics` then exit 1).
-    let flag_diagnostics = (!parsed.unknown_flags.is_empty()).then(|| {
+    let flag_diagnostics = if parsed.unknown_flags.is_empty() { Default::default() } else {
         let values = parsed.unknown_flags.iter().map(|(name, value)| (name.clone(), match value {
             super::args::FlagValue::Boolean(value) => maho_ext_api::FlagValue::Boolean(*value),
             super::args::FlagValue::String(value) => maho_ext_api::FlagValue::String(value.clone()),
         })).collect::<std::collections::BTreeMap<_, _>>();
         maho_core::agent_session_services::apply_extension_flag_values(Some(&extensions), Some(&values))
-    }).unwrap_or_default();
+    };
     let mut models = providers.0.lock().map_err(|error| error.to_string())?.clone();
     // senpi agent-session-services.ts:218: once the extension providers are registered, an offline
     // refresh restores their stored catalogs as well.

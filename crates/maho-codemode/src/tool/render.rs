@@ -264,7 +264,7 @@ impl maho_tui::tui::Component for EvalCard {
 fn eval_card(args: &Value, result: Option<&AgentToolResult>, theme: &Theme, context: &maho_ext_api::ToolRenderContext<(), Value>) -> Box<dyn maho_tui::tui::Component> {
     // A host theme that exports no colors (print/json modes) renders like senpi's `theme === undefined`.
     let theme=(!theme.colors.is_empty()).then(||theme.clone());
-    let live=result.is_some_and(|result|!result.details.get("action").is_some_and(|action|!action.is_null()) && has_live_cell(&result.details));
+    let live=result.is_some_and(|result|result.details.get("action").is_none_or(|action|action.is_null()) && has_live_cell(&result.details));
     let ticker=LiveTicker::new(live,context.invalidate.clone());
     Box::new(EvalCard {ticker,args:args.clone(),result:result.cloned(),expanded:context.expanded,has_result:context.has_result.unwrap_or(result.is_some()),
         is_partial:context.is_partial,is_error:context.is_error,show_images:context.show_images,

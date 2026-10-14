@@ -3094,12 +3094,12 @@ impl AgentSession {
     /// `_isHardErrorFallbackEligible`.
     async fn is_hard_error_fallback_eligible(&self, message: &maho_ai::types::AssistantMessage) -> bool {
         let probe = maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message);
-        !message.error_message.as_deref().is_some_and(|error| error.starts_with(
-            maho_ai::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX))
-            && !(self.model().provider == "anthropic-subscription"
-                && message.error_message.as_deref() == Some(maho_ai::auth::resolve::provider_not_configured_message("anthropic-subscription").as_str()))
-            && !self.is_subscription_same_model_remint_error(message)
-            && message.stop_reason == StopReason::Error
+        let suppressed = message.error_message.as_deref().is_some_and(|error| error.starts_with(
+            maho_ai::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX));
+        let subscription_unconfigured = self.model().provider == "anthropic-subscription"
+            && message.error_message.as_deref() == Some(maho_ai::auth::resolve::provider_not_configured_message("anthropic-subscription").as_str());
+        if suppressed || subscription_unconfigured || self.is_subscription_same_model_remint_error(message) { return false; }
+        message.stop_reason == StopReason::Error
             && !maho_ai::utils::overflow::is_context_overflow(message, Some(self.model().context_window))
             && !maho_ai::utils::overflow::is_cursor_payload_resource_exhausted(&probe, 0)
             && !maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(&probe)

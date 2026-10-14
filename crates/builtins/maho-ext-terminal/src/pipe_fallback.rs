@@ -73,7 +73,8 @@ impl PipeFallbackSession {
             let sink=Arc::clone(&sink);
             readers.push(std::thread::spawn(move || {
                 let mut buffer=[0_u8;8192];
-                while let Ok(count)=stream.read(&mut buffer) {if count==0 {break;}if let Ok(mut sink)=sink.lock() {(*sink)(&buffer[..count]);}}
+                while let Ok(count)=stream.read(&mut buffer) {if count==0 {break;}
+                    if let Ok(mut sink)=sink.lock() {(*sink)(&buffer[..count]);}}
             }));
         }
         let finished=Arc::new(AtomicBool::new(false));let timed_out=Arc::new(AtomicBool::new(false));
