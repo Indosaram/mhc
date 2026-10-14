@@ -131,7 +131,7 @@ impl TaskComponent {
                         // keys, and owned-member liveness is deduped by `terminal_epochs`.
                         component.sync();
                     }
-                    ExtensionEvent::SessionBeforeSwitch { .. } => { if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.detach(); } component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionSwitching, Some(session)); component.channels.emit_shutdown().await.map_err(maho_ext_api::ExtensionFailure::new)?; component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui(); }
+                    ExtensionEvent::SessionBeforeSwitch { .. } => { if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.detach(); } component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionSwitching, Some(session)); component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui(); }
                     ExtensionEvent::SessionBeforeCompact(_) => component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::Compacting, Some(session)),
                     ExtensionEvent::SessionCompact(_) => { component.transitions.lock().unwrap_or_else(PoisonError::into_inner).resolve(Some(session)).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; component.sync(); }
                     ExtensionEvent::SessionShutdown(shutdown) => {
