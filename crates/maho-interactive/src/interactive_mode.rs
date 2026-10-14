@@ -432,6 +432,9 @@ pub struct InteractiveMode {
     external_owner_compaction_notice_shown: bool,
     /// senpi `fallbackAppliedBeforeRetryStart`.
     fallback_applied_before_retry_start: bool,
+    /// senpi `renderSessionItems`' `cacheMisses`, keyed by the assistant message's (timestamp, model),
+    /// consumed while a local rebuild replays the transcript.
+    history_cache_misses: Vec<(serde_json::Value, serde_json::Value, maho_core::cache_stats::CacheMiss)>,
     /// senpi `providerErrors`: the current provider-failure display episode, mounted in the chat.
     provider_errors: Option<Rc<RefCell<crate::provider_error_presentation::ProviderErrorPresentation>>>,
     /// senpi `continuityNotices`.
@@ -1169,7 +1172,7 @@ impl InteractiveMode {
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
         let invalidate_ui = Arc::downgrade(&extension_ui);
         session.set_before_session_invalidate(Some(Arc::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } })));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, external_owner_compaction_notice_shown:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1773,6 +1776,26 @@ impl InteractiveMode {
     }
 
     pub fn rebuild_history(&mut self) {
+        self.reset_transcript_state();
+        // A mounted shared host is authoritative: rebuild from the fetched remote snapshot, never
+        // the unrelated local session. Without a host, the local session is the source.
+        if self.session_host.is_some() {
+            if let Some(messages) = self.remote_history.clone() {
+                for message in &messages { self.add_history_message(message); }
+            }
+        } else {
+            self.render_session_entries(false);
+            // senpi `renderInitialMessages`: show compaction info if the session was compacted.
+            let compaction_count = self.session.with_session_manager(|manager| manager.count_compactions());
+            if compaction_count > 0 {
+                let times = if compaction_count == 1 { "1 time".to_owned() } else { format!("{compaction_count} times") };
+                self.show_status(format!("Session compacted {times}"));
+            }
+        }
+    }
+
+    /// The transcript state `rebuild_history` and the compaction rebuild both start from.
+    fn reset_transcript_state(&mut self) {
         self.chat.clear(); self.pending_tools.clear(); self.streaming = None; self.assistant_segments.clear();
         self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.reveal.stop();
         self.assistant_cards.clear(); self.tool_cards.clear(); self.last_status = None;
@@ -1781,29 +1804,75 @@ impl InteractiveMode {
         self.continuity_notices.reset();
         // senpi `renderSessionItems`: `this.providerErrors = undefined`.
         self.provider_errors = None;
-        // A mounted shared host is authoritative: rebuild from the fetched remote snapshot, never
-        // the unrelated local session. Without a host, the local session is the source.
-        if self.session_host.is_some() {
-            if let Some(messages) = self.remote_history.clone() {
-                for message in &messages { self.add_history_message(message); }
-            }
-        } else {
-            // senpi `renderSessionEntries`: custom entries render in their transcript position among
-            // the context messages; messages without a matching entry follow in order.
-            let entries = self.session.with_session_manager(|manager| maho_core::session_manager::build_context_entries(&manager.entries(), manager.leaf_id()));
-            let mut messages = self.session.messages().into_iter();
-            for entry in &entries {
-                if entry["type"] == "custom" { self.add_custom_entry_to_chat(entry); continue; }
-                for message in messages.by_ref().take(maho_core::session_manager::session_entry_to_context_messages(entry).len()) { self.add_history_message(&message); }
-            }
-            for message in messages { self.add_history_message(&message); }
-            // senpi `renderInitialMessages`: show compaction info if the session was compacted.
-            let compaction_count = self.session.with_session_manager(|manager| manager.count_compactions());
-            if compaction_count > 0 {
-                let times = if compaction_count == 1 { "1 time".to_owned() } else { format!("{compaction_count} times") };
-                self.show_status(format!("Session compacted {times}"));
+    }
+
+    /// senpi `renderSessionEntries` over the local session's context entries: custom entries render
+    /// in their transcript position among the context messages; messages without a matching entry
+    /// follow in order. `skip_compaction` drops compaction entries (senpi's compaction_end path
+    /// appends the latest summary below instead). Cache-miss notices are re-derived from the full
+    /// entry list and compaction/branch-summary cost notices follow their summary.
+    fn render_session_entries(&mut self, skip_compaction: bool) {
+        let (all_entries, entries) = self.session.with_session_manager(|manager| { let all = manager.entries(); let context = maho_core::session_manager::build_context_entries(&all, manager.leaf_id()); (all, context) });
+        self.history_cache_misses = self.collect_history_cache_misses(&all_entries);
+        let mut messages = self.session.messages().into_iter();
+        for entry in &entries {
+            if entry["type"] == "custom" { self.add_custom_entry_to_chat(entry); continue; }
+            let count = maho_core::session_manager::session_entry_to_context_messages(entry).len();
+            if skip_compaction && entry["type"] == "compaction" { messages.by_ref().take(count).for_each(drop); continue; }
+            for message in messages.by_ref().take(count) { self.add_history_message(&message); }
+            if count > 0 && let (Some(kind @ ("compaction" | "branch_summary")), Some(usage)) = (entry["type"].as_str(), entry.get("usage")) {
+                self.add_compaction_cost_notice(kind == "compaction", usage);
             }
         }
+        for message in messages { self.add_history_message(&message); }
+        self.history_cache_misses.clear();
+    }
+
+    /// senpi `collectCacheMisses` (only when `showCacheMissNotices` is on), keyed by the assistant
+    /// message's timestamp and model.
+    fn collect_history_cache_misses(&self, entries: &[serde_json::Value]) -> Vec<(serde_json::Value, serde_json::Value, maho_core::cache_stats::CacheMiss)> {
+        if !self.show_cache_miss_notices() { return Vec::new(); }
+        let prices = |provider: &str, model: &str| self.host_find_model(provider, model).map(|model| model.cost.cache_read);
+        maho_core::cache_stats::collect_cache_misses(entries, &prices).map(|misses| misses.into_iter().map(|(message, miss)| (message["timestamp"].clone(), message["model"].clone(), miss)).collect()).unwrap_or_default()
+    }
+
+    fn show_cache_miss_notices(&self) -> bool {
+        self.session.with_settings_manager(|settings| settings.get_bool("showCacheMissNotices")).unwrap_or(false)
+    }
+
+    /// senpi `maybeShowCacheMissNotice`: the live check at an assistant `message_end`. The entry
+    /// list is scanned without the message itself, which may already be persisted here.
+    fn maybe_show_cache_miss_notice(&mut self, message: &maho_ai::types::AssistantMessage) {
+        if self.session_host.is_some() || !self.show_cache_miss_notices() { return; }
+        let Ok(value) = serde_json::to_value(message) else { return; };
+        let entries: Vec<serde_json::Value> = self.session.with_session_manager(|manager| manager.entries()).into_iter()
+            .filter(|entry| !(entry["type"] == "message" && entry["message"]["role"] == "assistant" && entry["message"]["timestamp"] == value["timestamp"] && entry["message"]["model"] == value["model"])).collect();
+        let prices = |provider: &str, model: &str| self.host_find_model(provider, model).map(|model| model.cost.cache_read);
+        if let Ok(Some(miss)) = maho_core::cache_stats::detect_cache_miss(&entries, &value, &prices) { self.add_cache_miss_notice(&miss); }
+    }
+
+    /// senpi `addCacheMissNotice`.
+    fn add_cache_miss_notice(&mut self, miss: &maho_core::cache_stats::CacheMiss) {
+        if miss.missed_tokens < 20_000.0 && miss.missed_cost < 0.1 { return; }
+        let cost = if miss.missed_cost >= 0.01 { format!(" (~${:.2})", miss.missed_cost) } else { String::new() };
+        let re_billed = format!("{} tokens re-billed{cost}", crate::components::footer::format_tokens(miss.missed_tokens));
+        let label = if miss.model_changed { "Cache miss after model switch".to_owned() }
+            else if miss.idle_ms >= maho_core::cache_stats::CACHE_TTL_MS as f64 { format!("Cache miss after {}m idle", (miss.idle_ms / 60_000.0).round()) }
+            else { "Cache miss".to_owned() };
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Warning, &format!("{label}: {re_billed}")), 1, 0))));
+    }
+
+    /// senpi `addCompactionCostNotice`: billing usage persisted on a compaction or branch summary.
+    fn add_compaction_cost_notice(&mut self, compaction: bool, usage: &serde_json::Value) {
+        if !self.show_cache_miss_notices() { return; }
+        let number = |key: &str| usage.get(key).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let tokens = number("input") + number("output") + number("cacheRead") + number("cacheWrite");
+        let total = usage.get("cost").and_then(|cost| cost.get("total")).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let cost = if total >= 0.01 { format!(" (~${total:.2})") } else { String::new() };
+        let label = if compaction { "Compaction" } else { "Branch summary" };
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Warning, &format!("{label}: {} tokens billed{cost}", crate::components::footer::format_tokens(tokens))), 1, 0))));
     }
 
     /// senpi `addCustomEntryToChat`: render a custom session entry through its registered entry
@@ -1845,7 +1914,16 @@ impl InteractiveMode {
     pub fn add_history_message(&mut self, message: &maho_agent::types::AgentMessage) {
         use maho_agent::types::{AgentMessage, CustomAgentMessage};
         match message {
-            AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => { crate::replay_assistant_tools::replay_assistant_tools(message, self); self.add_continuity_notice(message); }
+            AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => {
+                crate::replay_assistant_tools::replay_assistant_tools(message, self);
+                if !matches!(message.stop_reason, maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error)
+                    && let Ok(value) = serde_json::to_value(message)
+                    && let Some(index) = self.history_cache_misses.iter().position(|(timestamp, model, _)| *timestamp == value["timestamp"] && *model == value["model"]) {
+                    let (_, _, miss) = self.history_cache_misses.remove(index);
+                    self.add_cache_miss_notice(&miss);
+                }
+                self.add_continuity_notice(message);
+            }
             AgentMessage::Llm(maho_ai::types::Message::ToolResult(message)) => {
                 if let Some(component) = self.pending_tools.remove(&message.tool_call_id) {
                     let value = serde_json::to_value(message).expect("tool result");
@@ -4910,7 +4988,10 @@ impl InteractiveMode {
                 }
                 if matches!(event, AgentEvent::MessageEnd { .. }) {
                     self.reveal.stop(); self.streaming = None; self.assistant_segments.clear();
-                    if let Some(assistant) = message.as_assistant() { self.add_continuity_notice(assistant); }
+                    if let Some(assistant) = message.as_assistant() {
+                        self.add_continuity_notice(assistant);
+                        if !matches!(assistant.stop_reason, maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error) { self.maybe_show_cache_miss_notice(assistant); }
+                    }
                 }
             }
             AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
