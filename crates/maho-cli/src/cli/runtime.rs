@@ -47,6 +47,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let migrations = if facts_bootstrap { crate::migrations::MigrationResult { migrated_auth_providers: vec![], deprecation_warnings: vec![] } }
     else { indicator.during_surface_write(|| crate::migrations::run_migrations_with_lock(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir),true)).map_err(|error| error.to_string())? };
     maho_core::timings::time("runMigrations", maho_core::timings::TimingLabel::Main);
+    // senpi main.ts:1032-1034: the startup-cwd settings manager reports its diagnostics once, then is
+    // used only for the sessionDir lookup and the startup selectors during session selection.
+    let startup_settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), true);
+    indicator.during_surface_write(|| report_startup_settings_diagnostics(&startup_settings));
     if mode == AppMode::Rpc && parsed.multi_session {
         // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
         // built from the CLI configuration, instead of the single-session command stream. Like
@@ -67,45 +71,11 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         maho_core::timings::print_timings();
         return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
     }
-    // senpi `createCliRuntimeFactory`: resolve project trust for the launch cwd (override, saved
-    // `trust.json`, `defaultProjectTrust`, then the interactive startup prompt) before project
-    // settings and resources load.
-    let trust_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, mode);
-    let trust_mode = trust_config.trust_prompt_mode();
-    let startup_ui = {
-        let bootstrap = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
-        (bootstrap.get_string("theme"), bootstrap.get_show_hardware_cursor(), bootstrap.get_clear_on_shrink())
-    };
-    let selector: Box<super::project_trust::Selector> = Box::new(move |title: &str, options: &[String]| {
-        match super::startup_ui::show_startup_selector(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, options) {
-            Ok(selected) => selected,
-            Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
-        }
-    });
-    let (project_trusted, project_trust_warnings) = indicator.during_prompt(super::host_runtime::resolve_runtime_project_trust_with_warnings(
-        &trust_config, &cwd_text, trust_mode, trust_mode == AppMode::Interactive, selector,
-    )).await;
-    let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), project_trusted);
-    // senpi main.ts:769-775 `projectTrustDiagnostics`, then `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
-    let mut runtime_diagnostics: Vec<_> = project_trust_warnings.into_iter().map(maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning).collect();
-    runtime_diagnostics.extend(maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "runtime creation"));
-    // senpi main.ts:1254: re-apply the global `httpProxy` from the session settings (post-migration).
-    // `apply` only writes keys that changed, and the bootstrap pass already set an unchanged proxy.
-    {
-        let current = maho_core::config::current_env();
-        let mut next = current.clone();
-        let proxy = settings.get_global().get("httpProxy").and_then(serde_json::Value::as_str).map(str::to_owned);
-        maho_core::http_dispatcher::apply_http_proxy_settings(proxy.as_deref(), parsed.multi_session, &mut next)?;
-        maho_process_env::apply(&current, &next);
-    }
-    // senpi `ModelRuntime.create`: restores the stored dynamic catalogs (offline) before use.
-    let models = maho_core::model_runtime::ModelRuntime::create(maho_core::model_runtime::CreateModelRuntimeOptions {
-        models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
-        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")),
-        agent_dir: Some(std::path::PathBuf::from(&agent_dir)), ..Default::default()
-    }).await;
+    // senpi main.ts:1157-1161: decide the final runtime cwd before creating cwd-bound runtime
+    // services. --session and --resume may select a session from another project, so project
+    // trust, settings, resources and models resolve against the target session cwd.
     let identity = Some(maho_core::session_manager::NewSessionOptions { id: parsed.session_id.clone(), ..Default::default() });
-    let session_dir = resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), settings.get_string("sessionDir").as_deref());
+    let session_dir = resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), startup_settings.get_string("sessionDir").as_deref());
     let mut manager = if parsed.no_session { SessionManager::in_memory(&cwd_text, identity, None) }
         else if let Some(source) = &parsed.fork { fork_session(source, &cwd_text, session_dir.as_deref(), parsed.session_id.as_deref())? }
         else if let Some(argument) = &parsed.session {
@@ -132,7 +102,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         }
         else if parsed.resume {
             // senpi main.ts:515-531: the startup session picker; cancelling exits 0.
-            match indicator.during_surface_write(|| super::session_picker::select_session(&cwd_text, session_dir.as_deref(), &settings))? {
+            match indicator.during_surface_write(|| super::session_picker::select_session(&cwd_text, session_dir.as_deref(), &startup_settings))? {
                 Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None),
                 None => {
                     indicator.stop();
@@ -158,7 +128,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if let Some(issue) = maho_core::session_cwd::get_missing_session_cwd_issue(&manager, &cwd_text) {
         if mode != AppMode::Interactive { return Err(maho_core::session_cwd::format_missing_session_cwd_error(&issue)); }
         let options = vec!["Continue".to_owned(), "Cancel".to_owned()];
-        let (theme, hardware_cursor, clear_on_shrink) = (settings.get_string("theme"), settings.get_show_hardware_cursor(), settings.get_clear_on_shrink());
+        let (theme, hardware_cursor, clear_on_shrink) = (startup_settings.get_string("theme"), startup_settings.get_show_hardware_cursor(), startup_settings.get_clear_on_shrink());
         let prompt = maho_core::session_cwd::format_missing_session_cwd_prompt(&issue);
         let choice = indicator.during_surface_write(|| super::startup_ui::show_startup_selector(theme.as_deref(), hardware_cursor, clear_on_shrink, &prompt, &options))?;
         let session_file = issue.session_file.clone().filter(|_| choice.as_deref() == Some("Continue"));
@@ -168,6 +138,44 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         };
         manager = SessionManager::open(&session_file, session_dir.as_deref(), Some(issue.fallback_cwd.as_str()), None);
     }
+    let session_cwd = manager.cwd().to_owned();
+    // senpi `createCliRuntimeFactory`: resolve project trust for the session cwd (override, saved
+    // `trust.json`, `defaultProjectTrust`, then the interactive startup prompt) before project
+    // settings and resources load.
+    let trust_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, mode);
+    let trust_mode = trust_config.trust_prompt_mode();
+    let startup_ui = {
+        let bootstrap = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
+        (bootstrap.get_string("theme"), bootstrap.get_show_hardware_cursor(), bootstrap.get_clear_on_shrink())
+    };
+    let selector: Box<super::project_trust::Selector> = Box::new(move |title: &str, options: &[String]| {
+        match super::startup_ui::show_startup_selector(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, options) {
+            Ok(selected) => selected,
+            Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+        }
+    });
+    let (project_trusted, project_trust_warnings) = indicator.during_prompt(super::host_runtime::resolve_runtime_project_trust_with_warnings(
+        &trust_config, &session_cwd, trust_mode, trust_mode == AppMode::Interactive, selector,
+    )).await;
+    let mut settings = maho_core::settings_manager::SettingsManager::create(&session_cwd, &agent_dir, &maho_core::config::home_dir(), project_trusted);
+    // senpi main.ts:769-775 `projectTrustDiagnostics`, then `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
+    let mut runtime_diagnostics: Vec<_> = project_trust_warnings.into_iter().map(maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning).collect();
+    runtime_diagnostics.extend(maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "runtime creation"));
+    // senpi main.ts:1254: re-apply the global `httpProxy` from the session settings (post-migration).
+    // `apply` only writes keys that changed, and the bootstrap pass already set an unchanged proxy.
+    {
+        let current = maho_core::config::current_env();
+        let mut next = current.clone();
+        let proxy = settings.get_global().get("httpProxy").and_then(serde_json::Value::as_str).map(str::to_owned);
+        maho_core::http_dispatcher::apply_http_proxy_settings(proxy.as_deref(), parsed.multi_session, &mut next)?;
+        maho_process_env::apply(&current, &next);
+    }
+    // senpi `ModelRuntime.create`: restores the stored dynamic catalogs (offline) before use.
+    let models = maho_core::model_runtime::ModelRuntime::create(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
+        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")),
+        agent_dir: Some(std::path::PathBuf::from(&agent_dir)), ..Default::default()
+    }).await;
     let has_context_messages = manager.has_context_messages();
     // senpi main.ts:1181-1188: a blank `--name` is rejected before the runtime is built.
     let session_name = match parsed.name.as_deref() {
@@ -178,13 +186,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     // Builtins with the OAuth provider lanes, filtered by the builtin-extension settings selection.
-    let base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone(), &settings, &cwd, &agent_dir));
+    let base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone(), &settings, std::path::Path::new(&session_cwd), &agent_dir));
     // senpi `collectExtensionLoadDiagnostics` (main.ts:129-136): an extension that cannot load is a
     // warning; startup continues without it. `--no-extensions` keeps only the `-e` paths.
-    let (base_factories, extension_errors) = super::default_extensions::with_user_extensions(base_factories, &mut settings, &cwd_text, &agent_dir, &parsed.extensions, parsed.no_extensions).await?;
+    let (base_factories, extension_errors) = super::default_extensions::with_user_extensions(base_factories, &mut settings, &session_cwd, &agent_dir, &trust_config.resolved_extension_paths(), parsed.no_extensions).await?;
     runtime_diagnostics.extend(extension_errors.into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(super::default_extensions::extension_load_failure_message(&error.path, &error.message))));
     let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
-    let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, session_profile.clone())).await;
+    let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), std::path::Path::new(&session_cwd), session_profile.clone())).await;
     let extension_snapshot = extensions.extensions.clone();
     // senpi main.ts:1262-1268: every full launch refreshes what `--help` reads.
     super::help_flags_cache::write_help_flags_cache(
@@ -247,7 +255,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         model_runtime: models, extension_factories: base_factories,
     };
     let created = host_factory.create(maho_core::sdk::CreateAgentSessionOptions {
-        cwd: Some(cwd_text.to_string()), agent_dir: Some(agent_dir.clone()), loaded_extensions: Some(extensions),
+        cwd: Some(session_cwd.clone()), agent_dir: Some(agent_dir.clone()), loaded_extensions: Some(extensions),
         settings_manager: Some(settings), session_manager: Some(manager), model: options.options.model,
         initial_model_provenance: options.options.initial_model_provenance.map(str::to_owned),
         tools: options.options.tools, exclude_tools: options.options.exclude_tools, no_tools: options.options.no_tools,
@@ -261,8 +269,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             None,
         )),
         resource_inputs: maho_core::resource_loader::ResourceLoaderInputs {
-            additional_extension_paths: parsed.extensions.clone(), additional_skill_paths: parsed.skills.clone(),
-            additional_prompt_template_paths: parsed.prompt_templates.clone(), no_skills: parsed.no_skills,
+            additional_extension_paths: trust_config.resolved_extension_paths(), additional_skill_paths: trust_config.resolved_skill_paths(),
+            additional_prompt_template_paths: trust_config.resolved_prompt_template_paths(), no_skills: parsed.no_skills,
             no_prompt_templates: parsed.no_prompt_templates, ..Default::default()
         },
         ..Default::default()
@@ -310,6 +318,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if let Some(level) = options.options.thinking_level { session.set_session_thinking_level(level); }
     if let Some(name) = &session_name { session.set_session_name(name); }
     indicator.stop();
+    // senpi main.ts:1230-1236: the obsolete opt-out is reported in every app mode.
+    if super::shared_host::is_truthy_env_flag(maho_core::brand::env_value("DISABLE_SHARED_HOST", &maho_core::config::current_env()).as_deref()) {
+        maho_core::output_guard::maho_write_stderr("DISABLE_SHARED_HOST is obsolete: the shared session host is now off by default. Enable the experimental.sharedHost setting (or set the brand-prefixed ENABLE_SHARED_HOST=1 env flag) to opt in.\n");
+    }
     if mode == AppMode::Interactive { crate::migrations::show_deprecation_warnings(&migrations.deprecation_warnings).map_err(|error| error.to_string())?; }
     let run = async { match mode {
         AppMode::Rpc => {
@@ -441,6 +453,14 @@ fn prompt_confirm(message: &str) -> bool {
     match std::io::stdin().read_line(&mut answer) {
         Ok(0) | Err(_) => false,
         Ok(_) => matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"),
+    }
+}
+
+/// senpi main.ts:1033 `reportDiagnostics(collectSettingsDiagnosticsWithContext(startupSettingsManager,
+/// "startup session lookup"))`.
+pub fn report_startup_settings_diagnostics(settings: &maho_core::settings_manager::SettingsManager) {
+    for diagnostic in maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(settings, "startup session lookup") {
+        maho_core::output_guard::maho_write_stderr(&format!("Warning: {}\n", diagnostic.message));
     }
 }
 
