@@ -203,6 +203,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             let had_input = !chunks.is_empty();
             for chunk in chunks {
                 if let Some(data) = route_terminal_input(&mut screen, &mut terminal, &mut mode, &component, &chunk, now) {
+                    mode.set_selection_copy_available(!screen.get_copy_on_select() && screen.has_active_selection());
                     mode.handle_filtered_runtime_input(&data, now).await?;
                 }
             }
@@ -217,6 +218,8 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
                 if Rc::ptr_eq(&target, &component) { mode.handle_filtered_runtime_input(&paste, now).await?; } else { target.borrow_mut().handle_input(&paste); }
                 screen.base_mut().request_render(false, now);
             }
+            // senpi `handleCopyCommand({ preferSelection: true })`: the selection copy needs the terminal.
+            if mode.take_pending_selection_copy() { screen.copy_active_selection_to_clipboard(&mut terminal); }
             if let Some(request) = mode.take_terminal_request() {
                 // senpi `handleCtrlZ` / `handleOpenExternalEditor`: release the terminal (and the
                 // stderr takeover), run the step, then restart and force a full redraw.
