@@ -119,9 +119,12 @@ pub fn rpc_session_event_record(session:&AgentSession,event:&maho_ext_api::Agent
         maho_ext_api::AgentSessionEvent::Agent(event@maho_ext_api::AgentEvent::MessageUpdate{..})=>{
             if let Some(name)=session.message_update_resolved_tool_name(event){record["resolvedToolName"]=name.into();}
         },
+        // senpi connection-handler.ts: `aborted` and `abortSource` are added together, only when the
+        // session reports an abort owner for this turn.
         maho_ext_api::AgentSessionEvent::AgentEnd{abort_source:Some(source),..}=>{
             let source=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"};
             *last_abort_source.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some((session.session_id(),source));
+            record["aborted"]=true.into();record["abortSource"]=source.into();
         },
         _=>{},
     }
