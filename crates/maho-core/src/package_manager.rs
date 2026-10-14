@@ -905,8 +905,8 @@ fn auto_files(path: &str, kind: ResourceType, mode: SkillDiscoveryMode) -> Vec<S
         ResourceType::Prompts | ResourceType::Themes => {
             let mut matcher = crate::skill_discovery::IgnoreMatcher::new();
             crate::skill_discovery::add_ignore_rules(&mut matcher, path, path);
-            let Ok(entries) = std::fs::read_dir(path) else { return Vec::new(); };
-            entries.flatten().filter_map(|entry| {
+            let Ok(entries) = crate::utils::read_dir_sorted(path) else { return Vec::new(); };
+            entries.into_iter().filter_map(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if name.starts_with('.') || matcher.ignores(&name) || !entry.path().is_file() || !file_pattern(kind).is_match(&name) { return None; }
                 Some(entry.path().to_string_lossy().into_owned())
@@ -933,9 +933,9 @@ fn collect_auto_extension_entries(dir: &str) -> Vec<String> {
     if let Some(entries) = resolve_extension_entries(dir) { return entries; }
     let mut matcher = crate::skill_discovery::IgnoreMatcher::new();
     crate::skill_discovery::add_ignore_rules(&mut matcher, dir, dir);
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new(); };
+    let Ok(entries) = crate::utils::read_dir_sorted(dir) else { return Vec::new(); };
     let mut result = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') || name == "node_modules" { continue; }
         let path = entry.path();
@@ -1579,11 +1579,11 @@ pub fn collect_files(
     let mut matcher = ignore_matcher.cloned().unwrap_or_default();
     crate::skill_discovery::add_ignore_rules(&mut matcher, dir, &root);
 
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = crate::utils::read_dir_sorted(dir) else {
         return files;
     };
 
-    for entry in entries.flatten() {
+    for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
             continue;

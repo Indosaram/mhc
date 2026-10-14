@@ -186,10 +186,10 @@ pub fn collect_skill_entries(
     let mut matcher = ignore_matcher.cloned().unwrap_or_default();
     add_ignore_rules(&mut matcher, dir, &root);
 
-    let Ok(dir_entries) = std::fs::read_dir(dir) else {
+    let Ok(dir_entries) = crate::utils::read_dir_sorted(dir) else {
         return entries;
     };
-    let dir_entries: Vec<PathBuf> = dir_entries.flatten().map(|entry| entry.path()).collect();
+    let dir_entries: Vec<PathBuf> = dir_entries.into_iter().map(|entry| entry.path()).collect();
 
     for full_path in &dir_entries {
         let Some(name) = full_path.file_name().map(|name| name.to_string_lossy().into_owned()) else {

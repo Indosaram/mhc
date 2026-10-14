@@ -3,6 +3,15 @@ pub mod image_process;
 pub mod shell;
 pub mod tool_result_images;
 
+/// Node `readdirSync`: libuv `scandir` returns entry names sorted bytewise (strcmp), while
+/// `std::fs::read_dir` yields filesystem order. Discovery that is first-wins on collisions must
+/// iterate in the Node order.
+pub fn read_dir_sorted(dir: impl AsRef<std::path::Path>) -> std::io::Result<Vec<std::fs::DirEntry>> {
+    let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(dir)?.flatten().collect();
+    entries.sort_by(|left, right| left.file_name().as_encoded_bytes().cmp(right.file_name().as_encoded_bytes()));
+    Ok(entries)
+}
+
 mod image_resize {
     use base64::Engine;
 
