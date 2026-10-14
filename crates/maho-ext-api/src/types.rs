@@ -224,6 +224,8 @@ where TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwn
 }
 
 pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+/// Consumes the tool-search service's pending native-injection failure (`takeNativeInjectionFailure`).
+pub type NativeToolSearchInjectionFailureSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 pub type ShortcutHandler = Arc<dyn for<'a> Fn(&'a ExtensionContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
 #[derive(Clone)]
 pub struct ExtensionShortcut { pub shortcut: String, pub description: Option<String>, pub handler: ShortcutHandler, pub extension_path: String }
@@ -1421,6 +1423,9 @@ pub trait ExtensionSessionActions: Send + Sync {
     fn install_registered_tool(&self, _tool: RegisteredTool) -> Result<(), ExtensionFailure> { self.refresh_tools() }
     fn register_removed_tool_hint(&self, name: &str, hint: &str) -> Result<(), ExtensionFailure>;
     fn register_lazy_tool_activator(&self, activator: LazyToolActivator) -> Result<(), ExtensionFailure>;
+    /// Lets the session consume a rejected native tool-search request (upstream
+    /// `getToolSearchService().takeNativeInjectionFailure()`). Hosts without retry ignore it.
+    fn register_native_tool_search_injection_failure_source(&self, _source: NativeToolSearchInjectionFailureSource) -> Result<(), ExtensionFailure> { Ok(()) }
     fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure>;
     fn set_model(&self, model: Model) -> ExtensionFuture<'_, bool>;
     fn get_thinking_level(&self) -> Result<ThinkingLevel, ExtensionFailure>;
@@ -1589,6 +1594,7 @@ pub struct LoadedExtension {
     pub entry_renderers: BTreeMap<String, EntryRenderer>, pub entry_renderer_options: BTreeMap<String, EntryRendererOptions>,
     pub mcp_servers: Vec<RegisteredMcpServerDeclaration>, pub removed_tool_hints: BTreeMap<String, String>, pub filesystem_policies: Vec<FilesystemPolicy>,
     pub shortcuts: BTreeMap<String, ExtensionShortcut>, pub lazy_tool_activators: Vec<LazyToolActivator>,
+    pub native_tool_search_injection_failure_sources: Vec<NativeToolSearchInjectionFailureSource>,
     pub markdown_transformer: Option<MarkdownTransformer>, pub rpc_handlers: BTreeMap<String, ExtensionRpcRequestHandler>,
     pub command_context_handlers: BTreeMap<String, CommandContextHandler>,
     pub command_argument_completions: BTreeMap<String, CommandArgumentCompletions>,
@@ -1602,7 +1608,7 @@ impl LoadedExtension {
         Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
-            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new(), fast_mode_action: None }
+            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), native_tool_search_injection_failure_sources: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new(), fast_mode_action: None }
     }
 }
 #[derive(Clone, Default)]
@@ -1941,6 +1947,13 @@ impl ExtensionApi {
         if let Some(actions) = actions
             && let Err(error) = actions.register_lazy_tool_activator(Arc::clone(&activator)) { std::panic::panic_any(error); }
         self.registered.lazy_tool_activators.push(activator);
+    }
+    pub fn register_native_tool_search_injection_failure_source(&mut self, source: NativeToolSearchInjectionFailureSource) {
+        self.runtime.assert_active_or_panic();
+        let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
+        if let Some(actions) = actions
+            && let Err(error) = actions.register_native_tool_search_injection_failure_source(Arc::clone(&source)) { std::panic::panic_any(error); }
+        self.registered.native_tool_search_injection_failure_sources.push(source);
     }
     pub fn register_markdown_transformer(&mut self, transformer: MarkdownTransformer) {
         self.runtime.assert_active_or_panic(); self.registered.markdown_transformer = Some(transformer.clone());

@@ -33,6 +33,8 @@ impl ToolSearchExtension {
         let is_deferrable:Arc<dyn Fn(&str)->bool+Send+Sync>={let state=state.clone();Arc::new(move |name|{let (catalog,active,mcp)=state();is_deferrable(name,&catalog,&active,mcp)})};
         let enabled:Arc<dyn Fn()->bool+Send+Sync>={let state=state.clone();Arc::new(move ||{let (catalog,active,mcp)=state();native_search_enabled(&catalog,&active,mcp)})};
         let fallback_service=service.clone();
+        let take_service=service.clone();
+        api.register_native_tool_search_injection_failure_source(Arc::new(move ||take_service.try_lock().ok().and_then(|mut service|service.take_native_injection_failure())));
         let on_fallback:crate::native_search::NativeFallbackNotifier=Some(Arc::new(move |reason|{if let Ok(mut service)=fallback_service.try_lock(){service.note_native_injection_failure(reason.to_owned());}}));
         let adapter=Arc::new(std::sync::Mutex::new(crate::native_search::AnthropicNativeToolSearchAdapter::new(crate::native_search::AnthropicNativeAdapterDeps {search_tool_name:Some(crate::tool::TOOL_SEARCH_TOOL_NAME.to_owned()),is_deferrable,get_catalog,get_tool_definition,enabled,on_fallback})));
         let request_adapter=adapter.clone();
