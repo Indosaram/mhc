@@ -20,7 +20,7 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
     let background=call.params.get("run_in_background").and_then(Value::as_bool).unwrap_or(false);
     if !background&&call.signal.is_aborted() {return Ok(error_result("Command aborted"));}
     let dimension=|key:&str,fallback:u16|call.params.get(key).and_then(Value::as_f64).filter(|value|value.is_finite()&&*value>=1.0).map_or(fallback,|value|value.trunc() as u16);
-    let mut options=super::spawn::command_options(command,call.context.map(maho_tools::definition::ToolContext::cwd),shell).map_err(|error|error.to_string())?.size(dimension("cols",settings.default_cols as u16),dimension("rows",settings.default_rows as u16));
+    let (options,stdin)=super::spawn::command_options(command,call.context.map(maho_tools::definition::ToolContext::cwd),shell).map_err(|error|error.to_string())?;let mut options=options.size(dimension("cols",settings.default_cols as u16),dimension("rows",settings.default_rows as u16));
     if let Some(context)=call.context {
         options=options.cwd(context.cwd()).env("PI_SESSION_ID",context.session_manager().session_id()).env("PI_SESSION_CWD",context.cwd().to_string_lossy());
         if let Some(path)=context.session_manager().session_file() {options=options.env("PI_SESSION_FILE",path.to_string_lossy());}
@@ -29,7 +29,7 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
         if let Some(level)=context.thinking_level() {options=options.env("PI_REASONING_LEVEL",serde_json::to_value(level).map_err(|error|error.to_string())?.as_str().ok_or("reasoning level must be a string")?);}
     }
     if !background {for (key,value) in FOREGROUND_ENV_OVERRIDES {options=options.env(*key,*value);}if let Some(timeout)=call.params.get("timeout").and_then(Value::as_f64) {options=options.timeout(Duration::try_from_secs_f64(timeout).map_err(|error|error.to_string())?);}}
-    let (id,exit)={let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let id=manager.create(command,options).map_err(|error|error.to_string())?;let runtime=manager.get(&id).ok_or("created terminal session missing")?;(id,runtime.subscribe_exit())};
+    let (id,exit)={let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let id=manager.create(command,options).map_err(|error|error.to_string())?;let runtime=manager.get(&id).ok_or("created terminal session missing")?;if let Some(stdin)=&stdin {runtime.write(stdin.as_bytes()).map_err(|error|error.to_string())?;}(id,runtime.subscribe_exit())};
     if background {tokio::select! {_=wait_exit(exit)=>{},_=tokio::time::sleep(Duration::from_millis(250))=>{}}let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let early=format_terminal_tool_output(&manager.get(&id).ok_or("terminal session missing")?.read_delta().map_err(|error|error.to_string())?.text).text;let mut result=text_result(format!("Command running in background with ID: {id}{}",if early.is_empty() {String::new()} else {format!("\n\n{early}")}));result.details=Some(json!({"bash_id":id,"background":true}).as_object().ok_or("background details missing")?.clone());return Ok(result);}
     let sleep_wait=super::sleep_wait::classify_sleep_wait(command).map_err(|error|error.to_string())?;
     let window=super::foreground_window::resolve_foreground_window_seconds(foreground_window);

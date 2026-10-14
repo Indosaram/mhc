@@ -59,11 +59,12 @@ pub fn execute_configured_monitor(manager:&mut TerminalManager,registry:&mut Mon
     let persistent=input.get("persistent").and_then(Value::as_bool)==Some(true);
     let timeout=input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64).trunc().clamp(1.0,MAX_MONITOR_TIMEOUT_MS as f64) as u64;
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0;
-    let mut options=match super::spawn::command_options(command,Some(cwd),shell) {Ok(options)=>options,Err(error)=>return error_result(error.to_string())};
+    let (mut options,stdin)=match super::spawn::command_options(command,Some(cwd),shell) {Ok(options)=>options,Err(error)=>return error_result(error.to_string())};
     options=options.size(settings.default_cols as u16,settings.default_rows as u16);
     if !persistent {options=options.timeout(std::time::Duration::from_millis(timeout));}
     let monitor_id=match allocate_monitor_id() {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};
     let id=match manager.create(command,options) {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};
+    if let Some(stdin)=&stdin&&let Err(error)=manager.get(&id).expect("created runtime").write(stdin.as_bytes()) {return error_result(error.to_string());}
     let record=CommandMonitor::new(MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor_id.clone()),description:description.to_owned(),command:Some(command.to_owned()),filter:filter.map(str::to_owned),persistent:Some(persistent),deadline_ms:(!persistent).then_some(now+timeout as f64),expires_at:persistent.then_some(now+DURABLE_MONITOR_EXPIRY_MS as f64),fire_window:persistent.then_some(MonitorFireWindow {start_ms:now,count:0}),..Default::default()},filter_regex);
     if let Err(error)=registry.register(manager.get(&id).expect("created runtime"),record) {return error_result(error.to_string());}
     manager.bind_monitor_id(&monitor_id,&id);

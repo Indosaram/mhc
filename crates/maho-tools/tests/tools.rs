@@ -96,6 +96,36 @@ async fn bash_runs_real_pty_and_reports_failure() {
     let error = execute(&tool,json!({"command":"printf problem; exit 7"})).await.unwrap_err();
     assert!(error.to_string().contains("problem")); assert!(error.to_string().contains("Command exited with code 7"));
 }
+async fn exec_local(command: &str, env: std::collections::BTreeMap<String,String>) -> (Result<BashExit,ToolError>, String) {
+    let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let captured = std::sync::Arc::clone(&output);
+    let result = create_local_bash_operations(None).exec(command, std::path::Path::new("."), BashExecOptions {
+        on_data: std::sync::Arc::new(move |data| { captured.lock().expect("output lock").extend_from_slice(data); Ok(()) }),
+        signal: AbortSignal::default(), timeout: None, env,
+    }).await;
+    let text = String::from_utf8_lossy(&output.lock().expect("output lock")).into_owned(); (result, text)
+}
+#[tokio::test]
+async fn local_bash_uses_pipes_and_exactly_the_given_env() {
+    let env = std::env::vars().filter(|(key,_)| key == "PATH").chain([("ONLY_VAR".to_owned(),"set".to_owned())]).collect();
+    let (result, text) = exec_local("[ -t 1 ] && printf tty || printf pipe; printf ' %s %s' \"${ONLY_VAR-unset}\" \"${HOME-unset}\"", env).await;
+    assert_eq!(result.unwrap().exit_code, Some(0)); assert_eq!(text, "pipe set unset");
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn local_bash_tracks_backgrounded_process_group_until_killed() {
+    let (result, _) = exec_local("sleep 30 >/dev/null 2>&1 &", std::env::vars().collect()).await;
+    assert_eq!(result.unwrap().exit_code, Some(0));
+    let tracked = maho_tools::shell::list_tracked_detached_children();
+    assert_eq!(tracked.len(), 1); assert!(tracked[0].leader_exited);
+    maho_tools::shell::kill_tracked_detached_children();
+    assert!(maho_tools::shell::list_tracked_detached_children().is_empty());
+}
+#[test]
+fn shell_config_rejects_missing_custom_path_and_classifies_kinds() {
+    assert_eq!(maho_tools::shell::get_shell_config(Some("/definitely/missing/shell")).unwrap_err(), "Custom shell path not found: /definitely/missing/shell");
+    assert_eq!(maho_tools::shell::shell_config_for_path("C:/Windows/System32/bash.exe").command_transport, Some("stdin"));
+    assert_eq!(maho_tools::shell::shell_config_for_path("/usr/bin/pwsh").args, ["-NoProfile", "-Command"]);
+}
 #[test]
 fn accumulator_handles_split_utf8_and_spill() {
     let mut output = OutputAccumulator::new(OutputAccumulatorOptions { max_lines:1,max_bytes:10,temp_file_prefix:"maho-tools-test".into() });

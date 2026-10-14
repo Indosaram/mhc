@@ -5291,7 +5291,7 @@ dependencies = [
  "maho-agent",
  "maho-ai",
  "maho-grep",
- "maho-pty",
+ "nix 0.28.0",
  "regex",
  "serde",
  "serde_json",

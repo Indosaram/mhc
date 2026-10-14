@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::{LazyLock, Mutex}};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellKind { Bash, Sh, Cmd, Powershell }
 pub struct ShellConfig { pub shell: String, pub args: Vec<String>, pub command_transport: Option<&'static str>, pub kind: Option<ShellKind> }
@@ -49,43 +49,4 @@ pub async fn get_powershell_config() -> Result<ShellConfig, String> {
     let shell = path.ok_or("No PowerShell executable found. Install PowerShell or add powershell.exe/pwsh.exe to PATH.")?;
     Ok(ShellConfig { shell, args: POWERSHELL_ARGS.into_iter().map(str::to_owned).collect(), command_transport: None, kind: None })
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TrackedDetachedChild { pub pid: i32, pub pgid: i32, pub leader_exited: bool }
-static TRACKED: LazyLock<Mutex<BTreeMap<i32, TrackedDetachedChild>>> = LazyLock::new(|| Mutex::new(BTreeMap::new()));
-pub fn track_detached_child_pid(pid: i32) { TRACKED.lock().expect("tracked process lock").insert(pid, TrackedDetachedChild { pid, pgid: pid, leader_exited: false }); }
-pub fn untrack_detached_child_pid(pid: i32) { TRACKED.lock().expect("tracked process lock").remove(&pid); }
-pub fn list_tracked_detached_children() -> Vec<TrackedDetachedChild> { TRACKED.lock().expect("tracked process lock").values().copied().collect() }
-#[cfg(unix)]
-fn target_exists(pid: i32) -> bool { nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) != Err(nix::errno::Errno::ESRCH) }
-#[cfg(unix)]
-pub fn note_detached_child_exited(pid: i32) {
-    let mut tracked = TRACKED.lock().expect("tracked process lock");
-    if let Some(entry) = tracked.get_mut(&pid) { if target_exists(-entry.pgid) { entry.leader_exited = true; } else { tracked.remove(&pid); } }
-}
-#[cfg(unix)]
-pub fn prune_tracked_detached_children() { TRACKED.lock().expect("tracked process lock").retain(|_, entry| target_exists(-entry.pgid) || (!entry.leader_exited && target_exists(entry.pid))); }
-#[cfg(unix)]
-pub fn kill_tracked_detached_children() {
-    prune_tracked_detached_children();
-    let mut tracked = TRACKED.lock().expect("tracked process lock");
-    for entry in tracked.values() {
-        if nix::sys::signal::kill(nix::unistd::Pid::from_raw(-entry.pgid), nix::sys::signal::Signal::SIGKILL).is_err() && !entry.leader_exited { let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(entry.pid), nix::sys::signal::Signal::SIGKILL); }
-    }
-    tracked.clear();
-}
-#[cfg(unix)]
-pub fn kill_process_tree(pid: i32) {
-    if nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pid), nix::sys::signal::Signal::SIGKILL).is_err() { let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGKILL); }
-}
-pub fn windows_taskkill_candidates(env: &BTreeMap<String, String>) -> Vec<String> {
-    let drive = env.get("SystemDrive").filter(|drive| !drive.is_empty()).map(|drive| format!("{drive}\\Windows"));
-    let roots = [env.get("SystemRoot"), env.get("SYSTEMROOT"), env.get("windir"), drive.as_ref()];
-    let mut paths = Vec::new();
-    for root in roots.into_iter().flatten().filter(|root| !root.is_empty()) {
-        for directory in ["System32", "Sysnative"] {
-            let path = std::path::Path::new(root).join(directory).join("taskkill.exe").to_string_lossy().into_owned();
-            if !paths.contains(&path) && std::path::Path::new(&path).exists() { paths.push(path); }
-        }
-    }
-    paths.push("taskkill.exe".to_owned()); paths
-}
+pub use maho_tools::shell::{TrackedDetachedChild, kill_process_tree, kill_tracked_detached_children, list_tracked_detached_children, note_detached_child_exited, prune_tracked_detached_children, track_detached_child_pid, untrack_detached_child_pid, windows_taskkill_candidates};
