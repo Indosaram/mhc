@@ -4946,8 +4946,9 @@ async fn run_stream(
                     } else if holder.store.should_surface_before_rotating(&base) {
                         holder.store.mark_surfaced(&base, &current);
                     } else {
-                        let holder = rotation_store();
-                        match holder.store.record_zero_token_poison(&base, &current) {
+                        let decision = holder.store.record_zero_token_poison(&base, &current);
+                        drop(holder);
+                        match decision {
                             PoisonDecision::Rotated { wire_id } => {
                                 if let Some(cached) = conversations().state.get(&current).cloned() {
                                     conversations().state.insert(wire_id.clone(), cached);
@@ -4960,7 +4961,6 @@ async fn run_stream(
                                 if wire_id != current {
                                     forget_conversation_cache_key(&current);
                                 }
-                                drop(holder);
                                 continue;
                             }
                             PoisonDecision::Exhausted => {
