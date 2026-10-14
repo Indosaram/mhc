@@ -5446,6 +5446,13 @@ impl AgentSession {
         resolve_tool_name_alias(requested, self.callable_tool_names()).unwrap_or_else(|| requested.to_owned())
     }
 
+    /// senpi `_emit(withResolvedToolName(event, name => this.resolveToolCallName(name)))` for a
+    /// published `message_update`: the `resolvedToolName` a `toolcall_start`/`toolcall_end` carries.
+    pub fn message_update_resolved_tool_name(&self, event: &maho_agent::types::AgentEvent) -> Option<String> {
+        crate::tool_call_display_name::with_resolved_tool_name(event.clone(), |name| self.resolve_tool_call_name(name))
+            .resolved_tool_name
+    }
+
     /// Active tool names plus search-exposed lazy tools; senpi also appends the tool-search catalog,
     /// which has no Rust counterpart (the service is a TS extension), so it contributes nothing.
     fn callable_tool_names(&self) -> Vec<String> {
