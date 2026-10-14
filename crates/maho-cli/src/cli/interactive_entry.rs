@@ -53,7 +53,7 @@ pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession,
     Some(join_shared_host(binding, &agent_dir, None).await)
 }
 
-pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, extensions: Vec<maho_ext_api::LoadedExtension>, mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<maho_interactive::interactive_extension_ui::UiRequest>, migrated_providers: Vec<String>, model_fallback_message: Option<String>) -> Result<(), String> {
+pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, extensions: Vec<maho_ext_api::LoadedExtension>, mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<maho_interactive::interactive_extension_ui::UiRequest>, migrated_providers: Vec<String>, model_fallback_message: Option<String>, startup_benchmark: bool) -> Result<(), String> {
     use maho_interactive::{interactive_mode::{InteractiveMode, InteractiveModeOptions}, tui_renderer::TuiMode};
     let shared_host = mount_shared_host(&session, parsed).await;
     if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { maho_core::output_guard::maho_write_stderr(&format!("{message}\n")); }
@@ -142,6 +142,16 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     mode.resume_question_mouse_capture(&mut screen, &mut terminal);
     mode.bind_terminal_theme(&mut screen, theme_setting);
     let result = async {
+        // senpi main.ts:1355-1370 `PI_STARTUP_BENCHMARK`: once the TUI is initialized, give stdin a
+        // brief chance to consume terminal query replies, then stop instead of running the loop.
+        if startup_benchmark {
+            maho_core::timings::time("interactiveMode.init", maho_core::timings::TimingLabel::Main);
+            rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
+            screen.base_mut().request_render(true, 0);
+            if screen.base_mut().take_due_render(0) { screen.do_render(&mut terminal); }
+            terminal.pump(150).map_err(|error| error.to_string())?;
+            return Ok(());
+        }
         if let Some(text) = initial.initial_message { mode.enqueue_initial_message(&text, initial.initial_images); }
         for text in &parsed.messages { mode.enqueue_submission(text, None); }
         let clock = std::time::Instant::now();
@@ -288,6 +298,13 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     screen.after_terminal_stop(&mut terminal, false);
     screen.base_mut().reset_for_stop();
     drop(shared_host);
+    if startup_benchmark {
+        // senpi: `interactiveMode.stop(); stopThemeWatcher(); printTimings(); process.exit(0)`.
+        maho_interactive::interactive_stderr_guard::restore_interactive_stderr();
+        maho_core::timings::print_timings();
+        result.and(stopped)?;
+        std::process::exit(0);
+    }
     // senpi `shutdown`: after the terminal stops, tell the user how to reopen this session.
     let resume_command = session.with_session_manager(|manager| maho_interactive::interactive_mode::format_resume_command(manager, std::io::IsTerminal::is_terminal(&std::io::stdout())));
     if let Some(command) = resume_command { maho_core::output_guard::maho_write_stdout(&format!("\x1b[2mTo resume this session:\x1b[22m {command}\n")); }

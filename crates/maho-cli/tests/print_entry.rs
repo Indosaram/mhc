@@ -2,15 +2,49 @@ const SAFETY_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[tokio::test]
 async fn real_print_entry_streams_loopback_model_and_exits() {
-    run_print_entry(false).await;
+    run_print_entry(false, None).await;
 }
 
 #[tokio::test]
 async fn real_print_entry_suppresses_project_context_when_requested() {
-    run_print_entry(true).await;
+    run_print_entry(true, None).await;
 }
 
-async fn run_print_entry(no_context_files: bool) {
+/// senpi main.ts `readPipedStdin`: piped stdin is trimmed before it prefixes the first message.
+#[tokio::test]
+async fn real_print_entry_trims_piped_stdin() {
+    run_print_entry(false, Some("piped context\n")).await;
+}
+
+/// senpi `applyExtensionFlagValues` + `resolveModelScope`: an unregistered `--flag` is a runtime
+/// error (exit 1) and an unmatched `--models` pattern is a `Warning:` line.
+#[tokio::test]
+async fn real_print_entry_rejects_unknown_extension_flags_and_warns_on_unmatched_scope() {
+    let dir = tempfile::tempdir().expect("print-entry fixture operation");
+    std::fs::create_dir_all(dir.path().join(".maho")).expect("print-entry fixture operation");
+    std::fs::write(dir.path().join(".maho/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    let agent = dir.path().join("agent");
+    std::fs::create_dir(&agent).expect("print-entry fixture operation");
+    std::fs::write(agent.join("models.json"), serde_json::json!({"providers":{"offline":{
+        "api":"openai-completions", "baseUrl":"http://127.0.0.1:9/v1", "apiKey":"offline-fixture",
+        "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
+    }}}).to_string()).expect("print-entry fixture operation");
+    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
+        .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
+        .env_remove("__PI_INTERNAL_SPAWN")
+        .args(["-p", "--offline", "--no-session", "--no-tools", "--no-extensions", "--model", "offline/offline", "--models", "nomatch-fixture*", "--definitely-unknown-flag=1", "hello"])
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn().expect("print-entry fixture operation");
+    let output = tokio::time::timeout(SAFETY_BOUND, child.wait_with_output()).await
+        .expect("print entry finished within the safety bound").expect("print-entry fixture operation");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("Error: Unknown option: --definitely-unknown-flag"), "{stderr}");
+    assert!(stderr.contains("Warning: No models match pattern \"nomatch-fixture*\""), "{stderr}");
+}
+
+async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("print-entry fixture operation");
     let address = listener.local_addr().expect("print-entry fixture operation");
@@ -35,9 +69,15 @@ async fn run_print_entry(no_context_files: bool) {
         .args(["-p", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--prompt-template", "acceptance.md", "--model", "offline/offline", "/acceptance fixture"])
         .args(["--system-prompt", "system.md", "--append-system-prompt", "append.md", "--append-system-prompt", "fixture literal append"])
         .args(if no_context_files { vec!["--no-context-files"] } else { Vec::new() })
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .stdin(if piped_stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn().expect("print-entry fixture operation");
+    if let Some(text) = piped_stdin {
+        let mut stdin = child.stdin.take().expect("print stdin");
+        stdin.write_all(text.as_bytes()).await.expect("print-entry fixture operation");
+        drop(stdin);
+    }
     let mut stdout = child.stdout.take().expect("print stdout");
     let mut stderr = child.stderr.take().expect("print stderr");
     let result = tokio::time::timeout(SAFETY_BOUND, async {
@@ -83,7 +123,7 @@ async fn run_print_entry(no_context_files: bool) {
     };
     drop(listener);
     let messages = payload["messages"].as_array().expect("print messages");
-    assert!(messages.iter().any(|message| message["role"] == "user" && message["content"].as_array().is_some_and(|parts| parts.iter().any(|part| part["type"] == "text" && part["text"] == "expanded acceptance fixture"))), "{payload}");
+    assert!(messages.iter().any(|message| message["role"] == "user" && message["content"].as_array().is_some_and(|parts| parts.iter().any(|part| part["type"] == "text" && part["text"] == piped_stdin.map_or_else(|| "expanded acceptance fixture".to_owned(), |text| format!("{}/acceptance fixture", text.trim())).as_str()))), "{payload}");
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(String::from_utf8(output.stdout).expect("print-entry fixture operation"), "offline acceptance\n");
     let system = messages.iter().find(|message| message["role"] == "system").expect("print-entry fixture operation");
