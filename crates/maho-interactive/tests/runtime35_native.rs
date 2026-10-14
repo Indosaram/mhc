@@ -288,6 +288,19 @@ async fn rename_without_argument_opens_real_input_and_commits_enter() {
 }
 
 #[tokio::test]
+async fn rename_warns_when_the_session_normalizes_the_name_and_skips_an_unchanged_commit() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    mode.submit("/rename a\nb", Default::default()).await.expect("rename");
+    assert!(mode.render(80).join("\n").contains(r#"Session name was normalized from "a\nb" to "a b""#));
+    let entries = || session.with_session_manager(|manager| manager.entries().iter().filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("session_info")).count());
+    let before = entries();
+    mode.submit("/rename", Default::default()).await.expect("dialog");
+    mode.handle_input("\r");
+    assert_eq!(entries(), before, "confirming the unchanged name appends no session_info entry");
+}
+
+#[tokio::test]
 async fn native_footer_reflects_session_name_and_selected_model() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();

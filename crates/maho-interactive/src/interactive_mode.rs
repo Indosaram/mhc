@@ -1452,6 +1452,20 @@ impl InteractiveMode {
             Some(host) => { let _ = host.set_session_name(name.to_owned()).await; }
             None => self.session.set_session_name(name),
         }
+        self.report_session_name(name);
+    }
+
+    /// The reporting half of senpi's `applySessionName`: warn when the stored name was normalized,
+    /// then show the kept name. A mounted host's mirrored name only updates when its
+    /// `session_info_changed` event arrives, so the normalization check reads the local session.
+    fn report_session_name(&mut self, name: &str) {
+        if self.session_host.is_none() {
+            let session_name = self.session.session_name();
+            if session_name.as_deref() != Some(name) {
+                let quote = |value: Option<&str>| serde_json::to_string(&value).unwrap_or_default();
+                self.show_warning(&format!("Session name was normalized from {} to {}", quote(Some(name)), quote(session_name.as_deref())));
+            }
+        }
         self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into())));
     }
 
@@ -5111,8 +5125,9 @@ impl InteractiveMode {
                 self.rename_input = None;
                 if let Some(name) = result {
                     let name = name.trim();
+                    // senpi `commitSessionRename`: an unchanged name is a no-op.
                     if name.is_empty() { self.show_warning("Session name cannot be empty"); }
-                    else { self.fire_set_session_name(name); self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into()))); }
+                    else if self.host_session_name().as_deref() != Some(name) { self.fire_set_session_name(name); self.report_session_name(name); }
                 }
             }
         } else if let Some(editor) = &mut self.custom_editor {
