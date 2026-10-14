@@ -49,7 +49,7 @@ impl ApiKeyAuth for EnvApiKeyAuth {
     ) -> anyhow::Result<Option<AuthResult>> {
         signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
         if let Some(credential) = credential
-            && let Some(key) = &credential.key {
+            && let Some(key) = credential.key.as_ref().filter(|key| !key.is_empty()) {
                 return Ok(Some(AuthResult {
                     auth: ModelAuth { api_key: Some(key.clone()), ..Default::default() },
                     env: credential.env.clone(),
@@ -184,6 +184,17 @@ mod tests {
         let ctx = FauxAuthContext { values: [("ANTHROPIC_API_KEY".to_string(), "env-value".to_string())].into() };
         let signal = AbortController::new().signal();
         let result = auth.resolve(&ctx, None, &signal).await.unwrap().unwrap();
+        assert_eq!(result.auth.api_key, Some("env-value".into()));
+        assert_eq!(result.source, Some("ANTHROPIC_API_KEY".into()));
+    }
+
+    #[tokio::test]
+    async fn resolve_falls_back_to_env_when_the_stored_key_is_empty() {
+        let auth = env_api_key_auth("Anthropic API key", &["ANTHROPIC_API_KEY"]);
+        let ctx = FauxAuthContext { values: [("ANTHROPIC_API_KEY".to_string(), "env-value".to_string())].into() };
+        let signal = AbortController::new().signal();
+        let stored = ApiKeyCredential { key: Some(String::new()), env: None };
+        let result = auth.resolve(&ctx, Some(&stored), &signal).await.unwrap().unwrap();
         assert_eq!(result.auth.api_key, Some("env-value".into()));
         assert_eq!(result.source, Some("ANTHROPIC_API_KEY".into()));
     }
