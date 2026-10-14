@@ -40,10 +40,14 @@ pub async fn settle_output_credit(signal:&crate::session_worker_signals::WorkerS
 pub type SpawnSessionWorker=std::sync::Arc<dyn Fn()->std::io::Result<tokio::process::Child>+Send+Sync>;
 /// Lifecycle hooks the owning registry installs on every worker it allocates (senpi \`SessionWorkerCallbacks\`),
 /// plus the output/close routes senpi reaches through the bound \`SessionEventWriter\`.
+/// Write-reservation hook: grants or refuses one session path.
+pub type ReserveCallback=Box<dyn Fn(&str)->crate::session_worker_protocol::SessionWriteGrant+Send+Sync>;
+/// Snapshot hook: republishes the paths this worker still writes.
+pub type ReconcileCallback=Box<dyn Fn(&[String],Option<&str>)+Send+Sync>;
 pub struct SessionWorkerCallbacks{
-    pub reserve:Box<dyn Fn(&str)->crate::session_worker_protocol::SessionWriteGrant+Send+Sync>,
+    pub reserve:ReserveCallback,
     /// Every snapshot republishes which paths this worker still writes.
-    pub reconcile:Box<dyn Fn(&[String],Option<&str>)+Send+Sync>,
+    pub reconcile:ReconcileCallback,
     pub output:Box<dyn Fn(serde_json::Value,Option<String>)+Send+Sync>,
     pub request_close:Box<dyn Fn()+Send+Sync>,
     pub failure:Box<dyn Fn(&str)+Send+Sync>,

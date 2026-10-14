@@ -1186,7 +1186,7 @@ impl InteractiveMode {
         let keys = Arc::new(manager);
         let mut editor = CustomEditor::new(host.clone(), editor_theme(&theme), keys, CustomEditorOptions { embed_working_status: true, ..Default::default() });
         let (padding, max_visible) = session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_autocomplete_max_visible()));
-        editor.set_padding_x(padding as usize); editor.editor.set_autocomplete_max_visible(max_visible as usize);
+        editor.set_padding_x(padding as usize); editor.editor.set_autocomplete_max_visible(max_visible);
         editor.editor.set_autocomplete_provider(Rc::new(RefCell::new(Self::create_base_autocomplete_provider(&session, &session.cwd(), None))));
         let pending_images = Rc::new(RefCell::new(BTreeMap::<u64, maho_ai::types::ImageContent>::new()));
         let submission_images = Rc::new(RefCell::new(std::collections::VecDeque::new()));
@@ -2837,7 +2837,7 @@ impl InteractiveMode {
                     // re-register their autocomplete wrappers (queued UI requests, drained afterwards).
                     self.autocomplete_wrappers.clear();
                     let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_autocomplete_max_visible()));
-                    self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
+                    self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible);
                     // senpi `restoreChatBeforeSessionStart`: `hideThinkingBlock` is re-read before the rebuild.
                     self.reveal.hide_thinking = self.session.with_settings_manager(|settings| settings.get_bool("hideThinkingBlock").unwrap_or(false));
                     // senpi `applyRuntimeSettings`: terminal capability overrides and the smooth-streaming

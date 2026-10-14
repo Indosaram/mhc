@@ -70,7 +70,9 @@ pub fn migrate_sessions_from_agent_root(agent: &Path) -> std::io::Result<()> {
         let Some(cwd) = header.get("cwd").and_then(Value::as_str).filter(|v| !v.is_empty()) else { continue; };
         let trimmed = cwd.strip_prefix('/').or_else(|| cwd.strip_prefix('\\')).unwrap_or(cwd);
         let safe: String = trimmed.chars().map(|c| if matches!(c, '/' | '\\' | ':') { '-' } else { c }).collect();
-        let directory = agent.join("sessions").join(format!("--{safe}--")); let target = directory.join(entry.file_name()); if target.exists() { continue; } if fs::create_dir_all(directory).is_err() { continue; } if let Err(error) = fs::rename(entry.path(), target) { eprintln!("Session migration could not move file: {error}"); }
+        let directory = agent.join("sessions").join(format!("--{safe}--")); let target = directory.join(entry.file_name()); if target.exists() { continue; }
+        if fs::create_dir_all(directory).is_err() { continue; }
+        if let Err(error) = fs::rename(entry.path(), target) { eprintln!("Session migration could not move file: {error}"); }
     } Ok(())
 }
 pub fn migrate_tools_to_bin(agent: &Path) -> std::io::Result<()> {

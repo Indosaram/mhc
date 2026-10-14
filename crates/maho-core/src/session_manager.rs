@@ -581,7 +581,7 @@ impl SessionManager {
             blobs_dir: Some(Arc::new(move || provider_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())),
             ..Default::default()
         });
-        let mut manager = Self {
+        let manager = Self {
             session_id: String::new(),
             session_file: None,
             session_dir: normalize_path(session_dir, &PathInputOptions::default()),
@@ -2271,7 +2271,7 @@ mod tests {
         assert_eq!(load_entries_from_file(&empty.to_string_lossy()).len(), 1);
         let corrupt = tmp.path().join("corrupt.jsonl");
         std::fs::write(&corrupt, "not json\n").expect("write");
-        let error = SessionManager::open(&corrupt.to_string_lossy(), Some(&dir), None, None).err().expect("corrupt session refused");
+        let error = SessionManager::open(&corrupt.to_string_lossy(), Some(&dir), None, None).expect_err("corrupt session refused");
         assert_eq!(error, format!("Session file is not a valid {} session: {}", app_name(), corrupt.to_string_lossy()));
         assert_eq!(std::fs::read_to_string(&corrupt).expect("unchanged"), "not json\n");
     }

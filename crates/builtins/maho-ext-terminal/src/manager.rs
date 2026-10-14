@@ -11,7 +11,7 @@ const DEFAULT_FORCED_EXIT_GRACE_MS:u64=1000;
 /// registry-session.ts `sessionIdPrefix`: the shell basename (Windows executable extension stripped),
 /// lowercased with non-alphanumeric runs collapsed to `_`, so ids read `bash_N`, `sh_N`, `pwsh_N`, `cmd_N`.
 pub fn session_id_prefix(command:&str)->String {
-    let base_name=command.split(['\\','/']).filter(|part|!part.is_empty()).last().unwrap_or(DEFAULT_COMMAND);
+    let base_name=command.split(['\\','/']).rfind(|part|!part.is_empty()).unwrap_or(DEFAULT_COMMAND);
     let lowered=base_name.to_lowercase();
     let without_ext=[".exe",".com",".bat",".cmd",".ps1"].iter().find_map(|ext|lowered.strip_suffix(ext)).unwrap_or(&lowered);
     let mut prefix=String::new();

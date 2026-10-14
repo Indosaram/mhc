@@ -50,6 +50,7 @@ pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession,
     Some(join_shared_host(binding, &agent_dir, None).await)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, extensions: Vec<maho_ext_api::LoadedExtension>, mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<maho_interactive::interactive_extension_ui::UiRequest>, migrated_providers: Vec<String>, model_fallback_message: Option<String>, startup_benchmark: bool) -> Result<(), String> {
     use maho_interactive::{interactive_mode::{InteractiveMode, InteractiveModeOptions}, tui_renderer::TuiMode};
     let shared_host = mount_shared_host(&session, parsed).await;
