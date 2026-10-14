@@ -142,6 +142,16 @@ pub fn export_session_data_to_html(header: Value, entries: Vec<Value>, leaf_id: 
     export_html_data(header, entries, leaf_id, output_path, theme_name, presentation, ThemeColors::default())
 }
 
+/// Node `basename(path, ".jsonl")`: the file name with only a trailing `.jsonl` removed (a name
+/// that is exactly the suffix keeps it).
+fn basename_without_jsonl(path: &str) -> String {
+    let name = Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    match name.strip_suffix(".jsonl") {
+        Some(stem) if !stem.is_empty() => stem.to_owned(),
+        _ => name,
+    }
+}
+
 /// senpi `exportFromFile`: `colors` carries the resolved theme colors (`getResolvedThemeColors` /
 /// `getThemeExportColors`); `None` falls back to the colors derived from the default background.
 pub fn export_from_file(input_path: &str, output_path: Option<&str>, theme_name: Option<&str>, colors: Option<ExportColors>) -> Result<String, String> {
@@ -151,7 +161,7 @@ pub fn export_from_file(input_path: &str, output_path: Option<&str>, theme_name:
     let manager = crate::session_manager::SessionManager::open(&resolved, None, None, None)?;
     let output = match output_path {
         Some(path) => path.to_owned(),
-        None => format!("{}-session-{}.html", app_name(), Path::new(&resolved).file_stem().map_or_else(|| "session".into(), |stem| stem.to_string_lossy().into_owned())),
+        None => format!("{}-session-{}.html", app_name(), basename_without_jsonl(&resolved)),
     };
     let colors = colors.map_or_else(ThemeColors::default, |(colors, export)| ThemeColors { colors, export });
     export_html_data(manager.header().unwrap_or(Value::Null), manager.entries(), manager.leaf_id().map(str::to_owned), Some(&output), theme_name, (None, None, None), colors)
@@ -167,7 +177,7 @@ pub fn export_session_to_html_with_tools(session: &crate::session_manager::Sessi
     if !Path::new(file).exists() { return Err("Nothing to export yet - start a conversation first".to_owned()); }
     let output = match output_path {
         Some(path) => path.to_owned(),
-        None => format!("{}-session-{}.html", app_name(), Path::new(file).file_stem().map_or_else(|| "session".into(), |stem| stem.to_string_lossy().into_owned())),
+        None => format!("{}-session-{}.html", app_name(), basename_without_jsonl(file)),
     };
     export_html(session.header().unwrap_or(Value::Null), session.entries(), session.leaf_id().map(str::to_owned), Some(&output), theme_name, system_prompt, tools)
 }
@@ -176,6 +186,13 @@ pub fn export_session_to_html_with_tools(session: &crate::session_manager::Sessi
 mod tests {
     use super::*;
     #[test] fn tilde_path_expands_home() { assert!(expand_tilde("~/x").to_string_lossy().ends_with("/x")); }
+
+    #[test]
+    fn default_export_name_strips_only_a_jsonl_suffix() {
+        assert_eq!(basename_without_jsonl("/s/2026_abc.jsonl"), "2026_abc");
+        assert_eq!(basename_without_jsonl("/s/session.json"), "session.json");
+        assert_eq!(basename_without_jsonl("/s/.jsonl"), ".jsonl");
+    }
 
     #[test]
     fn export_from_file_reports_the_resolved_missing_path() {
