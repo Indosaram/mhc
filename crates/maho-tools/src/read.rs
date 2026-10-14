@@ -11,11 +11,11 @@ pub trait ReadOperations: Send + Sync {
 }
 pub struct LocalReadOperations;
 impl ReadOperations for LocalReadOperations {
-    fn read_file<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<u8>> { Box::pin(async move { Ok(tokio::fs::read(path).await?) }) }
-    fn access<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()> { Box::pin(async move { tokio::fs::File::open(path).await?; Ok(()) }) }
+    fn read_file<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<u8>> { Box::pin(async move { Ok(tokio::fs::read(path).await.map_err(|e| node_fs_error(e, "open", path))?) }) }
+    fn access<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()> { Box::pin(async move { tokio::fs::File::open(path).await.map_err(|e| node_fs_error(e, "access", path))?; Ok(()) }) }
     fn detect_image_mime_type<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Option<String>> { Box::pin(async move {
         use tokio::io::AsyncReadExt;
-        let mut file = tokio::fs::File::open(path).await?; let mut bytes = vec![0;4100];
+        let mut file = tokio::fs::File::open(path).await.map_err(|e| node_fs_error(e, "open", path))?; let mut bytes = vec![0;4100];
         let count = file.read(&mut bytes).await?; bytes.truncate(count);
         Ok(detect_supported_image_mime_type(&bytes).map(str::to_owned))
     }) }

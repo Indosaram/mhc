@@ -10,9 +10,9 @@ pub trait LsOperations: Send + Sync {
 pub struct LocalLsOperations;
 impl LsOperations for LocalLsOperations {
     fn exists<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool> { Box::pin(async move { Ok(tokio::fs::metadata(path).await.is_ok()) }) }
-    fn is_directory<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool> { Box::pin(async move { Ok(tokio::fs::metadata(path).await?.is_dir()) }) }
+    fn is_directory<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool> { Box::pin(async move { Ok(tokio::fs::metadata(path).await.map_err(|e| node_fs_error(e, "stat", path))?.is_dir()) }) }
     fn readdir<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<String>> { Box::pin(async move {
-        let mut entries = tokio::fs::read_dir(path).await?; let mut names = Vec::new();
+        let mut entries = tokio::fs::read_dir(path).await.map_err(|e| node_fs_error(e, "scandir", path))?; let mut names = Vec::new();
         while let Some(entry) = entries.next_entry().await? { names.push(entry.file_name().to_string_lossy().into_owned()); } Ok(names)
     }) }
 }
