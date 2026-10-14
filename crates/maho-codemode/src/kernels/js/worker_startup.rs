@@ -6,6 +6,15 @@ pub fn resolve_js_worker_entry_path(local_path: Option<&Path>, environment: &Cod
     require_codemode_runtime_asset(local_path.unwrap_or(Path::new(concat!(env!("CARGO_MANIFEST_DIR"),"/assets/kernels/js/worker-entry.js"))), Path::new("kernels/js/worker-entry.js"), environment)
 }
 
+/// senpi `spawnWorker` (worker-startup.ts:51): `options.workerEntryUrl ?? resolveJsWorkerEntryUrl()`; an
+/// explicit entry is spawned as given, so a missing one falls back to the inline worker.
+pub fn explicit_or_resolved_worker_entry(options: &WorkerStartupOptions<'_>) -> Result<PathBuf, ProcessError> {
+    match options.worker_entry {
+        Some(entry) => Ok(entry.to_path_buf()),
+        None => resolve_js_worker_entry_path(None, &options.environment).map_err(|error| ProcessError::Startup(error.to_string())),
+    }
+}
+
 pub struct WorkerStartupOptions<'a> {
     pub cwd: &'a Path,
     pub session_id: &'a str,
@@ -21,7 +30,7 @@ pub struct WorkerStartupOptions<'a> {
 
 pub async fn start_worker_with_inline_fallback(options: &WorkerStartupOptions<'_>, signal: &maho_ai::utils::abort::AbortSignal) -> Result<WorkerHost, ProcessError> {
     if signal.aborted() { return Err(ProcessError::Startup("JavaScript worker startup was cancelled".into())); }
-    let primary = resolve_js_worker_entry_path(options.worker_entry, &options.environment).map_err(|error|ProcessError::Startup(error.to_string()))
+    let primary = explicit_or_resolved_worker_entry(options)
         .and_then(|entry|WorkerHost::spawn(&entry, options.cwd, options.parallel_pool_width, JavaScriptKernelMode::Worker));
     if let Ok(mut worker) = primary {
         match worker.initialize(options, signal).await {

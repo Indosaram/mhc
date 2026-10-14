@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, path::Path, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::VecDeque, sync::{Arc, Mutex}, time::Duration};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use crate::kernels::shared::kernel_prelude_plan::KernelPreludeTracker;
@@ -9,7 +9,7 @@ type QueueSnapshot = (Option<String>, Vec<String>);
 enum Command {
     Run(PythonKernelRunOptions, oneshot::Sender<Result<Value, String>>),
     Cancel(String, String, oneshot::Sender<bool>),
-    Interrupt(String, Option<String>, oneshot::Sender<bool>),
+    Interrupt(String, Option<String>, oneshot::Sender<(bool, Option<String>)>),
     Reset(oneshot::Sender<Result<(), String>>),
     Close(oneshot::Sender<Result<(), String>>),
 }
@@ -27,7 +27,7 @@ impl PythonKernel {
     }
     pub async fn start_with_signal(options: PythonKernelStartOptions,signal:&maho_ai::utils::abort::AbortSignal) -> Result<Self, String> {
         let transport_options = PythonTransportOptions { interpreter_path:options.interpreter_path,session_id:options.session_id,cwd:options.cwd,connection:options.connection,env:options.env,session_env:options.session_env,startup_timeout:options.startup_timeout.unwrap_or(Duration::from_secs(5)) };
-        let transport = PythonKernelTransport::start_with_signal(&transport_options,Path::new(concat!(env!("CARGO_MANIFEST_DIR"),"/assets/kernels/py/prelude.py")),||true,signal).await.map_err(|error|error.to_string())?;
+        let transport = PythonKernelTransport::start_with_signal(&transport_options,&python_prelude_path()?,||true,signal).await.map_err(|error|error.to_string())?;
         let shutdown=maho_ai::utils::abort::AbortController::new();let cancel=shutdown.clone();
         let listener=signal.add_abort_listener(move |reason|cancel.abort(Some(reason.clone())));
         if signal.aborted() {shutdown.abort(signal.reason());}
@@ -53,7 +53,7 @@ impl PythonKernel {
         receiver.await.unwrap_or(false)
     }
 
-    pub async fn interrupt(&self, reason: &str, cell_id: Option<&str>) -> Result<bool, String> {
+    pub async fn interrupt(&self, reason: &str, cell_id: Option<&str>) -> Result<(bool, Option<String>), String> {
         let (sender,receiver)=oneshot::channel();
         self.commands.send(Command::Interrupt(reason.into(),cell_id.map(str::to_owned),sender)).map_err(|_| "Python kernel is closed".to_string())?;
         receiver.await.map_err(|_| "Python interrupt outcome unavailable".to_string())
@@ -79,7 +79,12 @@ impl Drop for PythonKernel {
 }
 
 async fn start_transport(options: &PythonTransportOptions,signal:&maho_ai::utils::abort::AbortSignal) -> Result<PythonKernelTransport,String> {
-    PythonKernelTransport::start_with_signal(options,Path::new(concat!(env!("CARGO_MANIFEST_DIR"),"/assets/kernels/py/prelude.py")),||true,signal).await.map_err(|error|error.to_string())
+    PythonKernelTransport::start_with_signal(options,&python_prelude_path()?,||true,signal).await.map_err(|error|error.to_string())
+}
+
+fn python_prelude_path() -> Result<std::path::PathBuf,String> {
+    let executable=std::env::current_exe().map_err(|error|error.to_string())?;
+    super::transport::resolve_python_prelude_path(super::transport::PythonPreludePathOptions {local_path:None,environment:crate::kernels::shared::runtime_asset::CodemodeRuntimeAssetEnvironment {bun_version:None,executable_path:&executable}}).map_err(|error|error.to_string())
 }
 
 fn settle(mut run: PendingRun, mut result: Value, retained: bool) {
@@ -90,7 +95,7 @@ fn settle(mut run: PendingRun, mut result: Value, retained: bool) {
         result=failed_python_result(&run.input.cell_id,&message,stack.as_deref());
         result["durationMs"]=serde_json::json!(duration);
     } else if result["durationMs"]==0 { result["durationMs"]=serde_json::json!(duration); }
-    if let Some(sender)=run.resolve_state_retained.take() { let _=sender.send(retained); }
+    if let Some(sender)=run.resolve_state_retained.take() { let _=sender.send((retained,None)); }
     let _=run.resolve.send(Ok(result));
 }
 
@@ -131,18 +136,18 @@ async fn run_actor(options: PythonTransportOptions, mut transport: PythonKernelT
                 }
                 Some(Command::Interrupt(reason,id,response))=>{
                     if id.as_ref().is_some_and(|id|active.as_ref().is_none_or(|run| &run.input.cell_id!=id)) {
-                        if let Some(index)=queue.iter().position(|run|Some(&run.input.cell_id)==id.as_ref()) && let Some(run)=queue.remove(index) {let result=failed_python_result(&run.input.cell_id,&reason,None);settle(run,result,true);}
-                        let _=response.send(true);
+                        let cancelled=if let Some(index)=queue.iter().position(|run|Some(&run.input.cell_id)==id.as_ref()) && let Some(run)=queue.remove(index) {let result=failed_python_result(&run.input.cell_id,&reason,None);settle(run,result,true);true} else {false};
+                        let _=response.send((true,(!cancelled).then(||"cell not found".to_owned())));
                     } else {
                         if id.is_none() {for mut run in queue.drain(..) {run.interrupt_reason=Some(reason.clone());let result=failed_python_result(&run.input.cell_id,"Eval interrupted",None);settle(run,result,true);}}
                         if let Some(run)=&mut active {
-                            if run.interrupt_reason.is_some() {let _=response.send(true);}
+                            if run.interrupt_reason.is_some() {let _=response.send((true,None));}
                             else {
                                 run.interrupt_reason=Some(reason.clone());run.resolve_state_retained=Some(response);
                                 deadline=Some(tokio::time::Instant::now()+Duration::from_secs(5));
                                 if transport.interrupt(&reason).await.is_err() {deadline=Some(tokio::time::Instant::now());}
                             }
-                        } else {let _=response.send(true);}
+                        } else {let _=response.send((true,None));}
                     }
                 }
                 Some(Command::Reset(response))=>{
@@ -167,7 +172,7 @@ async fn run_actor(options: PythonTransportOptions, mut transport: PythonKernelT
                             settle(run,message,true);
                         }
                     } else if message["type"]=="interrupted" {
-                        if let Some(run)=&mut active && let Some(sender)=run.resolve_state_retained.take() {let _=sender.send(true);}
+                        if let Some(run)=&mut active && let Some(sender)=run.resolve_state_retained.take() {let _=sender.send((true,None));}
                     } else {
                         let active_callback=active.as_ref().and_then(|run|run.input.on_message.as_ref());
                         if let Some(callback)=active_callback.or(fallback.as_ref()) {callback(&message);}

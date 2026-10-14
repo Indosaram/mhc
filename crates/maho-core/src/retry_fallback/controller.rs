@@ -57,9 +57,15 @@ pub trait RetryFallbackDeps {
     fn is_auth_available(&self,provider:&str)->bool;
     fn is_using_oauth(&self,_model:&Model)->bool {false}
     fn is_fallback_eligible(&self,_model:&Model)->bool {true}
+    /// senpi `registry.hasConfiguredAuth`: ranks configured-key providers ahead of unconfigured ones.
+    fn has_configured_auth(&self,_model:&Model)->bool {false}
     fn switch_model<'a>(&'a mut self,model:Model,thinking:ModelThinkingLevel,revert:bool)->maho_ai::types::BoxFuture<'a,Result<(),String>>;
     fn emit(&mut self,event:FallbackEvent);
+    /// senpi `deps.logger`: the fallback decision trail in `logs/fallback.log`.
+    fn log(&mut self,_level:FallbackLogLevel,_event:&str,_data:&[(&str,Option<&str>)]) {}
 }
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum FallbackLogLevel {Debug,Info}
 pub struct RetryFallbackController<D> {
     pub deps:D,pub cooldowns:SelectorCooldowns,pub state:Option<ActiveFallbackState>,pub exhausted_chain_key:Option<String>,
     tried:HashSet<String>,cache:Option<(FallbackChains,FallbackChains)>,
@@ -71,39 +77,66 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
     fn canonical_chains(&mut self)->FallbackChains {
         let chains=self.deps.settings().chains;
         if let Some((key,value))=&self.cache&&key==&chains{return value.clone();}
-        let models=self.deps.models();let oauth=|m:&Model|self.deps.is_using_oauth(m);let eligible=|m:&Model|self.deps.is_fallback_eligible(m);
-        let canonical=canonicalize_fallback_chains(&chains,&models,&FallbackAuthTiers{is_using_oauth:&oauth,has_configured_auth:None,is_fallback_eligible:Some(&eligible)});
+        let models=self.deps.models();let oauth=|m:&Model|self.deps.is_using_oauth(m);let eligible=|m:&Model|self.deps.is_fallback_eligible(m);let configured=|m:&Model|self.deps.has_configured_auth(m);
+        let canonical=canonicalize_fallback_chains(&chains,&models,&FallbackAuthTiers{is_using_oauth:&oauth,has_configured_auth:Some(&configured),is_fallback_eligible:Some(&eligible)});
         self.cache=Some((chains,canonical.clone()));canonical
     }
-    fn next_candidate(&mut self)->Option<(String,FallbackSelector,Model)> {
+    /// senpi `nextCandidate(reserve, logDecision)`: `canTryFallback` is silent, `tryFallback` logs.
+    fn next_candidate(&mut self,log_decision:bool)->Option<(String,FallbackSelector,Model)> {
         if !self.deps.settings().model_fallback{return None;}
         let (current,thinking)=self.deps.current()?;let chains=self.canonical_chains();
-        let key=resolve_chain_key(&current,thinking,&chains).or_else(||self.state.as_ref().map(|s|s.chain_key.clone()))?;
+        let Some((key,entries))=resolve_chain_key(&current,thinking,&chains).or_else(||self.state.as_ref().map(|s|s.chain_key.clone()))
+            .and_then(|key|chains.get(&key).cloned().map(|entries|(key,entries))) else {
+            if log_decision{let selector=format_selector(&current,None);self.deps.log(FallbackLogLevel::Debug,"no_chain",&[("selector",Some(selector.as_str()))]);}
+            return None;
+        };
         let models=self.deps.models();
-        for raw in candidates_after(chains.get(&key)?,&format_selector(&current,thinking)) {
-            let Some(selector)=parse_fallback_selector(raw,&models) else {continue;};
+        for raw in candidates_after(&entries,&format_selector(&current,thinking)) {
+            let Some(selector)=parse_fallback_selector(raw,&models) else {self.skip(raw,"unknown");continue;};
+            if selector.provider==current.provider&&selector.id==current.id{self.skip(raw,"self");continue;}
             let base=base_selector(&selector);
-            if base==format_selector(&current,None)||self.tried.contains(&base)||self.cooldowns.is_suppressed(&base)||!self.deps.is_auth_available(&selector.provider){continue;}
-            if let Some(model)=models.iter().find(|m|m.provider==selector.provider&&m.id==selector.id){return Some((key,selector,model.clone()));}
+            if self.tried.contains(&base){self.skip(raw,"tried");continue;}
+            if self.cooldowns.is_suppressed(&base){self.skip(raw,"suppressed");continue;}
+            if !self.deps.is_auth_available(&selector.provider){self.skip(raw,"unauthenticated");continue;}
+            let Some(model)=models.iter().find(|m|m.provider==selector.provider&&m.id==selector.id) else {self.skip(raw,"unknown");continue;};
+            return Some((key,selector,model.clone()));
         }
-        self.exhausted_chain_key=Some(key);None
+        self.exhausted_chain_key=Some(key.clone());
+        if log_decision{self.deps.log(FallbackLogLevel::Info,"candidates_exhausted",&[("chainKey",Some(key.as_str()))]);}
+        None
     }
-    pub fn can_try_fallback(&mut self)->bool {self.next_candidate().is_some()}
+    fn skip(&mut self,candidate:&str,skip_reason:&str){self.deps.log(FallbackLogLevel::Debug,"candidate_skipped",&[("candidate",Some(candidate)),("skipReason",Some(skip_reason))]);}
+    pub fn can_try_fallback(&mut self)->bool {self.next_candidate(false).is_some()}
     pub fn has_configured_chain(&mut self)->bool {let Some((model,thinking))=self.deps.current() else{return false;};resolve_chain_key(&model,thinking,&self.canonical_chains()).is_some()}
     pub async fn try_fallback(&mut self,reason:FallbackReason,failure:SelectorFailure<'_>)->Result<bool,String> {
         let Some((current,current_thinking))=self.deps.current() else{return Ok(false);};
-        let Some((key,selector,model))=self.next_candidate() else{return Ok(false);};
+        let Some((key,selector,model))=self.next_candidate(true) else{return Ok(false);};
         let from=format_selector(&current,None);let to=format_selector(&model,None);
-        if matches!(reason,FallbackReason::Transient|FallbackReason::HardError|FallbackReason::Billing){self.cooldowns.note(&from,failure);}
+        if matches!(reason,FallbackReason::Transient|FallbackReason::HardError|FallbackReason::Billing){
+            self.cooldowns.note(&from,failure);
+            self.deps.log(FallbackLogLevel::Info,"cooldown_noted",&[("selector",Some(from.as_str())),("errorMessage",failure.error_message)]);
+        }
         let thinking=maho_ai::models::clamp_thinking_level(&model,selector.thinking_level.or(current_thinking).unwrap_or(ModelThinkingLevel::Off));
         self.deps.switch_model(model,thinking,false).await?;self.tried.insert(base_selector(&selector));
         let prior=self.state.take();let refusal=prior.as_ref().is_some_and(|s|s.pinned_by_refusal)||reason==FallbackReason::Refusal;let billing=prior.as_ref().is_some_and(|s|s.pinned_by_billing)||reason==FallbackReason::Billing;
         self.state=Some(ActiveFallbackState{chain_key:key.clone(),original_selector:prior.as_ref().map_or_else(||from.clone(),|s|s.original_selector.clone()),original_thinking_level:prior.as_ref().and_then(|s|s.original_thinking_level).or(current_thinking),last_applied_thinking_level:Some(thinking),pinned_by_refusal:refusal,pinned_by_billing:billing,pinned:refusal||billing});
+        let reason_name=match reason{FallbackReason::Transient=>"transient",FallbackReason::Refusal=>"refusal",FallbackReason::HardError=>"hard-error",FallbackReason::Billing=>"billing"};
+        self.deps.log(FallbackLogLevel::Info,"fallback_applied",&[("from",Some(from.as_str())),("to",Some(to.as_str())),("chainKey",Some(key.as_str())),("reason",Some(reason_name))]);
         self.deps.emit(FallbackEvent::Applied{from,to,chain_key:key,reason});Ok(true)
     }
     pub fn note_manual_thinking_level(&mut self){if let Some(state)=&mut self.state{state.last_applied_thinking_level=None;}}
-    pub fn notify_compaction_applied(&mut self)->bool {let Some(state)=&mut self.state else{return false;};let was=state.pinned;state.pinned_by_refusal=false;state.pinned=state.pinned_by_billing;was&&!state.pinned}
-    pub fn clear_for_manual_model_change(&mut self,model:&Model){self.state=None;self.cooldowns.clear(&format_selector(model,None));}
+    pub fn notify_compaction_applied(&mut self)->bool {
+        let Some(state)=&mut self.state else{return false;};let was=state.pinned;state.pinned_by_refusal=false;state.pinned=state.pinned_by_billing;
+        if !was||state.pinned{return false;}
+        let (chain_key,original)=(state.chain_key.clone(),state.original_selector.clone());
+        self.deps.log(FallbackLogLevel::Info,"refusal_pin_released",&[("chainKey",Some(chain_key.as_str())),("originalSelector",Some(original.as_str())),("trigger",Some("compaction"))]);
+        true
+    }
+    pub fn clear_for_manual_model_change(&mut self,model:&Model){
+        let selector=format_selector(model,None);
+        if self.state.is_some(){self.deps.log(FallbackLogLevel::Info,"fallback_cleared_manual",&[("selector",Some(selector.as_str()))]);}
+        self.state=None;self.cooldowns.clear(&selector);
+    }
     pub async fn maybe_restore_primary(&mut self,policy:FallbackRevertPolicy)->Result<bool,String> {
         let Some(state)=self.state.clone() else{return Ok(false);};
         if state.pinned||policy!=FallbackRevertPolicy::CooldownExpiry||self.cooldowns.is_suppressed(&state.original_selector){return Ok(false);}
@@ -112,6 +145,8 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
         let Some(model)=models.into_iter().find(|m|m.provider==selector.provider&&m.id==selector.id) else{return Ok(false);};
         let Some((current,level))=self.deps.current() else{return Ok(false);};
         let thinking=if level==state.last_applied_thinking_level{state.original_thinking_level.or(level)}else{level}.unwrap_or(ModelThinkingLevel::Off);
-        self.deps.switch_model(model,thinking,true).await?;self.state=None;self.deps.emit(FallbackEvent::Reverted{from:format_selector(&current,None),to:state.original_selector});Ok(true)
+        self.deps.switch_model(model,thinking,true).await?;let from=format_selector(&current,None);self.state=None;
+        self.deps.log(FallbackLogLevel::Info,"fallback_reverted",&[("from",Some(from.as_str())),("to",Some(state.original_selector.as_str()))]);
+        self.deps.emit(FallbackEvent::Reverted{from,to:state.original_selector});Ok(true)
     }
 }

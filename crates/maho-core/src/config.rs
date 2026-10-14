@@ -88,6 +88,9 @@ pub fn get_agent_dir() -> String {
     resolve_agent_dir(&cwd, &home, env.as_deref())
 }
 
+/// `getBinDir()`: managed helper binaries live under the agent dir.
+pub fn get_bin_dir() -> String { Path::new(&get_agent_dir()).join("bin").to_string_lossy().into_owned() }
+
 pub fn get_agent_dir_with(cwd: &str, home_dir: &str, env: &HashMap<String, String>) -> String {
     let env_dir = env_value("CODING_AGENT_DIR", env);
     resolve_agent_dir(cwd, home_dir, env_dir.as_deref())
@@ -158,6 +161,12 @@ pub fn home_dir_path() -> PathBuf {
 
 pub fn current_env() -> HashMap<String, String> {
     std::env::vars().collect()
+}
+
+/// senpi `getShareViewerUrl`: the share viewer URL for a gist id.
+pub fn get_share_viewer_url(gist_id: &str) -> String {
+    let base = env_value("SHARE_VIEWER_URL", &current_env()).filter(|value| !value.is_empty()).unwrap_or_else(|| "https://pi.dev/session/".to_owned());
+    format!("{base}#{gist_id}")
 }
 
 /// A brand profile's display version, else the engine version.

@@ -68,12 +68,32 @@ impl ExplorationTranscriptContainer {
         self.children.push(child);
     }
 
+    /// A plain component child (senpi `addChild` with a non-exploration component).
+    pub fn add_component(&mut self, child: Rc<RefCell<dyn Component>>) {
+        self.add_child(TranscriptChild::Other(child));
+    }
+
     pub fn children(&self) -> &[TranscriptChild] {
         &self.children
     }
 
     pub fn children_mut(&mut self) -> &mut Vec<TranscriptChild> {
         &mut self.children
+    }
+
+    /// senpi `clear`: drop the projection and its groups, re-arm hydration, then clear the children.
+    pub fn clear(&mut self) {
+        self.display.children_mut().clear();
+        self.display.rearm();
+        self.groups.clear();
+        for child in self.children.drain(..) {
+            child.component().borrow_mut().dispose();
+        }
+    }
+
+    /// One bounded hydration step of the progressive display (senpi's `setImmediate` warm chunk).
+    pub fn warm_next_chunk(&mut self) {
+        self.display.warm_next_chunk();
     }
 
     fn group_for(&mut self, card: &Rc<RefCell<ToolExecutionComponent>>) -> Rc<RefCell<ExplorationGroup>> {

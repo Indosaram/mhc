@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/providers/opencode-go.ts.
 
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::env_api_key_auth;
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provider};
 use crate::providers::{builtin_api_streams, opencode_headers::with_open_code_session_header};
 use indexmap::IndexMap;
@@ -15,6 +17,7 @@ pub fn opencode_go_provider() -> Arc<dyn Provider> {
         name: Some("OpenCode Go".into()),
         base_url: None,
         headers: None,
+        auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("OpenCode API key", &["OPENCODE_API_KEY"]))), oauth: None }),
         models: super::opencode_go_models::opencode_go_models(),
         fetch_models: None,
         restore_models: None,

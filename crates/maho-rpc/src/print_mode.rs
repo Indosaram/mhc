@@ -30,7 +30,14 @@ pub async fn run_print_session(
 )->std::io::Result<i32>{
     use tokio::io::AsyncWriteExt;
     let(sender,mut events)=tokio::sync::mpsc::unbounded_channel();
-    let _subscription=session.subscribe(std::sync::Arc::new(move|event|{let _=sender.send((fallback_diagnostic(event),crate::session_binding::session_event_record(event)));}));
+    let event_session=session.weak_accessor();
+    let _subscription=session.subscribe(std::sync::Arc::new(move|event|{
+        let mut record=crate::session_binding::session_event_record(event);
+        // senpi publishes `message_update` with `resolvedToolName` (core/tool-call-display-name.ts).
+        if let(Ok(record),maho_ext_api::AgentSessionEvent::Agent(update@maho_ext_api::AgentEvent::MessageUpdate{..}))=(&mut record,event)
+            &&let Some(name)=event_session().and_then(|session|session.message_update_resolved_tool_name(update)){record["resolvedToolName"]=name.into();}
+        let _=sender.send((fallback_diagnostic(event),record));
+    }));
     if json_mode&&let Some(header)=session.with_session_manager(|manager|manager.header()){
         output.write_all(crate::jsonl::serialize_json_line(&header)?.as_bytes()).await?;
     }
@@ -38,8 +45,8 @@ pub async fn run_print_session(
     // session never settles a turn, so no `agent_idle` is expected and the runner must not wait.
     let ran_prompt=initial.is_some()||!messages.is_empty();
     let prompts=async{
-        if let Some((text,images))=initial{session.prompt(&text,maho_core::agent_session::PromptOptions{images:Some(images),..Default::default()}).await?;}
-        for text in messages{session.prompt(text,Default::default()).await?;}
+        if let Some((text,images))=initial{session.prompt(&text,maho_core::agent_session::PromptOptions{images:Some(images),session_title_prompt:Some(maho_core::agent_session::SessionTitlePrompt::Disabled),..Default::default()}).await?;}
+        for text in messages{session.prompt(text,maho_core::agent_session::PromptOptions{session_title_prompt:Some(maho_core::agent_session::SessionTitlePrompt::Disabled),..Default::default()}).await?;}
         session.wait_for_idle().await;Ok::<(),String>(())
     };
     tokio::pin!(prompts);

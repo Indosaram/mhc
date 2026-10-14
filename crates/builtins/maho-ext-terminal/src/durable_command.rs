@@ -8,9 +8,10 @@ pub fn restore_configured_command(monitor:&ManifestMonitor,manager:&mut Terminal
     if monitor.runtime_kind!=MonitorRuntimeKind::Command||!monitor.persistent {return RestoreOutcome::Lost;}
     let Some(command)=monitor.command.as_deref().filter(|command|!command.is_empty()) else {return RestoreOutcome::Lost;};
     let Some(cwd)=monitor.cwd.as_deref().filter(|cwd|Path::new(cwd).is_absolute()&&Path::new(cwd).is_dir()) else {return RestoreOutcome::Lost;};
-    let Ok(options)=crate::tools::spawn::command_options(command,Some(Path::new(cwd)),shell)else {return RestoreOutcome::Lost;};
+    let Ok((options,stdin))=crate::tools::spawn::command_options(command,Some(Path::new(cwd)),shell)else {return RestoreOutcome::Lost;};
     let options=options.size(settings.default_cols as u16,settings.default_rows as u16);
     let Ok(id)=manager.create(command,options) else {return RestoreOutcome::Lost;};
+    if let Some(stdin)=&stdin&&manager.get(&id).is_none_or(|runtime|runtime.write(stdin.as_bytes()).is_err()) {return RestoreOutcome::Lost;}
     let mut record=CommandMonitor::new(MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor.monitor_id.clone()),description:monitor.description.clone(),command:monitor.command.clone(),filter:monitor.filter.clone(),persistent:Some(true),deadline_ms:None,expires_at:monitor.expires_at,fire_window:Some(MonitorFireWindow {start_ms:monitor.fire_window.start_ms,count:monitor.fire_window.count as usize}),..Default::default()},monitor.filter.as_deref().and_then(crate::shared::safe_reg_exp));
     if monitor.delivery_paused {record.pause();}
     manager.bind_monitor_id(&monitor.monitor_id,&id);

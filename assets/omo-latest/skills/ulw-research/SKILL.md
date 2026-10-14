@@ -94,7 +94,7 @@ This is `$SESSION_DIR`. Write `brief.md` into it: the analysis block, the axis l
 
 ### Run it as a loop, and journal in real time
 
-ulw-loop is ON by default for this mode: register the research axes as loop goals from a JS eval cell (import the SDK once, const { agentToolkit } = await import(`${env("OMO_AGENT_TOOLKIT_SDK_ROOT")}/sdk.js`), then `agentToolkit.createGoals({ brief })`, then `create_goal` from the returned handoff) so the run has durable state and survives a compaction. The session directory's timestamp is the run's start clock — the closing briefing is computed from it, so create it once and never rename it. From that point every finding, source, quote, number, and lead is written into `$SESSION_DIR` **the instant it lands** — never held in the conversation for an end-of-run dump. After any context loss, re-read the brief, the journal, and `agentToolkit.status()` (re-import the SDK if the kernel restarted) before doing anything else, then resume from the open wave.
+ulw-loop is ON by default for this mode: register the research axes as loop goals from bash (`mhc ulw-loop create-goals --brief "<brief>" --json`, then `create_goal` from the printed handoff) so the run has durable state and survives a compaction. The session directory's timestamp is the run's start clock — the closing briefing is computed from it, so create it once and never rename it. From that point every finding, source, quote, number, and lead is written into `$SESSION_DIR` **the instant it lands** — never held in the conversation for an end-of-run dump. After any context loss, re-read the brief, the journal, and `mhc ulw-loop status --json` before doing anything else, then resume from the open wave.
 
 ### Deliverable lane, format, and the empty-info interview
 
@@ -229,7 +229,7 @@ The Phase 0 core question is the fixed goal of the run and never drifts. An excu
 
 Interest alone is not a trigger. Anything without one stays a queued lead in `expansion-log.md`, and the wave plan continues.
 
-**Budget the dive before you take it.** State the lane or member count and the probe count for this level in the ENTER row. An excursion may spawn at most ONE nested sub-excursion; a third level means the thing has become its own research question — surface immediately and either promote it to a real axis with its own member (`agentToolkit.steer({ kind: "add_subgoal", source: "finding", title: "<axis>", objective: "<what it must answer>", evidence: "<what surfaced it>", rationale: "<why the plan changes>" })`) or record it as an out-of-scope gap in `SYNTHESIS.md`.
+**Budget the dive before you take it.** State the lane or member count and the probe count for this level in the ENTER row. An excursion may spawn at most ONE nested sub-excursion; a third level means the thing has become its own research question — surface immediately and either promote it to a real axis with its own member (`mhc ulw-loop steer --kind add_subgoal --title "<axis>" --objective "<what it must answer>" --evidence "<what surfaced it>" --rationale "<why the plan changes>" --json`) or record it as an out-of-scope gap in `SYNTHESIS.md`.
 
 **EXIT (surface) the moment any of these holds** — you do not need all of them:
 
@@ -238,7 +238,7 @@ Interest alone is not a trigger. Anything without one stays a queued lead in `ex
 - The finding stops moving any claim's status — diminishing return is an exit, not a reason to push harder.
 - The level's stated budget is spent.
 
-**Fold back on the way out.** Every EXIT writes one line saying what the excursion changed in the top-level answer, and `none — <reason>` is a legitimate, required outcome; an excursion whose result is silently dropped is a lost run. Update the parent claim node or axis digest with the result, then mirror the whole excursion into the loop ledger: `agentToolkit.steer({ kind: "annotate_ledger", source: "finding", evidence: "<what the excursion observed>", rationale: "<what it changed, or none>" })`, and when it settled a success criterion, `agentToolkit.recordEvidence({ goalId, criterionId, status: "pass", evidence: "<artifact>" })`. Use status `"fail"` or `"blocked"` instead when the evidence supports that outcome. After a compaction, `agentToolkit.status()` plus `excursion-log.md` tell you which excursions are still open.
+**Fold back on the way out.** Every EXIT writes one line saying what the excursion changed in the top-level answer, and `none — <reason>` is a legitimate, required outcome; an excursion whose result is silently dropped is a lost run. Update the parent claim node or axis digest with the result, then mirror the whole excursion into the loop ledger: `mhc ulw-loop steer --kind annotate_ledger --evidence "<what the excursion observed>" --rationale "<what it changed, or none>" --json`, and when it settled a success criterion, `mhc ulw-loop record-evidence --goal-id <id> --criterion-id <id> --status pass --evidence "<artifact>" --json`. Use `--status fail` or `--status blocked` instead when the evidence supports that outcome. After a compaction, `mhc ulw-loop status --json` plus `excursion-log.md` tell you which excursions are still open.
 
 **Anti-drift.** After every EXIT, re-read the core question in `brief.md` and confirm the run still answers it. Three consecutive excursions that changed nothing end excursions for the run: converge on what you have.
 

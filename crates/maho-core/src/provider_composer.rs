@@ -121,10 +121,19 @@ pub fn compose_models(id: &str, base: &[Model], config: Option<&ModelsJsonProvid
     Ok(models)
 }
 
+/// `streamWith`'s text tool-call branch: a `compat.toolCallFormat` model with tools gets a
+/// transformed (tool-free) context and its stream parsed back into tool calls.
+fn tool_call_protocol(model: &Model, context: &Context) -> Option<(&'static dyn maho_ai::tool_call_middleware::types::ToolCallProtocol, Vec<maho_ai::types::Tool>)> {
+    let format = maho_ai::get_tool_call_format(model)?;
+    let tools = context.tools.as_ref().filter(|tools| !tools.is_empty())?;
+    Some((maho_ai::tool_call_middleware::get_protocol(format), tools.clone()))
+}
+
 struct ComposedProvider { id: String, name: String, models: Vec<Model>, base: Option<Arc<dyn Provider>>, config:Option<ModelsJsonProvider>, extension:Option<ProviderConfigInput>, refreshed:Arc<std::sync::RwLock<Option<Vec<ModelsJsonModel>>>> }
 impl Provider for ComposedProvider {
     fn id(&self) -> &str { &self.id }
     fn name(&self) -> &str { &self.name }
+    fn auth(&self) -> Option<&maho_ai::auth::types::ProviderAuth> { self.base.as_ref().and_then(|base| base.auth()) }
     fn retry_policy(&self) -> Option<&maho_ai::utils::retry_profile::types::RetryPolicyProfile> {
         self.extension.as_ref().and_then(|extension| extension.retry_policy.as_ref())
             .or_else(|| self.base.as_ref().and_then(|base| base.retry_policy()))
@@ -137,10 +146,16 @@ impl Provider for ComposedProvider {
         } else {self.models.clone()}
     }
     fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+        if let Some((protocol, tools)) = tool_call_protocol(model, context) {
+            return maho_ai::tool_call_middleware::wrap_stream_with_tool_call_middleware(self.stream(model, &maho_ai::tool_call_middleware::transform_context(context, protocol), options), protocol, tools);
+        }
         if let Some(extension)=&self.extension&&extension.api.as_ref().is_some_and(|api|api==&model.api)&&let Some(stream)=&extension.stream_simple{return stream(model,context,options.map(|stream|SimpleStreamOptions{stream,..Default::default()}));}
         match &self.base { Some(base) if base.get_models().iter().any(|m|m.api==model.api) => base.stream(model, context, options), _ => maho_ai::compat::stream(model, context, options) }
     }
     fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+        if let Some((protocol, tools)) = tool_call_protocol(model, context) {
+            return maho_ai::tool_call_middleware::wrap_stream_with_tool_call_middleware(self.stream_simple(model, &maho_ai::tool_call_middleware::transform_context(context, protocol), options), protocol, tools);
+        }
         if let Some(extension)=&self.extension&&extension.api.as_ref().is_some_and(|api|api==&model.api)&&let Some(stream)=&extension.stream_simple{return stream(model,context,options);}
         match &self.base { Some(base) if base.get_models().iter().any(|m|m.api==model.api) => base.stream_simple(model, context, options), _ => maho_ai::compat::stream_simple(model, context, options) }
     }
@@ -163,6 +178,60 @@ impl Provider for ComposedProvider {
     }
 }
 
+/// `composeOAuthAuth`: the extension's (or base provider's) OAuth with models.json / extension
+/// headers and `authHeader` applied to every derived request auth.
+pub struct ComposedOAuthAuth {
+    provider_id: String,
+    oauth: Arc<dyn maho_ai::auth::types::OAuthAuth>,
+    raw_headers: Option<std::collections::HashMap<String, String>>,
+    auth_header: bool,
+}
+
+pub fn compose_oauth_auth(
+    provider_id: &str,
+    oauth: Option<Arc<dyn maho_ai::auth::types::OAuthAuth>>,
+    config: Option<&ModelsJsonProvider>,
+    extension: Option<&ModelsJsonProvider>,
+) -> Option<ComposedOAuthAuth> {
+    Some(ComposedOAuthAuth {
+        provider_id: provider_id.to_owned(),
+        oauth: oauth?,
+        raw_headers: crate::provider_api_key_auth::configured_headers(config, extension),
+        auth_header: extension.and_then(|c| c.auth_header).or(config.and_then(|c| c.auth_header)).unwrap_or(false),
+    })
+}
+
+#[async_trait::async_trait]
+impl maho_ai::auth::types::OAuthAuth for ComposedOAuthAuth {
+    fn name(&self) -> &str { self.oauth.name() }
+    fn is_subscription(&self) -> bool { self.oauth.is_subscription() }
+    fn login_label(&self) -> Option<&str> { self.oauth.login_label() }
+    async fn login(&self, interaction: &maho_ai::auth::types::ProviderAuthInteraction) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+        self.oauth.login(interaction).await
+    }
+    async fn refresh(&self, credential: &maho_ai::auth::types::OAuthCredential, signal: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+        self.oauth.refresh(credential, signal).await
+    }
+    async fn check(&self, ctx: &dyn maho_ai::auth::types::AuthContext, credential: Option<&maho_ai::auth::types::OAuthCredential>, signal: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<Option<maho_ai::auth::types::AuthCheck>> {
+        self.oauth.check(ctx, credential, signal).await
+    }
+    fn has_resolve_ambient(&self) -> bool { self.oauth.has_resolve_ambient() }
+    async fn resolve_ambient(&self, ctx: &dyn maho_ai::auth::types::AuthContext, env: Option<&maho_ai::types::ProviderEnv>, signal: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<Option<maho_ai::auth::types::AuthResult>> {
+        self.oauth.resolve_ambient(ctx, env, signal).await
+    }
+    async fn to_auth(&self, credential: &maho_ai::auth::types::OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+        let auth = self.oauth.to_auth(credential).await?;
+        let env: Option<std::collections::HashMap<String, String>> = credential.get_extra("env").and_then(Value::as_object)
+            .map(|env| env.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))).collect());
+        let headers = crate::resolve_config_value::resolve_headers_or_throw(self.raw_headers.as_ref(), &format!("provider \"{}\"", self.provider_id), env.as_ref())
+            .await.map_err(|error| anyhow::anyhow!(error))?
+            .map(|values| values.into_iter().map(|(k, v)| (k, Some(v))).collect::<maho_ai::types::ProviderHeaders>());
+        let auth = crate::provider_api_key_auth::with_configured_auth(crate::provider_api_key_auth::model_auth_to_result(auth), headers, self.auth_header)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(crate::provider_api_key_auth::result_to_model_auth(auth))
+    }
+}
+
 pub fn compose_model_provider(id: &str, base: Option<Arc<dyn Provider>>, config: &ModelConfig, extension: Option<&ProviderConfigInput>) -> Result<Arc<dyn Provider>, String> {
     let models = compose_models(id, &base.as_ref().map(|p| p.get_models()).unwrap_or_default(), config.get_provider(id), extension)?;
     let name = extension.and_then(|e| e.name.clone()).or_else(|| config.get_provider(id).and_then(|c| c.name.clone())).unwrap_or_else(|| base.as_ref().map_or_else(|| id.to_owned(), |p| p.name().to_owned()));
@@ -172,6 +241,8 @@ pub fn compose_model_provider(id: &str, base: Option<Arc<dyn Provider>>, config:
 #[derive(Debug,Clone,Default)]
 pub struct CompatibilityRequestConfig {
     pub extra_body:Option<Map<String,Value>>,pub upstream_model_id:Option<String>,pub service_tier:Option<maho_ai::types::ServiceTierPreference>,pub auth_header:bool,
+    /// `promptPreset` from `modelOverrides`, extension or models.json definition (upstream keeps it on the model).
+    pub prompt_preset:Option<String>,
 }
 pub fn resolve_compatibility_request_config(model:&Model,config:Option<&ModelsJsonProvider>,extension:Option<&ProviderConfigInput>)->CompatibilityRequestConfig {
     let definition=config.and_then(|c|c.models.as_ref()).and_then(|v|v.iter().find(|d|d.id==model.id));
@@ -179,7 +250,7 @@ pub fn resolve_compatibility_request_config(model:&Model,config:Option<&ModelsJs
     let overlay=config.and_then(|c|c.model_overrides.as_ref()).and_then(|v|v.get(&model.id));
     let mut body=Map::new();
     for value in [config.and_then(|c|c.extra_body.as_ref()),extension.and_then(|c|c.extra_body.as_ref()),overlay.and_then(|c|c.extra_body.as_ref()),definition.and_then(|c|c.extra_body.as_ref()),ext.and_then(|c|c.extra_body.as_ref())].into_iter().flatten(){body.extend(value.clone());}
-    CompatibilityRequestConfig{extra_body:(!body.is_empty()).then_some(body),upstream_model_id:ext.and_then(|d|d.upstream_model_id.clone()).or_else(||definition.and_then(|d|d.upstream_model_id.clone())).or_else(||model.upstream_model_id.clone()),service_tier:ext.and_then(|d|d.service_tier).or_else(||definition.and_then(|d|d.service_tier)).or(model.service_tier),auth_header:extension.and_then(|c|c.auth_header).or(config.and_then(|c|c.auth_header)).unwrap_or(false)}
+    CompatibilityRequestConfig{extra_body:(!body.is_empty()).then_some(body),upstream_model_id:ext.and_then(|d|d.upstream_model_id.clone()).or_else(||definition.and_then(|d|d.upstream_model_id.clone())).or_else(||model.upstream_model_id.clone()),service_tier:ext.and_then(|d|d.service_tier).or_else(||definition.and_then(|d|d.service_tier)).or(model.service_tier),auth_header:extension.and_then(|c|c.auth_header).or(config.and_then(|c|c.auth_header)).unwrap_or(false),prompt_preset:overlay.and_then(|o|o.prompt_preset.clone()).or_else(||ext.and_then(|d|d.prompt_preset.clone())).or_else(||definition.and_then(|d|d.prompt_preset.clone()))}
 }
 pub async fn resolve_compatibility_request_headers(model:&Model,config:Option<&ModelsJsonProvider>,extension:Option<&ProviderConfigInput>,env:Option<&std::collections::HashMap<String,String>>)->Result<Option<maho_ai::types::ProviderHeaders>,String> {
     let mut headers=crate::provider_api_key_auth::configured_headers(config,extension.map(|e|&e.config)).unwrap_or_default();
@@ -207,6 +278,14 @@ mod tests {
         let config = ModelConfig::parse(r#"{"providers":{"proxy":{"models":[{"id":"sol"}],"modelOverrides":{"sol":{"maxTokens":42}}}}}"#, "memory");
         let extension = ModelsJsonProvider { api: Some("openai-completions".into()), base_url: Some("http://localhost/v1".into()), models: Some(vec![ModelsJsonModel {id:"sol".into(),max_tokens:Some(100.0),..Default::default()}]), ..Default::default() };
         assert_eq!(compose_models("proxy", &[], config.get_provider("proxy"), Some(&extension.into())).expect("compose")[0].max_tokens, 42);
+    }
+
+    #[test]
+    fn model_override_prompt_preset_reaches_request_config() {
+        let config = ModelConfig::parse(r#"{"providers":{"proxy":{"models":[{"id":"sol","promptPreset":"gpt-5.4"}],"modelOverrides":{"sol":{"promptPreset":"glm-5.3"}}}}}"#, "memory");
+        assert_eq!(resolve_compatibility_request_config(&test_model(), config.get_provider("proxy"), None).prompt_preset.as_deref(), Some("glm-5.3"));
+        let config = ModelConfig::parse(r#"{"providers":{"proxy":{"models":[{"id":"sol","promptPreset":"gpt-5.4"}]}}}"#, "memory");
+        assert_eq!(resolve_compatibility_request_config(&test_model(), config.get_provider("proxy"), None).prompt_preset.as_deref(), Some("gpt-5.4"));
     }
 
     struct CancelRecordingProvider {
@@ -256,5 +335,49 @@ mod tests {
 
         let incapable_base = Arc::new(CancelRecordingProvider { supports: false, seen: Default::default() });
         assert!(!composed(Some(incapable_base)).supports_cancel_deferred());
+    }
+
+    struct HermesBase(std::sync::Mutex<Option<Context>>);
+    impl Provider for HermesBase {
+        fn id(&self) -> &str { "proxy" }
+        fn name(&self) -> &str { "proxy" }
+        fn get_models(&self) -> Vec<Model> { vec![test_model()] }
+        fn stream(&self, model: &Model, context: &Context, _options: Option<StreamOptions>) -> AssistantMessageEventStream {
+            use maho_ai::types::{AssistantMessageEvent, ContentBlock, DoneReason, StopReason, TextContent};
+            *self.0.lock().expect("capture") = Some(context.clone());
+            let text = r#"<tool_call>{"name":"get_weather","arguments":{"city":"Seoul"}}</tool_call>"#;
+            let stream = AssistantMessageEventStream::assistant();
+            let mut message = maho_ai::utils::lazy::setup_error_message(model, "");
+            message.error_message = None;
+            message.stop_reason = StopReason::Stop;
+            let start = message.clone();
+            message.content = vec![ContentBlock::Text(TextContent { text: text.into(), ..Default::default() })];
+            stream.push(AssistantMessageEvent::Start { partial: start.clone() });
+            stream.push(AssistantMessageEvent::TextStart { content_index: 0, partial: start });
+            stream.push(AssistantMessageEvent::TextDelta { content_index: 0, delta: text.into(), partial: message.clone() });
+            stream.push(AssistantMessageEvent::TextEnd { content_index: 0, content: text.into(), partial: message.clone() });
+            stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message });
+            stream
+        }
+        fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+            self.stream(model, context, options.map(|o| o.stream))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_call_format_models_get_a_rewritten_context_and_parsed_tool_calls() {
+        let base = Arc::new(HermesBase(Default::default()));
+        let provider = composed(Some(base.clone()));
+        let mut model = test_model();
+        model.compat = Some(ModelCompat(Map::from_iter([("toolCallFormat".to_owned(), serde_json::json!("hermes"))])));
+        let tool = maho_ai::types::Tool { name: "get_weather".into(), description: "d".into(), parameters: serde_json::json!({"type": "object"}), freeform: None, constrained_sampling: None };
+        let context = Context { system_prompt: Some("base".into()), messages: Vec::new(), tools: Some(vec![tool]) };
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), provider.stream_simple(&model, &context, None).result())
+            .await.expect("bounded stream").expect("result");
+        let sent = base.0.lock().expect("capture").clone().expect("base provider called");
+        assert!(sent.tools.is_none());
+        assert!(sent.system_prompt.as_deref().is_some_and(|prompt| prompt.contains("<tool_call>") && prompt.ends_with("base")));
+        assert_eq!(message.stop_reason, maho_ai::types::StopReason::ToolUse);
+        assert!(message.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(call) if call.name == "get_weather")));
     }
 }

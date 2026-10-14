@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde::ser::Serializer;
 
 use crate::manager::TaskManager;
@@ -264,7 +264,7 @@ pub fn serialize_task_status<S: Serializer>(status: &TaskStatus, serializer: S) 
     serializer.serialize_str(status.as_str())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShutdownOperation {
     Request,
@@ -303,7 +303,19 @@ impl Serialize for ShutdownFailedCode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+impl<'de> Deserialize<'de> for ShutdownFailedCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        match code.as_str() {
+            "unknown_member" => Ok(Self::Shutdown(SenpiShutdownErrorCode::UnknownMember)),
+            "no_pending_request" => Ok(Self::Shutdown(SenpiShutdownErrorCode::NoPendingRequest)),
+            "team_state_missing" => Ok(Self::TeamStateMissing),
+            other => Err(serde::de::Error::unknown_variant(other, &["unknown_member", "no_pending_request", "team_state_missing"])),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SendResultDetails {
     Steered {
@@ -388,7 +400,7 @@ impl SendResultDetails {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CancelResultDetails {
     Cancelled {

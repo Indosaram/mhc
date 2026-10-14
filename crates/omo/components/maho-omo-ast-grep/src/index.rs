@@ -11,9 +11,10 @@ pub struct AstGrepComponentOptions {
 
 impl Default for AstGrepComponentOptions {
     fn default() -> Self {
+        let sibling_name = if cfg!(windows) { "ast-grep-mcp.exe" } else { "ast-grep-mcp" };
         let entry = std::env::current_exe()
-            .map(|path| path.with_file_name("ast-grep-mcp"))
-            .unwrap_or_else(|_| PathBuf::from("ast-grep-mcp"));
+            .map(|path| path.with_file_name(sibling_name))
+            .unwrap_or_else(|_| PathBuf::from(sibling_name));
         Self {
             env: std::env::vars().collect(),
             entry,

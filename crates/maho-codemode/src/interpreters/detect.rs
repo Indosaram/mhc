@@ -73,7 +73,11 @@ impl InterpreterDetector {
         if let Some(cached) = self.cache.get(&key) { return cached.clone(); }
         let mut detected = InterpreterDetection::Unavailable;
         if language == EvalLanguage::Js {
-            detected = InterpreterDetection::Detected { path: "node".into(), version: self.node_version.clone(), resolved_path: None };
+            // The native JS kernel runs in a `bun` relay (kernels/js/worker_host.rs), unlike upstream's in-process
+            // worker_threads, so js is available only when bun answers.
+            if (self.probe)("bun".into(),vec!["--version".into()],3000).await.is_ok() {
+                detected = InterpreterDetection::Detected { path: "node".into(), version: self.node_version.clone(), resolved_path: None };
+            }
         } else {
             for candidate in candidates_for(language, self.windows) {
                 let mut words = candidate.split(' ');

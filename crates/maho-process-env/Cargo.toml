@@ -1,0 +1,16 @@
+[package]
+name = "maho-process-env"
+version.workspace = true
+# Edition 2021 on purpose: `std::env::set_var`/`remove_var` are safe calls here, so the CLI entry
+# point can apply senpi's startup `process.env` assignments without any `unsafe` code. Callers must
+# only use this crate at process start, before any thread is spawned.
+edition = "2021"
+publish.workspace = true
+license = "MIT"
+
+[lib]
+name = "maho_process_env"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

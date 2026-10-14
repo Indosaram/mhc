@@ -1,5 +1,6 @@
 //! Goal creation and candidate derivation from brief text.
 
+use regex::Regex;
 use serde_json::Value;
 
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan, UlwLoopSuccessCriterion};
@@ -14,33 +15,53 @@ pub struct GoalSeedOptions {
     pub success_criteria: Option<Vec<Value>>,
 }
 
+/// JS `\s` / `String.prototype.trim` whitespace: unlike Rust's White_Space it includes U+FEFF
+/// (BOM) and excludes U+0085 (NEL).
+const JS_WS: &str = r"[\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]";
+
+fn is_js_whitespace(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}')
+}
+
+/// JS `value.trim()`.
+fn js_trim(value: &str) -> &str {
+    value.trim_matches(is_js_whitespace)
+}
+
+/// `/^\s*(?:[-*+]\s+|\d+[.)]\s+)/`: a list marker must be followed by whitespace (JS `\d` is ASCII).
+fn list_marker_pattern() -> String {
+    format!(r"^{JS_WS}*(?:[-*+]{JS_WS}+|[0-9]+[.)]{JS_WS}+)")
+}
+
+fn list_marker() -> Regex {
+    Regex::new(&list_marker_pattern()).expect("valid list marker regex")
+}
+
+/// JS `string.length`: UTF-16 code units.
+fn utf16_len(value: &str) -> usize {
+    value.encode_utf16().count()
+}
+
+/// JS `string.slice(0, end)` on UTF-16 units, cut on a char boundary (a surrogate pair straddling
+/// `end` is kept whole, as `maho_tui::components::markdown_lexer::slice_utf16` does).
+fn slice_utf16_prefix(value: &str, end: usize) -> &str {
+    let mut units = 0usize;
+    for (byte, character) in value.char_indices() {
+        if units >= end {
+            return &value[..byte];
+        }
+        units += character.len_utf16();
+    }
+    value
+}
+
 fn clean_line(line: &str) -> String {
-    let trimmed = line.trim_start();
-    if let Some(rest) = trimmed.strip_prefix(|c| c == '-' || c == '*' || c == '+') {
-        return rest.trim().to_string();
-    }
-    let mut chars = trimmed.chars().peekable();
-    let mut num_end = 0;
-    while let Some(c) = chars.peek() {
-        if c.is_ascii_digit() {
-            num_end += 1;
-            chars.next();
-        } else {
-            break;
-        }
-    }
-    if num_end > 0 {
-        let after_digits = &trimmed[num_end..];
-        if after_digits.starts_with('.') || after_digits.starts_with(')') {
-            return after_digits[1..].trim().to_string();
-        }
-    }
-    trimmed.trim().to_string()
+    js_trim(&list_marker().replace(line, "")).to_string()
 }
 
 fn normalize_objective(value: &str) -> String {
     let mut words = Vec::new();
-    for word in value.split_whitespace() {
+    for word in value.split(is_js_whitespace).filter(|word| !word.is_empty()) {
         words.push(word);
     }
     words.join(" ")
@@ -49,11 +70,11 @@ fn normalize_objective(value: &str) -> String {
 fn title_from_objective(objective: &str, fallback: &str) -> String {
     let first_line = objective
         .lines()
-        .map(|l| l.trim())
+        .map(js_trim)
         .find(|l| !l.is_empty())
         .unwrap_or(fallback);
-    if first_line.len() > 72 {
-        let truncated = first_line[..69].trim_end();
+    if utf16_len(first_line) > 72 {
+        let truncated = slice_utf16_prefix(first_line, 69).trim_end_matches(is_js_whitespace);
         format!("{truncated}...")
     } else {
         first_line.to_string()
@@ -63,7 +84,8 @@ fn title_from_objective(objective: &str, fallback: &str) -> String {
 pub fn normalize_goal_id(title: &str, index: usize) -> String {
     let mut slug = String::new();
     let mut last_dash = false;
-    for c in title.to_ascii_lowercase().chars() {
+    // JS `toLowerCase` is full Unicode: U+0130 and U+212A lowercase into ASCII before the filter.
+    for c in title.to_lowercase().chars() {
         if c.is_ascii_alphanumeric() {
             slug.push(c);
             last_dash = false;
@@ -87,7 +109,7 @@ pub fn normalize_goal_id(title: &str, index: usize) -> String {
 }
 
 fn assert_non_empty(value: &str, label: &str) -> Result<String, UlwLoopError> {
-    let trimmed = value.trim();
+    let trimmed = js_trim(value);
     if trimmed.is_empty() {
         return Err(UlwLoopError::new(format!("Missing {label}."), "ULW_LOOP_ARGUMENT_MISSING"));
     }
@@ -95,8 +117,8 @@ fn assert_non_empty(value: &str, label: &str) -> Result<String, UlwLoopError> {
 }
 
 fn truncate_objective(objective: &str) -> String {
-    if objective.len() > 80 {
-        format!("{}...", objective[..77].trim_end())
+    if utf16_len(objective) > 80 {
+        format!("{}...", slice_utf16_prefix(objective, 77).trim_end_matches(is_js_whitespace))
     } else {
         objective.to_string()
     }
@@ -105,7 +127,7 @@ fn truncate_objective(objective: &str) -> String {
 fn replace_via(goal_id: &str, id: &str, surface: UlwLoopToolkitSurface) -> String {
     match surface {
         UlwLoopToolkitSurface::OmoSenpi => format!(
-            "Replace via agentToolkit.steer({{ kind: \"revise_criterion\", source: \"finding\", goalId: \"{goal_id}\", criterionId: \"{id}\", scenario, expectedEvidence, evidence, rationale }}) (or pass successCriteria to addGoal)"
+            "Replace via mhc ulw-loop steer --kind revise_criterion --source finding --goal-id {goal_id} --criterion-id {id} --scenario \"<scenario>\" --expected-evidence \"<proof>\" --evidence \"<why>\" --rationale \"<why>\" (successCriteria cannot be passed to add-goal)"
         ),
         UlwLoopToolkitSurface::LazyCodex => format!(
             "Replace via ulw-loop steer --kind revise_criterion --goal-id {goal_id} --criterion-id {id} --scenario \"<scenario>\" --expected-evidence \"<proof>\" --evidence \"<why>\" --rationale \"<why>\""
@@ -156,22 +178,25 @@ pub fn seed_default_success_criteria(
 }
 
 pub fn derive_goal_candidates(brief: &str) -> Vec<(String, String)> {
-    let mut bullet_goals = Vec::new();
-    for line in brief.lines() {
-        let trimmed_start = line.trim_start();
-        let is_bullet = trimmed_start.starts_with(|c| c == '-' || c == '*' || c == '+')
-            || (trimmed_start.chars().next().is_some_and(|c| c.is_ascii_digit())
-                && (trimmed_start.contains('.') || trimmed_start.contains(')')));
-        if is_bullet {
-            let cleaned = normalize_objective(&clean_line(line));
-            if !cleaned.is_empty() && cleaned.len() <= 1200 && !bullet_goals.contains(&cleaned) {
-                bullet_goals.push(cleaned);
-            }
-        }
-    }
+    let marker = list_marker();
+    let lines: Vec<(&str, String)> = brief
+        .lines()
+        .map(|line| (line, normalize_objective(&clean_line(line))))
+        .filter(|(_, cleaned)| !cleaned.is_empty() && utf16_len(cleaned) <= 1200)
+        .collect();
+    let bullet_goals: Vec<String> = lines
+        .iter()
+        .enumerate()
+        .filter(|(index, (original, cleaned))| {
+            marker.is_match(original)
+                && lines.iter().position(|(_, candidate)| candidate == cleaned) == Some(*index)
+        })
+        .map(|(_, (_, cleaned))| cleaned.clone())
+        .collect();
 
     let mut paragraphs = Vec::new();
-    for p in brief.split("\n\n") {
+    let paragraph_break = Regex::new(&format!(r"\n{JS_WS}*\n")).expect("valid paragraph regex");
+    for p in paragraph_break.split(brief) {
         let cleaned = normalize_objective(p);
         if !cleaned.is_empty() && !cleaned.starts_with('#') {
             paragraphs.push(cleaned);

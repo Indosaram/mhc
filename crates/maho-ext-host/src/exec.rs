@@ -5,7 +5,7 @@ use tokio::io::AsyncReadExt;
 pub async fn exec_command(command: &str, args: &[String], cwd: &Path, options: ExecOptions) -> ExecResult {
     let mut command = tokio::process::Command::new(command);
     command.args(args).current_dir(options.cwd.as_deref().unwrap_or(cwd))
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env_remove("__PI_INTERNAL_SPAWN").kill_on_drop(true);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => return ExecResult { stdout: String::new(), stderr: error.to_string(), code: 1, killed: false },

@@ -7,9 +7,13 @@ use crate::{
     harness::{
         context::Context,
         types::AgentHarnessTool,
-        utils::truncate::{
-            DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, TruncationOptions, TruncationResult,
-            format_size, truncate_head,
+        utils::{
+            read_folders::{ReadFolder, prepare::prepare_read_folder, selected_read_folder},
+            segmented_read_view::create_default_read_summary,
+            truncate::{
+                DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, TruncationOptions,
+                TruncationResult, format_size, truncate_head,
+            },
         },
     },
     types::AgentToolResult,
@@ -53,10 +57,21 @@ pub type ReadImageProcessor = Arc<
         + Send
         + Sync,
 >;
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ReadToolOptions {
     pub auto_resize_images: Option<bool>,
     pub image_processor: Option<ReadImageProcessor>,
+    /// Structural folder. Default options select the measured folder; `None` reads verbatim.
+    pub folder: Option<Arc<dyn ReadFolder>>,
+}
+impl Default for ReadToolOptions {
+    fn default() -> Self {
+        Self {
+            auto_resize_images: None,
+            image_processor: None,
+            folder: Some(selected_read_folder()),
+        }
+    }
 }
 fn truncation_json(t: &TruncationResult) -> serde_json::Value {
     json!({"content":t.content,"truncated":t.truncated,"truncatedBy": t.truncated_by.map(|by| match by { TruncatedBy::Lines => "lines", TruncatedBy::Bytes => "bytes" }),"totalLines":t.total_lines,"totalBytes":t.total_bytes,"outputLines":t.output_lines,"outputBytes":t.output_bytes,"lastLinePartial":t.last_line_partial,"firstLineExceedsLimit":t.first_line_exceeds_limit,"maxLines":t.max_lines,"maxBytes":t.max_bytes})
@@ -179,9 +194,22 @@ pub fn create_read_tool<T: HasExecutionToolContext>(
                     lines[slice_start..slice_end].join("\n")
                 };
                 let t = truncate_head(&selected, TruncationOptions::default());
+                // A selected grammar loads lazily here, on the first structural read for its language.
+                let folder =
+                    prepare_read_folder(&absolute, options.folder.clone(), &selected_read_folder());
+                let summary = create_default_read_summary(
+                    &absolute,
+                    text,
+                    input.offset.map(|v| v as usize),
+                    input.limit.map(|v| v as usize),
+                    folder.as_deref(),
+                    t.truncated,
+                );
                 let mut details = serde_json::Value::Null;
                 let display = start + 1.0;
-                let output = if t.first_line_exceeds_limit {
+                let output = if let Some(summary) = summary {
+                    summary.text
+                } else if t.first_line_exceeds_limit {
                     details = json!({"truncation":truncation_json(&t)});
                     format!(
                         "[Line {display} is {}, exceeds {} limit. Use bash: sed -n '{display}p' {} | head -c {DEFAULT_MAX_BYTES}]",

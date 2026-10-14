@@ -12,7 +12,7 @@ impl Strings { fn into_vec(self) -> Vec<String> { match self { Self::One(s) => v
 pub struct GrepToolInput {
     pub pattern: String, pub path: Option<Strings>, pub glob: Option<Strings>, pub r#type: Option<String>,
     pub ignore_case: Option<bool>, pub literal: Option<bool>, pub multiline: Option<bool>, pub context: Option<u32>,
-    pub before: Option<u32>, pub after: Option<u32>, pub mode: Option<String>, pub limit: Option<u32>, pub skip: Option<u32>,
+    pub before: Option<u32>, pub after: Option<u32>, pub mode: Option<String>, pub limit: Option<f64>, pub skip: Option<f64>,
     pub timeout_ms: Option<u32>, pub hidden: Option<bool>, pub gitignore: Option<bool>,
 }
 #[derive(Clone, Default)]
@@ -40,6 +40,8 @@ fn scan_value(scan: &GrepEngineResult) -> Value {
         "warnings":scan.warnings.iter().map(|w| json!({"path":w.path,"code":w.code,"message":w.message})).collect::<Vec<_>>(),
         "timedOut":scan.timed_out,"elapsedMs":scan.elapsed_ms,"effectivePattern":scan.effective_pattern,"patternKind":scan.pattern_kind,"regexEngine":scan.regex_engine})
 }
+/// `Number.isInteger`.
+fn is_integer(value: f64) -> bool { value.is_finite() && value.fract() == 0.0 }
 pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> ToolDefinition {
     let execute: ToolExecutor = Arc::new(move |call| {
         let cwd = cwd.clone(); let policy = options.filesystem_policy.clone();
@@ -48,7 +50,10 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
             if input.pattern.is_empty() { return Err(ToolError::Message("Pattern must not be empty".into())); }
             let requested = input.path.map(Strings::into_vec).unwrap_or_else(|| vec![".".into()]);
             if requested.is_empty() || requested.iter().any(String::is_empty) { return Err(ToolError::Message("path must be a non-empty string or array of non-empty strings".into())); }
-            let limit = input.limit.unwrap_or(100); if limit == 0 { return Err(ToolError::Message("limit must be a positive integer".into())); }
+            let limit = input.limit.unwrap_or(100.0); let requested_skip = input.skip.unwrap_or(0.0);
+            if !is_integer(requested_skip) || requested_skip < 0.0 { return Err(ToolError::Message("skip must be a non-negative integer".into())); }
+            if !is_integer(limit) || limit <= 0.0 { return Err(ToolError::Message("limit must be a positive integer".into())); }
+            let (limit, requested_skip) = (limit.min(f64::from(u32::MAX)) as u32, requested_skip.min(f64::from(u32::MAX)) as u32);
             let cwd = call.context.map_or(cwd.as_path(), ToolContext::cwd).to_path_buf();
             let mut paths = Vec::new(); let mut missing = Vec::new(); let mut single_file = false; let mut line_start = None; let mut line_end = None;
             for raw in &requested {
@@ -71,7 +76,7 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
             }
             if paths.is_empty() { return Err(ToolError::Message(format!("Path not found: {}", missing.join(", ")))); }
             single_file &= paths.len() == 1;
-            let skip = if single_file { 0 } else { input.skip.unwrap_or(0) }; let page_size = limit.min(20); let cap = if single_file { 200 } else { 20 };
+            let skip = if single_file { 0 } else { requested_skip }; let page_size = limit.min(20); let cap = if single_file { 200 } else { 20 };
             let mode = match input.mode.as_deref().unwrap_or("content") { "content" => GrepMode::Content, "count" => GrepMode::Count, "files" => GrepMode::Files, other => return Err(ToolError::Message(format!("Invalid grep mode: {other}"))) };
             let before = input.before.or(input.context).unwrap_or(0); let after = input.after.or(input.context).unwrap_or(0);
             let request = GrepEngineRequest { multiline: Some(input.multiline.unwrap_or_else(|| input.pattern.contains('\n') || input.pattern.contains("\\n"))), pattern: input.pattern,
@@ -116,8 +121,10 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
                 for row in matches.iter().filter(|r| !r.is_context) { *counts.entry(row.path.clone()).or_insert(0u32) += 1; }
                 matches.retain(|r| counts.contains_key(&r.path)); file_matches = counts.into_iter().map(|(path,count)| FileMatch { path, count: Some(count) }).collect();
             } else if single_file || !selected.is_empty() { file_matches = result.file_counts.iter().map(|f| FileMatch { path: f.path.clone(), count: f.count }).collect(); }
+            let had_preselection = preselection.is_some();
             let mut scan = preselection.unwrap_or_else(|| result.clone()); scan.missing_paths = missing; scan.elapsed_ms = started.elapsed().as_secs_f64()*1000.0;
             scan.effective_pattern = result.effective_pattern; scan.pattern_kind = result.pattern_kind; scan.regex_engine = result.regex_engine; scan.timed_out |= result.timed_out;
+            if result.timed_out && had_preselection { scan.warnings.extend(result.warnings.iter().cloned()); }
             let partial = scan.timed_out || scan.prefix_searched > 0 || scan.skipped_oversized > 0;
             let engine = if scan.regex_engine == "pcre2" || std::env::var("SENPI_GREP_ENGINE").as_deref() == Ok("rg") { "rg" } else { "native" };
             let details = GrepToolDetails { version: 1, engine: engine.into(), status: if partial { "partial" } else if !file_matches.is_empty() { "ok" } else if skip > 0 { "pageEnd" } else { "noMatch" }.into(),

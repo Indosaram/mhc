@@ -46,7 +46,7 @@ pub fn git_total_loc(root: &Path) -> io::Result<usize> {
     let mut total = 0;
     for file in files.split('\0').filter(|s| !s.is_empty()) {
         if Path::new(file).extension().and_then(|e|e.to_str()).is_some_and(|ext|SOURCE_EXTENSIONS.contains(&ext)) {
-            total += fs::read_to_string(root.join(file))?.bytes().filter(|&b|b==b'\n').count();
+            total += fs::read(root.join(file))?.iter().filter(|&&b|b==b'\n').count();
         }
     }
     Ok(total)
@@ -79,6 +79,7 @@ pub(crate) mod tests {
     #[test] fn churn() { let (t,sha)=repo(); fs::write(t.path().join("src/a.ts"),(0..12).map(|i|format!("line{i}")).collect::<Vec<_>>().join("\n")).unwrap(); commit(t.path()); assert_eq!(git_churn_loc(t.path(),&sha).unwrap(),4); }
     #[test] fn binary_churn() { let (t,sha)=repo(); fs::write(t.path().join("blob.bin"),b"\0\x01\x02binary\0").unwrap(); commit(t.path()); assert_eq!(git_churn_loc(t.path(),&sha).unwrap(),0); }
     #[test] fn total_loc() { let (t,_)=repo(); assert_eq!(git_total_loc(t.path()).unwrap(),18); }
+    #[test] fn total_loc_non_utf8() { let (t,_)=repo(); fs::write(t.path().join("src/c.ts"),b"\xff\xfe\n\x80\n").unwrap(); commit(t.path()); assert_eq!(git_total_loc(t.path()).unwrap(),20); }
     #[test] fn commit_type() { let (t,sha)=repo(); assert_eq!(git_object_type(t.path(),&sha).as_deref(),Some("commit")); }
     #[test] fn other_object_types() { let (t,_)=repo(); for (object,kind) in [("HEAD^{tree}","tree"),("HEAD:src/a.ts","blob")] { let sha=run(t.path(), &["rev-parse",object]).unwrap(); assert_eq!(git_object_type(t.path(),sha.trim()).as_deref(),Some(kind)); } run(t.path(), &["tag","-a","v1","-m","tagged"]).unwrap(); let sha=run(t.path(), &["rev-parse","v1"]).unwrap(); assert_eq!(git_object_type(t.path(),sha.trim()).as_deref(),Some("tag")); assert!(git_object_type(t.path(),&"0".repeat(40)).is_none()); }
     #[test] fn common_realpath() { let (t,_)=repo(); assert_eq!(git_common_dir_realpath(t.path()).unwrap(),fs::canonicalize(t.path().join(".git")).unwrap()); }

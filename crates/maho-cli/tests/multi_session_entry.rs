@@ -51,7 +51,7 @@ fn a_profile_session_path_and_durable_id_reach_the_session_manager() {
         session_kind: None,
         session_context: None,
     };
-    let manager = open_profile_session_manager(&config, &profile);
+    let manager = open_profile_session_manager(&config, &profile).expect("profile session");
     assert_eq!(manager.cwd(), cwd.as_str());
     assert_eq!(manager.session_id(), "durable-session-1");
 }
@@ -77,7 +77,7 @@ fn a_profile_session_path_opens_that_session_with_the_profile_cwd() {
         session_kind: None,
         session_context: None,
     };
-    let manager = open_profile_session_manager(&config, &profile);
+    let manager = open_profile_session_manager(&config, &profile).expect("profile session");
     assert_eq!(manager.session_id(), "path-session");
     assert_eq!(manager.cwd(), cwd.as_str());
 }

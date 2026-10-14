@@ -45,7 +45,36 @@ fn cpu_model() -> Option<String> {
             return Some(value);
         }
     }
+    if cfg!(windows) {
+        return windows_cpu_model();
+    }
     None
+}
+
+/// `os.cpus()[0].model` on Windows: libuv reads `ProcessorNameString` from the CPU registry key.
+fn windows_cpu_model() -> Option<String> {
+    let output = std::process::Command::new("reg")
+        .args(["query", r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0", "/v", "ProcessorNameString"])
+        .output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines().find_map(|line| {
+        let (_, value) = line.trim().strip_prefix("ProcessorNameString")?.trim_start().split_once("REG_SZ")?;
+        Some(value.trim().to_string()).filter(|value| !value.is_empty())
+    })
+}
+
+/// `os.release()` on Windows: `<major>.<minor>.<build>` from `ver`
+/// (`Microsoft Windows [Version 10.0.22631.4317]` -> `10.0.22631`).
+fn windows_release() -> Option<String> {
+    let output = std::process::Command::new("cmd").args(["/c", "ver"]).output().ok()?;
+    parse_windows_ver(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_windows_ver(text: &str) -> Option<String> {
+    let version = text.split("Version").nth(1)?.trim().trim_end_matches(']').trim();
+    let parts: Vec<&str> = version.split('.').take(3).collect();
+    (!parts.is_empty() && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())))
+        .then(|| parts.join("."))
 }
 
 fn terminal_name() -> Option<String> {
@@ -64,6 +93,7 @@ fn terminal_name() -> Option<String> {
 fn os_platform() -> String {
     match std::env::consts::OS {
         "macos" => "darwin".to_string(),
+        "windows" => "win32".to_string(),
         other => other.to_string(),
     }
 }
@@ -95,6 +125,9 @@ fn os_release() -> String {
         && let Ok(release) = std::fs::read_to_string("/proc/sys/kernel/osrelease")
     {
         return release.trim().to_string();
+    }
+    if cfg!(windows) {
+        return windows_release().unwrap_or_default();
     }
     if let Ok(output) = std::process::Command::new("uname").arg("-r").output() {
         let release = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -192,6 +225,12 @@ pub fn build_workstation_section(options: &BuildWorkstationSectionOptions) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_ver_output_maps_to_the_node_release() {
+        assert_eq!(parse_windows_ver("\r\nMicrosoft Windows [Version 10.0.22631.4317]\r\n").as_deref(), Some("10.0.22631"));
+        assert_eq!(parse_windows_ver("no version here"), None);
+    }
 
     fn facts() -> WorkstationFacts {
         WorkstationFacts {

@@ -140,6 +140,7 @@ async fn switching_to_the_official_endpoint_hands_over_to_the_server_tool() {
     let session = boot().await;
     let initial = payload(&session, proxied()).await;
     assert_eq!(native_tools(&initial), 0);
+    session.configure_provider_key(&official().provider, "fixture-key").expect("configured provider");
     session.set_model(official()).await.expect("model");
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
@@ -153,6 +154,7 @@ async fn switching_to_a_proxied_endpoint_hands_back_to_the_client_tool() {
     let session = boot().await;
     let initial = payload(&session, official()).await;
     assert_eq!(native_tools(&initial), 1);
+    session.configure_provider_key(&proxied().provider, "fixture-key").expect("configured provider");
     session.set_model(proxied()).await.expect("model");
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
@@ -168,6 +170,7 @@ async fn a_native_session_without_credentials_loses_both_tools_on_a_proxied_endp
     let session = boot().await;
     let initial = payload(&session, official()).await;
     assert_eq!(native_tools(&initial), 1);
+    session.configure_provider_key(&proxied().provider, "fixture-key").expect("configured provider");
     session.set_model(proxied()).await.expect("model");
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
@@ -181,6 +184,7 @@ async fn an_unavailable_session_gains_the_server_tool_on_the_official_endpoint()
     let session = boot().await;
     let initial = payload(&session, proxied()).await;
     assert_eq!(native_tools(&initial), 0);
+    session.configure_provider_key(&official().provider, "fixture-key").expect("configured provider");
     session.set_model(official()).await.expect("model");
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);

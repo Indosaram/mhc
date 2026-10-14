@@ -14,6 +14,28 @@ fn no_plan_status_json_error_is_stdout_contract() {
     assert_eq!(payload["error"]["code"], "ULW_LOOP_PLAN_MISSING");
     assert!(payload["error"]["message"].as_str().unwrap().contains("No ulw-loop plan"));
     assert!(payload["error"].get("details").is_none() || payload["error"]["details"].is_object());
+    assert!(payload["error"]["message"].as_str().unwrap().contains("Recovery:"));
+}
+
+fn status_plan() -> ulw_loop_core::domain_types::UlwLoopPlan {
+    serde_json::from_value(serde_json::json!({"version":1,"createdAt":"2026-05-23T00:00:00Z","updatedAt":"2026-05-23T00:00:00Z","briefPath":"brief","goalsPath":"goals","ledgerPath":"ledger","goals":[]})).expect("valid plan fixture")
+}
+
+#[test]
+fn status_reads_plan_for_session_id_with_slash() {
+    let dir = tempdir().unwrap();
+    let scope = ulw_loop_core::paths::UlwLoopScope::new("team/run-1");
+    ulw_loop_core::plan_io::write_plan(dir.path(), status_plan(), Some(&scope)).unwrap();
+    assert_eq!(status(dir.path(), true, Some(&scope)).unwrap(), 0);
+}
+
+#[test]
+fn status_reads_plan_present_only_as_revision_log() {
+    let dir = tempdir().unwrap();
+    let scope = ulw_loop_core::paths::UlwLoopScope::new("revisions-only");
+    ulw_loop_core::plan_io::write_plan(dir.path(), status_plan(), Some(&scope)).unwrap();
+    std::fs::remove_file(ulw_loop_core::paths::ulw_loop_goals_path(dir.path(), Some(&scope))).unwrap();
+    assert_eq!(status(dir.path(), true, Some(&scope)).unwrap(), 0);
 }
 
 #[test]

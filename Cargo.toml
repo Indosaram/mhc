@@ -13,6 +13,7 @@ members = [
     "crates/maho-server",
     "crates/maho-codemode",
     "crates/maho-cli",
+    "crates/maho-process-env",
     "crates/maho-test-support",
     "crates/builtins/maho-ext-account",
     "crates/builtins/maho-ext-anthropic-bash",

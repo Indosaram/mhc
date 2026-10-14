@@ -10,6 +10,7 @@ pub mod tree_sitter;
 pub mod types;
 
 pub use types::*;
+use std::sync::{Arc, OnceLock};
 pub const READ_FOLDER_SELECTION_HEAD: &str = "ec63eb5ee999da83b9e5d3e37b83d1998707f44c";
 pub const READ_FOLDER_SELECTION_SHA256: &str =
     "07388b6a393cc05c78533fa701d536d5e617a38e2293b10c0a281a55395cc8a3";
@@ -46,6 +47,15 @@ pub fn is_read_summary_path(path: &str) -> bool {
 }
 pub struct SelectedReadFolder;
 pub static SELECTED_READ_FOLDER: SelectedReadFolder = SelectedReadFolder;
+/// Shared handle to the selected folder. `prepare_read_folder` recognises the selection by
+/// `Arc` identity (upstream compares against the frozen `selectedReadFolder` object), so every
+/// default read must hand out this one allocation.
+pub fn selected_read_folder() -> Arc<dyn ReadFolder> {
+    static SELECTED: OnceLock<Arc<dyn ReadFolder>> = OnceLock::new();
+    SELECTED
+        .get_or_init(|| Arc::new(SelectedReadFolder))
+        .clone()
+}
 impl ReadFolder for SelectedReadFolder {
     fn id(&self) -> &str {
         "measured-brace"

@@ -103,6 +103,7 @@ pub struct ToolExecutionComponent {
     spinner_tick_ms: Option<u64>,
     now_ms: f64,
     custom: Option<Rc<RefCell<dyn ToolRenderers>>>,
+    renderer_invalidated: Rc<std::cell::Cell<bool>>,
 }
 
 struct ToolExecutionRendererIdentity {
@@ -154,6 +155,7 @@ impl ToolExecutionComponent {
             spinner_tick_ms: None,
             now_ms: 0.,
             custom: custom.clone(),
+            renderer_invalidated: Rc::new(std::cell::Cell::new(false)),
         };
         let initial = component.create_render_state();
         if presentation == ToolExecutionPresentation::Grok {
@@ -168,7 +170,11 @@ impl ToolExecutionComponent {
                 initial,
                 custom,
                 component.theme.clone(),
-                Rc::new(|| {}),
+                // senpi's `onInvalidate` (`this.invalidate(); ui.requestRender()`), applied on the next host tick.
+                {
+                    let invalidated = Rc::clone(&component.renderer_invalidated);
+                    Rc::new(move || invalidated.set(true))
+                },
             ));
             component.images = Some(ToolExecutionImages::new(component.theme.clone()));
         }
@@ -270,6 +276,10 @@ impl ToolExecutionComponent {
     pub fn tick(&mut self, now_ms: u64) -> bool {
         self.now_ms = now_ms as f64;
         let mut changed = false;
+        if self.renderer_invalidated.replace(false) {
+            self.invalidate();
+            changed = true;
+        }
         if self.spinner_frame.is_some() {
             let due = self.spinner_tick_ms.is_none_or(|last| now_ms.saturating_sub(last) >= 80);
             if due {

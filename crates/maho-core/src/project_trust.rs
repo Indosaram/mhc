@@ -75,7 +75,7 @@ pub struct ResolveProjectTrustedOptions<'a> {
     pub default_project_trust: Option<DefaultProjectTrust>,
     pub emit_project_trust: Option<&'a EmitProjectTrust>,
     pub project_trust_context: &'a dyn ProjectTrustContext,
-    pub on_extension_error: Option<&'a dyn Fn(&str)>,
+    pub on_extension_error: Option<&'a (dyn Fn(&str) + Send + Sync)>,
 }
 
 fn select_project_trust_option(cwd: &str, ctx: &dyn ProjectTrustContext) -> Option<ProjectTrustOption> {

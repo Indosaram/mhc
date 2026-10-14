@@ -4,8 +4,10 @@ use std::sync::{Arc, Mutex};
 async fn configured_completion_callback_consumes_native_sdk_context() {
     let dir = tempfile::tempdir().expect("isolated SDK");
     let cwd = dir.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
-        tokens_per_second: Some(0.0), models: Some(["first", "second"].map(|id|
+    // senpi test/suite/harness.ts:124-175: an API-registry faux stream with the provider registered over it
+    // and a configured key; a native faux base would resolve its own `{ auth: {} }` (faux.ts:798) instead.
+    let provider = maho_ai::providers::faux::register_faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
+        api: Some("codemode-services-faux".into()), tokens_per_second: Some(0.0), models: Some(["first", "second"].map(|id|
             maho_ai::providers::faux::FauxModelDefinition { id: id.into(), cost: Some(maho_ai::types::ModelCost {
                 input: 1.0, output: 2.0, ..Default::default()
             }), ..Default::default() }).to_vec()), ..Default::default()
@@ -14,9 +16,16 @@ async fn configured_completion_callback_consumes_native_sdk_context() {
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
     });
-    runtime.register_native_provider(provider.provider.clone());
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
-        config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("fixture-key".into()), ..Default::default() },
+        config: maho_core::model_config_schema::ModelsJsonProvider {
+            api_key: Some("fixture-key".into()), api: Some(provider.api.clone()), base_url: Some(provider.models[0].base_url.clone()),
+            models: Some(provider.models.iter().map(|model| maho_core::model_config_schema::ModelsJsonModel {
+                id: model.id.clone(), name: Some(model.name.clone()), reasoning: Some(model.reasoning), input: Some(model.input.clone()),
+                cost: Some(model.cost.clone()), context_window: Some(model.context_window as f64), max_tokens: Some(model.max_tokens as f64),
+                ..Default::default()
+            }).collect()),
+            ..Default::default()
+        },
         ..Default::default()
     }).expect("configured provider");
     let captured = Arc::new(Mutex::new(None));
@@ -32,7 +41,7 @@ async fn configured_completion_callback_consumes_native_sdk_context() {
             Box::pin(async { Ok(()) })
         }),
     };
-    let model = provider.get_model(Some("second")).expect("model");
+    let model = runtime.get_model("faux", "second").expect("model");
     let session = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
         model: Some(model.clone()), model_runtime: Some(runtime), extension_factories: vec![factory],

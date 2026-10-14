@@ -12,6 +12,7 @@ pub const RPC_ERROR_MULTI_SESSION_DISABLED:&str="multi_session_disabled";
 pub const RPC_ERROR_INVALID_PATH:&str="invalid_path";
 pub const RPC_ERROR_OPEN_FAILED:&str="open_failed";
 pub const RPC_ERROR_MEDIA_NOT_FOUND:&str="media_not_found";
+pub const RPC_ERROR_MISSING_SESSION_CWD:&str="missing_session_cwd";
 pub const RPC_ERROR_INVALID_SESSION_CONTEXT:&str="invalid_session_context";
 pub const RPC_ERROR_INVALID_SESSION_KIND:&str="invalid_session_kind";
 pub const RPC_ERROR_INVALID_LAUNCH_PROFILE:&str="invalid_launch_profile";

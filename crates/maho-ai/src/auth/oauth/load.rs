@@ -113,7 +113,7 @@ pub async fn load_radius_oauth(options: RadiusOAuthOptions) -> anyhow::Result<Ar
     )))
 }
 
-pub const BUILTIN_OAUTH_PROVIDERS: [(&str, &str); 8] = [
+pub const BUILTIN_OAUTH_PROVIDERS: [(&str, &str); 9] = [
     ("anthropic", "Anthropic (Claude Pro/Max)"),
     ("chatgpt-subscription", "ChatGPT Subscription (Plus/Pro)"),
     ("cursor", "Cursor (Pro/Ultra/Teams)"),
@@ -121,6 +121,7 @@ pub const BUILTIN_OAUTH_PROVIDERS: [(&str, &str); 8] = [
     ("github-copilot", "GitHub Copilot"),
     ("kimi-coding", "Kimi Code (subscription)"),
     ("openrouter", "OpenRouter OAuth"),
+    ("radius", "Radius"),
     ("xai", "xAI (Grok/X subscription)"),
 ];
 
@@ -134,6 +135,17 @@ pub async fn load_builtin_oauth(provider_id: &str) -> anyhow::Result<Option<Arc<
         "xai" => Ok(Some(load_xai_oauth().await?)),
         "cursor" => Ok(Some(load_cursor_oauth().await?)),
         "devin" => Ok(Some(load_devin_oauth().await?)),
+        // senpi providers/radius.ts: `lazyOAuth({ name, load: () => loadRadiusOAuth({ name, gateway }) })`
+        // with the default provider name and gateway.
+        "radius" => Ok(Some(
+            load_radius_oauth(RadiusOAuthOptions {
+                name: "Radius".into(),
+                gateway: crate::providers::radius_config::normalize_radius_gateway_url(
+                    crate::providers::radius_config::DEFAULT_RADIUS_GATEWAY,
+                ),
+            })
+            .await?,
+        )),
         _ => Ok(None),
     }
 }
@@ -208,6 +220,13 @@ mod tests {
         register_bundled_oauth_flow_loaders(all_loaders("bundled"));
         let loaded = load_radius_oauth(RadiusOAuthOptions { name: "radius-x".into(), gateway: "gw".into() }).await.unwrap();
         assert_eq!(loaded.name(), "radius-x");
+    }
+
+    #[tokio::test]
+    async fn builtin_oauth_includes_radius() {
+        assert!(BUILTIN_OAUTH_PROVIDERS.iter().any(|(id, _)| *id == "radius"));
+        let loaded = load_builtin_oauth("radius").await.unwrap().expect("radius oauth");
+        assert!(!loaded.name().is_empty());
     }
 }
 

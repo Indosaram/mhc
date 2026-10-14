@@ -814,6 +814,17 @@ pub fn crop_kitty_image_line(line: &str, hidden_rows: usize, visible_rows: usize
     )
 }
 
+/// senpi `index.ts` `calculateImageRows`: the row count an image occupies at `target_width_cells`
+/// (default cell size 9x18px when the caller has none).
+pub fn calculate_image_rows(
+    image_dimensions: ImageDimensions,
+    target_width_cells: f64,
+    cell_dimensions: Option<CellDimensions>,
+) -> u32 {
+    let cell_dimensions = cell_dimensions.unwrap_or(CellDimensions { width_px: 9, height_px: 18 });
+    calculate_image_cell_size(image_dimensions, target_width_cells, None, cell_dimensions).rows
+}
+
 pub fn calculate_image_cell_size(
     image_dimensions: ImageDimensions,
     max_width_cells: f64,

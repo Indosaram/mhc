@@ -28,7 +28,7 @@
 //! `recommended-models` builtin ships (`RECOMMENDED_DEFAULT_MODELS`, senpi#2074, with GPT-6.1 Sol in
 //! the GPT-6 Sol slot from senpi#2394), so the TUI and the desktop start from one order. OmO carries
 //! one extra rung: `gpt-6-sol` (medium) right behind `gpt-6.1-sol`, because 6.1 Sol is served only on
-//! the two [OI] lanes and a Copilot or OpenCode Zen user must still reach a GPT-6 Sol rung. Every
+//! the two OpenAI lanes and a Copilot or OpenCode Zen user must still reach a GPT-6 Sol rung. Every
 //! builtin rung, in `recommended` and in the lanes, is served ONLY by its listed providers: a
 //! gateway aggregator's vendor-prefixed copy (`opengateway/anthropic/`) never becomes the session
 //! model (#9146).
@@ -91,7 +91,7 @@ const KIMI_PROVIDERS: &[&str] = &["kimi-coding", "kimi-for-coding", "moonshotai"
 // Engine Z.AI ids. `omo setup` imports OpenCode's `zai-coding-plan` key as `zai` (#8799).
 const GLM_PROVIDERS: &[&str] = &["zai", "zai-coding-cn", "opencode-go"];
 const GPT_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "github-copilot", "opencode"];
-// GPT-6.1 Sol and its Fast tier are served only on the two [OI] lanes (not Copilot or OpenCode Zen),
+// GPT-6.1 Sol and its Fast tier are served only on the two OpenAI lanes (not Copilot or OpenCode Zen),
 // so their rungs list just those; the rung behind them (GPT-5.6 Sol in Geeky · Normal, GPT-6 Sol in
 // Recommended) keeps the profile on every GPT provider.
 const GPT_6_1_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];

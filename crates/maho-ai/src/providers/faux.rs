@@ -1163,6 +1163,26 @@ impl FauxProviderHandle {
     }
 }
 
+/// senpi `auth: { apiKey: { name: "Faux", resolve: async () => ({ auth: {} }) } }`: always
+/// configured, with empty request auth.
+struct FauxApiKeyAuth;
+
+#[async_trait::async_trait]
+impl crate::auth::types::ApiKeyAuth for FauxApiKeyAuth {
+    fn name(&self) -> &str {
+        "Faux"
+    }
+
+    async fn resolve(
+        &self,
+        _ctx: &dyn crate::auth::types::AuthContext,
+        _credential: Option<&crate::auth::types::ApiKeyCredential>,
+        _signal: &crate::utils::abort::AbortSignal,
+    ) -> anyhow::Result<Option<crate::auth::types::AuthResult>> {
+        Ok(Some(crate::auth::types::AuthResult { auth: Default::default(), env: None, source: None }))
+    }
+}
+
 pub fn faux_provider(options: RegisterFauxProviderOptions) -> FauxProviderHandle {
     let core = create_faux_core(&options);
     let provider = create_provider(CreateProviderOptions {
@@ -1170,6 +1190,7 @@ pub fn faux_provider(options: RegisterFauxProviderOptions) -> FauxProviderHandle
         name: None,
         base_url: None,
         headers: None,
+        auth: Some(crate::auth::types::ProviderAuth { api_key: Some(Arc::new(FauxApiKeyAuth)), oauth: None }),
         models: core.models.clone(),
         fetch_models: None,
         restore_models: None,

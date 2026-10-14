@@ -13,7 +13,8 @@ pub fn register_account_methods(registry: &mut MethodRegistry, agent_dir: String
         let directory = agent_dir.clone();
         registry.register(method.into(), MethodRegistration { requires_init:true, experimental:false, scope:MethodScope::Global,
             handler:Arc::new(move |context| { let directory = directory.clone(); Box::pin(async move {
-                tokio::task::spawn_blocking(move || tokio::runtime::Handle::current().block_on(async move {
+                let request = context.request.clone();
+                let result = tokio::task::spawn_blocking(move || tokio::runtime::Handle::current().block_on(async move {
                 let params = &context.request["params"];
                 if method == "account/rateLimits/read" { return Err(JsonRpcError::new(-32600, "codex account authentication required to read rate limits")); }
                 if method == "account/usage/read" { return Err(JsonRpcError::new(-32600, "codex account authentication required to read token usage")); }
@@ -50,7 +51,14 @@ pub fn register_account_methods(registry: &mut MethodRegistry, agent_dir: String
                     },
                     _ => unreachable!(),
                 }
-                })).await.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?
+                })).await.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
+                // Pinned `pinCredentialAccount`/`removeCredentialAccount` emit `emitProviderAccountsChanged`
+                // after a successful mutation; emitted here on the dispatch task so the runtime listener
+                // defers the notification until this response is sent.
+                if result.is_ok() && matches!(method, "account/providerAccounts/pin" | "account/providerAccounts/remove") && let Ok(provider) = provider(&request["params"], method) {
+                    maho_core::emit_provider_accounts_changed(&provider);
+                }
+                result
             }) }) });
     }
 }

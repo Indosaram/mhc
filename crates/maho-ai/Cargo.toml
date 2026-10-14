@@ -8,6 +8,10 @@ license = "MIT"
 [lints]
 workspace = true
 
+[[bin]]
+name = "pi-ai"
+path = "src/bin/pi-ai.rs"
+
 # Dependencies for maho-ai and for the lanes that fill its declared modules
 # (todos 10-13: wire APIs over reqwest/SSE, OAuth, credential store). Exact versions.
 [build-dependencies]

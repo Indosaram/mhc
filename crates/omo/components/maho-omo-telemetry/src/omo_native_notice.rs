@@ -12,19 +12,23 @@ pub fn claim_notice(state_dir:&Path)->std::io::Result<bool> {
         Err(error)=>Err(error),
     }
 }
-pub fn register_omo_native_notice(api:&mut maho_ext_api::ExtensionApi,env:telemetry_core::TelemetryEnv,state_dir:std::path::PathBuf,enabled:crate::omo_native_component::ConfigEnabled) {
+pub fn register_omo_native_notice(api:&mut maho_ext_api::ExtensionApi,env:telemetry_core::TelemetryEnv,state_dir:std::path::PathBuf,enabled:crate::omo_native_component::ConfigEnabled,diagnostics:Option<telemetry_core::TelemetryDiagnostics>) {
     use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
     let reported=Arc::new(AtomicBool::new(false));
+    let report_once=move |error:telemetry_core::TelemetryError| {
+        if reported.swap(true,Ordering::SeqCst) {return;}
+        if let Some(diagnostics)=&diagnostics {diagnostics(&telemetry_core::TelemetryDiagnosticInput {event:telemetry_core::TelemetryDiagnosticEvent::TelemetryCaptureFailed,source:"omo-native-notice".into(),error:Some(error),error_kind:Some(telemetry_core::TelemetryDiagnosticErrorKind::Error)});}
+    };
     api.on(maho_ext_api::EventKind::SessionStart,Arc::new(move |_,ctx| {
         let product=crate::product_identity::create_omo_native_product_config();
         if enabled(&ctx.cwd) && telemetry_core::is_telemetry_client_enabled(&telemetry_core::TelemetryClientEnabledInput::for_product(Some(&env),&product)) {
             match claim_notice(&state_dir) {
                 Ok(true)=>{
                     let notification=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||ctx.ui.notify("omo-senpi sends anonymous usage telemetry (no prompts, no paths). Docs: https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/reference/senpi-telemetry.md - opt out: DO_NOT_TRACK=1",maho_ext_api::NotificationType::Info)));
-                    if notification.is_err() && !reported.swap(true,Ordering::SeqCst) {crate::omo_native_component::warn(ctx,"telemetry_capture_failed: omo-native-notice: notification UI failed");}
+                    if notification.is_err() {report_once(telemetry_core::TelemetryError::new("notification UI failed"));}
                 },
                 Ok(false)=>{},
-                Err(error)=>{if !reported.swap(true,Ordering::SeqCst) {crate::omo_native_component::warn(ctx,&format!("telemetry_capture_failed: omo-native-notice: {error}"));}}
+                Err(error)=>report_once(telemetry_core::TelemetryError::new(error.to_string())),
             }
         }
         Box::pin(async {Ok(maho_ext_api::EventResult::None)})
@@ -34,10 +38,10 @@ pub fn register_omo_native_notice(api:&mut maho_ext_api::ExtensionApi,env:teleme
 mod tests {
     use super::*;
     fn start()->maho_ext_api::ExtensionEvent {maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {reason:maho_ext_api::SessionReason::Startup,initial_model_provenance:None,previous_session_file:None})}
-    #[tokio::test] async fn registered_notice_once() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();register_omo_native_notice(&mut api,env(t.path()),t.path().join("notice"),std::sync::Arc::new(|_|true));let (ctx,messages)=context_with_notifications(t.path(),"s");dispatch(&api,start(),&ctx).await;dispatch(&api,start(),&ctx).await;assert_eq!(messages.lock().unwrap().len(),1);}
-    #[tokio::test] async fn optout_no_notice_or_marker() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();let mut env=env(t.path());env.insert("DO_NOT_TRACK".into(),"1".into());register_omo_native_notice(&mut api,env,t.path().join("notice"),std::sync::Arc::new(|_|true));let (ctx,messages)=context_with_notifications(t.path(),"s");dispatch(&api,start(),&ctx).await;assert!(messages.lock().unwrap().is_empty());assert!(!t.path().join("notice").exists());}
-    #[tokio::test] async fn disabled_config_no_notice_or_marker() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();register_omo_native_notice(&mut api,env(t.path()),t.path().join("notice"),std::sync::Arc::new(|_|false));let (ctx,messages)=context_with_notifications(t.path(),"s");dispatch(&api,start(),&ctx).await;assert!(messages.lock().unwrap().is_empty());assert!(!t.path().join("notice").exists());}
-    #[test] fn no_audit_commands() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();register_omo_native_notice(&mut api,env(t.path()),t.path().join("notice"),std::sync::Arc::new(|_|true));assert!(api.registered.commands.is_empty());}
+    #[tokio::test] async fn registered_notice_once() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();register_omo_native_notice(&mut api,env(t.path()),t.path().join("notice"),std::sync::Arc::new(|_|true),None);let (ctx,messages)=context_with_notifications(t.path(),"s");dispatch(&api,start(),&ctx).await;dispatch(&api,start(),&ctx).await;assert_eq!(messages.lock().unwrap().len(),1);}
+    #[tokio::test] async fn optout_no_notice_or_marker() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();let mut env=env(t.path());env.insert("DO_NOT_TRACK".into(),"1".into());register_omo_native_notice(&mut api,env,t.path().join("notice"),std::sync::Arc::new(|_|true),None);let (ctx,messages)=context_with_notifications(t.path(),"s");dispatch(&api,start(),&ctx).await;assert!(messages.lock().unwrap().is_empty());assert!(!t.path().join("notice").exists());}
+    #[tokio::test] async fn disabled_config_no_notice_or_marker() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();register_omo_native_notice(&mut api,env(t.path()),t.path().join("notice"),std::sync::Arc::new(|_|false),None);let (ctx,messages)=context_with_notifications(t.path(),"s");dispatch(&api,start(),&ctx).await;assert!(messages.lock().unwrap().is_empty());assert!(!t.path().join("notice").exists());}
+    #[test] fn no_audit_commands() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();register_omo_native_notice(&mut api,env(t.path()),t.path().join("notice"),std::sync::Arc::new(|_|true),None);assert!(api.registered.commands.is_empty());}
     #[test] fn once_per_machine() {let t=tempfile::tempdir().unwrap();assert!(claim_notice(t.path()).unwrap());assert!(!claim_notice(t.path()).unwrap());}
     #[cfg(unix)]
     #[test] fn private_marker() {use std::os::unix::fs::PermissionsExt;let t=tempfile::tempdir().unwrap();claim_notice(t.path()).unwrap();assert_eq!(std::fs::metadata(t.path().join("notice-shown")).unwrap().permissions().mode()&0o777,0o600);}
@@ -49,7 +53,7 @@ mod tests {
         use crate::telemetry_test_support::*;
         let temp=tempfile::tempdir().unwrap();
         let mut api=api();
-        register_omo_native_notice(&mut api,env(temp.path()),temp.path().join("notice"),std::sync::Arc::new(|_|true));
+        register_omo_native_notice(&mut api,env(temp.path()),temp.path().join("notice"),std::sync::Arc::new(|_|true),None);
         let (ctx,attempts)=context_with_failing_notifications(temp.path(),"failure");
         dispatch(&api,start(),&ctx).await;
         dispatch(&api,start(),&ctx).await;
@@ -63,7 +67,7 @@ mod tests {
         let mut api=api();
         let mut env=env(temp.path());
         env.insert("POSTHOG_API_KEY".into(),telemetry_core::UNCONFIGURED_POSTHOG_API_KEY.into());
-        register_omo_native_notice(&mut api,env,temp.path().join("notice"),std::sync::Arc::new(|_|true));
+        register_omo_native_notice(&mut api,env,temp.path().join("notice"),std::sync::Arc::new(|_|true),None);
         let (ctx,notifications)=context_with_notifications(temp.path(),"unconfigured");
         dispatch(&api,start(),&ctx).await;
         assert!(notifications.lock().unwrap().is_empty());

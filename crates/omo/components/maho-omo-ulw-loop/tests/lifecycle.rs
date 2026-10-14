@@ -99,7 +99,7 @@ async fn unrelated_tool_results_do_not_query_loop_status() {
 }
 
 #[tokio::test]
-async fn rejected_status_keeps_previous_snapshot_guard() {
+async fn rejected_status_clears_previous_snapshot_guard() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let calls = Arc::new(AtomicUsize::new(0));
     let captured = calls.clone();
@@ -118,7 +118,7 @@ async fn rejected_status_keeps_previous_snapshot_guard() {
             })
         })) }.register(&mut api);
     for _ in 0..3 { end(&api).await; }
-    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
 }
 
 #[tokio::test]

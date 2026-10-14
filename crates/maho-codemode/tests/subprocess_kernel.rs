@@ -112,7 +112,7 @@ async fn queued_cancellation_preserves_active_and_interrupt_restarts_state() {
     assert_eq!(result.unwrap()["durationMs"],0.0);
     assert_eq!(kernel.queue_snapshot().0.as_deref(),Some("active"));
     let old=kernel.pid().unwrap();
-    assert!(!kernel.interrupt("test interruption",Some("active")).await.unwrap());
+    assert!(!kernel.interrupt("test interruption",Some("active")).await.unwrap().0);
     assert_eq!(first.await.unwrap().unwrap()["ok"],false);
     assert!(!std::path::Path::new(&format!("/proc/{old}")).exists());
     let result=kernel.run(KernelRunInput {cell_id:"after".into(),code:"x".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap();

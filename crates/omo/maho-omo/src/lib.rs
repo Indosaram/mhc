@@ -19,8 +19,8 @@ pub use component_list::{
     omo_component_names, omo_components, try_omo_components,
 };
 pub use compose::{
-    OMO_COMPONENT_FLAG_PREFIX, OMO_DISABLED_FLAG, OMO_EXTENSION_IDENTITY, OmoExtension, OmoSenpiComponent,
-    component_disabled_flag, compose_omo_extension, compose_omo_extension_with_options, coordinator_of,
+    OMO_COMPONENT_FLAG_PREFIX, OMO_DISABLED_FLAG, OMO_EXTENSION_IDENTITY, OMO_SENPI_DISABLED_ENV, OmoExtension,
+    OmoSenpiComponent, component_disabled_flag, is_omo_senpi_disabled_by_env, compose_omo_extension, compose_omo_extension_with_options, coordinator_of,
 };
 pub use coordinator::{
     DETAIL_SEPARATOR, Delivery, DeliveryFuture, IdleInjectionDelivery, IdleInjectionDetail, IdleInjectionMessage,

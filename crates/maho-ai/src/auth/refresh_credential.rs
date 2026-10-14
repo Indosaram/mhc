@@ -1,76 +1,60 @@
 //! Port of senpi packages/ai/src/auth/refresh-credential.ts.
+//!
+//! Effective credential for a provider's catalog refresh (`Models.refresh`). OAuth credentials are
+//! refreshed before network access; the exchange is joined without owning it, so superseding the
+//! catalog refresh stops waiting but never aborts a token exchange another lane may be relying on.
 
 use crate::auth::oauth_refresh::{refresh_oauth_credential, OAuthRefreshRequest};
-use crate::auth::pool::slots::{project_slot, PooledCredential};
-use crate::auth::resolve::{oauth_refresh_models_error, resolve_api_key, ModelsError};
-use crate::auth::types::{AuthContext, AuthResult, Credential, CredentialStore, ProviderAuth};
+use crate::auth::resolve::{oauth_refresh_models_error, ModelsError};
+use crate::auth::types::{ApiKeyCredential, AuthContext, Credential, CredentialStore, OAuthCredential, ProviderAuth};
 use crate::utils::abort::AbortSignal;
 use std::sync::Arc;
 
-/// Force-refreshes the credential backing `Models.refresh`: an OAuth credential (or slot) is
-/// unconditionally exchanged regardless of expiry, an api-key credential resolves ambiently
-/// through `apiKeyAuth.resolve` (no forced refresh exists for api keys).
 pub async fn resolve_refresh_credential(
     provider_id: &str,
     provider_auth: &ProviderAuth,
     credentials: &Arc<dyn CredentialStore>,
     ctx: &dyn AuthContext,
-    slot_name: Option<&str>,
+    stored: Option<&Credential>,
     signal: &AbortSignal,
-) -> Result<Option<AuthResult>, ModelsError> {
-    signal.throw_if_aborted().map_err(|reason| ModelsError::new("auth", reason.to_string()))?;
-
-    let stored = credentials
-        .read(provider_id, Some(crate::auth::types::AuthOperationOptions { signal: Some(signal.clone()) }))
-        .await
-        .map_err(|e| ModelsError::new("auth", e.to_string()))?;
-
-    match &stored {
-        Some(Credential::OAuth(_)) => {
-            let Some(oauth) = &provider_auth.oauth else { return Ok(None) };
-            let stored_credential = stored.clone().expect("checked Some above");
-            let pooled: PooledCredential = stored_credential.clone().into();
-            let current = match slot_name {
-                None => stored_credential.as_oauth().cloned(),
-                Some(name) => project_slot(Some(&pooled), name).and_then(|c| c.into_oauth()),
-            };
-            let Some(current) = current else { return Ok(None) };
-
-            let refreshed = refresh_oauth_credential(OAuthRefreshRequest {
-                credentials: credentials.clone(),
-                provider_id: provider_id.to_string(),
-                oauth: oauth.clone(),
-                stale: current,
-                slot_name: slot_name.map(str::to_owned),
-                is_stale: Arc::new(|_| true),
-                signal: signal.clone(),
-                owning: true,
-            })
-            .await
-            .map_err(|e| oauth_refresh_models_error(&e, provider_id))?;
-
-            let Some(refreshed) = refreshed else { return Ok(None) };
-            let pooled: PooledCredential = refreshed.clone().into();
-            let credential = match slot_name {
-                None => refreshed.as_oauth().cloned(),
-                Some(name) => project_slot(Some(&pooled), name).and_then(|c| c.into_oauth()),
-            };
-            let Some(credential) = credential else { return Ok(None) };
-            let auth = oauth.to_auth(&credential).await.map_err(|e| ModelsError::new("oauth", e.to_string()))?;
-            Ok(Some(AuthResult { auth, env: None, source: Some("OAuth".into()) }))
+) -> Result<Option<Credential>, ModelsError> {
+    if let Some(Credential::OAuth(stored)) = stored {
+        let Some(oauth) = &provider_auth.oauth else { return Ok(None) };
+        if (crate::utils::diagnostics::now_ms() as f64) < stored.expires {
+            return Ok(Some(Credential::OAuth(stored.clone())));
         }
-        Some(Credential::ApiKey(_)) | None => match &provider_auth.api_key {
-            Some(api_key_auth) => resolve_api_key(api_key_auth, ctx, signal).await,
-            None => Ok(None),
-        },
+        if signal.aborted() {
+            return Ok(None);
+        }
+        let post = refresh_oauth_credential(OAuthRefreshRequest {
+            credentials: credentials.clone(),
+            provider_id: provider_id.to_owned(),
+            oauth: oauth.clone(),
+            stale: stored.clone(),
+            slot_name: None,
+            is_stale: Arc::new(|credential: &OAuthCredential| crate::utils::diagnostics::now_ms() as f64 >= credential.expires),
+            signal: signal.clone(),
+            owning: false,
+        })
+        .await
+        .map_err(|error| oauth_refresh_models_error(&error, provider_id))?;
+        return Ok(post.filter(|post| matches!(post, Credential::OAuth(_))));
     }
+
+    let Some(api_key) = &provider_auth.api_key else { return Ok(None) };
+    let credential = stored.and_then(Credential::as_api_key);
+    let result = api_key
+        .resolve(ctx, credential, signal)
+        .await
+        .map_err(|error| ModelsError::new("auth", error.to_string()))?;
+    Ok(result.map(|result| Credential::ApiKey(ApiKeyCredential { key: result.auth.api_key, env: result.env })))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::credential_store::InMemoryCredentialStore;
-    use crate::auth::types::{ApiKeyAuth, ApiKeyCredential, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction};
+    use crate::auth::types::{ApiKeyAuth, AuthResult, ModelAuth, OAuthAuth, ProviderAuthInteraction};
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -117,63 +101,62 @@ mod tests {
             "faux-oauth"
         }
         async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
-            unimplemented!()
+            anyhow::bail!("login is not exercised")
         }
         async fn refresh(&self, _credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
             self.refresh_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(OAuthCredential::new("forced-refresh-access", "forced-refresh-token", 999_999_999_999.0))
+            Ok(OAuthCredential::new("refreshed-access", "refreshed-token", 999_999_999_999_999.0))
         }
         async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
             Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
         }
     }
 
-    #[tokio::test]
-    async fn oauth_credential_is_unconditionally_refreshed_even_when_valid() {
+    fn signal() -> AbortSignal {
+        crate::utils::abort::AbortController::new().signal()
+    }
+
+    async fn seeded(credential: Credential) -> Arc<dyn CredentialStore> {
         let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
+        credentials.modify("p", Box::new(move |_| Box::pin(async move { Ok(Some(credential)) })), None).await.unwrap();
         credentials
-            .modify(
-                "p",
-                Box::new(|_| Box::pin(async { Ok(Some(Credential::OAuth(OAuthCredential::new("still-valid", "r1", 999_999_999_999.0)))) })),
-                None,
-            )
-            .await
-            .unwrap();
-        let refresh_calls = Arc::new(AtomicUsize::new(0));
-        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(FauxOAuthAuth { refresh_calls: refresh_calls.clone() })) };
-        let ctx = FauxCtx { env: HashMap::new() };
-        let result = resolve_refresh_credential(
-            "p",
-            &provider_auth,
-            &credentials,
-            &ctx,
-            None,
-            &crate::utils::abort::AbortController::new().signal(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(result.auth.api_key, Some("forced-refresh-access".into()));
-        assert_eq!(refresh_calls.load(Ordering::SeqCst), 1, "refresh must run unconditionally regardless of expiry");
     }
 
     #[tokio::test]
-    async fn api_key_credential_resolves_ambiently_without_forced_refresh() {
+    async fn unexpired_oauth_credential_is_returned_without_refresh() {
+        let stored = Credential::OAuth(OAuthCredential::new("still-valid", "r1", 999_999_999_999_999.0));
+        let credentials = seeded(stored.clone()).await;
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(FauxOAuthAuth { refresh_calls: refresh_calls.clone() })) };
+        let ctx = FauxCtx { env: HashMap::new() };
+        let result = resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, Some(&stored), &signal()).await.unwrap();
+        assert_eq!(result, Some(stored));
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn expired_oauth_credential_is_refreshed_before_the_catalog_fetch() {
+        let stored = Credential::OAuth(OAuthCredential::new("expired", "r1", 1.0));
+        let credentials = seeded(stored.clone()).await;
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(FauxOAuthAuth { refresh_calls: refresh_calls.clone() })) };
+        let ctx = FauxCtx { env: HashMap::new() };
+        let result = resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, Some(&stored), &signal())
+            .await
+            .unwrap()
+            .and_then(Credential::into_oauth)
+            .expect("refreshed oauth credential");
+        assert_eq!(result.access, "refreshed-access");
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn ambient_api_key_resolves_into_a_credential() {
         let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
         let provider_auth = ProviderAuth { api_key: Some(Arc::new(FauxApiKeyAuth)), oauth: None };
         let ctx = FauxCtx { env: [("KEY".to_string(), "env-value".to_string())].into() };
-        let result = resolve_refresh_credential(
-            "p",
-            &provider_auth,
-            &credentials,
-            &ctx,
-            None,
-            &crate::utils::abort::AbortController::new().signal(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(result.auth.api_key, Some("env-value".into()));
+        let result = resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, None, &signal()).await.unwrap();
+        assert_eq!(result, Some(Credential::ApiKey(ApiKeyCredential { key: Some("env-value".into()), env: None })));
     }
 
     #[tokio::test]
@@ -181,16 +164,7 @@ mod tests {
         let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
         let provider_auth = ProviderAuth { api_key: None, oauth: None };
         let ctx = FauxCtx { env: HashMap::new() };
-        let result = resolve_refresh_credential(
-            "p",
-            &provider_auth,
-            &credentials,
-            &ctx,
-            None,
-            &crate::utils::abort::AbortController::new().signal(),
-        )
-        .await
-        .unwrap();
+        let result = resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, None, &signal()).await.unwrap();
         assert_eq!(result, None);
     }
 }

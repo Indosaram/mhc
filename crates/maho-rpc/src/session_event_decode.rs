@@ -200,7 +200,7 @@ pub fn session_event_from_record(record: &Value) -> Option<AgentSessionEvent> {
         "model_change_rejected" => Some(E::ModelChangeRejected { model: get(record, "model")?, reason: get(record, "reason")?, detail: get(record, "detail")?, budget: record.get("contextWindow").is_some().then(|| budget(record)).flatten() }),
         "model_change_skipped" => Some(E::ModelChangeSkipped { model: get(record, "model")?, budget: budget(record)?, direction: get(record, "direction")? }),
         "service_tier_changed" => Some(E::ServiceTierChanged { tier: record.get("tier").and_then(Value::as_str).and_then(service_tier), fast_mode: get(record, "fastMode")? }),
-        "thinking_level_changed" => Some(E::ThinkingLevelChanged { level: get(record, "level")? }),
+        "thinking_level_changed" => Some(E::ThinkingLevelChanged { level: get(record, "level")?, thinking_selection: get(record, "thinkingSelection") }),
         "high_reasoning_warning" => Some(E::HighReasoningWarning { model_id: get(record, "modelId")?, provider: get(record, "provider")?, thinking_level: get(record, "thinkingLevel")? }),
         "server_fallback_aborted" => Some(E::ServerFallbackAborted { from: get(record, "from")?, to: get(record, "to")?, chain_configured: get(record, "chainConfigured")? }),
         "session_settings_changed" => Some(E::SessionSettingsChanged { steering_mode: get(record, "steeringMode")?, follow_up_mode: get(record, "followUpMode")?, auto_compaction_enabled: get(record, "autoCompactionEnabled")? }),
@@ -251,8 +251,8 @@ mod tests {
 
     #[test]
     fn agent_end_collision_prefers_the_session_shape_only_when_marked() {
-        let session = AgentSessionEvent::AgentEnd { messages: Vec::new(), aborted: true, will_retry: false, abort_source: Some(AbortSource::User) };
-        let record = session_event_record(&session).expect("serialize");
+        // The RPC wire record: `session_event_record` plus the connection's abort enrichment.
+        let record = json!({"type": "agent_end", "messages": [], "willRetry": false, "aborted": true, "abortSource": "user"});
         assert_eq!(record["type"], "agent_end");
         assert!(matches!(session_event_from_record(&record), Some(AgentSessionEvent::AgentEnd { aborted: true, will_retry: false, abort_source: Some(AbortSource::User), .. })), "aborted/willRetry present decodes as the session agent_end");
         let agent = json!({"type": "agent_end", "messages": []});
@@ -271,7 +271,7 @@ mod tests {
             AgentSessionEvent::CompactionEnd { reason: CompactionReason::Manual, result: Some(maho_ext_api::CompactionResult { summary: "s".into(), first_kept_entry_id: "e".into(), tokens_before: 9, details: Some(json!({"k": 1})) }), aborted: false, will_retry: true, request_id: Some("r".into()), accepted: Some(true), rejection_cause: Some(CompactionRejectionCause::WouldOverflow), error_message: Some("warn".into()) },
             AgentSessionEvent::AutoRetryStart { attempt: 2, max_attempts: 5, delay_ms: 250, error_message: "e".into() },
             AgentSessionEvent::AutoRetryEnd { success: false, attempt: 3, final_error: Some("f".into()) },
-            AgentSessionEvent::ThinkingLevelChanged { level: maho_ai::types::ThinkingLevel::High },
+            AgentSessionEvent::ThinkingLevelChanged { level: maho_ai::types::ThinkingLevel::High, thinking_selection: None },
             AgentSessionEvent::ServiceTierChanged { tier: Some(ServiceTier::Priority), fast_mode: true },
             AgentSessionEvent::ModelChanged { model: model(), thinking_level: maho_ai::types::ThinkingLevel::Minimal, source: ModelSelectSource::Cycle },
             AgentSessionEvent::SessionInfoChanged { name: Some("named".into()) },

@@ -1,6 +1,9 @@
 use std::path::{Path,PathBuf};
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum ExecutableSource {Override,Bundled,Path}
+/// Per-call executable resolution (senpi `resolveClaudeCodeRun(defaultExecutableDeps())`): the
+/// validated binary and its source, or senpi's error naming every tried candidate.
+pub type ExecutableResolver=std::sync::Arc<dyn Fn()->anyhow::Result<(PathBuf,Option<ExecutableSource>)>+Send+Sync>;
 #[derive(Debug,PartialEq,Eq)]
 pub struct ExecutableResolution {pub executable:Option<PathBuf>,pub source:Option<ExecutableSource>,pub tried:Vec<String>}
 pub fn candidates(platform:&str,arch:&str,prefer_musl:bool)->Vec<String> {

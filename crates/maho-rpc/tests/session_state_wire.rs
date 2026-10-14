@@ -70,12 +70,12 @@ async fn state_publishes_the_session_manager_usage_totals() {
         manager.append_message(json!({
             "role":"assistant",
             "content":"hi",
-            "usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"cost":{"total":0.25}}
+            "usage":{"input":6,"output":5,"cacheRead":2,"cacheWrite":2,"cost":{"total":0.25}}
         }));
     });
     assert_eq!(
         build_rpc_session_state(&session, None)["usageTotals"],
-        json!({"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"cost":0.25})
+        json!({"input":6,"output":5,"cacheRead":2,"cacheWrite":2,"cost":0.25,"latestCacheHitRate":20.0})
     );
     session.dispose().await;
 }

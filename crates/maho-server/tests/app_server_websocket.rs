@@ -1,4 +1,4 @@
-use maho_server::app_server::{server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::serve_websocket};
+use maho_server::app_server::{connection::TransportKind, server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::serve_websocket};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ fn core() -> Arc<RwLock<ServerCore>> { Arc::new(RwLock::new(ServerCore::new("/tm
 async fn websocket_real_handshake_and_text_initialize_remove_connection_on_close() {
     let core = core();
     let (client, server) = tokio::io::duplex(8192);
-    let running = tokio::spawn(serve_websocket(server, core.clone(), Arc::new(ResolvedWebSocketListenerAuth::Off), "ws-1".into(), 1024));
+    let running = tokio::spawn(serve_websocket(server, core.clone(), Arc::new(ResolvedWebSocketListenerAuth::Off), "ws-1".into(), TransportKind::WebSocket, 1024));
     let scenario = async {
         let (mut websocket, _) = client_async("ws://localhost/", client).await.unwrap();
         websocket.send(Message::Text(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"c","version":"1"}}}).to_string().into())).await.unwrap();
@@ -25,9 +25,41 @@ async fn websocket_real_handshake_and_text_initialize_remove_connection_on_close
     assert!(core.read().await.get_connection("ws-1").is_none());
 }
 #[tokio::test]
+async fn websocket_dispatch_does_not_hold_the_core_lock_across_a_slow_handler() {
+    use maho_server::app_server::registry::{MethodRegistration, MethodScope};
+    let core = core();
+    let (entered_send, entered) = tokio::sync::oneshot::channel::<()>();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let gates = Arc::new(std::sync::Mutex::new(Some((entered_send, released))));
+    core.write().await.registry.register("test/slow".into(), MethodRegistration { requires_init:true, experimental:false, scope:MethodScope::Global, handler:Arc::new(move |_| {
+        let gates = gates.lock().unwrap().take();
+        Box::pin(async move {
+            if let Some((entered, released)) = gates { entered.send(()).unwrap(); released.await.unwrap(); }
+            Ok(json!({}))
+        })
+    })});
+    let (client, server) = tokio::io::duplex(8192);
+    let running = tokio::spawn(serve_websocket(server, core.clone(), Arc::new(ResolvedWebSocketListenerAuth::Off), "ws-1".into(), TransportKind::WebSocket, 1024));
+    let scenario = async {
+        let (mut websocket, _) = client_async("ws://localhost/", client).await.unwrap();
+        websocket.send(Message::Text(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"c","version":"1"}}}).to_string().into())).await.unwrap();
+        websocket.next().await.unwrap().unwrap();
+        websocket.send(Message::Text(json!({"id":2,"method":"test/slow"}).to_string().into())).await.unwrap();
+        entered.await.unwrap();
+        core.write().await.add_connection("other".into(), Arc::new(|_| Box::pin(async { Ok(()) })));
+        release.send(()).unwrap();
+        let response: serde_json::Value = serde_json::from_str(websocket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(response["id"], 2);
+        websocket.close(None).await.unwrap();
+        drop(websocket);
+        running.await.unwrap().unwrap();
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), scenario).await.expect("a writer must not wait on an in-flight dispatch");
+}
+#[tokio::test]
 async fn websocket_rejects_origin_before_authentication() {
     let (client, server) = tokio::io::duplex(8192);
-    let running = tokio::spawn(serve_websocket(server, core(), Arc::new(ResolvedWebSocketListenerAuth::Bearer { token:"fixture".into(), path:None }), "ws-1".into(), 1024));
+    let running = tokio::spawn(serve_websocket(server, core(), Arc::new(ResolvedWebSocketListenerAuth::Bearer { token:"fixture".into(), path:None }), "ws-1".into(), TransportKind::WebSocket, 1024));
     let mut request = "ws://localhost/".into_client_request().unwrap();
     request.headers_mut().insert("origin", "https://example.test".parse().unwrap());
     let result = tokio::time::timeout(std::time::Duration::from_secs(3), client_async(request, client)).await.unwrap();

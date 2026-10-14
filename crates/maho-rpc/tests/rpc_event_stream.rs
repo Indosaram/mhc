@@ -42,12 +42,17 @@ async fn gated_session(cwd: &std::path::Path, responses: Vec<String>) -> Gated {
     provider.set_responses(responses.iter().map(|content| faux_assistant_message(content.as_str(), FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()).collect());
     let credentials = AuthStorage::in_memory(Default::default());
     credentials.set(&model.provider, Some(serde_json::json!({"type":"api_key","key":"faux-test"}))).expect("the faux credential is stored");
-    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+    let mut runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(cwd.join("models.json")),
         auth_path: Some(cwd.join("auth.json")),
         credentials: Some(Arc::new(credentials)),
         providers: Some(vec![provider.provider.clone()]),
-    });
+            ..Default::default()
+        });
+    // senpi test/suite/harness.ts:159: the faux auth resolves `{ auth: {} }`, so the configured key is registered.
+    runtime.register_provider(&model.provider, maho_core::provider_composer::ProviderConfigInput {
+        config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".into()), ..Default::default() }, ..Default::default()
+    }).expect("configured faux provider");
     let cwd = cwd.to_string_lossy().into_owned();
     let session = create_agent_session(CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model_runtime: Some(runtime), model: Some(model),

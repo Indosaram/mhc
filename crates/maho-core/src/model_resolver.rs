@@ -58,6 +58,51 @@ fn is_alias(id: &str) -> bool {
     id.ends_with("-latest") || !id.rsplit_once('-').is_some_and(|(_, suffix)| suffix.len() == 8 && suffix.bytes().all(|b| b.is_ascii_digit()))
 }
 
+const CURSOR_ALIAS_LEVEL_TOKENS:&[&str]=&["minimal","low","medium","high","extra-high","xhigh","max","none"];
+
+/// senpi `legacySelection`.
+fn legacy_selection(legacy_variant_id:&str)->Option<ThinkingSelection> {
+    let level=get_cursor_variant_alias(legacy_variant_id)?.level?;
+    Some(ThinkingSelection{level,source:ThinkingSelectionSource::LegacyVariant,legacy_variant_id:Some(legacy_variant_id.into())})
+}
+
+/// senpi `derivedCursorVariantIds`: variant ids a runtime-derived Cursor group observed.
+fn derived_cursor_variant_ids(model:&Model)->Vec<(ModelThinkingLevel,String)> {
+    if !((model.provider=="cursor"&&model.api=="cursor-agent")||(model.provider=="cursor-cli-oauth"&&model.api=="cursor-cli-oauth")) {return Vec::new();}
+    model.compat.as_ref().and_then(|c|c.0.get("cursorReasoning")).and_then(|v|v.get("variantIds")).and_then(serde_json::Value::as_object)
+        .map(|variants|variants.iter().filter_map(|(level,id)|Some((ModelThinkingLevel::parse(level)?,id.as_str()?.to_owned()))).collect())
+        .unwrap_or_default()
+}
+
+/// senpi `cursorLegacySelection`.
+fn cursor_legacy_selection(model:&Model,variant_id:&str)->Option<ThinkingSelection> {
+    if let Some(selection)=legacy_selection(variant_id) {return Some(selection);}
+    let normalized=variant_id.to_lowercase();
+    derived_cursor_variant_ids(model).into_iter().find(|(_,id)|id.to_lowercase()==normalized)
+        .map(|(level,id)|ThinkingSelection{level,source:ThinkingSelectionSource::LegacyVariant,legacy_variant_id:Some(id)})
+}
+
+/// senpi `cursorLegacyAliasesForModel`: legacy variant ids that resolve to this Cursor model.
+fn cursor_legacy_aliases_for_model(model:&Model)->Vec<String> {
+    if !matches!(model.provider.as_str(),"cursor"|"cursor-cli-oauth") {return Vec::new();}
+    let target_id=model.id.as_str();
+    let base_id=target_id.strip_suffix("-thinking").unwrap_or(target_id);
+    let mut candidates=indexmap::IndexSet::new();
+    candidates.insert(target_id.to_owned());candidates.insert(format!("{base_id}-thinking"));candidates.insert(format!("{base_id}-fast"));
+    for level in CURSOR_ALIAS_LEVEL_TOKENS {
+        candidates.insert(format!("{base_id}-{level}"));candidates.insert(format!("{base_id}-thinking-{level}"));
+        candidates.insert(format!("{base_id}-{level}-thinking"));candidates.insert(format!("{target_id}-{level}"));
+    }
+    let mut aliases:Vec<String>=candidates.into_iter().filter(|candidate|get_cursor_variant_alias(candidate).is_some_and(|alias|alias.target_id==target_id)).collect();
+    aliases.extend(derived_cursor_variant_ids(model).into_iter().map(|(_,id)|id));
+    aliases
+}
+
+/// minimatch(`value`, `pattern`, { nocase: true }).
+fn minimatch_nocase(value:&str,pattern:&str)->bool {
+    crate::package_manager::minimatch_path(&value.to_lowercase(),&pattern.to_lowercase())
+}
+
 fn try_match_model<'a>(pattern: &str, models: &'a [Model]) -> Option<&'a Model> {
     if let Some(model) = find_exact_model_reference_match(pattern, models) { return Some(model); }
     let pattern = pattern.to_lowercase();
@@ -116,13 +161,31 @@ pub fn resolve_model_scope_from_models(patterns:&[String],models:&[Model])->Reso
             }
             if let Some(model)=find_exact_model_reference_match(glob,models){matches.push(ParsedModelResult{model:Some(model.clone()),thinking_level:thinking,service_tier:tier.clone(),..Default::default()});}
             else {
-                let matcher=compile_glob(glob);
-                if let Ok(matcher)=matcher {
-                    for model in models {
-                        if matcher.is_match(&format!("{}/{}",model.provider,model.id))||(!glob.contains('/')&&matcher.is_match(&model.id)) {
-                            matches.push(ParsedModelResult{model:Some(model.clone()),thinking_level:thinking,service_tier:tier.clone(),..Default::default()});
-                        }
+                let canonical_pattern=glob.contains('/');
+                let glob_matches=|provider:&str,id:&str|minimatch_nocase(&format!("{provider}/{id}"),glob)||(!canonical_pattern&&minimatch_nocase(id,glob));
+                // Projection per canonical model, in catalog order: the model itself and/or the
+                // Cursor legacy aliases the glob matched.
+                let mut projections:indexmap::IndexMap<String,(&Model,Vec<Option<ThinkingSelection>>)>=indexmap::IndexMap::new();
+                for model in models {
+                    let id=format!("{}/{}",model.provider,model.id);
+                    if glob_matches(&model.provider,&model.id) {projections.insert(id.clone(),(model,Vec::new()));}
+                    for alias_id in cursor_legacy_aliases_for_model(model) {
+                        if !glob_matches(&model.provider,&alias_id) {continue;}
+                        projections.entry(id.clone()).or_insert_with(||(model,Vec::new())).1.push(cursor_legacy_selection(model,&alias_id));
                     }
+                }
+                for (model,aliases) in projections.into_values() {
+                    let (thinking_selection,projected_level)=if let Some(level)=thinking {
+                        (Some(ThinkingSelection{level,source:ThinkingSelectionSource::Explicit,legacy_variant_id:None}),Some(level))
+                    } else {
+                        let mut selections:Vec<ThinkingSelection>=aliases.into_iter().flatten().collect();
+                        let levels:std::collections::HashSet<_>=selections.iter().map(|selection|selection.level).collect();
+                        if levels.len()==1&&!selections.is_empty() {
+                            selections.sort_by(|a,b|a.legacy_variant_id.as_deref().unwrap_or("").cmp(b.legacy_variant_id.as_deref().unwrap_or("")));
+                            let selection=selections.swap_remove(0);let level=selection.level;(Some(selection),Some(level))
+                        } else {(None,None)}
+                    };
+                    matches.push(ParsedModelResult{model:Some(model.clone()),thinking_level:projected_level,thinking_selection,service_tier:tier.clone(),..Default::default()});
                 }
             }
         } else {
@@ -142,18 +205,6 @@ pub fn resolve_model_scope_from_models(patterns:&[String],models:&[Model])->Reso
         result.pattern_resolutions.push(PatternResolution{pattern:pattern.clone(),owned_ids,thinking_level:thinking,service_tier:tier,unresolved,is_glob});
     }
     result
-}
-
-fn compile_glob(pattern:&str)->Result<regex::Regex,regex::Error> {
-    let mut expression=String::from("(?i)^");let mut chars=pattern.chars().peekable();
-    while let Some(ch)=chars.next() {
-        match ch {
-            '*'=>expression.push_str(".*"),'?'=>expression.push('.'),
-            '['=>{expression.push('[');if chars.peek()==Some(&'!'){chars.next();expression.push('^');}for ch in chars.by_ref(){expression.push(ch);if ch==']'{break;}}},
-            ch=>expression.push_str(&regex::escape(&ch.to_string())),
-        }
-    }
-    expression.push('$');regex::Regex::new(&expression)
 }
 
 #[derive(Debug,Default)]
@@ -216,17 +267,34 @@ pub fn resolve_cli_model(provider:Option<&str>,pattern:Option<&str>,thinking:Opt
     if let Some(id)=&selected&&provider.is_some()&&pattern.to_lowercase().starts_with(&format!("{id}/").to_lowercase()){model_pattern=&pattern[id.len()+1..];}
     let candidates:Vec<_>=models.iter().filter(|m|selected.as_ref().is_none_or(|p|*p==m.provider)).cloned().collect();
     let parsed=parse_model_pattern(model_pattern,&candidates,false);
-    if parsed.model.is_some(){return ResolveCliModelResult{parsed,error:None};}
+    if let Some(model)=&parsed.model {
+        // If provider inference matched an unauthenticated provider/model pair, prefer one exact
+        // raw model-id match that is authenticated (e.g. a gateway model whose literal id is
+        // "xiaomi/mimo-v2.5-pro").
+        if inferred&&!runtime.get_provider_auth_status(&model.provider).configured {
+            let authenticated:Vec<_>=models.iter()
+                .filter(|m|m.id.eq_ignore_ascii_case(pattern)&&!(m.id==model.id&&m.provider==model.provider))
+                .filter(|m|runtime.get_provider_auth_status(&m.provider).configured).collect();
+            if authenticated.len()==1 {
+                return ResolveCliModelResult{parsed:ParsedModelResult{model:Some(authenticated[0].clone()),service_tier:parsed.service_tier,..Default::default()},error:None};
+            }
+        }
+        return ResolveCliModelResult{parsed,error:None};
+    }
+    let ParsedModelResult{warning,service_tier,..}=parsed;
     if inferred {
         let parsed=parse_model_pattern(pattern,&models,false);if parsed.model.is_some(){return ResolveCliModelResult{parsed,error:None};}
     }
-    if let Some(id)=selected&&let Some(base)=candidates.first() {
+    if let Some(id)=&selected&&let Some(base)=candidates.first() {
         let (model_id,level)=if thinking.is_none(){model_pattern.rsplit_once(':').and_then(|(prefix,suffix)|ModelThinkingLevel::parse(suffix).map(|l|(prefix,Some(l)))).unwrap_or((model_pattern,None))}else{(model_pattern,None)};
-        let base=DEFAULT_MODEL_PER_PROVIDER.iter().find(|(p,_)|*p==id).and_then(|(_,default)|candidates.iter().find(|m|m.id==*default)).unwrap_or(base);
+        let base=DEFAULT_MODEL_PER_PROVIDER.iter().find(|(p,_)|*p==id.as_str()).and_then(|(_,default)|candidates.iter().find(|m|m.id==*default)).unwrap_or(base);
         let mut model=base.clone();model.id=model_id.into();model.name=model_id.into();if thinking.or(level).is_some_and(|l|l!=ModelThinkingLevel::Off){model.reasoning=true;}
-        return ResolveCliModelResult{parsed:ParsedModelResult{model:Some(model),thinking_level:level,warning:Some(format!("Model \"{model_id}\" not found for provider \"{id}\". Using custom model id.")),..Default::default()},error:None};
+        let not_found=format!("Model \"{model_id}\" not found for provider \"{id}\". Using custom model id.");
+        let warning=Some(match warning {Some(warning)=>format!("{warning} {not_found}"),None=>not_found});
+        return ResolveCliModelResult{parsed:ParsedModelResult{model:Some(model),thinking_level:level,service_tier,warning,..Default::default()},error:None};
     }
-    ResolveCliModelResult{error:Some(format!("Model \"{pattern}\" not found. Use --list-models to see available models.")),..Default::default()}
+    let display=selected.as_ref().map_or_else(||pattern.to_owned(),|id|format!("{id}/{model_pattern}"));
+    ResolveCliModelResult{parsed:ParsedModelResult{service_tier,warning,..Default::default()},error:Some(format!("Model \"{display}\" not found. Use --list-models to see available models."))}
 }
 
 #[cfg(test)]
@@ -240,6 +308,25 @@ mod tests {
     fn scope_first_pattern_owns_deduplicated_models(){let models=vec![model("p","sol"),model("q","sol")];let result=resolve_model_scope_from_models(&["p/*:high".into(),"*/sol".into()],&models);assert_eq!(result.scoped_models.len(),2);assert_eq!(result.pattern_resolutions[1].owned_ids,["q/sol"]);assert_eq!(result.scoped_models[0].thinking_level,Some(ModelThinkingLevel::High));}
     #[test]
     fn literal_colon_id_precedes_thinking_decorator(){let models=vec![model("p","sol:high")];let parsed=parse_model_pattern("sol:high",&models,true);assert_eq!(parsed.model.expect("model").id,"sol:high");assert_eq!(parsed.thinking_level,None);}
+    #[test]
+    fn provider_glob_does_not_cross_slashes(){let result=resolve_model_scope_from_models(&["p/*".into()],&[model("p","sol"),model("p","org/sol")]);assert_eq!(result.pattern_resolutions[0].owned_ids,["p/sol"]);}
+    #[test]
+    fn brace_glob_matches_each_alternative(){let result=resolve_model_scope_from_models(&["{p,q}/S*".into()],&[model("p","sol"),model("q","sol"),model("r","sol")]);assert_eq!(result.pattern_resolutions[0].owned_ids,["p/sol","q/sol"]);}
+    #[test]
+    fn glob_projects_cursor_legacy_alias_selection(){
+        let result=resolve_model_scope_from_models(&["cursor/claude-4.5-opus-h*".into()],&[model("cursor","claude-4.5-opus")]);
+        assert_eq!(result.pattern_resolutions[0].owned_ids,["cursor/claude-4.5-opus"]);
+        let selection=result.scoped_models[0].thinking_selection.clone().expect("alias selection");
+        assert_eq!((selection.level,selection.source,selection.legacy_variant_id.as_deref()),(ModelThinkingLevel::High,ThinkingSelectionSource::LegacyVariant,Some("claude-4.5-opus-high")));
+    }
+    #[test]
+    fn inferred_unauthenticated_provider_prefers_authenticated_raw_id(){
+        let dir=tempfile::tempdir().expect("tempdir");let path=dir.path().join("models.json");
+        std::fs::write(&path,r#"{"providers":{"xprov":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"mimo"}]},"gw":{"api":"openai-completions","baseUrl":"http://localhost/v1","apiKey":"fixture-key","models":[{"id":"xprov/mimo"}]}}}"#).expect("config");
+        let runtime=crate::model_runtime::ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions{models_path:Some(path),providers:Some(Vec::new()),..Default::default()});
+        let resolved=resolve_cli_model(None,Some("xprov/mimo"),None,&runtime);
+        let model=resolved.parsed.model.expect("model");assert_eq!((model.provider.as_str(),model.id.as_str()),("gw","xprov/mimo"));
+    }
     #[test]
     fn unknown_scope_is_retained_as_unresolved(){let result=resolve_model_scope_from_models(&["missing".into()],&[model("p","sol")]);assert!(result.pattern_resolutions[0].unresolved);assert_eq!(result.diagnostics[0].code,"no-match");}
 }

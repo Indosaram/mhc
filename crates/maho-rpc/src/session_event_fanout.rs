@@ -14,6 +14,14 @@ impl SessionEventFanout{
         self.targets.register(id);self.actors.insert(id.into(),actor);
     }
     pub fn unregister(&mut self,id:&str){self.targets.unregister(id);self.actors.remove(id);}
+    /// Queues one untagged control record for a registered connection (senpi `enqueueControl`);
+    /// `false` when the connection has no actor and the caller must use the stdio lane.
+    pub fn enqueue_control(&self,id:&str,value:&Value)->Result<bool,String>{
+        let Some(actor)=self.actors.get(id)else{return Ok(false);};
+        let line=crate::jsonl::serialize_json_line(value).map_err(|error|error.to_string())?;
+        actor.enqueue(crate::socket_event_fanout::QueueEntry{line,key:None,demoted_line:None,on_written:None}).map_err(|error|error.to_string())?;
+        Ok(true)
+    }
     pub fn broadcast_host_record(&mut self,record:&Value)->Result<Option<Value>,String>{
         if self.actors.is_empty(){return Ok(Some(record.clone()));}
         let line=crate::jsonl::serialize_json_line(record).map_err(|error|error.to_string())?;
@@ -25,7 +33,9 @@ impl SessionEventFanout{
         Ok(None)
     }
     pub fn set_session_kind(&mut self,session:&str,kind:maho_ext_api::SessionKind){if kind==maho_ext_api::SessionKind::Worker{self.worker_sessions.insert(session.into());}else{self.worker_sessions.remove(session);}}
-    pub fn forget_session(&mut self,session:&str){self.snapshots.forget(session);self.worker_sessions.remove(session);}
+    pub fn forget_session(&mut self,session:&str){self.snapshots.forget(session);self.worker_sessions.remove(session);self.targets.forget_session(session);}
+    /// Whether a live connection with a sink actor is registered under `id`.
+    pub fn is_registered(&self,id:&str)->bool{self.actors.contains_key(id)}
     pub fn set_capabilities(&mut self,id:&str,capabilities:&[String])->Result<(),String>{
         if !self.targets.set_capabilities(id,capabilities){return Ok(());}
         let placeholders=capabilities.iter().any(|capability|capability==crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY);
@@ -88,6 +98,8 @@ impl SessionEventFanout{
 impl ConnectionTargets{
     pub fn register(&mut self,id:&str){if let Some(connection)=self.connections.iter_mut().find(|connection|connection.id==id){*connection=Connection{id:id.into(),capabilities:vec![],registered_capabilities:false,sessions:BTreeSet::new()};}else{self.connections.push(Connection{id:id.into(),capabilities:vec![],registered_capabilities:false,sessions:BTreeSet::new()});}}
     pub fn unregister(&mut self,id:&str){self.connections.retain(|connection|connection.id!=id);}
+    /// Drops a finished handle from every connection's attachment set.
+    pub fn forget_session(&mut self,session:&str){for connection in &mut self.connections{connection.sessions.remove(session);}}
     pub fn attach(&mut self,id:&str,session:&str)->bool{self.connections.iter_mut().find(|connection|connection.id==id).is_some_and(|connection|connection.sessions.insert(session.into()))}
     pub fn detach(&mut self,id:&str,session:&str){if let Some(connection)=self.connections.iter_mut().find(|connection|connection.id==id){connection.sessions.remove(session);}}
     pub fn set_capabilities(&mut self,id:&str,capabilities:&[String])->bool{let Some(connection)=self.connections.iter_mut().find(|connection|connection.id==id)else{return false;};let was=connection.capabilities.iter().any(|capability|capability==crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY);connection.capabilities=capabilities.iter().fold(vec![],|mut unique,capability|{if !unique.contains(capability){unique.push(capability.clone());}unique});connection.registered_capabilities=true;!was&&connection.capabilities.iter().any(|capability|capability==crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY)}

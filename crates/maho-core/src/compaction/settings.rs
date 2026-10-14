@@ -41,9 +41,28 @@ pub fn default_compaction_settings() -> CompactionSettings {
     }
 }
 
+/// senpi cursorOverflowCompactionSettings overrides: overflow recovery on Cursor keeps no recent
+/// tail and skips restoration.
+impl maho_ai::utils::overflow::CursorCompactionSettings for CompactionSettings {
+    fn with_cursor_overflow_overrides(self) -> Self {
+        CompactionSettings { keep_recent_tokens: 0, restoration_enabled: Some(false), ..self }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_overflow_drops_the_recent_tail_and_restoration_only_for_cursor_overflow() {
+        use maho_ai::utils::overflow::cursor_overflow_compaction_settings;
+        let settings = default_compaction_settings();
+        let cursor = cursor_overflow_compaction_settings(settings, Some("cursor"), Some("overflow"));
+        assert_eq!(cursor.keep_recent_tokens, 0);
+        assert_eq!(cursor.restoration_enabled, Some(false));
+        assert_eq!(cursor_overflow_compaction_settings(settings, Some("cursor"), Some("threshold")), settings);
+        assert_eq!(cursor_overflow_compaction_settings(settings, Some("anthropic"), Some("overflow")), settings);
+    }
 
     #[test]
     fn the_defaults_match_the_pinned_source() {

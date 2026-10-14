@@ -54,15 +54,28 @@ pub trait InteractiveSession: Send + Sync {
     /// override them either).
     fn prompt(&self, _message: String, _options: maho_core::agent_session::PromptOptions) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("prompt is not implemented for this session host".to_owned()) }) }
     fn abort(&self) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("abort is not implemented for this session host".to_owned()) }) }
+    fn abort_bash(&self) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("abort_bash is not implemented for this session host".to_owned()) }) }
+    fn abort_compaction(&self) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("abort_compaction is not implemented for this session host".to_owned()) }) }
     fn steer(&self, _text: String) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("steer is not implemented for this session host".to_owned()) }) }
     fn follow_up(&self, _text: String) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("follow_up is not implemented for this session host".to_owned()) }) }
     fn compact(&self, _instructions: Option<String>) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("compact is not implemented for this session host".to_owned()) }) }
     fn navigate_tree(&self, _entry_id: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Err("navigate_tree is not implemented for this session host".to_owned()) }) }
     fn edit_assistant_message(&self, _entry_id: String, _text: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Err("edit_assistant_message is not implemented for this session host".to_owned()) }) }
-    fn reload(&self) -> SessionFuture<'_, Result<bool, String>> { Box::pin(async { Err("reload is not implemented for this session host".to_owned()) }) }
+    /// senpi's `reload`: the `{ cancelled, reason? }` veto decision.
+    fn reload(&self) -> SessionFuture<'_, Result<maho_ext_api::ReloadVetoDecision, String>> { Box::pin(async { Err("reload is not implemented for this session host".to_owned()) }) }
     /// senpi's `clearQueue` proxy arm is synchronous: it returns the mirrored queue and fires the
     /// RPC. A no-op locally (the caller reads the local session's queue directly).
     fn fire_clear_queue(&self, _abort_will_follow: bool) {}
+    /// senpi's synchronous `setSteeringMode`/`setFollowUpMode`/`setAutoCompactionEnabled`/
+    /// `setThinkingLevel`/`setScopedModels`/`setFavoriteModels` proxy arms: the remote runtime
+    /// fires the RPC (mirroring the model lists first) and reports a failure; the local session
+    /// applies them directly.
+    fn set_steering_mode(&self, _mode: String) {}
+    fn set_follow_up_mode(&self, _mode: String) {}
+    fn set_auto_compaction(&self, _enabled: bool) {}
+    fn set_thinking_level(&self, _level: String) {}
+    fn set_scoped_models(&self, _models: Vec<maho_core::agent_session::SessionModelEntry>) {}
+    fn set_favorite_models(&self, _models: Vec<maho_core::agent_session::SessionModelEntry>) {}
     fn execute_bash(&self, _command: String, _exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> { Box::pin(async { Err("execute_bash is not implemented for this session host".to_owned()) }) }
     fn set_model(&self, _provider: String, _id: String) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("set_model is not implemented for this session host".to_owned()) }) }
     fn set_session_name(&self, _name: String) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("set_session_name is not implemented for this session host".to_owned()) }) }
@@ -75,7 +88,18 @@ pub trait InteractiveSession: Send + Sync {
     fn export_html(&self, _output_path: Option<String>, _theme_name: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> { Box::pin(async { Err("export_html is not implemented for this session host".to_owned()) }) }
     fn new_session(&self, parent_session: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>>;
     fn switch_session(&self, session_path: String) -> SessionFuture<'_, Result<ReplacementOutcome, String>>;
+    /// senpi `switchSession(path, { cwdOverride })`; without an override this is `switch_session`.
+    fn switch_session_with_cwd(&self, session_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        match cwd_override {
+            None => self.switch_session(session_path),
+            Some(_) => Box::pin(async { Err("switch_session_with_cwd is not implemented for this session host".to_owned()) }),
+        }
+    }
+    /// senpi `importFromJsonl(path, cwdOverride)`.
+    fn import_from_jsonl(&self, _input_path: String, _cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> { Box::pin(async { Err("import_from_jsonl is not implemented for this session host".to_owned()) }) }
     fn fork(&self, entry_id: String, include_entry: bool) -> SessionFuture<'_, Result<ForkOutcome, String>>;
+    /// senpi `runtimeHost.setBeforeSessionInvalidate`; a no-op where the local session owns the hook.
+    fn set_before_session_invalidate(&self, _callback: Box<dyn Fn() + Send + Sync>) {}
     fn dispose(&self) -> SessionFuture<'_, ()>;
 }
 
@@ -143,6 +167,24 @@ impl InteractiveSession for LocalInteractiveSession {
         })
     }
 
+    fn switch_session_with_cwd(&self, session_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        Box::pin(async move {
+            self.session
+                .switch_session_with_cwd(&session_path, cwd_override.as_deref())
+                .await
+                .map(|replaced| if replaced { ReplacementOutcome::Replaced } else { ReplacementOutcome::Cancelled })
+        })
+    }
+
+    fn import_from_jsonl(&self, input_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        Box::pin(async move {
+            self.session
+                .import_from_jsonl(&input_path, cwd_override.as_deref())
+                .await
+                .map(|replaced| if replaced { ReplacementOutcome::Replaced } else { ReplacementOutcome::Cancelled })
+        })
+    }
+
     fn fork(&self, entry_id: String, include_entry: bool) -> SessionFuture<'_, Result<ForkOutcome, String>> {
         Box::pin(async move {
             self.session.fork(&entry_id, include_entry).await.map(|result| ForkOutcome {
@@ -162,6 +204,14 @@ impl InteractiveSession for LocalInteractiveSession {
 
     fn abort(&self) -> SessionFuture<'_, Result<(), String>> {
         Box::pin(async move { self.session.abort().await; Ok(()) })
+    }
+
+    fn abort_bash(&self) -> SessionFuture<'_, Result<(), String>> {
+        Box::pin(async move { self.session.abort_bash(); Ok(()) })
+    }
+
+    fn abort_compaction(&self) -> SessionFuture<'_, Result<(), String>> {
+        Box::pin(async move { self.session.abort_compaction(); Ok(()) })
     }
 
     fn steer(&self, text: String) -> SessionFuture<'_, Result<(), String>> {
@@ -184,12 +234,12 @@ impl InteractiveSession for LocalInteractiveSession {
         Box::pin(async move { self.session.edit_assistant_message(&entry_id, &text, options).await })
     }
 
-    fn reload(&self) -> SessionFuture<'_, Result<bool, String>> {
+    fn reload(&self) -> SessionFuture<'_, Result<maho_ext_api::ReloadVetoDecision, String>> {
         Box::pin(async move { self.session.reload().await })
     }
 
     fn execute_bash(&self, command: String, exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> {
-        Box::pin(async move { self.session.execute_bash(&command, None, exclude_from_context, None, None).await.map(|result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null)) })
+        Box::pin(async move { self.session.execute_user_bash(&command, None, exclude_from_context, None).await.map(|result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null)) })
     }
 
     fn set_model(&self, provider: String, id: String) -> SessionFuture<'_, Result<(), String>> {
@@ -207,6 +257,32 @@ impl InteractiveSession for LocalInteractiveSession {
         Box::pin(async move { self.session.set_session_thinking_level(maho_ai::types::ModelThinkingLevel::parse(&level).unwrap_or(maho_ai::types::ModelThinkingLevel::Off)); Ok(()) })
     }
 
+    fn set_steering_mode(&self, mode: String) {
+        self.session.set_steering_mode(queue_mode(&mode));
+    }
+
+    fn set_follow_up_mode(&self, mode: String) {
+        self.session.set_follow_up_mode(queue_mode(&mode));
+    }
+
+    fn set_auto_compaction(&self, enabled: bool) {
+        self.session.set_auto_compaction_enabled(enabled);
+    }
+
+    fn set_thinking_level(&self, level: String) {
+        if let Some(level) = maho_ai::types::ModelThinkingLevel::parse(&level) {
+            self.session.set_thinking_level(level);
+        }
+    }
+
+    fn set_scoped_models(&self, models: Vec<maho_core::agent_session::SessionModelEntry>) {
+        self.session.set_scoped_models(models);
+    }
+
+    fn set_favorite_models(&self, models: Vec<maho_core::agent_session::SessionModelEntry>) {
+        self.session.set_favorite_models(models);
+    }
+
     fn cycle_thinking_level(&self) -> SessionFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move { Ok(self.session.cycle_thinking_level().map(|level| level.as_str().to_owned())) })
     }
@@ -222,6 +298,25 @@ impl InteractiveSession for LocalInteractiveSession {
     fn export_html(&self, output_path: Option<String>, theme_name: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move { self.session.export_to_html(output_path.as_deref(), theme_name.as_deref()).map(Some) })
     }
+}
+
+fn queue_mode(mode: &str) -> maho_agent::types::QueueMode {
+    if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime }
+}
+
+/// senpi's `void client.<setter>(...).catch(reportActionFailure(action))`.
+fn spawn_proxy_setter<F, Fut>(runtime: &RemoteInteractiveRuntime, action: &'static str, call: F)
+where
+    F: FnOnce(Arc<crate::interactive_host_runtime::RemoteSessionProxy>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(), maho_rpc::rpc_client::RpcClientError>> + Send + 'static,
+{
+    let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+    let proxy = runtime.proxy().clone();
+    handle.spawn(async move {
+        if let Err(error) = call(proxy.clone()).await {
+            proxy.report_action_failure(action, &error);
+        }
+    });
 }
 
 fn remote_outcome(
@@ -281,6 +376,14 @@ impl InteractiveSession for RemoteInteractiveRuntime {
         Box::pin(async move { self.proxy().abort().await.map_err(|error| error.to_string()) })
     }
 
+    fn abort_bash(&self) -> SessionFuture<'_, Result<(), String>> {
+        Box::pin(async move { self.proxy().abort_bash().await.map_err(|error| error.to_string()) })
+    }
+
+    fn abort_compaction(&self) -> SessionFuture<'_, Result<(), String>> {
+        Box::pin(async move { self.proxy().abort_compaction().await.map_err(|error| error.to_string()) })
+    }
+
     fn steer(&self, text: String) -> SessionFuture<'_, Result<(), String>> {
         Box::pin(async move { self.proxy().steer(&text, None, None).await.map_err(|error| error.to_string()) })
     }
@@ -301,12 +404,41 @@ impl InteractiveSession for RemoteInteractiveRuntime {
         Box::pin(async move { Ok(assistant_edit_result_from_wire(&self.proxy().edit_assistant_message(&entry_id, &text, tree_options_to_wire(&options)).await.map_err(|error| error.to_string())?)) })
     }
 
-    fn reload(&self) -> SessionFuture<'_, Result<bool, String>> {
-        Box::pin(async move { self.proxy().reload().await.map(|value| value.get("cancelled").and_then(serde_json::Value::as_bool) != Some(true)).map_err(|error| error.to_string()) })
+    fn reload(&self) -> SessionFuture<'_, Result<maho_ext_api::ReloadVetoDecision, String>> {
+        Box::pin(async move {
+            self.proxy().reload().await.map(|value| maho_ext_api::ReloadVetoDecision {
+                cancelled: value.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true),
+                reason: value.get("reason").and_then(serde_json::Value::as_str).map(str::to_owned),
+            }).map_err(|error| error.to_string())
+        })
     }
 
     fn fire_clear_queue(&self, abort_will_follow: bool) {
         self.proxy().spawn_clear_queue(abort_will_follow);
+    }
+
+    fn set_steering_mode(&self, mode: String) {
+        spawn_proxy_setter(self, "setSteeringMode", move |proxy| async move { proxy.set_steering_mode(&mode).await });
+    }
+
+    fn set_follow_up_mode(&self, mode: String) {
+        spawn_proxy_setter(self, "setFollowUpMode", move |proxy| async move { proxy.set_follow_up_mode(&mode).await });
+    }
+
+    fn set_auto_compaction(&self, enabled: bool) {
+        spawn_proxy_setter(self, "setAutoCompaction", move |proxy| async move { proxy.set_auto_compaction(enabled).await });
+    }
+
+    fn set_thinking_level(&self, level: String) {
+        spawn_proxy_setter(self, "setThinkingLevel", move |proxy| async move { proxy.set_thinking_level(&level, None).await.map(|_| ()) });
+    }
+
+    fn set_scoped_models(&self, models: Vec<maho_core::agent_session::SessionModelEntry>) {
+        self.proxy().spawn_set_scoped_models(models.iter().map(maho_rpc::connection_handler::session_model_entry_json).collect());
+    }
+
+    fn set_favorite_models(&self, models: Vec<maho_core::agent_session::SessionModelEntry>) {
+        self.proxy().spawn_set_favorite_models(models.iter().map(maho_rpc::connection_handler::session_model_entry_json).collect());
     }
 
     fn execute_bash(&self, command: String, exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> {
@@ -356,12 +488,24 @@ impl InteractiveSession for RemoteInteractiveRuntime {
         Box::pin(async move { remote_outcome(self, RemoteInteractiveRuntime::switch_session(self, &session_path, None).await) })
     }
 
+    fn switch_session_with_cwd(&self, session_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        Box::pin(async move { remote_outcome(self, RemoteInteractiveRuntime::switch_session(self, &session_path, cwd_override.as_deref()).await) })
+    }
+
+    fn import_from_jsonl(&self, input_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        Box::pin(async move { remote_outcome(self, RemoteInteractiveRuntime::import_jsonl(self, &input_path, cwd_override.as_deref()).await) })
+    }
+
     fn fork(&self, entry_id: String, include_entry: bool) -> SessionFuture<'_, Result<ForkOutcome, String>> {
         Box::pin(async move {
             let position = Some(if include_entry { "at" } else { "before" });
             let outcome = remote_outcome(self, RemoteInteractiveRuntime::fork(self, &entry_id, position).await)?;
             Ok(ForkOutcome { outcome, editor_text: None })
         })
+    }
+
+    fn set_before_session_invalidate(&self, callback: Box<dyn Fn() + Send + Sync>) {
+        RemoteInteractiveRuntime::set_before_session_invalidate(self, Some(callback));
     }
 
     fn dispose(&self) -> SessionFuture<'_, ()> {

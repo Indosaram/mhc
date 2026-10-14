@@ -67,15 +67,17 @@ impl ToolHtmlRenderer {
         tool_call_id: &str,
         tool_name: &str,
         result: &AgentToolResult,
-        _is_error: bool,
+        is_error: bool,
     ) -> Option<ToolHtmlResult> {
         let renderer = (self.get_tool_renderer)(tool_name)?;
         let state = self.rendered_states.entry(tool_call_id.to_owned()).or_default();
         catch_unwind(AssertUnwindSafe(|| {
             let args = self.rendered_args.get(tool_call_id).unwrap_or(&JsonValue::Null);
-            let collapsed_lines = renderer.render_result(args, result, &self.theme, self.width)?;
+            let collapsed_options = maho_ext_api::ToolRenderResultOptions { expanded: false, is_partial: false };
+            let collapsed_lines = renderer.render_result_with(args, result, collapsed_options, is_error, &self.theme, self.width)?;
             let collapsed_lines = trim_rendered_result_lines(collapsed_lines);
-            let expanded_lines = renderer.render_result(args, result, &self.theme, self.width)?;
+            let expanded_options = maho_ext_api::ToolRenderResultOptions { expanded: true, is_partial: false };
+            let expanded_lines = renderer.render_result_with(args, result, expanded_options, is_error, &self.theme, self.width)?;
             let expanded_lines = trim_rendered_result_lines(expanded_lines);
             state.collapsed_lines = Some(collapsed_lines.clone());
             state.result_lines = Some(expanded_lines.clone());
@@ -130,6 +132,24 @@ mod tests {
     #[test]
     fn result_lines_all_blank_become_empty() {
         assert!(trim_rendered_result_lines(vec!["".into(), "\x1b[1m  \x1b[0m".into()]).is_empty());
+    }
+
+    struct OptionsRenderer;
+    impl ErasedToolRenderers for OptionsRenderer {
+        fn render_call(&self, _: &JsonValue, _: &Theme, _: usize) -> Option<Vec<String>> { None }
+        fn render_result(&self, _: &JsonValue, _: &AgentToolResult, _: &Theme, _: usize) -> Option<Vec<String>> { None }
+        fn render_result_with(&self, _: &JsonValue, _: &AgentToolResult, options: maho_ext_api::ToolRenderResultOptions, is_error: bool, _: &Theme, _: usize) -> Option<Vec<String>> {
+            Some(vec![format!("expanded={} error={is_error}", options.expanded)])
+        }
+    }
+
+    #[test]
+    fn result_renders_collapsed_and_expanded_with_the_error_flag() {
+        let lookup: ToolRendererLookup = Arc::new(|_| Some(Arc::new(OptionsRenderer) as Arc<dyn ErasedToolRenderers>));
+        let mut renderer = ToolHtmlRenderer::new(ToolHtmlRendererDeps { get_tool_renderer: lookup, theme: Theme::default(), cwd: PathBuf::from("/work"), width: None });
+        let rendered = renderer.render_result("call-1", "custom", &AgentToolResult::text("failed"), true).expect("rendered result");
+        assert_eq!(rendered.collapsed.as_deref(), Some(ansi_lines_to_html(&["expanded=false error=true".to_owned()]).as_str()));
+        assert_eq!(rendered.expanded, ansi_lines_to_html(&["expanded=true error=true".to_owned()]));
     }
 
 }

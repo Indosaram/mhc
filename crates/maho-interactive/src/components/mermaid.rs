@@ -22,11 +22,22 @@ pub enum MermaidRenderingMode {
 }
 
 impl MermaidRenderingMode {
+    /// senpi `getMermaidRenderingMode`: `off` and `final` as written, anything else `streaming`.
     pub fn from_setting(setting: Option<&Value>) -> Self {
         match setting.and_then(Value::as_str) {
             Some("off") => Self::Off,
-            Some("streaming") => Self::Streaming,
-            _ => Self::On,
+            Some("final") => Self::On,
+            _ => Self::Streaming,
+        }
+    }
+}
+
+impl From<maho_core::settings_shapes::MermaidRenderingMode> for MermaidRenderingMode {
+    fn from(mode: maho_core::settings_shapes::MermaidRenderingMode) -> Self {
+        match mode {
+            maho_core::settings_shapes::MermaidRenderingMode::Off => Self::Off,
+            maho_core::settings_shapes::MermaidRenderingMode::Final => Self::On,
+            maho_core::settings_shapes::MermaidRenderingMode::Streaming => Self::Streaming,
         }
     }
 }
@@ -74,6 +85,15 @@ pub fn create_mermaid_markdown_transformer(
     get_mode: Rc<dyn Fn() -> MermaidRenderingMode>,
     theme: Option<Theme>,
 ) -> MarkdownTransformer {
+    create_live_mermaid_markdown_transformer(get_mode, Rc::new(move || theme.clone()))
+}
+
+/// senpi styles diagrams through the module-level `theme` proxy, which always resolves to the active
+/// theme; `get_theme` is read on every transform so a theme switch restyles the next render.
+pub fn create_live_mermaid_markdown_transformer(
+    get_mode: Rc<dyn Fn() -> MermaidRenderingMode>,
+    get_theme: Rc<dyn Fn() -> Option<Theme>>,
+) -> MarkdownTransformer {
     Rc::new(move |markdown, context| {
         let mode = get_mode();
         if mode == MermaidRenderingMode::Off
@@ -82,6 +102,7 @@ pub fn create_mermaid_markdown_transformer(
         {
             return Ok(Some(markdown.to_owned()));
         }
+        let theme = get_theme();
 
         let tokens = Lexer::new().lex(markdown);
         let mut out = String::new();

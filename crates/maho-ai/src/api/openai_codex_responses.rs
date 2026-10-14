@@ -4,21 +4,23 @@
 //! Responses processor. This module builds the Codex request body, maps the Codex event vocabulary
 //! onto the shared Responses events, and owns the retry/cache-affinity/compression behavior.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::{SinkExt, Stream, StreamExt};
+use futures::Stream;
 use serde_json::{json, Map, Value};
-use tokio_tungstenite::{connect_async, tungstenite::{client::IntoClientRequest, Message}};
 
 use crate::api::constrained_sampling::create_grammar_tool_input_properties;
 use crate::api::openai_prompt_cache::{apply_chat_gpt_subscription_cache_affinity_headers, clamp_openai_prompt_cache_key};
 use crate::api::openai_responses::{
-    get_service_tier_cost_multiplier, CachedWebSocket, CachedWebSocketConnection, SESSION_WEBSOCKET_CACHE_TTL_MS,
+    close_websocket_silently, connect_web_socket, get_service_tier_cost_multiplier, is_websocket_reusable,
+    parse_web_socket, CachedWebSocket, CachedWebSocketConnection, ParseWebSocketOptions, TungsteniteWebSocket,
+    WebSocketFailureSlot, WebSocketStreamFailure, SESSION_WEBSOCKET_CACHE_TTL_MS,
 };
 use crate::api::openai_responses_shared::{
     convert_responses_messages, convert_responses_tools, get_done_reason, process_responses_stream,
@@ -30,6 +32,7 @@ use crate::types::{
     AssistantMessage, AssistantMessageEvent, CacheRetention, Context, ErrorReason, Model, ModelThinkingLevel,
     ProviderHeaders, ProviderResponse, SimpleStreamOptions, StopReason, StreamOptions, ThinkingLevel, Transport, Usage,
 };
+use crate::utils::abort::AbortSignal;
 use crate::utils::deferred_tools::split_deferred_tools;
 use crate::utils::diagnostics::{append_assistant_message_diagnostic, create_assistant_message_diagnostic, now_ms, Thrown};
 use crate::utils::error_body::{format_provider_error, normalize_provider_error, SdkErrorShape, ThrownProviderError};
@@ -66,7 +69,7 @@ const COMPAT_GRAMMAR_TOOLS_KEY: &str = "supportsOpenAIGrammarTools";
 
 const CODEX_RESPONSE_STATUSES: [&str; 6] = ["completed", "incomplete", "failed", "cancelled", "queued", "in_progress"];
 
-/// `[OI]CodexResponsesOptions`, read off the provider-neutral options bag.
+/// `OpenAICodexResponsesOptions`, read off the provider-neutral options bag.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CodexResponsesOptions {
     pub reasoning_effort: Option<String>,
@@ -651,72 +654,414 @@ pub fn build_web_socket_headers(
     headers
 }
 
-async fn websocket_events(
+/// `CachedWebSocketContinuationState`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CachedWebSocketContinuationState {
+    pub last_request_body: Map<String, Value>,
+    pub last_response_id: String,
+    pub last_response_items: Vec<Value>,
+}
+
+/// The Codex `CachedWebSocketConnection`: one live socket per session and account, parked between
+/// requests and carrying the `previous_response_id` continuation.
+pub struct CodexCachedWebSocketConnection {
+    socket: Arc<TungsteniteWebSocket>,
+    busy: AtomicBool,
+    created_at: u64,
+    idle_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    continuation: Mutex<Option<CachedWebSocketContinuationState>>,
+}
+
+impl CodexCachedWebSocketConnection {
+    fn new(socket: Arc<TungsteniteWebSocket>) -> Self {
+        Self {
+            socket,
+            busy: AtomicBool::new(true),
+            created_at: u64::try_from(now_ms()).unwrap_or_default(),
+            idle_task: Mutex::new(None),
+            continuation: Mutex::new(None),
+        }
+    }
+
+    fn busy(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
+    }
+
+    fn set_continuation(&self, continuation: Option<CachedWebSocketContinuationState>) {
+        *self.continuation.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = continuation;
+    }
+}
+
+type CodexWebSocketSessionCache = HashMap<String, HashMap<String, Arc<CodexCachedWebSocketConnection>>>;
+
+/// `websocketSessionCache`: session id -> account id -> connection.
+static WEBSOCKET_SESSION_CACHE: LazyLock<Mutex<CodexWebSocketSessionCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn websocket_session_cache() -> std::sync::MutexGuard<'static, CodexWebSocketSessionCache> {
+    WEBSOCKET_SESSION_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn remove_session_web_socket(session_id: &str, account_id: &str, entry: &Arc<CodexCachedWebSocketConnection>) {
+    let mut cache = websocket_session_cache();
+    if let Some(account_entries) = cache.get_mut(session_id) {
+        if account_entries.get(account_id).is_some_and(|cached| Arc::ptr_eq(cached, entry)) {
+            account_entries.remove(account_id);
+        }
+        if account_entries.is_empty() {
+            cache.remove(session_id);
+        }
+    }
+}
+
+/// `evictSessionWebSocket`.
+fn evict_session_web_socket(session_id: &str, account_id: &str, entry: &Arc<CodexCachedWebSocketConnection>, reason: &str) {
+    unpark_session_web_socket(entry);
+    close_websocket_silently(entry.socket.as_ref(), 1000, reason);
+    remove_session_web_socket(session_id, account_id, entry);
+}
+
+/// `unparkSessionWebSocket`.
+fn unpark_session_web_socket(entry: &CodexCachedWebSocketConnection) {
+    if let Some(task) = entry.idle_task.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
+        task.abort();
+    }
+}
+
+/// `parkSessionWebSocket`: parks a connection between requests. The idle TTL is the only eviction
+/// the cache had; a server or network close while parked must evict immediately, because the next
+/// request would otherwise write into a dead socket and wait out the whole stream-start watchdog.
+fn park_session_web_socket(session_id: String, account_id: String, entry: Arc<CodexCachedWebSocketConnection>) {
+    unpark_session_web_socket(&entry);
+    entry.busy.store(false, Ordering::SeqCst);
+    let parked = entry.clone();
+    let task = tokio::spawn(async move {
+        let reason = tokio::select! {
+            () = tokio::time::sleep(Duration::from_millis(SESSION_WEBSOCKET_CACHE_TTL_MS)) => "idle_timeout",
+            () = parked.socket.closed() => "parked_close",
+        };
+        if parked.busy() {
+            return;
+        }
+        evict_session_web_socket(&session_id, &account_id, &parked, reason);
+    });
+    *entry.idle_task.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
+}
+
+/// The `{ socket, entry, reused, release }` `acquireWebSocket` returns.
+struct CodexWebSocketLease {
+    socket: Arc<TungsteniteWebSocket>,
+    /// The cached entry with its session and account keys; `None` for a one-shot socket.
+    entry: Option<(String, String, Arc<CodexCachedWebSocketConnection>)>,
+    reused: bool,
+}
+
+impl CodexWebSocketLease {
+    fn entry(&self) -> Option<&Arc<CodexCachedWebSocketConnection>> {
+        self.entry.as_ref().map(|(_, _, entry)| entry)
+    }
+
+    fn release(self, keep: bool) {
+        let Some((session_id, account_id, entry)) = self.entry else {
+            close_websocket_silently(self.socket.as_ref(), 1000, "done");
+            return;
+        };
+        if !keep || !is_websocket_reusable(entry.socket.as_ref()) {
+            close_websocket_silently(entry.socket.as_ref(), 1000, "done");
+            unpark_session_web_socket(&entry);
+            remove_session_web_socket(&session_id, &account_id, &entry);
+            return;
+        }
+        park_session_web_socket(session_id, account_id, entry);
+    }
+}
+
+/// `acquireWebSocket`.
+async fn acquire_web_socket(
     url: &str,
-    headers: &reqwest::header::HeaderMap,
-    body: &str,
-    timeout_ms: Option<u64>,
-) -> Result<Vec<Bytes>, CodexError> {
-    let mut request = url
-        .into_client_request()
-        .map_err(|error| CodexError::Other(error.to_string()))?;
-    for (name, value) in headers {
-        if let Ok(value) = value.to_str()
-            && let Ok(value) = http::HeaderValue::from_str(value)
-        {
-            request.headers_mut().insert(name.clone(), value);
-        }
-    }
-    let connect = connect_async(request);
-    let (mut socket, _) = match timeout_ms {
-        Some(ms) if ms > 0 => tokio::time::timeout(Duration::from_millis(ms), connect)
-            .await
-            .map_err(|_| CodexError::Other(format!("WebSocket connect timeout after {ms}ms")))?
-            .map_err(|error| CodexError::Other(error.to_string()))?,
-        _ => connect.await.map_err(|error| CodexError::Other(error.to_string()))?,
+    headers: &BTreeMap<String, String>,
+    session_id: Option<&str>,
+    account_id: &str,
+    signal: Option<&AbortSignal>,
+    connect_timeout_ms: Option<u64>,
+) -> Result<CodexWebSocketLease, String> {
+    let Some(session_id) = session_id else {
+        let socket = connect_web_socket(url, headers, signal, connect_timeout_ms).await?;
+        return Ok(CodexWebSocketLease { socket, entry: None, reused: false });
     };
-    socket
-        .send(Message::Text(body.to_owned().into()))
-        .await
-        .map_err(|error| CodexError::Other(error.to_string()))?;
-    let mut frames = Vec::new();
-    while let Some(message) = socket.next().await {
-        let message = message.map_err(|error| CodexError::Other(error.to_string()))?;
-        match message {
-            Message::Text(text) => {
-                let value: Value = serde_json::from_str(&text)
-                    .map_err(|error| CodexError::Protocol(CodexProtocolError {
-                        message: format!("Invalid Codex WebSocket JSON: {error}"),
-                        payload: Some(Value::String(text.to_string())),
-                    }))?;
-                let event_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
-                if event_type == "error" || event_type == "response.failed" {
-                    return Err(CodexError::Api(CodexApiError {
-                        message: get_codex_event_error_message(value.as_object().unwrap_or(&Map::new())),
-                        code: Some(get_codex_event_error_code(value.as_object().unwrap_or(&Map::new()))),
-                        payload: Some(value),
-                    }));
-                }
-                let done = matches!(event_type, "response.done" | "response.completed" | "response.incomplete");
-                frames.push(Bytes::from(format!("data: {value}\n\n")));
-                if done { break; }
-            }
-            Message::Binary(data) => {
-                let value: Value = serde_json::from_slice(&data)
-                    .map_err(|error| CodexError::Other(error.to_string()))?;
-                frames.push(Bytes::from(format!("data: {value}\n\n")));
-            }
-            Message::Ping(data) => {
-                socket.send(Message::Pong(data)).await.map_err(|error| CodexError::Other(error.to_string()))?;
-            }
-            Message::Close(_) => break,
-            Message::Pong(_) | Message::Frame(_) => {}
+
+    let cached = websocket_session_cache().get(session_id).and_then(|entries| entries.get(account_id)).cloned();
+    if let Some(cached) = cached {
+        unpark_session_web_socket(&cached);
+        if !cached.busy() && is_web_socket_session_expired(cached.created_at) {
+            close_websocket_silently(cached.socket.as_ref(), 1000, "connection_age_limit");
+            remove_session_web_socket(session_id, account_id, &cached);
+        } else if !cached.busy() && is_websocket_reusable(cached.socket.as_ref()) {
+            cached.busy.store(true, Ordering::SeqCst);
+            return Ok(CodexWebSocketLease {
+                socket: cached.socket.clone(),
+                entry: Some((session_id.to_owned(), account_id.to_owned(), cached)),
+                reused: true,
+            });
+        } else if cached.busy() {
+            let socket = connect_web_socket(url, headers, signal, connect_timeout_ms).await?;
+            return Ok(CodexWebSocketLease { socket, entry: None, reused: false });
+        } else {
+            close_websocket_silently(cached.socket.as_ref(), 1000, "done");
+            remove_session_web_socket(session_id, account_id, &cached);
         }
     }
-    if frames.is_empty() {
-        return Err(CodexError::Other(String::from("WebSocket stream closed before response.completed")));
+
+    let socket = connect_web_socket(url, headers, signal, connect_timeout_ms).await?;
+    let entry = Arc::new(CodexCachedWebSocketConnection::new(socket.clone()));
+    websocket_session_cache()
+        .entry(session_id.to_owned())
+        .or_default()
+        .insert(account_id.to_owned(), entry.clone());
+    Ok(CodexWebSocketLease { socket, entry: Some((session_id.to_owned(), account_id.to_owned(), entry)), reused: false })
+}
+
+/// `buildCachedWebSocketRequestBody` over a cached entry: a stale or mismatched continuation is
+/// dropped and the full body sent.
+fn build_entry_cached_web_socket_request_body(entry: &CodexCachedWebSocketConnection, body: &Map<String, Value>) -> Map<String, Value> {
+    let mut continuation = entry.continuation.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(state) = continuation.as_ref() else {
+        return body.clone();
+    };
+    match build_cached_web_socket_request_body(
+        body,
+        Some(&state.last_request_body),
+        Some(state.last_response_id.as_str()).filter(|id| !id.is_empty()),
+        Some(state.last_response_items.as_slice()),
+    ) {
+        Some(next) => next,
+        None => {
+            *continuation = None;
+            body.clone()
+        }
     }
-    Ok(frames)
+}
+
+/// senpi's `onStart` callback state: `websocketStarted` for this attempt and the request-wide
+/// `startEmitted`.
+#[derive(Clone)]
+struct WebSocketStart {
+    started: Arc<AtomicBool>,
+    start_emitted: Arc<AtomicBool>,
+}
+
+/// `startWebSocketOutputOnFirstEvent`: emits `start` when the first mapped event arrives. A Codex
+/// error event is thrown by `mapCodexEvents` before it is yielded, so it does not count.
+struct StartOnFirstEvent {
+    inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+    adapter_state: Arc<Mutex<CodexStreamAdapterState>>,
+    start: Option<(WebSocketStart, AssistantMessage, AssistantMessageEventStream)>,
+}
+
+impl Stream for StartOnFirstEvent {
+    type Item = Result<Bytes, reqwest::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let polled = this.inner.as_mut().poll_next(context);
+        if let Poll::Ready(Some(Ok(_))) = &polled {
+            let failed = this.adapter_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).error.is_some();
+            if !failed && let Some((start, partial, sink)) = this.start.take() {
+                start.started.store(true, Ordering::SeqCst);
+                if !start.start_emitted.swap(true, Ordering::SeqCst) {
+                    sink.push(AssistantMessageEvent::Start { partial });
+                }
+            }
+        }
+        polled
+    }
+}
+
+/// One `response.create` round trip over an acquired socket.
+#[allow(clippy::too_many_arguments)]
+async fn run_web_socket_request(
+    socket: &Arc<TungsteniteWebSocket>,
+    request_body: &Map<String, Value>,
+    output: &mut AssistantMessage,
+    stream: &AssistantMessageEventStream,
+    model: &Model,
+    on_start: &WebSocketStart,
+    idle_timeout_ms: Option<u64>,
+    signal: Option<AbortSignal>,
+    grammar_tool_input_properties: &BTreeMap<String, String>,
+    codex_options: &CodexResponsesOptions,
+) -> Result<(), CodexError> {
+    let mut frame = Map::new();
+    frame.insert(String::from("type"), json!("response.create"));
+    frame.extend(request_body.clone());
+    let events = socket.begin_request(Value::Object(frame).to_string()).await.map_err(CodexError::Other)?;
+    let failed: WebSocketFailureSlot = Arc::default();
+    let body = parse_web_socket(
+        socket.clone(),
+        events,
+        signal,
+        ParseWebSocketOptions {
+            completion_types: &["response.completed", "response.done", "response.incomplete"],
+            invalid_json_prefix: Some("Invalid Codex WebSocket JSON"),
+            idle_timeout_ms,
+        },
+        failed.clone(),
+    );
+    let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
+    let adapter = CodexEventStream { body, buffer: String::new(), done: false, state: adapter_state.clone() };
+    let started = StartOnFirstEvent {
+        inner: Box::pin(adapter),
+        adapter_state: adapter_state.clone(),
+        start: Some((on_start.clone(), output.clone(), stream.clone())),
+    };
+    let stream_options = ResponsesStreamOptions {
+        service_tier: codex_options.service_tier.as_deref(),
+        grammar_tool_input_properties,
+        apply_service_tier_pricing: Some(&|usage: &mut Usage, service_tier: Option<&str>| {
+            apply_codex_service_tier_pricing(usage, service_tier, model)
+        }),
+    };
+    let processed = process_responses_stream(Box::pin(started), output, stream, model, &stream_options).await;
+    let adapter_error = adapter_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).error.take();
+    if let Some(error) = adapter_error {
+        return Err(error);
+    }
+    let failure = failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+    if let Some(failure) = failure {
+        return Err(match failure {
+            WebSocketStreamFailure::Protocol { message, payload } => {
+                CodexError::Protocol(CodexProtocolError { message, payload: Some(Value::String(payload)) })
+            }
+            other => CodexError::Other(other.message()),
+        });
+    }
+    processed.map_err(|error| CodexError::Other(error.message))
+}
+
+/// `processWebSocketStream`.
+#[allow(clippy::too_many_arguments)]
+async fn process_web_socket_stream(
+    url: &str,
+    body: &Map<String, Value>,
+    headers: &reqwest::header::HeaderMap,
+    output: &mut AssistantMessage,
+    stream: &AssistantMessageEventStream,
+    model: &Model,
+    on_start: &WebSocketStart,
+    idle_timeout_ms: Option<u64>,
+    websocket_connect_timeout_ms: Option<u64>,
+    cache_session_id: Option<&str>,
+    account_id: &str,
+    grammar_tool_input_properties: &BTreeMap<String, String>,
+    options: &StreamOptions,
+    codex_options: &CodexResponsesOptions,
+) -> Result<(), CodexError> {
+    let signal = options.request.signal.clone();
+    let lease = acquire_web_socket(
+        url,
+        &headers_to_record(headers),
+        cache_session_id,
+        account_id,
+        signal.as_ref(),
+        websocket_connect_timeout_ms,
+    )
+    .await
+    .map_err(CodexError::Other)?;
+    let use_cached_context = matches!(options.transport, Some(Transport::WebsocketCached | Transport::Auto));
+    // ChatGPT Codex Responses rejects `store: true` ("Store must be set to false"). WebSocket
+    // continuation still works via connection-scoped previous_response_id state.
+    let full_body = body;
+    let mut request_body = match lease.entry() {
+        Some(entry) if use_cached_context => build_entry_cached_web_socket_request_body(entry, full_body),
+        _ => full_body.clone(),
+    };
+    let mut recovered_stale_previous_response = false;
+    let result = loop {
+        if let Some(session_id) = cache_session_id {
+            let reused = lease.reused && !recovered_stale_previous_response;
+            fallback_state::update_web_socket_debug_stats(session_id, |stats| {
+                record_web_socket_request_stats(Some(stats), &request_body, reused, use_cached_context);
+            });
+        }
+        match run_web_socket_request(
+            &lease.socket,
+            &request_body,
+            output,
+            stream,
+            model,
+            on_start,
+            idle_timeout_ms,
+            signal.clone(),
+            grammar_tool_input_properties,
+            codex_options,
+        )
+        .await
+        {
+            Ok(()) => break Ok(()),
+            Err(error) => {
+                if !recovered_stale_previous_response
+                    && let Some(entry) = lease.entry()
+                    && request_body.get("previous_response_id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())
+                    && is_codex_previous_response_stale(&error)
+                    && !signal.as_ref().is_some_and(AbortSignal::aborted)
+                {
+                    entry.set_continuation(None);
+                    request_body = full_body.clone();
+                    recovered_stale_previous_response = true;
+                    continue;
+                }
+                break Err(error);
+            }
+        }
+    };
+
+    let mut keep_connection = true;
+    match &result {
+        Ok(()) => {
+            if signal.as_ref().is_some_and(AbortSignal::aborted) {
+                keep_connection = false;
+            } else if use_cached_context
+                && let Some(entry) = lease.entry()
+                && let Some(response_id) = output.response_id.clone()
+            {
+                let context = Context {
+                    system_prompt: None,
+                    messages: vec![crate::types::Message::Assistant(Box::new(output.clone()))],
+                    tools: None,
+                };
+                let response_items: Vec<Value> = convert_responses_messages(
+                    model,
+                    &context,
+                    &CODEX_TOOL_CALL_PROVIDERS.iter().map(|provider| (*provider).to_owned()).collect(),
+                    &ConvertResponsesMessagesOptions {
+                        include_system_prompt: Some(false),
+                        grammar_tool_input_properties: grammar_tool_input_properties.clone(),
+                        ..ConvertResponsesMessagesOptions::default()
+                    },
+                )
+                .into_iter()
+                .filter(|item| {
+                    !matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("function_call_output" | "custom_tool_call_output")
+                    )
+                })
+                .collect();
+                entry.set_continuation(Some(CachedWebSocketContinuationState {
+                    last_request_body: full_body.clone(),
+                    last_response_id: response_id,
+                    last_response_items: response_items,
+                }));
+            }
+        }
+        Err(_) => {
+            if let Some(entry) = lease.entry() {
+                entry.set_continuation(None);
+            }
+            keep_connection = false;
+        }
+    }
+    lease.release(keep_connection);
+    result
 }
 
 /// `SESSION_WEBSOCKET_MAX_AGE_MS`.
@@ -732,10 +1077,26 @@ pub fn schedule_session_web_socket_expiry(session_id: &str, entry: Arc<CachedWeb
     crate::api::openai_responses::schedule_session_websocket_expiry(session_id, entry);
 }
 
-/// `closeChatGptSubscriptionWebSocketSessions`: maho-ai holds no codex WebSocket client, so this
-/// drops the fallback bookkeeping the transport would have left behind.
+/// `closeChatGptSubscriptionWebSocketSessions`.
 pub fn close_chat_gpt_subscription_web_socket_sessions(session_id: Option<&str>) {
-    fallback_state::clear_web_socket_fallback_state(session_id);
+    let close_entry = |entry: &Arc<CodexCachedWebSocketConnection>| {
+        unpark_session_web_socket(entry);
+        close_websocket_silently(entry.socket.as_ref(), 1000, "debug_close");
+    };
+    let mut cache = websocket_session_cache();
+    if let Some(session_id) = session_id {
+        for entry in cache.remove(session_id).into_iter().flat_map(HashMap::into_values) {
+            close_entry(&entry);
+        }
+        drop(cache);
+        fallback_state::clear_web_socket_fallback_state(Some(session_id));
+        return;
+    }
+    for entry in cache.drain().flat_map(|(_, entries)| entries.into_values()) {
+        close_entry(&entry);
+    }
+    drop(cache);
+    fallback_state::clear_web_socket_fallback_state(None);
 }
 
 /// The codex session-resource cleanup senpi registers at module load
@@ -756,7 +1117,7 @@ pub fn register_session_resource_cleanup(
 /// the event stream (senpi throws these out of `mapCodexEvents`).
 #[derive(Default)]
 struct CodexStreamAdapterState {
-    error: Option<String>,
+    error: Option<CodexError>,
 }
 
 /// `mapCodexEvents` + `parseSSE` as a byte stream: each Codex event is normalized onto the shared
@@ -807,7 +1168,7 @@ impl Stream for CodexEventStream {
                     this.done = true;
                     let mut state = this.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     if state.error.is_none() {
-                        state.error = Some(error.to_string());
+                        state.error = Some(CodexError::Other(error.to_string()));
                     }
                     return Poll::Ready(None);
                 }
@@ -824,7 +1185,8 @@ fn synthetic_error_frame(state: &Arc<Mutex<CodexStreamAdapterState>>) -> Vec<u8>
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .error
-        .clone()
+        .as_ref()
+        .map(CodexError::message)
         .unwrap_or_default();
     let frame = json!({ "type": "error", "code": "", "message": message }).to_string();
     format!("data: {frame}\n\n").into_bytes()
@@ -846,8 +1208,14 @@ fn map_codex_frame(chunk: &str, state: &Arc<Mutex<CodexStreamAdapterState>>) -> 
     if data.is_empty() || data == "[DONE]" {
         return Ok(None);
     }
-    let Ok(event) = serde_json::from_str::<Value>(data) else {
-        return fail(state, format!("Invalid Codex SSE JSON: invalid JSON in {data:?}"));
+    let event = match serde_json::from_str::<Value>(data) {
+        Ok(event) => event,
+        Err(error) => {
+            return fail(state, CodexError::Protocol(CodexProtocolError {
+                message: format!("Invalid Codex SSE JSON: {error}"),
+                payload: Some(Value::String(data.to_owned())),
+            }));
+        }
     };
     let Some(event_type) = event.get("type").and_then(Value::as_str).map(str::to_owned) else {
         return Ok(None);
@@ -859,13 +1227,25 @@ fn map_codex_frame(chunk: &str, state: &Arc<Mutex<CodexStreamAdapterState>>) -> 
             let code = get_codex_event_error_code(&event);
             let message = get_codex_event_error_message(&event);
             let fallback = serde_json::to_string(&Value::Object(event.clone())).unwrap_or_default();
-            let base = format!("Codex error: {}", if !message.is_empty() { message } else if !code.is_empty() { code } else { fallback });
-            fail(state, error_text_with_marker(base, &event))
+            let base = format!(
+                "Codex error: {}",
+                if !message.is_empty() { message } else if !code.is_empty() { code.clone() } else { fallback }
+            );
+            fail(state, CodexError::Api(CodexApiError {
+                message: error_text_with_marker(base, &event),
+                code: (!code.is_empty()).then_some(code),
+                payload: Some(Value::Object(event)),
+            }))
         }
         "response.failed" => {
+            let code = get_codex_event_error_code(&event);
             let message = get_codex_event_error_message(&event);
             let base = if message.is_empty() { String::from("Codex response failed") } else { message };
-            fail(state, error_text_with_marker(base, &event))
+            fail(state, CodexError::Api(CodexApiError {
+                message: error_text_with_marker(base, &event),
+                code: Some(code),
+                payload: Some(Value::Object(event)),
+            }))
         }
         "response.done" | "response.completed" | "response.incomplete" => {
             let response = event.get("response").cloned().unwrap_or(Value::Null);
@@ -884,8 +1264,8 @@ fn map_codex_frame(chunk: &str, state: &Arc<Mutex<CodexStreamAdapterState>>) -> 
     }
 }
 
-fn fail(state: &Arc<Mutex<CodexStreamAdapterState>>, message: String) -> Result<Option<Bytes>, ()> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).error = Some(message);
+fn fail(state: &Arc<Mutex<CodexStreamAdapterState>>, error: CodexError) -> Result<Option<Bytes>, ()> {
+    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).error = Some(error);
     Err(())
 }
 
@@ -1001,7 +1381,7 @@ async fn drive(
         &api_key,
         cache_session_id.as_deref(),
     );
-    let _websocket_headers = build_web_socket_headers(
+    let websocket_headers = build_web_socket_headers(
         model.headers.as_ref(),
         options.request.headers.as_ref(),
         account_id.as_deref(),
@@ -1010,9 +1390,10 @@ async fn drive(
     );
     let body_json = Value::Object(body.clone()).to_string();
     let http_timeout_ms = normalize_timeout_ms(options.request.timeout_ms)?;
-    let _websocket_connect_timeout_ms =
+    let websocket_connect_timeout_ms =
         normalize_timeout_ms(options.websocket_connect_timeout_ms.or(Some(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS)))?;
-    let transport = options.transport.unwrap_or(Transport::Sse);
+    let transport = options.transport.unwrap_or(Transport::Auto);
+    let start_emitted = Arc::new(AtomicBool::new(false));
     let websocket_disabled_for_session = transport != Transport::Sse && is_web_socket_sse_fallback_active(cache_session_id.as_deref());
     if websocket_disabled_for_session {
         record_web_socket_sse_fallback(cache_session_id.as_deref());
@@ -1020,40 +1401,86 @@ async fn drive(
 
     if transport != Transport::Sse && !websocket_disabled_for_session {
         let websocket_url = resolve_codex_web_socket_url(Some(model.base_url.as_str()));
-        match websocket_events(&websocket_url, &_websocket_headers, &body_json, _websocket_connect_timeout_ms).await {
-            Ok(frames) => {
-                stream.push(AssistantMessageEvent::Start { partial: output.clone() });
-                let adapter = CodexEventStream {
-                    body: Box::pin(futures::stream::iter(frames.into_iter().map(Ok))),
-                    buffer: String::new(),
-                    done: false,
-                    state: Arc::new(Mutex::new(CodexStreamAdapterState::default())),
-                };
-                let service_tier = codex_options.service_tier.as_deref();
-                let stream_options = ResponsesStreamOptions {
-                    service_tier,
-                    grammar_tool_input_properties: &grammar_tool_input_properties,
-                    apply_service_tier_pricing: Some(&|usage: &mut Usage, service_tier: Option<&str>| {
-                        apply_codex_service_tier_pricing(usage, service_tier, model)
-                    }),
-                };
-                process_responses_stream(Box::pin(adapter), output, stream, model, &stream_options)
-                    .await
-                    .map_err(|error| CodexError::Other(error.message))?;
-                assert_successful_output(output)?;
-                stream.push(AssistantMessageEvent::Done { reason: get_done_reason(output.stop_reason), message: output.clone() });
-                stream.end(None);
-                return Ok(());
+        let websocket_account_id = account_id.clone().unwrap_or_else(|| api_key.clone());
+        let signal = options.request.signal.clone();
+        let mut retried_web_socket_connection_limit = false;
+        let mut retried_missing_web_socket_continuation = false;
+        loop {
+            let on_start = WebSocketStart { started: Arc::new(AtomicBool::new(false)), start_emitted: start_emitted.clone() };
+            let result = process_web_socket_stream(
+                &websocket_url,
+                &body,
+                &websocket_headers,
+                output,
+                stream,
+                model,
+                &on_start,
+                http_timeout_ms,
+                websocket_connect_timeout_ms,
+                cache_session_id.as_deref(),
+                &websocket_account_id,
+                &grammar_tool_input_properties,
+                options,
+                codex_options,
+            )
+            .await
+            .and_then(|()| {
+                if signal.as_ref().is_some_and(AbortSignal::aborted) {
+                    return Err(CodexError::Other(String::from("Request was aborted")));
+                }
+                assert_successful_output(output)
+            });
+            let error = match result {
+                Ok(()) => {
+                    stream.push(AssistantMessageEvent::Done { reason: get_done_reason(output.stop_reason), message: output.clone() });
+                    stream.end(None);
+                    return Ok(());
+                }
+                Err(error) => error,
+            };
+            let websocket_started = on_start.started.load(Ordering::SeqCst);
+            let aborted = signal.as_ref().is_some_and(AbortSignal::aborted);
+            let connection_limit_before_start = !websocket_started && is_web_socket_connection_limit_reached_error(&error);
+            let previous_response_not_found = is_previous_response_not_found_error(&error);
+            if !aborted && previous_response_not_found && !retried_missing_web_socket_continuation {
+                retried_missing_web_socket_continuation = true;
+                continue;
             }
-            Err(error) if transport == Transport::Websocket => return Err(error),
-            Err(error) => {
-                append_assistant_message_diagnostic(
-                    &mut output.diagnostics,
-                    create_assistant_message_diagnostic("provider_transport_failure", &Thrown::error("Error", error.message()), None),
-                );
-                record_web_socket_failure(cache_session_id.as_deref(), &Thrown::error("Error", error.message()));
-                record_web_socket_sse_fallback(cache_session_id.as_deref());
+            if !aborted && connection_limit_before_start && !retried_web_socket_connection_limit {
+                retried_web_socket_connection_limit = true;
+                continue;
             }
+            if aborted || (is_codex_non_transport_error(&error) && !connection_limit_before_start) {
+                return Err(error);
+            }
+            let transport_name = match transport {
+                Transport::Sse => "sse",
+                Transport::Websocket => "websocket",
+                Transport::WebsocketCached => "websocket-cached",
+                Transport::Auto => "auto",
+            };
+            let mut details = Map::new();
+            details.insert(String::from("configuredTransport"), json!(transport_name));
+            if !websocket_started {
+                details.insert(String::from("fallbackTransport"), json!("sse"));
+            }
+            details.insert(String::from("eventsEmitted"), json!(websocket_started));
+            details.insert(
+                String::from("phase"),
+                json!(if websocket_started { "after_message_stream_start" } else { "before_message_stream_start" }),
+            );
+            details.insert(String::from("requestBytes"), json!(body_json.len()));
+            let thrown = Thrown::error("Error", error.message());
+            append_assistant_message_diagnostic(
+                &mut output.diagnostics,
+                create_assistant_message_diagnostic("provider_transport_failure", &thrown, Some(details)),
+            );
+            record_web_socket_failure(cache_session_id.as_deref(), &thrown);
+            if websocket_started {
+                return Err(error);
+            }
+            record_web_socket_sse_fallback(cache_session_id.as_deref());
+            break;
         }
     }
 
@@ -1082,13 +1509,23 @@ async fn drive(
         let body = sse_body.clone();
         let request = client.post(&url).headers(headers).body(body);
         let send = match http_timeout_ms {
-            Some(timeout_ms) => match tokio::time::timeout(Duration::from_millis(timeout_ms), request.send()).await {
-                Ok(result) => result,
-                Err(_) => {
-                    return Err(CodexError::Other(format!("Codex SSE response headers timed out after {timeout_ms}ms")));
+            Some(timeout_ms) if timeout_ms > 0 => {
+                match tokio::time::timeout(Duration::from_millis(timeout_ms), request.send()).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let message = format!("Codex SSE response headers timed out after {timeout_ms}ms");
+                        last_error = Some(CodexError::Other(message.clone()));
+                        if attempt < max_retries {
+                            if sleep(BASE_DELAY_MS * 2u64.pow(attempt), signal.as_ref()).await.is_err() {
+                                return Err(CodexError::Other(String::from("Request was aborted")));
+                            }
+                            continue;
+                        }
+                        return Err(CodexError::Other(message));
+                    }
                 }
-            },
-            None => request.send().await,
+            }
+            _ => request.send().await,
         };
         let response_value = match send {
             Ok(response) => response,
@@ -1148,6 +1585,15 @@ async fn drive(
                 error_message = append_retry_after_ms_marker(&error_message, hint_ms);
             }
         }
+        // senpi throws this into the attempt's `catch`, which retries any error but a retry-delay
+        // rejection or a usage-limit message while attempts remain.
+        last_error = Some(CodexError::Other(error_message.clone()));
+        if attempt < max_retries && !error_message.contains("usage limit") {
+            if sleep(BASE_DELAY_MS * 2u64.pow(attempt), signal.as_ref()).await.is_err() {
+                return Err(CodexError::Other(String::from("Request was aborted")));
+            }
+            continue;
+        }
         return Err(CodexError::Other(error_message));
     }
 
@@ -1155,7 +1601,9 @@ async fn drive(
         return Err(last_error.unwrap_or_else(|| CodexError::Other(String::from("Failed after retries"))));
     };
 
-    stream.push(AssistantMessageEvent::Start { partial: output.clone() });
+    if !start_emitted.swap(true, Ordering::SeqCst) {
+        stream.push(AssistantMessageEvent::Start { partial: output.clone() });
+    }
     let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
     let adapter = CodexEventStream {
         body: Box::pin(response.bytes_stream()),
@@ -1174,7 +1622,7 @@ async fn drive(
     let processed = process_responses_stream(Box::pin(adapter), output, stream, model, &stream_options).await;
     let adapter_error = adapter_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).error.clone();
     if let Some(error) = adapter_error {
-        return Err(CodexError::Other(error));
+        return Err(error);
     }
     processed.map_err(|error: ResponsesStreamError| CodexError::Other(error.message))?;
 
@@ -1330,8 +1778,10 @@ fn _cached_socket_marker(socket: &dyn CachedWebSocket) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{SinkExt, StreamExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message;
 
     #[test]
     fn websocket_url_converts_http_schemes() {
@@ -1365,35 +1815,86 @@ mod tests {
         assert!(String::from_utf8_lossy(collected[0].as_ref().expect("frame")).contains("response.completed"));
     }
 
-    #[tokio::test]
-    async fn websocket_events_uses_a_local_tungstenite_server() {
+    async fn serve_codex_socket(
+        frames: Vec<String>,
+    ) -> (String, tokio::task::JoinHandle<Value>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind websocket server");
         let address = listener.local_addr().expect("websocket server address");
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept websocket");
             let mut socket = accept_async(stream).await.expect("websocket handshake");
-            let message = socket.next().await.expect("request frame").expect("request frame is valid");
-            assert!(matches!(message, Message::Text(_)));
-            socket.send(Message::Text(json!({"type":"response.completed","response":{"status":"completed"}}).to_string().into())).await.expect("send completion");
+            let request = match socket.next().await.expect("request frame").expect("request frame is valid") {
+                Message::Text(text) => serde_json::from_str::<Value>(text.as_str()).expect("request JSON"),
+                other => panic!("unexpected request frame {other:?}"),
+            };
+            for frame in frames {
+                socket.send(Message::Text(frame.into())).await.expect("send frame");
+            }
+            request
         });
-        let frames = websocket_events(&format!("ws://{address}"), &reqwest::header::HeaderMap::new(), "{}", Some(1_000)).await.expect("websocket response");
-        server.await.expect("server task");
-        assert_eq!(frames.len(), 1);
-        assert!(String::from_utf8_lossy(&frames[0]).contains("response.completed"));
+        (format!("ws://{address}"), server)
+    }
+
+    async fn read_live(socket: Arc<TungsteniteWebSocket>, request: &str) -> (Vec<String>, Option<WebSocketStreamFailure>) {
+        let events = socket.begin_request(request.to_owned()).await.expect("send request");
+        let failed: WebSocketFailureSlot = Arc::default();
+        let body = parse_web_socket(
+            socket,
+            events,
+            None,
+            ParseWebSocketOptions {
+                completion_types: &["response.completed", "response.done", "response.incomplete"],
+                invalid_json_prefix: Some("Invalid Codex WebSocket JSON"),
+                idle_timeout_ms: Some(5_000),
+            },
+            failed.clone(),
+        );
+        let frames: Vec<String> = tokio::time::timeout(Duration::from_secs(10), body.collect::<Vec<_>>())
+            .await
+            .expect("bounded websocket read")
+            .into_iter()
+            .map(|frame| String::from_utf8_lossy(&frame.expect("frame")).into_owned())
+            .collect();
+        let failure = failed.lock().expect("failure slot").take();
+        (frames, failure)
     }
 
     #[tokio::test]
-    async fn websocket_events_reports_server_error_frames() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind websocket server");
-        let address = listener.local_addr().expect("websocket server address");
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept websocket");
-            let mut socket = accept_async(stream).await.expect("websocket handshake");
-            let _ = socket.next().await;
-            socket.send(Message::Text(json!({"type":"error","error":{"message":"server failure"}}).to_string().into())).await.expect("send error");
-        });
-        let error = websocket_events(&format!("ws://{address}"), &reqwest::header::HeaderMap::new(), "{}", Some(1_000)).await.expect_err("error frame");
+    async fn live_websocket_stream_yields_each_frame_until_completion() {
+        let (url, server) = serve_codex_socket(vec![
+            json!({"type":"response.output_text.delta","delta":"hi"}).to_string(),
+            json!({"type":"response.completed","response":{"status":"completed"}}).to_string(),
+        ])
+        .await;
+        let socket = connect_web_socket(&url, &BTreeMap::new(), None, Some(1_000)).await.expect("connect");
+        let (frames, failure) = read_live(socket, "{\"type\":\"response.create\"}").await;
+        assert_eq!(server.await.expect("server task")["type"], "response.create");
+        assert_eq!(failure, None);
+        assert_eq!(frames.len(), 2);
+        assert!(frames[0].contains("response.output_text.delta"));
+        assert!(frames[1].contains("response.completed"));
+    }
+
+    #[tokio::test]
+    async fn live_websocket_stream_reports_close_before_completion() {
+        let (url, server) = serve_codex_socket(vec![
+            json!({"type":"response.output_text.delta","delta":"hi"}).to_string(),
+        ])
+        .await;
+        let socket = connect_web_socket(&url, &BTreeMap::new(), None, Some(1_000)).await.expect("connect");
+        let (frames, failure) = read_live(socket, "{}").await;
         server.await.expect("server task");
-        assert!(error.message().contains("server failure"));
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(failure, Some(WebSocketStreamFailure::Transport(_))), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn codex_error_frames_carry_the_backend_code() {
+        let state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
+        let frame = format!("data: {}", json!({"type":"error","error":{"code":"previous_response_not_found","message":"gone"}}));
+        assert!(map_codex_frame(&frame, &state).is_err());
+        let error = state.lock().expect("state").error.clone().expect("recorded error");
+        assert!(is_previous_response_not_found_error(&error));
+        assert!(is_codex_non_transport_error(&error));
     }
 }

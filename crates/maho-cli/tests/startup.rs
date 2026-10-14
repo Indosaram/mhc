@@ -134,4 +134,18 @@ fn startup_theme_registry_loads_custom_resources_and_reports_fallbacks() {
     let packaged = resolve_startup_theme_with_registered(Some("packaged"), None, directory.path(), registered).expect("resolution");
     assert_eq!(packaged.theme.name, "packaged");
     assert!(packaged.diagnostics.is_empty());
+
+    // senpi `loadThemes` + `dedupeThemes`: a duplicate name is a collision, a missing path a warning.
+    let duplicate_path = resource_directory.path().join("duplicate.json");
+    std::fs::write(&duplicate_path, omarchy_style_theme("packaged")).expect("duplicate theme");
+    let missing_path = resource_directory.path().join("missing.json");
+    let (registered, diagnostics) = load_theme_resources(
+        [resource_directory.path().join("packaged.json"), duplicate_path.clone(), missing_path.clone()], ColorMode::Truecolor);
+    assert_eq!(registered.len(), 1);
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].message, "theme path does not exist");
+    assert_eq!(diagnostics[0].path.as_deref(), Some(missing_path.to_string_lossy().as_ref()));
+    let collision = diagnostics[1].collision.as_ref().expect("theme collision");
+    assert_eq!(collision.name, "packaged");
+    assert_eq!(collision.loser_path, duplicate_path.to_string_lossy());
 }

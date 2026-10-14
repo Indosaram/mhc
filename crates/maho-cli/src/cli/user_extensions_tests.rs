@@ -1,6 +1,6 @@
 use maho_core::{package_manager::{PathMetadata, ResolvedPaths, ResolvedResource}, SourceOrigin, SourceScope};
 
-use super::{discover, UserExtensionErrorKind};
+use super::{discover, split_builtin_specifiers, UserExtensionErrorKind};
 
 fn resource(path: &str, enabled: bool) -> ResolvedResource {
     ResolvedResource {
@@ -76,4 +76,52 @@ fn cli_native_paths_keep_cli_source_and_temporary_trust_scope() {
     assert_eq!(result.factories.len(), 1);
     assert_eq!(result.factories[0].source_info.source, "cli");
     assert_eq!(result.factories[0].source_info.scope, maho_ext_api::SourceScope::Temporary);
+}
+
+#[test]
+fn missing_local_cli_extension_path_is_reported_and_remote_sources_are_not() {
+    let dir = tempfile::tempdir().expect("cli extension directory");
+    std::fs::write(dir.path().join("present.rs"), "").expect("present extension file");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let errors = super::missing_extension_path_errors(&cwd, &["./typo".into(), "present.rs".into(), "npm:pkg".into()]);
+
+    let resolved = dir.path().join("typo").to_string_lossy().into_owned();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].kind, UserExtensionErrorKind::MissingPath);
+    assert_eq!(errors[0].path, resolved);
+    assert_eq!(errors[0].message, format!("Extension path does not exist: {resolved}"));
+}
+
+#[test]
+fn builtin_cli_specifiers_resolve_to_linked_factories_and_keep_other_sources() {
+    let (sources, builtins) = split_builtin_specifiers(&["builtin:task-member".to_owned(), "/opt/ext/pi-ast-grep.rs".to_owned(), "builtin:missing".to_owned()]);
+
+    assert_eq!(sources, vec!["/opt/ext/pi-ast-grep.rs".to_owned()]);
+    assert_eq!(builtins.factories.len(), 1);
+    assert_eq!(builtins.factories[0].path, "<builtin:task-member>");
+    assert_eq!(builtins.factories[0].source_info.source, "cli");
+    assert_eq!(builtins.errors.len(), 1);
+    assert_eq!(builtins.errors[0].kind, UserExtensionErrorKind::UnknownNativeExtension);
+    assert_eq!(builtins.errors[0].path, "builtin:missing");
+}
+
+#[test]
+fn package_entries_map_to_their_port_beside_the_builtin_and_generated_shims_are_provided() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let package = root.path().join("git/pi-ast-grep");
+    std::fs::create_dir_all(package.join("src")).expect("package dir");
+    std::fs::write(package.join("package.json"), r#"{"name":"pi-ast-grep"}"#).expect("manifest");
+    std::fs::write(package.join("src/index.ts"), "").expect("entry");
+    let rules = root.path().join("git/pi-rules");
+    std::fs::create_dir_all(rules.join("src")).expect("rules dir");
+    std::fs::write(rules.join("package.json"), r#"{"name":"@code-yeongyu/pi-rules"}"#).expect("rules manifest");
+    std::fs::write(rules.join("src/index.ts"), "").expect("rules entry");
+    let shim = root.path().join("diff.js");
+    std::fs::write(&shim, maho_core::generated_shim_banner::generated_shim_banner()).expect("shim");
+    let paths = ResolvedPaths { extensions: [package.join("src/index.ts"), rules.join("src/index.ts"), shim]
+        .iter().map(|path| resource(&path.to_string_lossy(), true)).collect(), ..Default::default() };
+    let result = discover(&paths);
+
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.factories.iter().map(|factory| factory.path.as_str()).collect::<Vec<_>>(), ["<user:pi-ast-grep>", "<user:pi-rules>"]);
 }

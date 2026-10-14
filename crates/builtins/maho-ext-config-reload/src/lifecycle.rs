@@ -132,10 +132,13 @@ impl Extension for ConfigReload {
         }
         let shared = Arc::clone(&state);
         let events = api.events.clone();
-        api.on(EventKind::ProjectTrust, Arc::new(move |_, ctx| {
+        api.on(EventKind::ProjectTrust, Arc::new(move |_, _| {
             let state = Arc::clone(&shared); let events = events.clone();
             Box::pin(async move {
-                start(state, ctx.clone(), events, false).await?;
+                // senpi config-reload/index.ts:474: only an already-started session rebuilds its
+                // watchers; the pre-trust bootstrap runtime has no current context.
+                let current = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.context.clone();
+                if let Some(current) = current { start(state, current, events, false).await?; }
                 Ok(EventResult::ProjectTrust(maho_ext_api::ProjectTrustEventResult { trusted: maho_ext_api::TrustDecision::Undecided, remember: None }))
             })
         }));

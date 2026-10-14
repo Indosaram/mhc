@@ -21,7 +21,7 @@ pub fn eval_emphasis_style(model_id: Option<&str>) -> EvalEmphasisStyle {
     EvalEmphasisStyle::Default
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct EvalPromptOptions {
     pub spawns: bool,
     pub monitor: bool,

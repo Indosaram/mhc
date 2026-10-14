@@ -14,6 +14,13 @@ path = "src/lib.rs"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }
+
 # Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
 # The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).
 [lints.rust]

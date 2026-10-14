@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 
 use maho_omo_bundled_skills::HostCommands;
 use maho_tui::autocomplete::{
-    ApplyCompletionResult, AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, MentionRange,
+    ApplyCompletionResult, AutocompleteItem, AutocompleteProvider, AutocompleteSignal, AutocompleteSuggestions,
+    MentionRange, SuggestionRequest,
 };
 
 use crate::bare_skill_command::{
@@ -63,6 +64,22 @@ impl AutocompleteProvider for BareSkillCommandsProvider {
         }
         let prefix = base.as_ref().map(|page| page.prefix.clone()).unwrap_or_else(|| format!("/{typed}"));
         Some(AutocompleteSuggestions { prefix, items: merge_before_skill_entries(&items, &aliases) })
+    }
+
+    /// Only a leading `/command` token is merged with aliases (synchronously); every other request,
+    /// including the inner provider's asynchronous `@` file search, is the inner provider's own.
+    fn request_suggestions(
+        &mut self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+        force: bool,
+        signal: &AutocompleteSignal,
+    ) -> SuggestionRequest {
+        if force || cursor_line != 0 || leading_command_token(lines.first().map(String::as_str).unwrap_or(""), cursor_col).is_none() {
+            return self.inner.request_suggestions(lines, cursor_line, cursor_col, force, signal);
+        }
+        SuggestionRequest::Ready(self.get_suggestions(lines, cursor_line, cursor_col, force))
     }
 
     fn apply_completion(

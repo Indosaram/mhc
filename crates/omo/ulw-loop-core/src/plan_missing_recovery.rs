@@ -6,11 +6,10 @@ use crate::surface::UlwLoopToolkitSurface;
 
 pub const ULW_LOOP_CREATE_GOALS_COMMAND: &str = "mhc ulw-loop create-goals --brief \"<brief>\" --json";
 
-pub fn create_goals_action(surface: &UlwLoopToolkitSurface) -> String {
-    match surface {
-        UlwLoopToolkitSurface::OmoSenpi => "agentToolkit.createGoals({ brief: \"<brief>\" })".to_string(),
-        UlwLoopToolkitSurface::LazyCodex => ULW_LOOP_CREATE_GOALS_COMMAND.to_string(),
-    }
+/// Native divergence: upstream's omo-senpi surface names the JS `agentToolkit` SDK, which the Rust
+/// product does not ship; both surfaces point at the native `mhc ulw-loop` CLI instead.
+pub fn create_goals_action(_surface: &UlwLoopToolkitSurface) -> String {
+    ULW_LOOP_CREATE_GOALS_COMMAND.to_string()
 }
 
 pub struct PlanMissingRecovery {
@@ -27,7 +26,7 @@ pub fn plan_missing_recovery(
         let joined = existing_session_ids.join(", ");
         if surface == UlwLoopToolkitSurface::OmoSenpi {
             lines.push(format!(
-                "Existing ulw-loop session ids under .omo/ulw-loop/: {joined}. The SDK is bound to the current session; resume the owning session to target its plan."
+                "Existing ulw-loop session ids under .omo/ulw-loop/: {joined}. `mhc ulw-loop` run from this session's bash is bound to the current session (PI_SESSION_ID); resume the owning session to target its plan."
             ));
         } else {
             lines.push(format!(

@@ -98,7 +98,22 @@ pub fn process_alive(pid: u32) -> bool {
     io::Error::last_os_error().raw_os_error() == Some(1)
 }
 
-#[cfg(not(unix))]
+/// libuv `uv_kill(pid, 0)` on Windows: a process we may not open (access denied) is EPERM,
+/// which TS `isProcessAlive` counts as alive; an exited process or unknown pid is ESRCH.
+#[cfg(windows)]
+pub fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, STILL_ACTIVE};
+    if pid == 0 {
+        return false;
+    }
+    let Some(handle) = WindowsProcess::open(pid) else {
+        return io::Error::last_os_error().raw_os_error()
+            == i32::try_from(ERROR_ACCESS_DENIED).ok();
+    };
+    handle.exit_code() == u32::try_from(STILL_ACTIVE).ok()
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn process_alive(pid: u32) -> bool {
     pid != 0
 }
@@ -116,9 +131,76 @@ pub fn send_signal(pid: u32, signal: i32) -> bool {
     unsafe { libc::kill(pid, signal) == 0 }
 }
 
-#[cfg(not(unix))]
+/// libuv `uv_kill` on Windows: signal 0 probes, SIGINT/SIGQUIT/SIGKILL/SIGTERM terminate the
+/// process with exit code 1, any other signal is unsupported.
+#[cfg(windows)]
+pub fn send_signal(pid: u32, signal: i32) -> bool {
+    const SIGINT: i32 = 2;
+    const SIGQUIT: i32 = 3;
+    const SIGKILL: i32 = 9;
+    const SIGTERM: i32 = 15;
+    if pid == 0 {
+        return false;
+    }
+    match signal {
+        0 => process_alive(pid),
+        SIGINT | SIGQUIT | SIGKILL | SIGTERM => {
+            WindowsProcess::open(pid).is_some_and(|process| process.terminate())
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn send_signal(_pid: u32, _signal: i32) -> bool {
     false
+}
+
+/// Owned process handle opened with libuv's `uv_kill` access rights; closed on drop.
+#[cfg(windows)]
+struct WindowsProcess(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl WindowsProcess {
+    fn open(pid: u32) -> Option<Self> {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        };
+        // SAFETY: `OpenProcess` only reads its integer arguments and returns a new handle or null.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        (!handle.is_null()).then_some(Self(handle))
+    }
+
+    fn exit_code(&self) -> Option<u32> {
+        use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+        let mut code = 0_u32;
+        // SAFETY: `self.0` is a live process handle owned by this value and `code` is a valid
+        // out-pointer for the duration of the call.
+        let ok = unsafe { GetExitCodeProcess(self.0, &mut code) };
+        (ok != 0).then_some(code)
+    }
+
+    fn terminate(&self) -> bool {
+        use windows_sys::Win32::System::Threading::TerminateProcess;
+        // SAFETY: `self.0` is a live process handle opened with PROCESS_TERMINATE.
+        unsafe { TerminateProcess(self.0, 1) != 0 }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsProcess {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` was returned non-null by `OpenProcess` and is closed exactly once.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
 }
 
 pub fn random_bytes(len: usize) -> io::Result<Vec<u8>> {
@@ -133,7 +215,13 @@ pub fn random_bytes(len: usize) -> io::Result<Vec<u8>> {
         file.read_exact(&mut buffer)?;
         Ok(buffer)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let mut buffer = vec![0_u8; len];
+        getrandom::fill(&mut buffer).map_err(io::Error::other)?;
+        Ok(buffer)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

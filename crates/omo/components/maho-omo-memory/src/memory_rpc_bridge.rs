@@ -11,7 +11,9 @@ pub trait MemoryRpcEmitter{fn emit(&mut self,name:&str,data:&serde_json::Value);
 pub type MemoryRpcDepsResolver=std::sync::Arc<dyn Fn()->Box<dyn MemoryRpcBridgeDeps+Send>+Send+Sync>;
 pub fn register_memory_rpc_bridge(api:&mut maho_ext_api::ExtensionApi,bridge:std::sync::Arc<std::sync::Mutex<MemoryRpcBridge>>,deps:MemoryRpcDepsResolver,now:std::sync::Arc<dyn Fn()->i64+Send+Sync>)->Result<(),maho_ext_api::ExtensionFailure>{
     api.rpc_handle(MEMORY_STATUS_RPC_METHOD,std::sync::Arc::new(move |_|{
-        let result=bridge.lock().unwrap_or_else(std::sync::PoisonError::into_inner).status(deps().as_ref(),now());
+        // Resolve deps before taking the bridge lock: sync paths lock runs then bridge.
+        let deps=deps();let now=now();
+        let result=bridge.lock().unwrap_or_else(std::sync::PoisonError::into_inner).status(deps.as_ref(),now);
         Box::pin(async move{result.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))})
     }))
 }

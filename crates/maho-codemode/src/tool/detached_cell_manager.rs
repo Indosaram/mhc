@@ -90,14 +90,33 @@ impl EvalDetachedCellManager {
     }
 
     pub fn complete(&mut self, cell: &ManagedCellHandle, result: AgentToolResult) -> bool {
-        let state = if result.details["cells"][0]["status"] == "cancelled" { EvalDetachedCellState::Cancelled }
+        // A kill deadline (hard limit / run budget) cancels the cell, as upstream `#expireDeadline` settles it.
+        let state = if result.details["cells"][0]["status"] == "cancelled" || Self::deadline_expired(cell) { EvalDetachedCellState::Cancelled }
             else if result.details["isError"] == true { EvalDetachedCellState::Failed } else { EvalDetachedCellState::Completed };
         self.settle(cell, state, result)
     }
 
     pub fn fail(&mut self, cell: &ManagedCellHandle, error: &str) -> bool {
-        let result = detached_error_result(&cell.lock().expect("managed cell poisoned").source, error, None);
+        self.fail_with_code(cell, error, None)
+    }
+
+    /// Upstream `fail(cell, error)` forwards `error.code` for an `EvalKernelResetRefusedError`
+    /// (`detached-cell-snapshot.ts` detachedErrorResult); Rust callers pass that code explicitly.
+    pub fn fail_with_code(&mut self, cell: &ManagedCellHandle, error: &str, code: Option<&str>) -> bool {
+        let result = detached_error_result(&cell.lock().expect("managed cell poisoned").source, error, code);
+        if Self::deadline_expired(cell) {
+            // Expired before the kernel ran it: upstream cancels the queued cell with its state retained.
+            let mut managed = cell.lock().expect("managed cell poisoned");
+            if managed.source.state == EvalDetachedCellState::Queued { managed.source.state_retained.get_or_insert(true); }
+            drop(managed);
+            return self.settle(cell, EvalDetachedCellState::Cancelled, result);
+        }
         self.settle(cell, EvalDetachedCellState::Failed, result)
+    }
+
+    fn deadline_expired(cell: &ManagedCellHandle) -> bool {
+        let cell = cell.lock().expect("managed cell poisoned");
+        cell.source.hard_limited || cell.source.run_budget_exhausted
     }
 
     fn settle(&mut self, cell: &ManagedCellHandle, state: EvalDetachedCellState, result: AgentToolResult) -> bool {

@@ -4,7 +4,7 @@ use crate::kernels::shared::{subprocess_contract::KernelRunInput, subprocess_pro
 use serde_json::{Value, json};
 use std::{path::{Path, PathBuf}, sync::{Arc, Mutex}, time::Duration};
 use tokio::sync::{mpsc, oneshot};
-use super::{local_module_loader::{LocalModuleLoader, LocalModuleLoaderOptions, PREPARED_CELL_PREFIX}, run_queue::{JavaScriptRunQueue, stopped_result}, worker_slot::WorkerSlot, worker_startup::WorkerStartupOptions, interrupt_bounds::{INTERRUPT_ACK_MS, JS_INTERRUPT_GRACE_MS}};
+use super::{local_module_loader::{LocalModuleLoader, LocalModuleLoaderOptions, PREPARED_CELL_PREFIX}, run_queue::{JavaScriptRunQueue, stopped_result}, worker_slot::WorkerSlot, worker_startup::WorkerStartupOptions, interrupt_bounds::{INTERRUPT_ACK_MS, JS_INTERRUPT_GRACE_MS, WORKER_TERMINATE_DEADLINE_MS, WorkerRetirement, abandoned_worker_note}};
 
 type Snapshot = (Option<String>, Vec<String>);
 pub type KernelToolNames = Arc<dyn Fn()->Result<(Vec<String>,Vec<String>),String>+Send+Sync>;
@@ -13,7 +13,7 @@ enum Command {
     Cancel(String, String, oneshot::Sender<bool>),
     Reply(Value),
     Pull(oneshot::Sender<oneshot::Receiver<Value>>),
-    Interrupt(String, Option<String>, oneshot::Sender<Result<bool, String>>),
+    Interrupt(String, Option<String>, oneshot::Sender<Result<(bool, Option<String>), String>>),
     Reset(oneshot::Sender<Result<(), String>>),
     Close(oneshot::Sender<Result<(), String>>),
 }
@@ -109,7 +109,9 @@ impl JavaScriptKernel {
         self.commands.send(Command::Pull(sender)).map_err(|_|ProcessError::Closed)?;
         receiver.await.map_err(|_|ProcessError::Closed)?.await.map_err(|_|ProcessError::Closed)
     }
-    pub async fn interrupt(&self,reason:&str,id:Option<&str>)->Result<bool,String> {
+    /// Interrupts the active (or a queued) cell; reports whether worker state survived and, when a blocked
+    /// worker had to be abandoned, the note that explains it.
+    pub async fn interrupt(&self,reason:&str,id:Option<&str>)->Result<(bool,Option<String>),String> {
         let (sender,receiver)=oneshot::channel();
         self.commands.send(Command::Interrupt(reason.into(),id.map(str::to_owned),sender)).map_err(|_|"JavaScript kernel is closed".to_string())?;
         receiver.await.map_err(|_|"JavaScript interrupt outcome unavailable".to_string())?
@@ -159,8 +161,8 @@ fn route(message:Value,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueu
     true
 }
 
-async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue,tools:&super::kernel_tools_host::KernelToolHostPump,reason:&str,message:&str,duration:u64)->Result<bool,ProcessError> {
-    let Some(run)=runs.active_mut() else {return Ok(true);};
+async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue,tools:&super::kernel_tools_host::KernelToolHostPump,reason:&str,message:&str,duration:u64)->Result<(bool,Option<String>),ProcessError> {
+    let Some(run)=runs.active_mut() else {return Ok((true,None));};
     let mut result=stopped_result(&run.input.cell_id,message);
     result["durationMs"]=json!(duration);
     run.interrupt_result=Some(result);
@@ -175,15 +177,15 @@ async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mu
             acknowledged=true;
             deadline=tokio::time::Instant::now()+Duration::from_millis(JS_INTERRUPT_GRACE_MS);
         }
-        if route(frame,runs,calls) {calls.clear_tool_calls();return Ok(true);}
+        if route(frame,runs,calls) {calls.clear_tool_calls();return Ok((true,None));}
     }
-    slot.retire().await?;
+    let retirement=slot.retire().await?;
     if let Some(mut run)=runs.release_active() {
         let result=run.interrupt_result.take().expect("interrupt result");
         JavaScriptRunQueue::settle(&mut run,result);
     }
     calls.clear_tool_calls();
-    Ok(false)
+    Ok((false,(retirement==WorkerRetirement::Abandoned).then(||abandoned_worker_note(WORKER_TERMINATE_DEADLINE_MS))))
 }
 
 async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::UnboundedReceiver<Command>,snapshot:Arc<Mutex<Snapshot>>,pid:Arc<Mutex<Option<u32>>>,tools:Arc<super::kernel_tools_host::KernelToolHostPump>,shutdown:maho_ai::utils::abort::AbortSignal) {
@@ -222,7 +224,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                 Some(Command::Reply(message))=>{if let Err(error)=slot.post_message(&message).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}deadline=None;}}
                 Some(Command::Pull(response))=>{let _=response.send(calls.next_tool_call());}
                 Some(Command::Interrupt(reason,id,response))=>{
-                    let result=if id.as_ref().is_some_and(|id|runs.active().is_none_or(|run|&run.input.cell_id!=id)) {if let Some(id)=id {runs.remove(&id,&reason);}Ok(true)} else {
+                    let result=if id.as_ref().is_some_and(|id|runs.active().is_none_or(|run|&run.input.cell_id!=id)) {let cancelled=id.as_ref().is_some_and(|id|runs.remove(id,&reason));Ok((true,(!cancelled).then(||"cell not found".to_owned())))} else {
                         deadline=None;
                         stop_active(&mut slot,&mut runs,&mut calls,&tools,&reason,&format!("JS cell interrupted: {reason}"),0).await.map_err(|error|error.to_string())
                     };

@@ -12,9 +12,14 @@ pub struct ThemeRegistry {
     pub current: Theme,
     pub current_name: String,
     custom_directory: PathBuf,
+    /// senpi `getThemesDir()`: the shipped builtin theme directory reported as builtin paths.
+    builtin_directory: Option<PathBuf>,
     registered: BTreeMap<String, Theme>,
     watched_name: Option<String>,
     reload_at: Option<u64>,
+    /// senpi `themeWatcher`: the OS watch on the custom themes directory and the file names it
+    /// reported, drained by [`ThemeRegistry::poll_theme_watcher`].
+    watcher: Option<(notify::RecommendedWatcher, std::sync::mpsc::Receiver<Option<PathBuf>>)>,
 }
 impl ThemeRegistry {
     pub fn new(custom_directory: PathBuf, name: &str, mode: ColorMode) -> Result<Self, ThemeError> {
@@ -23,9 +28,11 @@ impl ThemeRegistry {
             current: theme,
             current_name: "dark".into(),
             custom_directory,
+            builtin_directory: None,
             registered: BTreeMap::new(),
             watched_name: None,
             reload_at: None,
+            watcher: None,
         };
         registry.init_theme(name, false)?;
         Ok(registry)
@@ -43,6 +50,9 @@ impl ThemeRegistry {
         }
         Ok(())
     }
+    pub fn set_builtin_directory(&mut self, directory: Option<PathBuf>) {
+        self.builtin_directory = directory;
+    }
     pub fn load_theme(&self, name: &str) -> Result<Theme, ThemeError> {
         if let Some(theme) = self.registered.get(name) {
             return Ok(theme.clone());
@@ -50,17 +60,25 @@ impl ThemeRegistry {
         if matches!(name, "dark" | "light" | "grok-day" | "grok-night") {
             Theme::builtin(name, self.current.get_color_mode())
         } else {
-            Theme::load_from_path(
-                &self.custom_directory.join(format!("{name}.json")),
-                self.current.get_color_mode(),
-            )
+            let path = self.custom_directory.join(format!("{name}.json"));
+            // senpi `loadThemeJson`: a missing custom file is `Theme not found: <name>`.
+            if !path.exists() {
+                return Err(ThemeError::Schema(format!("Theme not found: {name}")));
+            }
+            Theme::load_from_path(&path, self.current.get_color_mode())
         }
     }
     pub fn get_available_themes_with_paths(&self) -> Vec<ThemeInfo> {
         let mut themes: BTreeMap<String, Option<PathBuf>> =
             ["dark", "light", "grok-day", "grok-night"]
                 .into_iter()
-                .map(|n| (n.into(), None))
+                .map(|n| {
+                    let path = self
+                        .builtin_directory
+                        .as_ref()
+                        .map(|directory| directory.join(format!("{n}.json")));
+                    (n.into(), path)
+                })
                 .collect();
         if let Ok(entries) = std::fs::read_dir(&self.custom_directory) {
             for entry in entries.flatten() {
@@ -77,10 +95,18 @@ impl ThemeRegistry {
                 .entry(name.clone())
                 .or_insert(theme.source_path.clone());
         }
-        themes
+        let mut themes: Vec<ThemeInfo> = themes
             .into_iter()
             .map(|(name, path)| ThemeInfo { name, path })
-            .collect()
+            .collect();
+        // senpi `a.name.localeCompare(b.name)`: case-insensitive, lowercase first on ties.
+        themes.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| b.name.cmp(&a.name))
+        });
+        themes
     }
     pub fn init_theme(&mut self, name: &str, watch: bool) -> Result<(), ThemeError> {
         match self.set_theme(name, watch) {
@@ -125,11 +151,56 @@ impl ThemeRegistry {
             .exists()
         {
             self.watched_name = Some(self.current_name.clone());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let handler = move |event: notify::Result<notify::Event>| {
+                let Ok(event) = event else { return };
+                if !matches!(
+                    event.kind,
+                    notify::EventKind::Create(_)
+                        | notify::EventKind::Modify(_)
+                        | notify::EventKind::Remove(_)
+                ) {
+                    return;
+                }
+                if event.paths.is_empty() {
+                    let _ = sender.send(None);
+                }
+                for path in event.paths {
+                    let _ = sender.send(path.file_name().map(PathBuf::from));
+                }
+            };
+            // A directory that cannot be watched leaves hot reload off, as senpi's
+            // `watchWithErrorHandler` does.
+            if let Ok(mut watcher) = notify::recommended_watcher(handler)
+                && notify::Watcher::watch(
+                    &mut watcher,
+                    &self.custom_directory,
+                    notify::RecursiveMode::NonRecursive,
+                )
+                .is_ok()
+            {
+                self.watcher = Some((watcher, receiver));
+            }
         }
     }
     pub fn stop_theme_watcher(&mut self) {
         self.watched_name = None;
         self.reload_at = None;
+        self.watcher = None;
+    }
+    /// Feeds the file names the OS watcher reported into [`ThemeRegistry::on_file_change`], then
+    /// runs the debounced reload; `true` when the current theme was reloaded (senpi's
+    /// `onThemeChangeCallback`).
+    pub fn poll_theme_watcher(&mut self, now: u64) -> bool {
+        let changes: Vec<Option<PathBuf>> = self
+            .watcher
+            .as_ref()
+            .map(|(_, receiver)| receiver.try_iter().collect())
+            .unwrap_or_default();
+        for change in changes {
+            self.on_file_change(change.as_deref(), now);
+        }
+        self.reload_due(now)
     }
     pub fn on_file_change(&mut self, filename: Option<&Path>, now: u64) {
         let Some(name) = self.watched_name.as_deref() else {

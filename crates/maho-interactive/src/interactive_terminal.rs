@@ -63,15 +63,18 @@ impl InteractiveTerminal {
         self.mode.borrow_mut().drain_events();
         self.mode.borrow_mut().tick_now();
         if self.resized.replace(false) { self.renderer.borrow_mut().base_mut().invalidate(); }
+        let now = self.mode.borrow().clock_ms();
+        self.renderer.borrow_mut().poll_timers(now);
         let (cursor, shrink, progress, title) = {
             let mode = self.mode.borrow();
-            let (cursor, shrink, progress) = mode.terminal_settings();
-            (cursor, shrink, progress && !mode.agent_idle, mode.terminal_title.clone())
+            let (cursor, shrink, _) = mode.terminal_settings();
+            (cursor, shrink, mode.terminal_progress_active(), mode.terminal_window_title())
         };
         self.renderer.borrow_mut().base_mut().set_show_hardware_cursor(cursor);
         self.renderer.borrow_mut().base_mut().set_clear_on_shrink(shrink);
         terminal.set_progress(progress);
-        if let Some(title) = title { terminal.set_title(&title); }
+        if self.mode.borrow_mut().take_pending_bell() { terminal.write("\x07"); }
+        terminal.set_title(&title);
         self.renderer.borrow_mut().do_render(terminal);
     }
 

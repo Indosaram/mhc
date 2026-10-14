@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, MentionRange};
+use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSignal, MentionRange, SuggestionRequest};
 use crate::components::editor_line_render::{render_editor_line, EditorLineCursor, EditorLineRenderInput};
 use crate::components::select_list::{
     SelectItem, SelectList, SelectListLayoutOptions, SelectListTheme,
@@ -365,6 +365,31 @@ pub struct EditorOptions {
 const SLASH_COMMAND_MIN_PRIMARY_COLUMN_WIDTH: usize = 12;
 const SLASH_COMMAND_MAX_PRIMARY_COLUMN_WIDTH: usize = 32;
 const DEFAULT_AUTOCOMPLETE_TRIGGER_CHARACTERS: [&str; 3] = ["@", "#", "$"];
+const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS: u64 = 20;
+
+/// senpi's `{ force, explicitTab }` request options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutocompleteRequestOptions {
+    force: bool,
+    explicit_tab: bool,
+}
+
+/// One started request: senpi's `requestId`, `AbortController` and the snapshot
+/// `isAutocompleteRequestCurrent` compares against.
+struct AutocompleteRequest {
+    request_id: u64,
+    signal: AutocompleteSignal,
+    snapshot_text: String,
+    snapshot_line: usize,
+    snapshot_col: usize,
+    options: AutocompleteRequestOptions,
+}
+
+/// A request whose provider answer arrives later (senpi's awaited `getSuggestions`).
+struct InFlightAutocomplete {
+    request: AutocompleteRequest,
+    receiver: std::sync::mpsc::Receiver<Option<crate::autocomplete::AutocompleteSuggestions>>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutocompleteState {
@@ -475,6 +500,12 @@ pub struct Editor {
     autocomplete_prefix: String,
     autocomplete_max_visible: usize,
     pending_autocomplete_select: Rc<RefCell<Option<SelectItem>>>,
+    /// senpi `autocompleteDebounceTimer`: the deadline a debounced request starts at, polled by
+    /// [`Editor::poll_autocomplete`] from the host loop.
+    autocomplete_debounce: Option<(std::time::Instant, AutocompleteRequestOptions)>,
+    /// senpi `autocompleteAbort` + the awaited request.
+    autocomplete_in_flight: Option<InFlightAutocomplete>,
+    autocomplete_request_id: u64,
     paste_markers: PasteMarkerRegistry,
     image_markers: ImageMarkerRegistry,
     paste_buffer: String,
@@ -532,6 +563,9 @@ impl Editor {
             autocomplete_prefix: String::new(),
             autocomplete_max_visible,
             pending_autocomplete_select: Rc::new(RefCell::new(None)),
+            autocomplete_debounce: None,
+            autocomplete_in_flight: None,
+            autocomplete_request_id: 0,
             paste_markers: PasteMarkerRegistry::new(),
             image_markers: ImageMarkerRegistry::new(),
             paste_buffer: String::new(),
@@ -2719,7 +2753,102 @@ impl Editor {
 
         self.cancel_autocomplete_request();
 
-        self.run_autocomplete_request(force, explicit_tab);
+        let options = AutocompleteRequestOptions { force, explicit_tab };
+        let debounce_ms = self.get_autocomplete_debounce_ms(options);
+        if debounce_ms > 0 {
+            self.autocomplete_debounce = Some((
+                std::time::Instant::now() + std::time::Duration::from_millis(debounce_ms),
+                options,
+            ));
+            return;
+        }
+
+        self.start_autocomplete_request(options);
+    }
+
+    fn start_autocomplete_request(&mut self, options: AutocompleteRequestOptions) {
+        let Some(provider) = self.autocomplete_provider.clone() else {
+            return;
+        };
+
+        self.autocomplete_request_id += 1;
+        let request = AutocompleteRequest {
+            request_id: self.autocomplete_request_id,
+            signal: AutocompleteSignal::new(),
+            snapshot_text: self.get_text(),
+            snapshot_line: self.state.cursor_line,
+            snapshot_col: self.state.cursor_col,
+            options,
+        };
+
+        let answer = provider.borrow_mut().request_suggestions(
+            &self.state.lines,
+            self.state.cursor_line,
+            self.state.cursor_col,
+            options.force,
+            &request.signal,
+        );
+        match answer {
+            SuggestionRequest::Ready(suggestions) => self.run_autocomplete_request(&request, suggestions),
+            SuggestionRequest::Pending(receiver) => {
+                self.autocomplete_in_flight = Some(InFlightAutocomplete { request, receiver });
+            }
+        }
+    }
+
+    /// Drive the parts of senpi's async autocomplete that the event loop owns there: fire an elapsed
+    /// debounce timer and apply a resolved provider request. Hosts call this from their loop.
+    /// Returns whether a debounced or in-flight request is still outstanding.
+    pub fn poll_autocomplete(&mut self) -> bool {
+        self.poll_autocomplete_at(std::time::Instant::now())
+    }
+
+    /// [`Editor::poll_autocomplete`] against an explicit clock reading.
+    pub fn poll_autocomplete_at(&mut self, now: std::time::Instant) -> bool {
+        if let Some((deadline, options)) = self.autocomplete_debounce
+            && now >= deadline
+        {
+            self.autocomplete_debounce = None;
+            self.start_autocomplete_request(options);
+        }
+
+        let resolved = match &self.autocomplete_in_flight {
+            Some(in_flight) => match in_flight.receiver.try_recv() {
+                Ok(suggestions) => Some(suggestions),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                // A worker that ended without answering resolves like senpi's `child.on("error")`.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+            },
+            None => None,
+        };
+        if let Some(suggestions) = resolved
+            && let Some(in_flight) = self.autocomplete_in_flight.take()
+        {
+            self.run_autocomplete_request(&in_flight.request, suggestions);
+        }
+
+        self.autocomplete_debounce.is_some() || self.autocomplete_in_flight.is_some()
+    }
+
+    fn get_autocomplete_debounce_ms(&self, options: AutocompleteRequestOptions) -> u64 {
+        if options.explicit_tab || options.force {
+            return 0;
+        }
+
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .map(String::as_str)
+            .unwrap_or("");
+        let text_before_cursor = current_line
+            .get(..self.state.cursor_col.min(current_line.len()))
+            .unwrap_or("");
+        if self.autocomplete_debounce_pattern.is_match(text_before_cursor) {
+            ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS
+        } else {
+            0
+        }
     }
 
     fn set_autocomplete_trigger_characters(&mut self, trigger_characters: &[String]) {
@@ -2742,23 +2871,17 @@ impl Editor {
         self.autocomplete_debounce_pattern = build_debounce_pattern(&next);
     }
 
-    fn run_autocomplete_request(&mut self, force: bool, explicit_tab: bool) {
+    fn run_autocomplete_request(
+        &mut self,
+        request: &AutocompleteRequest,
+        suggestions: Option<crate::autocomplete::AutocompleteSuggestions>,
+    ) {
         let Some(provider) = self.autocomplete_provider.clone() else {
             return;
         };
+        let AutocompleteRequestOptions { force, explicit_tab } = request.options;
 
-        let snapshot_text = self.get_text();
-        let snapshot_line = self.state.cursor_line;
-        let snapshot_col = self.state.cursor_col;
-
-        let suggestions = provider.borrow_mut().get_suggestions(
-            &self.state.lines,
-            self.state.cursor_line,
-            self.state.cursor_col,
-            force,
-        );
-
-        if !self.is_autocomplete_request_current(&snapshot_text, snapshot_line, snapshot_col) {
+        if !self.is_autocomplete_request_current(request) {
             return;
         }
 
@@ -2801,15 +2924,12 @@ impl Editor {
         self.tui.request_render();
     }
 
-    fn is_autocomplete_request_current(
-        &self,
-        snapshot_text: &str,
-        snapshot_line: usize,
-        snapshot_col: usize,
-    ) -> bool {
-        self.get_text() == snapshot_text
-            && self.state.cursor_line == snapshot_line
-            && self.state.cursor_col == snapshot_col
+    fn is_autocomplete_request_current(&self, request: &AutocompleteRequest) -> bool {
+        !request.signal.is_aborted()
+            && request.request_id == self.autocomplete_request_id
+            && self.get_text() == request.snapshot_text
+            && self.state.cursor_line == request.snapshot_line
+            && self.state.cursor_col == request.snapshot_col
     }
 
     fn apply_autocomplete_suggestions(
@@ -2832,6 +2952,10 @@ impl Editor {
 
     fn cancel_autocomplete_request(&mut self) {
         *self.pending_autocomplete_select.borrow_mut() = None;
+        self.autocomplete_debounce = None;
+        if let Some(in_flight) = self.autocomplete_in_flight.take() {
+            in_flight.request.signal.abort();
+        }
     }
 
     fn clear_autocomplete_ui(&mut self) {

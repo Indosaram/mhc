@@ -36,7 +36,13 @@ pub fn resolve_senpi_comment_checker_binary(
                     })
                 })
         },
-        "linux",
+        if cfg!(windows) {
+            "win32"
+        } else if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            "linux"
+        },
         None,
     )
 }

@@ -488,6 +488,7 @@ pub fn fake_deps(
         exec: overrides.exec.clone(),
         env: Some(BTreeMap::new()),
         people_ask,
+        launcher: None,
         now: Some(now),
         is_process_alive: Some(is_process_alive),
     };

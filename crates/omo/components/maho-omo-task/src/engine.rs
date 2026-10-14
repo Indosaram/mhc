@@ -70,17 +70,49 @@ pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: 
     options.isolation = Some(isolation_runtime);
     options.isolation_settings = isolation_settings;
     options.config = ManagerConfig { max_depth: settings["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1), default_execution_mode: settings["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse).unwrap_or_default(), ..ManagerConfig::default() };
-    let concurrency = &deps.config["background_task"];
     options.config.concurrency = senpi_task::manager::concurrency::TaskConcurrencyConfig {
-        default_concurrency: concurrency["defaultConcurrency"].as_u64().and_then(|value| usize::try_from(value).ok()),
-        provider_concurrency: concurrency["providerConcurrency"].as_object().map(|values| values.iter().filter_map(|(name,value)| value.as_u64().and_then(|value| usize::try_from(value).ok()).map(|value| (name.clone(),value))).collect()),
-        model_concurrency: concurrency["modelConcurrency"].as_object().map(|values| values.iter().filter_map(|(name,value)| value.as_u64().and_then(|value| usize::try_from(value).ok()).map(|value| (name.clone(),value))).collect()),
+        default_concurrency: settings["default_concurrency"].as_u64().and_then(|value| usize::try_from(value).ok()),
+        provider_concurrency: settings["provider_concurrency"].as_object().map(|values| values.iter().filter_map(|(name,value)| value.as_u64().and_then(|value| usize::try_from(value).ok()).map(|value| (name.clone(),value))).collect()),
+        model_concurrency: settings["model_concurrency"].as_object().map(|values| values.iter().filter_map(|(name,value)| value.as_u64().and_then(|value| usize::try_from(value).ok()).map(|value| (name.clone(),value))).collect()),
     };
     options.destruction = Some(Arc::new(TaskLifecycleDestruction((*lifecycle).clone())));
+    options.trusted_respawn_launch = trusted_respawn_launch(&deps.cwd, &settings);
     let admission = lifecycle.clone();
     // Bookkeeping failure must remain a launch failure, never a retryable capacity denial.
     options.fallible_admit = Some(Arc::new(move |session| admit_lifecycle(&admission, session).map_err(|error| senpi_task::host::HostError { message: error.to_string() })));
     let manager = Arc::new(TaskManager::new(options));
     let _ = manager_ref.set(Arc::downgrade(&manager));
     TaskEngine { manager, lifecycle, notifier, runtime, store, config: deps.config, agents }
+}
+
+/// The `--extension` entry a team member process loads the native member extension through
+/// (upstream `resolveMemberExtensionEntryPath()`, the `omo-member.js` bundle).
+pub const MEMBER_EXTENSION_ENTRY: &str = "builtin:task-member";
+
+/// omo `task.team` bounds with the omo-config schema defaults.
+pub fn task_team_bounds(settings: &Value) -> senpi_task::team::runtime_config::TeamTaskBounds {
+    let team = &settings["team"];
+    let bound = |key: &str, default: u64| team[key].as_u64().unwrap_or(default);
+    senpi_task::team::runtime_config::TeamTaskBounds { max_members: bound("max_members", 8), max_parallel_members: bound("max_parallel_members", 4), max_wall_clock_minutes: bound("max_wall_clock_minutes", 120) }
+}
+
+/// `trustedRespawnLaunch: createTeamMemberRespawnLaunchResolver({ stateDir, taskSettings, memberExtension })`.
+fn trusted_respawn_launch(cwd: &std::path::Path, settings: &Value) -> Option<senpi_task::manager::types::TrustedRespawnLaunchResolver> {
+    use senpi_task::{manager::types::{ManagedRunnerError, TrustedRespawnLaunch}, team::{member_respawn::{TeamMemberRespawnLaunchResolverOptions, create_team_member_respawn_launch_resolver}, runtime_types::TeamMemberExtensionConfig}};
+    let resolver = create_team_member_respawn_launch_resolver(TeamMemberRespawnLaunchResolverOptions {
+        state_dir: StateDirConfig { project_dir: cwd.to_path_buf(), task_state_dir: settings["state_dir"].as_str().map(PathBuf::from) },
+        team_bounds: task_team_bounds(settings),
+        member_extension: TeamMemberExtensionConfig {
+            entry_path: MEMBER_EXTENSION_ENTRY.into(),
+            inherited_extensions: Some(senpi_task::runners::rpc::parent_extensions::parse_extension_entries(&std::env::args().collect::<Vec<_>>())),
+        },
+    });
+    let resolver = match resolver {
+        Ok(resolver) => resolver,
+        Err(error) => { maho_ext_api::diagnostic(&format!("task team respawn launch resolver unavailable: {error}")); return None; }
+    };
+    Some(Arc::new(move |record| match resolver.resolve(record.name.as_deref(), &record.task_id) {
+        Ok(launch) => Ok(Some(TrustedRespawnLaunch { extensions: Some(launch.extensions), member_env: launch.member_env })),
+        Err(error) => Err(ManagedRunnerError::TeamRespawnLaunch { code: error.code.as_str().into() }),
+    }))
 }

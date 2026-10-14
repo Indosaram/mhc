@@ -194,6 +194,8 @@ impl Extension for HerdrAgentState {
         }
         let subscription = api.events.on("herdr:blocked", Arc::new(move |data| {
             let mut runtime = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            // herdr-agent-state.ts:208-210: a non-root (non-TUI) session publishes nothing.
+            if !runtime.state.root_session { return; }
             runtime.state.blocked(truthy(data.get("active")), data.get("label").and_then(Value::as_str));
             runtime.publish(&delivery, false);
         }));

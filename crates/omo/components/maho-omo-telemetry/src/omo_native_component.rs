@@ -53,9 +53,9 @@ impl Extension for OmoNativeTelemetryComponent {
             crate::omo_native_session::start_native_session(&options,ctx.session_manager.session_id(),&serde_json::json!({"reason":reason}),&ctx.agent_dir).map(|session|{*client.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=session;})
         } else {Ok(())};Box::pin(async move {if let Err(error)=result {warn(ctx,&format!("telemetry_capture_failed: omo-native-session: {error}"));}Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let client=shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();Box::pin(async move {if let Some(client)=client {client.shutdown().await;}Ok(EventResult::None)})}));
-        crate::omo_native_turns::register_omo_native_turn_telemetry(api,Arc::clone(&hash),Arc::clone(&capture),Arc::new(|ctx|warn(ctx,"telemetry_event_property_rejected: turn_end assistant usage contained missing or invalid values")));
+        crate::omo_native_turns::register_omo_native_turn_telemetry(api,Arc::clone(&hash),Arc::clone(&capture),{let diagnostics=self.options.diagnostics.clone();Arc::new(move |_:&maho_ext_api::ExtensionContext|if let Some(diagnostics)=&diagnostics {diagnostics(&telemetry_core::TelemetryDiagnosticInput {event:telemetry_core::TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,source:"omo-native-turns".into(),error:Some(telemetry_core::TelemetryError::new("turn_end assistant usage contained missing or invalid values")),error_kind:Some(telemetry_core::TelemetryDiagnosticErrorKind::Error)});})});
         crate::omo_native_tools::register_omo_native_tool_telemetry(api,self.skills_root.clone(),hash,capture,Some(Arc::new(|ctx,message,details|warn(ctx,&format!("{message}: {details}")))));
-        crate::omo_native_notice::register_omo_native_notice(api,env,notice_state_dir,Arc::clone(&self.is_config_enabled));
+        crate::omo_native_notice::register_omo_native_notice(api,env,notice_state_dir,Arc::clone(&self.is_config_enabled),self.options.diagnostics.clone());
     }
 }
 #[cfg(test)]

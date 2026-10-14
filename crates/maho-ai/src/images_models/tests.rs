@@ -1,6 +1,9 @@
 use super::*;
-use crate::models::ProviderAuthResult;
-use crate::types::{ContentBlock, ImagesStopReason, ProviderEnv};
+use crate::auth::types::{ApiKeyAuth, Credential, ModelAuth, OAuthCredential};
+use crate::types::{ContentBlock, ImagesStopReason};
+use crate::utils::abort::AbortSignal;
+use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn test_image_model(provider: &str, id: &str) -> ImagesModel {
@@ -32,18 +35,61 @@ impl ProviderImages for Recorder {
     }
 }
 
-fn env_auth(env: &'static [(&'static str, &'static str)], var: Option<&'static str>) -> ResolveImagesAuth {
-    Arc::new(move |overrides: &AuthResolutionOverrides| {
-        let explicit = overrides.api_key.clone();
-        Box::pin(async move {
-            let Some(var) = var else { return Ok(Some(AuthResolution::default())) };
-            let key = explicit.or_else(|| env.iter().find(|(k, _)| *k == var).map(|(_, v)| (*v).to_owned()));
-            Ok(key.map(|key| AuthResolution { auth: ProviderAuthResult { api_key: Some(key), ..Default::default() }, env: None }))
-        })
-    })
+struct FakeAuthContext(HashMap<String, String>);
+
+#[async_trait]
+impl AuthContext for FakeAuthContext {
+    async fn env(&self, name: &str) -> Option<String> {
+        self.0.get(name).cloned()
+    }
+
+    async fn file_exists(&self, _path: &str) -> bool {
+        false
+    }
 }
 
-fn provider(id: &str, models: Vec<ImagesModel>, auth: ResolveImagesAuth, api: Arc<Recorder>) -> Arc<dyn ImagesProvider> {
+fn fake_auth_context(env: &[(&str, &str)]) -> Option<CreateImagesModelsOptions> {
+    let env = env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+    Some(CreateImagesModelsOptions { auth_context: Some(Arc::new(FakeAuthContext(env))), ..Default::default() })
+}
+
+struct TestKey(Option<&'static str>);
+
+#[async_trait]
+impl ApiKeyAuth for TestKey {
+    fn name(&self) -> &str {
+        "Test key"
+    }
+
+    async fn resolve(&self, ctx: &dyn AuthContext, credential: Option<&ApiKeyCredential>, _signal: &AbortSignal) -> anyhow::Result<Option<AuthResult>> {
+        let Some(var) = self.0 else { return Ok(Some(AuthResult::default())) };
+        let key = match credential.and_then(|c| c.key.clone()) {
+            Some(key) => Some(key),
+            None => ctx.env(var).await,
+        };
+        Ok(key.map(|key| AuthResult { auth: ModelAuth { api_key: Some(key), ..Default::default() }, ..Default::default() }))
+    }
+}
+
+fn env_auth(var: Option<&'static str>) -> ProviderAuth {
+    ProviderAuth { api_key: Some(Arc::new(TestKey(var))), oauth: None }
+}
+
+struct FixedAuth;
+
+#[async_trait]
+impl ApiKeyAuth for FixedAuth {
+    fn name(&self) -> &str {
+        "Test key"
+    }
+
+    async fn resolve(&self, _ctx: &dyn AuthContext, _credential: Option<&ApiKeyCredential>, _signal: &AbortSignal) -> anyhow::Result<Option<AuthResult>> {
+        let env: ProviderEnv = [("PROVIDER_ONLY", "provider"), ("SHARED", "provider")].iter().map(|(k, v)| ((*k).into(), (*v).into())).collect();
+        Ok(Some(AuthResult { auth: ModelAuth { api_key: Some("provider-key".into()), ..Default::default() }, env: Some(env), source: None }))
+    }
+}
+
+fn provider(id: &str, models: Vec<ImagesModel>, auth: ProviderAuth, api: Arc<Recorder>) -> Arc<dyn ImagesProvider> {
     create_images_provider(CreateImagesProviderOptions { id: id.into(), name: None, auth, models, refresh_models: None, api })
 }
 
@@ -54,10 +100,10 @@ fn context() -> ImagesContext {
 #[test]
 fn registers_providers_and_reads_models_synchronously() {
     let title = "registers providers and reads models synchronously";
-    let models = create_images_models();
+    let models = create_images_models(None);
     let api = Arc::new(Recorder::default());
-    models.set_provider(provider("p1", vec![test_image_model("p1", "m1"), test_image_model("p1", "m2")], env_auth(&[], None), api.clone()));
-    models.set_provider(provider("p2", vec![test_image_model("p2", "m3")], env_auth(&[], None), api));
+    models.set_provider(provider("p1", vec![test_image_model("p1", "m1"), test_image_model("p1", "m2")], env_auth(None), api.clone()));
+    models.set_provider(provider("p2", vec![test_image_model("p2", "m3")], env_auth(None), api));
     assert_eq!(models.get_providers().iter().map(|p| p.id().to_owned()).collect::<Vec<_>>(), ["p1", "p2"], "{title}");
     assert_eq!(models.get_models(None).iter().map(|m| m.id.clone()).collect::<Vec<_>>(), ["m1", "m2", "m3"], "{title}");
     assert_eq!(models.get_models(Some("p1")).iter().map(|m| m.id.clone()).collect::<Vec<_>>(), ["m1", "m2"], "{title}");
@@ -70,9 +116,9 @@ fn registers_providers_and_reads_models_synchronously() {
 #[tokio::test]
 async fn resolves_auth_through_the_provider_and_merges_it_into_requests_explicit_options_win() {
     let title = "resolves auth through the provider and merges it into requests; explicit options win";
-    let models = create_images_models();
+    let models = create_images_models(fake_auth_context(&[("TEST_KEY", "env-key")]));
     let api = Arc::new(Recorder::default());
-    models.set_provider(provider("p1", vec![test_image_model("p1", "model-a")], env_auth(&[("TEST_KEY", "env-key")], Some("TEST_KEY")), api.clone()));
+    models.set_provider(provider("p1", vec![test_image_model("p1", "model-a")], env_auth(Some("TEST_KEY")), api.clone()));
     let model = models.get_model("p1", "model-a").expect("model");
     let key = |r: Option<AuthResolution>| r.and_then(|r| r.auth.api_key);
     assert_eq!(key(models.get_auth("p1", &AuthResolutionOverrides::default()).await.expect("auth")), Some("env-key".into()), "{title}");
@@ -91,14 +137,9 @@ async fn resolves_auth_through_the_provider_and_merges_it_into_requests_explicit
 #[tokio::test]
 async fn merges_provider_resolved_env_into_image_options() {
     let title = "merges provider-resolved env into image options";
-    let models = create_images_models();
+    let models = create_images_models(None);
     let api = Arc::new(Recorder::default());
-    let auth: ResolveImagesAuth = Arc::new(|_| {
-        Box::pin(async {
-            let env: ProviderEnv = [("PROVIDER_ONLY", "provider"), ("SHARED", "provider")].iter().map(|(k, v)| ((*k).into(), (*v).into())).collect();
-            Ok(Some(AuthResolution { auth: ProviderAuthResult { api_key: Some("provider-key".into()), ..Default::default() }, env: Some(env) }))
-        })
-    });
+    let auth = ProviderAuth { api_key: Some(Arc::new(FixedAuth)), oauth: None };
     models.set_provider(provider("p1", vec![test_image_model("p1", "model-a")], auth, api.clone()));
     let model = models.get_model("p1", "model-a").expect("model");
     let mut options = ImagesOptions::default();
@@ -116,14 +157,14 @@ async fn merges_provider_resolved_env_into_image_options() {
 #[tokio::test]
 async fn returns_an_error_result_for_unknown_providers_and_unconfigured_auth_rejections() {
     let title = "returns an error result for unknown providers and unconfigured auth rejections";
-    let models = create_images_models();
+    let models = create_images_models(fake_auth_context(&[]));
     let ghost = models.generate_images(&test_image_model("ghost", "m"), &context(), None).await;
     assert_eq!(ghost.stop_reason, ImagesStopReason::Error, "{title}");
     assert!(ghost.error_message.as_deref().is_some_and(|m| m.contains("Unknown provider: ghost")), "{title}");
     assert!(ghost.output.is_empty(), "{title}");
 
     let api = Arc::new(Recorder::default());
-    models.set_provider(provider("p1", vec![test_image_model("p1", "model-a")], env_auth(&[], Some("MISSING")), api.clone()));
+    models.set_provider(provider("p1", vec![test_image_model("p1", "model-a")], env_auth(Some("MISSING")), api.clone()));
     let model = models.get_model("p1", "model-a").expect("model");
     assert_eq!(models.get_auth("p1", &AuthResolutionOverrides::default()).await, Ok(None), "{title}");
     models.generate_images(&model, &context(), None).await;
@@ -148,11 +189,11 @@ async fn supports_dynamic_providers_via_refresh_with_in_flight_dedupe() {
             Ok(vec![test_image_model("dyn", "listed")])
         })
     });
-    let models = create_images_models();
+    let models = create_images_models(None);
     models.set_provider(create_images_provider(CreateImagesProviderOptions {
         id: "dyn".into(),
         name: None,
-        auth: env_auth(&[], None),
+        auth: env_auth(None),
         models: Vec::new(),
         refresh_models: Some(refresh),
         api: Arc::new(Recorder::default()),
@@ -174,7 +215,7 @@ async fn supports_dynamic_providers_via_refresh_with_in_flight_dedupe() {
     models.set_provider(create_images_provider(CreateImagesProviderOptions {
         id: "flaky".into(),
         name: None,
-        auth: env_auth(&[], None),
+        auth: env_auth(None),
         models: Vec::new(),
         refresh_models: Some(flaky),
         api: Arc::new(Recorder::default()),
@@ -187,11 +228,32 @@ async fn supports_dynamic_providers_via_refresh_with_in_flight_dedupe() {
     assert_eq!(fetches.load(Ordering::SeqCst), 2, "{title}");
 }
 
-// senpi test/images-models.test.ts's 6th case, "builtinImagesModels registers the openrouter
-// provider with its catalog", drives `builtinImagesModels()` from `providers/all.ts`, which
-// aggregates every provider factory (including `openrouter-images.ts`) into one registry. Both
-// `crates/maho-ai/src/providers/all.rs` and `.../providers/openrouter_images.rs` are still todo-13
-// stubs (`// ported by todo 13`) in this crate, so there is no `builtin_images_models()` to call
-// yet; porting this case now would mean writing todo 13's registry ahead of its lane. Excluded;
-// owned by todo 13 (providers/).
+#[tokio::test]
+async fn builtin_images_models_registers_the_openrouter_provider_with_its_catalog() {
+    let title = "builtinImagesModels registers the openrouter provider with its catalog";
+    let models = crate::providers::all::builtin_images_models(fake_auth_context(&[("OPENROUTER_API_KEY", "or-key")]));
+    assert_eq!(models.get_providers().iter().map(|p| p.id().to_owned()).collect::<Vec<_>>(), ["openrouter", "openai"], "{title}");
+    let list = models.get_models(Some("openrouter"));
+    assert!(!list.is_empty(), "{title}");
+    assert!(list.iter().all(|m| m.api == "openrouter-images"), "{title}");
+    let auth = models.get_auth(&list[0].provider, &AuthResolutionOverrides::default()).await.expect("auth");
+    assert_eq!(auth.and_then(|r| r.auth.api_key), Some("or-key".into()), "{title}");
+}
 
+#[tokio::test]
+async fn stored_openrouter_oauth_credential_resolves_for_images() {
+    let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
+    let expires = crate::utils::diagnostics::now_ms() as f64 + 3_600_000.0;
+    credentials
+        .modify(
+            "openrouter",
+            Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(OAuthCredential::new("oauth-access", "oauth-refresh", expires)))) })),
+            None,
+        )
+        .await
+        .expect("seed credential");
+    let options = CreateImagesModelsOptions { credentials: Some(credentials), auth_context: fake_auth_context(&[("OPENROUTER_API_KEY", "or-key")]).and_then(|o| o.auth_context) };
+    let models = crate::providers::all::builtin_images_models(Some(options));
+    let auth = models.get_auth("openrouter", &AuthResolutionOverrides::default()).await.expect("auth");
+    assert_eq!(auth.and_then(|r| r.auth.api_key), Some("oauth-access".into()));
+}

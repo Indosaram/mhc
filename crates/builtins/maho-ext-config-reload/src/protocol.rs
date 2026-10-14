@@ -25,8 +25,7 @@ pub fn registration_has_restricted_target(registration: &ConfigWatchRegistration
  let agent = resolve(&if agent_dir.is_absolute() { agent_dir.into() } else { cwd.join(agent_dir) });
  let protected: Vec<_> = ["auth.json", "sessions", "logs"].into_iter().map(|name| agent.join(name)).collect();
  registration.targets.iter().any(|target| {
-  let raw = Path::new(target.path.trim());
-  let path = resolve(&if raw.is_absolute() { raw.into() } else { cwd.join(raw) });
+  let path = crate::index::resolve_watch_path(&target.path, cwd);
   let safe = target.kind == ConfigWatchTargetKind::Dir
    && !protected.iter().any(|protected| path.starts_with(protected))
    && target.filter_globs.as_ref().is_some_and(|filters| !filters.is_empty() && filters.iter().all(|filter| {

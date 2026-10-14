@@ -22,7 +22,6 @@ use maho_ai::compat::extension_oauth_types::{
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 
 use crate::config::get_agent_dir;
-use crate::credential_pool::slots::{CredentialSlot, PooledCredential};
 use crate::lockfile_policy::{FILE_STORAGE_LOCK_RETRY_BUDGET_MS, CredentialStoreBusyError, acquire_lock_async, acquire_lock_sync, FILE_STORAGE_SYNC_LOCK_BUDGET_MS};
 use crate::paths::{get_file_content_revision, normalize_path};
 use crate::resolve_config_value::{is_command_config_value, resolve_config_value};
@@ -126,43 +125,30 @@ pub fn repair_poisoned_pool_slots(data: &AuthStorageData) -> (AuthStorageData, b
     }
 }
 
-/// A generated slot that carries the flat sentinel material is dropped: the flat fields already hold
-/// that material, so the slot is redundant and poisonous.
+/// A slot carrying the provider's `<providerId>-managed` sentinel as both access and refresh can
+/// never authenticate; drop it and clear a pin that named it (senpi `repairManagedSentinelSlots`).
+/// The raw JSON object is filtered in place so every other byte of the credential survives.
 fn repair_managed_sentinel_slots(provider_id: &str, credential: &Value) -> Option<Value> {
     let object = credential.as_object()?;
     let accounts = object.get("accounts")?.as_array()?;
-    let flat = PooledCredential {
-        credential_type: object.get("type").and_then(Value::as_str).unwrap_or_default().to_owned(),
-        key: credential_key(credential).map(str::to_owned),
-        access: object.get("access").and_then(Value::as_str).map(str::to_owned),
-        refresh: object.get("refresh").and_then(Value::as_str).map(str::to_owned),
-        expires: object.get("expires").and_then(Value::as_i64),
-        accounts: None,
-        pinned: object.get("pinned").and_then(Value::as_str).map(str::to_owned),
-    };
-    let flat_slots: Vec<CredentialSlot> = flat.list_slots();
-    let sentinel = flat_slots.first().cloned().unwrap_or_default();
-    let mut healed: Vec<Value> = Vec::new();
-    let mut changed = false;
-    for account in accounts {
-        let name = account.get("name").and_then(Value::as_str).unwrap_or_default();
-        let is_generated = name == "default" || name.strip_prefix("login-").map(|index| index.chars().all(|c| c.is_ascii_digit())).unwrap_or(false);
-        let carries_sentinel = account.get("key").and_then(Value::as_str) == sentinel.key.as_deref()
-            && account.get("access").and_then(Value::as_str) == sentinel.access.as_deref()
-            && account.get("refresh").and_then(Value::as_str) == sentinel.refresh.as_deref()
-            && sentinel.key.is_some();
-        if is_generated && carries_sentinel {
-            changed = true;
-            continue;
-        }
-        healed.push(account.clone());
-    }
-    if !changed {
+    let kept: Vec<Value> = accounts
+        .iter()
+        .filter(|account| {
+            !serde_json::from_value::<maho_ai::auth::pool::slots::CredentialSlot>((*account).clone())
+                .is_ok_and(|slot| maho_ai::auth::pool::slots::is_managed_sentinel_slot(provider_id, &slot))
+        })
+        .cloned()
+        .collect();
+    if kept.len() == accounts.len() {
         return None;
     }
-    let _ = provider_id;
     let mut updated = object.clone();
-    updated.insert("accounts".to_owned(), Value::Array(healed));
+    if let Some(pinned) = object.get("pinned").and_then(Value::as_str)
+        && !kept.iter().any(|slot| slot.get("name").and_then(Value::as_str) == Some(pinned))
+    {
+        updated.remove("pinned");
+    }
+    updated.insert("accounts".to_owned(), Value::Array(kept));
     Some(Value::Object(updated))
 }
 
@@ -512,6 +498,11 @@ impl AuthStorage {
         self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
+    /// Take every recorded load/refresh error, leaving none behind (senpi `drainErrors`).
+    pub fn drain_errors(&self) -> Vec<String> {
+        std::mem::take(&mut *self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
     fn parse_storage_content(content: Option<&str>) -> Result<(AuthStorageData, bool, bool), String> {
         let Some(content) = content else { return Ok((AuthStorageData::new(), false, false)) };
         let parsed = parse_auth_json(content)?;
@@ -547,14 +538,14 @@ impl AuthStorage {
         }
     }
 
-    pub fn set_runtime_api_key(&mut self, provider: &str, api_key: &str) {
+    pub fn set_runtime_api_key(&self, provider: &str, api_key: &str) {
         self.runtime_overrides
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(provider.to_owned(), api_key.to_owned());
     }
 
-    pub fn remove_runtime_api_key(&mut self, provider: &str) {
+    pub fn remove_runtime_api_key(&self, provider: &str) {
         self.runtime_overrides
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -568,6 +559,15 @@ impl AuthStorage {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(provider)
+    }
+
+    /// The non-persistent runtime API key for a provider, if one is set.
+    pub fn runtime_api_key(&self, provider: &str) -> Option<String> {
+        self.runtime_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(provider)
+            .cloned()
     }
 
     pub fn get(&self, provider: &str) -> Option<Value> {
@@ -601,12 +601,27 @@ impl AuthStorage {
         maho_ai::env_api_keys::get_env_api_key(provider, None)
     }
 
+    /// senpi `list`: stored credential metadata, with every runtime-override provider reported as
+    /// an api-key entry (replacing any stored entry for that provider in place).
     pub fn list(&self) -> Vec<(String, CredentialKind)> {
-        self.data
+        let mut entries: Vec<(String, CredentialKind)> = self.data
             .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter_map(|(provider_id, credential)| credential_kind(credential).map(|kind| (provider_id.clone(), kind)))
-            .collect()
+            .collect();
+        let mut runtime: Vec<String> = self.runtime_overrides
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect();
+        runtime.sort();
+        for provider_id in runtime {
+            match entries.iter_mut().find(|(id, _)| *id == provider_id) {
+                Some(entry) => entry.1 = CredentialKind::ApiKey,
+                None => entries.push((provider_id, CredentialKind::ApiKey)),
+            }
+        }
+        entries
     }
 
     /// Stores a credential for a provider; a None value deletes the entry.
@@ -660,58 +675,55 @@ impl AuthStorage {
         credential: OAuthCredential,
         signal: Option<AbortSignal>,
     ) -> Result<Option<AccountLoginReceipt>, String> {
+        self.append_login_account(provider_id, Credential::OAuth(credential), signal).await
+    }
+
+    /// senpi `Models.login`'s `credentials.modify(appendLoginSlot)`: appends a completed api-key
+    /// or OAuth login to the provider's credential pool (`login-N` beside existing slots). The
+    /// receipt is returned only after the serialized auth.json write succeeds.
+    pub async fn append_login_account(
+        &self,
+        provider_id: &str,
+        flat: Credential,
+        signal: Option<AbortSignal>,
+    ) -> Result<Option<AccountLoginReceipt>, String> {
         let _mutation = self.account_mutation.lock().await;
         if let Some(signal) = &signal {
             signal.throw_if_aborted().map_err(|reason| reason.message)?;
         }
-        let flat = Credential::OAuth(credential);
-        let mut cached = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut receipt = None;
+        let apply = |current: Option<&str>| -> Result<(AuthStorageData, Option<String>), String> {
+            if let Some(signal) = &signal {
+                signal.throw_if_aborted().map_err(|reason| reason.message)?;
+            }
+            let (mut data, _, _) = Self::parse_storage_content(current)?;
+            let current = data.get(provider_id).cloned()
+                .map(|value| serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value).map_err(|error| error.to_string()))
+                .transpose()?;
+            let pooled = maho_ai::auth::pool::slots::PooledCredential::from(flat.clone());
+            let next = maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
+                receipt = Some(AccountLoginReceipt {
+                    provider_id: provider_id.to_owned(),
+                    name: name.to_owned(),
+                    origin: match origin {
+                        maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
+                        maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
+                    },
+                });
+            })?;
+            // An api-key `ApiKeyCredential` has no room for `accounts`/`pinned`; persist the pooled
+            // object itself, as senpi does.
+            let stored = match next.credential_type {
+                maho_ai::auth::pool::slots::PooledCredentialType::ApiKey => serde_json::to_value(&next),
+                maho_ai::auth::pool::slots::PooledCredentialType::OAuth => serde_json::to_value(next.to_stored_credential()),
+            }.map_err(|error| error.to_string())?;
+            data.insert(provider_id.to_owned(), stored);
+            Ok((data.clone(), Some(serialize_auth_data(&data))))
+        };
+        let mut cached = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let result: Result<AuthStorageData, String> = match &self.storage {
-            AuthStorageBackend::File(backend) => backend.with_lock(|current| {
-                if let Some(signal) = &signal {
-                    signal.throw_if_aborted().map_err(|reason| reason.message)?;
-                }
-                let (mut data, _, _) = Self::parse_storage_content(current)?;
-                let current = data.get(provider_id).cloned()
-                    .map(|value| serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value).map_err(|error| error.to_string()))
-                    .transpose()?;
-                let pooled = maho_ai::auth::pool::slots::PooledCredential::from(flat.clone());
-                let next = maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
-                    receipt = Some(AccountLoginReceipt {
-                        provider_id: provider_id.to_owned(),
-                        name: name.to_owned(),
-                        origin: match origin {
-                            maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
-                            maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
-                        },
-                    });
-                })?;
-                data.insert(provider_id.to_owned(), serde_json::to_value(next.to_stored_credential()).map_err(|error| error.to_string())?);
-                Ok((data.clone(), Some(serialize_auth_data(&data))))
-            }),
-            AuthStorageBackend::InMemory(backend) => backend.with_lock(|current| {
-                if let Some(signal) = &signal {
-                    signal.throw_if_aborted().map_err(|reason| reason.message)?;
-                }
-                let (mut data, _, _) = Self::parse_storage_content(current)?;
-                let current = data.get(provider_id).cloned()
-                    .map(|value| serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value).map_err(|error| error.to_string()))
-                    .transpose()?;
-                let pooled = maho_ai::auth::pool::slots::PooledCredential::from(flat.clone());
-                let next = maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
-                    receipt = Some(AccountLoginReceipt {
-                        provider_id: provider_id.to_owned(),
-                        name: name.to_owned(),
-                        origin: match origin {
-                            maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
-                            maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
-                        },
-                    });
-                })?;
-                data.insert(provider_id.to_owned(), serde_json::to_value(next.to_stored_credential()).map_err(|error| error.to_string())?);
-                Ok((data.clone(), Some(serialize_auth_data(&data))))
-            }),
+            AuthStorageBackend::File(backend) => backend.with_lock(apply),
+            AuthStorageBackend::InMemory(backend) => backend.with_lock(apply),
         };
         match result {
             Ok(data) => {
@@ -725,7 +737,64 @@ impl AuthStorage {
         }
     }
 
+    /// senpi `modify`: reads the provider's stored credential, runs `f`, and writes the result in one
+    /// critical section under the auth.json file lock, so a credential rotated by another process
+    /// between the read and the write cannot be overwritten. `f` returning `None` leaves the entry
+    /// unchanged and yields the current value.
+    pub async fn modify_credential<F, Fut>(&self, provider_id: &str, f: F) -> Result<Option<Value>, String>
+    where
+        F: FnOnce(Option<Value>) -> Fut,
+        Fut: std::future::Future<Output = Result<Option<Value>, String>>,
+    {
+        let outcome: Result<(AuthStorageData, Option<Value>), String> = match &self.storage {
+            AuthStorageBackend::File(backend) => {
+                backend
+                    .with_lock_async(async move |current| {
+                        let (mut data, _, _) = Self::parse_storage_content(current)?;
+                        let existing = read_by_provider_id(&data, provider_id);
+                        let Some(next) = f(existing.clone()).await? else {
+                            return Ok(((data, existing), None));
+                        };
+                        data.insert(provider_id.to_owned(), next.clone());
+                        let serialized = serialize_auth_data(&data);
+                        Ok(((data, Some(next)), Some(serialized)))
+                    })
+                    .await
+            }
+            AuthStorageBackend::InMemory(backend) => {
+                let content = backend.content();
+                match Self::parse_storage_content(content.as_deref()) {
+                    Err(error) => Err(error),
+                    Ok((mut data, _, _)) => {
+                        let existing = read_by_provider_id(&data, provider_id);
+                        match f(existing.clone()).await {
+                            Err(error) => Err(error),
+                            Ok(None) => Ok((data, existing)),
+                            Ok(Some(next)) => {
+                                data.insert(provider_id.to_owned(), next.clone());
+                                let serialized = serialize_auth_data(&data);
+                                backend.with_lock(|_| Ok(((), Some(serialized)))).map(|()| (data, Some(next)))
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        match outcome {
+            Ok((data, result)) => {
+                *self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = data;
+                Ok(result)
+            }
+            Err(error) => {
+                self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    /// senpi `delete`: drops the runtime override as well as the stored credential.
     pub fn delete(&self, provider_id: &str) -> Result<(), String> {
+        self.remove_runtime_api_key(provider_id);
         self.set(provider_id, None)
     }
 
@@ -774,11 +843,14 @@ impl AuthStorage {
                 name: oauth.name().to_string(),
             })
             .collect();
-        for &(id, name) in &maho_ai::auth::oauth::load::BUILTIN_OAUTH_PROVIDERS {
-            if !dynamic.contains_key(id) {
+        // senpi `getOAuthProviders`: builtins are every builtin provider that declares OAuth, named
+        // by that OAuth method (so Radius is included and names match the login flow).
+        for provider in maho_ai::providers::all::builtin_providers() {
+            let Some(oauth) = provider.auth().and_then(|auth| auth.oauth.as_ref()) else { continue };
+            if !dynamic.contains_key(provider.id()) {
                 results.push(OAuthProviderInfo {
-                    id: id.to_string(),
-                    name: name.to_string(),
+                    id: provider.id().to_owned(),
+                    name: oauth.name().to_owned(),
                 });
             }
         }
@@ -931,16 +1003,18 @@ mod tests {
     }
 
     #[test]
-    fn heals_a_poisoned_pool_slot_that_duplicates_the_flat_sentinel() {
+    fn heals_a_poisoned_pool_slot_carrying_the_managed_sentinel() {
         let data = parse_auth_json(
-            "{\"anthropic\":{\"type\":\"api_key\",\"key\":\"flat\",\"accounts\":[{\"name\":\"login-1\",\"key\":\"flat\"},{\"name\":\"login-2\",\"key\":\"real\"}]}}",
+            "{\"anthropic-subscription\":{\"type\":\"oauth\",\"access\":\"anthropic-subscription-managed\",\"refresh\":\"anthropic-subscription-managed\",\"expires\":0,\"pinned\":\"login-1\",\"accounts\":[{\"name\":\"login-1\",\"access\":\"anthropic-subscription-managed\",\"refresh\":\"anthropic-subscription-managed\"},{\"name\":\"login-2\",\"access\":\"real\",\"refresh\":\"r\"}]},\"anthropic\":{\"type\":\"api_key\",\"key\":\"flat\",\"accounts\":[{\"name\":\"default\",\"key\":\"flat\"}]}}",
         )
         .expect("data");
         let (repaired, flag) = repair_poisoned_pool_slots(&data);
         assert!(flag);
-        let accounts = repaired["anthropic"]["accounts"].as_array().expect("accounts");
+        let accounts = repaired["anthropic-subscription"]["accounts"].as_array().expect("accounts");
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0]["name"], "login-2");
+        assert!(repaired["anthropic-subscription"].get("pinned").is_none());
+        assert_eq!(repaired["anthropic"]["accounts"].as_array().expect("accounts").len(), 1);
         let (_again, flag) = repair_poisoned_pool_slots(&repaired);
         assert!(!flag);
     }
@@ -1017,7 +1091,7 @@ mod tests {
     async fn the_auth_storage_sets_reads_and_deletes_credentials() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
-        let mut storage = AuthStorage::create(&path);
+        let storage = AuthStorage::create(&path);
         assert!(storage.get("anthropic").is_none());
         storage.set("anthropic", Some(api_key("stored"))).expect("set");
         assert_eq!(storage.get_api_key("anthropic").await.as_deref(), Some("stored"));
@@ -1133,6 +1207,17 @@ mod tests {
         assert!(storage.get("anthropic").is_none());
         assert_eq!(storage.errors().len(), 1);
         assert!(storage.errors()[0].contains("Invalid auth.json credential for provider"));
+    }
+
+    #[test]
+    fn drain_errors_returns_recorded_errors_once() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        std::fs::write(&path, "{\"anthropic\":{\"type\":\"bogus\"}}").expect("write");
+        let storage = AuthStorage::create(&path);
+        assert_eq!(storage.drain_errors().len(), 1);
+        assert!(storage.drain_errors().is_empty());
+        assert!(storage.errors().is_empty());
     }
 
     struct FauxOAuth {
@@ -1264,6 +1349,14 @@ mod tests {
     }
 
     #[test]
+    fn builtin_oauth_providers_come_from_provider_auth_declarations() {
+        let providers = AuthStorage::in_memory(AuthStorageData::new()).get_oauth_providers();
+        assert!(providers.iter().any(|p| p.id == "anthropic" && p.name == "Anthropic (Claude Pro/Max)"));
+        assert!(providers.iter().any(|p| p.id == "radius"));
+        assert!(providers.iter().any(|p| p.id == "devin" && p.name == "Devin"));
+    }
+
+    #[test]
     fn builtin_providers_still_enumerate_after_dynamic_registration() {
         let storage = AuthStorage::in_memory(AuthStorageData::new());
         storage.register_oauth_provider(
@@ -1277,7 +1370,7 @@ mod tests {
 
     #[tokio::test]
     async fn logout_removes_stored_credential_and_runtime_key() {
-        let mut storage = AuthStorage::in_memory(AuthStorageData::new());
+        let storage = AuthStorage::in_memory(AuthStorageData::new());
         storage.set("anthropic", Some(api_key("stored"))).unwrap();
         storage.set_runtime_api_key("anthropic", "runtime");
         assert!(storage.has("anthropic"));
@@ -1286,6 +1379,18 @@ mod tests {
         storage.logout("anthropic").unwrap();
         assert!(!storage.has("anthropic"));
         assert!(!storage.has_runtime_api_key("anthropic"));
+    }
+
+    #[tokio::test]
+    async fn delete_clears_the_runtime_key_and_list_reports_runtime_only_providers() {
+        let storage = AuthStorage::in_memory(AuthStorageData::new());
+        storage.set_runtime_api_key("openai", "runtime");
+        assert_eq!(storage.list(), vec![("openai".to_owned(), CredentialKind::ApiKey)]);
+
+        storage.delete("openai").unwrap();
+        assert!(!storage.has_runtime_api_key("openai"));
+        assert!(storage.list().is_empty());
+        assert_eq!(storage.get_api_key("openai").await.filter(|key| key == "runtime"), None);
     }
 
     #[tokio::test]

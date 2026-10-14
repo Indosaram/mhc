@@ -18,7 +18,7 @@ pub fn resolve_binary(source_path: &Path) -> Option<PathBuf> {
     let binary_name = if cfg!(windows) { "comment-checker.exe" } else { "comment-checker" };
     let platform = if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { "linux" };
     let arch = if cfg!(target_arch = "x86_64") { "x64" } else if cfg!(target_arch = "aarch64") { "arm64" } else { std::env::consts::ARCH };
-    for directory in source_path.parent()?.ancestors() {
+    for directory in source_path.parent().into_iter().flat_map(Path::ancestors) {
         let package = directory.join("node_modules/@code-yeongyu/comment-checker");
         if package.join("package.json").exists() {
             let bundled = package.join("vendor").join(format!("{platform}-{arch}")).join(binary_name);
@@ -149,6 +149,17 @@ mod tests {
         assert_eq!(lines.next(), Some("fixture prompt"));
         let payload: serde_json::Value = serde_json::from_str(lines.next().expect("hook JSON")).expect("parse hook");
         assert_eq!(payload, serde_json::to_value(input).expect("expected hook"));
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn bundled_binary_resolves_from_installed_package_entry() {
+        let root = tempfile::tempdir().expect("package fixture");
+        let package = root.path().join("node_modules/@code-yeongyu/comment-checker");
+        std::fs::create_dir_all(package.join("vendor/linux-x64")).expect("vendor dir");
+        std::fs::write(package.join("package.json"), "{}").expect("package manifest");
+        std::fs::write(package.join("vendor/linux-x64/comment-checker"), "").expect("bundled binary");
+        let resolved = resolve_binary(&root.path().join("src/index.ts"));
+        assert_eq!(resolved, Some(package.join("vendor/linux-x64/comment-checker")));
     }
     #[tokio::test]
     async fn missing_binary_does_not_spawn() {

@@ -8,7 +8,8 @@ use super::builtins::{
 };
 use super::fallback_chains::category_fallback_chain;
 use crate::delegate_adapter::{
-    DelegateFallbackEntry, DelegateModelResolutionInput, resolve_model_for_delegate_task,
+    DelegateFallbackEntry, DelegateModelResolutionInput, DelegateModelResolutionResult,
+    resolve_model_for_delegate_task, warm_cache_deps,
 };
 use crate::host::{
     HostError, SenpiModelRegistry, parse_available_models, parse_model, parse_registry_model,
@@ -453,15 +454,19 @@ pub fn resolve_category(
         None => flatten_fallback_models(config.get("fallback_models")),
     };
     let available_set: BTreeSet<String> = available_models.iter().cloned().collect();
-    let resolution = resolve_model_for_delegate_task(&DelegateModelResolutionInput {
-        user_model: user_model.as_deref(),
-        user_fallback_models: user_fallback_models.as_deref(),
-        category_default_model: builtin_model.as_deref(),
-        fallback_chain,
-        available_models: available_set.clone(),
-        system_default_model: options.system_default_model.as_deref(),
-    });
-    let Some(resolution) = resolution else {
+    let resolution = resolve_model_for_delegate_task(
+        &DelegateModelResolutionInput {
+            user_model,
+            user_fallback_models,
+            category_default_model: builtin_model.clone(),
+            is_user_configured_category_model: false,
+            fallback_chain: fallback_chain.map(<[DelegateFallbackEntry]>::to_vec),
+            available_models: available_models.iter().cloned().collect(),
+            system_default_model: options.system_default_model.clone(),
+        },
+        &warm_cache_deps(),
+    );
+    let Some(DelegateModelResolutionResult::Resolved(resolution)) = resolution else {
         return Ok(CategoryResolutionResult::ModelUnavailable(Box::new(
             unavailable(
                 string_field(&config, "model"),

@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use maho_cli::cli::extension_registry::{
     assemble_extensions, builtin_extensions, deferred_builtin_extensions, deferred_user_extensions,
-    inline_extensions, load_native_extensions, native_extension_factories, user_extensions,
+    inline_extensions, installed_user_extension_ids, load_native_extensions, native_extension_factories,
+    native_extension_factories_for, user_extensions,
     BUILTIN_EXTENSION_IDS, GLOBAL_DEFAULT_EXTENSION_IDS, INLINE_EXTENSION_IDS,
 };
 
@@ -74,7 +75,7 @@ fn linked_factories_register_through_the_loader() {
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(result.extensions.len(), native_extension_factories().len());
     let ids: Vec<&str> = result.extensions.iter().map(|extension| extension.identity.path.as_str()).collect();
-    for expected in ["<builtin:loop-guard>", "<builtin:hooks>", "<builtin:prompt-preset>", "<builtin:terminal>", "<builtin:goal>", "<builtin:loop>", "<builtin:websearch>", "<builtin:webfetch>", "<user:pi-ast-grep>", "<user:orca-titlebar-spinner>", "<inline:llama.cpp>"] {
+    for expected in ["<builtin:loop-guard>", "<builtin:hooks>", "<builtin:prompt-preset>", "<builtin:terminal>", "<builtin:goal>", "<builtin:loop>", "<builtin:websearch>", "<builtin:webfetch>", "<inline:llama.cpp>"] {
         assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
     }
 }
@@ -150,4 +151,21 @@ fn deferred_user_records_cover_the_unlinked_ports() {
     for deferred in deferred_user_extensions() {
         assert!(!linked.contains(deferred.id), "{}", deferred.id);
     }
+}
+
+#[test]
+fn user_ports_register_only_when_installed() {
+    let agent = tempfile::tempdir().expect("isolated agent dir");
+    let bare: Vec<String> = native_extension_factories_for(agent.path()).into_iter().map(|factory| factory.path).collect();
+    assert!(!bare.iter().any(|path| path.starts_with("<user:")), "{bare:?}");
+    std::fs::create_dir_all(agent.path().join("extensions")).expect("extensions dir");
+    std::fs::write(agent.path().join("extensions/orca-titlebar-spinner.ts"), "").expect("extension file");
+    std::fs::write(agent.path().join("settings.json"), r#"{"packages":["git:github.com/code-yeongyu/pi-ast-grep",{"source":"npm:omo-zcode-oauth@1.0.0"}]}"#).expect("settings");
+    let installed = installed_user_extension_ids(agent.path());
+    assert_eq!(installed.into_iter().collect::<Vec<_>>(), ["omo-zcode-oauth", "orca-titlebar-spinner", "pi-ast-grep"]);
+    let paths: Vec<String> = native_extension_factories_for(agent.path()).into_iter().map(|factory| factory.path).collect();
+    for expected in ["<user:pi-ast-grep>", "<user:orca-titlebar-spinner>", "<user:omo-zcode-oauth>"] {
+        assert!(paths.contains(&expected.to_owned()), "{expected} missing from {paths:?}");
+    }
+    assert!(!paths.contains(&"<user:orca-prefill>".to_owned()));
 }

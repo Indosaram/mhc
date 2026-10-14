@@ -9,7 +9,8 @@ pub struct BashExit { pub exit_code: Option<i32> }
 pub trait BashOperations: Send + Sync {
     fn exec<'a>(&'a self, command: &'a str, cwd: &'a Path, options: BashExecOptions) -> ToolFuture<'a, BashExit>;
 }
-pub struct LocalShellOperations { pub shell_name: String, pub shell: String, pub args: Vec<String>, pub prefix: String }
+pub type ShellConfigResolver = Arc<dyn Fn() -> Result<crate::shell::ShellConfig, ToolError> + Send + Sync>;
+pub struct LocalShellOperations { pub shell_name: String, pub resolve_shell_config: ShellConfigResolver }
 pub fn resolve_timeout_ms(timeout: Option<f64>) -> Result<Option<Duration>, ToolError> {
     match timeout {
         None => Ok(None),
@@ -18,63 +19,120 @@ pub fn resolve_timeout_ms(timeout: Option<f64>) -> Result<Option<Duration>, Tool
         Some(seconds) => Ok(Some(Duration::from_secs_f64(seconds))),
     }
 }
+const EXIT_STDIO_GRACE: Duration = Duration::from_millis(250);
+const ABORT_EXIT_GRACE: Duration = Duration::from_millis(5000);
+async fn read_pipe(pipe: &mut Option<impl tokio::io::AsyncRead + Unpin>, buffer: &mut [u8]) -> std::io::Result<usize> {
+    use tokio::io::AsyncReadExt;
+    match pipe.as_mut() { Some(pipe) => pipe.read(buffer).await, None => std::future::pending().await }
+}
+async fn sleep_until_some(deadline: Option<tokio::time::Instant>) {
+    match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await }
+}
 impl BashOperations for LocalShellOperations {
     fn exec<'a>(&'a self, command: &'a str, cwd: &'a Path, options: BashExecOptions) -> ToolFuture<'a, BashExit> {
         Box::pin(async move {
+            use crate::shell::{kill_process_tree, note_detached_child_exited, prune_tracked_detached_children, track_detached_child_pid};
             let timeout = resolve_timeout_ms(options.timeout)?;
             if options.signal.is_aborted() { return Err(ToolError::Message("aborted".into())); }
+            let shell_config = (self.resolve_shell_config)()?;
             if tokio::fs::metadata(cwd).await.is_err() { return Err(ToolError::Message(format!("Working directory does not exist: {}\nCannot execute {} commands.", cwd.display(), self.shell_name))); }
-            let mut settings = maho_pty::PtySessionOptions::new(&self.shell).cwd(cwd);
-            settings.args = self.args.clone(); settings.args.push(format!("{}{command}", self.prefix));
-            settings.env = options.env.into_iter().collect(); settings.timeout = timeout;
-            let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-            let mut session = maho_pty::PtySession::start(settings, move |bytes| { if sender.send(bytes.to_vec()).is_err() { /* consumer has cancelled */ } })
-                .map_err(|e| ToolError::Message(e.to_string()))?;
-            let waiter = session.wait_in_background().map_err(|e| ToolError::Message(e.to_string()))?;
-            let mut completion = tokio::task::spawn_blocking(move || waiter.join().map_err(|_| ToolError::Message("PTY wait thread panicked".into()))?.map_err(|e| ToolError::Message(e.to_string())));
-            let mut callback_error = None; let mut cancelled = false; let mut receiving = true;
-            let exit = loop {
+            let command_from_stdin = shell_config.command_transport == Some("stdin");
+            let mut process = tokio::process::Command::new(&shell_config.shell);
+            process.args(&shell_config.args);
+            if !command_from_stdin { process.arg(command); }
+            process.current_dir(cwd).env_clear().envs(options.env)
+                .stdin(if command_from_stdin { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            #[cfg(unix)]
+            process.process_group(0);
+            #[cfg(windows)]
+            process.creation_flags(crate::shell::CREATE_NO_WINDOW);
+            let mut child = process.spawn().map_err(|e| ToolError::Message(e.to_string()))?;
+            if command_from_stdin && let Some(mut stdin) = child.stdin.take() {
+                let input = command.to_owned();
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let _ignored_stdin_error = async { stdin.write_all(input.as_bytes()).await?; stdin.shutdown().await }.await;
+                });
+            }
+            let pid = child.id().and_then(|pid| i32::try_from(pid).ok());
+            if let Some(pid) = pid { track_detached_child_pid(pid); }
+            let (mut stdout, mut stderr) = (child.stdout.take(), child.stderr.take());
+            let (mut out, mut err) = ([0u8; 8192], [0u8; 8192]);
+            let timeout_deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+            let mut timed_out = false; let mut killed = false; let mut callback_error = None;
+            let mut exit: Option<Option<i32>> = None; let mut idle = None; let mut abort_deadline = None;
+            let wait_result: Result<Option<i32>, ToolError> = loop {
+                if stdout.is_none() && stderr.is_none() && let Some(code) = exit { break Ok(code); }
+                let mut abort = false;
                 tokio::select! {
-                    result = &mut completion => break result.map_err(|e| ToolError::Message(e.to_string()))??,
-                    data = receiver.recv(), if receiving => match data {
-                        Some(data) if callback_error.is_none() => if let Err(error) = (options.on_data)(&data) {
-                            callback_error = Some(error); session.kill().map_err(|e| ToolError::Message(e.to_string()))?;
-                        },
-                        Some(_) => {},
-                        None => receiving = false,
+                    status = child.wait(), if exit.is_none() => match status {
+                        Ok(status) => { exit = Some(status.code()); idle = Some(tokio::time::Instant::now() + EXIT_STDIO_GRACE); },
+                        Err(error) => break Err(ToolError::Message(error.to_string())),
                     },
-                    () = options.signal.cancelled(), if !cancelled => {
-                        cancelled = true; session.kill().map_err(|e| ToolError::Message(e.to_string()))?;
-                    }
+                    read = read_pipe(&mut stdout, &mut out), if stdout.is_some() => match read {
+                        Ok(0) | Err(_) => stdout = None,
+                        Ok(count) => {
+                            if exit.is_some() { idle = Some(tokio::time::Instant::now() + EXIT_STDIO_GRACE); }
+                            if callback_error.is_none() && let Err(error) = (options.on_data)(&out[..count]) { callback_error = Some(error); abort = true; }
+                        },
+                    },
+                    read = read_pipe(&mut stderr, &mut err), if stderr.is_some() => match read {
+                        Ok(0) | Err(_) => stderr = None,
+                        Ok(count) => {
+                            if exit.is_some() { idle = Some(tokio::time::Instant::now() + EXIT_STDIO_GRACE); }
+                            if callback_error.is_none() && let Err(error) = (options.on_data)(&err[..count]) { callback_error = Some(error); abort = true; }
+                        },
+                    },
+                    () = sleep_until_some(timeout_deadline), if timeout_deadline.is_some() && !killed => { timed_out = true; abort = true; },
+                    () = options.signal.cancelled(), if !killed => abort = true,
+                    () = sleep_until_some(idle), if idle.is_some() => break Ok(exit.flatten()),
+                    () = sleep_until_some(abort_deadline), if abort_deadline.is_some() => break Ok(exit.flatten()),
+                }
+                if abort && !killed {
+                    if let Some(pid) = pid { kill_process_tree(pid); }
+                    killed = true; stdout = None; stderr = None;
+                    if let Some(code) = exit { break Ok(code); }
+                    abort_deadline = Some(tokio::time::Instant::now() + ABORT_EXIT_GRACE);
                 }
             };
-            while let Ok(data) = receiver.try_recv() {
-                if callback_error.is_none() && let Err(error) = (options.on_data)(&data) { callback_error = Some(error); }
+            if let Some(pid) = pid {
+                if exit.is_some() || matches!(child.try_wait(), Ok(Some(_))) { note_detached_child_exited(pid); }
+                else { tokio::spawn(async move { let _exit_status = child.wait().await; note_detached_child_exited(pid); }); }
             }
+            prune_tracked_detached_children();
+            let exit_code = wait_result?;
             if let Some(error) = callback_error { return Err(error); }
-            if cancelled || options.signal.is_aborted() { return Err(ToolError::Message("aborted".into())); }
-            if exit.timed_out { return Err(ToolError::Message(format!("timeout:{}", options.timeout.unwrap_or_default()))); }
-            Ok(BashExit { exit_code: exit.exit_code })
+            if options.signal.is_aborted() { return Err(ToolError::Message("aborted".into())); }
+            if timed_out { return Err(ToolError::Message(format!("timeout:{}", options.timeout.unwrap_or_default()))); }
+            Ok(BashExit { exit_code })
         })
     }
 }
+/// Shared process execution used by the built-in shell tools.
+pub fn create_local_shell_operations(shell_name: &str, resolve_shell_config: ShellConfigResolver) -> LocalShellOperations {
+    LocalShellOperations { shell_name: shell_name.into(), resolve_shell_config }
+}
 pub fn create_local_bash_operations(shell: Option<&str>) -> Arc<dyn BashOperations> {
-    Arc::new(LocalShellOperations { shell_name: "bash".into(), shell: shell.unwrap_or("bash").into(), args: vec!["-c".into()], prefix: if cfg!(unix) { "stty -echo -onlcr; exec </dev/null;\n".into() } else { String::new() } })
+    let shell_path = shell.map(str::to_owned);
+    Arc::new(create_local_shell_operations("bash", Arc::new(move || crate::shell::get_shell_config(shell_path.as_deref()).map_err(ToolError::Message))))
 }
 #[derive(Clone)]
 pub struct BashSpawnContext { pub command: String, pub cwd: PathBuf, pub env: BTreeMap<String,String> }
 pub type BashSpawnHook = Arc<dyn Fn(BashSpawnContext) -> Result<BashSpawnContext, ToolError> + Send + Sync>;
+/// `getShellEnv()` supplier; maho-core injects the agent-bin-on-PATH env (it owns `getBinDir`).
+pub type ShellEnvProvider = Arc<dyn Fn() -> BTreeMap<String,String> + Send + Sync>;
 #[derive(Default, Clone)]
 pub struct BashToolOptions {
     pub operations: Option<Arc<dyn BashOperations>>, pub command_prefix: Option<String>, pub shell_path: Option<String>,
-    pub expose_session_environment: Option<bool>, pub spawn_hook: Option<BashSpawnHook>,
+    pub expose_session_environment: Option<bool>, pub spawn_hook: Option<BashSpawnHook>, pub shell_env: Option<ShellEnvProvider>,
 }
 #[derive(Deserialize)]
 pub struct BashToolInput { pub command: String, pub timeout: Option<f64> }
 #[derive(Clone)]
 pub struct ShellToolConfig { pub name: String, pub shell_name: String, pub prompt_snippet: String, pub temp_file_prefix: String }
-pub fn resolve_spawn_context(command: String, cwd: PathBuf, hook: Option<&BashSpawnHook>, expose: bool, context: Option<&dyn ToolContext>) -> Result<BashSpawnContext, ToolError> {
-    let mut env: BTreeMap<_,_> = std::env::vars().collect();
+pub fn resolve_spawn_context(command: String, cwd: PathBuf, hook: Option<&BashSpawnHook>, expose: bool, context: Option<&dyn ToolContext>, shell_env: Option<&ShellEnvProvider>) -> Result<BashSpawnContext, ToolError> {
+    let mut env: BTreeMap<_,_> = shell_env.map_or_else(|| std::env::vars().collect(), |shell_env| shell_env());
     for key in ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_CWD", "PI_GOAL_STORE_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"] { env.remove(key); }
     if expose && let Some(context) = context {
             env.insert("PI_SESSION_ID".into(), context.session_manager().session_id().into());
@@ -113,7 +171,7 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
         Box::pin(async move {
             let input: BashToolInput = serde_json::from_value(call.params)?;
             let command = match options.command_prefix.as_deref().filter(|p| !p.is_empty()) { Some(prefix) => format!("{prefix}\n{}", input.command), None => input.command };
-            let context = resolve_spawn_context(command, call.context.map_or(cwd.as_path(), ToolContext::cwd).to_path_buf(), options.spawn_hook.as_ref(), options.expose_session_environment.unwrap_or(true), call.context)?;
+            let context = resolve_spawn_context(command, call.context.map_or(cwd.as_path(), ToolContext::cwd).to_path_buf(), options.spawn_hook.as_ref(), options.expose_session_environment.unwrap_or(true), call.context, options.shell_env.as_ref())?;
             let output = Arc::new(Mutex::new(OutputAccumulator::new(OutputAccumulatorOptions { temp_file_prefix: config.temp_file_prefix, ..Default::default() })));
             if let Some(update) = &call.on_update { update(ToolResult { content: Vec::new(), details: None })?; }
             let captured = Arc::clone(&output);
@@ -173,7 +231,7 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
             }
         })
     });
-    let mut tool = ToolDefinition::new(&config.name, &format!("Execute a {} command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.", config.shell_name), json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"}},"required":["command"]}), execute);
+    let mut tool = ToolDefinition::new(&config.name, &format!("Execute a {} command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.", config.shell_name), json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"}},"required":["command"]}), execute);
     tool.constrained_sampling = Some(maho_ai::types::ConstrainedSampling::Config(maho_ai::types::ConstrainedSamplingConfig::JsonSchema { strict: maho_ai::types::JsonSchemaStrictness::Prefer }));
     if expose_environment { tool.prompt_guidelines = Some(vec!["You can inspect PI_* environment variables for current model and session details.".into()]); }
     tool.prompt_snippet = Some(config.prompt_snippet); tool.exposure = Some(ToolExposure::Eval); tool

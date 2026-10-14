@@ -47,9 +47,17 @@ pub struct CreateAgentSessionOptions {
     pub loaded_extensions: Option<maho_ext_host::loader::LoadExtensionsResult>,
     pub hook_resources: Vec<crate::package_manager::ResolvedResource>,
     pub additional_hook_paths: Vec<String>,
+    /// senpi `DefaultResourceLoader` CLI inputs (`-e`, `--skill`, `--prompt-template`, `--no-skills`,
+    /// `--no-prompt-templates`); merged with `hook_resources` / `additional_hook_paths`.
+    pub resource_inputs: crate::resource_loader::ResourceLoaderInputs,
     pub minimal_resources: bool,
     pub defer_extension_start: bool,
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
+    /// The first `bind_extensions` call's bindings, built over the created session (pinned
+    /// `createBoundAppServerSession` binding a mode's handlers before `session_start`).
+    pub extension_bindings: Option<crate::agent_session::ExtensionBindingsFactory>,
+    /// senpi `bindExtensions({ uiContext })`: the UI a mode binds before `session_start` runs.
+    pub extension_ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
 }
 
 /// `noTools` suppression mode.
@@ -94,6 +102,39 @@ impl Drop for PendingSessionConstruction {
     }
 }
 
+/// senpi agent-session.ts `_buildRuntime`: the built-in tool options. The extensions' filesystem
+/// policies are composed into the file tools (re-read per call, since native extensions may
+/// register theirs at bind time), and the tools honour `images.autoResize`, `shellCommandPrefix`
+/// and `shellPath` from settings. A cwd-changing switch rebuilds the tools with the same options.
+pub fn built_in_tools_options(
+    settings: &SettingsManager,
+    session: std::sync::Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>,
+) -> maho_tools::index::ToolsOptions {
+    use std::sync::Arc;
+    let filesystem_policy: maho_tools::FilesystemPolicyChecker = Arc::new(move |request| {
+        let session = session();
+        Box::pin(async move {
+            let policies = match session { Some(session) => session.filesystem_policies().await, None => Vec::new() };
+            match maho_tools::filesystem_policy::compose_filesystem_policies(policies) {
+                Some(check) => check(request).await,
+                None => Ok(maho_tools::FilesystemPolicyDecision::Allow),
+            }
+        })
+    });
+    let shell_env: maho_tools::bash::ShellEnvProvider = Arc::new(crate::utils::shell::get_shell_env);
+    maho_tools::index::ToolsOptions {
+        read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), auto_resize_images: Some(settings.get_image_auto_resize()), ..Default::default() },
+        bash: maho_tools::bash::BashToolOptions { command_prefix: settings.get_string("shellCommandPrefix"),
+            shell_path: settings.get_shell_path(), shell_env: Some(shell_env.clone()), ..Default::default() },
+        powershell: maho_tools::bash::BashToolOptions { shell_env: Some(shell_env), ..Default::default() },
+        write: maho_tools::write::WriteToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        edit: maho_tools::edit::EditToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        grep: maho_tools::grep::index::GrepToolOptions { filesystem_policy: Some(filesystem_policy.clone()) },
+        find: maho_tools::find::FindToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        ls: maho_tools::ls::LsToolOptions { filesystem_policy: Some(filesystem_policy), ..Default::default() },
+    }
+}
+
 pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Result<CreateAgentSessionResult, String> {
     use std::{collections::BTreeMap, sync::Arc};
     if options.minimal_resources {
@@ -109,29 +150,50 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let agent_dir = options.agent_dir.take().unwrap_or_else(crate::config::get_agent_dir);
     let runtime = options.model_runtime.take().or_else(|| options.model_registry.as_ref().map(|registry| registry.model_runtime.clone())).unwrap_or_else(|| ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
         credentials: options.auth_storage.take(), models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
-        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), providers: None,
+        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), providers: None, ..Default::default()
     }));
     let registry = options.model_registry.take().unwrap_or_else(|| ModelRegistry::new(runtime.clone()));
-    let settings = options.settings_manager.take().unwrap_or_else(|| SettingsManager::create(&cwd, &agent_dir, &crate::config::home_dir(), false));
+    // senpi sdk.ts `SettingsManager.create(cwd, agentDir)`: `projectTrusted` defaults to true.
+    let settings = options.settings_manager.take().unwrap_or_else(|| SettingsManager::create(&cwd, &agent_dir, &crate::config::home_dir(), true));
+    runtime.set_settings_manager(&settings);
     let mut manager = options.session_manager.take().unwrap_or_else(|| SessionManager::create(&cwd, None, None));
     crate::session_cwd::assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
-    let context = manager.build_context(manager.leaf_id());
-    let model = options.model.take().or_else(|| context.model.as_ref().and_then(|(provider, id)| registry.find(provider, id)))
-        .or_else(|| settings.get_string("defaultProvider").zip(settings.get_string("defaultModel")).and_then(|(provider,id)| registry.find(&provider,&id)))
-        .or_else(|| registry.get_available().into_iter().next()).ok_or("No model available")?;
-    let has_thinking_entry = manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change");
-    let configured_thinking = settings.get_value("modelThinkingLevels")
+    let context = manager.current_context();
+    let mut model_fallback_message: Option<String> = None;
+    let mut model = options.model.take();
+    // senpi sdk.ts:284-299: a resumed session's model is restored only when its provider has
+    // configured auth; otherwise startup warns and falls back.
+    if model.is_none() && !context.messages.is_empty() && let Some((provider, id)) = context.model.as_ref() {
+        model = registry.find(provider, id).filter(|restored| registry.has_configured_auth(restored));
+        if model.is_none() {
+            model_fallback_message = Some(format!("Could not restore model {provider}/{id}"));
+        }
+    }
+    if model.is_none() {
+        model = settings.get_string("defaultProvider").zip(settings.get_string("defaultModel")).and_then(|(provider,id)| registry.find(&provider,&id))
+            .or_else(|| registry.get_available().into_iter().next());
+        // senpi sdk.ts:322-326: no model leaves a model-less session with the login guidance.
+        match &model {
+            None => model_fallback_message = Some(crate::auth_guidance::format_no_models_available_message()),
+            Some(fallback) => if let Some(message) = model_fallback_message.as_mut() {
+                message.push_str(&format!(". Using {}/{}", fallback.provider, fallback.id));
+            },
+        }
+    }
+    let has_thinking_entry = manager.current_branch().iter().any(|entry| entry["type"] == "thinking_level_change");
+    let configured_thinking = model.as_ref().and_then(|model| settings.get_value("modelThinkingLevels")
         .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id))).and_then(serde_json::Value::as_str)
-        .and_then(ModelThinkingLevel::parse)
+        .and_then(ModelThinkingLevel::parse))
         .or_else(|| settings.get_string("defaultThinkingLevel").as_deref().and_then(ModelThinkingLevel::parse));
     let requested_thinking = options.thinking_level.map(ModelThinkingLevel::from)
         .or_else(|| options.thinking_selection.as_ref().map(|selection| selection.level)).or_else(||
         has_thinking_entry.then(|| ModelThinkingLevel::parse(&context.thinking_level)).flatten()).or(configured_thinking)
         .or(Some(ModelThinkingLevel::Medium));
+    // senpi sdk.ts:360-365: without a model the level is "off" (`clamp_thinking_level_to_model(_, None)`).
     let thinking_level = match requested_thinking {
         Some(ModelThinkingLevel::Off) => ModelThinkingLevel::Off,
-        Some(level) => clamp_thinking_level_to_model(serde_json::from_value(serde_json::Value::from(level.as_str())).ok(), Some(&model)),
-        None => clamp_thinking_level_to_model(None, Some(&model)),
+        Some(level) => clamp_thinking_level_to_model(serde_json::from_value(serde_json::Value::from(level.as_str())).ok(), model.as_ref()),
+        None => clamp_thinking_level_to_model(None, model.as_ref()),
     };
     let mut thinking_selection = options.thinking_selection.take().or_else(|| {
         options.thinking_level.map(|_| ThinkingSelection { level: thinking_level,
@@ -143,10 +205,14 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
             source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None });
     }
     if let Some(selection) = thinking_selection.as_mut() { selection.level = thinking_level; }
-    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), Default::default());
+    let session_accessor = Arc::new(std::sync::OnceLock::<Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>>::new());
+    // senpi `_buildRuntime`: the built-in tools carry the composed filesystem policy and settings.
+    let policy_accessor = session_accessor.clone();
+    let options_session: Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync> =
+        Arc::new(move || policy_accessor.get().and_then(|accessor| accessor()));
+    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), built_in_tools_options(&settings, options_session));
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
     let registered_definitions = definitions.clone();
-    let session_accessor = Arc::new(std::sync::OnceLock::<Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>>::new());
     let context_accessor = session_accessor.clone();
     let context_factory: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
         let session = context_accessor.get().expect("SDK session initialized before tool execution")()
@@ -174,7 +240,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let active_tools = selected.iter().filter_map(|name| base_tools.get(name).cloned()).collect();
     let runtime_for_stream = runtime.clone();
     let runtime_for_auth = runtime.clone();
-    if context.messages.is_empty() {
+    if context.messages.is_empty() && let Some(model) = &model {
         manager.append_model_change(&model.provider, &model.id, None, None);
     }
     if context.messages.is_empty() || !has_thinking_entry {
@@ -184,17 +250,49 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let resumed = !context.messages.is_empty();
     let messages = context.messages.into_iter().map(crate::agent_session::session_message_from_value)
         .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+    let provider_retry_settings = settings.get_provider_retry_settings();
     let agent = maho_agent::agent::Agent::new(maho_agent::agent::AgentOptions {
-        initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), thinking_level: Some(thinking_level),
+        initial_state: Some(maho_agent::agent::PartialAgentState { model, thinking_level: Some(thinking_level),
             thinking_selection, messages: Some(messages), tools: Some(active_tools), ..Default::default() }),
         stream_fn: Some(Arc::new(move |model, context, options| runtime_for_stream.stream_simple(model, context, options.map(|options| options.simple)))),
         get_api_key: Some(Arc::new(move |provider| { let runtime = runtime_for_auth.clone(); Box::pin(async move {
             runtime.get_auth(&provider).await.ok().flatten().and_then(|auth| auth.auth.api_key)
         }) })),
-        // senpi sdk.ts hands the Agent the coding-agent convertToLlm: custom, bash-execution and
-        // summary messages become user turns. The agent-core default drops them, so a hidden
-        // extension wake after an assistant reply left the provider request ending on that reply.
-        convert_to_llm: Some(Arc::new(|messages| Box::pin(async move { maho_agent::harness::messages::convert_to_llm(messages) }))),
+        // senpi sdk.ts hands the Agent convertToLlmForTransport: custom, bash-execution and
+        // summary messages become user turns (the agent-core default drops them, so a hidden
+        // extension wake after an assistant reply left the provider request ending on that reply),
+        // and the transport image policy applies. blockImages and maxHistoricalImages are read per
+        // request so a mid-session settings change takes effect.
+        convert_to_llm: Some({
+            let settings_accessor = session_accessor.clone();
+            Arc::new(move |messages: Vec<maho_agent::types::AgentMessage>| {
+                let (block_images, max_historical_images) = settings_accessor.get().and_then(|accessor| accessor())
+                    .map(|session| session.with_settings_manager(|manager| (manager.get_block_images(), manager.get_max_historical_images())))
+                    .unwrap_or((false, None));
+                Box::pin(async move {
+                    let options = crate::messages::TransportConvertOptions {
+                        elide: crate::messages::ElideOldImagesOptions {
+                            budget_bytes: Some(crate::messages::TRANSPORT_IMAGE_BUDGET_BYTES), always_keep_newest: Some(1), max_historical_images,
+                        },
+                        block_images,
+                    };
+                    // The typed agent messages and the JSON session messages share one serde shape;
+                    // a message that cannot cross it keeps the typed conversion (without the image policy)
+                    // rather than losing conversation content.
+                    let values = messages.iter().map(crate::agent_session::session_message_to_value).collect::<Result<Vec<_>, _>>();
+                    let converted = values.and_then(|values| crate::messages::convert_to_llm_for_transport(&values, &options)
+                        .into_iter().map(serde_json::from_value::<maho_ai::types::Message>).collect::<Result<Vec<_>, _>>());
+                    converted.unwrap_or_else(|_| maho_agent::harness::messages::convert_to_llm(messages))
+                })
+            })
+        }),
+        steering_mode: Some(settings.get_steering_mode()),
+        follow_up_mode: Some(settings.get_follow_up_mode()),
+        transport: Some(settings.get_transport()),
+        thinking_budgets: settings.get_thinking_budgets(),
+        timeout_ms: settings.get_agent_stream_idle_timeout_ms()?,
+        stream_start_timeout_ms: settings.get_agent_stream_start_timeout_ms()?,
+        max_retry_delay_ms: Some(provider_retry_settings.max_retry_delay_ms),
         ..Default::default()
     });
     let session_start_event = match options.initial_model_provenance.take() {
@@ -207,18 +305,28 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         }
         None => options.session_start_event.take(),
     };
+    // senpi reads `resourceLoader.getExtensions().runtime.flagValues` in the AgentSession constructor,
+    // so CLI-applied extension flags (`--no-model-fallback`, `--no-ask-user`) reach the settings overrides.
+    let flag_values = options.loaded_extensions.as_ref().map(|loaded| loaded.runtime.flag_values()).unwrap_or_default();
     let session = crate::agent_session::AgentSession::new(crate::agent_session::AgentSessionConfig {
         agent, session_manager: manager, settings_manager: settings, cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()),
         fallback_now: None, retry_random: None, scoped_models: options.scoped_models, favorite_models: options.favorite_models,
-        flag_values: BTreeMap::new(), custom_tools: options.custom_tools, model_runtime: Some(runtime), model_registry: Some(registry),
-        uses_default_stream_function: Some(true), initial_active_tool_names: Some(selected),
+        flag_values, custom_tools: options.custom_tools, model_runtime: Some(runtime), model_registry: Some(registry),
+        // senpi sdk.ts:425 hands the Agent its own `streamFn` closure, so `agent.streamFunction ===
+        // streamSimple` is false for SDK sessions (agent-session.ts:1243).
+        uses_default_stream_function: Some(false), initial_active_tool_names: Some(selected),
         default_tool_names, eval_only_tool_names: None, allowed_tool_names, excluded_tool_names: options.exclude_tools,
         base_tools_override: Some(base_tools.clone()), session_start_event,
         auto_title_sessions: options.auto_title_sessions,
     }).map_err(|error| error.to_string())?;
+    // `modelRuntime.setSettingsManager(settings)`: provider concurrency limits follow live settings.
+    session.with_settings_manager(|settings| session.model_runtime().set_settings_manager(settings));
     if options.minimal_resources {
         session.set_context_files_enabled(false);
     }
+    // senpi sdk.ts hands the Agent its settings-aware `streamFn` up front, so attribution headers,
+    // provider timeouts and the request service tier apply with or without an extension runner.
+    session.install_default_stream_function();
     assert!(session_accessor.set(session.weak_accessor()).is_ok(), "SDK context initialized once");
     for (name, definition) in registered_definitions {
         if let Some(tool) = base_tools.get(&name) {
@@ -228,18 +336,15 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         }
     }
     if !options.minimal_resources {
-    let (prompt_paths, skill_paths) = session.with_settings_manager(|manager| {
-        let paths = |key| manager.get_value(key).and_then(serde_json::Value::as_array).map(|values|
-            values.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
-        (paths("prompts"), paths("skills"))
-    });
-    let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
-        cwd: cwd.clone(), agent_dir: agent_dir.clone(), prompt_paths, include_defaults: true,
-    });
-    let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, skill_paths, include_defaults: true });
-    session.set_prompt_resources_with_diagnostics(templates, skills.skills, skills.diagnostics);
+        let mut inputs = options.resource_inputs;
+        inputs.additional_hook_paths.extend(options.additional_hook_paths);
+        inputs.hook_resources.extend(options.hook_resources);
+        session.set_resource_loader_inputs(inputs);
+        if let Err(error) = session.load_resources().await {
+            session.dispose().await;
+            return Err(error);
+        }
     }
-    session.set_hook_source_paths(options.hook_resources, options.additional_hook_paths);
     session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
     if let Err(error) = session.admit_sdk_model(resumed) {
         session.dispose().await;
@@ -262,7 +367,11 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
                 }
             } };
         session.set_extension_runner(runner).await;
-        if !options.defer_extension_start { session.bind_extensions(Default::default()).await; }
+        if !options.defer_extension_start {
+            let mut bindings = options.extension_bindings.as_ref().map(|factory| factory(&session)).unwrap_or_default();
+            if bindings.ui_context.is_none() { bindings.ui_context = options.extension_ui.clone(); }
+            session.bind_extensions(bindings).await;
+        }
         drop(construction.session.take());
     }
     session.set_cursor_exec_bridge_factory(Arc::new({
@@ -276,7 +385,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
              ))
          }
     }));
-    Ok(CreateAgentSessionResult { session, model_fallback_message: None })
+    Ok(CreateAgentSessionResult { session, model_fallback_message })
 }
 
 /// The default global config directory.
@@ -358,7 +467,7 @@ mod tests {
             session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
             tools: Some(Vec::new()), ..Default::default()
         }).await.expect("SDK session");
-        let context = created.session.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let context = created.session.with_session_manager(|manager| manager.current_context());
         let entries = created.session.with_session_manager(|manager| manager.entries());
         created.session.dispose().await;
         assert_eq!(context.model, Some(("faux".to_owned(), "faux-1".to_owned())));
@@ -382,7 +491,7 @@ mod tests {
                 model: Some(test_model()), thinking_level: Some(ThinkingLevel::Low),
                 session_manager: Some(manager), tools: Some(Vec::new()), ..Default::default()
             }).await.expect("existing SDK conversation");
-            let context = created.session.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+            let context = created.session.with_session_manager(|manager| manager.current_context());
             let entries = created.session.with_session_manager(|manager| manager.entries());
             let effective = created.session.thinking_level();
             created.session.dispose().await;
@@ -446,7 +555,7 @@ mod tests {
                 "content":[{"type":"text","text":"restored context ".repeat(2500)}],"timestamp":index}));
         }
         let before = manager.entries().into_iter().filter(|entry| entry["type"] == "message").collect::<Vec<_>>();
-        let live_before: u64 = manager.build_context(manager.leaf_id()).messages.iter()
+        let live_before: u64 = manager.current_context().messages.iter()
             .map(crate::compaction::compaction::estimate_tokens).sum();
         let mut model = test_model();
         model.context_window = 128000;
@@ -457,7 +566,7 @@ mod tests {
             model: Some(model.clone()), session_manager: Some(manager),
             tools: Some(Vec::new()), ..Default::default()
         })).await.expect("bounded oversized SDK resume").expect("repairable resume");
-        let context = created.session.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let context = created.session.with_session_manager(|manager| manager.current_context());
         let entries = created.session.with_session_manager(|manager| manager.entries());
         let live_after: u64 = context.messages.iter().map(crate::compaction::compaction::estimate_tokens).sum();
         let admission = created.session.assert_model_usable(&model, live_after);
@@ -519,6 +628,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sdk_applies_loaded_extension_flag_values_to_session_settings() {
+        let dir = tempfile::tempdir().expect("directory");
+        let loaded = maho_ext_host::loader::load_extensions_async(Vec::new(), dir.path(), Default::default()).await;
+        loaded.runtime.set_flag("no-model-fallback", maho_ext_api::FlagValue::Boolean(true));
+        loaded.runtime.set_flag("no-ask-user", maho_ext_api::FlagValue::Boolean(true));
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(dir.path().to_string_lossy().into_owned()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()), session_manager: Some(SessionManager::in_memory(&dir.path().to_string_lossy(), None, None)),
+            tools: Some(Vec::new()), loaded_extensions: Some(loaded), defer_extension_start: true, ..Default::default()
+        }).await.expect("SDK session");
+        let (fallback, ask_user) = created.session.with_settings_manager(|manager| (
+            manager.get_value("retry").and_then(|retry| retry.get("modelFallback")).cloned(),
+            manager.get_value("askUser").and_then(|ask| ask.get("enabled")).cloned(),
+        ));
+        created.session.dispose().await;
+        assert_eq!(fallback, Some(serde_json::Value::Bool(false)));
+        assert_eq!(ask_user, Some(serde_json::Value::Bool(false)));
+    }
+
+    #[tokio::test]
     async fn sdk_creates_session_with_working_builtin_tool() {
         let dir = tempfile::tempdir().expect("directory");
         let created = create_agent_session(CreateAgentSessionOptions {
@@ -532,6 +661,21 @@ mod tests {
         assert_eq!(tools, vec!["bash"]);
         let result = result.expect("tool");
         assert!(maho_ai::utils::text::content_text(&result.content, "").contains("sdk"));
+    }
+
+    #[tokio::test]
+    async fn sdk_bash_tool_honours_shell_command_prefix_setting() {
+        let dir = tempfile::tempdir().expect("directory");
+        let settings = crate::settings_manager::SettingsManager::in_memory(
+            serde_json::Map::from_iter([("shellCommandPrefix".to_owned(), serde_json::json!("SDK_PREFIX=prefixed"))]), false);
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(dir.path().to_string_lossy().into_owned()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()), session_manager: Some(SessionManager::in_memory(&dir.path().to_string_lossy(), None, None)),
+            settings_manager: Some(settings), tools: Some(vec!["bash".to_owned()]), ..Default::default()
+        }).await.expect("SDK session");
+        let result = created.session.execute_tool("bash", serde_json::json!({"command":"printf \"$SDK_PREFIX\""}), Default::default()).await;
+        created.session.dispose().await;
+        assert!(maho_ai::utils::text::content_text(&result.expect("tool").content, "").contains("prefixed"));
     }
 
     #[tokio::test]
@@ -560,6 +704,54 @@ mod tests {
         let Some(Message::User(last)) = context.messages.last() else { panic!("custom message must reach the provider as a user turn") };
         let UserContent::Blocks(blocks) = &last.content else { panic!("custom text projects to content blocks") };
         assert_eq!(maho_ai::utils::text::content_text(blocks, ""), "Continue");
+    }
+
+    #[tokio::test]
+    async fn sdk_agent_receives_settings_driven_stream_options() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let mut global = crate::settings_manager::Settings::new();
+        global.insert("httpIdleTimeoutMs".to_owned(), serde_json::json!(60_000));
+        global.insert("followUpMode".to_owned(), serde_json::json!("all"));
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()), session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
+            settings_manager: Some(SettingsManager::in_memory(global, false)),
+            tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        let agent = created.session.agent().clone();
+        created.session.dispose().await;
+        assert_eq!((agent.timeout_ms(), agent.stream_start_timeout_ms()), (Some(60_000), Some(60_000)));
+        assert_eq!(agent.max_retry_delay_ms(), Some(60_000));
+        assert_eq!(agent.transport(), Some(maho_ai::types::Transport::Auto));
+        assert_eq!(agent.steering_mode(), maho_agent::types::QueueMode::All);
+        assert_eq!(agent.follow_up_mode(), maho_agent::types::QueueMode::All);
+    }
+
+    #[tokio::test]
+    async fn sdk_agent_applies_the_block_images_setting_at_the_transport_boundary() {
+        use maho_agent::types::{AgentContext, AgentMessage};
+        use maho_ai::types::{ContentBlock, ImageContent, Message, UserContent, UserMessage};
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
+        let mut settings = SettingsManager::create(&cwd, &agent_dir, &cwd, false);
+        settings.apply_overrides(&serde_json::Map::from_iter([("images".to_owned(), serde_json::json!({"blockImages":true}))]));
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(agent_dir), model: Some(test_model()), settings_manager: Some(settings),
+            session_manager: Some(SessionManager::in_memory(&cwd, None, None)), tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        let messages = vec![AgentMessage::Llm(Message::User(UserMessage {
+            content: UserContent::Blocks(vec![ContentBlock::Image(ImageContent { data: "aGk=".into(), mime_type: "image/png".into() })]),
+            timestamp: 1,
+        }))];
+        let context = created.session.agent()
+            .build_provider_context(&AgentContext { system_prompt: String::new(), messages, tools: None }, None).await;
+        created.session.dispose().await;
+        let Some(Message::User(user)) = context.messages.first() else { panic!("user turn reaches the provider") };
+        let UserContent::Blocks(blocks) = &user.content else { panic!("blocks content") };
+        assert!(!blocks.iter().any(|block| matches!(block, ContentBlock::Image(_))), "blockImages strips every image");
+        assert_eq!(maho_ai::utils::text::content_text(blocks, ""), crate::messages::BLOCKED_IMAGE_PLACEHOLDER);
     }
 
     fn test_model() -> Model {

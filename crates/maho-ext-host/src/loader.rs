@@ -47,6 +47,7 @@ pub fn load_extensions(factories: Vec<NativeExtensionFactory>, cwd: &std::path::
             }
         }
     }
+    errors.extend(detect_extension_conflicts(&extensions));
     LoadExtensionsResult { extensions, errors, runtime, events }
 }
 
@@ -73,8 +74,9 @@ pub async fn load_inline_extensions(factories: Vec<NativeInlineExtension>, cwd: 
         if extension.hidden { hidden_paths.insert(path.clone()); }
         NativeAsyncExtensionFactory { source_info: SourceInfo { path: path.clone(), source: "inline".into(), ..Default::default() }, path, factory: extension.factory }
     }).collect();
-    let loaded = load_extensions_async(factories, cwd, profile).await;
+    let mut loaded = load_extensions_async(factories, cwd, profile).await;
     hidden_paths.retain(|path| loaded.extensions.iter().any(|extension| extension.identity.path == *path));
+    for extension in &mut loaded.extensions { extension.hidden = hidden_paths.contains(&extension.identity.path); }
     LoadInlineExtensionsResult { loaded, hidden_paths }
 }
 pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, cwd: &std::path::Path, profile: ExtensionSessionProfile) -> LoadExtensionsResult {
@@ -110,5 +112,46 @@ pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, 
             }
         }
     }
+    errors.extend(detect_extension_conflicts(&extensions));
     LoadExtensionsResult { extensions, errors, runtime, events }
+}
+
+/// senpi `shouldSuppressExtensionConflict`: a conflict involving a builtin is expected (builtins are
+/// overridable). The upstream same-package-identity case never applies natively: native extension
+/// paths are synthetic `<kind:id>` identities, which have no package identity.
+fn should_suppress_extension_conflict(existing_owner: &str, candidate_owner: &str) -> bool {
+    existing_owner.starts_with("<builtin:") || candidate_owner.starts_with("<builtin:")
+}
+
+/// senpi `detectExtensionConflicts`: tools and flags registered under the same name by different
+/// extensions are reported (all extensions stay loaded; load order decides precedence).
+pub fn detect_extension_conflicts(extensions: &[LoadedExtension]) -> Vec<ExtensionError> {
+    let mut conflicts = Vec::new();
+    let mut tool_owners: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut flag_owners: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut report = |path: &str, error: String| conflicts.push(ExtensionError { extension_path: path.into(), event: "load".into(), error, stack: None });
+    for extension in extensions {
+        let path = extension.identity.path.as_str();
+        for tool in &extension.tools {
+            let name = tool.definition.name.as_str();
+            match tool_owners.get(name) {
+                Some(existing) if *existing != path => {
+                    if !should_suppress_extension_conflict(existing, path) { report(path, format!("Tool \"{name}\" conflicts with {existing}")); }
+                }
+                Some(_) => {}
+                None => { tool_owners.insert(name, path); }
+            }
+        }
+        for flag in &extension.flags {
+            let name = flag.name.as_str();
+            match flag_owners.get(name) {
+                Some(existing) if *existing != path => {
+                    if !should_suppress_extension_conflict(existing, path) { report(path, format!("Flag \"--{name}\" conflicts with {existing}")); }
+                }
+                Some(_) => {}
+                None => { flag_owners.insert(name, path); }
+            }
+        }
+    }
+    conflicts
 }

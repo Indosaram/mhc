@@ -72,21 +72,3 @@ pub async fn complete(request: CompletionRequest, context: ExtensionContext) -> 
     let message = result.map_err(|error| CompletionError(error.to_string()))?;
     maho_codemode::completion::handler::format_completion(&message, &model.provider, &model.id, request.schema.is_some())
 }
-
-pub struct ImageSdk;
-impl maho_codemode::tool::image_resize::EvalImageSdk for ImageSdk {
-    fn resize_image<'a>(&'a self, bytes: Vec<u8>, mime_type: &'a str, max_bytes: Option<usize>) -> maho_codemode::tool::image_resize::ImageFuture<'a, Option<maho_codemode::tool::image_resize::ResizedImage>> {
-        Box::pin(async move {
-            let mut options = crate::utils::image_resize::ImageResizeOptions::default();
-            if let Some(max_bytes) = max_bytes { options.max_bytes = max_bytes as f64; }
-            let result = crate::utils::image_process::process_image(&bytes, mime_type,
-                crate::utils::image_process::ProcessImageOptions { resize_options: Some(options), ..Default::default() }).await?;
-            Ok(Some(maho_codemode::tool::image_resize::ResizedImage { data: result.data,
-                mime_type: result.mime_type, dimension_note: result.hints.join("\n") }))
-        })
-    }
-    fn convert_to_png<'a>(&'a self, data: &'a str, mime_type: &'a str) -> maho_codemode::tool::image_resize::ImageFuture<'a, Option<maho_codemode::tool::image_resize::EvalImageContent>> {
-        Box::pin(async move { Ok(crate::utils::image_convert::convert_to_png(data, mime_type).map(|image|
-            maho_codemode::tool::image_resize::EvalImageContent { data: image.data, mime_type: image.mime_type })) })
-    }
-}

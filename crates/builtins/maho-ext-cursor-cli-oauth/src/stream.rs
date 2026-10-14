@@ -6,6 +6,13 @@ pub struct StreamDeps {
     pub settings:crate::settings::CursorCliOauthProviderSettings,pub router:std::sync::Arc<tokio::sync::Mutex<crate::session_router::SessionRouter>>,
     pub environment:std::collections::BTreeMap<String,String>,pub now:std::sync::Arc<dyn Fn()->i64+Send+Sync>,
 }
+/// A turn refused before any spawn (senpi `stream.ts` catch path): one error event, then the end.
+pub fn failed_stream(model:&Model,at:i64,message:&str)->AssistantMessageEventStream {
+    let mut mapper=StreamMapper::new(model,at);
+    mapper.output.stop_reason=StopReason::Error;mapper.output.error_message=Some(message.into());
+    mapper.stream.push(Event::Error {reason:maho_ai::types::ErrorReason::Error,error:mapper.output.clone()});mapper.stream.end(None);
+    mapper.stream
+}
 pub fn stream_cursor_cli(model:Model,context:maho_ai::types::Context,options:Option<maho_ai::types::SimpleStreamOptions>,deps:StreamDeps)->AssistantMessageEventStream {
     let mut mapper=StreamMapper::new(&model,(deps.now)());let stream=mapper.stream.clone();
     tokio::spawn(async move {

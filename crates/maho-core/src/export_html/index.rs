@@ -10,7 +10,7 @@ const JS: &str = include_str!("templates/template.js");
 const MARKED: &str = include_str!("templates/vendor/marked.min.js");
 const HIGHLIGHT: &str = include_str!("templates/vendor/highlight.min.js");
 
-fn app_name() -> &'static str { "maho" }
+fn app_name() -> String { crate::config::app_name() }
 
 fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
     if let Some(hex) = color.strip_prefix('#') && hex.len() == 6 {
@@ -39,16 +39,13 @@ fn derive_export_colors(base: &str) -> (String, String, String) {
     (page, card, info)
 }
 
+/// senpi `expandTildePath`: `normalizePath` with the default options.
 fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return PathBuf::from(home).join(rest);
-    }
-    PathBuf::from(path)
+    PathBuf::from(crate::paths::normalize_path(path, &crate::paths::PathInputOptions::default()))
 }
 
-fn normalize_output(path: &str) -> PathBuf { expand_tilde(path) }
+/// senpi: `normalizePath(outputPath)` followed by `expandTildePath`.
+fn normalize_output(path: &str) -> PathBuf { expand_tilde(&crate::paths::normalize_path(path, &crate::paths::PathInputOptions::default())) }
 
 type ExportPresentation = (Option<String>, Option<Value>, Option<Value>);
 pub type ExportColors = (std::collections::BTreeMap<String, String>, std::collections::BTreeMap<String, String>);
@@ -145,12 +142,29 @@ pub fn export_session_data_to_html(header: Value, entries: Vec<Value>, leaf_id: 
     export_html_data(header, entries, leaf_id, output_path, theme_name, presentation, ThemeColors::default())
 }
 
-pub fn export_from_file(input_path: &str, output_path: Option<&str>, theme_name: Option<&str>) -> Result<String, String> {
-    let input = Path::new(input_path);
-    if !input.exists() { return Err(format!("File not found: {}", input.display())); }
-    let path = input.to_string_lossy().into_owned();
-    let manager = crate::session_manager::SessionManager::open(&path, None, None, None);
-    export_html(manager.header().unwrap_or(Value::Null), manager.entries(), manager.leaf_id().map(str::to_owned), output_path, theme_name, None, None)
+/// Node `basename(path, ".jsonl")`: the file name with only a trailing `.jsonl` removed (a name
+/// that is exactly the suffix keeps it).
+fn basename_without_jsonl(path: &str) -> String {
+    let name = Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    match name.strip_suffix(".jsonl") {
+        Some(stem) if !stem.is_empty() => stem.to_owned(),
+        _ => name,
+    }
+}
+
+/// senpi `exportFromFile`: `colors` carries the resolved theme colors (`getResolvedThemeColors` /
+/// `getThemeExportColors`); `None` falls back to the colors derived from the default background.
+pub fn export_from_file(input_path: &str, output_path: Option<&str>, theme_name: Option<&str>, colors: Option<ExportColors>) -> Result<String, String> {
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let resolved = crate::paths::resolve_path(input_path, &cwd.to_string_lossy(), &crate::paths::PathInputOptions::default());
+    if !Path::new(&resolved).exists() { return Err(format!("File not found: {resolved}")); }
+    let manager = crate::session_manager::SessionManager::open(&resolved, None, None, None)?;
+    let output = match output_path {
+        Some(path) => path.to_owned(),
+        None => format!("{}-session-{}.html", app_name(), basename_without_jsonl(&resolved)),
+    };
+    let colors = colors.map_or_else(ThemeColors::default, |(colors, export)| ThemeColors { colors, export });
+    export_html_data(manager.header().unwrap_or(Value::Null), manager.entries(), manager.leaf_id().map(str::to_owned), Some(&output), theme_name, (None, None, None), colors)
 }
 
 pub fn export_session_to_html(session: &crate::session_manager::SessionManager, output_path: Option<&str>, theme_name: Option<&str>, system_prompt: Option<String>) -> Result<String, String> {
@@ -163,7 +177,7 @@ pub fn export_session_to_html_with_tools(session: &crate::session_manager::Sessi
     if !Path::new(file).exists() { return Err("Nothing to export yet - start a conversation first".to_owned()); }
     let output = match output_path {
         Some(path) => path.to_owned(),
-        None => format!("{}-session-{}.html", app_name(), Path::new(file).file_stem().map_or_else(|| "session".into(), |stem| stem.to_string_lossy().into_owned())),
+        None => format!("{}-session-{}.html", app_name(), basename_without_jsonl(file)),
     };
     export_html(session.header().unwrap_or(Value::Null), session.entries(), session.leaf_id().map(str::to_owned), Some(&output), theme_name, system_prompt, tools)
 }
@@ -172,6 +186,36 @@ pub fn export_session_to_html_with_tools(session: &crate::session_manager::Sessi
 mod tests {
     use super::*;
     #[test] fn tilde_path_expands_home() { assert!(expand_tilde("~/x").to_string_lossy().ends_with("/x")); }
+
+    #[test]
+    fn default_export_name_strips_only_a_jsonl_suffix() {
+        assert_eq!(basename_without_jsonl("/s/2026_abc.jsonl"), "2026_abc");
+        assert_eq!(basename_without_jsonl("/s/session.json"), "session.json");
+        assert_eq!(basename_without_jsonl("/s/.jsonl"), ".jsonl");
+    }
+
+    #[test]
+    fn export_from_file_reports_the_resolved_missing_path() {
+        let error = export_from_file("definitely-missing-session.jsonl", None, None, None).expect_err("missing file");
+        let expected = std::env::current_dir().expect("cwd").join("definitely-missing-session.jsonl");
+        assert_eq!(error, format!("File not found: {}", expected.display()));
+    }
+
+    #[test]
+    fn export_from_file_writes_themed_html_for_a_session_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cwd = tmp.path().to_string_lossy().into_owned();
+        let sessions = tmp.path().join("sessions");
+        let mut manager = crate::session_manager::SessionManager::create(&cwd, Some(&sessions.to_string_lossy()), None);
+        manager.append_message(json!({"role":"user","content":"hello","timestamp":1}));
+        manager.append_message(json!({"role":"assistant","content":[{"type":"text","text":"world"}],"stopReason":"stop","timestamp":2}));
+        let input = manager.session_file().expect("session file").to_owned();
+        let output = tmp.path().join("from-file.html");
+        let colors: std::collections::BTreeMap<String, String> = [("text".to_owned(), "#101010".to_owned())].into();
+        let written = export_from_file(&input, output.to_str(), None, Some((colors, Default::default()))).expect("export from file");
+        assert_eq!(written, output.to_string_lossy());
+        assert!(std::fs::read_to_string(output).expect("read export").contains("--text: #101010;"));
+    }
     #[test] fn session_payload_is_base64_embedded_and_carries_custom_tool_html() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let output = tmp.path().join("export.html");
@@ -236,6 +280,27 @@ mod tests {
         assert_eq!(rendered["call-1"]["callHtml"], "<div class=\"ansi-line\">call</div>");
         assert_eq!(rendered["call-1"]["resultHtmlExpanded"], "<div class=\"ansi-line\">expanded</div>");
         assert_eq!(*calls.lock().expect("recorded calls"), vec!["call", "collapsed", "expanded"]);
+    }
+
+    #[test]
+    fn pre_render_walk_renders_custom_result_stored_without_details() {
+        use std::sync::Arc;
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let lookup: super::super::tool_renderer::ToolRendererLookup = Arc::new(move |_| {
+            Some(Arc::new(RecordedRenderer(recorded.clone())) as Arc<dyn maho_ext_api::ErasedToolRenderers>)
+        });
+        let mut renderer = super::super::tool_renderer::ToolHtmlRenderer::new(super::super::tool_renderer::ToolHtmlRendererDeps {
+            get_tool_renderer: lookup,
+            theme: maho_ext_api::Theme::default(),
+            cwd: PathBuf::from("/work"),
+            width: None,
+        });
+        let entries = vec![
+            json!({"type":"message","message":{"role":"toolResult","toolCallId":"call-1","toolName":"custom","content":[{"type":"text","text":"ok"}],"isError":false}}),
+        ];
+        let rendered = pre_render_custom_tools(&entries, &mut renderer);
+        assert_eq!(rendered["call-1"]["resultHtmlExpanded"], "<div class=\"ansi-line\">expanded</div>");
     }
 
     #[test]

@@ -64,6 +64,13 @@ async fn contributes_no_skill_or_section_when_credentials_are_absent() {
     assert_eq!(before_agent_start(&api, &ctx).await, None);
 }
 
+#[test]
+fn embedded_skill_materializes_the_bundled_text() {
+    let path = maho_ext_imagegen::embedded_skill_path().expect("embedded skill path");
+    let bundled = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/SKILL.md")).expect("bundled skill");
+    assert_eq!(std::fs::read_to_string(path).expect("embedded skill"), bundled);
+}
+
 #[tokio::test]
 async fn omits_a_missing_skill_path_without_crashing() {
     let api = api_with(ImageGen { skill_path: std::path::PathBuf::from("/nonexistent/skill/SKILL.md") });

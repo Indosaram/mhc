@@ -176,12 +176,12 @@ async fn run_policy_scenario() {
     let mut api=ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
     maho_ext_compaction::CompactionExtension.register(&mut api);
     let source=vec![serde_json::from_value(serde_json::json!({"role":"assistant","content":[{"type":"toolCall","id":"call","name":"read","arguments":{}}],"api":"faux","provider":"faux","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":0})).expect("native compaction scenario invariant"),serde_json::from_value(serde_json::json!({"role":"toolResult","toolCallId":"call","toolName":"read","content":[{"type":"text","text":"x".repeat(30000)}],"isError":false,"timestamp":0})).expect("native compaction scenario invariant")];
-    let mut event=ExtensionEvent::Context {messages:source.clone()};
+    let mut event=ExtensionEvent::Context {messages:source.clone(),entry_ids:Vec::new()};
     let result=api.registered.handlers[&EventKind::Context][0](&mut event,&ctx).await.expect("native compaction scenario invariant");
     let EventResult::Context {messages:Some(preserved)}=result else {panic!("missing registered context")};
     assert_eq!(serde_json::to_value(&preserved).expect("native compaction scenario invariant"),serde_json::to_value(&source).expect("native compaction scenario invariant"));
     actions.settings.lock().expect("native compaction scenario invariant").tool_admission_enabled=true;
-    let mut event=ExtensionEvent::Context {messages:source};
+    let mut event=ExtensionEvent::Context {messages:source,entry_ids:Vec::new()};
     let result=api.registered.handlers[&EventKind::Context][0](&mut event,&ctx).await.expect("native compaction scenario invariant");
     let EventResult::Context {messages:Some(projected)}=result else {panic!("missing registered context")};
     assert!(serde_json::to_value(projected).expect("native compaction scenario invariant")[1]["content"][0]["text"].as_str().expect("native compaction scenario invariant").len()<30000);
@@ -242,7 +242,7 @@ async fn run_native_scenario(cancel: bool, threshold: bool) {
 
 async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     use maho_core::agent_session::{AgentSession, AgentSessionConfig};
-    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider, faux_provider};
+    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider};
     let temp = tempfile::tempdir().expect("native compaction scenario invariant");
     let cwd = temp.path().to_string_lossy().into_owned();
     let idle_variant=matches!(variant,"idle-shutdown"|"idle-model-change"|"idle-stale-runner");
@@ -337,10 +337,22 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     }
     let credentials = maho_core::auth_storage::AuthStorage::in_memory(Default::default());
     credentials.set(&model.provider,Some(serde_json::json!({"type":"api_key","key":"faux"}))).expect("native compaction scenario invariant");
-    let native = faux_provider(RegisterFauxProviderOptions { api: Some(model.api.clone()), provider: Some(model.provider.clone()), tokens_per_second: Some(0.), ..Default::default() });
-    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-        models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(vec![native.provider]), ..Default::default()
+    // senpi test/suite/harness.ts:150-175: the faux stream is an API-registry entry, and the provider is
+    // registered over it with a configured key, so request auth resolves that key (no faux base auth).
+    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(Vec::new()), ..Default::default()
     });
+    runtime.register_provider(&model.provider, maho_core::provider_composer::ProviderConfigInput {
+        config: maho_core::model_config_schema::ModelsJsonProvider {
+            base_url: Some(model.base_url.clone()), api_key: Some("faux".into()), api: Some(model.api.clone()),
+            models: Some(vec![maho_core::model_config_schema::ModelsJsonModel {
+                id: model.id.clone(), api: Some(model.api.clone()), base_url: Some(model.base_url.clone()), reasoning: Some(model.reasoning),
+                input: Some(model.input.clone()), cost: Some(model.cost.clone()), context_window: Some(model.context_window as f64),
+                max_tokens: Some(model.max_tokens as f64), compat: model.compat.clone().map(|compat| compat.0), ..Default::default()
+            }]),
+            ..Default::default()
+        }, ..Default::default()
+    }).expect("configured faux provider");
     let mut manager = maho_core::session_manager::SessionManager::in_memory(&cwd,None,None);
     manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(if variant=="overflow" {2000} else if idle_variant {25000} else {30000}),"timestamp":0}));
     manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
@@ -354,7 +366,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"ready"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":input,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":input,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
     }
     let agent=maho_agent_for_test(model);
-    if threshold || variant=="reminder" || idle_variant {agent.set_messages(manager.build_context(manager.leaf_id()).messages.into_iter().map(|value|serde_json::from_value(value).expect("seeded native message")).collect());}
+    if threshold || variant=="reminder" || idle_variant {agent.set_messages(manager.current_context().messages.into_iter().map(|value|serde_json::from_value(value).expect("seeded native message")).collect());}
     let storage = maho_core::settings_manager::InMemorySettingsStorage::default();
     maho_core::settings_manager::SettingsStorage::with_lock(&storage, maho_core::settings_manager::SettingsScope::Global,
         &mut |_|Some(if variant=="fractional" {serde_json::json!({"compaction":{"keepRecentTokens":1,"reserveTokens":100,"speculativeEnabled":false,"speculativeFraction":0.42,"speculativeCooldownMs":321.5,"restorationEnabled":false,"restorationMaxItems":2.5,"restorationMaxTokensPerItem":11.5,"restorationMaxTotalTokens":22.5,"restorationContextRatio":0.03,"idleCompactionEnabled":false,"graceBandEnabled":false,"toolAdmissionEnabled":false,"reminderEnabled":false,"reserveScalingEnabled":false,"speculativeLeadTokens":12000.5,"summarizationMaxDurationMs":90000.5}})} else {serde_json::json!({"compaction":{"keepRecentTokens":1}})}.to_string())).expect("native compaction scenario invariant");
@@ -861,3 +873,34 @@ fn disabled_restoration_and_rejected_compaction_never_read_unbound_context() {
     assert!(state.pending_payload.is_none());
 }
 
+
+#[allow(dead_code)] // shared with examples/resume_compaction_native.rs, which includes this file
+fn lane_context(global_settings: Option<&str>) -> (tempfile::TempDir, ExtensionContext) {
+    let temp = tempfile::tempdir().expect("lane temp dir");
+    let agent = temp.path().join("agent");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    if let Some(settings) = global_settings { std::fs::write(agent.join("settings.json"), settings).expect("global settings"); }
+    let mut ctx = context();
+    ctx.cwd = temp.path().join("project");
+    ctx.agent_dir = agent;
+    ctx.model = Some(serde_json::from_value(serde_json::json!({"id":"m","name":"m","api":"anthropic-messages","provider":"anthropic-subscription","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("lane model"));
+    (temp, ctx)
+}
+
+#[test]
+fn live_lane_policy_stands_down_for_resident_sdk_lane() {
+    let (_temp, ctx) = lane_context(None);
+    assert!(maho_ext_compaction::lane_policy::live_disables_senpi_compaction(&std::sync::Mutex::default(), &ctx));
+}
+
+#[test]
+fn live_lane_policy_keeps_senpi_active_when_resume_mode_off() {
+    let (_temp, ctx) = lane_context(Some(r#"{"claudeSdkOauthProvider":{"resumeMode":"off"}}"#));
+    assert!(!maho_ext_compaction::lane_policy::live_disables_senpi_compaction(&std::sync::Mutex::default(), &ctx));
+}
+
+#[test]
+fn live_lane_policy_keeps_senpi_active_with_compaction_model_override() {
+    let (_temp, ctx) = lane_context(Some(r#"{"compaction":{"model":"deepseek/chat"}}"#));
+    assert!(!maho_ext_compaction::lane_policy::live_disables_senpi_compaction(&std::sync::Mutex::default(), &ctx));
+}

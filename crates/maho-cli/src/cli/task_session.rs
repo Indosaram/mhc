@@ -73,7 +73,7 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
         session_id: session.clone(), state_dir: ownership.state_dir.clone(), bounds: ownership.team_bounds,
         omo_config: component.engine.config.clone(), agent_names: component.engine.agents.keys().cloned().collect(),
         member_extension: senpi_task::team::runtime_types::TeamMemberExtensionConfig {
-            entry_path: "builtin:task".into(), inherited_extensions: Some(senpi_task::runners::rpc::parent_extensions::parse_extension_entries(&std::env::args().collect::<Vec<_>>())),
+            entry_path: maho_omo_task::engine::MEMBER_EXTENSION_ENTRY.into(), inherited_extensions: Some(senpi_task::runners::rpc::parent_extensions::parse_extension_entries(&std::env::args().collect::<Vec<_>>())),
         },
         append_task_event: None, now: None, new_message_id: None,
     }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?);
@@ -206,8 +206,10 @@ pub fn factory_with_workpool_events(executor: tokio::runtime::Handle, parent: Ar
         let model = options.model.as_ref().and_then(|model| model.downcast_ref::<maho_ai::model::Model>()).cloned();
         let registry = options.model_registry.as_ref().and_then(|registry| registry.downcast_ref::<super::task_runners::NativeChildModelRegistry>()).map(|registry| registry.0.clone());
         let models = options.model_runtime.as_ref().and_then(|runtime| runtime.downcast_ref::<maho_core::model_runtime::ModelRuntime>()).cloned();
-        let manager = super::task_runners::native_child_session_manager(&options);
-        let child_builtins = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&options.cwd), Default::default());
+        let manager = super::task_runners::native_child_session_manager(&options)?;
+        let shell_options = maho_tools::bash::BashToolOptions { shell_env: Some(Arc::new(maho_core::utils::shell::get_shell_env)), ..Default::default() };
+        let child_builtins = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&options.cwd),
+            maho_tools::index::ToolsOptions { bash: shell_options.clone(), powershell: shell_options, ..Default::default() });
         let custom = options.custom_tools.iter().map(|tool| {
             let name = tool.name().to_owned();
             if let Some(definition) = child_builtins.get(&name) { return Ok(definition.clone()); }

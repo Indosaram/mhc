@@ -3,9 +3,12 @@
 //! Combined autocomplete provider handling `/` slash commands, `@` and bare-path file
 //! suggestions (fd-backed fuzzy search plus directory listing), and `$` skill invocations.
 
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
 
 use crate::dollar_invocation_autocomplete::{
     find_dollar_skill_mentions, get_dollar_invocation_context, get_dollar_invocation_suggestions,
@@ -43,6 +46,44 @@ pub struct ApplyCompletionResult {
 }
 
 pub type ArgumentCompletions = Rc<dyn Fn(&str) -> Option<Vec<AutocompleteItem>>>;
+
+/// senpi's `AbortSignal` for one autocomplete request. `abort` marks the request aborted and kills
+/// the in-flight `fd` child (`child.kill("SIGKILL")`), so a superseded walk stops early.
+#[derive(Clone, Default)]
+pub struct AutocompleteSignal {
+    state: Arc<AutocompleteSignalState>,
+}
+
+#[derive(Default)]
+struct AutocompleteSignalState {
+    aborted: AtomicBool,
+    child: Mutex<Option<Child>>,
+}
+
+impl AutocompleteSignal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn abort(&self) {
+        self.state.aborted.store(true, Ordering::SeqCst);
+        if let Some(child) = self.state.child.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
+            // Upstream kills only a still-running child; killing an exited one is a harmless error.
+            let _ = child.kill();
+        }
+    }
+
+    pub fn is_aborted(&self) -> bool {
+        self.state.aborted.load(Ordering::SeqCst)
+    }
+}
+
+/// The native shape of senpi's async `getSuggestions`: either resolved now, or resolved later by a
+/// worker thread through the channel (polled by the editor from the host loop).
+pub enum SuggestionRequest {
+    Ready(Option<AutocompleteSuggestions>),
+    Pending(mpsc::Receiver<Option<AutocompleteSuggestions>>),
+}
 
 /// A slash command definition or a plain completion item; senpi's `SlashCommand | AutocompleteItem`.
 #[derive(Clone)]
@@ -120,6 +161,20 @@ pub trait AutocompleteProvider {
         cursor_col: usize,
         force: bool,
     ) -> Option<AutocompleteSuggestions>;
+
+    /// senpi's `getSuggestions(lines, line, col, { signal, force })`. Providers with slow work (the
+    /// `fd` walk) return [`SuggestionRequest::Pending`] and honour `signal`; the default resolves
+    /// synchronously through [`AutocompleteProvider::get_suggestions`]. Wrappers must forward it.
+    fn request_suggestions(
+        &mut self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+        force: bool,
+        _signal: &AutocompleteSignal,
+    ) -> SuggestionRequest {
+        SuggestionRequest::Ready(self.get_suggestions(lines, cursor_line, cursor_col, force))
+    }
 
     fn apply_completion(
         &self,
@@ -417,6 +472,7 @@ fn walk_directory_with_fd(
     fd_path: &str,
     query: &str,
     max_results: usize,
+    signal: &AutocompleteSignal,
     max_depth: Option<usize>,
 ) -> Vec<(String, bool)> {
     let mut args: Vec<String> = vec![
@@ -451,14 +507,40 @@ fn walk_directory_with_fd(
         args.push(build_fd_path_query(query));
     }
 
-    let output = match Command::new(fd_path).args(&args).output() {
-        Ok(output) => output,
-        Err(_) => return Vec::new(),
-    };
-    if !output.status.success() {
+    if signal.is_aborted() {
         return Vec::new();
     }
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let Ok(mut child) = Command::new(fd_path)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    let child_stdout = child.stdout.take();
+    {
+        // Publish the child under the lock that `abort` takes, so an abort racing the spawn either
+        // sees the child (and kills it) or is seen here.
+        let mut slot = signal.state.child.lock().unwrap_or_else(PoisonError::into_inner);
+        if signal.is_aborted() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Vec::new();
+        }
+        *slot = Some(child);
+    }
+    let mut bytes = Vec::new();
+    let read = child_stdout.map(|mut stdout| stdout.read_to_end(&mut bytes));
+    // Take the child out before waiting so a concurrent `abort` never blocks on the wait.
+    let child = signal.state.child.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let status = child.map(|mut child| child.wait());
+    let succeeded = matches!(read, Some(Ok(_))) && matches!(status, Some(Ok(status)) if status.success());
+    if signal.is_aborted() || !succeeded {
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&bytes).to_string();
     if stdout.trim().is_empty() {
         return Vec::new();
     }
@@ -556,7 +638,7 @@ impl CombinedAutocompleteProvider {
         None
     }
 
-    fn resolve_scoped_fuzzy_query(&self, raw_query: &str) -> Option<(String, String, String)> {
+    fn resolve_scoped_fuzzy_query(base_path: &str, raw_query: &str) -> Option<(String, String, String)> {
         let normalized_query = to_display_path(raw_query);
         let slash_index = normalized_query.rfind('/')?;
 
@@ -568,7 +650,7 @@ impl CombinedAutocompleteProvider {
         } else if display_base.starts_with('/') {
             display_base.clone()
         } else {
-            join_posix(&[self.base_path.as_str(), display_base.as_str()])
+            join_posix(&[base_path, display_base.as_str()])
         };
 
         if !Path::new(&base_dir).is_dir() {
@@ -729,26 +811,36 @@ impl CombinedAutocompleteProvider {
         score
     }
 
-    fn get_base_dir_suggestions(&self, base_dir: &str, query: &str) -> Vec<(String, bool)> {
-        let Some(fd_path) = &self.fd_path else {
+    fn get_base_dir_suggestions(fd_path: &str, base_dir: &str, query: &str, signal: &AutocompleteSignal) -> Vec<(String, bool)> {
+        if signal.is_aborted() {
             return Vec::new();
-        };
-        walk_directory_with_fd(base_dir, fd_path, query, 100, Some(1))
+        }
+        walk_directory_with_fd(base_dir, fd_path, query, 100, signal, Some(1))
     }
 
-    fn get_fuzzy_file_suggestions(&self, query: &str, is_quoted_prefix: bool) -> Vec<AutocompleteItem> {
-        let Some(fd_path) = &self.fd_path else {
+    /// Associated (not `&self`) so the walk can run on a worker thread with owned inputs.
+    fn get_fuzzy_file_suggestions(
+        base_path: &str,
+        fd_path: &str,
+        query: &str,
+        is_quoted_prefix: bool,
+        signal: &AutocompleteSignal,
+    ) -> Vec<AutocompleteItem> {
+        if signal.is_aborted() {
             return Vec::new();
-        };
+        }
 
-        let scoped_query = self.resolve_scoped_fuzzy_query(query);
+        let scoped_query = Self::resolve_scoped_fuzzy_query(base_path, query);
         let (fd_base_dir, fd_query) = match &scoped_query {
             Some((base_dir, scoped, _)) => (base_dir.clone(), scoped.clone()),
-            None => (self.base_path.clone(), query.to_string()),
+            None => (base_path.to_string(), query.to_string()),
         };
 
-        let base_dir_entries = self.get_base_dir_suggestions(&fd_base_dir, &fd_query);
-        let recursive_entries = walk_directory_with_fd(&fd_base_dir, fd_path, &fd_query, 100, None);
+        let base_dir_entries = Self::get_base_dir_suggestions(fd_path, &fd_base_dir, &fd_query, signal);
+        let recursive_entries = walk_directory_with_fd(&fd_base_dir, fd_path, &fd_query, 100, signal, None);
+        if signal.is_aborted() {
+            return Vec::new();
+        }
 
         let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut entries: Vec<(String, bool)> = Vec::new();
@@ -830,6 +922,43 @@ impl CombinedAutocompleteProvider {
 }
 
 impl AutocompleteProvider for CombinedAutocompleteProvider {
+    /// The `@` fuzzy search walks with `fd`; senpi spawns it asynchronously with an abort signal, so
+    /// here it runs on a worker thread and resolves through the channel. Everything else is
+    /// synchronous and resolves immediately.
+    fn request_suggestions(
+        &mut self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+        force: bool,
+        signal: &AutocompleteSignal,
+    ) -> SuggestionRequest {
+        let current_line = lines.get(cursor_line).cloned().unwrap_or_default();
+        let text_before_cursor = current_line.get(..cursor_col).unwrap_or(&current_line);
+        if let Some(at_prefix) = self.extract_at_prefix(text_before_cursor) {
+            let Some(fd_path) = self.fd_path.clone() else {
+                return SuggestionRequest::Ready(None);
+            };
+            let parsed = parse_path_prefix(&at_prefix);
+            let base_path = self.base_path.clone();
+            let signal = signal.clone();
+            let (sender, receiver) = mpsc::channel();
+            std::thread::spawn(move || {
+                let items = Self::get_fuzzy_file_suggestions(
+                    &base_path,
+                    &fd_path,
+                    &parsed.raw_prefix,
+                    parsed.is_quoted_prefix,
+                    &signal,
+                );
+                let suggestions = (!items.is_empty()).then_some(AutocompleteSuggestions { items, prefix: at_prefix });
+                // The receiver is gone when the editor dropped a superseded request.
+                let _ = sender.send(suggestions);
+            });
+            return SuggestionRequest::Pending(receiver);
+        }
+        SuggestionRequest::Ready(self.get_suggestions(lines, cursor_line, cursor_col, force))
+    }
     fn get_mention_ranges(&self, line: &str) -> Vec<MentionRange> {
         find_dollar_skill_mentions(line, &known_skill_names(&self.commands))
             .into_iter()
@@ -855,8 +984,16 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
 
         if let Some(at_prefix) = self.extract_at_prefix(&text_before_cursor) {
             let parsed = parse_path_prefix(&at_prefix);
-            let suggestions =
-                self.get_fuzzy_file_suggestions(&parsed.raw_prefix, parsed.is_quoted_prefix);
+            let Some(fd_path) = &self.fd_path else {
+                return None;
+            };
+            let suggestions = Self::get_fuzzy_file_suggestions(
+                &self.base_path,
+                fd_path,
+                &parsed.raw_prefix,
+                parsed.is_quoted_prefix,
+                &AutocompleteSignal::new(),
+            );
             if suggestions.is_empty() {
                 return None;
             }

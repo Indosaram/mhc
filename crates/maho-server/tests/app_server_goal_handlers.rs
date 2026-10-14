@@ -15,7 +15,7 @@ fn factory() -> SessionFactory {
         let streams = faux_streams(provider.core.clone());
         let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model,context,options.map(|options|options.simple)));
         let credentials=Arc::new(maho_core::auth_storage::AuthStorage::in_memory([("faux".into(),json!({"type":"api_key","key":"faux-test"}))].into_iter().collect()));
-        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {credentials:Some(credentials),models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()])});
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {credentials:Some(credentials),models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()]), ..Default::default() });
         AgentSession::new(AgentSessionConfig {
             agent:maho_agent::Agent::new(maho_agent::AgentOptions {initial_state:Some(maho_agent::agent::PartialAgentState {model:Some(model),..Default::default()}),stream_fn:Some(stream_fn),..Default::default()}),
             session_manager:options.session_manager.ok_or("Missing session manager")?,settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
@@ -123,6 +123,15 @@ async fn goal_set_updates_status_and_budget_and_rejects_unknown_thread_without_s
 }
 
 #[tokio::test]
+async fn thread_resume_of_unknown_id_reports_no_rollout_found() {
+    let mut harness = harness().await;
+    let resumed = harness.call(json!({"id":2,"method":"thread/resume","params":{"threadId":"missing"}})).await;
+    assert_eq!(resumed["error"]["code"],-32603);
+    assert_eq!(resumed["error"]["message"],"no rollout found for thread id missing");
+    harness.runtime.dispose().await;
+}
+
+#[tokio::test]
 async fn invalid_status_transition_leaves_persisted_goal_unchanged() {
     let mut harness = harness().await;
     let thread = harness.start_thread().await;
@@ -202,7 +211,7 @@ fn probe_factory(sessions:Arc<Mutex<std::collections::BTreeMap<String,maho_core:
             let streams = faux_streams(provider.core.clone());
             let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model,context,options.map(|options|options.simple)));
             let credentials=Arc::new(maho_core::auth_storage::AuthStorage::in_memory([("faux".into(),json!({"type":"api_key","key":"faux-test"}))].into_iter().collect()));
-            let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {credentials:Some(credentials),models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()])});
+            let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {credentials:Some(credentials),models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()]), ..Default::default() });
             let session = AgentSession::new(AgentSessionConfig {
                 agent:maho_agent::Agent::new(maho_agent::AgentOptions {initial_state:Some(maho_agent::agent::PartialAgentState {model:Some(model),..Default::default()}),stream_fn:Some(stream_fn),..Default::default()}),
                 session_manager:options.session_manager.ok_or("Missing session manager")?,settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
@@ -241,6 +250,15 @@ impl ProbeHarness {
             let message = tokio::time::timeout(std::time::Duration::from_secs(5), self.receive.recv()).await.expect("response within deadline").expect("connection stays open");
             if message.get("id").is_some_and(|value| *value == id) { return message; }
         }
+    }
+    /// senpi `ThreadRegistry.createThread` only calls `SessionManager.create` (threads/registry.ts:110-127);
+    /// the session file appears on the first assistant flush, so a thread must run a turn before it
+    /// can be unloaded and found again on disk.
+    async fn persist(&self, id: &str) {
+        let disposition = self.session(id).prompt("hello", maho_core::agent_session::PromptOptions::default()).await.expect("faux turn runs");
+        assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Started);
+        let file = self.session(id).session_file().expect("session file path");
+        assert!(std::path::Path::new(&file).exists(), "the first assistant flush persists the session");
     }
     async fn anchor(&self) -> Arc<tokio::sync::Notify> { self.runtime.mcp_inventory.lock().await.ready_signal() }
     async fn await_anchor(&self, anchor: &Arc<tokio::sync::Notify>) { tokio::time::timeout(std::time::Duration::from_secs(5), anchor.notified()).await.expect("post-rebind inventory anchor within deadline"); }
@@ -283,6 +301,7 @@ async fn runtime_rebinds_the_connection_ui_into_the_session_runner_on_thread_res
     let started = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
     let thread = started["result"]["thread"]["id"].as_str().unwrap().to_owned();
     harness.await_anchor(&anchor).await;
+    harness.persist(&thread).await;
     // Make the thread non-loaded (its inventory holder would be removed by the idle-unload lifecycle).
     assert!(harness.runtime.threads.unload_thread(&thread).await);
     harness.runtime.mcp_inventory.lock().await.remove_thread(&thread);
@@ -357,5 +376,26 @@ async fn runtime_rebinds_the_connection_ui_into_the_session_runner_on_loaded_thr
     assert_eq!(resumed["result"]["thread"]["id"].as_str(), Some(thread.as_str()));
     harness.await_anchor(&anchor).await;
     assert_eq!(harness.probe_read(&thread).await, "", "loaded thread/resume must bind a fresh AppServerUiContext, clearing the prior editor state");
+    harness.runtime.dispose().await;
+}
+
+/// Every load path binds at creation: a thread loaded only by thread/read (no start/resume attach)
+/// already has its per-thread MCP inventory and the stateful AppServerUiContext when the response
+/// arrives, so a later turn has approvals/questions and `mcpServerStatus/list {threadId}` resolves.
+#[tokio::test]
+async fn runtime_binds_ui_and_mcp_inventory_for_a_thread_loaded_by_thread_read() {
+    let mut harness = ProbeHarness::new().await;
+    let anchor = harness.anchor().await;
+    let started = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
+    let thread = started["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    harness.await_anchor(&anchor).await;
+    harness.persist(&thread).await;
+    assert!(harness.runtime.threads.unload_thread(&thread).await);
+    harness.runtime.mcp_inventory.lock().await.remove_thread(&thread);
+    let read = harness.call(json!({"id":3,"method":"thread/read","params":{"threadId":thread}})).await;
+    assert_eq!(read["result"]["thread"]["id"].as_str(), Some(thread.as_str()));
+    assert!(harness.runtime.mcp_inventory.lock().await.resolve(Some(&thread)).is_some(), "thread/read must register the thread's MCP inventory");
+    harness.probe_write(&thread, "read-marker").await;
+    assert_eq!(harness.probe_read(&thread).await, "read-marker", "thread/read must bind the stateful AppServerUiContext");
     harness.runtime.dispose().await;
 }

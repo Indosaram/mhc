@@ -43,11 +43,15 @@ impl OmoMount {
         // (`getOmoNativeStateDir` -> `<agentDir>/omo-senpi/omo-native`), which `OmoComponentOptions`
         // already resolves; the onboarding marker/decline/cooldown files are agent-global (they carry
         // per-project hashes INSIDE), so a project-local dir would be a divergence. Do not override it
-        // with `cwd`; `..Default::default()` keeps the library's own resolution.
+        // with `cwd`. Resolve it from the same `environment` handed to the components so a custom
+        // agent home in that map cannot diverge from the process-env default.
+        let telemetry_env: std::collections::HashMap<String, String> = environment.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+        let state_dir = maho_omo_telemetry::product_identity::get_omo_native_state_dir(&telemetry_env);
         Ok(Self::shipped(task, memory, &maho_omo::OmoComponentOptions {
             skills_root,
+            state_dir,
             facts_read_only_bootstrap: environment.get("MAHO_FACTS_READ_ONLY_BOOTSTRAP").is_some_and(|value|value=="1")&&maho_core::lockfile_policy::facts_lock_broker_enabled(),
-            env: environment, ..Default::default()
+            env: environment,
         }, OmoRuntimeOptions {
             logger: Some(Arc::new(maho_omo::logger::SinkLogger::new(Arc::new(|level, message, details| {
                 let diagnostic = match details {
@@ -80,8 +84,8 @@ impl OmoMount {
     pub fn factory(&self) -> NativeExtensionFactory {
         let path = format!("<builtin:{OMO_EXTENSION_IDENTITY}>");
         NativeExtensionFactory {
-            path: path.clone(),
-            source_info: maho_ext_api::SourceInfo { path, source: "builtin".to_owned(), ..Default::default() },
+            source_info: super::default_extensions::builtin_source_info(&path),
+            path,
             extension: Box::new(SharedOmoExtension(Arc::clone(&self.extension))),
         }
     }

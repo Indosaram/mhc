@@ -1,6 +1,6 @@
 use super::{connection::{InitializedConnection, TransportKind, parse_initialize_params}, envelope::{ClassifiedIncoming, populate_outbound_notification}, errors, notifications::SendMessage, registry::MethodRegistry};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}}};
 use tokio::sync::Mutex;
 
 pub struct ConnectionInput {
@@ -14,6 +14,37 @@ pub struct CoreConnection {
     pub transport_kind: TransportKind,
     pub send: SendMessage,
     pub close: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    /// senpi `NotificationRouter` per-connection `pending` / `closed` slow-client state.
+    pending: Arc<AtomicUsize>,
+    slow_closed: AtomicBool,
+}
+/// senpi `DEFAULT_OUTBOUND_QUEUE_LIMIT`.
+pub const OUTBOUND_QUEUE_LIMIT: usize = 32_768;
+impl CoreConnection {
+    /// senpi `NotificationRouter.enqueue`: a non-stdio connection with `OUTBOUND_QUEUE_LIMIT`
+    /// notifications in flight is closed as a slow client and receives nothing further.
+    async fn enqueue_notification(&self, message: Value) -> Result<(), errors::JsonRpcError> {
+        if self.slow_closed.load(Ordering::SeqCst) { return Ok(()); }
+        if self.transport_kind != TransportKind::Stdio && self.pending.load(Ordering::SeqCst) >= OUTBOUND_QUEUE_LIMIT {
+            if !self.slow_closed.swap(true, Ordering::SeqCst) && let Some(close) = &self.close { close("slow-client".to_owned()); }
+            return Ok(());
+        }
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        let result = (self.send)(message);
+        if self.transport_kind == TransportKind::Stdio {
+            let result = result.await;
+            self.pending.fetch_sub(1, Ordering::SeqCst);
+            return result;
+        }
+        // senpi `NotificationRouter.enqueue` never awaits a non-stdio send: the ws/unix send queues
+        // its frame when called, and only the pending counter waits for delivery.
+        let pending = self.pending.clone();
+        tokio::spawn(async move {
+            if let Err(error) = result.await { eprintln!("app-server notification delivery: {}", error.message); }
+            pending.fetch_sub(1, Ordering::SeqCst);
+        });
+        Ok(())
+    }
 }
 pub struct ServerCore {
     connections: BTreeMap<String, Arc<CoreConnection>>,
@@ -36,7 +67,7 @@ impl ServerCore {
         self.add_connection_input(ConnectionInput {id, transport_kind:TransportKind::Stdio, send, close:None})
     }
     pub fn add_connection_input(&mut self, input: ConnectionInput) -> Arc<CoreConnection> {
-        let connection = Arc::new(CoreConnection { initialized: Mutex::new(InitializedConnection::default()), transport_kind: input.transport_kind, send: input.send, close: input.close });
+        let connection = Arc::new(CoreConnection { initialized: Mutex::new(InitializedConnection::default()), transport_kind: input.transport_kind, send: input.send, close: input.close, pending: Arc::new(AtomicUsize::new(0)), slow_closed: AtomicBool::new(false) });
         self.connections.insert(input.id, connection.clone());
         connection
     }
@@ -49,8 +80,63 @@ impl ServerCore {
         if self.connections.remove(id).is_some() && let Some(on_disconnect) = &self.on_disconnect { on_disconnect(id.to_owned()); }
     }
     pub fn get_connection(&self, id: &str) -> Option<Arc<CoreConnection>> { self.connections.get(id).cloned() }
+    /// Owned snapshot of everything one `receive` needs, so a transport can release the core lock
+    /// before dispatching (pinned per-message dispatch holds no shared lock across the handler).
+    pub fn receive_context(&self, id: &str) -> Option<ReceiveContext> {
+        Some(ReceiveContext {
+            id: id.to_owned(), connection: self.connections.get(id)?.clone(), registry: self.registry.clone(),
+            agent_home: self.agent_home.clone(), version: self.version.clone(), os_type: self.os_type.clone(),
+            os_release: self.os_release.clone(), arch: self.arch.clone(), platform: self.platform.clone(),
+            approvals: self.approvals.clone(), user_input: self.user_input.clone(),
+        })
+    }
     pub async fn receive(&self, id: &str, envelope: ClassifiedIncoming) -> Result<(), errors::JsonRpcError> {
-        let Some(connection) = self.connections.get(id) else { return Ok(()); };
+        match self.receive_context(id) { Some(context) => context.receive(envelope).await, None => Ok(()) }
+    }
+    pub async fn send_notification_to_connection(&self, id: &str, notification: Value, now: u64) -> Result<bool, errors::JsonRpcError> {
+        let Some(connection) = self.connections.get(id) else { return Ok(false); };
+        if !connection.initialized.lock().await.can_deliver_notification(notification["method"].as_str().unwrap_or_default()) { return Ok(false); }
+        connection.enqueue_notification(populate_outbound_notification(notification, now)).await?;
+        Ok(true)
+    }
+    /// senpi `NotificationRouter.toThread` delivery to one subscriber. Returns whether the
+    /// connection counts as routed (initialized), even when its filters drop the message.
+    pub async fn send_thread_notification_to_connection(&self, id: &str, notification: Value, now: u64) -> Result<bool, errors::JsonRpcError> {
+        let Some(connection) = self.connections.get(id) else { return Ok(false); };
+        let deliver = {
+            let state = connection.initialized.lock().await;
+            if state.state.is_none() { return Ok(false); }
+            state.can_route_thread_notification(notification["method"].as_str().unwrap_or_default())
+        };
+        if deliver { connection.enqueue_notification(populate_outbound_notification(notification, now)).await?; }
+        Ok(true)
+    }
+    pub async fn broadcast_notification(&self, notification: Value, now: u64) -> Result<usize, errors::JsonRpcError> {
+        let mut delivered = 0;
+        for id in self.connections.keys() {
+            if self.send_notification_to_connection(id, notification.clone(), now).await? { delivered += 1; }
+        }
+        Ok(delivered)
+    }
+}
+/// See [`ServerCore::receive_context`].
+pub struct ReceiveContext {
+    id: String,
+    connection: Arc<CoreConnection>,
+    registry: MethodRegistry,
+    agent_home: String,
+    version: String,
+    os_type: String,
+    os_release: String,
+    arch: String,
+    platform: String,
+    approvals: Option<Arc<std::sync::Mutex<super::approval_bridge::ApprovalBridge>>>,
+    user_input: Option<Arc<std::sync::Mutex<super::user_input_bridge::UserInputBridge>>>,
+}
+impl ReceiveContext {
+    pub async fn receive(&self, envelope: ClassifiedIncoming) -> Result<(), errors::JsonRpcError> {
+        let id = self.id.as_str();
+        let connection = &self.connection;
         if connection.initialized.lock().await.state.is_some() && let Some(input) = &self.user_input {
             let routed = match &envelope {
                 ClassifiedIncoming::Notification(message) if message["method"] == "item/tool/userInputProgress" => Some(input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).progress(&message["params"])),
@@ -88,29 +174,22 @@ impl ServerCore {
                     let mut state = connection.initialized.lock().await.registry_connection();
                     state.id = id.to_owned();
                     dispatch_connection = Some(state.clone());
-                    self.registry.dispatch(state, request).await
+                    super::registry::ACTIVE_DISPATCH.scope(state.clone(), self.registry.dispatch(state, request)).await
                 }
             }
             ClassifiedIncoming::ProtocolInvalid(_) => json!({"id":null,"error":errors::invalid_request_error()}),
             ClassifiedIncoming::Notification(_) | ClassifiedIncoming::Response(_) => return Ok(()),
         };
-        (connection.send)(response).await?;
+        (connection.send)(response.clone()).await?;
         if let Some(connection) = dispatch_connection {
-            connection.finish_response().await;
+            // senpi `respondToRequest`: deferred actions run only after a successful response.
+            if response.get("error").is_some() {
+                connection.deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+                connection.async_deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+            } else {
+                connection.finish_response().await;
+            }
         }
         Ok(())
-    }
-    pub async fn send_notification_to_connection(&self, id: &str, notification: Value, now: u64) -> Result<bool, errors::JsonRpcError> {
-        let Some(connection) = self.connections.get(id) else { return Ok(false); };
-        if !connection.initialized.lock().await.can_deliver_notification(notification["method"].as_str().unwrap_or_default()) { return Ok(false); }
-        (connection.send)(populate_outbound_notification(notification, now)).await?;
-        Ok(true)
-    }
-    pub async fn broadcast_notification(&self, notification: Value, now: u64) -> Result<usize, errors::JsonRpcError> {
-        let mut delivered = 0;
-        for id in self.connections.keys() {
-            if self.send_notification_to_connection(id, notification.clone(), now).await? { delivered += 1; }
-        }
-        Ok(delivered)
     }
 }

@@ -1,5 +1,6 @@
 //! Port of senpi packages/ai/src/images.ts. The builtin images APIs are registered by
-//! providers/images (todo 12); the OpenAI image params re-export lives with api/openai-images.
+//! providers/images/register_builtins on first use (the TS module-import side effect); the OpenAI
+//! image params re-export lives with api/openai-images.
 
 use crate::images_api_registry::get_images_api_provider;
 use crate::types::{AssistantImages, ImagesContext, ImagesModel, ImagesStopReason, ProviderImagesOptions};
@@ -35,6 +36,7 @@ pub async fn generate_images(
     context: &ImagesContext,
     options: Option<ProviderImagesOptions>,
 ) -> Result<AssistantImages, GenerateImagesError> {
+    crate::providers::images::register_builtins::ensure_built_in_images_api_providers();
     let provider = get_images_api_provider(&model.api)?.ok_or_else(|| GenerateImagesError::NoProvider(model.api.clone()))?;
     Ok(provider.generate_images(model, context, options)?.await)
 }

@@ -3,13 +3,16 @@ use maho_ext_api::types::{Extension,ExtensionApi,EventKind,EventResult,Extension
 use maho_tools::definition::{ToolDefinition,ToolResult,ToolContent,ToolError};
 use serde_json::{Value,json};
 use crate::manager::TerminalManager;
-use crate::tools::{bash_input::{execute_bash_input,BashInputInput},bash_output::execute_bash_output_view,bash_resize::execute_bash_resize,kill_bash::execute_kill_bash,context::TerminalToolResult};
+use crate::tools::{bash_input::{execute_bash_input,BashInputInput},bash_output::execute_bash_output_view,bash_resize::execute_bash_resize,kill_bash::execute_kill_bash_shared,context::TerminalToolResult};
 pub struct TerminalExtension;
 type Backgrounds=Arc<Mutex<indexmap::IndexMap<String,crate::session_bundle::BackgroundSession>>>;
+/// The session's manifest recorder (upstream `state.manifestWriter`), bound while a lifecycle owns it.
+type Lifecycle=Arc<tokio::sync::Mutex<Option<crate::terminal_state::TerminalStateLifecycle>>>;
+fn manifest_now_ms()->f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|elapsed|elapsed.as_secs_f64()*1000.0)}
 fn publish_backgrounds(backgrounds:&Backgrounds,sender:&ExtensionApi) {
     let items=backgrounds.lock().expect("terminal backgrounds").values().map(|entry|json!({"id":entry.id,"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>();sender.events.emit("wake_source_state",&json!({"source":"terminal-background-sessions","activeCount":items.len(),"items":items}));
 }
-fn bind_completion(id:String,manager:Arc<Mutex<TerminalManager>>,backgrounds:Backgrounds,sender:Arc<ExtensionApi>,delivery:Arc<Mutex<Option<crate::notify::NotificationDelivery>>>,notifier:Arc<Mutex<crate::notify::TerminalNotifier>>)->Option<tokio::task::JoinHandle<()>> {
+fn bind_completion(id:String,manager:Arc<Mutex<TerminalManager>>,backgrounds:Backgrounds,sender:Arc<ExtensionApi>,delivery:Arc<Mutex<Option<crate::notify::NotificationDelivery>>>,notifier:Arc<Mutex<crate::notify::TerminalNotifier>>,lifecycle:Lifecycle)->Option<tokio::task::JoinHandle<()>> {
     let mut exit=manager.lock().expect("terminal manager").get(&id)?.subscribe_exit();
     Some(tokio::spawn(async move {
         loop {
@@ -17,6 +20,8 @@ fn bind_completion(id:String,manager:Arc<Mutex<TerminalManager>>,backgrounds:Bac
             if exit.changed().await.is_err() {return;}
         }
         backgrounds.lock().expect("terminal backgrounds").shift_remove(&id);publish_backgrounds(&backgrounds,&sender);
+        // Upstream `onBackgroundExit`: the manifest forgets the exited background session.
+        if let Some(lifecycle)=lifecycle.lock().await.as_mut() {lifecycle.writer.record_background_exit(&id,manifest_now_ms()).await;}
         let (status,output)={let mut manager=manager.lock().expect("terminal manager");let Some(runtime)=manager.get(&id) else {return;};(runtime.exit_result().ok().flatten(),runtime.full_output().unwrap_or_default())};
         notifier.lock().expect("terminal notifier").notify_completion(&id,*delivery.lock().expect("terminal delivery"),status.as_ref(),&output,|content,delivery| {
             use maho_ext_api::types::{CustomMessage,SendMessageOptions,DeliverAs};
@@ -34,12 +39,15 @@ pub fn monitor_state_payload(snapshot:&[crate::monitor_registry::MonitorSnapshot
 fn monitor_ended_payload(event:&crate::monitor_registry::MonitorEndedEvent)->Value {
     json!({"id":event.id,"description":event.description,"startedAtMs":event.started_at_ms,"endedAtMs":event.ended_at_ms,"reason":event.reason.as_str(),"exitCode":event.exit_code,"fireCount":event.fire_count})
 }
-fn bind_monitor_events(mut state:tokio::sync::watch::Receiver<Vec<crate::monitor_registry::MonitorSnapshotEntry>>,sender:Arc<ExtensionApi>)->tokio::task::JoinHandle<()> {
+fn bind_monitor_events(mut state:tokio::sync::watch::Receiver<Vec<crate::monitor_registry::MonitorSnapshotEntry>>,sender:Arc<ExtensionApi>,lifecycle:Lifecycle)->tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let snapshot=state.borrow_and_update().clone();let payload=monitor_state_payload(&snapshot);
             sender.events.emit("terminal_monitor_state",&payload);if let Err(error)=sender.rpc_emit("terminal_monitor_state",&payload) {maho_ext_api::diagnostic(&format!("monitor state RPC delivery failed: {error}"));}
             sender.events.emit("wake_source_state",&json!({"source":"terminal-monitors","activeCount":snapshot.len(),"monitors":snapshot.iter().map(|entry|json!({"id":entry.id,"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>()}));
+            // Upstream `onMonitorState`: the manifest mirrors mute state and burned fire windows and
+            // prunes monitors that ended.
+            if let Some(lifecycle)=lifecycle.lock().await.as_mut()&&let Err(error)=lifecycle.writer.observe_monitor_state(&snapshot,manifest_now_ms()).await {maho_ext_api::diagnostic(&format!("terminal manifest monitor sync failed: {error}"));}
             if state.changed().await.is_err() {return;}
         }
     })
@@ -131,11 +139,12 @@ impl Extension for TerminalExtension {
             Ok(EventResult::None)
         })}));
         let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
+        let state_lifecycle:Lifecycle=Arc::new(tokio::sync::Mutex::new(None));
         let telemetry_task:Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>=Arc::new(Mutex::new(None));
-        let telemetry_monitors=monitors.clone();let telemetry_sender=sender.clone();let start_telemetry=telemetry_task.clone();
-        api.on(EventKind::SessionStart,Arc::new(move |_,_| {let monitors=telemetry_monitors.clone();let sender=telemetry_sender.clone();let task=start_telemetry.clone();Box::pin(async move {
+        let telemetry_monitors=monitors.clone();let telemetry_sender=sender.clone();let start_telemetry=telemetry_task.clone();let telemetry_lifecycle=state_lifecycle.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |_,_| {let monitors=telemetry_monitors.clone();let sender=telemetry_sender.clone();let task=start_telemetry.clone();let lifecycle=telemetry_lifecycle.clone();Box::pin(async move {
             let mut task=task.lock().map_err(|_|ExtensionFailure::new("monitor telemetry state poisoned"))?;if let Some(previous)=task.take() {previous.abort();}
-            *task=Some(bind_monitor_events(monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.subscribe_state(),sender));Ok(EventResult::None)
+            *task=Some(bind_monitor_events(monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.subscribe_state(),sender,lifecycle));Ok(EventResult::None)
         })}));
         let stepped_aside=Arc::new(std::sync::atomic::AtomicBool::new(false));
         let notice_shown=Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -169,7 +178,6 @@ impl Extension for TerminalExtension {
         // live under the session dir the host exposes through `SessionManager::get_session_dir`;
         // a context without one keeps no durable terminal state, like upstream's SDK/in-memory
         // sessions. A reload generation keeps the lease: the same pid still owns it.
-        let state_lifecycle:Arc<Mutex<Option<crate::terminal_state::TerminalStateLifecycle>>>=Arc::new(Mutex::new(None));
         let start_lifecycle=state_lifecycle.clone();let lifecycle_manager=manager.clone();let lifecycle_monitors=monitors.clone();let lifecycle_settings=configuration.clone();let lifecycle_sender=sender.clone();
         api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();Box::pin(async move {
             #[cfg(unix)]
@@ -183,7 +191,7 @@ impl Extension for TerminalExtension {
                 // manifest coverage continues; a fresh generation acquires the lease and restores.
                 let mut lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
                 if reload {
-                    *state.lock().map_err(|_|ExtensionFailure::new("terminal state lifecycle poisoned"))?=Some(lifecycle);
+                    *state.lock().await=Some(lifecycle);
                 } else {
                     let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
                     let delivery=crate::notify::get_terminal_notification_delivery(settings.notify,Some(match ctx.mode {maho_ext_api::types::ExtensionMode::Print=>"print",maho_ext_api::types::ExtensionMode::Json=>"json",_=>"interactive"}),ctx.model.is_some(),false);
@@ -192,7 +200,7 @@ impl Extension for TerminalExtension {
                             let restore_state=lifecycle.read_restore_state().await;
                             let digest={let mut manager=manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?;let mut monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;lifecycle.apply_restore(restore_state,&mut manager,&mut monitors,now,shell.as_deref(),&settings)};
                             if let Some(sentence)=restore_digest_sentence(&digest) {send_terminal_reminder(&sender,delivery,&sentence);}
-                            *state.lock().map_err(|_|ExtensionFailure::new("terminal state lifecycle poisoned"))?=Some(lifecycle);
+                            *state.lock().await=Some(lifecycle);
                         }
                         Ok(crate::terminal_state::TerminalStateAdoption::AttachedElsewhere {pid})=>send_terminal_reminder(&sender,delivery,&format!("Terminal monitors for this session are attached in another live process (pid {pid}); nothing was restored here.")),
                         Err(error)=>send_terminal_reminder(&sender,delivery,&format!("Terminal state after restart: the session lease could not be acquired ({error}); nothing was restored.")),
@@ -203,12 +211,16 @@ impl Extension for TerminalExtension {
             {let _=(event,ctx,manager,monitors,configuration,sender);}
             Ok(EventResult::None)
         })}));
-        let shutdown_lifecycle=state_lifecycle.clone();
-        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();Box::pin(async move {
+        let shutdown_lifecycle=state_lifecycle.clone();let shutdown_monitors=monitors.clone();
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let monitors=shutdown_monitors.clone();Box::pin(async move {
             #[cfg(unix)]
             {
                 if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {return Ok(EventResult::None);}
-                let Some(mut lifecycle)=state.lock().map_err(|_|ExtensionFailure::new("terminal state lifecycle poisoned"))?.take() else {return Ok(EventResult::None);};
+                let Some(mut lifecycle)=state.lock().await.take() else {return Ok(EventResult::None);};
+                // Upstream `suspendAndFlushManifest`: a final live-state sync so the shutdown write
+                // carries each watch's burned fire window and mute state.
+                let snapshot=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.snapshot();
+                if let Err(error)=lifecycle.writer.observe_monitor_state(&snapshot,terminal_now_ms()).await {maho_ext_api::diagnostic(&format!("terminal manifest monitor sync failed: {error}"));}
                 lifecycle.record_shutdown(terminal_now_ms()).await;
                 if lifecycle.is_owner() {
                     if let Err(error)=lifecycle.release() {maho_ext_api::diagnostic(&format!("terminal lease release failed: {error}"));}
@@ -220,7 +232,7 @@ impl Extension for TerminalExtension {
                 }
             }
             #[cfg(not(unix))]
-            {let _=(event,ctx);}
+            {let _=(event,ctx,state,monitors);}
             Ok(EventResult::None)
         })}));
         let bash_sender=sender.clone();let lifecycle_delivery=completion_delivery.clone();
@@ -248,49 +260,63 @@ impl Extension for TerminalExtension {
         })}));
         let bash_manager=Arc::clone(&manager);let bash_configuration=configuration.clone();
         let completion_tasks:Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>=Arc::new(Mutex::new(vec![]));let bash_tasks=completion_tasks.clone();let cleanup_terminal_notifier=terminal_notifier.clone();
-        let restored_manager=manager.clone();let restored_backgrounds=backgrounds.clone();let restored_sender=bash_sender.clone();let restored_delivery=completion_delivery.clone();let restored_notifier=terminal_notifier.clone();let restored_tasks=completion_tasks.clone();
-        api.on(EventKind::SessionStart,Arc::new(move |_,_| {let manager=restored_manager.clone();let backgrounds=restored_backgrounds.clone();let sender=restored_sender.clone();let delivery=restored_delivery.clone();let notifier=restored_notifier.clone();let tasks=restored_tasks.clone();Box::pin(async move {
-            publish_backgrounds(&backgrounds,&sender);let ids=backgrounds.lock().map_err(|_|ExtensionFailure::new("terminal backgrounds poisoned"))?.keys().cloned().collect::<Vec<_>>();
-            for id in ids {if let Some(task)=bind_completion(id,manager.clone(),backgrounds.clone(),sender.clone(),delivery.clone(),notifier.clone()) {tasks.lock().map_err(|_|ExtensionFailure::new("terminal completion tasks poisoned"))?.push(task);}}Ok(EventResult::None)
+        let restored_manager=manager.clone();let restored_backgrounds=backgrounds.clone();let restored_sender=bash_sender.clone();let restored_delivery=completion_delivery.clone();let restored_notifier=terminal_notifier.clone();let restored_tasks=completion_tasks.clone();let restored_lifecycle=state_lifecycle.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |_,_| {let manager=restored_manager.clone();let backgrounds=restored_backgrounds.clone();let sender=restored_sender.clone();let delivery=restored_delivery.clone();let notifier=restored_notifier.clone();let tasks=restored_tasks.clone();let lifecycle=restored_lifecycle.clone();Box::pin(async move {
+            publish_backgrounds(&backgrounds,&sender);let entries=backgrounds.lock().map_err(|_|ExtensionFailure::new("terminal backgrounds poisoned"))?.values().cloned().collect::<Vec<_>>();
+            // Upstream `onBackgroundState`: each live background session is recorded once per writer.
+            if let Some(lifecycle)=lifecycle.lock().await.as_mut() {for entry in &entries {lifecycle.writer.record_background_start(&entry.id,&entry.description,entry.started_at_ms,manifest_now_ms()).await;}}
+            let ids=entries.into_iter().map(|entry|entry.id).collect::<Vec<_>>();
+            for id in ids {if let Some(task)=bind_completion(id,manager.clone(),backgrounds.clone(),sender.clone(),delivery.clone(),notifier.clone(),lifecycle.clone()) {tasks.lock().map_err(|_|ExtensionFailure::new("terminal completion tasks poisoned"))?.push(task);}}Ok(EventResult::None)
         })}));
-        let bash_backgrounds=backgrounds.clone();
-        let mut bash=ToolDefinition::new("bash","Execute a shell command in a persistent PTY-backed session.",json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"},"description":{"type":"string"},"run_in_background":{"type":"boolean"},"cols":{"type":"number"},"rows":{"type":"number"}},"required":["command"]}),Arc::new(move |call| {let manager=Arc::clone(&bash_manager);let sender=bash_sender.clone();let delivery=completion_delivery.clone();let notifier=terminal_notifier.clone();let tasks=bash_tasks.clone();let bash_configuration=bash_configuration.clone();let backgrounds=bash_backgrounds.clone();Box::pin(async move {
+        let bash_backgrounds=backgrounds.clone();let bash_lifecycle=state_lifecycle.clone();
+        let mut bash=ToolDefinition::new("bash",r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops — subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session. Returns a bash_id immediately; query it with bash_output, steer with bash_input, tear down with kill_bash."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]}),Arc::new(move |call| {let manager=Arc::clone(&bash_manager);let sender=bash_sender.clone();let delivery=completion_delivery.clone();let notifier=terminal_notifier.clone();let tasks=bash_tasks.clone();let bash_configuration=bash_configuration.clone();let backgrounds=bash_backgrounds.clone();let lifecycle=bash_lifecycle.clone();Box::pin(async move {
             let (settings,shell)=bash_configuration.lock().map_err(|_|ToolError::Message("terminal configuration state poisoned".to_owned()))?.clone();
             let description=call.params.get("description").or_else(||call.params.get("command")).and_then(Value::as_str).unwrap_or("").to_owned();let started_at_ms=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error|ToolError::Message(error.to_string()))?.as_secs_f64()*1000.0;
             let result=crate::tools::bash::execute_configured_bash(manager.clone(),call,std::env::var("PI_BASH_FOREGROUND_SECONDS").ok().as_deref(),&settings,shell.as_deref()).await.map_err(ToolError::Message)?;
             if let Some(details)=&result.details && details.get("background").and_then(Value::as_bool)==Some(true) && let Some(id)=details.get("bash_id").and_then(Value::as_str) {
-                let id=id.to_owned();backgrounds.lock().map_err(|_|ToolError::Message("terminal backgrounds poisoned".to_owned()))?.insert(id.clone(),crate::session_bundle::BackgroundSession {id:id.clone(),description,started_at_ms});publish_backgrounds(&backgrounds,&sender);
-                if let Some(task)=bind_completion(id,manager,backgrounds,sender,delivery,notifier) {let mut tasks=tasks.lock().map_err(|_|ToolError::Message("terminal completion tasks poisoned".to_owned()))?;tasks.retain(|task|!task.is_finished());tasks.push(task);}
+                let id=id.to_owned();backgrounds.lock().map_err(|_|ToolError::Message("terminal backgrounds poisoned".to_owned()))?.insert(id.clone(),crate::session_bundle::BackgroundSession {id:id.clone(),description:description.clone(),started_at_ms});publish_backgrounds(&backgrounds,&sender);
+                if let Some(lifecycle)=lifecycle.lock().await.as_mut() {lifecycle.writer.record_background_start(&id,&description,started_at_ms,manifest_now_ms()).await;}
+                if let Some(task)=bind_completion(id,manager,backgrounds,sender,delivery,notifier,lifecycle) {let mut tasks=tasks.lock().map_err(|_|ToolError::Message("terminal completion tasks poisoned".to_owned()))?;tasks.retain(|task|!task.is_finished());tasks.push(task);}
             }
             tool_result(result)
         })}));
-        bash.exposure=Some(maho_tools::definition::ToolExposure::Eval);api.register_tool(bash);
-        for (name,description,properties,required) in [
-            ("bash_output","Read output from a background bash session without blocking.",json!({"bash_id":{"type":"string"},"filter":{"type":"string"},"view":{"type":"string","enum":["log","screen"]}}),vec!["bash_id"]),
-            ("bash_input","Write stdin or named keys to a live background bash session.",json!({"bash_id":{"type":"string"},"input":{"type":"string"},"keys":{"type":"array","items":{"type":"string"}},"submit":{"type":"boolean"}}),vec!["bash_id"]),
-            ("bash_resize","Resize a live background bash session's PTY.",json!({"bash_id":{"type":"string"},"cols":{"type":"number"},"rows":{"type":"number"}}),vec!["bash_id","cols","rows"]),
-            ("kill_bash","Terminate a background bash session and its process tree.",json!({"bash_id":{"type":"string"},"all":{"type":"boolean"}}),Vec::new()),
+        bash.exposure=Some(maho_tools::definition::ToolExposure::Eval);bash.prompt_snippet=Some("Run shell commands; run_in_background:true for long-lived/interactive PTY sessions".to_owned());bash.prompt_guidelines=Some(vec!["You can inspect PI_* environment variables for current model and session details.".to_owned()]);api.register_tool(bash);
+        for (name,description,prompt_snippet,properties,required) in [
+            ("bash_output","Read output from a background bash session without blocking: new output since the last read, the status line, or a rendered full-screen snapshot via view:'screen'. Pattern watches run through monitor; completion arrives as a notification carrying the exit code and output tail.","Peek at background bash session output (filter, screen view, status); watch patterns with monitor, completion arrives as a notification",json!({"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"filter":{"type":"string","description":"Only return output lines matching this regex."},"view":{"type":"string","enum":["log","screen"],"description":"'log' returns new raw output (default); 'screen' returns the rendered xterm grid."}}),vec!["bash_id"]),
+            ("bash_input","Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session — e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.","Send stdin/keys to a live background bash session (REPL steering, ctrl+c, etc.)",json!({"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"input":{"type":"string","description":"Literal text to write to the session's stdin."},"keys":{"type":"array","items":{"type":"string"},"description":"Named keys to send, e.g. ['ctrl+c'], ['enter'], ['up']. Sent after `input` when both are given."},"submit":{"type":"boolean","description":"Append Enter (\\r) after `input`. Default true when `input` is a non-empty string."}}),vec!["bash_id"]),
+            ("bash_resize","Resize a live background bash session's PTY (cols x rows) so full-screen TUIs reflow. No-ops with a note under the pipe fallback.","Resize a background bash session's PTY so TUIs reflow",json!({"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"cols":{"type":"number","description":"New PTY width in columns."},"rows":{"type":"number","description":"New PTY height in rows."}}),vec!["bash_id","cols","rows"]),
+            ("kill_bash","Terminate a background bash session (or all of them) and its process tree cleanly.","Tree-kill a background bash session (or all) with no orphans",json!({"bash_id":{"type":"string","description":"Session id to tree-kill."},"all":{"type":"boolean","description":"Tree-kill every live background session."}}),Vec::new()),
         ] {
             let manager=Arc::clone(&manager);
             let monitors=monitors.clone();
-            let tool=ToolDefinition::new(name,description,json!({"type":"object","properties":properties,"required":required}),Arc::new(move |call| {let manager=Arc::clone(&manager);let monitors=monitors.clone();Box::pin(async move {
-                let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
+            let mut tool=ToolDefinition::new(name,description,json!({"type":"object","properties":properties,"required":required}),Arc::new(move |call| {let manager=Arc::clone(&manager);let monitors=monitors.clone();Box::pin(async move {
                 let id=call.params.get("bash_id").and_then(Value::as_str);
                 if name=="kill_bash" {
-                    let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
+                    // kill-bash.ts awaits the stop/teardown: the exit graces are awaited with the
+                    // manager lock released so the async runtime thread is never blocked.
                     let all=call.params.get("all").and_then(Value::as_bool).unwrap_or(false);
                     if all {
-                        let mut count=manager.size();
-                        for id in monitors.snapshot().into_iter().filter(|record|record.id.starts_with("watch_")).map(|record|record.id) {count+=usize::from(monitors.stop_file(&id));}
-                        manager.teardown().map_err(|error|ToolError::Message(error.to_string()))?;
+                        let count={
+                            let manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
+                            let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
+                            let mut count=manager.size();
+                            for id in monitors.snapshot().into_iter().filter(|record|record.id.starts_with("watch_")).map(|record|record.id) {count+=usize::from(monitors.stop_file(&id));}
+                            count
+                        };
+                        crate::manager::teardown_shared(&manager).await.map_err(|error|ToolError::Message(error.to_string()))?;
                         return tool_result(crate::tools::context::text_result(format!("Killed {count} session(s).")));
                     }
                     if let Some(id)=id {
-                        let resolved=crate::tools::context::resolve_terminal_id(&manager,id);
-                        if monitors.stop_file(&resolved) {return tool_result(crate::tools::context::text_result(format!("Killed {id}.")));}
+                        let stopped={
+                            let manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
+                            let resolved=crate::tools::context::resolve_terminal_id(&manager,id);
+                            monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?.stop_file(&resolved)
+                        };
+                        if stopped {return tool_result(crate::tools::context::text_result(format!("Killed {id}.")));}
                     }
-                    return tool_result(execute_kill_bash(&mut manager,id,all));
+                    return tool_result(execute_kill_bash_shared(&manager,id,all).await);
                 }
+                let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let id=id.ok_or_else(||ToolError::Message("bash_id must be a string".to_owned()))?;let resolved=crate::tools::context::resolve_terminal_id(&manager,id);let runtime=manager.get(&resolved);
                 match name {
                     "bash_output"=>{let mut result=execute_bash_output_view(runtime.as_deref(),id,call.params.get("filter").and_then(Value::as_str),call.params.get("view").and_then(Value::as_str)==Some("screen")).map_err(|error|ToolError::Message(error.to_string()))?;let registry=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;if runtime.is_some()&&let Some(entry)=registry.snapshot().iter().find(|entry|entry.id==resolved) {result=crate::tools::bash_output::with_monitor_state(result,id,entry.paused,registry.muted_dropped(&resolved));}tool_result(result)},
@@ -298,23 +324,48 @@ impl Extension for TerminalExtension {
                     "bash_resize"=>tool_result(execute_bash_resize(runtime.as_deref(),id,call.params.get("cols").and_then(Value::as_f64).unwrap_or(f64::NAN),call.params.get("rows").and_then(Value::as_f64).unwrap_or(f64::NAN))),_=>unreachable!(),
                 }
             })}));
+            tool.prompt_snippet=Some(prompt_snippet.to_owned());
             if name=="bash_output" {api.register_tool_with_renderers(tool,crate::tools::render::output_renderers()).expect("valid builtin bash_output registration");} else {api.register_tool(tool);}
         }
-        let tool_manager=manager.clone();let tool_monitors=monitors.clone();let tool_notifier=notifier.clone();let tool_configuration=configuration.clone();
-        api.register_tool_with_renderers(ToolDefinition::new("monitor","Subscribe to command output or file changes instead of polling.",crate::tools::monitor::monitor_schema(),Arc::new(move |call| {
-            let manager=tool_manager.clone();let monitors=tool_monitors.clone();let notifier=tool_notifier.clone();let configuration=tool_configuration.clone();Box::pin(async move {
-                let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
-                let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
+        let tool_manager=manager.clone();let tool_monitors=monitors.clone();let tool_notifier=notifier.clone();let tool_configuration=configuration.clone();let tool_lifecycle=state_lifecycle.clone();
+        let mut monitor_tool=ToolDefinition::new("monitor","Subscribe to a change instead of polling. Pass command XOR path, never both: command watches a PTY session, injecting matching newline-terminated output lines (stderr merged) plus an exit summary; path natively watches one file and fires once, where create (the default) fires only when the file appears after registration, so use event modify for an existing file, and filter is rejected. Returns a bash_id immediately; peek with bash_output, stop with kill_bash.",crate::tools::monitor::monitor_schema(),Arc::new(move |call| {
+            let manager=tool_manager.clone();let monitors=tool_monitors.clone();let notifier=tool_notifier.clone();let configuration=tool_configuration.clone();let lifecycle=tool_lifecycle.clone();Box::pin(async move {
                 let cwd=call.context.map(|context|context.cwd().to_path_buf()).unwrap_or(std::env::current_dir()?);
                 let approved_parent=crate::tools::monitor::approved_parent_for(&call)?;
                 let (settings,shell)=configuration.lock().map_err(|_|ToolError::Message("terminal configuration state poisoned".to_owned()))?.clone();
-                let result=crate::tools::monitor::execute_configured_monitor(&mut manager,&mut monitors,&call.params,&cwd,approved_parent.as_deref(),shell.as_deref(),&settings);
-                if call.params.get("action").and_then(Value::as_str)==Some("rearm") && let Some(notifier)=notifier.lock().map_err(|_|ToolError::Message("monitor notifier state poisoned".to_owned()))?.as_ref() {
-                    notifier.resume(monitors.snapshot().iter().filter(|record|!record.paused).map(|record|record.id.clone()).collect()).map_err(ToolError::Message)?;
+                // Upstream monitor.ts:164/:315 hand the captured spec to the session's manifest writer
+                // and :207-217 caps durable creates before any spawn. The writer lock is async; the
+                // manager/registry locks are held only across the synchronous registration.
+                let mut lifecycle=lifecycle.lock().await;
+                if let Some(refused)=crate::tools::monitor::durable_admission_error(&call.params,lifecycle.as_ref().map(|lifecycle|&lifecycle.writer)) {return tool_result(refused);}
+                let (result,recorded)={
+                    let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
+                    let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
+                    let result=crate::tools::monitor::execute_configured_monitor(&mut manager,&mut monitors,&call.params,&cwd,approved_parent.as_deref(),shell.as_deref(),&settings);
+                    if call.params.get("action").and_then(Value::as_str)==Some("rearm") && let Some(notifier)=notifier.lock().map_err(|_|ToolError::Message("monitor notifier state poisoned".to_owned()))?.as_ref() {
+                        notifier.resume(monitors.snapshot().iter().filter(|record|!record.paused).map(|record|record.id.clone()).collect()).map_err(ToolError::Message)?;
+                    }
+                    let registration=crate::tools::monitor::monitor_registration(&call.params,&result,&cwd,approved_parent.as_deref());
+                    let recorded=registration.map(|(registration,id)|{let checkpoint=(call.params.get("persistent").and_then(Value::as_bool)==Some(true)).then(||monitors.file_checkpoint(&id)).flatten();(registration,checkpoint)});
+                    (result,recorded)
+                };
+                if let Some(lifecycle)=lifecycle.as_mut()&&let Some((registration,checkpoint))=recorded {
+                    let monitor_id=registration.monitor_id.clone();
+                    lifecycle.writer.record_register(registration,manifest_now_ms()).await;
+                    if let Some(checkpoint)=checkpoint {lifecycle.writer.schedule_checkpoint(&monitor_id,checkpoint);}
                 }
+                drop(lifecycle);
                 tool_result(result)
             })
-        })),crate::tools::render::monitor_renderers()).expect("valid builtin monitor registration");
+        }));
+        monitor_tool.prompt_snippet=Some("Subscribe to a command's output or a file's create/modify event as injected events instead of polling".to_owned());
+        monitor_tool.prompt_guidelines=Some(vec![
+            "Waiting on observable state (CI checks, builds, log patterns, deploys, a file landing) means a monitor, never a foreground sleep/poll loop.".to_owned(),
+            r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already — when the run creates that directory too, use the `command` branch instead."#.to_owned(),
+            r#"Shape the command for the events you need: one-shot gate = `until <cond>; do sleep 1; done; printf 'READY\n'` with filter ^READY$; stream = `tail -n 0 -F <log> | grep --line-buffered <pat>` with persistent: true, then kill_bash."#.to_owned(),
+            "Sleep loops belong INSIDE the monitor command, never in your turn: about to sleep, re-poll bash_output, or foreground-block on a long command means register a monitor and keep working.".to_owned(),
+        ]);
+        api.register_tool_with_renderers(monitor_tool,crate::tools::render::monitor_renderers()).expect("valid builtin monitor registration");
         let activity=notifier.clone();
         let input_monitors=monitors.clone();
         api.on(EventKind::Input,Arc::new(move |event,_| {let notifier=activity.clone();let monitors=input_monitors.clone();Box::pin(async move {
@@ -336,8 +387,11 @@ impl Extension for TerminalExtension {
                 bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.detach_delivery();
                 crate::session_bundle::park_bundle(&session_id,bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.clone()).map_err(|error|ExtensionFailure::new(error.to_string()))?;
             }else {
-                bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;
-                crate::session_bundle::teardown_parked_bundle(&session_id).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                // registry.ts teardown is awaited: release the bundle lock so none is held
+                // across the exit-grace awaits and the runtime thread is not blocked.
+                let manager={let mut live=bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?;live.begin_teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?.then(||live.manager.clone())};
+                if let Some(manager)=manager {crate::manager::teardown_shared(&manager).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;}
+                crate::session_bundle::teardown_parked_bundle_async(&session_id).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
             }
             Ok(EventResult::None)
         })}));
@@ -377,7 +431,7 @@ mod tests {
     async fn registry_state_reaches_native_event_bus_and_rpc() {
         let dir=tempfile::tempdir().unwrap();let bus=EventBus::default();let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let state_sender=sender.clone();let rpc_sender=sender;
         let _state=bus.on("terminal_monitor_state",Arc::new(move |data| {state_sender.send(("state",data.clone())).unwrap();}));let _rpc=bus.on("senpi:extension-rpc-event",Arc::new(move |data| {rpc_sender.send(("rpc",data.clone())).unwrap();}));
-        let api=Arc::new(ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),bus,ExtensionRuntime::default()));let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let task=bind_monitor_events(registry.subscribe_state(),api);
+        let api=Arc::new(ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),bus,ExtensionRuntime::default()));let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let task=bind_monitor_events(registry.subscribe_state(),api,Arc::new(tokio::sync::Mutex::new(None)));
         tokio::time::timeout(std::time::Duration::from_secs(5),async {
             let (_,initial)=events.recv().await.unwrap();assert_eq!(initial["activeCount"],0);let (kind,rpc)=events.recv().await.unwrap();assert_eq!(kind,"rpc");assert_eq!(rpc["data"],initial);
             let (id,_)=registry.register_persistent_file("watch",&dir.path().join("file"),crate::terminal_manifest_model::FileEvent::Create).unwrap();let (kind,live)=events.recv().await.unwrap();assert_eq!(kind,"state");assert_eq!(live["activeCount"],1);assert_eq!(live["monitors"][0]["id"],id);assert_eq!(live["monitors"][0]["persistent"],true);assert_eq!(live["monitors"][0].get("command"),Some(&Value::Null));assert_eq!(live["monitors"][0]["fireCount"],0);let (_,rpc)=events.recv().await.unwrap();assert_eq!(rpc["data"],live);

@@ -151,11 +151,11 @@ pub fn load_templates_from_dir(dir: &str, get_source_info: &dyn Fn(&str) -> Sour
         return templates;
     }
 
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = crate::utils::read_dir_sorted(dir) else {
         return templates;
     };
 
-    for entry in entries.flatten() {
+    for entry in entries {
         let full_path = entry.path().to_string_lossy().into_owned();
         let Ok(file_type) = entry.file_type() else {
             continue;

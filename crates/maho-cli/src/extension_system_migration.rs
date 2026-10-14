@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 pub fn migrate_extension_system(cwd: &Path, agent: &Path) -> Vec<String> {
     let mut warnings = Vec::new();
-    for (base, label) in [(agent.to_owned(), "Global"), (cwd.join(".maho"), "Project")] {
+    for (base, label) in [(agent.to_owned(), "Global"), (cwd.join(maho_core::config::config_dir_name()), "Project")] {
         let commands = base.join("commands"); let prompts = base.join("prompts");
         if commands.exists() && !prompts.exists() { match fs::rename(commands, prompts) { Ok(()) => crate::cli::stdout_guard::write_line(&format!("Migrated {label} commands/ → prompts/\n")), Err(error) => eprintln!("Warning: Could not migrate {label} commands/ to prompts/: {error}") } }
         if base.join("hooks").exists() { warnings.push(format!("{label} hooks/ directory found. Hooks have been renamed to extensions.")); }

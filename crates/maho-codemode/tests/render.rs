@@ -52,3 +52,27 @@ fn registered_renderers_draw_the_eval_card_instead_of_raw_arguments() {
     assert_eq!(lines,vec!["eval js","collect project facts","const a = 1;","console.log(a)"]);
     assert!(!lines.iter().any(|line|line.contains("\"summary\"")));
 }
+
+
+#[test]
+fn live_result_card_repaints_itself_each_second_until_terminal() {
+    use std::{cell::Cell,rc::Rc,time::{Duration,Instant}};
+    let renderers=std::sync::Arc::new(eval_tool_renderers());
+    let args=json!({"language":"js","summary":"work","code":"1+1"});
+    let invalidations=Rc::new(Cell::new(0));
+    let counter=invalidations.clone();
+    let context=maho_ext_api::ToolRenderContext {args,tool_call_id:"live".into(),invalidate:Rc::new(move ||counter.set(counter.get()+1)),last_component:None,state:(),cwd:"/tmp".into(),
+        execution_started:true,args_complete:true,is_partial:true,expanded:false,show_images:false,image_protocol:None,is_error:false,has_result:Some(true),spinner_frame:None};
+    let mut session=maho_ext_api::ToolRendererSession {renderers,context};
+    let mut running=AgentToolResult::text("");
+    running.details=json!({"cells":[{"language":"js","code":"1+1","status":"running","startedAt":1000,"output":""}]});
+    session.render_result(&running,&Default::default(),80).expect("eval result renderer");
+    assert!(maho_tui::ui_intervals::run_due_ui_intervals(Instant::now()+Duration::from_millis(1_001)));
+    assert_eq!(invalidations.get(),1);
+    let mut done=AgentToolResult::text("2");
+    done.details=json!({"cells":[{"language":"js","code":"1+1","status":"complete","startedAt":1000,"durationMs":5,"output":"2"}]});
+    session.context.is_partial=false;
+    session.render_result(&done,&Default::default(),80).expect("eval result renderer");
+    assert!(!maho_tui::ui_intervals::run_due_ui_intervals(Instant::now()+Duration::from_secs(5)));
+    assert_eq!(invalidations.get(),1);
+}

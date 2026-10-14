@@ -29,6 +29,7 @@ struct RadiusProvider {
     models: Arc<Mutex<Vec<Model>>>,
     streams: Arc<dyn ProviderStreams>,
     fetch: reqwest::Client,
+    auth: crate::auth::types::ProviderAuth,
 }
 
 impl Provider for RadiusProvider {
@@ -38,6 +39,10 @@ impl Provider for RadiusProvider {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn auth(&self) -> Option<&crate::auth::types::ProviderAuth> {
+        Some(&self.auth)
     }
 
     fn get_models(&self) -> Vec<Model> {
@@ -150,7 +155,15 @@ pub fn radius_provider(options: Option<RadiusProviderOptions>) -> Arc<dyn Provid
     let id = options.id.clone().unwrap_or_else(|| "radius".to_owned());
     let name = options.name.clone().unwrap_or_else(|| "Radius".to_owned());
     let gateway = normalize_radius_gateway_url(options.gateway.as_deref().unwrap_or(DEFAULT_RADIUS_GATEWAY));
+    let oauth_options = crate::auth::oauth::load::RadiusOAuthOptions { name: name.clone(), gateway: gateway.clone() };
+    let auth = crate::auth::types::ProviderAuth {
+        api_key: Some(Arc::new(crate::auth::helpers::env_api_key_auth("Radius API key", &["RADIUS_API_KEY"]))),
+        oauth: Some(Arc::new(crate::auth::helpers::lazy_oauth(name.clone(), false, None, move || {
+            Box::pin(crate::auth::oauth::load::load_radius_oauth(oauth_options.clone()))
+        }))),
+    };
     Arc::new(RadiusProvider {
+        auth,
         models: Arc::new(Mutex::new(get_radius_models(&id, None))),
         id,
         name,

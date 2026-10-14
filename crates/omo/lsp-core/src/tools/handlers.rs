@@ -394,7 +394,7 @@ pub async fn execute_lsp_symbols(
     })
 }
 
-fn format_symbols_result(
+pub(super) fn format_symbols_result(
     file_path: &str,
     scope: &str,
     symbols: Value,
@@ -417,8 +417,14 @@ fn format_symbols_result(
     if total == 0 {
         return ToolExecutionResult::text("No symbols found", map);
     }
+    // JS `symbols.slice(0, limit)`: truncate toward zero, negative ends count from the back.
     let take = if truncated {
-        limit.max(0.0).ceil() as usize
+        let end = if limit.is_nan() { 0.0 } else { limit.trunc() };
+        if end < 0.0 {
+            (total as f64 + end).max(0.0) as usize
+        } else {
+            end as usize
+        }
     } else {
         total
     };

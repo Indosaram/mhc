@@ -1,6 +1,7 @@
 //! Native, statically registered extension contracts. No host or interactive dependency.
 pub mod types;
 pub mod mcp_wire;
+pub mod process_env;
 pub use types::*;
 pub use maho_tui::utils::wrap_text_with_ansi as notice_wrap_text;
 

@@ -106,9 +106,10 @@ fn local_asset_precedes_sidecar() {
 #[test]
 fn missing_required_asset_returns_paths() {
     let env = CodemodeRuntimeAssetEnvironment { bun_version: None, executable_path: Path::new("/absent/pi") };
-    let error = require_codemode_runtime_asset(Path::new("/absent/runner"), Path::new("kernels/rb/runner.rb"), &env).unwrap_err();
+    // Embedded kernel scripts back every shipped path, so only an unknown asset can be missing.
+    let error = require_codemode_runtime_asset(Path::new("/absent/runner"), Path::new("kernels/rb/absent.rb"), &env).unwrap_err();
     assert_eq!(error.local_path, Path::new("/absent/runner"));
-    assert_eq!(error.package_relative_path, Path::new("kernels/rb/runner.rb"));
+    assert_eq!(error.package_relative_path, Path::new("kernels/rb/absent.rb"));
 }
 
 #[test]

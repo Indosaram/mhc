@@ -31,6 +31,17 @@ pub const OMO_DISABLED_FLAG: &str = "maho-omo-disabled";
 pub const OMO_COMPONENT_FLAG_PREFIX: &str = "omo-senpi-";
 pub const OMO_EXTENSION_IDENTITY: &str = "omo";
 
+/// Upstream `disable-env.ts`: `OMO_SENPI_DISABLED=1` loads the composition without registering
+/// anything, like the disabled flag. A memory child that loads extensions only for a provider one of
+/// them registers sets it through the environment, because the flag is an unknown option to a child
+/// that happens not to load this extension.
+pub const OMO_SENPI_DISABLED_ENV: &str = "OMO_SENPI_DISABLED";
+
+/// Upstream `isOmoSenpiDisabledByEnv`.
+pub fn is_omo_senpi_disabled_by_env(read: impl Fn(&str) -> Option<String>) -> bool {
+    read(OMO_SENPI_DISABLED_ENV).as_deref() == Some("1")
+}
+
 pub fn component_disabled_flag(name: &str) -> String {
     format!("{OMO_COMPONENT_FLAG_PREFIX}{name}-disabled")
 }
@@ -144,7 +155,9 @@ impl Extension for OmoExtension {
             );
         }
 
-        if is_true(api.get_flag(OMO_DISABLED_FLAG)) {
+        if is_true(api.get_flag(OMO_DISABLED_FLAG))
+            || is_omo_senpi_disabled_by_env(|name| self.provisioning.read(name))
+        {
             logger.info("maho-omo disabled by flag", None);
             return;
         }

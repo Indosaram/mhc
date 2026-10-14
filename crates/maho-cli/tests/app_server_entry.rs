@@ -1,8 +1,8 @@
 use maho_cli::cli::app_server::{
-    daemon_verb, is_app_server_command, listening_banner, ShutdownSignals, SignalEscalation,
-    USAGE_EXIT_CODE,
+    daemon_verb, is_app_server_command, ShutdownSignals, SignalEscalation, USAGE_EXIT_CODE,
 };
-use maho_server::app_server::cli_args::{DaemonVerb, Listen};
+use maho_server::app_server::cli_args::DaemonVerb;
+use maho_server::app_server::index::{listening_banner, BoundListen};
 
 #[test]
 fn shutdown_escalates_from_graceful_to_forced() {
@@ -26,16 +26,25 @@ fn only_the_app_server_verb_is_handled() {
 
 #[test]
 fn listening_banner_matches_the_pinned_transport_lines() {
-    let stdio = Listen::Stdio { url: "stdio://".to_owned() };
-    assert_eq!(listening_banner("maho code", &stdio), "maho code app-server listening on stdio://\n");
+    assert_eq!(listening_banner("maho code", &BoundListen::Stdio), "maho code app-server listening on stdio://\n");
 
-    let ws = Listen::Ws { url: "ws://127.0.0.1:18800".to_owned(), host: "127.0.0.1".to_owned(), port: 18800 };
+    let ws = BoundListen::Ws { host: "127.0.0.1".to_owned(), port: 18800, token_file: None };
     let banner = listening_banner("maho code", &ws);
     assert!(banner.contains("listening on ws://127.0.0.1:18800"), "{banner}");
     assert!(banner.contains("readyz http://127.0.0.1:18800/readyz"), "{banner}");
+    assert!(!banner.contains("token "), "{banner}");
 
-    let unix = Listen::Unix { url: "unix:///tmp/app.sock".to_owned(), path: Some("/tmp/app.sock".to_owned()) };
+    let unix = BoundListen::Unix { socket_path: "/tmp/app.sock".into(), token_file: None };
     assert_eq!(listening_banner("maho code", &unix), "maho code app-server listening on unix:///tmp/app.sock\n");
+}
+
+#[test]
+fn listening_banner_reports_the_bearer_token_file() {
+    let unix = BoundListen::Unix { socket_path: "/tmp/app.sock".into(), token_file: Some("/tmp/ws-token".into()) };
+    assert_eq!(
+        listening_banner("maho code", &unix),
+        "maho code app-server listening on unix:///tmp/app.sock\ntoken /tmp/ws-token\n"
+    );
 }
 
 #[test]

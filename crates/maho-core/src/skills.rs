@@ -183,10 +183,10 @@ fn load_skills_from_dir_internal(
     let mut matcher = ignore_matcher.cloned().unwrap_or_default();
     add_ignore_rules(&mut matcher, dir, &root);
 
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = crate::utils::read_dir_sorted(dir) else {
         return LoadSkillsResult { skills, diagnostics };
     };
-    let entries: Vec<std::path::PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    let entries: Vec<std::path::PathBuf> = entries.into_iter().map(|entry| entry.path()).collect();
 
     for full_path in &entries {
         let name = full_path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();

@@ -55,7 +55,9 @@ fn test_fixture_like_plan_parses() { let tmp=tempfile::tempdir().unwrap(); let m
 #[test]
 fn test_legacy_objective_migrates_under_lock() { let tmp=tempfile::tempdir().unwrap(); let old="Complete all ulw-loop stories in .omo/ulw-loop/goals.json: G001 Build auth service"; let mut p=sample_plan(); p.codex_goal_mode=Some("aggregate".into()); p.codex_objective=Some(old.into()); write_plan(tmp.path(),p,None).unwrap(); let got=with_ulw_loop_mutation_lock(tmp.path(),None,None,||{let x=read_ulw_loop_plan(tmp.path(),None)?; write_plan(tmp.path(),x.clone(),None)?; Ok(x)}).unwrap(); assert_ne!(got.codex_objective.as_deref(),Some(old)); assert_eq!(got.codex_objective_aliases.unwrap(),vec![old]); }
 #[test]
-fn test_legacy_objective_read_does_not_persist() { let tmp=tempfile::tempdir().unwrap(); let old="Complete all ulw-loop stories in .omo/ulw-loop/goals.json: G001 Build auth service"; let mut p=sample_plan(); p.codex_goal_mode=Some("aggregate".into()); p.codex_objective=Some(old.into()); write_raw(tmp.path(),p); let got=read_ulw_loop_plan(tmp.path(),None).unwrap(); assert_ne!(got.codex_objective.as_deref(),Some(old)); assert_eq!(serde_json::from_str::<UlwLoopPlan>(&fs::read_to_string(ulw_loop_goals_path(tmp.path(),None)).unwrap()).unwrap().codex_objective.as_deref(),Some(old)); assert!(!ulw_loop_ledger_path(tmp.path(),None).exists()); }
+fn test_legacy_objective_read_persists_migration() { let tmp=tempfile::tempdir().unwrap(); let old="Complete all ulw-loop stories in .omo/ulw-loop/goals.json: G001 Build auth service"; let mut p=sample_plan(); p.codex_goal_mode=Some("aggregate".into()); p.codex_objective=Some(old.into()); write_raw(tmp.path(),p); let got=read_ulw_loop_plan(tmp.path(),None).unwrap(); assert_ne!(got.codex_objective.as_deref(),Some(old)); assert_ne!(got.updated_at,"2026-05-23T00:00:00Z"); let persisted=serde_json::from_str::<UlwLoopPlan>(&fs::read_to_string(ulw_loop_goals_path(tmp.path(),None)).unwrap()).unwrap(); assert_eq!(persisted.codex_objective,got.codex_objective); let migrated=read_ledger(tmp.path(),None).into_iter().filter(|e|e.kind=="aggregate_objective_migrated").collect::<Vec<_>>(); assert_eq!(migrated.len(),1); assert_eq!(migrated[0].before.as_ref().unwrap()["codexObjective"],old); }
+#[test]
+fn test_objective_containing_legacy_prefix_mid_string_is_not_migrated() { let tmp=tempfile::tempdir().unwrap(); let obj="Note: Complete all ulw-loop stories in .omo/ulw-loop/goals.json: G001"; let mut p=sample_plan(); p.codex_goal_mode=Some("aggregate".into()); p.codex_objective=Some(obj.into()); write_raw(tmp.path(),p); assert_eq!(read_ulw_loop_plan(tmp.path(),None).unwrap().codex_objective.as_deref(),Some(obj)); assert!(read_ledger(tmp.path(),None).iter().all(|e|e.kind!="aggregate_objective_migrated")); }
 #[test]
 fn test_migrated_plan_reads_without_ledger() { let tmp=tempfile::tempdir().unwrap(); let mut p=sample_plan(); p.codex_goal_mode=Some("aggregate".into()); p.codex_objective=Some("objective".into()); write_raw(tmp.path(),p); assert_eq!(read_ulw_loop_plan(tmp.path(),None).unwrap().codex_objective.as_deref(),Some("objective")); assert!(!ulw_loop_ledger_path(tmp.path(),None).exists()); }
 fn write_raw(root:&std::path::Path,p:UlwLoopPlan){fs::create_dir_all(ulw_loop_dir(root,None)).unwrap();fs::write(ulw_loop_goals_path(root,None),format!("{}\n",serde_json::to_string_pretty(&p).unwrap())).unwrap();}
@@ -101,3 +103,23 @@ fn test_distinct_roots_independent() { let a=tempfile::tempdir().unwrap(); let b
 #[test]
 fn test_distinct_scopes_independent() { let tmp=tempfile::tempdir().unwrap(); let a=UlwLoopScope::new("session-a"); with_ulw_loop_mutation_lock(tmp.path(),Some(&a),None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); with_ulw_loop_mutation_lock(tmp.path(),None,None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); }
 
+#[test]
+fn test_minimal_version_one_plan_with_goals_array_is_accepted() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(ulw_loop_dir(tmp.path(), None)).unwrap();
+    fs::write(ulw_loop_goals_path(tmp.path(), None), "{\"version\":1,\"goals\":[]}").unwrap();
+    let plan = read_ulw_loop_plan(tmp.path(), None).unwrap();
+    assert!(plan.goals.is_empty());
+}
+
+#[test]
+fn test_corrupt_or_wrong_shape_goals_json_is_invalid_not_missing() {
+    for raw in ["{not json", "{\"version\":1,\"goals\":{}}", "{\"version\":2,\"goals\":[]}", "{\"version\":1}"] {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(ulw_loop_dir(tmp.path(), None)).unwrap();
+        fs::write(ulw_loop_goals_path(tmp.path(), None), raw).unwrap();
+        let e = read_ulw_loop_plan(tmp.path(), None).unwrap_err();
+        assert_eq!(e.code, "ULW_LOOP_PLAN_INVALID", "{raw}");
+        assert!(e.message.starts_with("Invalid ulw-loop plan at "), "{}", e.message);
+    }
+}

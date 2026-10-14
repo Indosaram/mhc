@@ -29,11 +29,9 @@ pub fn should_join_shared_host(app_mode: AppMode, enable_env: bool, setting_enab
     enable_env || setting_enabled
 }
 
-/// The flat native key for senpi's nested `experimental.sharedHost` setting.
-pub const EXPERIMENTAL_SHARED_HOST_SETTING: &str = "experimentalSharedHost";
-
+/// senpi `getExperimentalSharedHost`: `experimental.sharedHost === true`.
 pub fn shared_host_setting_enabled(settings: &maho_core::settings_manager::SettingsManager) -> bool {
-    settings.get_bool(EXPERIMENTAL_SHARED_HOST_SETTING).unwrap_or(false)
+    settings.get_experimental_shared_host()
 }
 
 pub fn session_profile(

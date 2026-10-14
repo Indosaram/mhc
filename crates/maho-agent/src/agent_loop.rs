@@ -19,7 +19,8 @@ use maho_ai::api::cursor_agent::types::CursorToolResultHandler;
 use tokio::sync::oneshot;
 
 use crate::assistant_terminal_state::{
-    AgentStreamError, TerminalAssistantMessageEvent, create_terminal_failure_assistant_message,
+    AgentStreamError, PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME, TerminalAssistantMessageEvent,
+    create_terminal_failure_assistant_message,
     demote_tool_use_without_tool_calls, is_stream_idle_timeout_error, normalize_terminal_assistant_message, now_ms,
     promote_stop_with_pending_tool_calls, should_finalize_idle_as_stop, should_terminate_assistant_turn,
 };
@@ -315,7 +316,15 @@ async fn run_loop(
                 let executed_tool_batch = if message.stop_reason == StopReason::Length {
                     fail_tool_calls_from_truncated_message(&tool_calls, &emit).await
                 } else {
-                    execute_tool_calls(&current_context, &message, &config, signal.clone(), &emit).await
+                    execute_tool_calls(
+                        &current_context,
+                        &message,
+                        &provider_tool_results,
+                        &config,
+                        signal.clone(),
+                        &emit,
+                    )
+                    .await
                 };
                 tool_results.extend(executed_tool_batch.messages.iter().cloned());
                 tool_batch_terminated = executed_tool_batch.terminate;
@@ -377,6 +386,25 @@ async fn run_loop(
                 Some(prepare) => prepare(next_turn_context).await,
                 None => None,
             };
+            if let Some(error_message) = next_turn_snapshot.as_ref().and_then(|snapshot| snapshot.failure.clone()) {
+                if let Some(queue) = drained_terminating_queue
+                    && let Some(restore) = config.restore_pending_messages.as_ref()
+                {
+                    restore(queue, pending_messages.clone()).await;
+                }
+                // senpi `handleRunFailure(error, aborted=false)`.
+                let failure = assistant_event(&create_terminal_failure_assistant_message(
+                    &config.model,
+                    StopReason::Error,
+                    &AgentStreamError::Other { message: error_message },
+                    None,
+                ));
+                send(&emit, AgentEvent::MessageStart { message: failure.clone() }).await;
+                send(&emit, AgentEvent::MessageEnd { message: failure.clone() }).await;
+                send(&emit, AgentEvent::TurnEnd { message: failure.clone(), tool_results: Vec::new() }).await;
+                send(&emit, AgentEvent::AgentEnd { messages: vec![failure] }).await;
+                return;
+            }
             if let Some(snapshot) = next_turn_snapshot {
                 current_context = snapshot.context.unwrap_or(current_context);
                 config.model = snapshot.model.unwrap_or(config.model.clone());
@@ -792,9 +820,14 @@ fn stream_error(error: StreamError) -> AgentStreamError {
     AgentStreamError::Other { message: error.message }
 }
 
-/// `AbortError`: the reason the signal carries, else the DOM default.
+/// `AbortError`: the reason the signal carries, else the DOM default. A
+/// `ProviderRetryWatchdogAbortError` reason keeps its class so the terminal message gets
+/// `abortSource: "provider"`.
 fn abort_error(signal: Option<&AbortSignal>) -> AgentStreamError {
     match signal.and_then(AbortSignal::reason) {
+        Some(reason) if reason.name == PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME => {
+            AgentStreamError::ProviderRetryWatchdogAbort { provider_cause: reason.message }
+        }
         Some(reason) => AgentStreamError::Other { message: reason.message },
         None => AgentStreamError::Other { message: "Request was aborted".to_owned() },
     }
@@ -988,6 +1021,7 @@ async fn fail_tool_calls_from_truncated_message(
 async fn execute_tool_calls(
     current_context: &AgentContext,
     assistant_message: &AssistantMessage,
+    provider_tool_results: &[ToolResultMessage],
     config: &AgentLoopConfig,
     signal: Option<AbortSignal>,
     emit: &AgentEventSink,
@@ -996,12 +1030,11 @@ async fn execute_tool_calls(
     // stamped `kCursorExecResolved` was already executed by Cursor's exec
     // channel and its result buffered; running it again would duplicate a
     // side-effecting tool.
-    let provider_tool_results: Vec<ToolResultMessage> = Vec::new();
     let tool_calls: Vec<AgentToolCall> = assistant_message
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::ToolCall(call) if !is_cursor_exec_resolved(call, &provider_tool_results) => Some(call.clone()),
+            ContentBlock::ToolCall(call) if !is_cursor_exec_resolved(call, provider_tool_results) => Some(call.clone()),
             _ => None,
         })
         .collect();

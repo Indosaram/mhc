@@ -9,6 +9,7 @@ license = "MIT"
 maho-ai = { path = "../maho-ai" }
 maho-agent = { path = "../maho-agent" }
 maho-core = { path = "../maho-core" }
+maho-process-env = { path = "../maho-process-env" }
 maho-tui = { path = "../maho-tui" }
 maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }
@@ -58,12 +59,14 @@ maho-ext-loop = { path = "../builtins/maho-ext-loop" }
 maho-ext-ttsr = { path = "../builtins/maho-ext-ttsr" }
 maho-ext-config-reload = { path = "../builtins/maho-ext-config-reload" }
 maho-ext-pi-webfetch = { path = "../extensions/maho-ext-pi-webfetch" }
+maho-ext-pi-rules = { path = "../extensions/maho-ext-pi-rules" }
+maho-ext-pi-websearch = { path = "../extensions/maho-ext-pi-websearch" }
+maho-ext-pi-goal = { path = "../extensions/maho-ext-pi-goal" }
 maho-ext-pi-comment-checker = { path = "../extensions/maho-ext-pi-comment-checker" }
 maho-ext-pi-ast-grep = { path = "../extensions/maho-ext-pi-ast-grep" }
 maho-ext-pi-nested-agents-md = { path = "../extensions/maho-ext-pi-nested-agents-md" }
 maho-ext-omo-zcode-oauth = { path = "../extensions/maho-ext-omo-zcode-oauth" }
 maho-ext-orca-prefill = { path = "../extensions/maho-ext-orca-prefill" }
-maho-ext-quiet-model-profile = { path = "../extensions/maho-ext-quiet-model-profile" }
 maho-ext-ferryx-agent-state = { path = "../extensions/maho-ext-ferryx-agent-state" }
 maho-ext-herdr-agent-state = { path = "../extensions/maho-ext-herdr-agent-state" }
 maho-ext-orca-agent-status = { path = "../extensions/maho-ext-orca-agent-status" }
@@ -73,6 +76,7 @@ ulw-loop-core = { path = "../omo/ulw-loop-core" }
 maho-omo-config-resolution = { path = "../omo/components/maho-omo-config-resolution" }
 maho-omo-config-core = { path = "../omo/omo-config-core" }
 maho-omo-memory = { path = "../omo/components/maho-omo-memory" }
+maho-omo-telemetry = { path = "../omo/components/maho-omo-telemetry" }
 memory-core = { package = "maho-memory-core", path = "../omo/memory-core" }
 maho-omo-lsp = { path = "../omo/components/maho-omo-lsp" }
 lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon" }
@@ -93,6 +97,7 @@ percent-encoding.workspace = true
 base64 = "=0.22.1"
 reqwest = { workspace = true, features = ["rustls-tls"] }
 semver = "=1.0.27"
+icu_collator = "=2.3.1"
 photon-rs = { version = "=0.3.3", default-features = false }
 tempfile.workspace = true
 notify = "=8.2.0"

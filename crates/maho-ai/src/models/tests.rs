@@ -182,6 +182,7 @@ fn test_provider(id: &str, models: Vec<Model>, fetch: Option<FetchModels>) -> Ar
         name: None,
         base_url: None,
         headers: None,
+        auth: None,
         models,
         fetch_models: fetch,
         restore_models: None,
@@ -198,6 +199,7 @@ fn provider_collection_retains_declared_retry_policy() {
         name: None,
         base_url: None,
         headers: None,
+        auth: None,
         models: Vec::new(),
         fetch_models: None,
         restore_models: None,
@@ -324,6 +326,18 @@ fn models_error_appends_cause_detail_once() {
 
 fn plain_provider(id: &str, models: Vec<Model>) -> Arc<dyn Provider> {
     test_provider(id, models, None)
+}
+
+#[tokio::test]
+async fn ambient_bedrock_credentials_resolve_without_a_request_key() {
+    let models = create_models(None);
+    models.set_provider(crate::providers::amazon_bedrock::amazon_bedrock_provider());
+    let overrides = AuthResolutionOverrides {
+        env: Some(ProviderEnv::from([("AWS_PROFILE".to_owned(), "work".to_owned())])),
+        ..AuthResolutionOverrides::default()
+    };
+    let resolution = models.get_auth("amazon-bedrock", &overrides).await.expect("resolve").expect("configured");
+    assert_eq!(resolution.auth.api_key, None);
 }
 
 #[test]
@@ -1016,6 +1030,7 @@ async fn uses_explicit_request_api_key_and_env_during_provider_auth_resolution()
         name: None,
         base_url: None,
         headers: None,
+        auth: None,
         models: vec![model.clone()],
         fetch_models: None,
         restore_models: None,
@@ -1089,6 +1104,7 @@ async fn merges_resolved_auth_into_stream_options_explicit_options_win_per_field
         name: None,
         base_url: None,
         headers: None,
+        auth: None,
         models: vec![model.clone()],
         fetch_models: None,
         restore_models: None,
@@ -1146,6 +1162,7 @@ async fn adds_model_headers_only_for_model_auth_and_transforms_assembled_headers
         name: None,
         base_url: None,
         headers: None,
+        auth: None,
         models: vec![model.clone()],
         fetch_models: None,
         restore_models: None,
@@ -2181,6 +2198,7 @@ async fn cancel_deferred_resolves_the_provider_and_rejects_unknown_or_incapable_
         name: None,
         base_url: None,
         headers: None,
+        auth: None,
         models: vec![model.clone()],
         fetch_models: None,
         restore_models: None,

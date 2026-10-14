@@ -267,6 +267,30 @@ async fn temporary_manifest_system_scope_applies_only_to_temporary_sources() {
 }
 
 #[tokio::test]
+async fn extension_entries_resolve_like_upstream_with_override_patterns() {
+    // Given
+    let dir = tempfile::tempdir().expect("tempdir"); let mut settings = settings(true);
+    put(&dir.path().join("agent/extensions/a.ts"), "a");
+    put(&dir.path().join("agent/extensions/b/index.ts"), "b");
+    put(&dir.path().join("pkg/package.json"), r#"{"pi":{"extensions":["./src/index.ts"]}}"#);
+    put(&dir.path().join("pkg/src/index.ts"), "pkg");
+    put(&dir.path().join("single.ts"), "single");
+    let mut values = Settings::new(); values.insert("extensions".into(), json!(["-extensions/a.ts"]));
+    values.insert("packages".into(), json!([{"source":"../pkg","extensions":[]}]));
+    settings.set(SettingsScope::Global, &values).expect("settings");
+    let manager = manager(&dir, &mut settings, Arc::new(FakeRunner::default()));
+    // When
+    let paths = manager.resolve(None).await.expect("resolve");
+    let cli = manager.resolve_extension_sources(&["./single.ts".into()], Some(ResolveSourcesOptions { temporary: true, local: false })).await.expect("cli");
+    // Then
+    let state = |suffix: &str| paths.extensions.iter().find(|resource| resource.path.ends_with(suffix)).map(|resource| resource.enabled);
+    assert_eq!(state("extensions/a.ts"), Some(false));
+    assert_eq!(state("extensions/b/index.ts"), Some(true));
+    assert_eq!(state("pkg/src/index.ts"), Some(false));
+    assert_eq!(cli.extensions.len(), 1); assert!(cli.extensions[0].path.ends_with("single.ts")); assert!(cli.extensions[0].enabled);
+}
+
+#[tokio::test]
 async fn git_clone_uses_ref_and_remove_cleans_owned_checkout() {
     // Given
     let dir = tempfile::tempdir().expect("tempdir"); let mut settings = settings(true);
@@ -516,7 +540,7 @@ async fn legacy_global_npm_resources_resolve_without_managed_install() {
 }
 
 #[tokio::test]
-async fn explicit_resources_precede_auto_resources_and_native_extensions_stay_empty() {
+async fn explicit_resources_precede_auto_resources_and_extension_files_resolve() {
     // Given
     let dir = tempfile::tempdir().expect("tempdir"); let mut settings = settings(true);
     put(&dir.path().join("agent/prompts/a.md"), "a");
@@ -528,7 +552,8 @@ async fn explicit_resources_precede_auto_resources_and_native_extensions_stay_em
     let paths = manager.resolve(None).await.expect("resolve");
     // Then
     assert_eq!(paths.prompts.len(), 1); assert!(!paths.prompts[0].enabled);
-    assert_eq!(paths.prompts[0].metadata.source, "local"); assert!(paths.extensions.is_empty());
+    assert_eq!(paths.prompts[0].metadata.source, "local");
+    assert_eq!(paths.extensions.len(), 1); assert!(paths.extensions[0].enabled); assert_eq!(paths.extensions[0].metadata.source, "auto");
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use super::{registry::{JsonRpcError, MethodRegistration, MethodRegistry, MethodScope}, thread_registry::ThreadRegistry};
-use maho_core::{paths::{PathInputOptions, resolve_path}, skills::{LoadSkillsOptions, LoadSkillsResult, load_skills}, source_info::SourceScope};
+use maho_core::{package_identity::dedupe_paths_by_package_identity, package_manager::{DefaultPackageManager, PackageManagerOptions}, paths::{PathInputOptions, canonicalize_path, resolve_path}, settings_manager::SettingsManager, skills::{LoadSkillsOptions, LoadSkillsResult, load_skills}, source_info::{SourceScope, create_source_info}};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
@@ -7,6 +7,36 @@ use tokio::sync::Mutex;
 pub type SkillLoader = Arc<dyn Fn(&str, &str) -> Result<LoadSkillsResult, String> + Send + Sync>;
 pub fn register_skill_methods(registry: &mut MethodRegistry, agent_dir: String, server_cwd: String, threads: Arc<ThreadRegistry>) {
     register_skill_methods_with_loader(registry,agent_dir,server_cwd,threads,Arc::new(|cwd,agent_dir|Ok(load_skills(&LoadSkillsOptions {cwd:cwd.into(),agent_dir:agent_dir.into(),skill_paths:Vec::new(),include_defaults:true}))));
+}
+/// Pinned runtime `resourceLoaderFactory`: a fresh `DefaultResourceLoader({cwd, agentDir})` + `reload()`.
+/// Skill paths come from `SettingsManager.create(cwd, agentDir)` (project trusted by default) resolved
+/// through `DefaultPackageManager.resolve()` (settings paths, installed packages, auto-discovered dirs),
+/// merged with `additional_skill_paths`, deduped by package identity and loaded without defaults.
+/// Runs on a blocking-pool thread (the handler spawns it there) so it can drive the async resolve.
+pub fn resource_skill_loader(additional_skill_paths: Vec<String>) -> SkillLoader {
+    Arc::new(move |cwd, agent_dir| {
+        let mut settings = SettingsManager::create(cwd, agent_dir, &maho_core::config::home_dir(), true);
+        let manager = DefaultPackageManager::new(PackageManagerOptions { cwd, agent_dir, settings_manager: &mut settings });
+        let handle = tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
+        let resolved = handle.block_on(manager.resolve(None)).map_err(|error| error.to_string())?;
+        let enabled = resolved.skills.into_iter().filter(|resource| resource.enabled).collect::<Vec<_>>();
+        let options = PathInputOptions { trim: true, ..Default::default() };
+        let mut seen = std::collections::HashSet::new();
+        let merged = enabled.iter().map(|resource| resource.path.clone()).chain(additional_skill_paths.iter().cloned())
+            .map(|path| resolve_path(&path, cwd, &options))
+            .filter(|path| seen.insert(canonicalize_path(path)))
+            .collect::<Vec<_>>();
+        let skill_paths = dedupe_paths_by_package_identity(&merged);
+        let mut loaded = load_skills(&LoadSkillsOptions { cwd: cwd.into(), agent_dir: agent_dir.into(), skill_paths, include_defaults: false });
+        for skill in &mut loaded.skills {
+            let path = std::path::Path::new(&skill.file_path);
+            let metadata = enabled.iter().find(|resource| path == std::path::Path::new(&resource.path))
+                .or_else(|| enabled.iter().find(|resource| path.starts_with(&resource.path)))
+                .map(|resource| &resource.metadata);
+            if let Some(metadata) = metadata { skill.source_info = create_source_info(&skill.file_path, metadata); }
+        }
+        Ok(loaded)
+    })
 }
 pub fn register_skill_methods_with_loader(registry: &mut MethodRegistry, agent_dir: String, server_cwd: String, threads: Arc<ThreadRegistry>, loader: SkillLoader) {
     let cache = Arc::new(Mutex::new(BTreeMap::<String, LoadSkillsResult>::new()));
@@ -49,10 +79,13 @@ pub fn register_skill_methods_with_loader(registry: &mut MethodRegistry, agent_d
                     let loaded = if params["forceReload"] == true || !cache.contains_key(&cwd) {
                         match loaded_thread_skills(&threads,&cwd,params["forceReload"] == true).await {
                             Some(loaded)=>loaded,
-                            None=>match loader(&cwd,&agent_dir) {
+                            None=>{
+                                let loader = loader.clone();let load_cwd = cwd.clone();let agent_dir = agent_dir.clone();
+                                let res = tokio::task::spawn_blocking(move || loader(&load_cwd,&agent_dir)).await.unwrap_or_else(|error| Err(error.to_string()));
+                                match res {
                                 Ok(loaded)=>{cache.insert(cwd.clone(),loaded.clone());loaded},
                                 Err(message)=>{cache.remove(&cwd);data.push(json!({"cwd":cwd,"skills":[],"errors":[{"path":cwd,"message":message}]}));continue;},
-                            },
+                            }},
                         }
                     } else {cache[&cwd].clone()};
                     let skills = loaded.skills.iter().map(|skill| {

@@ -28,6 +28,8 @@ impl HandoffDrain{
 #[derive(Default)]pub struct ConnectionAttachments{owned:std::collections::BTreeMap<String,std::collections::BTreeMap<String,usize>>}
 impl ConnectionAttachments{
     pub fn attach(&mut self,owner:&str,session:&str){*self.owned.entry(owner.into()).or_default().entry(session.into()).or_default()+=1;}
+    /// The sessions one owner holds, with how many attachments it holds on each.
+    pub fn owned_by(&self,owner:&str)->Vec<(String,usize)>{self.owned.get(owner).map(|sessions|sessions.iter().map(|(session,count)|(session.clone(),*count)).collect()).unwrap_or_default()}
     pub fn owns(&self,owner:Option<&str>,session:&str)->bool{owner.is_none_or(|owner|self.owned.get(owner).is_some_and(|sessions|sessions.contains_key(session)))}
     pub fn admit_close(&mut self,route:(Option<&str>,&str),response:&serde_json::Value,entry:&mut crate::session_registry::SessionCloseState,detach:bool,writer:&crate::session_event_writer::SessionWriterActor)->Result<Option<(u64,crate::session_teardown::CloseClaim)>,String>{
         let(owner,session)=route;
@@ -36,6 +38,11 @@ impl ConnectionAttachments{
         if claim.is_some()&&let Some(owner)=owner{self.release(owner,session);}
         Ok(claim)
     }
+    /// Removes and returns every attachment one dropped connection still held (senpi
+    /// `releaseConnection`'s `sessionsByConnection.delete`).
+    pub fn take(&mut self,owner:&str)->std::collections::BTreeMap<String,usize>{self.owned.remove(owner).unwrap_or_default()}
+    /// Drops every connection's record of a handle the host closed on its own (senpi `forgetSessionOwnership`).
+    pub fn forget_session(&mut self,session:&str){self.owned.retain(|_,sessions|{sessions.remove(session);!sessions.is_empty()});}
     pub fn release(&mut self,owner:&str,session:&str){
         let Some(sessions)=self.owned.get_mut(owner)else{return;};
         let Some(count)=sessions.get_mut(session)else{return;};
@@ -43,11 +50,13 @@ impl ConnectionAttachments{
         if sessions.is_empty(){self.owned.remove(owner);}
     }
 }
-#[cfg(test)]mod attachment_tests{use super::*;#[test]fn public_handle_does_not_authorize_another_connections_close(){let mut attachments=ConnectionAttachments::default();attachments.attach("one","s");attachments.attach("one","s");assert!(!attachments.owns(Some("two"),"s"));assert!(attachments.owns(None,"s"));attachments.release("two","s");assert!(attachments.owns(Some("one"),"s"));attachments.release("one","s");assert!(attachments.owns(Some("one"),"s"));attachments.release("one","s");assert!(!attachments.owns(Some("one"),"s"));}}
+#[cfg(test)]mod attachment_tests{use super::*;#[test]fn owned_by_lists_each_session_with_its_attachment_count(){let mut attachments=ConnectionAttachments::default();attachments.attach("one","s");attachments.attach("one","s");attachments.attach("one","t");assert_eq!(attachments.owned_by("one"),vec![("s".to_owned(),2),("t".to_owned(),1)]);assert!(attachments.owned_by("two").is_empty());}#[test]fn public_handle_does_not_authorize_another_connections_close(){let mut attachments=ConnectionAttachments::default();attachments.attach("one","s");attachments.attach("one","s");assert!(!attachments.owns(Some("two"),"s"));assert!(attachments.owns(None,"s"));attachments.release("two","s");assert!(attachments.owns(Some("one"),"s"));attachments.release("one","s");assert!(attachments.owns(Some("one"),"s"));attachments.release("one","s");assert!(!attachments.owns(Some("one"),"s"));}}
 #[derive(Default)]pub struct SharedSessionWidths{widths:std::collections::BTreeMap<String,std::collections::BTreeMap<String,f64>>}
 impl SharedSessionWidths{
     pub fn set_width(&mut self,session:&str,connection:Option<&str>,width:f64){if let Some(connection)=connection{self.widths.entry(session.into()).or_default().insert(connection.into(),width);}}
     pub fn clear_width(&mut self,session:&str,connection:Option<&str>){if let Some(connection)=connection&&let Some(widths)=self.widths.get_mut(session){widths.remove(connection);}}
+    pub fn clear_connection(&mut self,connection:&str){for widths in self.widths.values_mut(){widths.remove(connection);}}
+    pub fn forget_session(&mut self,session:&str){self.widths.remove(session);}
     pub fn width(&self,session:&str)->f64{self.widths.get(session).and_then(|widths|widths.values().copied().reduce(f64::min)).unwrap_or(80.)}
 }
 #[cfg(test)]mod width_tests{use super::*;#[test]fn narrowest_live_connection_controls_render_width(){let mut widths=SharedSessionWidths::default();assert_eq!(widths.width("s"),80.);widths.set_width("s",None,10.);widths.set_width("s",Some("desktop"),120.);widths.set_width("s",Some("phone"),40.);assert_eq!(widths.width("s"),40.);widths.clear_width("s",Some("phone"));assert_eq!(widths.width("s"),120.);widths.clear_width("s",Some("desktop"));assert_eq!(widths.width("s"),80.);}}

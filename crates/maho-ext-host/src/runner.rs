@@ -273,6 +273,8 @@ pub struct ExtensionRunner {
     /// `create_context_for_extension`. Cleared whenever the bound context/actions change.
     context_session_manager: Arc<std::sync::Mutex<Option<Arc<dyn SessionManager>>>>,
     factory_context: ExtensionContext,
+    /// The session-bound error listener (pinned `_extensionErrorUnsubscriber` swap in `_applyExtensionBindings`).
+    session_error_listener: Option<ErrorListener>,
 }
 pub type RuntimeFactory = Arc<dyn Fn(ExtensionContext) -> ExtensionFuture<'static, ExtensionRunner> + Send + Sync>;
 struct SharedExtension(Arc<dyn Extension>);
@@ -282,7 +284,7 @@ impl Extension for SharedExtension {
 impl ExtensionRunner {
     pub fn new(extensions: Vec<LoadedExtension>, runtime: ExtensionRuntime, events: EventBus, context: ExtensionContext) -> Self {
         Self { extensions, runtime, events, factory_context: context.clone(), context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
-            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None, runtime_factory: None, context_session_manager: Arc::new(std::sync::Mutex::new(None)) }
+            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None, runtime_factory: None, context_session_manager: Arc::new(std::sync::Mutex::new(None)), session_error_listener: None }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
         Self::from_shared_static(extensions.into_iter().map(Arc::from).collect(), context)
@@ -342,6 +344,7 @@ impl ExtensionRunner {
         let mut runner = factory(context).await?;
         runner.runtime_factory = self.runtime_factory.clone();
         runner.error_listeners = self.error_listeners.clone();
+        runner.session_error_listener = self.session_error_listener.clone();
         runner.warning_listener = self.warning_listener.clone();
         runner.hook_observer = self.hook_observer.clone();
         runner.shutdown_budget = self.shutdown_budget.clone();
@@ -390,6 +393,7 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         for extension in &self.extensions {
             for activator in &extension.lazy_tool_activators { actions.register_lazy_tool_activator(Arc::clone(activator))?; }
+            for source in &extension.native_tool_search_injection_failure_sources { actions.register_native_tool_search_injection_failure_source(Arc::clone(source))?; }
             for (name, hint) in &extension.removed_tool_hints { actions.register_removed_tool_hint(name, hint)?; }
         }
         self.runtime.bind_session_actions(actions); Ok(())
@@ -400,7 +404,7 @@ impl ExtensionRunner {
     pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>, exclude_path: Option<String>) -> Result<ProviderRequestPreparation, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context_runner = self.clone();
-        let messages = context_runner.emit_context(&messages, exclude_path.as_deref()).await?;
+        let messages = context_runner.emit_context(&messages, &[], exclude_path.as_deref()).await?;
         let payload_runner = self.clone();
         let header_runner = self.clone();
         Ok(ProviderRequestPreparation {
@@ -530,11 +534,15 @@ impl ExtensionRunner {
         }
     }
     pub fn on_error(&mut self, listener: ErrorListener) { self.error_listeners.push(listener); }
+    /// Replace the single session-bound error listener (pinned unsubscribe-then-`onError`).
+    pub fn set_session_error_listener(&mut self, listener: Option<ErrorListener>) { self.session_error_listener = listener; }
+    pub fn has_session_error_listener(&self) -> bool { self.session_error_listener.is_some() }
     pub fn set_tool_hook_lifecycle_observer(&mut self, observer: Option<HookObserver>) { self.hook_observer = observer; }
     pub fn set_warning_listener(&mut self, listener: Option<WarningListener>) { self.warning_listener = listener; }
     pub fn set_shutdown_budget_resolver(&mut self, resolver: Arc<dyn Fn() -> (u64, u64) + Send + Sync>) { self.shutdown_budget = Some(resolver); }
     pub fn emit_error(&mut self, error: ExtensionError) {
         for listener in &self.error_listeners { listener(&error); }
+        if let Some(listener) = &self.session_error_listener { listener(&error); }
         self.errors.push(error);
     }
     fn report(&mut self, path: &str, kind: EventKind, error: ExtensionFailure) {
@@ -735,7 +743,8 @@ impl ExtensionRunner {
                 result = &mut future => return result,
                 () = &mut warn, if self.shutdown_warn_ms > 0 && !warned => {
                     warned = true;
-                    let message = format!("Extension {path} is still running its session_shutdown handler after {}ms.", self.shutdown_warn_ms);
+                    let cap_note = if self.shutdown_timeout_ms > 0 { format!(" (hard cap {}ms)", self.shutdown_timeout_ms) } else { String::new() };
+                    let message = format!("Extension {path} is still running its session_shutdown handler after {}ms{cap_note}.", self.shutdown_warn_ms);
                     if let Some(listener) = &self.warning_listener { listener(&message); }
                     self.warnings.push(message);
                 }
@@ -814,19 +823,26 @@ impl ExtensionRunner {
         }
         Ok(modified.then_some(current_message))
     }
-    pub async fn emit_context(&mut self, messages: &[AgentMessage], exclude_path: Option<&str>) -> Result<Vec<AgentMessage>, ExtensionFailure> {
+    /// `entry_ids` stamps each message with its session entry (senpi `emitContext` copying
+    /// `getSessionContextEntryId` onto the cloned messages); missing positions are unstamped.
+    pub async fn emit_context(&mut self, messages: &[AgentMessage], entry_ids: &[Option<String>], exclude_path: Option<&str>) -> Result<Vec<AgentMessage>, ExtensionFailure> {
         self.runtime.assert_active()?;
-        let mut event = ExtensionEvent::Context { messages: messages.to_vec() };
+        let entry_ids = (0..messages.len()).map(|index| entry_ids.get(index).cloned().flatten()).collect();
+        let mut event = ExtensionEvent::Context { messages: messages.to_vec(), entry_ids };
         for (path, handler) in self.handlers(EventKind::Context) {
             if exclude_path == Some(path.as_str()) { continue; }
             let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {
-                Ok(EventResult::Context { messages: Some(next) }) => if let ExtensionEvent::Context { messages } = &mut event { *messages = next; },
+                Ok(EventResult::Context { messages: Some(next) }) => if let ExtensionEvent::Context { messages, entry_ids } = &mut event {
+                    // A stamp rides on its message: it survives only where the handler kept that exact message in place.
+                    *entry_ids = next.iter().enumerate().map(|(index, message)| entry_ids.get(index).cloned().flatten().filter(|_| messages.get(index) == Some(message))).collect();
+                    *messages = next;
+                },
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::Context, error),
             }
             self.runtime.assert_active()?;
         }
-        if let ExtensionEvent::Context { messages } = event { return Ok(messages); }
+        if let ExtensionEvent::Context { messages, .. } = event { return Ok(messages); }
         Err(ExtensionFailure::new("context handler replaced event kind"))
     }
     pub async fn emit_before_provider_request(&mut self, payload: JsonValue, exclude_path: Option<&str>) -> Result<JsonValue, ExtensionFailure> {

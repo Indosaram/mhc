@@ -6,16 +6,23 @@ pub struct CursorCliExtension {
     pub settings:Arc<dyn Fn()->crate::settings::CursorCliOauthProviderSettings+Send+Sync>,
     pub router:Option<Arc<tokio::sync::Mutex<crate::session_router::SessionRouter>>>,
     pub shutdown:Option<maho_ai::utils::abort::AbortController>,
-    pub catalog:Option<(std::path::PathBuf,std::path::PathBuf,std::collections::BTreeMap<String,String>)>,
+    pub catalog:Option<(crate::oauth_login::ExecutablePathResolver,std::path::PathBuf,std::collections::BTreeMap<String,String>)>,
     pub catalog_refresh:Option<Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>>,
 }
 impl CursorCliExtension {
     pub fn native(oauth:Arc<crate::oauth_login::CursorCliOAuth>,executable:std::path::PathBuf,cwd:std::path::PathBuf,agent_dir:std::path::PathBuf,environment:std::collections::BTreeMap<String,String>)->Self {
+        Self::native_with_resolver(oauth,Arc::new(move |_:&crate::settings::CursorCliOauthProviderSettings|->anyhow::Result<std::path::PathBuf> {Ok(executable.clone())}),cwd,agent_dir,environment)
+    }
+    /// senpi `stream.ts`: settings and the cursor-agent executable are re-resolved inside every
+    /// turn, and a missing binary fails the turn with the install guidance instead of hiding the lane.
+    pub fn native_with_resolver(oauth:Arc<crate::oauth_login::CursorCliOAuth>,resolve:crate::oauth_login::ExecutablePathResolver,cwd:std::path::PathBuf,agent_dir:std::path::PathBuf,environment:std::collections::BTreeMap<String,String>)->Self {
         let settings=oauth.settings.clone();
         let router=Arc::new(tokio::sync::Mutex::new(crate::session_router::SessionRouter::default()));
         let shutdown=maho_ai::utils::abort::AbortController::new();
-        let catalog=Some((executable.clone(),agent_dir.clone(),environment.clone()));
+        let catalog=Some((resolve.clone(),agent_dir.clone(),environment.clone()));
         let stream={let oauth=oauth.clone();let router=router.clone();let shutdown=shutdown.clone();Arc::new(move |model:&maho_ai::model::Model,context:&maho_ai::types::Context,options:Option<maho_ai::types::SimpleStreamOptions>| {
+            let settings=(oauth.settings)();
+            let executable=if settings.explicitly_disabled {std::path::PathBuf::new()} else {match resolve(&settings) {Ok(executable)=>executable,Err(error)=>return crate::stream::failed_stream(model,(oauth.now)(),&error.to_string())}};
             let mut options=options.unwrap_or_default();
             let controller=maho_ai::utils::abort::AbortController::new();
             let signals=[options.stream.request.signal.clone(),Some(shutdown.signal())];
@@ -26,7 +33,7 @@ impl CursorCliExtension {
                 subscriptions.push((signal,id));
             }
             options.stream.request.signal=Some(controller.signal());
-            let stream=crate::stream::stream_cursor_cli(model.clone(),context.clone(),Some(options),crate::stream::StreamDeps {cwd:cwd.clone(),agent_dir:agent_dir.clone(),executable:executable.clone(),store:oauth.store.clone(),oauth:oauth.clone(),settings:(oauth.settings)(),router:router.clone(),environment:environment.clone(),now:oauth.now.clone()});
+            let stream=crate::stream::stream_cursor_cli(model.clone(),context.clone(),Some(options),crate::stream::StreamDeps {cwd:cwd.clone(),agent_dir:agent_dir.clone(),executable,store:oauth.store.clone(),oauth:oauth.clone(),settings,router:router.clone(),environment:environment.clone(),now:oauth.now.clone()});
             let completion=stream.clone();
             tokio::spawn(async move {
                 if let Err(error)=completion.result().await {maho_ext_api::diagnostic(&format!("Cursor CLI completion failed: {error}"));}
@@ -55,13 +62,13 @@ impl Extension for CursorCliExtension {
         let config=ProviderConfig {name:Some(crate::oauth_login::PROVIDER_NAME.into()),base_url:Some(crate::oauth_login::PROVIDER_ID.into()),api:Some(crate::oauth_login::PROVIDER_ID.into()),
             stream_simple:Some(self.stream.clone()),models:Some(crate::models::static_models()),oauth:Some(self.oauth.clone()),fallback_eligible:Some(Arc::new(move || {let current=settings();!current.explicitly_disabled&&!crate::guardrails::force_refusal_pending(&current)})),..Default::default()};
         api.register_provider(crate::oauth_login::PROVIDER_ID,config.clone()).expect("Cursor CLI provider registration");
-        if let Some((executable,agent_dir,environment))=&self.catalog {
-            let executable=executable.clone();let agent_dir=agent_dir.clone();let environment=environment.clone();
+        if let Some((resolve,agent_dir,environment))=&self.catalog {
+            let resolve=resolve.clone();let agent_dir=agent_dir.clone();let environment=environment.clone();
             let oauth=self.oauth.clone();let runtime=api.runtime.clone();let path=api.registered.identity.path.clone();
             let catalog_refresh=self.catalog_refresh.clone();
             let shutdown=self.shutdown.clone();
             api.on(maho_ext_api::EventKind::SessionStart,Arc::new(move |_,_| {
-                let executable=executable.clone();let agent_dir=agent_dir.clone();let environment=environment.clone();
+                let resolve=resolve.clone();let agent_dir=agent_dir.clone();let environment=environment.clone();
                 let oauth=oauth.clone();let runtime=runtime.clone();let path=path.clone();let mut config=config.clone();
                 let catalog_refresh=catalog_refresh.clone();
                 let shutdown=shutdown.clone();
@@ -71,6 +78,7 @@ impl Extension for CursorCliExtension {
                     let refresh=async move {
                         let settings=(oauth.settings)();
                         let usable=!settings.explicitly_disabled&&settings.enabled&&(oauth.resolve)(&settings).is_ok();
+                        let executable=resolve(&settings).unwrap_or_default();
                         let credential=crate::native_bootstrap::bootstrap_native_in_runtime(oauth.store.as_ref(),usable,Some(runtime.clone())).await;
                         if runtime.assert_active().is_err() || shutdown.as_ref().is_some_and(|shutdown|shutdown.signal().aborted()) {return;}
                         if let Ok(Some(models))=crate::catalog_refresh::refresh_catalog(&agent_dir,&settings,credential.as_ref(),&executable,&environment,(oauth.now)() as f64,||async {(oauth.resolve)(&settings)}).await

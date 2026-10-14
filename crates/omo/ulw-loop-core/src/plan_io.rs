@@ -20,7 +20,7 @@ use crate::state_lock::{with_state_lock, StateLockOptions};
 
 pub use crate::plan_log::plan_exists;
 
-const LEGACY_OBJECTIVE_PREFIX: &str = ".omo/ulw-loop/goals.json: ";
+const LEGACY_OBJECTIVE_PREFIX: &str = "Complete all ulw-loop stories in .omo/ulw-loop/goals.json: ";
 const LEGACY_OBJECTIVE: &str = "Complete all ulw-loop stories listed in .omo/ulw-loop/goals.json. Use .omo/ulw-loop/ledger.jsonl as the durable audit trail.";
 
 pub fn read_ledger(repo_root: impl AsRef<Path>, scope: Option<&UlwLoopScope>) -> Vec<UlwLoopLedgerEntry> {
@@ -46,8 +46,16 @@ pub fn read_ulw_loop_plan_sync(
     let mut parsed = match reconcile_plan(&dir) {
         Some(p) => p,
         None => {
-            let session_ids = list_ulw_loop_session_ids(&repo_root);
             let rel = repo_relative(&path.to_string_lossy(), &repo_root.as_ref().to_string_lossy());
+            // Pin `plan-io.ts:73-81`: a goals.json that exists but is not a version-1 plan with a
+            // `goals` array is an invalid plan, never a missing one.
+            if fs::read_to_string(&path).is_ok() {
+                return Err(UlwLoopError::new(
+                    format!("Invalid ulw-loop plan at {rel}."),
+                    "ULW_LOOP_PLAN_INVALID",
+                ));
+            }
+            let session_ids = list_ulw_loop_session_ids(&repo_root);
             return Err(plan_missing_error(&rel, &session_ids, None));
         }
     };
@@ -62,15 +70,36 @@ pub fn read_ulw_loop_plan_sync(
 
     let is_aggregate = parsed.codex_goal_mode.as_deref().unwrap_or("per_story") == "aggregate";
     if is_aggregate {
-        if let Some(prev) = &parsed.codex_objective {
-            if prev == LEGACY_OBJECTIVE || prev.contains(LEGACY_OBJECTIVE_PREFIX) {
+        if let Some(previous_objective) = parsed.codex_objective.clone() {
+            if previous_objective == LEGACY_OBJECTIVE || previous_objective.starts_with(LEGACY_OBJECTIVE_PREFIX) {
+                let now = iso();
                 let new_obj = aggregate_codex_objective_for_scope(scope);
                 let mut aliases = parsed.codex_objective_aliases.clone().unwrap_or_default();
-                if !aliases.contains(prev) {
-                    aliases.push(prev.clone());
+                if !aliases.contains(&previous_objective) {
+                    aliases.push(previous_objective.clone());
                 }
-                parsed.codex_objective = Some(new_obj);
+                parsed.codex_objective = Some(new_obj.clone());
                 parsed.codex_objective_aliases = Some(aliases);
+                parsed.updated_at = now.clone();
+                let mut entries = vec![UlwLoopLedgerEntry {
+                    at: now,
+                    kind: "aggregate_objective_migrated".to_string(),
+                    message: Some(
+                        "Migrated legacy enumerated aggregate Codex objective to the stable pointer objective."
+                            .to_string(),
+                    ),
+                    before: Some(serde_json::json!({ "codexObjective": previous_objective })),
+                    after: Some(serde_json::json!({ "codexObjective": new_obj })),
+                    ..Default::default()
+                }];
+                commit(
+                    &repo_root,
+                    scope,
+                    CommitMutation {
+                        plan: &mut parsed,
+                        entries: &mut entries,
+                    },
+                )?;
             }
         }
     }

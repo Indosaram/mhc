@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/providers/fireworks.ts.
 
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::env_api_key_auth;
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provider};
 use crate::providers::builtin_api_streams;
 use indexmap::IndexMap;
@@ -14,6 +16,7 @@ pub fn fireworks_provider() -> Arc<dyn Provider> {
         name: Some("Fireworks".into()),
         base_url: Some("https://api.fireworks.ai/inference".into()),
         headers: None,
+        auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("Fireworks API key", &["FIREWORKS_API_KEY"]))), oauth: None }),
         models: super::fireworks_models::fireworks_models(),
         fetch_models: None,
         restore_models: None,

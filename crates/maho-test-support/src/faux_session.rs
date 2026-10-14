@@ -168,6 +168,7 @@ impl FauxSession {
                 ("faux".to_owned(), serde_json::json!({"type": "api_key", "key": "faux-test"})),
             ].into_iter().collect()))),
             providers: Some(vec![provider.provider.clone()]),
+            ..Default::default()
         });
         Ok(AgentSession::new(AgentSessionConfig {
             agent: maho_agent::Agent::new(maho_agent::AgentOptions {
@@ -313,6 +314,16 @@ impl NativeSession {
     /// Switches the active model, as `session.setModel` does.
     pub async fn set_model(&self, model: maho_ai::types::Model) -> Result<(), String> {
         self.session.set_model(model).await.map(|_| ())
+    }
+
+    /// Registers `provider` with a configured api key, as senpi test/suite/harness.ts:159 does, so a
+    /// later `set_model` passes the `checkAuth` admission (agent-session.ts:5148).
+    pub fn configure_provider_key(&self, provider: &str, key: &str) -> Result<(), String> {
+        let mut runtime = self.session.model_runtime().clone();
+        runtime.register_provider(provider, maho_core::provider_composer::ProviderConfigInput {
+            config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some(key.to_owned()), ..Default::default() },
+            ..Default::default()
+        })
     }
 
     /// Emits `before_provider_request` with the given payload and effective model and returns the

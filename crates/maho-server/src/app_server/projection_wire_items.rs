@@ -60,8 +60,8 @@ pub fn tool_wire_projection(tool: &ActiveToolItem, status: ToolExecutionStatus, 
     }
 }
 pub fn provider_native_item(id: &str, message: &Value, content: &Value) -> Value {
-    if content["kind"] == "web_search_call" { return super::projection_web_search::web_search_item(id, content); }
-    let subtype = content["kind"].as_str().unwrap_or_default();
+    if content["subtype"] == "web_search_call" { return super::projection_web_search::web_search_item(id, content); }
+    let subtype = content["subtype"].as_str().unwrap_or_default();
     let raw = &content["raw"];
     let summary = maho_rpc::provider_native_rendering::format_provider_native_summary(message["provider"].as_str().unwrap_or_default(), subtype, raw, true);
     let body = maho_rpc::provider_native_rendering::format_provider_native_body(subtype, raw, true).expect("JSON Value rendering is infallible");

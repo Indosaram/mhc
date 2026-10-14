@@ -1,8 +1,65 @@
 use crate::{wiring_types::{MemoryWiringOptions,MemoryAfterBindInput},wiring_runtime::MemoryRuntimeWiring,wiring_reflection_live::MemoryReflectionLiveWiring,status_live::MemoryFooterUi};
-pub struct MemoryWiring{pub runtime:MemoryRuntimeWiring,pub reflection_live:MemoryReflectionLiveWiring,pub skills_usage:crate::skills_usage_wiring::SkillsUsageTrackers,pub maintenance:crate::memory_maintenance::MemoryMaintenance,evaluators:Vec<Box<dyn crate::shutdown_drain::ShutdownEvaluator>>}
-pub fn create_memory_wiring(options:MemoryWiringOptions)->MemoryWiring{MemoryWiring{runtime:options.runtime,reflection_live:Default::default(),skills_usage:options.skills_usage,maintenance:crate::memory_maintenance::MemoryMaintenance::new(Default::default()),evaluators:vec![]}}
+pub struct MemoryWiring{pub runtime:MemoryRuntimeWiring,pub reflection_live:MemoryReflectionLiveWiring,pub skills_usage:crate::skills_usage_wiring::SkillsUsageTrackers,pub maintenance:crate::memory_maintenance::MemoryMaintenance,evaluators:Vec<Box<dyn crate::shutdown_drain::ShutdownEvaluator>>,live_host:Option<(std::sync::Arc<maho_ext_api::ExtensionApi>,std::sync::Arc<dyn maho_ext_api::ExtensionUi>)>,footer_ticker:bool}
+pub fn create_memory_wiring(options:MemoryWiringOptions)->MemoryWiring{MemoryWiring{runtime:options.runtime,reflection_live:Default::default(),skills_usage:options.skills_usage,maintenance:crate::memory_maintenance::MemoryMaintenance::new(Default::default()),evaluators:vec![],live_host:None,footer_ticker:false}}
 struct NativeFooter(std::sync::Arc<dyn maho_ext_api::ExtensionUi>);
 impl MemoryFooterUi for NativeFooter{fn set_status(&mut self,key:&str,text:&str){self.0.set_status(key,Some(text));}}
+/// Bound-session live surface for the bind-time completion drain (pin `wiring-reflection-live.ts`
+/// bind: liveSession built from createReflectionCompletionApi(pi) and readUi(eventCtx)).
+struct NativeBindLive<'a>{api:maho_ext_api::ExtensionApi,context:&'a maho_ext_api::ExtensionContext,initial:crate::wiring_types::NativeInitialStatus,warn:std::sync::Arc<dyn Fn(&str)+Send+Sync>}
+impl crate::worker::completion_delivery::ReflectionLiveSession for NativeBindLive<'_>{
+    fn session_id(&self)->&str{self.context.session_manager.session_id()}
+    fn append_entry(&mut self,kind:&str,data:serde_json::Value){if let Err(error)=self.api.append_entry(kind,Some(data)){(self.warn)(&format!("memory reflection entry failed: {error}"));}}
+    fn notify(&mut self,message:&str,warning:bool)->Result<(),String>{self.context.ui.notify(message,if warning{maho_ext_api::NotificationType::Warning}else{maho_ext_api::NotificationType::Info});Ok(())}
+    fn warn(&mut self,message:&str,error:&str){(self.warn)(&format!("{message}: {error}"));}
+    fn on_completion(&mut self,_:&str){}
+}
+impl crate::worker::health_alert::ReflectionHealthLiveSession for NativeBindLive<'_>{
+    fn session_id(&self)->&str{self.context.session_manager.session_id()}
+    fn has_ui(&self)->bool{self.context.has_ui}
+    fn append_entry(&mut self,name:&str,entry:&crate::worker::health_alert::ReflectionHealthEntry){match serde_json::to_value(entry){Ok(data)=>crate::worker::completion_delivery::ReflectionLiveSession::append_entry(self,name,data),Err(error)=>(self.warn)(&error.to_string())}}
+    fn notify(&mut self,message:&str,_:&str){self.context.ui.notify(message,maho_ext_api::NotificationType::Warning);}
+}
+impl crate::wiring_reflection_live::ReflectionBindLive for NativeBindLive<'_>{
+    fn refresh_initial_status(&mut self,identity:&crate::context::MemoryIdentityContext){(self.initial)(identity,self.context);}
+    fn completions(&mut self)->&mut dyn crate::worker::completion_delivery::ReflectionLiveSession{self}
+    fn health(&mut self)->&mut dyn crate::worker::health_alert::ReflectionHealthLiveSession{self}
+}
+/// 320ms footer animation driver (pin `status-live.ts` timers.set(tick, FRAME_INTERVAL_MS)).
+/// Runs on its own thread and exits once the footer stops animating; call outside async context.
+pub fn spawn_footer_ticker(wiring:std::sync::Arc<tokio::sync::Mutex<MemoryWiring>>)->std::io::Result<()>{
+    let ticker=wiring.clone();
+    let spawned=std::thread::Builder::new().name("memory-footer".into()).spawn(move||loop{
+        std::thread::sleep(std::time::Duration::from_millis(crate::status_live::FRAME_INTERVAL_MS));
+        let mut guard=ticker.blocking_lock();
+        let ui=guard.live_host.as_ref().map(|(_,ui)|ui.clone());
+        match ui{Some(ui) if guard.reflection_live.footer.is_animating()=>guard.reflection_live.footer.tick(&mut NativeFooter(ui)),_=>{guard.footer_ticker=false;return;}}
+    });
+    if spawned.is_err()&&let Ok(mut guard)=wiring.try_lock(){guard.footer_ticker=false;}
+    spawned.map(|_|())
+}
+/// Pin `memory/index.ts:100-111` + `wiring-runtime.ts:51-52`: `session_start` replaces the session
+/// state, so a session that does not rebind (disabled, identity conflict) resolves no context.
+/// Registered before the component's own `session_start`, which rebinds through `after_bind`.
+fn register_session_reset_handler(api:&mut maho_ext_api::ExtensionApi,wiring:std::sync::Arc<tokio::sync::Mutex<MemoryWiring>>){
+    api.on(maho_ext_api::EventKind::SessionStart,std::sync::Arc::new(move|_,context|{
+        let wiring=wiring.clone();
+        Box::pin(async move{wiring.lock().await.unbind(context.session_manager.session_id());Ok(maho_ext_api::EventResult::None)})
+    }));
+}
+/// Production settled handler (pin `wiring-static.ts:96-111` agent_settled: journal reconcile, facts, footer).
+fn register_settled_handler(
+    api:&mut maho_ext_api::ExtensionApi,wiring:std::sync::Arc<tokio::sync::Mutex<MemoryWiring>>,handle:std::sync::Arc<maho_ext_api::ExtensionApi>,
+    now:std::sync::Arc<dyn Fn()->f64+Send+Sync>,warn:std::sync::Arc<dyn Fn(&str)+Send+Sync>,
+){
+    api.on(maho_ext_api::EventKind::AgentSettled,std::sync::Arc::new(move|_,context|{
+        let wiring=wiring.clone();let api=handle.clone();let now=now.clone();let warn=warn.clone();
+        Box::pin(async move{
+            let entries=context.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();let mut ui=NativeFooter(context.ui.clone());
+            wiring.lock().await.on_settled(context.session_manager.session_id(),&entries,&api,now() as i64,Some(&mut ui),|session,error|warn(&format!("journal reconcile failed: {session}: {error}"))).map_err(maho_ext_api::ExtensionFailure::new)?;
+            Ok(maho_ext_api::EventResult::None)
+        })
+    }));
+}
 impl MemoryWiring{
     pub fn register_native(
         wiring:std::sync::Arc<tokio::sync::Mutex<Self>>,component:&std::sync::Arc<crate::index::MemoryComponent>,
@@ -10,17 +67,22 @@ impl MemoryWiring{
         register_static:impl FnOnce(&mut maho_ext_api::ExtensionApi),
     )->Result<bool,String>{
         let handle=std::sync::Arc::new(maho_ext_api::ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
-        let bind_wiring=wiring.clone();let bind_handle=handle.clone();let facts=options.facts;let reconcile=options.reconcile;let now=options.now.clone();let journal_warn=options.warn.clone();
+        let bind_wiring=wiring.clone();let bind_handle=handle.clone();let initial=options.initial_status;let facts=options.facts;let reconcile=options.reconcile;let now=options.now.clone();let journal_warn=options.warn.clone();
         let shutdown_wiring=wiring.clone();let shutdown_now=options.now.clone();let shutdown_warn=options.warn.clone();
+        // Pin `wiring-static.ts:96-111`: the settled journal/facts/footer handler is registered before
+        // the reflection trigger (:183) and dream trigger (:184), so a settle journals its final turn first.
+        let settled_wiring=wiring.clone();let settled_handle=handle.clone();let settled_now=options.now.clone();let settled_warn=options.warn.clone();let unbind_wiring=wiring.clone();
+        let register_static=move|api:&mut maho_ext_api::ExtensionApi|{register_session_reset_handler(api,unbind_wiring);register_settled_handler(api,settled_wiring,settled_handle,settled_now,settled_warn);register_static(api);};
         let registered=component.register(api,crate::index::MemoryComponentHooks{
             after_bind:std::sync::Arc::new(move|session,identity,context|{
-                let wiring=bind_wiring.clone();let api=bind_handle.clone();let identity=identity.clone();let facts=facts(&identity,context);let reconcile=reconcile.clone();let now=now.clone();let warn=journal_warn.clone();
+                let wiring=bind_wiring.clone();let api=bind_handle.clone();let identity=identity.clone();let facts=facts(&identity,context);let reconcile=reconcile.clone();let now=now.clone();let warn=journal_warn.clone();let initial=initial.clone();
                 Box::pin(async move{
                     let entries=context.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
-                    let mut wiring=wiring.lock().await;let mut ui=NativeFooter(context.ui.clone());
+                    let mut wiring=wiring.lock().await;let mut ui=NativeFooter(context.ui.clone());wiring.live_host=Some((api.clone(),context.ui.clone()));
+                    let mut live=NativeBindLive{api:maho_ext_api::ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()),context,initial,warn:warn.clone()};
                     let mut api=maho_ext_api::ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone());
                     let work=reconcile(identity.clone());
-                    wiring.after_bind(&mut api,MemoryAfterBindInput{session_id:session,identity,entries:&entries,now_ms:now() as i64},Some(&mut ui),||work,facts?,|session,error|warn(&format!("journal reconcile failed: {session}: {error}"))).await
+                    wiring.after_bind(&mut api,MemoryAfterBindInput{session_id:session,identity,entries:&entries,now_ms:now() as i64},Some(&mut ui),Some(&mut live),||work,facts?,|session,error|warn(&format!("journal reconcile failed: {session}: {error}"))).await
                 })
             }),
             shutdown:std::sync::Arc::new(move|event,context,deadline|{
@@ -42,31 +104,43 @@ impl MemoryWiring{
             clear_status:std::sync::Arc::new(|context|context.ui.set_status(crate::status::MEMORY_STATUS_KEY,None)),warn:options.warn.clone(),
         },register_static)?;
         if !registered{return Ok(false);}
-        let now=options.now;let warn=options.warn;
-        api.on(maho_ext_api::EventKind::AgentSettled,std::sync::Arc::new(move|_,context|{
-            let wiring=wiring.clone();let api=handle.clone();let now=now.clone();let warn=warn.clone();
-            Box::pin(async move{
-                let entries=context.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();let mut ui=NativeFooter(context.ui.clone());
-                wiring.lock().await.on_settled(context.session_manager.session_id(),&entries,&api,now() as i64,Some(&mut ui),|session,error|warn(&format!("journal reconcile failed: {session}: {error}"))).map_err(maho_ext_api::ExtensionFailure::new)?;
-                Ok(maho_ext_api::EventResult::None)
-            })
-        }));Ok(true)
+        // Pull side of the RPC bridge (pin `wiring.ts:111` registerRpc in registerStatic).
+        let rpc_component=component.clone();let rpc_now=options.now.clone();
+        wiring.try_lock().map_err(|error|format!("memory wiring locked during registration: {error}"))?.reflection_live.register_rpc(api,std::sync::Arc::new(move||->std::collections::BTreeMap<String,crate::context::MemoryIdentityContext>{
+            rpc_component.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|(_,state)|state.enabled).filter_map(|(session,state)|state.context.clone().map(|context|(session.clone(),context))).collect()
+        }),std::sync::Arc::new(move||rpc_now() as i64)).map_err(|error|error.to_string())?;
+        Ok(true)
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn after_bind<F:std::future::Future<Output=Result<(),String>>>(
         &mut self,api:&mut maho_ext_api::ExtensionApi,input:MemoryAfterBindInput<'_>,ui:Option<&mut (dyn MemoryFooterUi+Send)>,
-        reconcile:impl FnOnce()->F,facts:crate::facts_wiring::MemoryFactsWiringOptions,warn:impl FnOnce(&str,&memory_core::journal::store::JournalError),
+        live:Option<&mut (dyn crate::wiring_reflection_live::ReflectionBindLive+Send)>,reconcile:impl FnOnce()->F,facts:crate::facts_wiring::MemoryFactsWiringOptions,warn:impl FnOnce(&str,&memory_core::journal::store::JournalError),
     )->Result<(),String>{
         self.runtime.contexts.insert(input.session_id.into(),input.identity.clone());self.reflection_live.attach(input.session_id);self.maintenance.schedule(input.identity.clone());
         crate::policy_guard::register_memory_filesystem_policy(Some(api),Some(&input.identity)).map_err(|error|error.to_string())?;
         reconcile().await?;
         if !input.entries.is_empty(){self.runtime.journal_wiring_for(&input.identity).reconcile_session(Some(input.session_id),input.entries,warn).map_err(|error|error.to_string())?;}
         self.runtime.facts_wiring_for(&input.identity,||facts).reconcile_extractor();
-        self.reflection_live.bind(input.session_id,input.identity,api,input.now_ms,ui.map(|ui|ui as &mut dyn MemoryFooterUi))
+        self.reflection_live.bind(input.session_id,input.identity,api,input.now_ms,ui.map(|ui|ui as &mut dyn MemoryFooterUi),live.map(|live|live as &mut dyn crate::wiring_reflection_live::ReflectionBindLive))
     }
     pub fn flush_skills_usage(&mut self,now:&dyn Fn()->String,aborted:Option<&dyn Fn()->bool>,warn:&dyn Fn(&str)){
         for tracker in self.skills_usage.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values_mut(){if aborted.is_some_and(|aborted|aborted()){return;}tracker.flush(now,aborted,warn);}
     }
     pub fn clear_status(&mut self){self.reflection_live.clear_status();}
+    /// Launch hook (pin `wiring-reflection-live.ts` onReflectionLaunched). Returns true when the
+    /// caller must start the footer ticker via [`spawn_footer_ticker`].
+    pub fn on_reflection_launched(&mut self,identity:&str,run:&str,details:crate::status_active_runs::ActiveReflectionRunDetails,now:i64,warn:&dyn Fn(&str))->bool{
+        let Some((api,ui))=self.live_host.clone()else{self.reflection_live.active_runs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).start(identity,run,details);return false;};
+        if let Err(error)=self.reflection_live.on_reflection_launched(identity,run,details,&api,now,Some(&mut NativeFooter(ui))){warn(&format!("memory rpc sync failed: {error}"));}
+        let start=self.reflection_live.footer.is_animating()&&!self.footer_ticker;if start{self.footer_ticker=true;}start
+    }
+    /// Live completion hook (pin `wiring-reflection-live.ts` onLiveReflectionCompleted).
+    pub fn on_live_reflection_completed(&mut self,identity:&str,run:&str,now:i64)->Result<(),String>{
+        let Some((api,ui))=self.live_host.clone()else{self.reflection_live.active_runs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).settle(identity,run);return Ok(());};
+        self.reflection_live.on_live_reflection_completed(identity,run,&api,now,Some(&mut NativeFooter(ui)))
+    }
+    /// Memory-write hook (pin `wiring.ts:133` onMemoryWrite: reflectionLive.syncRpc).
+    pub fn sync_rpc(&mut self,now:i64)->Result<(),String>{let Some((api,_))=self.live_host.clone()else{return Ok(());};self.reflection_live.sync_rpc(&api,now)}
     pub fn on_settled(
         &mut self,session:&str,entries:&[serde_json::Value],api:&maho_ext_api::ExtensionApi,now:i64,
         ui:Option<&mut dyn MemoryFooterUi>,warn:impl FnOnce(&str,&memory_core::journal::store::JournalError),
@@ -79,11 +153,14 @@ impl MemoryWiring{
         self.reflection_live.on_settled(session,api,now,ui)
     }
     pub fn shutdown(&mut self,session:&str){let identity=self.runtime.resolve_context(session).map(|context|context.identity.clone());self.reflection_live.shutdown(identity.as_deref());}
+    /// Drops the session's bound context so later settles resolve nothing (pin `wiring-runtime.ts:51-52`).
+    pub fn unbind(&mut self,session:&str){self.runtime.contexts.remove(session);self.reflection_live.unbind(session);}
     pub async fn on_session_shutdown(&mut self,reason:crate::shutdown_drain::ShutdownReason,session:&str,deadline:f64,now:&(dyn Fn()->f64+Sync),warn:&mut (dyn FnMut(&str,Option<&str>)+Send)){
         self.maintenance.dispose();self.maintenance.settled().await;self.shutdown(session);
         let evaluators=std::mem::take(&mut self.evaluators);
         let evaluators={let mut drain=crate::shutdown_drain::create_shutdown_drain(MemoryShutdownSteps{wiring:self,now});for evaluator in evaluators{drain.register_evaluator(evaluator);}drain.run(reason,session,deadline,now,warn).await;std::mem::take(&mut drain.evaluators)};
         self.evaluators=evaluators;
+        self.unbind(session);
     }
     pub fn register_shutdown_evaluator(&mut self,evaluator:Box<dyn crate::shutdown_drain::ShutdownEvaluator>){self.evaluators.push(evaluator);}
     pub fn register_dream_triggers(&mut self,api:&mut maho_ext_api::ExtensionApi,dream:std::sync::Arc<crate::dream_trigger::DreamTriggerWiring>){
@@ -128,7 +205,7 @@ impl crate::shutdown_drain::ShutdownDrainSteps for MemoryShutdownSteps<'_>{
         let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
         let entries=vec![serde_json::json!({"type":"message","id":"one","message":{"role":"user","content":"hello"}})];
         let facts=crate::facts_wiring::MemoryFactsWiringOptions{identity:"agent".into(),identity_paths:paths.clone(),facts_enabled:Box::new(||false),debounce_settles:Box::new(||4),extractor:None,now:None,warn:std::sync::Arc::new(|message|panic!("{message}"))};
-        wiring.after_bind(&mut api,MemoryAfterBindInput{session_id:"session",identity,entries:&entries,now_ms:0},None,||async{assert!(!paths.transcripts.join("session").exists());Ok(())},facts,|_,error|panic!("{error}")).await.unwrap();
+        wiring.after_bind(&mut api,MemoryAfterBindInput{session_id:"session",identity,entries:&entries,now_ms:0},None,None,||async{assert!(!paths.transcripts.join("session").exists());Ok(())},facts,|_,error|panic!("{error}")).await.unwrap();
         assert_eq!(api.registered.filesystem_policies.len(),1);assert!(wiring.runtime.resolve_context("session").is_some());assert!(paths.transcripts.join("session").exists());assert!(!paths.repo.exists());
     }
     #[tokio::test]async fn settled_reconciles_journal_before_facts_delta_and_empty_branch_does_not_enqueue(){

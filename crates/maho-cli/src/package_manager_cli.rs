@@ -10,6 +10,10 @@ pub fn package_command_usage(command: PackageCommand) -> &'static str {
         PackageCommand::List => "mhc list [--approve|--no-approve]",
     }
 }
+pub fn package_command_name(command: PackageCommand) -> &'static str {
+    match command { PackageCommand::Install => "install", PackageCommand::Remove => "remove", PackageCommand::Update => "update", PackageCommand::List => "list" }
+}
+pub const CONFIG_COMMAND_USAGE: &str = "mhc config [-l] [--approve|--no-approve]";
 pub fn package_command_help(command: PackageCommand) -> String {
     let body = match command {
         PackageCommand::Install => "Install a package and add it to settings.\n\nOptions:\n  -l, --local       Install project-locally (.maho/settings.json)\n  -a, --approve     Trust project-local files for this command\n  -na, --no-approve Ignore project-local files for this command\n\nExamples:\n  mhc install npm:@foo/bar\n  mhc install git:github.com/user/repo\n  mhc install git:git@github.com:user/repo\n  mhc install https://github.com/user/repo\n  mhc install ssh://git@github.com/user/repo\n  mhc install ./local/path\n",
@@ -32,8 +36,8 @@ pub fn parse_config_command(args: &[String]) -> Result<Option<ConfigCommandOptio
             "-l" | "--local" => options.local = true,
             "-a" | "--approve" => options.project_trust_override = Some(true),
             "-na" | "--no-approve" => options.project_trust_override = Some(false),
-            _ if argument.starts_with('-') => return Err(format!("Unknown option {argument} for \"config\".")),
-            _ => return Err(format!("Unexpected argument {argument}.")),
+            _ if argument.starts_with('-') => return Err(format!("Unknown option {argument} for \"config\".\nUse \"mhc --help\" or \"{CONFIG_COMMAND_USAGE}\".")),
+            _ => return Err(format!("Unexpected argument {argument}.\nUsage: {CONFIG_COMMAND_USAGE}")),
         }
     }
     Ok(Some(options))
@@ -113,7 +117,7 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
     Some(parsed)
 }
 
-async fn command_settings(trust_override: Option<bool>, saved_only: bool) -> Result<(String, String, maho_core::settings_manager::SettingsManager), String> {
+async fn command_settings(trust_override: Option<bool>, saved_only: bool, context: &str) -> Result<(String, String, maho_core::settings_manager::SettingsManager), String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?.to_string_lossy().into_owned();
     let agent_dir = maho_core::config::get_agent_dir();
     let home = maho_core::config::home_dir();
@@ -122,22 +126,76 @@ async fn command_settings(trust_override: Option<bool>, saved_only: bool) -> Res
     let trusted = if saved_only {
         trust_override.unwrap_or(store.get(&cwd)? == Some(true))
     } else {
+        // senpi `getCommandAppMode`: the trust prompt is offered only when stdin and stdout are TTYs.
+        use std::io::IsTerminal;
+        let mode = if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            maho_core::project_trust::AppMode::Interactive
+        } else { maho_core::project_trust::AppMode::Print };
+        let startup_ui = (global.get_string("theme"), global.get_show_hardware_cursor(), global.get_clear_on_shrink());
+        let select_ui = startup_ui.clone();
+        let selector: std::sync::Arc<crate::cli::project_trust::Selector> = std::sync::Arc::new(move |title: &str, options: &[String]| {
+            match crate::cli::startup_ui::show_startup_selector(select_ui.0.as_deref(), select_ui.1, select_ui.2, title, options) {
+                Ok(selected) => selected,
+                Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+            }
+        });
+        // senpi package-manager-cli.ts:788-818: the pre-trust extensions decide first; their load
+        // and handler failures are reported as `projectTrustWarnings`.
+        let mut project_trust_warnings = Vec::new();
+        let extension_trust = if trust_override.is_none() && maho_core::trust_manager::has_trust_requiring_project_resources(&cwd, None) {
+            let ui = std::sync::Arc::new(crate::cli::project_trust::ProjectTrustUi {
+                mode, has_ui: mode == maho_core::project_trust::AppMode::Interactive, select: selector.clone(),
+                input: std::sync::Arc::new(move |title: &str, placeholder: Option<&str>| {
+                    match crate::cli::startup_ui::show_startup_input(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, placeholder) {
+                        Ok(value) => value,
+                        Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+                    }
+                }),
+            });
+            let resolved = crate::cli::project_trust::resolve_extension_project_trust(&cwd, &agent_dir, &[], false, mode, ui).await;
+            project_trust_warnings.extend(resolved.load_warnings);
+            project_trust_warnings.extend(resolved.trust_warnings);
+            resolved.result
+        } else { None };
+        let emit = move |_: &str| -> Result<Option<maho_ext_api::ProjectTrustEventResult>, maho_ext_api::ExtensionFailure> { Ok(extension_trust.clone()) };
+        let context_selector = selector.clone();
         let context = crate::cli::project_trust::CliProjectTrustContext {
-            cwd: cwd.clone(), mode: maho_core::project_trust::AppMode::Print,
-            ui_available: false, selector: Box::new(|_, _| None),
+            cwd: cwd.clone(), mode,
+            ui_available: mode == maho_core::project_trust::AppMode::Interactive,
+            selector: Box::new(move |title: &str, options: &[String]| context_selector(title, options)),
         };
-        maho_core::project_trust::resolve_project_trusted(maho_core::project_trust::ResolveProjectTrustedOptions {
+        let trusted = maho_core::project_trust::resolve_project_trusted(maho_core::project_trust::ResolveProjectTrustedOptions {
             cwd: &cwd, trust_store: &store, trust_override,
             default_project_trust: global.get_string("defaultProjectTrust").as_deref().and_then(maho_core::project_trust::DefaultProjectTrust::parse),
-            emit_project_trust: None, project_trust_context: &context, on_extension_error: None,
-        }).await
+            emit_project_trust: Some(&emit), project_trust_context: &context, on_extension_error: None,
+        }).await;
+        // senpi `reportProjectTrustWarnings`.
+        for warning in project_trust_warnings { eprintln!("\x1b[33mWarning: {warning}\x1b[39m"); }
+        trusted
     };
     let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &home, trusted);
-    for error in settings.errors() { eprintln!("Resource command settings error: {error:?}"); }
+    // senpi package-manager-cli.ts `reportSettingsErrors`: settings errors are warnings, labelled with
+    // the command context and the settings scope.
+    for error in settings.errors() {
+        let scope = match error.scope { maho_core::settings_manager::SettingsScope::Global => "global", maho_core::settings_manager::SettingsScope::Project => "project" };
+        eprintln!("Warning ({context}, {scope} settings): {}", error.error);
+    }
     Ok((cwd, agent_dir, settings))
 }
 
-pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), String> {
+/// senpi package-manager-cli.ts: a handled failure (`console.error(...)`, exit 1) prints its message
+/// as is, while a thrown error is caught at `:1131-1133` and printed as `Error: <message>`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PackageCommandError { Reported(String), Failed(String) }
+impl std::fmt::Display for PackageCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { Self::Reported(message) => f.write_str(message), Self::Failed(message) => write!(f, "Error: {message}") }
+    }
+}
+impl From<String> for PackageCommandError { fn from(message: String) -> Self { Self::Failed(message) } }
+impl From<&str> for PackageCommandError { fn from(message: &str) -> Self { Self::Failed(message.to_owned()) } }
+
+pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), PackageCommandError> {
     if options.command == PackageCommand::Update && options.update_target == Some(UpdateTarget::Models) {
         let agent_dir = std::path::PathBuf::from(maho_core::config::get_agent_dir());
         let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
@@ -148,12 +206,16 @@ pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), S
         })).await.map_err(|_| "Model catalog refresh timed out.".to_owned())?;
         if result.aborted { return Err("Model catalog refresh timed out.".into()); }
         if !result.errors.is_empty() {
-            return Err(format!("Could not refresh model catalogs: {}", result.errors.iter().map(|(provider, error)| format!("{provider}: {error}")).collect::<Vec<_>>().join("; ")));
+            return Err(format!("Could not refresh model catalogs: {}", result.errors.iter().map(|(provider, error)| format!("{provider}: {error}")).collect::<Vec<_>>().join("; ")).into());
         }
         maho_core::output_guard::maho_write_stdout("Model catalogs refreshed\n");
         return Ok(());
     }
-    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, options.command == PackageCommand::Update).await?;
+    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, options.command == PackageCommand::Update, "package command").await?;
+    let writes_project_package_config = matches!(options.command, PackageCommand::Install | PackageCommand::Remove) && options.local;
+    if writes_project_package_config && !settings.is_project_trusted() {
+        return Err(PackageCommandError::Reported("Project is not trusted. Use --approve to modify local package config.".into()));
+    }
     let mut manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
         cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
     });
@@ -165,18 +227,18 @@ pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), S
 }
 
 /// The caller's settings manager is borrowed by the real resource manager throughout execution.
-pub async fn execute_package_command(options: &PackageCommandOptions, manager: &mut maho_core::package_manager::DefaultPackageManager<'_>) -> Result<(), String> {
+pub async fn execute_package_command(options: &PackageCommandOptions, manager: &mut maho_core::package_manager::DefaultPackageManager<'_>) -> Result<(), PackageCommandError> {
     use maho_core::package_manager::{InstalledSourceScope, PackageOptions};
     let text = match options.command {
         PackageCommand::Install => {
-            let source = options.source.as_deref().ok_or("Missing install source")?;
+            let source = options.source.as_deref().ok_or("Missing install source.")?;
             manager.install_and_persist(source, Some(PackageOptions { local: options.local })).await.map_err(|error| error.to_string())?;
             format!("Installed {source}\n")
         }
         PackageCommand::Remove => {
-            let source = options.source.as_deref().ok_or("Missing remove source")?;
+            let source = options.source.as_deref().ok_or("Missing remove source.")?;
             if !manager.remove_and_persist(source, Some(PackageOptions { local: options.local })).await.map_err(|error| error.to_string())? {
-                return Err(format!("No matching package found for {source}"));
+                return Err(PackageCommandError::Reported(format!("No matching package found for {source}")));
             }
             format!("Removed {source}\n")
         }
@@ -218,7 +280,7 @@ pub async fn execute_package_command(options: &PackageCommandOptions, manager: &
 
 pub async fn run_config_command(options: ConfigCommandOptions) -> Result<(), String> {
     use maho_core::package_manager::{DefaultPackageManager, PackageManagerOptions};
-    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, false).await?;
+    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, false, "config command").await?;
     if options.local && !settings.is_project_trusted() { return Err("Project is not trusted. Use --approve to modify local resource config.".into()); }
     let mut global_settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &maho_core::config::home_dir(), false);
     let global = DefaultPackageManager::new(PackageManagerOptions { cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut global_settings }).resolve(None).await.map_err(|error| error.to_string())?;
@@ -231,15 +293,15 @@ pub async fn run_config_command(options: ConfigCommandOptions) -> Result<(), Str
 fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: String, agent_dir: String, local: bool, global: maho_core::package_manager::ResolvedPaths, project: maho_core::package_manager::ResolvedPaths) -> Result<(), String> {
     use std::{cell::{Cell, RefCell}, rc::Rc};
     use maho_interactive::{components::config_selector::{ConfigSelectorComponent, ConfigWriteScope}, tui_renderer::{create_interactive_tui, InteractiveTuiOptions}};
-    use maho_tui::{terminal::{ProcessTerminal, Terminal}, tui::Component};
+    use maho_tui::{terminal::Terminal, tui::Component};
     let theme = crate::cli::startup_ui::resolve_startup_theme(settings.get_string("theme").as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
-    let show_hardware_cursor = settings.get_bool("showHardwareCursor").unwrap_or(false);
-    let clear_on_shrink = settings.get_bool("clearOnShrink").unwrap_or(false);
+    let show_hardware_cursor = settings.get_show_hardware_cursor();
+    let clear_on_shrink = settings.get_clear_on_shrink();
     let available = settings.is_project_trusted();
     let closed = Rc::new(Cell::new(false)); let close = closed.clone(); let exit = closed.clone();
     let switch = Rc::new(Cell::new(false)); let toggle = switch.clone();
     let host = ConfigSettings { settings, error: Rc::new(RefCell::new(None)) }; let write_error = host.error.clone();
-    let mut terminal = ProcessTerminal::default();
+    let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
     let selector = Rc::new(RefCell::new(ConfigSelectorComponent::new(&theme,
         std::collections::BTreeMap::from([(ConfigWriteScope::Global, global), (ConfigWriteScope::Project, project)]),
         Box::new(host), &cwd, &agent_dir, &maho_core::config::config_dir_name(),
@@ -254,12 +316,16 @@ fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: St
     screen.base_mut().set_clear_on_shrink(clear_on_shrink);
     screen.base_mut().add_child(component.clone()); screen.base_mut().set_focus(Some(component));
     let input = Rc::new(RefCell::new(Vec::<String>::new())); let captured = input.clone();
+    screen.base_mut().prepare_start();
     screen.before_terminal_start(&mut terminal, false, false);
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+    screen.base_mut().after_terminal_start(&mut terminal);
     let clock = std::time::Instant::now();
     let result = (|| {
         while !closed.get() {
-            for chunk in std::mem::take(&mut *input.borrow_mut()) { selector.borrow_mut().handle_input(&chunk); }
+            // senpi `TuiBase.handleTerminalInput`: protocol replies (e.g. the cell-size answer to
+            // the start-up query) are consumed before the focused selector sees input.
+            for chunk in std::mem::take(&mut *input.borrow_mut()) { screen.base_mut().handle_terminal_input(&chunk, maho_tui::keys::is_key_release(&chunk)); }
             if switch.replace(false) && available { selector.borrow_mut().switch_write_scope(); }
             if let Some(error) = write_error.borrow_mut().take() { return Err(error); }
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
@@ -268,9 +334,12 @@ fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: St
         }
         Ok(())
     })();
+    screen.base_mut().begin_stop(&mut terminal);
     screen.before_terminal_stop(&mut terminal, false);
+    screen.base_mut().finish_stop_output(&mut terminal, false);
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, false);
+    screen.base_mut().reset_for_stop();
     result.and(stopped)
 }
 
