@@ -45,6 +45,7 @@ async fn persisted_fork_clone_tree_and_import_preserve_source() {
     assert_eq!(session.messages().len(), 2);
     let response = command(&session, json!({"type":"navigate_tree","targetId":"absent"})).await;
     assert_eq!(response["success"], false);
+    assert_eq!(response["errorCode"], "not_found");
     assert_eq!(std::fs::read(&source).expect("source unchanged"), bytes);
     let response = command(&session, json!({"type":"new_session","parentSession":source})).await;
     assert_eq!(response["data"], json!({"cancelled":false}));
