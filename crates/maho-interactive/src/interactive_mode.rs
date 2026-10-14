@@ -4540,7 +4540,7 @@ impl InteractiveMode {
         let pending_count = self.questions.len();
         self.async_question_widget = Some(crate::components::ask_user_async_widget::AskUserAsyncWidget::new(crate::components::ask_user_async_widget::AskUserAsyncWidgetOptions {
             request, draft, timeout_ms, now_ms,
-            get_deadline_at_ms: deadline.map(|deadline| Box::new(move || deadline()) as Box<dyn Fn() -> u64>), pending_count, theme: self.theme.clone(), env: std::env::vars().collect(), mouse_capture_active: false,
+            get_deadline_at_ms: deadline.map(|deadline| Box::new(move || deadline()) as Box<dyn Fn() -> u64>), pending_count, theme: self.theme.clone(), env: std::env::vars().collect(), mouse_capture_active: self.terminal_mouse_mode() != "off",
             on_option_click: Some(Box::new(move |index| actions.borrow_mut().push_back(QuestionAction::ClickOption(index)))),
             on_own_answer_click: Some(Box::new(move || own_answer_actions.borrow_mut().push_back(QuestionAction::OwnAnswer))),
             on_expand_click: Some(Box::new(move || expand_actions.borrow_mut().push_back(QuestionAction::Expand))),
