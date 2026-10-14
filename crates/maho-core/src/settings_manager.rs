@@ -759,6 +759,23 @@ impl SettingsManager {
         self.settings.get(key).and_then(Value::as_bool)
     }
 
+    /// senpi `getClearOnShrink`: the setting, then the brand-prefixed `CLEAR_ON_SHRINK=1` env value,
+    /// then `false`.
+    pub fn get_clear_on_shrink(&self, env: &HashMap<String, String>) -> bool {
+        self.get_bool("clearOnShrink").unwrap_or_else(|| crate::brand::env_value("CLEAR_ON_SHRINK", env).as_deref() == Some("1"))
+    }
+
+    /// senpi `getShowTerminalProgress`: defaults to `false`.
+    pub fn get_show_terminal_progress(&self) -> bool {
+        self.get_bool("showTerminalProgress").unwrap_or(false)
+    }
+
+    /// senpi `getShowHardwareCursor`: the setting, then the brand-prefixed `HARDWARE_CURSOR=1` env
+    /// value.
+    pub fn get_show_hardware_cursor(&self, env: &HashMap<String, String>) -> bool {
+        self.get_bool("showHardwareCursor").unwrap_or_else(|| crate::brand::env_value("HARDWARE_CURSOR", env).as_deref() == Some("1"))
+    }
+
     /// senpi `getDisabledBuiltinExtensions`: builtin extension ids to skip loading.
     pub fn get_disabled_builtin_extensions(&self) -> Vec<String> {
         string_list(self.settings.get("disabledBuiltinExtensions")).unwrap_or_default()
@@ -1482,6 +1499,21 @@ mod tests {
         assert_eq!(overrides.images, Some(None));
         assert_eq!(overrides.true_color, Some(true));
         assert_eq!(overrides.hyperlinks, Some(true));
+    }
+
+    #[test]
+    fn terminal_renderer_settings_prefer_settings_then_env_and_default_off() {
+        let env: HashMap<String, String> = [("PI_HARDWARE_CURSOR", "1"), ("PI_CLEAR_ON_SHRINK", "1")].into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
+        let unset = SettingsManager::in_memory(Settings::new(), false);
+        assert!(!unset.get_show_hardware_cursor(&HashMap::new()));
+        assert!(!unset.get_clear_on_shrink(&HashMap::new()));
+        assert!(!unset.get_show_terminal_progress());
+        assert!(unset.get_show_hardware_cursor(&env));
+        assert!(unset.get_clear_on_shrink(&env));
+        let configured = SettingsManager::in_memory(settings(r#"{"showHardwareCursor":false,"clearOnShrink":false,"showTerminalProgress":true}"#), false);
+        assert!(!configured.get_show_hardware_cursor(&env));
+        assert!(!configured.get_clear_on_shrink(&env));
+        assert!(configured.get_show_terminal_progress());
     }
 
     #[test]
