@@ -122,8 +122,9 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     if invocation.input.reset==Some(true) {
         let busy=manager.lock().expect("cell manager lock").live_cells(Some(invocation.input.language),Some(&invocation.cell_id));
         if !busy.is_empty() {
-            let error=EvalKernelResetRefusedError::new(invocation.input.language,&busy.into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>()).to_string();
-            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);
+            let refused=EvalKernelResetRefusedError::new(invocation.input.language,&busy.into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>());
+            let error=refused.to_string();
+            execution.finish();manager.lock().expect("cell manager lock").fail_with_code(&cell,&error,Some(refused.code));
             emit_early_failure(&options,&invocation,started_at,&error);return Err(error);
         }
         if let Err(error)=execution.wait(kernel.reset()).await {execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);emit_early_failure(&options,&invocation,started_at,&error);return Err(error);}
