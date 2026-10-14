@@ -48,7 +48,9 @@ async fn status(
     };
     if result.code != 0 {
         log_warn(logger, "omo-senpi ulw-loop status ignored", Some(serde_json::json!({"reason":"non-zero-exit","code":result.code})));
-        return None;
+        // Pin `index.ts:174-177`: a non-zero exit is an inactive status, not an absent one; only a
+        // spawn failure yields `null`, and the in-process native reader has no spawn step.
+        return Some((result.stdout, false));
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.stdout) else {
         log_warn(logger, "omo-senpi ulw-loop status ignored", Some(serde_json::json!({"reason":"malformed-json"})));
