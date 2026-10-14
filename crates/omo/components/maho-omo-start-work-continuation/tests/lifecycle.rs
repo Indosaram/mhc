@@ -31,22 +31,28 @@ impl ComponentLogger for Logger {
 #[tokio::test] async fn identical_signature_is_suppressed_and_user_input_resets()->Result<(),Box<dyn std::error::Error>> {
  let root=tempfile::tempdir()?;let plan=root.path().join("plan.md");std::fs::write(&plan,"## TODOs\n- [ ] 1. task\n")?;let state=boulder_state::create_boulder_state(&plan.to_string_lossy(),"senpi:session",&boulder_state::WorkOwner::default());boulder_state::write_boulder_state(root.path(),&state)?;
  let actions=Arc::new(Actions::default());let runtime=ExtensionRuntime::default();runtime.bind(actions.clone());let mut api=ExtensionApi::new(LoadedExtension::new("continuation",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);maho_omo_start_work_continuation::index::StartWorkContinuationComponent::default().register(&mut api);let mut ctx=support::context();ctx.cwd=root.path().into();
- // Turn 1 delivers; a second settle with the same signature is skipped outright (latest lastSignature).
+ // Turn 1 delivers; the pinned budget allows one same-signature retry, then skips it (`retry-budget-exhausted`).
  end(&api,&ctx).await?;assert_eq!(actions.0.lock().expect("messages").len(),1);
- end(&api,&ctx).await?;assert_eq!(actions.0.lock().expect("messages").len(),1);
+ end(&api,&ctx).await?;assert_eq!(actions.0.lock().expect("messages").len(),2);
+ end(&api,&ctx).await?;assert_eq!(actions.0.lock().expect("messages").len(),2);
  // A queued user steer resets the state and appends the steering reminder.
  let mut event=ExtensionEvent::Input(InputEvent{input_id:"id".into(),text:"steer".into(),images:None,source:InputSource::Interactive,streaming_behavior:Some(StreamingBehavior::Steer)});assert!(matches!(api.registered.handlers[&EventKind::Input][0](&mut event,&ctx).await?,EventResult::Input(InputEventResult::Transform{..})));
- end(&api,&ctx).await?;assert_eq!(actions.0.lock().expect("messages").len(),2);Ok(())
+ end(&api,&ctx).await?;assert_eq!(actions.0.lock().expect("messages").len(),3);Ok(())
 }
 
 fn register(root: &std::path::Path, limit: usize) -> (ExtensionApi, Arc<Actions>, ExtensionContext) {
+    register_with(root, maho_omo_start_work_continuation::index::StartWorkContinuationComponent {
+        continuation_limit: limit, ..Default::default() })
+}
+
+fn register_with(root: &std::path::Path, component: maho_omo_start_work_continuation::index::StartWorkContinuationComponent)
+    -> (ExtensionApi, Arc<Actions>, ExtensionContext) {
     let actions = Arc::new(Actions::default());
     let runtime = ExtensionRuntime::default();
     runtime.bind(actions.clone());
     let mut api = ExtensionApi::new(LoadedExtension::new("continuation", root.into(), SourceInfo::default()),
         ExtensionSessionProfile::default(), EventBus::default(), runtime);
-    maho_omo_start_work_continuation::index::StartWorkContinuationComponent { continuation_limit: limit }
-        .register(&mut api);
+    component.register(&mut api);
     let mut ctx = support::context();
     ctx.cwd = root.into();
     (api, actions, ctx)
@@ -120,13 +126,15 @@ async fn signature_progress_delivers_again() -> Result<(), Box<dyn std::error::E
     let (api, actions, ctx) = register(root.path(), 8);
     end(&api, &ctx).await?;
     assert_eq!(actions.0.lock().expect("messages").len(), 1);
-    // Same signature: suppressed.
+    // Same signature: one bounded recovery retry, then suppressed.
     end(&api, &ctx).await?;
-    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+    end(&api, &ctx).await?;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
     // A plan revision changes the signature, so the next edge delivers again.
     std::fs::write(plan, "## TODOs\n- [x] 1. first\n- [ ] 2. second\n")?;
     end(&api, &ctx).await?;
-    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+    assert_eq!(actions.0.lock().expect("messages").len(), 3);
     Ok(())
 }
 
@@ -142,8 +150,28 @@ async fn extension_input_does_not_reset_the_signature() -> Result<(), Box<dyn st
         images: None, source: InputSource::Extension, streaming_behavior: Some(StreamingBehavior::Steer) });
     assert!(matches!(api.registered.handlers[&EventKind::Input][0](&mut event, &ctx).await?,
         EventResult::Input(InputEventResult::Continue)));
+    // The retry is spent by the next edge and the one after is suppressed, so no reset happened.
     end(&api, &ctx).await?;
-    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+    end(&api, &ctx).await?;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+    Ok(())
+}
+
+// Pin `index.ts:99-120` / `index.test.ts` #10-#12: the same-signature retry budget is configurable,
+// exhaustion skips with `retry-budget-exhausted`, and a changed signature restores the budget.
+#[tokio::test]
+async fn same_signature_retry_budget_is_bounded_and_reset_by_progress() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let plan = write_work(root.path(), "## TODOs\n- [ ] 1. first\n- [ ] 2. second\n")?;
+    assert_eq!(maho_omo_start_work_continuation::index::StartWorkContinuationComponent::default().max_same_signature_retries,
+        maho_omo_start_work_continuation::index::DEFAULT_MAX_SAME_SIGNATURE_RETRIES);
+    let (api, actions, ctx) = register_with(root.path(), maho_omo_start_work_continuation::index::StartWorkContinuationComponent {
+        max_same_signature_retries: 2, ..Default::default() });
+    for _ in 0..5 { end(&api, &ctx).await?; }
+    assert_eq!(actions.0.lock().expect("messages").len(), 3, "first delivery plus two bounded retries");
+    std::fs::write(&plan, "## TODOs\n- [x] 1. first\n- [ ] 2. second\n")?;
+    for _ in 0..5 { end(&api, &ctx).await?; }
+    assert_eq!(actions.0.lock().expect("messages").len(), 6, "progress resets the retry budget");
     Ok(())
 }
 

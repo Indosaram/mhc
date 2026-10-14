@@ -13,9 +13,15 @@ fn log_info(logger:&Option<Arc<dyn ComponentLogger>>,message:&str,details:Option
 fn log_warn(logger:&Option<Arc<dyn ComponentLogger>>,message:&str,details:Option<JsonValue>){if let Some(logger)=logger{logger.warn(message,details.as_ref());}}
 struct PendingRun { payload:JsonValue, session_id:Option<String>, cwd:std::path::PathBuf }
 #[derive(Default)]
-struct State { consecutive:usize,last_signature:Option<String>,pending_run:Option<PendingRun> }
-pub struct StartWorkContinuationComponent { pub continuation_limit:usize }
-impl Default for StartWorkContinuationComponent { fn default()->Self { Self{continuation_limit:8} } }
+struct State { consecutive:usize,last_signature:Option<String>,same_signature_retries:usize,pending_run:Option<PendingRun> }
+/// Pin `index.ts:14` `DEFAULT_MAX_SAME_SIGNATURE_RETRIES`.
+pub const DEFAULT_MAX_SAME_SIGNATURE_RETRIES:usize=1;
+pub struct StartWorkContinuationComponent {
+    pub continuation_limit:usize,
+    /// Pin `index.ts:8` `maxSameSignatureRetries`: retries for an unchanged plan/checklist signature.
+    pub max_same_signature_retries:usize,
+}
+impl Default for StartWorkContinuationComponent { fn default()->Self { Self{continuation_limit:8,max_same_signature_retries:DEFAULT_MAX_SAME_SIGNATURE_RETRIES} } }
 impl Extension for StartWorkContinuationComponent {
     fn register(&self,api:&mut ExtensionApi) {
         api.register_flag(START_WORK_CONTINUATION_DISABLED_FLAG,FlagType::Boolean{default:Some(false)},Some("Disable the omo-senpi start-work-continuation component.".to_owned()));
@@ -39,7 +45,7 @@ impl Extension for StartWorkContinuationComponent {
             state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending_run=Some(PendingRun{payload,session_id:Some(ctx.session_manager.session_id().to_owned()).filter(|id|!id.is_empty()),cwd:ctx.cwd.clone()});
             Ok(EventResult::None)
         }) }));
-        let limit=self.continuation_limit;let runtime=api.runtime.clone();
+        let limit=self.continuation_limit;let max_retries=self.max_same_signature_retries;let runtime=api.runtime.clone();
         api.on(EventKind::AgentSettled,Arc::new(move |_,ctx| { let state=Arc::clone(&state);let runtime=runtime.clone();Box::pin(async move {
             let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(run)=state.pending_run.take() else { return Ok(EventResult::None); };
@@ -50,12 +56,21 @@ impl Extension for StartWorkContinuationComponent {
             }
             if state.consecutive>=limit { let count=state.consecutive; drop(state); log_info(&ctx.logger,"omo-senpi ulw-execute-continuation skipped",Some(serde_json::json!({"reason":"continuation-cap-reached","count":count}))); return Ok(EventResult::None); }
             let Some(session_id)=run.session_id else { log_info(&ctx.logger,"omo-senpi ulw-execute-continuation skipped",Some(serde_json::json!({"reason":"missing-context"}))); return Ok(EventResult::None); };
-            let Some(work)=find_continuable_boulder_work_in(&run.cwd,&session_id,&ctx.agent_dir.join("sessions")).map_err(|e|ExtensionFailure::new(e.to_string()))? else { state.last_signature=None;log_info(&ctx.logger,"omo-senpi ulw-execute-continuation skipped",Some(serde_json::json!({"reason":"not-continuable"})));return Ok(EventResult::None); };
+            let Some(work)=find_continuable_boulder_work_in(&run.cwd,&session_id,&ctx.agent_dir.join("sessions")).map_err(|e|ExtensionFailure::new(e.to_string()))? else { state.last_signature=None;state.same_signature_retries=0;log_info(&ctx.logger,"omo-senpi ulw-execute-continuation skipped",Some(serde_json::json!({"reason":"not-continuable"})));return Ok(EventResult::None); };
             let signature=format!("{}:{}:{}/{}",work.work.work_id().unwrap_or_default(),work.work.updated_at().or_else(||work.work.started_at()).unwrap_or_default(),work.checklist.completed,work.checklist.total);
-            // The latest upstream keeps one `lastSignature` and skips an unchanged signature outright
-            // (no bounded retry budget), so a repeated edge with no progress is answered once.
-            if state.last_signature.as_ref()==Some(&signature) { log_info(&ctx.logger,"omo-senpi ulw-execute-continuation skipped",Some(serde_json::json!({"reason":"stale-signature"}))); return Ok(EventResult::None); }
-            state.last_signature=Some(signature);
+            // Pin `index.ts:101-118`: an unchanged signature gets a bounded recovery retry budget; once
+            // spent, the edge is skipped with `retry-budget-exhausted` until progress or user input.
+            if state.last_signature.as_ref()==Some(&signature) {
+                if state.same_signature_retries>=max_retries {
+                    let retries=state.same_signature_retries; drop(state);
+                    log_info(&ctx.logger,"omo-senpi ulw-execute-continuation skipped",Some(serde_json::json!({"reason":"retry-budget-exhausted","signature":signature,"retries":retries,"maxRetries":max_retries})));
+                    return Ok(EventResult::None);
+                }
+                state.same_signature_retries+=1;
+            } else {
+                state.last_signature=Some(signature);
+                state.same_signature_retries=0;
+            }
             state.consecutive+=1;
             let content=render_directive(&work,&run.cwd,&session_id);
             deliver(ctx,&runtime,content)?;
