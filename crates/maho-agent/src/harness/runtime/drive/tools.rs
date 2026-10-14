@@ -531,7 +531,7 @@ async fn perform_tool_invocation<TContext: Clone + Send + Sync + 'static>(
     batch: &ToolBatch,
     call: &DurableCall,
     cleared: ClearedToolCall<TContext>,
-    tool_context: TContext,
+    tool_context: Option<TContext>,
     recovery: bool,
 ) -> Result<ToolOutcome, SessionError> {
     let (invocation, active) = invocation_capability(lane, drive, batch, call);
@@ -562,7 +562,13 @@ async fn perform_tool_invocation<TContext: Clone + Send + Sync + 'static>(
             }
         })
     };
-    let execution = match execute_tool_call(cleared, &drive.gate, on_update, tool_context, invocation.clone(), drive.context.clone()).await {
+    // Pinned `toolContext` may be `undefined`; a typed Rust tool cannot receive an absent context,
+    // so such a call settles like a tool that threw instead of faulting the harness.
+    let executed = match tool_context {
+        Some(tool_context) => execute_tool_call(cleared, &drive.gate, on_update, tool_context, invocation.clone(), drive.context.clone()).await,
+        None => Ok(ExecutedToolCall { result: crate::harness::execution::tools::create_error_tool_result("Tool context is unavailable in this process"), is_error: true }),
+    };
+    let execution = match executed {
         Ok(executed) => executed,
         Err(GateRefusal::Abort(abort)) => {
             active.store(false, Ordering::SeqCst);
@@ -716,7 +722,7 @@ fn recover_tool_invocation<'a, TContext: Clone + Send + Sync + 'static>(
 struct ToolExecution<'a, TContext> {
     tools: &'a [Arc<AgentHarnessTool<TContext>>],
     tools_by_name: &'a BTreeMap<String, Arc<AgentHarnessTool<TContext>>>,
-    tool_context: &'a TContext,
+    tool_context: &'a Option<TContext>,
 }
 
 async fn run_sequential<TContext: Clone + Send + Sync + 'static>(
@@ -811,11 +817,19 @@ pub trait ToolBatchRunner: Send + Sync {
 /// The pinned process-local `Config<TContext>.tools` + `toolContext` for one lane.
 pub struct ToolRunner<TContext> {
     pub tools: Vec<Arc<AgentHarnessTool<TContext>>>,
-    pub tool_context: Option<TContext>,
+    pub tool_context: Option<crate::harness::agent_harness::ToolContextSource<TContext>>,
+}
+
+/// Pinned `resolveToolContext`: resolve the configured value or lazy source for one drive.
+async fn resolve_tool_context<TContext: Clone>(runner: &ToolRunner<TContext>, drive: &Drive) -> Option<TContext> {
+    match &runner.tool_context {
+        Some(source) => Some(source.resolve(&drive.context).await),
+        None => None,
+    }
 }
 
 impl<TContext: Clone + Send + Sync + 'static> ToolRunner<TContext> {
-    pub fn new(tools: Vec<Arc<AgentHarnessTool<TContext>>>, tool_context: Option<TContext>) -> Self {
+    pub fn new(tools: Vec<Arc<AgentHarnessTool<TContext>>>, tool_context: Option<crate::harness::agent_harness::ToolContextSource<TContext>>) -> Self {
         Self { tools, tool_context }
     }
 }
@@ -842,7 +856,7 @@ impl ToolBatchRunner for EmptyToolRunner {
         state: OperationState,
     ) -> maho_ai::types::BoxFuture<'a, Result<ProcedureResult, SessionError>> {
         Box::pin(async move {
-            let runner = ToolRunner::<()> { tools: Vec::new(), tool_context: None };
+            let runner = ToolRunner::<()> { tools: Vec::new(), tool_context: Some(crate::harness::agent_harness::ToolContextSource::Value(())) };
             run_tools(lane, &runner, drive, state).await
         })
     }
@@ -877,7 +891,7 @@ pub async fn run_tools<TContext: Clone + Send + Sync + 'static>(
     let active: std::collections::BTreeSet<String> = batch.configuration.active_tool_names.iter().cloned().collect();
     let tools: Vec<Arc<AgentHarnessTool<TContext>>> = runner.tools.iter().filter(|tool| active.contains(tool.name())).cloned().collect();
     let tools_by_name: BTreeMap<String, Arc<AgentHarnessTool<TContext>>> = tools.iter().map(|tool| (tool.name().to_owned(), tool.clone())).collect();
-    let tool_context = runner.tool_context.clone().ok_or_else(|| session_invariant_error("Tool batch requires a tool context"))?;
+    let tool_context = resolve_tool_context(runner, drive).await;
     let execution = ToolExecution { tools: &tools, tools_by_name: &tools_by_name, tool_context: &tool_context };
     if run.operation.settings.tool_execution == ToolExecutionMode::Sequential {
         run_sequential(lane, drive, &current, &sources, Some(&execution), recovery).await
