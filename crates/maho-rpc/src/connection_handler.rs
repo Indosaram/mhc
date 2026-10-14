@@ -115,6 +115,10 @@ pub fn rpc_session_event_record(session:&AgentSession,event:&maho_ext_api::Agent
         maho_ext_api::AgentSessionEvent::ThinkingLevelChanged{..}|maho_ext_api::AgentSessionEvent::ModelChanged{..}=>{
             if let Some(selection)=session.thinking_selection(){record["thinkingSelection"]=serde_json::to_value(selection)?;}
         },
+        // senpi agent-session.ts publishes `message_update` through `withResolvedToolName`.
+        maho_ext_api::AgentSessionEvent::Agent(event@maho_ext_api::AgentEvent::MessageUpdate{..})=>{
+            if let Some(name)=session.message_update_resolved_tool_name(event){record["resolvedToolName"]=name.into();}
+        },
         maho_ext_api::AgentSessionEvent::AgentEnd{abort_source:Some(source),..}=>{
             let source=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"};
             *last_abort_source.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some((session.session_id(),source));

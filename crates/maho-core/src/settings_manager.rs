@@ -1088,6 +1088,22 @@ impl SettingsManager {
             .unwrap_or(crate::http_dispatcher::DEFAULT_HTTP_IDLE_TIMEOUT_MS)
     }
 
+    /// `getRetrySettings`. The `maxRetries` default is derived from the shipped profile so the one
+    /// `retry.maxRetries` key means the same budget on every consumer.
+    pub fn get_retry_settings(&self) -> maho_ai::utils::retry::RetryPolicy {
+        let retry = self.get_value("retry");
+        let field = |key: &str| retry.and_then(|retry| retry.get(key));
+        maho_ai::utils::retry::RetryPolicy {
+            enabled: field("enabled").and_then(Value::as_bool).unwrap_or(true),
+            max_retries: field("maxRetries").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(maho_ai::utils::retry_profile::profiles::SENPI_DEFAULT_RETRY_PROFILE.turn.max_retries),
+            base_delay_ms: field("baseDelayMs").and_then(Value::as_u64).unwrap_or(2_000),
+            max_agent_delay_ms: Some(field("maxAgentDelayMs").and_then(Value::as_u64)
+                .unwrap_or(maho_ai::utils::retry::DEFAULT_MAX_AGENT_RETRY_DELAY_MS)),
+            random: None,
+        }
+    }
+
     /// `getProviderRetrySettings`.
     pub fn get_provider_retry_settings(&self) -> ProviderRequestRetrySettings {
         let provider = self.get_value("retry").and_then(|retry| retry.get("provider"));

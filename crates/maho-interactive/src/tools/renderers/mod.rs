@@ -91,6 +91,85 @@ pub fn create_all_tool_renderers() -> HashMap<&'static str, Rc<RefCell<dyn ToolR
     ])
 }
 
+/// The renderers a built-in tool definition carries (senpi spreads `...grepRenderers` into the
+/// `grep` definition and `find` likewise), exposed to HTML export through the erased factory.
+/// The template already renders bash/read/write/edit/ls, so only these two are needed there.
+pub fn built_in_export_renderers(tool_name: &str) -> Option<Arc<dyn maho_ext_api::ErasedToolRenderers>> {
+    let tool = match tool_name { "grep" => "grep", "find" => "find", _ => return None };
+    Some(Arc::new(BuiltInExportRenderers { tool }))
+}
+
+struct BuiltInExportRenderers {
+    tool: &'static str,
+}
+
+impl BuiltInExportRenderers {
+    fn renderers(&self) -> Box<dyn ToolRenderers> {
+        match self.tool {
+            "grep" => Box::new(grep::GrepRenderers),
+            _ => Box::new(find::FindRenderers),
+        }
+    }
+
+    fn render(
+        &self,
+        args: &Value,
+        theme: &maho_ext_api::Theme,
+        width: usize,
+        result: Option<(&maho_ext_api::AgentToolResult, ToolRenderResultOptions, bool)>,
+    ) -> Option<Vec<String>> {
+        let theme = crate::interactive_extension_ui::theme_from_extension(theme, crate::theme::ColorMode::Truecolor).ok()?;
+        let context = ToolRenderContext {
+            args,
+            tool_call_id: "",
+            cwd: "",
+            execution_started: true,
+            args_complete: true,
+            is_partial: false,
+            expanded: result.as_ref().is_some_and(|(_, options, _)| options.expanded),
+            show_images: false,
+            is_error: result.as_ref().is_some_and(|(_, _, is_error)| *is_error),
+            has_result: result.is_some(),
+            spinner_frame: None,
+            now_ms: 0.,
+            invalidate: Rc::new(|| {}),
+        };
+        let mut renderers = self.renderers();
+        let component = match result {
+            None => renderers.render_call(&theme, &context)?,
+            Some((result, options, _)) => {
+                let result: ToolResult = serde_json::from_value(serde_json::to_value(result).ok()?).ok()?;
+                renderers.render_result(&result, options, &theme, &context)?
+            }
+        };
+        let lines = component.borrow_mut().render(width);
+        Some(lines)
+    }
+}
+
+impl maho_ext_api::ErasedToolRenderers for BuiltInExportRenderers {
+    fn render_call(&self, args: &Value, theme: &maho_ext_api::Theme, width: usize) -> Option<Vec<String>> {
+        self.render(args, theme, width, None)
+    }
+
+    fn render_result(&self, args: &Value, result: &maho_ext_api::AgentToolResult, theme: &maho_ext_api::Theme, width: usize) -> Option<Vec<String>> {
+        self.render(args, theme, width, Some((result, ToolRenderResultOptions::default(), false)))
+    }
+
+    fn render_result_with(
+        &self,
+        args: &Value,
+        result: &maho_ext_api::AgentToolResult,
+        options: maho_ext_api::ToolRenderResultOptions,
+        is_error: bool,
+        theme: &maho_ext_api::Theme,
+        width: usize,
+    ) -> Option<Vec<String>> {
+        let options = ToolRenderResultOptions { expanded: options.expanded, is_partial: options.is_partial };
+        self.render(args, theme, width, Some((result, options, is_error)))
+    }
+}
+
 /// senpi's `withBuiltInRenderers`.
 ///
 /// senpi's version fills in each half a partial definition left out; a Rust [`ToolRenderers`] is

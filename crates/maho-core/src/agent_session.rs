@@ -486,6 +486,15 @@ struct AgentSessionState {
     post_compaction_deferred_follow_up_messages: Vec<AgentMessage>,
     prompt_start_pending: bool,
     had_cleared_queued_messages: bool,
+    /// senpi `_triggerTurnAdmissionAbortGeneration`: the user-abort generation an idle
+    /// `triggerTurn` custom message is being admitted under.
+    trigger_turn_admission_abort_generation: Option<u64>,
+    /// senpi `_requiredCompactionTurnError`: the message of the `RequiredCompactionError` that
+    /// ended the current run from the next-turn preparation.
+    required_compaction_turn_error: Option<String>,
+    /// senpi `_requiredCompactionAdmissionError`: rethrown by the originating prompt when queued
+    /// input could not be admitted because required compaction failed.
+    required_compaction_admission_error: Option<String>,
     auto_compaction_session_override: Option<bool>,
     turn_index: u64,
     message_replacements: Vec<(AgentMessage, AgentMessage)>,
@@ -626,6 +635,9 @@ pub struct AgentSessionInner {
     extension_rpc_event_listeners: Mutex<Vec<ExtensionRpcEventListener>>,
     tool_context_disposers: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
     html_theme_resolver: Mutex<Option<HtmlThemeResolver>>,
+    /// senpi `getToolDefinition` over `_baseToolDefinitions`: the built-in tool definitions carry
+    /// renderers (`grep`, `find`) that `/export` uses when no extension registered the tool.
+    html_built_in_tool_renderers: Mutex<Option<crate::export_html::tool_renderer::ToolRendererLookup>>,
 }
 
 pub type HtmlThemeResolver = Arc<dyn Fn(Option<&str>) -> Result<(maho_ext_api::Theme, Option<(BTreeMap<String, String>, BTreeMap<String, String>)>), String> + Send + Sync>;
@@ -1722,6 +1734,9 @@ impl AgentSession {
             post_compaction_deferred_follow_up_messages: Vec::new(),
             prompt_start_pending: false,
             had_cleared_queued_messages: false,
+            trigger_turn_admission_abort_generation: None,
+            required_compaction_turn_error: None,
+            required_compaction_admission_error: None,
             auto_compaction_session_override: None,
             turn_index: 0,
             message_replacements: Vec::new(),
@@ -1816,6 +1831,7 @@ impl AgentSession {
             extension_rpc_event_listeners: Mutex::new(Vec::new()),
             tool_context_disposers: Mutex::new(Vec::new()),
             html_theme_resolver: Mutex::new(None),
+            html_built_in_tool_renderers: Mutex::new(None),
         }) };
 
         let initial_model = session.agent.state().model;
@@ -1911,6 +1927,7 @@ impl AgentSession {
             let mut state = self.state();
             match &mut event {
                 AgentEvent::AgentStart => {
+                    state.required_compaction_turn_error = None;
                     state.turn_index = 0;
                     state.message_replacements.clear();
                     state.abort_source = None;
@@ -2129,6 +2146,31 @@ impl AgentSession {
             return Err("Prompt cancelled".to_owned());
         }
         if text.starts_with('/') && self.try_execute_extension_command(text).await? { return Ok(PromptDisposition::Handled); }
+        // Bare "." on a session that already has messages is the manual-continue shortcut: it
+        // never becomes a visible user turn. Route it through the hidden custom-message path
+        // before extensions see an input event, so a "." cannot be echoed, transformed, or
+        // persisted as literal text.
+        if crate::manual_continue::is_manual_continue_submission(
+            text,
+            !self.agent.state().messages().is_empty(),
+            options.images.as_ref().is_some_and(|images| !images.is_empty()),
+        ) {
+            self.send_custom_message_content(
+                crate::manual_continue::MANUAL_CONTINUE_CUSTOM_TYPE.to_owned(),
+                maho_agent::harness::messages::CustomMessageContent::Text(crate::manual_continue::MANUAL_CONTINUE_DIRECTIVE.to_owned()),
+                false,
+                None,
+                maho_ext_api::SendMessageOptions {
+                    trigger_turn: true,
+                    deliver_as: Some(if options.streaming_behavior == Some(StreamingBehavior::FollowUp) {
+                        maho_ext_api::DeliverAs::FollowUp
+                    } else {
+                        maho_ext_api::DeliverAs::Steer
+                    }),
+                },
+            ).await?;
+            return Ok(PromptDisposition::Handled);
+        }
         let (pending_compaction, compaction_generation) = if options.source == Some(InputSource::Extension) {
             let state = self.state();
             (state.pending_compaction_admission.clone(),
@@ -2244,18 +2286,7 @@ impl AgentSession {
         };
         let mut messages = vec![make_user_message(&text, images)];
         messages.extend(consumed.clone());
-        if let Some(before) = before {
-            self.state().system_prompt_override = before.system_prompt.clone();
-            self.agent.set_system_prompt(before.system_prompt.unwrap_or_else(|| self.state().base_system_prompt.clone()));
-            for message in before.messages {
-                messages.push(session_message_from_value(serde_json::json!({"role":"custom", "customType":message.custom_type,
-                    "content":message.content, "display":message.display, "details":message.details,
-                    "timestamp":maho_ai::utils::diagnostics::now_ms()})).map_err(|error| error.to_string())?);
-            }
-        } else {
-            self.state().system_prompt_override = None;
-            self.agent.set_system_prompt(self.state().base_system_prompt.clone());
-        }
+        self.apply_before_agent_start_result(&mut messages, before)?;
         if let Err(error) = self.enforce_final_provider_admission(&messages).await {
             self.state().pending_next_turn_messages.splice(0..0, consumed);
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
@@ -2274,9 +2305,11 @@ impl AgentSession {
         // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
         // allows it and a configured fallback chain can take over.
         self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
+        self.state().required_compaction_admission_error = None;
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
+        let required_compaction_error = self.state().required_compaction_admission_error.take();
         let title_prompt = match options.session_title_prompt {
             Some(SessionTitlePrompt::Disabled) => None,
             Some(SessionTitlePrompt::Text(prompt)) => Some(prompt),
@@ -2289,7 +2322,31 @@ impl AgentSession {
         drop(_work);
         drop(_admission);
         self.emit_agent_settled().await;
+        // senpi `_promptAgent`: the stored admission rejection surfaces as the prompt rejecting.
+        if let Some(error) = required_compaction_error { return Err(error); }
         Ok(PromptDisposition::Started)
+    }
+
+    /// senpi `_applyBeforeAgentStartResult`.
+    fn apply_before_agent_start_result(
+        &self,
+        messages: &mut Vec<AgentMessage>,
+        result: Option<maho_ext_api::BeforeAgentStartCombinedResult>,
+    ) -> Result<(), String> {
+        if let Some(before) = result {
+            for message in before.messages {
+                messages.push(session_message_from_value(serde_json::json!({"role":"custom", "customType":message.custom_type,
+                    "content":message.content, "display":message.display, "details":message.details,
+                    "timestamp":maho_ai::utils::diagnostics::now_ms()})).map_err(|error| error.to_string())?);
+            }
+            self.state().system_prompt_override = before.system_prompt.clone();
+            self.agent.set_system_prompt(before.system_prompt.unwrap_or_else(|| self.state().base_system_prompt.clone()));
+        } else {
+            // Ensure the base prompt is used (in case a previous turn had modifications).
+            self.state().system_prompt_override = None;
+            self.agent.set_system_prompt(self.state().base_system_prompt.clone());
+        }
+        Ok(())
     }
 
     async fn enforce_final_provider_admission(&self, additions: &[AgentMessage]) -> Result<(), String> {
@@ -2414,7 +2471,10 @@ impl AgentSession {
         let streaming = self.is_streaming();
         let had_retry_backoff = self.state().retry_abort_controller.is_some();
         let was_mid_run = streaming && !had_retry_backoff;
-        let had_compaction_or_pending = !streaming && (self.is_compacting() || self.pending_message_count() > 0);
+        let has_pending_trigger_turn_admission = self.state().trigger_turn_admission_abort_generation
+            == Some(self.user_abort_generation.load(Ordering::SeqCst));
+        let had_compaction_or_pending = !streaming
+            && (self.is_compacting() || self.pending_message_count() > 0 || has_pending_trigger_turn_admission);
         let had_cleared_queues = std::mem::take(&mut self.state().had_cleared_queued_messages);
         let joined_agent_end_boundary = self.state().abort_provenance.has_open_agent_end_boundary();
         let should_emit_abort = !joined_agent_end_boundary && !was_mid_run
@@ -2868,9 +2928,9 @@ impl AgentSession {
     }
 
     /// `_willRetryAfterAgentEnd`: whether the agent_end handler will start another attempt.
-    /// The required-compaction branch is not ported: the session keeps no `_requiredCompactionTurnError`.
     async fn will_retry(&self, message: Option<&maho_ai::types::AssistantMessage>) -> bool {
         let Some(message) = message else { return false; };
+        if self.required_compaction_still_needed(message).unwrap_or(false) { return true; }
         let profile = self.resolve_retry_profile();
         if !profile.turn.enabled { return false; }
         if self.state().user_aborted || !self.with_settings_manager(|manager| manager.get_value("retry")
@@ -3190,13 +3250,37 @@ impl AgentSession {
     }
 
     async fn finish_provider_turn(&self) -> Result<(), String> {
+        loop {
+            let mut retry_owned_deferred_queue = false;
+            self.finish_provider_turn_retrying(&mut retry_owned_deferred_queue).await?;
+            // senpi `retryExhaustionAllowsQueuedContinuation`: provider-timeout retries skip their
+            // first queue poll so steering cannot be consumed by another doomed retry request. Once
+            // the retry owner stops retrying, hand that retained queue back to the continuation
+            // path instead of parking it until an unrelated later prompt arrives.
+            let allows_queued_continuation = retry_owned_deferred_queue
+                && !self.state().user_aborted
+                && self.messages().last().and_then(AgentMessage::as_assistant)
+                    .is_some_and(|tail| matches!(tail.stop_reason, StopReason::Error | StopReason::Aborted))
+                && self.agent.has_queued_messages();
+            // A concurrent prompt already owns the agent: a benign takeover (senpi "taken-over").
+            if !allows_queued_continuation || self.agent.signal().is_some() { return Ok(()); }
+            self.agent.continue_with_queued_messages(Default::default()).await;
+        }
+    }
+
+    /// The retry loop of senpi's `agent_end` handling. `retry_owned_deferred_queue` reports whether
+    /// the run that produced the final tail was a retry continuation that deferred queued messages
+    /// (senpi `DEFERRED_RETRY_QUEUE_OWNERS`).
+    async fn finish_provider_turn_retrying(&self, retry_owned_deferred_queue: &mut bool) -> Result<(), String> {
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
         let mut overflow_compacted = false;
         let rate_limit_pattern = regex::Regex::new(r"(?i)rate.?limit|(?:^429\s+\{|(?:\bHTTP/1\.[01]\s+|\bHTTP\s+|\bstatus(?:\s+code)?\s+|\berror\s+|\bcode\s+)429\b)|too many requests|resource.?exhausted")
             .expect("pinned rate limit pattern");
+        let mut deferred_by_retry = false;
         loop {
             self.agent.wait_for_idle().await;
+            *retry_owned_deferred_queue = std::mem::take(&mut deferred_by_retry);
             let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(()); };
             let assistant_pending_persistence = {
                 let state = self.state();
@@ -3267,6 +3351,28 @@ impl AgentSession {
                 }
                 self.agent.continue_run(maho_agent::agent::AgentContinuationOptions { defer_queued_messages: Some(true), ..Default::default() }).await;
                 continue;
+            }
+            // senpi `retryAfterRequiredCompaction`: a run ended by a failed required compaction runs
+            // threshold recovery with retry; if it is still required and input is queued, the
+            // originating prompt rejects with the stored admission error.
+            if !self.state().user_aborted && self.required_compaction_still_needed(&message)? {
+                let compacted = self.compact_for_model_with_retry(None, &self.model(), "threshold", true, false, None).await.is_ok();
+                if self.is_compaction_delegated() { return Ok(()); }
+                if compacted {
+                    self.state().required_compaction_admission_error = None;
+                    let mut messages = self.messages();
+                    if messages.last().and_then(AgentMessage::as_assistant).is_some_and(|tail| tail.stop_reason == StopReason::Error) {
+                        messages.pop();
+                        self.agent.set_messages(messages);
+                        self.state().message_revision += 1;
+                    }
+                    self.agent.continue_with_queued_messages(Default::default()).await;
+                    continue;
+                }
+                if self.agent.has_queued_messages() && self.required_compaction_still_needed(&message)? {
+                    self.state().required_compaction_admission_error = Some(RequiredCompactionError.to_string());
+                }
+                return Ok(());
             }
             if !self.retry_can_admit_provider(&message).await {
                 if let Some(error) = message.error_message.clone()
@@ -3512,14 +3618,16 @@ impl AgentSession {
                         .and_then(Value::as_u64).or(Some(30_000)),
                     timeout_ms: self.agent.timeout_ms(), stream_start_timeout_ms: self.agent.stream_start_timeout_ms(),
                 });
+            deferred_by_retry = plan.options.defer_queued_messages == Some(true);
             let continuation = self.agent.continue_run(plan.options);
             if let Some(timeout) = plan.watchdog_timeout_ms {
                 tokio::pin!(continuation);
                 tokio::select! {
                     _ = &mut continuation => {}
                     _ = tokio::time::sleep(std::time::Duration::from_millis(timeout)) => {
-                        self.agent.abort(Some(maho_ai::utils::abort::AbortReason::new("AbortError",
-                            provider_retry_watchdog_abort_message(Some(timeout), self.agent.stream_start_timeout_ms()))));
+                        self.agent.abort(Some(maho_agent::ProviderRetryWatchdogAbortError::new(
+                            provider_retry_watchdog_abort_message(Some(timeout), self.agent.stream_start_timeout_ms()),
+                        ).into_abort_reason()));
                         continuation.await;
                     }
                 }
@@ -4503,12 +4611,13 @@ impl AgentSession {
                     maho_ai::types::CacheRetention::None
                 } else { maho_ai::types::CacheRetention::Short }), ..Default::default()
             };
-            let retry = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
+            // `sessionTitleRetryPolicy(settingsManager.getRetrySettings())`.
+            let retry = self.with_settings_manager(|manager| manager.get_retry_settings());
             let policy = maho_ai::utils::retry::RetryPolicy {
-                enabled: retry.as_ref().and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
-                max_retries: retry.as_ref().and_then(|settings| settings.get("maxRetries")).and_then(Value::as_u64).unwrap_or(3).min(1) as u32,
-                base_delay_ms: retry.as_ref().and_then(|settings| settings.get("baseDelayMs")).and_then(Value::as_u64).unwrap_or(2_000).min(2_000),
-                max_agent_delay_ms: retry.as_ref().and_then(|settings| settings.get("maxAgentDelayMs")).and_then(Value::as_u64),
+                enabled: retry.enabled,
+                max_retries: retry.max_retries.min(1),
+                base_delay_ms: retry.base_delay_ms.min(2_000),
+                max_agent_delay_ms: None,
                 random: Some(self.retry_random.clone()),
             };
             let response = maho_ai::utils::retry::retry_transient_call(|| async {
@@ -4979,14 +5088,8 @@ impl AgentSession {
 
     /// `settingsManager.getRetrySettings()` as the summarization retry policy.
     fn summarization_retry_policy(&self) -> maho_ai::utils::retry::RetryPolicy {
-        let retry = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
-        maho_ai::utils::retry::RetryPolicy {
-            enabled: retry.as_ref().and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
-            max_retries: retry.as_ref().and_then(|settings| settings.get("maxRetries")).and_then(Value::as_u64).unwrap_or(3) as u32,
-            base_delay_ms: retry.as_ref().and_then(|settings| settings.get("baseDelayMs")).and_then(Value::as_u64).unwrap_or(2_000),
-            max_agent_delay_ms: retry.as_ref().and_then(|settings| settings.get("maxAgentDelayMs")).and_then(Value::as_u64),
-            random: Some(self.retry_random.clone()),
-        }
+        let retry = self.with_settings_manager(|manager| manager.get_retry_settings());
+        maho_ai::utils::retry::RetryPolicy { random: Some(self.retry_random.clone()), ..retry }
     }
 
     /// senpi `_summarizationRetryCallbacks`: surface summarization retries as session events.
@@ -5207,6 +5310,11 @@ impl AgentSession {
         *lock(&self.inner.html_theme_resolver) = Some(resolver);
     }
 
+    /// Installs the renderers of the built-in tool definitions for HTML export.
+    pub fn set_html_built_in_tool_renderers(&self, lookup: crate::export_html::tool_renderer::ToolRendererLookup) {
+        *lock(&self.inner.html_built_in_tool_renderers) = Some(lookup);
+    }
+
     pub fn export_to_html_with_theme(
         &self, output_path: Option<&str>, theme_name: Option<&str>, render_theme: maho_ext_api::Theme,
         colors: Option<(std::collections::BTreeMap<String, String>, std::collections::BTreeMap<String, String>)>,
@@ -5220,9 +5328,11 @@ impl AgentSession {
         let renderers = runner.as_ref().map(|runner| runner.get_all_registered_tools().into_iter()
             .filter_map(|tool| runner.get_erased_tool_renderers(&tool.definition.name).map(|renderers| (tool.definition.name, renderers)))
             .collect::<std::collections::HashMap<_, _>>()).unwrap_or_default();
+        let built_in = lock(&self.inner.html_built_in_tool_renderers).clone();
         let mut renderer = crate::export_html::tool_renderer::ToolHtmlRenderer::new(
             crate::export_html::tool_renderer::ToolHtmlRendererDeps {
-                get_tool_renderer: Arc::new(move |name| renderers.get(name).cloned()),
+                get_tool_renderer: Arc::new(move |name| renderers.get(name).cloned()
+                    .or_else(|| built_in.as_ref().and_then(|built_in| built_in(name)))),
                 theme: render_theme, cwd: PathBuf::from(self.cwd()), width: None,
             },
         );
@@ -5453,6 +5563,13 @@ impl AgentSession {
     /// else the unique alias among callable tools), without activating anything.
     pub fn resolve_tool_call_name(&self, requested: &str) -> String {
         resolve_tool_name_alias(requested, self.callable_tool_names()).unwrap_or_else(|| requested.to_owned())
+    }
+
+    /// senpi `_emit(withResolvedToolName(event, name => this.resolveToolCallName(name)))` for a
+    /// published `message_update`: the `resolvedToolName` a `toolcall_start`/`toolcall_end` carries.
+    pub fn message_update_resolved_tool_name(&self, event: &maho_agent::types::AgentEvent) -> Option<String> {
+        crate::tool_call_display_name::with_resolved_tool_name(event.clone(), |name| self.resolve_tool_call_name(name))
+            .resolved_tool_name
     }
 
     /// Active tool names plus search-exposed lazy tools; senpi also appends the tool-search catalog,
@@ -6581,8 +6698,8 @@ impl AgentSession {
     ///
     /// Adaptations: the resident-store rehydration and Cursor admission belong to other parity rows;
     /// the refreshed prompt is the agent's live prompt, which `rebuild_system_prompt` keeps equal to
-    /// `override ?? base`; a required compaction that fails aborts the run, the native equivalent of
-    /// the upstream callback throwing `RequiredCompactionError`.
+    /// `override ?? base`; a required compaction that fails ends the run through the loop's
+    /// preparation failure, the native form of the upstream callback throwing `RequiredCompactionError`.
     fn install_agent_next_turn_refresh(&self) {
         let previous: Option<maho_agent::PrepareNextTurnWithContext> = self.agent.prepare_next_turn_with_context().or_else(|| {
             self.agent.prepare_next_turn().map(|without| -> maho_agent::PrepareNextTurnWithContext {
@@ -6596,7 +6713,10 @@ impl AgentSession {
             Box::pin(async move {
                 let inner = weak.upgrade()?;
                 let session = AgentSession { inner };
-                let compacted_before_callback = session.compact_before_next_admission(&turn).await;
+                let compacted_before_callback = match session.compact_before_next_admission(&turn).await {
+                    Ok(compacted) => compacted,
+                    Err(failure) => return Some(maho_agent::types::AgentLoopTurnUpdate { failure: Some(failure), ..Default::default() }),
+                };
                 let messages = if compacted_before_callback { session.messages() } else { turn.context.messages.clone() };
                 let post_compaction_turn = maho_agent::types::PrepareNextTurnContext {
                     context: maho_agent::types::AgentContext { messages, ..turn.context.clone() }, ..turn.clone()
@@ -6605,10 +6725,14 @@ impl AgentSession {
                     Some(previous) => previous(post_compaction_turn.clone(), signal.clone()).await,
                     None => None,
                 };
+                if previous_snapshot.as_ref().is_some_and(|snapshot| snapshot.failure.is_some()) { return previous_snapshot; }
                 let mut previous_context = previous_snapshot.as_ref().and_then(|snapshot| snapshot.context.clone())
                     .unwrap_or_else(|| post_compaction_turn.context.clone());
                 // The previous callback may await while continuation work is enqueued; re-sample once.
-                let compacted_after_callback = !compacted_before_callback && session.compact_before_next_admission(&turn).await;
+                let compacted_after_callback = !compacted_before_callback && match session.compact_before_next_admission(&turn).await {
+                    Ok(compacted) => compacted,
+                    Err(failure) => return Some(maho_agent::types::AgentLoopTurnUpdate { failure: Some(failure), ..Default::default() }),
+                };
                 if compacted_after_callback {
                     let post_late_compaction_turn = maho_agent::types::PrepareNextTurnContext {
                         context: maho_agent::types::AgentContext { messages: session.messages(), ..turn.context.clone() }, ..turn.clone()
@@ -6627,6 +6751,7 @@ impl AgentSession {
                             thinking_level: late.thinking_level.or(base.thinking_level),
                             thinking_selection: late.thinking_selection.or(base.thinking_selection),
                             abort_server_side_fallback: late.abort_server_side_fallback.or(base.abort_server_side_fallback),
+                            failure: late.failure.or(base.failure),
                         },
                         None => maho_agent::types::AgentLoopTurnUpdate { context: Some(context.clone()), ..base },
                     });
@@ -6643,6 +6768,7 @@ impl AgentSession {
                     thinking_level: Some(state.thinking_level),
                     thinking_selection: Some(state.thinking_selection.clone()),
                     abort_server_side_fallback: previous_snapshot.and_then(|snapshot| snapshot.abort_server_side_fallback),
+                    failure: None,
                 })
             })
         })));
@@ -6651,25 +6777,50 @@ impl AgentSession {
     /// `compactBeforeNextAdmission` inside `_installAgentNextTurnRefresh`: threshold compaction runs
     /// only when this prepare precedes an actual provider admission (a tool continuation or queued
     /// messages). Returns whether a compaction landed.
-    async fn compact_before_next_admission(&self, turn: &maho_agent::types::PrepareNextTurnContext) -> bool {
+    async fn compact_before_next_admission(&self, turn: &maho_agent::types::PrepareNextTurnContext) -> Result<bool, String> {
         let model = self.model();
         // Cursor rebuilds the full conversation each hop; compacting mid-run poisons its conversation id.
         if model.provider == "cursor" || model.provider == "cursor-cli-oauth" || model.context_window == 0 {
-            return false;
+            return Ok(false);
         }
         if turn.tool_results.is_empty() && !self.agent.has_queued_messages() {
-            return false;
+            return Ok(false);
         }
         let latest_compaction = || self.with_session_manager(|manager|
             crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id()))
                 .and_then(|entry| entry.get("id").cloned()));
         let before = latest_compaction();
-        if let Err(error) = self.revalidate_continuation_admission(false).await {
-            self.emit(AgentSessionEvent::ContinuationError { error_message: error.clone() });
-            self.agent.abort(Some(maho_ai::utils::abort::AbortReason::new("RequiredCompactionError", error)));
-            return false;
+        if self.revalidate_continuation_admission(false).await.is_err() {
+            // senpi: the callback throws `RequiredCompactionError`; the run ends with an error
+            // assistant message that the agent_end handler recognises for recovery.
+            let error = RequiredCompactionError.to_string();
+            let mut state = self.state();
+            state.required_compaction_turn_error = Some(error.clone());
+            if self.agent.has_queued_messages() { state.required_compaction_admission_error = Some(error.clone()); }
+            return Err(error);
         }
-        latest_compaction() != before
+        Ok(latest_compaction() != before)
+    }
+
+    /// senpi `_isRequiredCompactionError`.
+    fn is_required_compaction_error(&self, message: &maho_ai::types::AssistantMessage) -> bool {
+        message.stop_reason == StopReason::Error
+            && self.state().required_compaction_turn_error.as_deref().is_some_and(|error| message.error_message.as_deref() == Some(error))
+    }
+
+    /// Whether a required-compaction error turn still needs threshold compaction (senpi
+    /// `_getRequiredAutoCompactionReason` for that turn's error message).
+    fn required_compaction_still_needed(&self, message: &maho_ai::types::AssistantMessage) -> Result<bool, String> {
+        if !self.is_required_compaction_error(message) || !self.auto_compaction_enabled() || self.is_compaction_delegated() {
+            return Ok(false);
+        }
+        let model = self.model();
+        let resolved = self.get_compaction_settings(Some(&model))?;
+        if !resolved.enabled { return Ok(false); }
+        let reserve = if resolved.reserve_scaling_enabled {
+            crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
+        } else { resolved.reserve_tokens as u64 };
+        Ok(self.threshold_context_tokens(message)? > model.context_window.saturating_sub(reserve))
     }
 
     fn install_after_tool_call_hook(&self) {
@@ -7176,25 +7327,86 @@ impl AgentSession {
             match options.deliver_as { Some(maho_ext_api::DeliverAs::FollowUp) => self.agent.follow_up(agent_message), _ => self.agent.steer(agent_message) }
         } else if self.is_streaming() {
             self.state().pending_custom_messages.push(message);
+        } else if options.trigger_turn {
+            let guard = self.work_barrier.begin();
+            let generation = self.user_abort_generation.load(Ordering::SeqCst);
+            let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
+            let session = self.clone();
+            let deliver_as = options.deliver_as;
+            tokio::spawn(async move {
+                if session.state().disposed || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation {
+                    drop(guard);
+                    return;
+                }
+                if let Err(error) = session.trigger_custom_message_turn(message, deliver_as, generation).await {
+                    session.emit(AgentSessionEvent::ContinuationError { error_message: error });
+                }
+                drop(guard);
+            });
         } else {
             self.append_extension_custom_message(message).map_err(maho_ext_api::ExtensionFailure::new)?;
-            if options.trigger_turn {
-                let guard = self.work_barrier.begin();
-                let generation = self.user_abort_generation.load(Ordering::SeqCst);
-                let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
-                let session = self.clone();
-                tokio::spawn(async move {
-                    if session.state().disposed || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation {
-                        drop(guard);
-                        return;
-                    }
-                    if let Err(error) = session.continue_session_internal(Some(generation)).await {
-                        session.emit(AgentSessionEvent::ContinuationError { error_message: error });
-                    }
-                    drop(guard);
-                });
-            }
         }
+        Ok(())
+    }
+
+    /// senpi `sendCustomMessage` with `triggerTurn` while idle: enforce compaction before the
+    /// provider, emit `before_agent_start` for the message text, apply its result, run the final
+    /// provider admission, then prompt the agent with the batch. A user abort or an admission
+    /// rejection inside that window queues the message for later delivery instead of dropping it.
+    async fn trigger_custom_message_turn(
+        &self,
+        message: maho_agent::harness::messages::CustomMessage,
+        deliver_as: Option<maho_ext_api::DeliverAs>,
+        user_abort_generation: u64,
+    ) -> Result<(), String> {
+        let _admission = self.prompt_admission.lock().await;
+        let _work = self.work_barrier.begin();
+        let app_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message.clone()));
+        let queue_trigger_for_later = || match deliver_as {
+            Some(maho_ext_api::DeliverAs::FollowUp) => self.agent.follow_up(app_message.clone()),
+            _ => self.agent.steer(app_message.clone()),
+        };
+        // senpi returns without delivering when a user abort landed while waiting for session work.
+        if user_abort_generation != self.user_abort_generation.load(Ordering::SeqCst) { return Ok(()); }
+        self.state().user_aborted = false;
+        let mut messages = vec![app_message.clone()];
+        self.state().trigger_turn_admission_abort_generation = Some(user_abort_generation);
+        let admitted: Result<bool, String> = async {
+            self.revalidate_continuation_admission(false).await?;
+            let prompt = match &message.content {
+                maho_agent::harness::messages::CustomMessageContent::Text(text) => text.clone(),
+                maho_agent::harness::messages::CustomMessageContent::Blocks(blocks) => blocks.iter()
+                    .filter_map(|block| match block { maho_ai::types::ContentBlock::Text(text) => Some(text.text.as_str()), _ => None })
+                    .collect::<String>(),
+            };
+            let base_system_prompt = self.state().base_system_prompt.clone();
+            let before = {
+                let mut runner = self.extension_runner.lock().await.clone();
+                match runner.as_mut() { Some(runner) => runner.emit_before_agent_start(maho_ext_api::BeforeAgentStartEvent {
+                    prompt, images: None, system_prompt: base_system_prompt,
+                    system_prompt_options: self.extension_system_prompt_options(),
+                }).await.map_err(|error| error.to_string())?, None => None }
+            };
+            if user_abort_generation != self.user_abort_generation.load(Ordering::SeqCst) { return Ok(false); }
+            self.apply_before_agent_start_result(&mut messages, before)?;
+            self.enforce_final_provider_admission(&messages).await?;
+            Ok::<bool, String>(user_abort_generation == self.user_abort_generation.load(Ordering::SeqCst))
+        }.await;
+        self.state().trigger_turn_admission_abort_generation = None;
+        match admitted {
+            Ok(true) => {}
+            Ok(false) => { queue_trigger_for_later(); return Ok(()); }
+            Err(error) => { queue_trigger_for_later(); return Err(error); }
+        }
+        self.runtime_messages();
+        self.agent_run_active.store(true, Ordering::SeqCst);
+        self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
+        self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
+        self.finish_provider_turn().await?;
+        self.flush_pending_bash_messages();
+        drop(_work);
+        drop(_admission);
+        self.emit_agent_settled().await;
         Ok(())
     }
 
@@ -12338,9 +12550,9 @@ mod tests {
         drop(admission);
         tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_for_idle()).await.expect("settled scheduled work");
         assert!(session.state().user_aborted);
-        assert_eq!(session.messages().len(), 1);
-        assert_eq!(session.messages()[0].role(), "custom");
-        assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 1);
+        assert!(session.messages().is_empty());
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+        assert!(!session.agent.has_queued_messages());
     }
 
     #[tokio::test]
