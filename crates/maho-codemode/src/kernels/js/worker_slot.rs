@@ -1,6 +1,6 @@
 use serde_json::Value;
 use crate::kernels::shared::subprocess_process::ProcessError;
-use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, worker_startup::{WorkerStartupOptions, resolve_js_worker_entry_path}, interrupt_bounds::{WorkerRetirement, WORKER_TERMINATE_DEADLINE_MS, retire_worker}};
+use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, worker_startup::{WorkerStartupOptions, explicit_or_resolved_worker_entry}, interrupt_bounds::{WorkerRetirement, WORKER_TERMINATE_DEADLINE_MS, retire_worker}};
 
 pub struct WorkerSlot {
     worker: Option<WorkerHost>,
@@ -23,7 +23,7 @@ impl WorkerSlot {
         if self.generation == 0 { self.generation = 1; }
         options.generation = self.generation;
         if signal.aborted() {return Err(ProcessError::Startup("JavaScript worker startup was cancelled".into()));}
-        let primary=resolve_js_worker_entry_path(options.worker_entry,&options.environment).map_err(|error|ProcessError::Startup(error.to_string())).and_then(|entry|WorkerHost::spawn(&entry,options.cwd,options.parallel_pool_width,JavaScriptKernelMode::Worker));
+        let primary=explicit_or_resolved_worker_entry(&options).and_then(|entry|WorkerHost::spawn(&entry,options.cwd,options.parallel_pool_width,JavaScriptKernelMode::Worker));
         if let Ok(worker)=primary {
             self.worker=Some(worker);
             let initialized=self.worker.as_mut().expect("published worker").initialize(&options,signal).await;

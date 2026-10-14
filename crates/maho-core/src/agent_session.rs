@@ -3487,9 +3487,9 @@ impl AgentSession {
             self.record_rejected_model_change(model, detail.clone(), Some(budget));
             return Err(detail);
         }
-        if self.state().uses_default_stream_function
-            && let Err(detail) = self.get_required_request_auth(&model).await
-        {
+        // senpi `_setModel` (agent-session.ts:5148): refuse only when `checkAuth` finds no auth.
+        if !matches!(self.model_runtime().check_auth(&model.provider, None).await, Ok(Some(_))) {
+            let detail = format!("No API key for {}/{}", model.provider, model.id);
             self.record_rejected_model_change(model, detail.clone(), None);
             return Err(detail);
         }
@@ -8714,9 +8714,12 @@ mod tests {
             cwd: Some(cwds[0].clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), model: Some(model),
             session_manager: Some(SessionManager::in_memory(&cwds[0], None, None)), tools: Some(Vec::new()), ..Default::default()
         }).await.expect("session").session;
-        // Project-scoped only: user-level ~/.agents skills on the host are outside this test.
-        let skill_names = |session: &AgentSession| session.loaded_skills().expect("skills").skills.into_iter().filter(|skill| skill.source_info.scope == crate::source_info::SourceScope::Project).map(|skill| skill.name).collect::<Vec<_>>();
-        assert_eq!(skill_names(&session), ["first-skill"]);
+        // Only this test's fixture skills, each with its project scope: host user skills are outside it.
+        let skill_names = |session: &AgentSession| session.loaded_skills().expect("skills").skills.into_iter()
+            .filter(|skill| ["first-skill", "second-skill"].contains(&skill.name.as_str()))
+            .map(|skill| (skill.name, skill.source_info.scope)).collect::<Vec<_>>();
+        let project = |name: &str| vec![(name.to_owned(), crate::source_info::SourceScope::Project)];
+        assert_eq!(skill_names(&session), project("first-skill"));
         let header = |id: &str, cwd: &str| format!("{}\n", serde_json::json!({"type":"session","version":3,"id":id,"timestamp":"2026-01-01T00:00:00Z","cwd":cwd}));
         let gone = dir.path().join("gone").to_string_lossy().into_owned();
         let missing = dir.path().join("missing.jsonl");
@@ -8728,7 +8731,7 @@ mod tests {
         std::fs::write(&target, header("second-cwd", &cwds[1])).expect("second header");
         assert!(session.switch_session(&target.to_string_lossy()).await.expect("switch"));
         assert_eq!(session.cwd(), cwds[1]);
-        assert_eq!(skill_names(&session), ["second-skill"]);
+        assert_eq!(skill_names(&session), project("second-skill"));
         session.dispose().await;
     }
 

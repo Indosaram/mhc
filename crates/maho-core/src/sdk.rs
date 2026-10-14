@@ -120,7 +120,8 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), providers: None, ..Default::default()
     }));
     let registry = options.model_registry.take().unwrap_or_else(|| ModelRegistry::new(runtime.clone()));
-    let settings = options.settings_manager.take().unwrap_or_else(|| SettingsManager::create(&cwd, &agent_dir, &crate::config::home_dir(), false));
+    // senpi sdk.ts `SettingsManager.create(cwd, agentDir)`: `projectTrusted` defaults to true.
+    let settings = options.settings_manager.take().unwrap_or_else(|| SettingsManager::create(&cwd, &agent_dir, &crate::config::home_dir(), true));
     runtime.set_settings_manager(&settings);
     let mut manager = options.session_manager.take().unwrap_or_else(|| SessionManager::create(&cwd, None, None));
     crate::session_cwd::assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
@@ -281,7 +282,9 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         agent, session_manager: manager, settings_manager: settings, cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()),
         fallback_now: None, retry_random: None, scoped_models: options.scoped_models, favorite_models: options.favorite_models,
         flag_values, custom_tools: options.custom_tools, model_runtime: Some(runtime), model_registry: Some(registry),
-        uses_default_stream_function: Some(true), initial_active_tool_names: Some(selected),
+        // senpi sdk.ts:425 hands the Agent its own `streamFn` closure, so `agent.streamFunction ===
+        // streamSimple` is false for SDK sessions (agent-session.ts:1243).
+        uses_default_stream_function: Some(false), initial_active_tool_names: Some(selected),
         default_tool_names, eval_only_tool_names: None, allowed_tool_names, excluded_tool_names: options.exclude_tools,
         base_tools_override: Some(base_tools.clone()), session_start_event,
         auto_title_sessions: options.auto_title_sessions,

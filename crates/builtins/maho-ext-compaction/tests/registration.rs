@@ -242,7 +242,7 @@ async fn run_native_scenario(cancel: bool, threshold: bool) {
 
 async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     use maho_core::agent_session::{AgentSession, AgentSessionConfig};
-    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider, faux_provider};
+    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider};
     let temp = tempfile::tempdir().expect("native compaction scenario invariant");
     let cwd = temp.path().to_string_lossy().into_owned();
     let idle_variant=matches!(variant,"idle-shutdown"|"idle-model-change"|"idle-stale-runner");
@@ -337,10 +337,22 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     }
     let credentials = maho_core::auth_storage::AuthStorage::in_memory(Default::default());
     credentials.set(&model.provider,Some(serde_json::json!({"type":"api_key","key":"faux"}))).expect("native compaction scenario invariant");
-    let native = faux_provider(RegisterFauxProviderOptions { api: Some(model.api.clone()), provider: Some(model.provider.clone()), tokens_per_second: Some(0.), ..Default::default() });
-    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-        models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(vec![native.provider]), ..Default::default()
+    // senpi test/suite/harness.ts:150-175: the faux stream is an API-registry entry, and the provider is
+    // registered over it with a configured key, so request auth resolves that key (no faux base auth).
+    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(Vec::new()), ..Default::default()
     });
+    runtime.register_provider(&model.provider, maho_core::provider_composer::ProviderConfigInput {
+        config: maho_core::model_config_schema::ModelsJsonProvider {
+            base_url: Some(model.base_url.clone()), api_key: Some("faux".into()), api: Some(model.api.clone()),
+            models: Some(vec![maho_core::model_config_schema::ModelsJsonModel {
+                id: model.id.clone(), api: Some(model.api.clone()), base_url: Some(model.base_url.clone()), reasoning: Some(model.reasoning),
+                input: Some(model.input.clone()), cost: Some(model.cost.clone()), context_window: Some(model.context_window as f64),
+                max_tokens: Some(model.max_tokens as f64), compat: model.compat.clone().map(|compat| compat.0), ..Default::default()
+            }]),
+            ..Default::default()
+        }, ..Default::default()
+    }).expect("configured faux provider");
     let mut manager = maho_core::session_manager::SessionManager::in_memory(&cwd,None,None);
     manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(if variant=="overflow" {2000} else if idle_variant {25000} else {30000}),"timestamp":0}));
     manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
