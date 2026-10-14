@@ -82,6 +82,18 @@ fn write_work(root: &std::path::Path, checklist: &str) -> Result<std::path::Path
     Ok(plan)
 }
 
+#[test]
+fn the_pinned_start_work_disabled_flag_suppresses_registration() {
+    let root = std::env::temp_dir();
+    let runtime = ExtensionRuntime::default();
+    runtime.set_flag(maho_omo_start_work_continuation::index::START_WORK_CONTINUATION_DISABLED_FLAG, FlagValue::Boolean(true));
+    let mut api = ExtensionApi::new(LoadedExtension::new("continuation", root, SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    maho_omo_start_work_continuation::index::StartWorkContinuationComponent::default().register(&mut api);
+    assert!(api.registered.flags.iter().any(|flag| flag.name == maho_omo_start_work_continuation::index::START_WORK_CONTINUATION_DISABLED_FLAG));
+    assert!(api.registered.handlers.is_empty());
+}
+
 #[tokio::test]
 async fn no_boulder_state_sends_no_message() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
