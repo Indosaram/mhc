@@ -359,6 +359,11 @@ pub struct InteractiveMode {
     pub terminal_title: Option<String>,
     /// senpi `ui.terminal.write("\x07")` on ask-user question arrival, written by the host on the next frame.
     pending_bell: bool,
+    /// senpi `activeToolExecutions` (insertion-ordered) and `activeToolExecutionTerminalTitle`.
+    active_tool_executions: Vec<(String, String)>,
+    active_tool_execution_terminal_title: Option<String>,
+    /// senpi `blockingQuestionHeader`.
+    blocking_question_header: Option<String>,
     markdown_transformers: Vec<crate::components::markdown_transform::MarkdownTransformer>,
     /// The theme the Mermaid transformer styles diagrams with; senpi reads its live `theme` proxy.
     mermaid_theme: Rc<RefCell<Theme>>,
@@ -1014,8 +1019,54 @@ impl InteractiveMode {
         }
     }
 
-    pub(crate) fn terminal_settings(&self) -> (bool, bool, bool) {
+    /// senpi `getShowHardwareCursor` / `getClearOnShrink` / `getShowTerminalProgress`, read live so
+    /// `/settings` changes reach the running renderer.
+    pub fn terminal_settings(&self) -> (bool, bool, bool) {
         self.session.with_settings_manager(|settings| (settings.get_show_hardware_cursor(), settings.get_clear_on_shrink(), settings.get_show_terminal_progress()))
+    }
+
+    /// senpi `getFullscreenExitOutput`.
+    pub fn fullscreen_exit_output(&self) -> crate::components::settings_selector::FullscreenExitOutput {
+        use crate::components::settings_selector::FullscreenExitOutput;
+        match self.session.with_settings_manager(|settings| settings.get_string("fullscreenExitOutput")).as_deref() {
+            Some("resume-hint") => FullscreenExitOutput::ResumeHint,
+            _ => FullscreenExitOutput::Transcript,
+        }
+    }
+
+    /// senpi's OSC 9;4 progress state: on from `agent_start`/`turn_start`/`compaction_start` until
+    /// `agent_end`/`compaction_end`, only while `showTerminalProgress` is on.
+    pub fn terminal_progress_active(&self) -> bool {
+        let (_, _, show) = self.terminal_settings();
+        show && (!self.agent_idle || self.host_is_compacting())
+    }
+
+    /// senpi `getNormalTerminalTitle`.
+    fn get_normal_terminal_title(&self) -> String {
+        let cwd = self.host_cwd();
+        let cwd_basename = std::path::Path::new(&cwd).file_name().map_or_else(|| cwd.clone(), |name| name.to_string_lossy().into_owned());
+        let app_title = maho_core::config::app_title();
+        match self.host_session_name() {
+            Some(session_name) if !session_name.is_empty() => format!("{app_title} - {session_name} - {cwd_basename}"),
+            _ => format!("{app_title} - {cwd_basename}"),
+        }
+    }
+
+    /// senpi `applyTerminalTitle`'s precedence: the active tool execution, the shown or blocking
+    /// question header, the extension title, then the normal title.
+    pub fn terminal_window_title(&self) -> String {
+        let question_header = self.questions.shown().and_then(|shown| shown.request.questions.first()).map(|question| question.header.clone())
+            .or_else(|| self.blocking_question_header.clone());
+        self.active_tool_execution_terminal_title.clone()
+            .or_else(|| question_header.map(|header| format!("? {header}")))
+            .or_else(|| self.terminal_title.clone())
+            .unwrap_or_else(|| self.get_normal_terminal_title())
+    }
+
+    /// senpi `handleToolExecutionStart` / `handleToolExecutionEnd` / `clearActiveToolExecutionStatus`:
+    /// the first still-running execution's label titles the terminal.
+    fn refresh_active_tool_execution_terminal_title(&mut self) {
+        self.active_tool_execution_terminal_title = self.active_tool_executions.first().map(|(_, label)| format!("{} - {label}", maho_core::config::app_title()));
     }
     fn keybindings(&self) -> maho_tui::keybindings::KeybindingsManager {
         maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone()
@@ -1108,7 +1159,7 @@ impl InteractiveMode {
             if let Some(session) = blocked_session() { session.emit_extension_event(channel, data); }
         }));
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1877,7 +1928,9 @@ impl InteractiveMode {
         if let Some(data) = self.filter_terminal_input(data) { self.handle_filtered_input_at(&data, now_ms); }
     }
 
-    fn filter_terminal_input(&self, data: &str) -> Option<String> {
+    /// senpi's extension `onTerminalInput` listeners (`ui.addInputListener`), which run for all
+    /// input before focus delivery whichever component is focused.
+    pub fn filter_terminal_input(&self, data: &str) -> Option<String> {
         let listeners = self.extension_ui.terminal_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let mut data = data.to_owned();
         for listener in listeners {
@@ -2094,7 +2147,11 @@ impl InteractiveMode {
 
     pub async fn handle_runtime_input(&mut self, data: &str, now_ms: u64) -> Result<(), String> {
         let Some(data) = self.filter_terminal_input(data) else { return Ok(()); };
-        let data = data.as_str();
+        self.handle_filtered_runtime_input(&data, now_ms).await
+    }
+
+    /// [`Self::handle_runtime_input`] for input the extension terminal-input listeners already saw.
+    pub async fn handle_filtered_runtime_input(&mut self, data: &str, now_ms: u64) -> Result<(), String> {
         if self.share.is_some() || self.ui_dialog.is_some() || self.rename_input.is_some() || (self.question.is_some() && self.async_question_widget.is_none()) { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
         let keys = self.keybindings();
         if self.editor.on_extension_shortcut.as_mut().is_some_and(|shortcut| shortcut(data)) { return Ok(()); }
@@ -3497,7 +3554,7 @@ impl InteractiveMode {
 
     /// senpi `handleDebugCommand`: dump the current render, visible widths and the
     /// session messages to the debug log so a broken frame can be inspected.
-    fn handle_debug_command(&mut self) {
+    pub fn handle_debug_command(&mut self) {
         let (columns, rows) = self.terminal_dimensions.get();
         let width = usize::from(columns);
         let lines = self.render(width);
@@ -4182,7 +4239,7 @@ impl InteractiveMode {
         let closed = self.question_reply.borrow().as_ref().is_some_and(tokio::sync::oneshot::Sender::is_closed);
         if closed || (self.blocking_question && sent) {
             self.question_reply.borrow_mut().take();
-            if self.blocking_question { self.blocking_question = false; self.question = None; }
+            if self.blocking_question { self.blocking_question = false; self.blocking_question_header = None; self.question = None; }
         }
         let abandoned: Vec<String> = self.questions.order().iter().filter(|id| self.questions.get(id).is_some_and(|entry| !entry.replies.is_empty() && entry.replies.iter().all(tokio::sync::oneshot::Sender::is_closed))).cloned().collect();
         for id in abandoned {
@@ -4348,6 +4405,7 @@ impl InteractiveMode {
                 *self.question_reply.borrow_mut() = Some(reply); let answer = self.question_reply.clone();
                 self.blocking_question = true;
                 self.notify_question_arrival();
+                self.blocking_question_header = request.questions.first().map(|question| question.header.clone());
                 let mut component_options = crate::components::ask_user_question::AskUserQuestionOptions::new(self.theme.clone());
                 component_options.now_ms = self.clock.elapsed().as_millis() as u64;
                 component_options.timeout_ms = options.dialog.timeout_ms;
@@ -4516,6 +4574,7 @@ impl InteractiveMode {
         }));
         self.questions.surface = crate::question_registry::QuestionSurface::Expanded;
         self.blocking_question = false;
+        self.blocking_question_header = None;
         self.async_question_widget = None;
         self.question = Some(crate::components::ask_user_question::AskUserQuestionComponent::new(request, Box::new(move |response| { *result.borrow_mut() = Some(to_extension_response(response)); }), options));
     }
@@ -4535,7 +4594,7 @@ impl InteractiveMode {
         if let Some(mut entry) = self.questions.finish(request_id) {
             for reply in entry.replies.drain(..) { let _ = reply.send(response.clone()); }
         }
-        if was_shown { self.question = None; self.blocking_question = false; }
+        if was_shown { self.question = None; self.blocking_question = false; self.blocking_question_header = None; }
         self.refresh_async_question_widget();
     }
 
@@ -4655,8 +4714,8 @@ impl InteractiveMode {
 
     pub fn handle_event(&mut self, event: &AgentEvent) {
         match event {
-            AgentEvent::AgentStart => { self.agent_idle = false; self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0); }
-            AgentEvent::AgentEnd { .. } => { self.agent_idle = true; self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.working_started_ms = None; }
+            AgentEvent::AgentStart => { self.agent_idle = false; self.active_tool_executions.clear(); self.refresh_active_tool_execution_terminal_title(); self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0); }
+            AgentEvent::AgentEnd { .. } => { self.agent_idle = true; self.active_tool_executions.clear(); self.refresh_active_tool_execution_terminal_title(); self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.working_started_ms = None; }
             AgentEvent::MessageStart { message } => {
                 if message.role() == "user" {
                     let value = serde_json::to_value(message).expect("serializable agent message");
@@ -4722,6 +4781,9 @@ impl InteractiveMode {
                 }
             }
             AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+                self.active_tool_executions.retain(|(id, _)| id != tool_call_id);
+                self.active_tool_executions.push((tool_call_id.clone(), crate::working_status::format_active_tool_working_label(tool_name, args)));
+                self.active_tool_execution_terminal_title = self.active_tool_executions.last().map(|(_, label)| format!("{} - {label}", maho_core::config::app_title()));
                 self.tool_args_reveal.finish(tool_call_id); self.tool_partial_json.remove(tool_call_id);
                 let component = self.tool_component(tool_name, tool_call_id, args.clone());
                 let mut component = component.borrow_mut();
@@ -4736,6 +4798,9 @@ impl InteractiveMode {
                 }
             }
             AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+                let before = self.active_tool_executions.len();
+                self.active_tool_executions.retain(|(id, _)| id != tool_call_id);
+                if self.active_tool_executions.len() != before { self.refresh_active_tool_execution_terminal_title(); }
                 self.tool_reveal.finish(tool_call_id, self.clock.elapsed().as_secs_f64() * 1000.0);
                 let component = self.tool_component(tool_name, tool_call_id, serde_json::json!({}));
                 component.borrow_mut().update_result(Self::tool_result(result, *is_error), false);

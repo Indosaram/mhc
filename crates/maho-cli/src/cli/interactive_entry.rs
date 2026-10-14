@@ -98,11 +98,14 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         mode.set_fd_path(fd_path);
     }
     mode.show_startup_warnings();
-    let fullscreen = parsed.tui_mode.as_deref() == Some("fullscreen");
+    // senpi `options.tuiMode ?? settingsManager.getTuiMode()`: the flag, then the persisted setting.
+    let fullscreen = parsed.tui_mode.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("tuiMode"))).as_deref() == Some("fullscreen");
     let document_lines = Rc::new(RefCell::new(Vec::<String>::new()));
     let dock_lines = Rc::new(RefCell::new(Vec::<String>::new()));
     let rendered = Rc::new(RefCell::new(RenderedMode(Vec::new())));
-    let MountedScreen { mut screen, mut component, mut transcript } = mount_screen(&session, if fullscreen { TuiMode::Fullscreen } else { TuiMode::Regular }, theme, &document_lines, &dock_lines, &rendered);
+    // senpi `onRightClickPaste`: the alternate screen flags the press; the loop reads the clipboard.
+    let right_click_paste = Rc::new(Cell::new(false));
+    let MountedScreen { mut screen, mut component, mut transcript } = mount_screen(&session, if fullscreen { TuiMode::Fullscreen } else { TuiMode::Regular }, theme, mode.terminal_settings().0, &right_click_paste, &document_lines, &dock_lines, &rendered);
     let mut fullscreen = fullscreen;
     // senpi focuses the editor (`ui.setFocus(this.editor)`); a focused editor emits the cursor
     // marker the renderer turns into the per-frame hardware cursor restore (row move + absolute
@@ -141,6 +144,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     screen.base_mut().after_terminal_start(&mut terminal);
     mode.resume_question_mouse_capture(&mut screen, &mut terminal);
     mode.bind_terminal_theme(&mut screen, theme_setting);
+    let mut progress_active = false;
     let result = async {
         // senpi main.ts:1355-1370 `PI_STARTUP_BENCHMARK`: once the TUI is initialized, give stdin a
         // brief chance to consume terminal query replies, then stop instead of running the loop.
@@ -152,10 +156,13 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             terminal.pump(150).map_err(|error| error.to_string())?;
             return Ok(());
         }
+        let progress_active = &mut progress_active;
         if let Some(text) = initial.initial_message { mode.enqueue_initial_message(&text, initial.initial_images); }
         for text in &parsed.messages { mode.enqueue_submission(text, None); }
         let clock = std::time::Instant::now();
         let mut installed_native_renderers = Vec::new();
+        // senpi `applyTerminalTitle` / `setProgress`: written only when the value changes.
+        let mut applied_title: Option<String> = None;
         while !mode.shutdown_requested {
             #[cfg(unix)]
             {
@@ -198,9 +205,20 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             let chunks = std::mem::take(&mut *input.borrow_mut());
             let had_input = !chunks.is_empty();
             for chunk in chunks {
-                if let Some(data) = route_terminal_input(&mut screen, &mut terminal, &component, &chunk, now) {
-                    mode.handle_runtime_input(&data, now).await?;
+                if let Some(data) = route_terminal_input(&mut screen, &mut terminal, &mut mode, &component, &chunk, now) {
+                    mode.handle_filtered_runtime_input(&data, now).await?;
                 }
+            }
+            // senpi `handleRightClickPaste`: paste into the component that was focused at the
+            // press, unless focus moved while the clipboard was read.
+            if right_click_paste.replace(false)
+                && let Some(target) = screen.base().get_focused_component()
+                && let Some(text) = crate::utils::clipboard::read_clipboard_text().await
+                && screen.base().get_focused_component().is_some_and(|focused| Rc::ptr_eq(&focused, &target))
+            {
+                let paste = format!("\x1b[200~{text}\x1b[201~");
+                if Rc::ptr_eq(&target, &component) { mode.handle_filtered_runtime_input(&paste, now).await?; } else { target.borrow_mut().handle_input(&paste); }
+                screen.base_mut().request_render(false, now);
             }
             if let Some(request) = mode.take_terminal_request() {
                 // senpi `handleCtrlZ` / `handleOpenExternalEditor`: release the terminal (and the
@@ -248,7 +266,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
                     screen.after_terminal_stop(&mut terminal, true);
                     screen.base_mut().reset_for_stop();
                     mouse_enabled = next_mouse_enabled;
-                    let mounted = mount_screen(&session, next_mode, mode.active_theme().clone(), &document_lines, &dock_lines, &rendered);
+                    let mounted = mount_screen(&session, next_mode, mode.active_theme().clone(), screen.base().get_show_hardware_cursor(), &right_click_paste, &document_lines, &dock_lines, &rendered);
                     (screen, component, transcript) = (mounted.screen, mounted.component, mounted.transcript);
                     fullscreen = next_mode == TuiMode::Fullscreen;
                     screen.base_mut().prepare_start();
@@ -264,6 +282,15 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             if let Some(transcript) = &transcript { transcript.borrow_mut().set_scrollbar(fullscreen_scrollbar(&session)); }
             mode.poll_terminal_theme(&mut screen, &mut terminal);
             mode.pump_turn().await;
+            // senpi `showHardwareCursor` / `clearOnShrink` (re-applied on settings changes), the
+            // OSC 9;4 progress indicator and the window title.
+            let (show_hardware_cursor, clear_on_shrink, _) = mode.terminal_settings();
+            screen.base_mut().set_show_hardware_cursor(show_hardware_cursor);
+            screen.base_mut().set_clear_on_shrink(clear_on_shrink);
+            let progress = mode.terminal_progress_active();
+            if progress != *progress_active { terminal.set_progress(progress); *progress_active = progress; }
+            let title = mode.terminal_window_title();
+            if applied_title.as_deref() != Some(title.as_str()) { terminal.set_title(&title); applied_title = Some(title); }
             if fullscreen {
                 let (document, dock) = mode.render_split(usize::from(terminal.columns()));
                 *document_lines.borrow_mut() = document;
@@ -288,14 +315,38 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         }
         Ok(())
     }.await;
-    // senpi `stopInteractiveTui` -> `TuiBase.stop()`: release mouse leases, disable color-scheme
-    // notifications, hand terminal modes back, park the cursor below the last frame, show it.
+    // senpi `shutdown`: drain in-flight Kitty key release events before stopping, so escape
+    // sequences cannot leak to the parent shell over slow SSH (signal and interactive quit alike).
+    terminal.drain_input(1000, 50);
+    // senpi `stop()`: clear the progress indicator.
+    if progress_active { terminal.set_progress(false); }
+    // senpi `stopInteractiveTui`: the "transcript" exit output switches fullscreen to the regular
+    // renderer (without starting it) and renders once, so the transcript lands in scrollback.
+    if fullscreen && mode.fullscreen_exit_output() == maho_interactive::components::settings_selector::FullscreenExitOutput::Transcript {
+        while screen.base().has_overlay() { screen.base_mut().hide_overlay(); }
+        let show_hardware_cursor = screen.base().get_show_hardware_cursor();
+        let clear_on_shrink = screen.base().get_clear_on_shrink();
+        mode.pause_question_mouse_capture(&mut screen, &mut terminal);
+        screen.base_mut().begin_stop(&mut terminal);
+        screen.before_terminal_stop(&mut terminal, mouse_enabled);
+        screen.base_mut().finish_stop_output(&mut terminal, true);
+        screen.after_terminal_stop(&mut terminal, true);
+        screen.base_mut().reset_for_stop();
+        screen = mount_screen(&session, TuiMode::Regular, mode.active_theme().clone(), show_hardware_cursor, &right_click_paste, &document_lines, &dock_lines, &rendered).screen;
+        screen.base_mut().set_clear_on_shrink(clear_on_shrink);
+        fullscreen = false;
+        rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
+        screen.do_render(&mut terminal);
+    }
+    // senpi `stopInteractiveTui` -> `TuiBase.stop({ preserveScreen: fullscreen })`: release mouse
+    // leases, disable color-scheme notifications, hand terminal modes back, park the cursor below
+    // the last frame, show it.
     mode.pause_question_mouse_capture(&mut screen, &mut terminal);
     screen.base_mut().begin_stop(&mut terminal);
     screen.before_terminal_stop(&mut terminal, mouse_enabled);
     screen.base_mut().finish_stop_output(&mut terminal, fullscreen);
     let stopped = terminal.stop().map_err(|error| error.to_string());
-    screen.after_terminal_stop(&mut terminal, false);
+    screen.after_terminal_stop(&mut terminal, fullscreen);
     screen.base_mut().reset_for_stop();
     drop(shared_host);
     if startup_benchmark {
@@ -337,13 +388,16 @@ fn fullscreen_scrollbar(session: &maho_core::agent_session::AgentSession) -> mah
 
 /// senpi `createInteractiveTui` + `mountInteractiveTui` for this entry: build the renderer for
 /// `tui_mode` and mount the line buffers the loop fills each frame.
-fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho_interactive::tui_renderer::TuiMode, theme: maho_interactive::theme::Theme, document_lines: &Rc<RefCell<Vec<String>>>, dock_lines: &Rc<RefCell<Vec<String>>>, rendered: &Rc<RefCell<RenderedMode>>) -> MountedScreen {
+#[allow(clippy::too_many_arguments)]
+fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho_interactive::tui_renderer::TuiMode, theme: maho_interactive::theme::Theme, show_hardware_cursor: bool, right_click_paste: &Rc<Cell<bool>>, document_lines: &Rc<RefCell<Vec<String>>>, dock_lines: &Rc<RefCell<Vec<String>>>, rendered: &Rc<RefCell<RenderedMode>>) -> MountedScreen {
     use maho_interactive::tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode};
-    let mut screen = create_interactive_tui(InteractiveTuiOptions { tui_mode, show_hardware_cursor: true, bottom_shortcut: String::new() }, theme);
+    let mut screen = create_interactive_tui(InteractiveTuiOptions { tui_mode, show_hardware_cursor, bottom_shortcut: String::new() }, theme);
     // senpi tui-renderer.ts: fullscreen opens OSC 8 links in the browser, copies selections
     // through the platform clipboard (flashing the real outcome) and honors fullscreenCopyOnSelect.
     if let maho_interactive::tui_renderer::InteractiveTui::Fullscreen(alt) = &mut screen {
         alt.set_open_url(Some(Rc::new(|url: &str| crate::utils::open_browser::open_browser(url))));
+        let paste = right_click_paste.clone();
+        alt.set_on_right_click_paste(Some(Rc::new(move || paste.set(true))));
         alt.set_copy_selection(Some(Rc::new(|text: String| {
             let (sender, receiver) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
@@ -384,10 +438,12 @@ fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho
 
 /// senpi `TuiBase.handleTerminalInput` for the mounted interactive renderer: terminal protocol
 /// replies are consumed, the renderer's input listeners (mouse, focus reports and, in fullscreen,
-/// the `tui.altScreen.*` viewport keys) run before focus delivery, overlay focus is restored, and
-/// input for a focused overlay is delivered through the renderer. Returns the input for the
-/// interactive mode when the mounted root holds focus.
-fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::InteractiveTui, terminal: &mut dyn Terminal, root: &Rc<RefCell<dyn Component>>, chunk: &str, now_ms: u64) -> Option<String> {
+/// the `tui.altScreen.*` viewport keys) and then the extension terminal-input listeners run before
+/// focus delivery whichever component is focused, Shift+Ctrl+D writes the debug log
+/// (`ui.onDebug = handleDebugCommand`), overlay focus is restored, and input for a focused overlay
+/// is delivered through the renderer. Returns the (listener-filtered) input for the interactive
+/// mode when the mounted root holds focus.
+fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::InteractiveTui, terminal: &mut dyn Terminal, mode: &mut maho_interactive::interactive_mode::InteractiveMode, root: &Rc<RefCell<dyn Component>>, chunk: &str, now_ms: u64) -> Option<String> {
     let data = screen.base_mut().consume_terminal_protocol_input(chunk)?;
     if screen.handle_mouse_input(&data, i64::try_from(now_ms).unwrap_or(i64::MAX), terminal) {
         return None;
@@ -397,6 +453,12 @@ fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::Interactive
         && let maho_interactive::tui_renderer::InteractiveTui::Fullscreen(alt) = &mut *screen
         && alt.handle_viewport_input(&data, maho_tui::keys::is_key_release(&data))
     {
+        return None;
+    }
+    let data = mode.filter_terminal_input(&data)?;
+    if data.is_empty() { return None; }
+    if maho_tui::keys::matches_key(&data, "shift+ctrl+d") {
+        mode.handle_debug_command();
         return None;
     }
     screen.base_mut().apply_input_focus_rules();

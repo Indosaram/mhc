@@ -23,6 +23,8 @@ pub mod native_module_path; // todo 6
 pub mod native_platform; // todo 6
 #[cfg(target_os = "macos")]
 pub mod native_platform_darwin;
+#[cfg(target_os = "linux")]
+pub mod native_platform_linux_x11;
 #[cfg(windows)]
 pub mod native_platform_win32;
 pub mod paste_markers; // todo 8

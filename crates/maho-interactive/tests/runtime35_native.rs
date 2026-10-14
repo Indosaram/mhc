@@ -112,6 +112,21 @@ fn tool_lifecycle_updates_one_card_and_replaces_partial_result() {
 }
 
 #[test]
+fn terminal_title_follows_the_running_tool_then_returns_to_the_normal_title() {
+    use maho_agent::types::AgentEvent;
+    let (mut mode, directory) = native_mode();
+    let app_title = maho_core::config::app_title();
+    let cwd_basename = directory.path().file_name().expect("cwd basename").to_string_lossy().into_owned();
+    let normal = format!("{app_title} - {cwd_basename}");
+    assert_eq!(mode.terminal_window_title(), normal);
+    assert!(!mode.terminal_progress_active(), "showTerminalProgress defaults to off");
+    mode.handle_event(&AgentEvent::ToolExecutionStart { tool_call_id: "call-1".into(), tool_name: "bash".into(), args: serde_json::json!({"command":"ls"}) });
+    assert_eq!(mode.terminal_window_title(), format!("{app_title} - Running bash: ls"));
+    mode.handle_event(&AgentEvent::ToolExecutionEnd { tool_call_id: "call-1".into(), tool_name: "bash".into(), result: serde_json::json!({"content":[]}), is_error: false });
+    assert_eq!(mode.terminal_window_title(), normal);
+}
+
+#[test]
 fn tool_end_without_start_still_renders_final_result() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
