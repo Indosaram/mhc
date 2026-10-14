@@ -88,6 +88,8 @@ pub trait InteractiveSession: Send + Sync {
     /// senpi `importFromJsonl(path, cwdOverride)`.
     fn import_from_jsonl(&self, _input_path: String, _cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> { Box::pin(async { Err("import_from_jsonl is not implemented for this session host".to_owned()) }) }
     fn fork(&self, entry_id: String, include_entry: bool) -> SessionFuture<'_, Result<ForkOutcome, String>>;
+    /// senpi `runtimeHost.setBeforeSessionInvalidate`; a no-op where the local session owns the hook.
+    fn set_before_session_invalidate(&self, _callback: Box<dyn Fn() + Send + Sync>) {}
     fn dispose(&self) -> SessionFuture<'_, ()>;
 }
 
@@ -421,6 +423,10 @@ impl InteractiveSession for RemoteInteractiveRuntime {
             let outcome = remote_outcome(self, RemoteInteractiveRuntime::fork(self, &entry_id, position).await)?;
             Ok(ForkOutcome { outcome, editor_text: None })
         })
+    }
+
+    fn set_before_session_invalidate(&self, callback: Box<dyn Fn() + Send + Sync>) {
+        RemoteInteractiveRuntime::set_before_session_invalidate(self, Some(callback));
     }
 
     fn dispose(&self) -> SessionFuture<'_, ()> {
