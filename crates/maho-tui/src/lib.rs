@@ -43,6 +43,7 @@ pub mod tmux_image_probe; // todo 9
 pub mod tui; // todo 7
 pub mod tui_alt_screen; // todo 7
 pub mod tui_main_screen; // todo 7
+pub mod ui_intervals;
 pub mod undo_stack; // todo 8
 pub mod unicode_tables; // todo 6
 pub mod utils; // todo 6
