@@ -1,11 +1,17 @@
 //! Port of senpi packages/ai/src/api/openai-responses.ts.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
+use bytes::Bytes;
+use futures::{SinkExt, Stream, StreamExt};
 use serde_json::{json, Map, Value};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message as WebSocketMessage};
 
 use crate::api::cloudflare::{is_cloudflare_provider, resolve_cloudflare_base_url};
 use crate::api::constrained_sampling::create_grammar_tool_input_properties;
@@ -20,13 +26,21 @@ use crate::api::openai_responses_shared::{
 use crate::api::simple_options::{
     apply_extra_body, build_base_options, clamp_max_for_openai, OPENAI_RESPONSES_RESERVED_BODY_KEYS,
 };
+use crate::api::websocket_liveness::{
+    start_websocket_liveness, LivenessCapableSocket, WebSocketLivenessMonitor, DEFAULT_WEBSOCKET_LIVENESS_POLICY,
+};
+use crate::api::websocket_transport_failure::{
+    create_web_socket_transport_failure, WebSocketCloseEvent, WebSocketErrorEvent, WebSocketTransportFailure,
+    WEBSOCKET_ERROR_CLOSE_GRACE_MS,
+};
 use crate::models::{clamp_thinking_level, infer_openai_thinking_level_map, supports_max, supports_xhigh};
 use crate::openai_responses_compat::SessionAffinityFormat;
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, CacheRetention, Context, ErrorReason, Model, ModelThinkingLevel,
     ProviderEnv, ProviderHeaders, ProviderResponse, ServiceTierPreference, SimpleStreamOptions, StopReason,
-    StreamOptions, ThinkingLevel, Usage,
+    StreamOptions, ThinkingLevel, Transport, Usage,
 };
+use crate::utils::abort::AbortSignal;
 use crate::utils::deferred_tools::split_deferred_tools;
 use crate::utils::error_body::{
     format_provider_error, normalize_provider_error, SdkErrorShape, ThrownProviderError,
@@ -620,7 +634,7 @@ pub fn is_websocket_reusable(socket: &dyn CachedWebSocket) -> bool {
     matches!(socket.ready_state(), None | Some(1))
 }
 
-fn close_websocket_silently(socket: &dyn CachedWebSocket, code: u16, reason: &str) {
+pub(crate) fn close_websocket_silently(socket: &dyn CachedWebSocket, code: u16, reason: &str) {
     // senpi wraps this in `try {} catch {}`; a socket that refuses to close must not abort the
     // expiry sweep.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| socket.close(code, reason)));
@@ -629,13 +643,20 @@ fn close_websocket_silently(socket: &dyn CachedWebSocket, code: u16, reason: &st
 /// `CachedWebSocketConnection`.
 pub struct CachedWebSocketConnection {
     pub socket: Arc<dyn CachedWebSocket>,
+    /// The live transport behind `socket` when the entry was opened by [`connect_web_socket`].
+    transport: Option<Arc<TungsteniteWebSocket>>,
     busy: AtomicBool,
 }
 
 impl CachedWebSocketConnection {
     /// A freshly acquired connection is busy until its holder releases it.
     pub fn new(socket: Arc<dyn CachedWebSocket>) -> Self {
-        Self { socket, busy: AtomicBool::new(true) }
+        Self { socket, transport: None, busy: AtomicBool::new(true) }
+    }
+
+    /// A freshly connected transport, busy until its holder releases it.
+    pub fn from_transport(socket: Arc<TungsteniteWebSocket>) -> Self {
+        Self { socket: socket.clone(), transport: Some(socket), busy: AtomicBool::new(true) }
     }
 
     pub fn busy(&self) -> bool {
@@ -667,6 +688,13 @@ fn remove_websocket_session(session_id: &str) {
     WEBSOCKET_SESSION_CACHE.lock().expect("websocket session cache lock").remove(session_id);
 }
 
+fn remove_websocket_session_entry(session_id: &str, entry: &Arc<CachedWebSocketConnection>) {
+    let mut cache = WEBSOCKET_SESSION_CACHE.lock().expect("websocket session cache lock");
+    if cache.get(session_id).is_some_and(|cached| Arc::ptr_eq(cached, entry)) {
+        cache.remove(session_id);
+    }
+}
+
 /// `scheduleSessionWebSocketExpiry`: arms the idle-expiry for a cached session socket. A fire while
 /// the entry is busy must not strand the entry: a live busy socket is re-checked on the next tick,
 /// while a dead one is dropped immediately because nothing can release it.
@@ -688,6 +716,534 @@ pub fn schedule_session_websocket_expiry(session_id: &str, entry: Arc<CachedWebS
             return;
         }
     });
+}
+
+/// WHATWG `readyState` values the native socket reports.
+pub const WEBSOCKET_OPEN: u8 = 1;
+pub const WEBSOCKET_CLOSING: u8 = 2;
+pub const WEBSOCKET_CLOSED: u8 = 3;
+
+/// One inbound WebSocket event as senpi's `message`/`ping`/`pong`/`error`/`close` listeners observe it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebSocketEvent {
+    /// A decoded text (or binary) message.
+    Message(String),
+    /// A ping or pong control frame (liveness activity).
+    Activity,
+    Error(String),
+    Close(WebSocketCloseEvent),
+}
+
+enum WebSocketCommand {
+    Send(String),
+    Ping(String),
+    Close(u16, String),
+}
+
+/// The inbound event queue one request holds while it reads the socket.
+pub type WebSocketEventReceiver = tokio::sync::OwnedMutexGuard<tokio::sync::mpsc::UnboundedReceiver<WebSocketEvent>>;
+
+/// The runtime WebSocket senpi drives through listeners: a tokio-tungstenite connection owned by a
+/// background task, fed commands and draining frames into an event queue.
+pub struct TungsteniteWebSocket {
+    commands: tokio::sync::mpsc::UnboundedSender<WebSocketCommand>,
+    events: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<WebSocketEvent>>>,
+    ready_state: tokio::sync::watch::Receiver<u8>,
+}
+
+type TungsteniteStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+impl TungsteniteWebSocket {
+    fn spawn(socket: TungsteniteStream) -> Arc<Self> {
+        let (commands, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (event_tx, events) = tokio::sync::mpsc::unbounded_channel();
+        let (state_tx, ready_state) = tokio::sync::watch::channel(WEBSOCKET_OPEN);
+        tokio::spawn(run_web_socket(socket, command_rx, event_tx, state_tx));
+        Arc::new(Self { commands, events: Arc::new(tokio::sync::Mutex::new(events)), ready_state })
+    }
+
+    /// Takes the inbound queue for one request, dropping frames that arrived while the connection was
+    /// parked (senpi has no listener attached then), and sends `text`.
+    pub async fn begin_request(&self, text: String) -> Result<WebSocketEventReceiver, String> {
+        let mut events = self.events.clone().lock_owned().await;
+        while events.try_recv().is_ok() {}
+        self.commands
+            .send(WebSocketCommand::Send(text))
+            .map_err(|_| String::from("WebSocket is not open"))?;
+        Ok(events)
+    }
+
+    /// Resolves once the connection reached `CLOSED`.
+    pub async fn closed(&self) {
+        let mut ready_state = self.ready_state.clone();
+        let _ = ready_state.wait_for(|state| *state == WEBSOCKET_CLOSED).await;
+    }
+}
+
+impl CachedWebSocket for TungsteniteWebSocket {
+    fn ready_state(&self) -> Option<u8> {
+        Some(*self.ready_state.borrow())
+    }
+
+    fn close(&self, code: u16, reason: &str) {
+        let _ = self.commands.send(WebSocketCommand::Close(code, reason.to_owned()));
+    }
+}
+
+impl LivenessCapableSocket for TungsteniteWebSocket {
+    fn has_ping(&self) -> bool {
+        true
+    }
+
+    fn ping(&self, data: &str) -> Result<(), String> {
+        self.commands
+            .send(WebSocketCommand::Ping(data.to_owned()))
+            .map_err(|_| String::from("WebSocket is not open"))
+    }
+}
+
+async fn run_web_socket(
+    mut socket: TungsteniteStream,
+    mut commands: tokio::sync::mpsc::UnboundedReceiver<WebSocketCommand>,
+    events: tokio::sync::mpsc::UnboundedSender<WebSocketEvent>,
+    ready_state: tokio::sync::watch::Sender<u8>,
+) {
+    let abnormal_close = WebSocketCloseEvent { code: Some(1006), reason: None, was_clean: Some(false) };
+    loop {
+        tokio::select! {
+            command = commands.recv() => {
+                let result = match command {
+                    Some(WebSocketCommand::Send(text)) => socket.send(WebSocketMessage::Text(text.into())).await,
+                    Some(WebSocketCommand::Ping(data)) => {
+                        socket.send(WebSocketMessage::Ping(Bytes::from(data.into_bytes()))).await
+                    }
+                    Some(WebSocketCommand::Close(code, reason)) => {
+                        ready_state.send_replace(WEBSOCKET_CLOSING);
+                        let frame = CloseFrame { code: CloseCode::from(code), reason: reason.into() };
+                        // A close on an already-closing socket is ignored, as `close()` is in the browser.
+                        let _ = socket.close(Some(frame)).await;
+                        Ok(())
+                    }
+                    None => {
+                        let _ = socket.close(None).await;
+                        ready_state.send_replace(WEBSOCKET_CLOSED);
+                        return;
+                    }
+                };
+                if let Err(error) = result {
+                    let _ = events.send(WebSocketEvent::Error(error.to_string()));
+                }
+            }
+            message = socket.next() => match message {
+                Some(Ok(WebSocketMessage::Text(text))) => {
+                    let _ = events.send(WebSocketEvent::Message(text.as_str().to_owned()));
+                }
+                Some(Ok(WebSocketMessage::Binary(data))) => {
+                    let _ = events.send(WebSocketEvent::Message(String::from_utf8_lossy(&data).into_owned()));
+                }
+                Some(Ok(WebSocketMessage::Ping(_) | WebSocketMessage::Pong(_))) => {
+                    let _ = events.send(WebSocketEvent::Activity);
+                }
+                Some(Ok(WebSocketMessage::Close(frame))) => {
+                    ready_state.send_replace(WEBSOCKET_CLOSED);
+                    let reason = frame.as_ref().map(|frame| frame.reason.as_str().to_owned()).filter(|reason| !reason.is_empty());
+                    let _ = events.send(WebSocketEvent::Close(WebSocketCloseEvent {
+                        code: frame.as_ref().map(|frame| u16::from(frame.code)),
+                        reason,
+                        was_clean: Some(true),
+                    }));
+                    return;
+                }
+                Some(Ok(WebSocketMessage::Frame(_))) => {}
+                Some(Err(error)) => {
+                    ready_state.send_replace(WEBSOCKET_CLOSED);
+                    let _ = events.send(WebSocketEvent::Error(error.to_string()));
+                    let _ = events.send(WebSocketEvent::Close(abnormal_close.clone()));
+                    return;
+                }
+                None => {
+                    ready_state.send_replace(WEBSOCKET_CLOSED);
+                    let _ = events.send(WebSocketEvent::Close(abnormal_close.clone()));
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Resolves when `signal` aborts; never when there is no signal.
+pub(crate) async fn wait_for_abort(signal: Option<&AbortSignal>) {
+    match signal {
+        Some(signal) => signal.cancelled().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// `connectWebSocket`: opens the socket with the request headers, honoring the abort signal and an
+/// optional connect timeout (`0`/absent disables it).
+pub async fn connect_web_socket(
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    signal: Option<&AbortSignal>,
+    connect_timeout_ms: Option<u64>,
+) -> Result<Arc<TungsteniteWebSocket>, String> {
+    let mut request = url.into_client_request().map_err(|error| error.to_string())?;
+    for (name, value) in headers {
+        if let (Ok(name), Ok(value)) =
+            (http::HeaderName::from_bytes(name.as_bytes()), http::HeaderValue::from_str(value))
+        {
+            request.headers_mut().insert(name, value);
+        }
+    }
+    let connect = async {
+        let connect = tokio_tungstenite::connect_async(request);
+        match connect_timeout_ms {
+            Some(ms) if ms > 0 => match tokio::time::timeout(Duration::from_millis(ms), connect).await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => Err(format!("WebSocket connect timeout after {ms}ms")),
+            },
+            _ => connect.await.map_err(|error| error.to_string()),
+        }
+    };
+    let (socket, _) = tokio::select! {
+        biased;
+        () = wait_for_abort(signal) => return Err(String::from("Request was aborted")),
+        result = connect => result?,
+    };
+    Ok(TungsteniteWebSocket::spawn(socket))
+}
+
+/// A failure `parseWebSocket` throws once its queue drains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebSocketStreamFailure {
+    Aborted,
+    Transport(String),
+    /// Invalid JSON on a strict (Codex) stream.
+    Protocol { message: String, payload: String },
+}
+
+impl WebSocketStreamFailure {
+    pub fn message(&self) -> String {
+        match self {
+            WebSocketStreamFailure::Aborted => String::from("Request was aborted"),
+            WebSocketStreamFailure::Transport(message) => message.clone(),
+            WebSocketStreamFailure::Protocol { message, .. } => message.clone(),
+        }
+    }
+}
+
+/// Where the parsed stream records the failure that ended it (the byte stream itself can only end).
+pub type WebSocketFailureSlot = Arc<Mutex<Option<WebSocketStreamFailure>>>;
+
+/// The per-API differences between senpi's two `parseWebSocket` generators.
+#[derive(Debug, Clone, Copy)]
+pub struct ParseWebSocketOptions {
+    /// Event types that complete the response.
+    pub completion_types: &'static [&'static str],
+    /// `Some(prefix)` turns invalid JSON into a protocol failure (Codex); `None` skips the frame.
+    pub invalid_json_prefix: Option<&'static str>,
+    /// The per-wait idle timeout (`0`/absent disables it).
+    pub idle_timeout_ms: Option<u64>,
+}
+
+struct ParseWebSocketState {
+    socket: Arc<TungsteniteWebSocket>,
+    events: WebSocketEventReceiver,
+    failures: tokio::sync::mpsc::UnboundedReceiver<WebSocketStreamFailure>,
+    liveness: WebSocketLivenessMonitor,
+    transport_failure: WebSocketTransportFailure,
+    signal: Option<AbortSignal>,
+    options: ParseWebSocketOptions,
+    failed: WebSocketFailureSlot,
+    saw_completion: bool,
+    done: bool,
+}
+
+impl ParseWebSocketState {
+    fn fail(&mut self, failure: WebSocketStreamFailure) {
+        self.done = true;
+        let mut failed = self.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if failed.is_none() {
+            *failed = Some(failure);
+        }
+    }
+}
+
+impl Drop for ParseWebSocketState {
+    fn drop(&mut self) {
+        self.liveness.stop();
+        self.transport_failure.dispose();
+    }
+}
+
+enum ParseWebSocketStep {
+    Failure(WebSocketStreamFailure),
+    Event(Option<WebSocketEvent>),
+    Idle,
+}
+
+/// `parseWebSocket`: the live event stream for one request, re-encoded as SSE frames for the shared
+/// Responses processor. Each frame is yielded as it arrives; a failure (abort, liveness, idle
+/// timeout, transport error/close, invalid JSON) ends the stream and is recorded in `failed`.
+pub fn parse_web_socket(
+    socket: Arc<TungsteniteWebSocket>,
+    events: WebSocketEventReceiver,
+    signal: Option<AbortSignal>,
+    options: ParseWebSocketOptions,
+    failed: WebSocketFailureSlot,
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> {
+    let (failure_tx, failures) = tokio::sync::mpsc::unbounded_channel();
+    let liveness_socket = socket.clone();
+    let liveness_tx = failure_tx.clone();
+    let liveness = start_websocket_liveness(
+        socket.clone(),
+        move |error| {
+            let _ = liveness_tx.send(WebSocketStreamFailure::Transport(error.to_string()));
+            close_websocket_silently(liveness_socket.as_ref(), 1000, "liveness_timeout");
+        },
+        DEFAULT_WEBSOCKET_LIVENESS_POLICY,
+    );
+    let transport_failure = create_web_socket_transport_failure(
+        move |error| {
+            let _ = failure_tx.send(WebSocketStreamFailure::Transport(error));
+        },
+        WEBSOCKET_ERROR_CLOSE_GRACE_MS,
+    );
+    let state = ParseWebSocketState {
+        socket,
+        events,
+        failures,
+        liveness,
+        transport_failure,
+        signal,
+        options,
+        failed,
+        saw_completion: false,
+        done: false,
+    };
+    Box::pin(futures::stream::unfold(state, |mut state| async move {
+        let frame = next_web_socket_frame(&mut state).await?;
+        Some((Ok::<Bytes, reqwest::Error>(frame), state))
+    }))
+}
+
+async fn next_web_socket_frame(state: &mut ParseWebSocketState) -> Option<Bytes> {
+    loop {
+        if state.done {
+            return None;
+        }
+        if state.signal.as_ref().is_some_and(AbortSignal::aborted) {
+            state.fail(WebSocketStreamFailure::Aborted);
+            return None;
+        }
+        let idle_timeout_ms = state.options.idle_timeout_ms.filter(|ms| *ms > 0);
+        let idle = async move {
+            match idle_timeout_ms {
+                Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let step = tokio::select! {
+            biased;
+            () = wait_for_abort(state.signal.as_ref()) => ParseWebSocketStep::Failure(WebSocketStreamFailure::Aborted),
+            Some(failure) = state.failures.recv() => ParseWebSocketStep::Failure(failure),
+            event = state.events.recv() => ParseWebSocketStep::Event(event),
+            () = idle => ParseWebSocketStep::Idle,
+        };
+        match step {
+            ParseWebSocketStep::Failure(failure) => {
+                state.fail(failure);
+                return None;
+            }
+            ParseWebSocketStep::Idle => {
+                let ms = idle_timeout_ms.unwrap_or_default();
+                close_websocket_silently(state.socket.as_ref(), 1000, "idle_timeout");
+                state.fail(WebSocketStreamFailure::Transport(format!("WebSocket idle timeout after {ms}ms")));
+                return None;
+            }
+            ParseWebSocketStep::Event(None) => {
+                // The connection task is gone without a close event: report it as an abnormal close.
+                state.transport_failure.on_close(&WebSocketCloseEvent {
+                    code: Some(1006),
+                    reason: None,
+                    was_clean: Some(false),
+                });
+                let failure = state.failures.try_recv().unwrap_or_else(|_| {
+                    WebSocketStreamFailure::Transport(String::from("WebSocket stream closed before response.completed"))
+                });
+                state.fail(failure);
+                return None;
+            }
+            ParseWebSocketStep::Event(Some(WebSocketEvent::Message(text))) => {
+                state.liveness.note_activity();
+                if text.is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<Value>(&text) {
+                    Ok(parsed) => {
+                        let event_type = parsed.get("type").and_then(Value::as_str).unwrap_or_default();
+                        if state.options.completion_types.contains(&event_type) {
+                            state.saw_completion = true;
+                            state.done = true;
+                        }
+                        return Some(Bytes::from(format!("data: {parsed}\n\n")));
+                    }
+                    Err(error) => {
+                        if let Some(prefix) = state.options.invalid_json_prefix {
+                            state.fail(WebSocketStreamFailure::Protocol {
+                                message: format!("{prefix}: {error}"),
+                                payload: text,
+                            });
+                            return None;
+                        }
+                    }
+                }
+            }
+            ParseWebSocketStep::Event(Some(WebSocketEvent::Activity)) => {
+                state.liveness.note_activity();
+            }
+            ParseWebSocketStep::Event(Some(WebSocketEvent::Error(message))) => {
+                state
+                    .transport_failure
+                    .on_error(&WebSocketErrorEvent { message: Some(message), nested_message: None });
+            }
+            ParseWebSocketStep::Event(Some(WebSocketEvent::Close(close))) => {
+                if state.saw_completion {
+                    state.transport_failure.dispose();
+                    state.done = true;
+                    return None;
+                }
+                state.transport_failure.on_close(&close);
+            }
+        }
+    }
+}
+
+/// The connection `acquireWebSocket` hands out, plus how to give it back.
+struct ResponsesWebSocketLease {
+    socket: Arc<TungsteniteWebSocket>,
+    entry: Option<(String, Arc<CachedWebSocketConnection>)>,
+}
+
+impl ResponsesWebSocketLease {
+    fn release(self, keep: bool) {
+        let Some((session_id, entry)) = self.entry else {
+            close_websocket_silently(self.socket.as_ref(), 1000, "done");
+            return;
+        };
+        if !keep || !is_websocket_reusable(entry.socket.as_ref()) {
+            close_websocket_silently(entry.socket.as_ref(), 1000, "done");
+            remove_websocket_session_entry(&session_id, &entry);
+            return;
+        }
+        entry.set_busy(false);
+        schedule_session_websocket_expiry(&session_id, entry);
+    }
+}
+
+/// `acquireWebSocket`.
+async fn acquire_web_socket(
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    session_id: Option<&str>,
+    signal: Option<&AbortSignal>,
+) -> Result<ResponsesWebSocketLease, String> {
+    let Some(session_id) = session_id else {
+        let socket = connect_web_socket(url, headers, signal, None).await?;
+        return Ok(ResponsesWebSocketLease { socket, entry: None });
+    };
+
+    let cached = WEBSOCKET_SESSION_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(session_id)
+        .cloned();
+    if let Some(cached) = cached {
+        if !cached.busy()
+            && is_websocket_reusable(cached.socket.as_ref())
+            && let Some(socket) = cached.transport.clone()
+        {
+            cached.set_busy(true);
+            return Ok(ResponsesWebSocketLease { socket, entry: Some((session_id.to_owned(), cached)) });
+        }
+        if !cached.busy() {
+            close_websocket_silently(cached.socket.as_ref(), 1000, "done");
+            remove_websocket_session_entry(session_id, &cached);
+        }
+    }
+
+    let socket = connect_web_socket(url, headers, signal, None).await?;
+    let entry = Arc::new(CachedWebSocketConnection::from_transport(socket.clone()));
+    cache_websocket_session(session_id, entry.clone());
+    Ok(ResponsesWebSocketLease { socket, entry: Some((session_id.to_owned(), entry)) })
+}
+
+/// `processWebSocketStream`. `websocket_started` is senpi's `onStart` flag: set once the request
+/// frame went out, after which a failure must not fall back to HTTP.
+#[allow(clippy::too_many_arguments)]
+async fn process_web_socket_stream(
+    url: &str,
+    params: &Map<String, Value>,
+    headers: &BTreeMap<String, String>,
+    output: &mut AssistantMessage,
+    sink: &AssistantMessageEventStream,
+    model: &Model,
+    websocket_started: &mut bool,
+    cache_session_id: Option<&str>,
+    grammar_tool_input_properties: &BTreeMap<String, String>,
+    options: &StreamOptions,
+) -> Result<(), ResponsesApiError> {
+    let signal = options.request.signal.clone();
+    let lease = acquire_web_socket(url, headers, cache_session_id, signal.as_ref())
+        .await
+        .map_err(ResponsesApiError::Message)?;
+    let result = async {
+        let mut frame = Map::new();
+        frame.insert("type".into(), json!("response.create"));
+        frame.extend(params.clone());
+        let events = lease
+            .socket
+            .begin_request(Value::Object(frame).to_string())
+            .await
+            .map_err(ResponsesApiError::Message)?;
+        *websocket_started = true;
+        options
+            .request
+            .apply_response_hook(&ProviderResponse { status: 101, headers: BTreeMap::new() }, model)
+            .await
+            .map_err(ResponsesApiError::Message)?;
+        sink.push(AssistantMessageEvent::Start { partial: output.clone() });
+        let failed: WebSocketFailureSlot = Arc::default();
+        let body = parse_web_socket(
+            lease.socket.clone(),
+            events,
+            signal.clone(),
+            ParseWebSocketOptions {
+                completion_types: &["response.completed", "response.incomplete"],
+                invalid_json_prefix: None,
+                idle_timeout_ms: None,
+            },
+            failed.clone(),
+        );
+        let service_tier = option_str(options, "serviceTier");
+        let stream_options = ResponsesStreamOptions {
+            service_tier: service_tier.as_deref(),
+            grammar_tool_input_properties,
+            apply_service_tier_pricing: Some(&|usage: &mut Usage, service_tier: Option<&str>| {
+                apply_service_tier_pricing(usage, service_tier, model)
+            }),
+        };
+        let processed = process_responses_stream(body, output, sink, model, &stream_options).await;
+        let failure = failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        if let Some(failure) = failure {
+            return Err(ResponsesApiError::Message(failure.message()));
+        }
+        processed.map_err(|error| ResponsesApiError::Message(error.message))
+    }
+    .await;
+    lease.release(false);
+    result
 }
 
 /// `stream`.
@@ -753,6 +1309,52 @@ async fn drive(
         params = next.as_object().cloned().unwrap_or_default();
     }
     params = sanitize_unsupported_native_tools(params, &compat);
+    let transport = options.transport.unwrap_or(Transport::Sse);
+    if transport != Transport::Sse && compat.supports_web_socket {
+        let mut websocket_started = false;
+        let websocket_headers = build_websocket_headers(
+            model,
+            context,
+            &client_auth.api_key,
+            client_auth.headers.as_ref(),
+            cache_session_id.as_deref(),
+            env,
+        );
+        let result = process_web_socket_stream(
+            &resolve_openai_responses_websocket_url(model, env),
+            &params,
+            &websocket_headers,
+            output,
+            sink,
+            model,
+            &mut websocket_started,
+            cache_session_id.as_deref(),
+            &grammar_tool_input_properties,
+            options,
+        )
+        .await
+        .and_then(|()| {
+            if options.request.signal.as_ref().is_some_and(|signal| signal.aborted()) {
+                return Err(ResponsesApiError::Message(String::from("Request was aborted")));
+            }
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                sink.push(AssistantMessageEvent::Done {
+                    reason: get_done_reason(output.stop_reason),
+                    message: output.clone(),
+                });
+                sink.end(None);
+                return Ok(());
+            }
+            Err(error) => {
+                if transport == Transport::Websocket || websocket_started {
+                    return Err(error);
+                }
+            }
+        }
+    }
 
     let base_url = responses_base_url(model, env);
     let url = format!("{}/responses", base_url.trim_end_matches('/'));
