@@ -87,7 +87,13 @@ pub fn read_newest_record(dir: impl AsRef<Path>) -> Option<PlanCommitRecord> {
 
 pub fn reconcile_plan(dir: impl AsRef<Path>) -> Option<UlwLoopPlan> {
     let raw = read_optional(dir.as_ref().join("goals.json"));
-    let cached: Option<UlwLoopPlan> = raw.and_then(|r| serde_json::from_str(&r).ok());
+    // Pin `plan-io.ts:73-81`: the raw document must be `version: 1` with a `goals` array before it
+    // counts as a plan; serde defaults alone would accept a goals-less `{"version":1}` as empty.
+    let cached: Option<UlwLoopPlan> = raw
+        .and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok())
+        .filter(|value| value.get("version").and_then(serde_json::Value::as_u64) == Some(1)
+            && value.get("goals").is_some_and(serde_json::Value::is_array))
+        .and_then(|value| serde_json::from_value(value).ok());
     let latest = read_newest_record(&dir);
 
     match (cached, latest) {

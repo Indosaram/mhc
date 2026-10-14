@@ -104,8 +104,17 @@ fn test_distinct_roots_independent() { let a=tempfile::tempdir().unwrap(); let b
 fn test_distinct_scopes_independent() { let tmp=tempfile::tempdir().unwrap(); let a=UlwLoopScope::new("session-a"); with_ulw_loop_mutation_lock(tmp.path(),Some(&a),None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); with_ulw_loop_mutation_lock(tmp.path(),None,None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); }
 
 #[test]
+fn test_minimal_version_one_plan_with_goals_array_is_accepted() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(ulw_loop_dir(tmp.path(), None)).unwrap();
+    fs::write(ulw_loop_goals_path(tmp.path(), None), "{\"version\":1,\"goals\":[]}").unwrap();
+    let plan = read_ulw_loop_plan(tmp.path(), None).unwrap();
+    assert!(plan.goals.is_empty());
+}
+
+#[test]
 fn test_corrupt_or_wrong_shape_goals_json_is_invalid_not_missing() {
-    for raw in ["{not json", "{\"version\":1,\"goals\":{}}", "{\"version\":2,\"goals\":[]}"] {
+    for raw in ["{not json", "{\"version\":1,\"goals\":{}}", "{\"version\":2,\"goals\":[]}", "{\"version\":1}"] {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir_all(ulw_loop_dir(tmp.path(), None)).unwrap();
         fs::write(ulw_loop_goals_path(tmp.path(), None), raw).unwrap();

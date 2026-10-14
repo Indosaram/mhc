@@ -102,15 +102,17 @@ pub struct UlwLoopPlan {
     pub ledger_reset_revision: Option<u64>,
     #[serde(rename = "evidenceLayoutVersion", default, skip_serializing_if = "Option::is_none")]
     pub evidence_layout_version: Option<u32>,
-    #[serde(rename = "createdAt")]
+    // Pin `plan-io.ts:73-81`: only `version` and `goals` are validated upstream; the rest of the
+    // parsed document is trusted as-is, so these fields tolerate absence instead of invalidating it.
+    #[serde(rename = "createdAt", default)]
     pub created_at: String,
-    #[serde(rename = "updatedAt")]
+    #[serde(rename = "updatedAt", default)]
     pub updated_at: String,
-    #[serde(rename = "briefPath")]
+    #[serde(rename = "briefPath", default)]
     pub brief_path: String,
-    #[serde(rename = "goalsPath")]
+    #[serde(rename = "goalsPath", default)]
     pub goals_path: String,
-    #[serde(rename = "ledgerPath")]
+    #[serde(rename = "ledgerPath", default)]
     pub ledger_path: String,
     #[serde(rename = "codexGoalMode", default, skip_serializing_if = "Option::is_none")]
     pub codex_goal_mode: Option<String>,
