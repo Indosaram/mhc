@@ -175,6 +175,9 @@ fn metadata_launches_resolve_trust_as_a_print_run() {
 fn cli_paths_resolve_against_the_launch_cwd() {
     assert_eq!(resolve_cli_path("/w", "/abs/x"), "/abs/x");
     assert_eq!(resolve_cli_path("/w", "rel/x"), "/w/rel/x");
+    assert_eq!(resolve_cli_path("/w", "npm:@x/y"), "npm:@x/y");
+    assert_eq!(resolve_cli_path("/w", "git:github.com/a/b"), "git:github.com/a/b");
+    assert_eq!(resolve_cli_path("/w", "file:///abs/f"), "/abs/f");
     let parsed = Args {
         skills: vec!["skills".to_owned()],
         prompt_templates: vec!["/abs/templates".to_owned()],

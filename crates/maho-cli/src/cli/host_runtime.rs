@@ -303,12 +303,11 @@ pub async fn resolve_runtime_project_trust_with_warnings(
     (trusted, warnings)
 }
 
-/// senpi `resolvePath`/`normalizePath` for a CLI path: absolute paths are returned as given and
-/// relative paths resolve against the launch cwd.
+/// senpi `resolveCliPaths` entry: package sources and remote URLs (`isLocalPath` false) are kept
+/// verbatim; local values go through `resolvePath` (`~` and `file://` expansion) against the cwd.
 pub fn resolve_cli_path(cwd: &str, path: &str) -> String {
-    let candidate = Path::new(path);
-    if candidate.is_absolute() { return path.to_owned(); }
-    PathBuf::from(cwd).join(candidate).to_string_lossy().into_owned()
+    if !maho_core::paths::is_local_path(path) { return path.to_owned(); }
+    maho_core::paths::resolve_path(path, cwd, &maho_core::paths::PathInputOptions::default())
 }
 
 /// The per-runtime inputs a mode supplies when it mounts a session runtime.
