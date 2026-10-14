@@ -25,7 +25,7 @@ pub fn select_session(
     settings: &maho_core::settings_manager::SettingsManager,
 ) -> Result<Option<String>, String> {
     use maho_interactive::tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode};
-    use maho_tui::{terminal::{ProcessTerminal, Terminal}, tui::Component};
+    use maho_tui::{terminal::Terminal, tui::Component};
     let theme = super::startup_ui::resolve_startup_theme(settings.get_string("theme").as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
     let keybindings = Arc::new(maho_core::keybindings::KeybindingsManager::create(Some(&maho_core::config::get_agent_dir())).inner().clone());
     let (current_cwd, current_dir, all_dir) = (cwd.to_owned(), session_dir.map(str::to_owned), session_dir.map(str::to_owned));
@@ -38,7 +38,7 @@ pub fn select_session(
     let outcome: Rc<RefCell<Option<Option<String>>>> = Rc::default();
     let exited = Rc::new(RefCell::new(false));
     let (selected, cancelled, exit) = (outcome.clone(), outcome.clone(), exited.clone());
-    let mut terminal = ProcessTerminal::default();
+    let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
     let mut screen = create_interactive_tui(InteractiveTuiOptions {
         tui_mode: TuiMode::Regular,
         show_hardware_cursor: settings.get_show_hardware_cursor(),
@@ -68,7 +68,7 @@ pub fn select_session(
         screen.base_mut().add_child(component.clone());
         screen.base_mut().set_focus(Some(component));
         while outcome.borrow().is_none() && !*exited.borrow() {
-            for chunk in std::mem::take(&mut *input.borrow_mut()) { selector.borrow_mut().handle_input(&chunk); }
+            for chunk in std::mem::take(&mut *input.borrow_mut()) { screen.base_mut().handle_terminal_input(&chunk, maho_tui::keys::is_key_release(&chunk)); }
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
             screen.base_mut().request_render(false, now);
             screen.do_render(&mut terminal);
