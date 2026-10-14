@@ -726,6 +726,7 @@ pub struct TuiBaseState {
     pub previous_viewport_top: usize,
     full_redraw_count: u64,
     mux_viewport_repaint_count: u64,
+    reset_render_state_pending: bool,
     over_wide_crash_dump_written: bool,
     pub stopped: bool,
     last_cursor_visibility: Option<bool>,
@@ -839,6 +840,7 @@ impl Default for TuiBaseState {
             previous_viewport_top: 0,
             full_redraw_count: 0,
             mux_viewport_repaint_count: 0,
+            reset_render_state_pending: false,
             over_wide_crash_dump_written: false,
             stopped: false,
             last_cursor_visibility: None,
@@ -1926,6 +1928,9 @@ impl TuiBase {
     /// expedited: the frame is due immediately instead of after the throttle interval, so
     /// keystrokes echo without waiting for the next throttled frame.
     pub fn request_render_from(&mut self, force: bool, source: &str, now_ms: u64) {
+        if force {
+            self.reset_forced_render_state();
+        }
         let mut state = self.state.borrow_mut();
         if force {
             state.input_render_pending = false;
@@ -2021,6 +2026,12 @@ impl TuiBase {
         self.state.borrow().mux_viewport_repaint_count
     }
 
+    /// Takes the pending renderer `resetRenderState()` request left by
+    /// [`TuiBase::reset_forced_render_state`].
+    pub fn take_reset_render_state_pending(&mut self) -> bool {
+        std::mem::take(&mut self.state.borrow_mut().reset_render_state_pending)
+    }
+
     /// Reset renderer-side state for the next `start()`; mirrors senpi's `stop()` clearing the
     /// diff cache so a stopped-then-restarted (or handed-off) renderer starts clean.
     pub fn reset_for_stop(&mut self) {
@@ -2040,8 +2051,12 @@ impl TuiBase {
     }
 
     /// Force the next render to repaint from a clean slate (senpi's `resetForcedRenderState`).
+    /// senpi's first step, the renderer's `resetRenderState()` override, is deferred through
+    /// `reset_render_state_pending`: there is no virtual dispatch from `TuiBase` back onto
+    /// [`crate::tui_alt_screen::TuiAltScreen`], which consumes the flag before its next frame.
     pub fn reset_forced_render_state(&mut self) {
         let mut state = self.state.borrow_mut();
+        state.reset_render_state_pending = true;
         state.previous_lines.clear();
         state.previous_raw_lines.clear();
         state.previous_width = -1;
