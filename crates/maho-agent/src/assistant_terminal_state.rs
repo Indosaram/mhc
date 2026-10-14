@@ -70,9 +70,17 @@ pub struct ProviderRetryWatchdogAbortError {
     pub provider_cause: String,
 }
 
+/// The `name` a `ProviderRetryWatchdogAbortError` carries as an abort-signal reason.
+pub const PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME: &str = "ProviderRetryWatchdogAbortError";
+
 impl ProviderRetryWatchdogAbortError {
     pub fn new(provider_cause: impl Into<String>) -> Self {
         Self { provider_cause: provider_cause.into() }
+    }
+
+    /// The reason passed to `agent.abort(new ProviderRetryWatchdogAbortError(...))`.
+    pub fn into_abort_reason(self) -> maho_ai::utils::abort::AbortReason {
+        maho_ai::utils::abort::AbortReason::new(PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME, self.provider_cause)
     }
 }
 

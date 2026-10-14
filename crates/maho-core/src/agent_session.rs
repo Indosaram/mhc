@@ -3514,8 +3514,9 @@ impl AgentSession {
                 tokio::select! {
                     _ = &mut continuation => {}
                     _ = tokio::time::sleep(std::time::Duration::from_millis(timeout)) => {
-                        self.agent.abort(Some(maho_ai::utils::abort::AbortReason::new("AbortError",
-                            provider_retry_watchdog_abort_message(Some(timeout), self.agent.stream_start_timeout_ms()))));
+                        self.agent.abort(Some(maho_agent::ProviderRetryWatchdogAbortError::new(
+                            provider_retry_watchdog_abort_message(Some(timeout), self.agent.stream_start_timeout_ms()),
+                        ).into_abort_reason()));
                         continuation.await;
                     }
                 }

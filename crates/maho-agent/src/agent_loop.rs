@@ -19,7 +19,8 @@ use maho_ai::api::cursor_agent::types::CursorToolResultHandler;
 use tokio::sync::oneshot;
 
 use crate::assistant_terminal_state::{
-    AgentStreamError, TerminalAssistantMessageEvent, create_terminal_failure_assistant_message,
+    AgentStreamError, PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME, TerminalAssistantMessageEvent,
+    create_terminal_failure_assistant_message,
     demote_tool_use_without_tool_calls, is_stream_idle_timeout_error, normalize_terminal_assistant_message, now_ms,
     promote_stop_with_pending_tool_calls, should_finalize_idle_as_stop, should_terminate_assistant_turn,
 };
@@ -792,9 +793,14 @@ fn stream_error(error: StreamError) -> AgentStreamError {
     AgentStreamError::Other { message: error.message }
 }
 
-/// `AbortError`: the reason the signal carries, else the DOM default.
+/// `AbortError`: the reason the signal carries, else the DOM default. A
+/// `ProviderRetryWatchdogAbortError` reason keeps its class so the terminal message gets
+/// `abortSource: "provider"`.
 fn abort_error(signal: Option<&AbortSignal>) -> AgentStreamError {
     match signal.and_then(AbortSignal::reason) {
+        Some(reason) if reason.name == PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME => {
+            AgentStreamError::ProviderRetryWatchdogAbort { provider_cause: reason.message }
+        }
         Some(reason) => AgentStreamError::Other { message: reason.message },
         None => AgentStreamError::Other { message: "Request was aborted".to_owned() },
     }
