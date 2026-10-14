@@ -737,6 +737,61 @@ impl AuthStorage {
         }
     }
 
+    /// senpi `modify`: reads the provider's stored credential, runs `f`, and writes the result in one
+    /// critical section under the auth.json file lock, so a credential rotated by another process
+    /// between the read and the write cannot be overwritten. `f` returning `None` leaves the entry
+    /// unchanged and yields the current value.
+    pub async fn modify_credential<F, Fut>(&self, provider_id: &str, f: F) -> Result<Option<Value>, String>
+    where
+        F: FnOnce(Option<Value>) -> Fut,
+        Fut: std::future::Future<Output = Result<Option<Value>, String>>,
+    {
+        let outcome: Result<(AuthStorageData, Option<Value>), String> = match &self.storage {
+            AuthStorageBackend::File(backend) => {
+                backend
+                    .with_lock_async(async move |current| {
+                        let (mut data, _, _) = Self::parse_storage_content(current)?;
+                        let existing = read_by_provider_id(&data, provider_id);
+                        let Some(next) = f(existing.clone()).await? else {
+                            return Ok(((data, existing), None));
+                        };
+                        data.insert(provider_id.to_owned(), next.clone());
+                        let serialized = serialize_auth_data(&data);
+                        Ok(((data, Some(next)), Some(serialized)))
+                    })
+                    .await
+            }
+            AuthStorageBackend::InMemory(backend) => {
+                let content = backend.content();
+                match Self::parse_storage_content(content.as_deref()) {
+                    Err(error) => Err(error),
+                    Ok((mut data, _, _)) => {
+                        let existing = read_by_provider_id(&data, provider_id);
+                        match f(existing.clone()).await {
+                            Err(error) => Err(error),
+                            Ok(None) => Ok((data, existing)),
+                            Ok(Some(next)) => {
+                                data.insert(provider_id.to_owned(), next.clone());
+                                let serialized = serialize_auth_data(&data);
+                                backend.with_lock(|_| Ok(((), Some(serialized)))).map(|()| (data, Some(next)))
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        match outcome {
+            Ok((data, result)) => {
+                *self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = data;
+                Ok(result)
+            }
+            Err(error) => {
+                self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     /// senpi `delete`: drops the runtime override as well as the stored credential.
     pub fn delete(&self, provider_id: &str) -> Result<(), String> {
         self.remove_runtime_api_key(provider_id);
