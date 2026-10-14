@@ -11,6 +11,9 @@ pub async fn thread_history_turns(id: &str,threads: &ThreadRegistry,archive: &Th
         return Ok(entry.session.with_session_manager(|manager|turns_from_session_entries(&manager.entries(),&entry.created_at)));
     }
     if let Some(info) = threads.list_session_infos().await.into_iter().find(|info|info.id == id) {
+        // senpi `turnsForEntry`: the process-lifetime TurnLog wins over the session-entry rebuild.
+        let logged = log.lock().await.read_turns(id);
+        if !logged.is_empty() {return Ok(logged);}
         return Ok(turns_from_session_entries(&maho_core::session_manager::load_entries_from_file(&info.path),&info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)));
     }
     if archive.list_archived_threads().await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?.iter().any(|thread|thread["id"] == id) {return Ok(log.lock().await.read_turns(id));}
