@@ -32,6 +32,7 @@ pub fn park_bundle(session_key:&str,mut bundle:TerminalSessionBundle)->Result<()
 }
 pub fn claim_parked_bundle(session_key:&str)->Option<TerminalSessionBundle> {parked_bundles().lock().expect("parked bundles").remove(session_key)}
 pub fn teardown_parked_bundle(session_key:&str)->Result<(),crate::runtime_session::RuntimeError> {if let Some(mut bundle)=claim_parked_bundle(session_key) {bundle.teardown()?;}Ok(())}
+pub async fn teardown_parked_bundle_async(session_key:&str)->Result<(),crate::runtime_session::RuntimeError> {if let Some(mut bundle)=claim_parked_bundle(session_key) && bundle.begin_teardown()? {crate::manager::teardown_shared(&bundle.manager).await?;}Ok(())}
 impl TerminalSessionBundle {
     pub fn new(max_sessions:usize)->Self {
         let manager=Arc::new(Mutex::new(TerminalManager::new(max_sessions)));
@@ -97,12 +98,19 @@ impl TerminalSessionBundle {
     }
     pub fn park(&mut self) {self.routing.lock().expect("terminal routing").sink=None;self.ended_routing.lock().expect("terminal ended routing").sink=None;self.state_sink=None;self.background_state=None;self.background_exit=None;}
     pub fn teardown(&mut self)->Result<(),crate::runtime_session::RuntimeError> {
-        {let mut routing=self.routing.lock().expect("terminal routing");if routing.torndown {return Ok(());}routing.torndown=true;routing.sink=None;routing.parked.clear();}
+        if !self.begin_teardown()? {return Ok(());}
+        self.manager.lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.teardown()
+    }
+    /// Everything teardown does before stopping terminals; `false` when already torn down. Async
+    /// callers then await `manager::teardown_shared` on `manager` with no bundle lock held, so the
+    /// runtime thread is not blocked (upstream awaits `manager.teardown()`).
+    pub fn begin_teardown(&mut self)->Result<bool,crate::runtime_session::RuntimeError> {
+        {let mut routing=self.routing.lock().expect("terminal routing");if routing.torndown {return Ok(false);}routing.torndown=true;routing.sink=None;routing.parked.clear();}
         self.ended_routing.lock().expect("terminal ended routing").parked.clear();
         self.parked_exits.lock().expect("parked exits").clear();
         let had_backgrounds=!self.backgrounds.lock().expect("terminal backgrounds").is_empty();
         if had_backgrounds {self.backgrounds.lock().expect("terminal backgrounds").clear();if let Some(state)=&self.background_state {state(&[]);}}self.state_sink=None;self.background_state=None;self.background_exit=None;
-        self.monitors.lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.dispose();self.manager.lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.teardown()
+        self.monitors.lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.dispose();Ok(true)
     }
 }
 #[cfg(test)]

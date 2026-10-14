@@ -3,7 +3,7 @@ use maho_ext_api::types::{Extension,ExtensionApi,EventKind,EventResult,Extension
 use maho_tools::definition::{ToolDefinition,ToolResult,ToolContent,ToolError};
 use serde_json::{Value,json};
 use crate::manager::TerminalManager;
-use crate::tools::{bash_input::{execute_bash_input,BashInputInput},bash_output::execute_bash_output_view,bash_resize::execute_bash_resize,kill_bash::execute_kill_bash,context::TerminalToolResult};
+use crate::tools::{bash_input::{execute_bash_input,BashInputInput},bash_output::execute_bash_output_view,bash_resize::execute_bash_resize,kill_bash::execute_kill_bash_shared,context::TerminalToolResult};
 pub struct TerminalExtension;
 type Backgrounds=Arc<Mutex<indexmap::IndexMap<String,crate::session_bundle::BackgroundSession>>>;
 fn publish_backgrounds(backgrounds:&Backgrounds,sender:&ExtensionApi) {
@@ -274,23 +274,33 @@ impl Extension for TerminalExtension {
             let manager=Arc::clone(&manager);
             let monitors=monitors.clone();
             let mut tool=ToolDefinition::new(name,description,json!({"type":"object","properties":properties,"required":required}),Arc::new(move |call| {let manager=Arc::clone(&manager);let monitors=monitors.clone();Box::pin(async move {
-                let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let id=call.params.get("bash_id").and_then(Value::as_str);
                 if name=="kill_bash" {
-                    let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
+                    // kill-bash.ts awaits the stop/teardown: the exit graces are awaited with the
+                    // manager lock released so the async runtime thread is never blocked.
                     let all=call.params.get("all").and_then(Value::as_bool).unwrap_or(false);
                     if all {
-                        let mut count=manager.size();
-                        for id in monitors.snapshot().into_iter().filter(|record|record.id.starts_with("watch_")).map(|record|record.id) {count+=usize::from(monitors.stop_file(&id));}
-                        manager.teardown().map_err(|error|ToolError::Message(error.to_string()))?;
+                        let count={
+                            let manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
+                            let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
+                            let mut count=manager.size();
+                            for id in monitors.snapshot().into_iter().filter(|record|record.id.starts_with("watch_")).map(|record|record.id) {count+=usize::from(monitors.stop_file(&id));}
+                            count
+                        };
+                        crate::manager::teardown_shared(&manager).await.map_err(|error|ToolError::Message(error.to_string()))?;
                         return tool_result(crate::tools::context::text_result(format!("Killed {count} session(s).")));
                     }
                     if let Some(id)=id {
-                        let resolved=crate::tools::context::resolve_terminal_id(&manager,id);
-                        if monitors.stop_file(&resolved) {return tool_result(crate::tools::context::text_result(format!("Killed {id}.")));}
+                        let stopped={
+                            let manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
+                            let resolved=crate::tools::context::resolve_terminal_id(&manager,id);
+                            monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?.stop_file(&resolved)
+                        };
+                        if stopped {return tool_result(crate::tools::context::text_result(format!("Killed {id}.")));}
                     }
-                    return tool_result(execute_kill_bash(&mut manager,id,all));
+                    return tool_result(execute_kill_bash_shared(&manager,id,all).await);
                 }
+                let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let id=id.ok_or_else(||ToolError::Message("bash_id must be a string".to_owned()))?;let resolved=crate::tools::context::resolve_terminal_id(&manager,id);let runtime=manager.get(&resolved);
                 match name {
                     "bash_output"=>{let mut result=execute_bash_output_view(runtime.as_deref(),id,call.params.get("filter").and_then(Value::as_str),call.params.get("view").and_then(Value::as_str)==Some("screen")).map_err(|error|ToolError::Message(error.to_string()))?;let registry=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;if runtime.is_some()&&let Some(entry)=registry.snapshot().iter().find(|entry|entry.id==resolved) {result=crate::tools::bash_output::with_monitor_state(result,id,entry.paused,registry.muted_dropped(&resolved));}tool_result(result)},
@@ -345,8 +355,11 @@ impl Extension for TerminalExtension {
                 bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.detach_delivery();
                 crate::session_bundle::park_bundle(&session_id,bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.clone()).map_err(|error|ExtensionFailure::new(error.to_string()))?;
             }else {
-                bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;
-                crate::session_bundle::teardown_parked_bundle(&session_id).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                // registry.ts teardown is awaited: release the bundle lock so none is held
+                // across the exit-grace awaits and the runtime thread is not blocked.
+                let manager={let mut live=bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?;live.begin_teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?.then(||live.manager.clone())};
+                if let Some(manager)=manager {crate::manager::teardown_shared(&manager).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;}
+                crate::session_bundle::teardown_parked_bundle_async(&session_id).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
             }
             Ok(EventResult::None)
         })}));
