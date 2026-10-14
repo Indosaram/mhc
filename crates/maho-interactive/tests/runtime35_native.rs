@@ -175,7 +175,7 @@ async fn login_api_key_saves_credential_and_logout_removes_it() {
     let (mut mode, directory) = native_mode();
     let auth_path = directory.path().join("auth.json");
     let mut events = mode.subscribe_auth_lifecycle();
-    mode.enqueue_submission("/login-provider faux api_key", None);
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider faux api_key"), None);
     assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
     assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
     mode.handle_input("test-key");
@@ -207,7 +207,7 @@ async fn login_cached_default_is_selected_before_catalog_refresh_completes() {
     let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "anthropic", "claude-opus-4-8", true);
     let session_id = session.session_id();
     let mut events = mode.subscribe_auth_lifecycle();
-    mode.enqueue_submission("/login-provider anthropic api_key", None);
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider anthropic api_key"), None);
     assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
     assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
     mode.handle_input("test-key");
@@ -230,7 +230,7 @@ async fn login_catalog_completion_does_not_replace_a_new_session_model() {
     use maho_tui::tui::Component;
     let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "anthropic", "claude-opus-4-8", true);
     let mut events = mode.subscribe_auth_lifecycle();
-    mode.enqueue_submission("/login-provider anthropic api_key", None);
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider anthropic api_key"), None);
     assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
     assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
     mode.handle_input("test-key");
@@ -255,7 +255,7 @@ async fn login_cancel_shows_neutral_status_and_leaves_auth_unchanged() {
     let auth_path = directory.path().join("auth.json");
     let before = std::fs::read_to_string(&auth_path).ok();
     let mut events = mode.subscribe_auth_lifecycle();
-    mode.enqueue_submission("/login-provider faux api_key", None);
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider faux api_key"), None);
     assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
     assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
     mode.handle_input("\u{1b}");
@@ -674,7 +674,7 @@ async fn armin_says_hi_command_renders_the_easter_egg_instead_of_prompting() {
 async fn selecting_opencode_kimi_k2_5_shows_the_daxnuts_card() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode_with_provider(None, "opencode", "kimi-k2.5", false);
-    mode.submit("/model-select opencode/kimi-k2.5", Default::default()).await.expect("select");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/model-select opencode/kimi-k2.5"), Default::default()).await.expect("select");
     mode.tick(1_000_000.0);
     assert!(mode.render(80).join("\n").contains("Free Kimi K2.5 via OpenCode Zen"));
 }
@@ -847,7 +847,7 @@ async fn resume_path_restores_exported_native_transcript() {
     let path = directory.path().join("resume.jsonl");
     mode.submit(&format!("/export {}", path.display()), Default::default()).await.expect("export");
     mode.submit("/new", Default::default()).await.expect("new");
-    mode.submit(&format!("/resume {}", path.display()), Default::default()).await.expect("resume");
+    mode.submit(&maho_interactive::interactive_mode::internal_command(format!("/resume {}", path.display())), Default::default()).await.expect("resume");
     assert!(mode.render(80).join("\n").contains("saved-message"));
 }
 
@@ -1608,23 +1608,23 @@ async fn tree_edit_prefills_assistant_text_and_rejects_other_entries() {
         maho_core::session_manager::SessionManager::in_memory(cwd, None, Some(entries))
     });
     // senpi `editAssistantMessageFromTree`: a non-assistant entry is refused.
-    mode.submit("/tree-edit u1", Default::default()).await.expect("command");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree-edit u1"), Default::default()).await.expect("command");
     assert!(mode.render(80).join("\n").contains("Only assistant responses can be edited here"), "non-assistant entries are rejected");
     // An assistant entry opens the editor prefilled with its text.
-    mode.submit("/tree-edit a1", Default::default()).await.expect("command");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree-edit a1"), Default::default()).await.expect("command");
     assert!(mode.render(80).join("\n").contains("assistant reply"), "the editor is prefilled with the assistant text");
 }
 
 #[tokio::test]
 async fn tree_edit_apply_without_a_pending_edit_is_a_noop() {
     let (mut mode,_directory) = native_mode();
-    mode.submit("/tree-edit-apply", Default::default()).await.expect("no-op");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree-edit-apply"), Default::default()).await.expect("no-op");
 }
 
 #[tokio::test]
 async fn tree_navigate_without_a_pending_choice_is_a_noop() {
     let (mut mode,_directory) = native_mode();
-    mode.submit("/tree-navigate", Default::default()).await.expect("no-op");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree-navigate"), Default::default()).await.expect("no-op");
 }
 
 #[tokio::test]
@@ -1639,7 +1639,7 @@ async fn tree_navigation_prompts_for_a_branch_summary_unless_skipped() {
         maho_core::session_manager::SessionManager::in_memory(cwd, None, Some(entries))
     });
     // senpi `runTreeNavigation(entryId, { promptForSummary: true })`: the summary choice is asked.
-    mode.submit("/tree u1", Default::default()).await.expect("command");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree u1"), Default::default()).await.expect("command");
     let text = mode.render(80).join("\n");
     assert!(text.contains("Summarize branch?"), "the branch summary selector mounts: {text}");
     assert!(text.contains("Summarize with custom prompt"), "the custom option is offered: {text}");
@@ -1736,7 +1736,7 @@ async fn replacement_commands_route_through_the_mounted_session_host() {
     mode.set_session_host(Arc::new(SpyHost { calls: calls.clone() }));
     mode.submit("/new", Default::default()).await.expect("new");
     assert_eq!(calls.lock().expect("calls").as_slice(), ["new_session"], "the mounted host receives /new instead of the local session");
-    mode.submit("/fork entry-1", Default::default()).await.expect("fork");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/fork entry-1"), Default::default()).await.expect("fork");
     assert_eq!(calls.lock().expect("calls").as_slice(), ["new_session", "fork:entry-1:false"], "the mounted host receives /fork");
     assert_eq!(mode.editor.editor.get_text(), "selected", "the host fork's selected text prefills the editor");
     mode.submit("/export remote.html", Default::default()).await.expect("remote export");
