@@ -181,11 +181,14 @@ static LAST_TRUST_LOOKUP:std::sync::Mutex<Option<TrustLookup>>=std::sync::Mutex:
 fn project_trusted(agent_dir:&str,cwd:String)->bool{
     let store=maho_core::ProjectTrustStore::new(agent_dir);
     let stamp=std::fs::metadata(store.trust_path()).ok().and_then(|metadata|Some((metadata.modified().ok()?,metadata.len())));
-    let mut last=LAST_TRUST_LOOKUP.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((path,cached_cwd,cached_stamp,trusted))=last.as_ref()&&path==store.trust_path()&&*cached_cwd==cwd&&*cached_stamp==stamp{return *trusted;}
+    {
+        let last=LAST_TRUST_LOOKUP.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((path,cached_cwd,cached_stamp,trusted))=last.as_ref()&&path==store.trust_path()&&*cached_cwd==cwd&&*cached_stamp==stamp{return *trusted;}
+    }
+    // The store lookup takes the trust.json file lock, so it runs with the memo mutex released.
     let decision=store.get(&cwd);let trusted=decision.as_ref().is_ok_and(|decision|*decision==Some(true));
     // A failed lookup (lock timeout, bad file) is retried next time rather than memoized.
-    *last=decision.is_ok().then(||(store.trust_path().to_owned(),cwd,stamp,trusted));
+    *LAST_TRUST_LOOKUP.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=decision.is_ok().then(||(store.trust_path().to_owned(),cwd,stamp,trusted));
     trusted
 }
 /// Project one session into the wire state shape (senpi `buildRpcSessionState`).

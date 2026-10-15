@@ -108,13 +108,19 @@ fn score_subsequence(candidate: &str, query: &str) -> Option<(usize, Vec<usize>)
 pub fn rank_fuzzy_file_entries(query: &str, entries: &[FuzzyFileEntry]) -> Vec<FuzzyFileSearchResult> {
     if query.is_empty() { return Vec::new(); }
     let query = query.to_lowercase();
-    let mut results = entries.iter().filter_map(|entry| {
+    // Rank (score, entry index, indices) first; only the kept entries are cloned into results.
+    let mut ranked = entries.iter().enumerate().filter_map(|(entry_index, entry)| {
         let filename = score_subsequence(&entry.file_name, &query);
         let filename_match = filename.is_some();
         let (score, mut indices) = filename.or_else(|| score_subsequence(&entry.path, &query))?;
         if filename_match { let offset = entry.path.chars().count().saturating_sub(entry.file_name.chars().count()); for index in &mut indices { *index += offset; } }
-        Some(FuzzyFileSearchResult { root:entry.root.clone(), path:entry.path.clone(), match_type:entry.match_type.clone(), file_name:entry.file_name.clone(), score:score + if filename_match { 1_000_000 } else { 0 }, indices })
+        Some((score + if filename_match { 1_000_000 } else { 0 }, entry_index, indices))
     }).collect::<Vec<_>>();
-    results.sort_by(|left, right| right.score.cmp(&left.score).then_with(|| left.path.encode_utf16().cmp(right.path.encode_utf16())));
-    results.truncate(FUZZY_SEARCH_RESULT_LIMIT); results
+    // Stable sort: ties on (score, path) keep walk order, as before.
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| entries[left.1].path.encode_utf16().cmp(entries[right.1].path.encode_utf16())));
+    ranked.truncate(FUZZY_SEARCH_RESULT_LIMIT);
+    ranked.into_iter().map(|(score, entry_index, indices)| {
+        let entry = &entries[entry_index];
+        FuzzyFileSearchResult { root:entry.root.clone(), path:entry.path.clone(), match_type:entry.match_type.clone(), file_name:entry.file_name.clone(), score, indices }
+    }).collect()
 }

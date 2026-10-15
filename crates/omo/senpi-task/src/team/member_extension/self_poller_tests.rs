@@ -277,6 +277,31 @@ fn given_ack_miss_on_existing_transcript_when_envelope_is_appended_then_next_ack
 }
 
 #[test]
+fn given_ack_miss_with_unchanged_transcript_when_ack_check_repeats_then_lease_is_not_taken() {
+    // given
+    let harness = create_harness();
+    let value = message("66666666-6666-4666-8666-666666666666");
+    seed(&harness, &value);
+    fs::write(harness.session_dir.join("20260712_session.jsonl"), "{\"type\":\"session\"}\n").unwrap();
+    let self_poller = poller(&harness);
+    self_poller.poll_once(None).unwrap();
+    self_poller.check_pending_acks().unwrap();
+    // A regular file at the inbox path makes any lease attempt fail.
+    fs::remove_dir_all(&harness.inbox_dir).unwrap();
+    fs::write(&harness.inbox_dir, "").unwrap();
+
+    // when
+    let unchanged = self_poller.check_pending_acks();
+    persist_envelope(&harness, &value);
+    let changed = self_poller.check_pending_acks();
+
+    // then
+    assert!(unchanged.is_ok());
+    assert!(changed.is_err());
+    assert_eq!(self_poller.pending_message_ids(), vec![value.message_id.clone()]);
+}
+
+#[test]
 fn given_crash_after_envelope_persistence_when_new_poller_recovers_then_commits_without_reinjecting() {
     // given
     let harness = create_harness();

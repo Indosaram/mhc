@@ -499,7 +499,8 @@ pub type EventFilter = Arc<dyn Fn(&HarnessEvent) -> bool + Send + Sync>;
 pub type ResnapshotCapture<T> =
     Arc<dyn Fn(Context, Arc<dyn Fn() + Send + Sync>) -> BoxFuture<'static, T> + Send + Sync>;
 pub type SnapshotCapture<T> = Arc<dyn Fn(Context) -> BoxFuture<'static, T> + Send + Sync>;
-pub type WatcherErrorFn = Arc<dyn Fn(String, HarnessEvent, Context) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type WatcherErrorFn =
+    Arc<dyn Fn(String, &'static str, Option<String>, Context) -> BoxFuture<'static, ()> + Send + Sync>;
 pub type WatchListenerFilter = Arc<dyn Fn(&HarnessEvent) -> bool + Send + Sync>;
 
 type Job = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
@@ -700,14 +701,13 @@ impl HarnessEventBus {
 
         let on_error: WatcherErrorFn = {
             let bus = self.clone();
-            Arc::new(move |error, event, context| {
+            Arc::new(move |error, event_type, lane, context| {
                 let bus = bus.clone();
                 Box::pin(async move {
-                    if event.event_type() == "handler_error" {
+                    if event_type == "handler_error" {
                         return;
                     }
-                    let lane = event.lane.clone();
-                    bus.emit(HarnessEvent::handler_error(error, "event", event.event_type(), lane), context).await;
+                    bus.emit(HarnessEvent::handler_error(error, "event", event_type, lane), context).await;
                 })
             })
         };
@@ -1100,11 +1100,13 @@ async fn deliver_watcher<T: Clone + Send + Sync + 'static>(
     let Some(listener) = listener else {
         return;
     };
-    let result = std::panic::AssertUnwindSafe(listener(event.clone(), context.clone())).catch_unwind().await;
+    let event_type = event.event_type();
+    let lane = event.lane.clone();
+    let result = std::panic::AssertUnwindSafe(listener(event, context.clone())).catch_unwind().await;
     if let Err(payload) = result {
         let on_error = inner.on_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         if let Some(on_error) = on_error {
-            let _ = std::panic::AssertUnwindSafe(on_error(panic_message(&payload), event, context))
+            let _ = std::panic::AssertUnwindSafe(on_error(panic_message(&payload), event_type, lane, context))
                 .catch_unwind()
                 .await;
         }

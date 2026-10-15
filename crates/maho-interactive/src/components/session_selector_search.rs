@@ -4,6 +4,8 @@
 //! the exact field subset the search reads so the ranking logic can be ported and tested now; the
 //! todo-35 mode converts its session records into `SessionInfo`.
 
+use std::borrow::Borrow;
+
 use maho_tui::fuzzy::fuzzy_match;
 use regex::Regex;
 
@@ -251,11 +253,11 @@ pub fn filter_and_sort_sessions(
 
 /// [`filter_and_sort_sessions`] over already name-filtered sessions paired with their
 /// `get_session_search_text`, returning borrowed sessions in result order.
-pub(crate) fn filter_and_sort_sessions_with_text<'a>(
-    candidates: Vec<(&'a SessionInfo, &str)>,
+pub(crate) fn filter_and_sort_sessions_with_text<'a, S: Borrow<SessionInfo>>(
+    candidates: Vec<(&'a S, &str)>,
     query: &str,
     sort_mode: SortMode,
-) -> Vec<&'a SessionInfo> {
+) -> Vec<&'a S> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return candidates.into_iter().map(|(session, _)| session).collect();
@@ -276,7 +278,7 @@ pub(crate) fn filter_and_sort_sessions_with_text<'a>(
     }
 
     // Relevance mode: sort by score, tie-break by modified desc.
-    let mut scored: Vec<(&SessionInfo, f64)> = candidates
+    let mut scored: Vec<(&S, f64)> = candidates
         .into_iter()
         .filter_map(|(session, text)| {
             let result = match_session_text(text, &parsed);
@@ -285,7 +287,10 @@ pub(crate) fn filter_and_sort_sessions_with_text<'a>(
         .collect();
 
     scored.sort_by(|(a, a_score), (b, b_score)| {
-        a_score.total_cmp(b_score).then_with(|| b.modified_ms.cmp(&a.modified_ms))
+        a_score.total_cmp(b_score).then_with(|| {
+            let (a, b): (&SessionInfo, &SessionInfo) = ((*a).borrow(), (*b).borrow());
+            b.modified_ms.cmp(&a.modified_ms)
+        })
     });
 
     scored.into_iter().map(|(session, _)| session).collect()

@@ -1,7 +1,7 @@
 use super::{
     edit_diff::{
-        Edit, apply_edits_to_normalized_content, detect_line_ending, generate_diff_string,
-        generate_unified_patch, normalize_to_lf, restore_line_endings, strip_bom,
+        Edit, apply_edits_to_normalized_content, detect_line_ending, generate_diff_and_patch,
+        normalize_to_lf, restore_line_endings, strip_bom,
     },
     file_mutation_queue::with_file_mutation_queue,
     path_utils::resolve_tool_path,
@@ -97,9 +97,9 @@ pub fn create_edit_tool<T: HasExecutionToolContext>() -> AgentHarnessTool<T> {
                         Err(error) => reread_note = Some(format!("postMutate left the file unreadable: {}. Reported diff describes the edit before the hook ran.", error.code.as_str())),
                     }
                 }
-                let diff = generate_diff_string(&applied.base_content, &committed, 4);
+                let (diff, patch) = generate_diff_and_patch(&input.path, &applied.base_content, &committed, 4);
                 let mut result = AgentToolResult::text(append_post_mutate_note(&format!("Successfully replaced {} block(s) in {}.", input.edits.len(), input.path), &[outcome.note, reread_note]));
-                result.details = serde_json::to_value(EditToolDetails { diff: diff.diff, patch: generate_unified_patch(&input.path, &applied.base_content, &committed, 4), first_changed_line: diff.first_changed_line }).map_err(|e| e.to_string())?;
+                result.details = serde_json::to_value(EditToolDetails { diff: diff.diff, patch, first_changed_line: diff.first_changed_line }).map_err(|e| e.to_string())?;
                 Ok(result)
             }, &context).await
         })),

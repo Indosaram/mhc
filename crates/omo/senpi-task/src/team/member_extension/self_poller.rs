@@ -143,7 +143,7 @@ impl MemberSelfPoller {
         if self.is_stopped() {
             return Ok(());
         }
-        if self.pending_lock().is_empty() {
+        if self.pending_lock().is_empty() || self.all_pending_acks_unchanged() {
             return Ok(());
         }
         self.with_lease(|| self.check_pending_under_lease())
@@ -191,6 +191,18 @@ impl MemberSelfPoller {
             }
         }
         false
+    }
+
+    /// Lease-free pre-check: true only when every pending id already missed against the
+    /// current session signature, so the leased scan would skip them all. An unreadable
+    /// signature or any unrecorded id takes the leased path.
+    fn all_pending_acks_unchanged(&self) -> bool {
+        let Ok(signature) = session_jsonl_signature(&self.deps.session_dir) else {
+            return false;
+        };
+        let misses = self.ack_misses.lock().unwrap_or_else(PoisonError::into_inner);
+        let pending = self.pending_lock();
+        !pending.is_empty() && pending.iter().all(|(id, _)| misses.get(id) == Some(&signature))
     }
 
     fn is_stopped(&self) -> bool {

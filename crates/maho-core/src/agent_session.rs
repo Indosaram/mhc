@@ -833,6 +833,12 @@ impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
         self.session.upgrade().map_or_else(Vec::new, |inner| AgentSession { inner }.with_session_manager(|manager|
             manager.current_branch().into_iter().map(session_entry_from_value).collect()))
     }
+    fn get_branch_tail(&self, min_entries: usize, satisfied: &mut dyn FnMut(&Value) -> bool) -> (usize, Vec<maho_ext_api::SessionEntry>) {
+        self.session.upgrade().map_or_else(|| (0, Vec::new()), |inner| AgentSession { inner }.with_session_manager(|manager| {
+            let (len, tail) = manager.current_branch_tail(min_entries, satisfied);
+            (len, tail.into_iter().map(session_entry_from_value).collect())
+        }))
+    }
     fn get_leaf_id(&self) -> Option<String> {
         self.session.upgrade().and_then(|inner| AgentSession { inner }.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)))
     }
@@ -5825,8 +5831,7 @@ impl AgentSession {
     /// senpi `_emit(withResolvedToolName(event, name => this.resolveToolCallName(name)))` for a
     /// published `message_update`: the `resolvedToolName` a `toolcall_start`/`toolcall_end` carries.
     pub fn message_update_resolved_tool_name(&self, event: &maho_agent::types::AgentEvent) -> Option<String> {
-        crate::tool_call_display_name::with_resolved_tool_name(event.clone(), |name| self.resolve_tool_call_name(name))
-            .resolved_tool_name
+        crate::tool_call_display_name::streamed_tool_call_name(event).map(|name| self.resolve_tool_call_name(&name))
     }
 
     /// Active tool names plus search-exposed lazy tools; senpi also appends the tool-search catalog,
@@ -8332,7 +8337,9 @@ impl AgentSession {
             .filter_map(|message| serde_json::to_value(message).ok())
             .collect();
         let messages = crate::messages::filter_context_excluded_messages(messages);
-        let branch = self.with_session_manager(|manager| manager.current_branch());
+        // Id-only walk first: only a compacted branch needs the materialized `current_branch()`.
+        let compacted = self.latest_current_branch_entry_id("compaction", None).is_some();
+        let branch = if compacted { self.with_session_manager(|manager| manager.current_branch()) } else { Vec::new() };
         if let Some(latest) = crate::session_manager::get_latest_compaction_entry(&branch) {
             let compaction_index = branch.iter().rposition(|entry| entry == &latest).unwrap_or(0);
             let has_post_compaction_usage = branch[compaction_index + 1..].iter().rev().any(|entry| {
