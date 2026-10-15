@@ -30,7 +30,7 @@ async fn real_print_entry_rejects_unknown_extension_flags_and_warns_on_unmatched
         "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
     }}}).to_string()).expect("print-entry fixture operation");
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .current_dir(dir.path()).env("HOME", dir.path()).env("OMO_CODING_AGENT_DIR", &agent)
+        .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
         .env_remove("__PI_INTERNAL_SPAWN")
         .args(["-p", "--offline", "--no-session", "--no-tools", "--no-extensions", "--model", "offline/offline", "--models", "nomatch-fixture*", "--definitely-unknown-flag=1", "hello"])
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
@@ -68,7 +68,7 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
         "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
     }}}).to_string()).expect("print-entry fixture operation");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .current_dir(dir.path()).env("HOME", dir.path()).env("OMO_CODING_AGENT_DIR", &agent)
+        .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
         .env_remove("__PI_INTERNAL_SPAWN")
         .args(["-p", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--prompt-template", "acceptance.md", "--model", "offline/offline", "/acceptance fixture"])
         .args(["--system-prompt", "system.md", "--append-system-prompt", "append.md", "--append-system-prompt", "fixture literal append"])

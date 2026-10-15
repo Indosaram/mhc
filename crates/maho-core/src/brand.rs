@@ -68,7 +68,7 @@ pub fn standalone_brand_profile() -> BrandProfile {
         display_version: None,
         config_dir: ".omo".to_owned(),
         flat_layout: false,
-        env_prefix: "OMO".to_owned(),
+        env_prefix: "MAHO".to_owned(),
         user_agent: "maho".to_owned(),
         originator: None,
         update: None,

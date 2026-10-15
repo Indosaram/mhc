@@ -48,8 +48,8 @@ fn public_environment_names_are_exactly_the_three_omo_variables() {
     assert_eq!(
         names,
         vec![
+            "MAHO_LSP_DAEMON_DIR",
             "OMO_LSP_DAEMON_CLI",
-            "OMO_LSP_DAEMON_DIR",
             "OMO_LSP_DAEMON_VERSION"
         ]
     );

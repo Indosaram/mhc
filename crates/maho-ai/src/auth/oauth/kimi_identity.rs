@@ -48,7 +48,7 @@ fn sanitize_header_value(value: &str, fallback: &str) -> String {
 }
 
 fn agent_dir() -> String {
-    let configured = env_value("OMO_CODING_AGENT_DIR").or_else(|| env_value("CODING_AGENT_DIR"));
+    let configured = env_value("MAHO_CODING_AGENT_DIR").or_else(|| env_value("CODING_AGENT_DIR"));
     if let Some(configured) = configured {
         return configured.trim_end_matches('/').to_string();
     }

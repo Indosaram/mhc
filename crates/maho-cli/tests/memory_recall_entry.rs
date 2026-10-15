@@ -282,8 +282,8 @@ fn seed_corpus(paths: &MemoryIdentityPaths) {
 fn child_env(home: &Path, agent: &Path, memory_root: &Path) -> Vec<(String, String)> {
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     env.insert("HOME".to_owned(), home.to_string_lossy().into_owned());
-    env.insert("OMO_CODING_AGENT_DIR".to_owned(), agent.to_string_lossy().into_owned());
-    env.insert("OMO_MEMORY_HOME".to_owned(), memory_root.to_string_lossy().into_owned());
+    env.insert("MAHO_CODING_AGENT_DIR".to_owned(), agent.to_string_lossy().into_owned());
+    env.insert("MAHO_MEMORY_HOME".to_owned(), memory_root.to_string_lossy().into_owned());
     env.insert("PATH".to_owned(), std::env::var("PATH").unwrap_or_default());
     env.into_iter().collect()
 }

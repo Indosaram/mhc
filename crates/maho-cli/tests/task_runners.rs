@@ -186,7 +186,7 @@ fn native_rpc_spawn_preserves_isolation_and_explicit_member_profile() {
     let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
     let options = native_rpc_options(executable.clone(), &agent_dir, BTreeMap::from([
         ("SENPI_TASK_MEMBER".into(), "stale-parent".into()),
-        ("OMO_CODING_AGENT_SESSION_DIR".into(), "parent-transcript".into()),
+        ("MAHO_CODING_AGENT_SESSION_DIR".into(), "parent-transcript".into()),
     ]), Vec::new());
     let spec = RpcRunnerSpec {
         task_id: "isolated-child".into(), cwd: dir.path().to_string_lossy().into_owned(),
@@ -201,10 +201,10 @@ fn native_rpc_spawn_preserves_isolation_and_explicit_member_profile() {
 
     assert_eq!(descriptor.command, executable.to_string_lossy());
     assert_eq!(descriptor.cwd, spec.cwd);
-    assert_eq!(descriptor.env["OMO_CODING_AGENT_DIR"], agent_dir);
+    assert_eq!(descriptor.env["MAHO_CODING_AGENT_DIR"], agent_dir);
     assert_eq!(descriptor.env["SENPI_TASK_MEMBER"], "child-member");
-    assert_eq!(descriptor.env["OMO_CODING_AGENT_SESSION_DIR"], descriptor.env["SENPI_CODING_AGENT_SESSION_DIR"]);
-    assert!(std::path::Path::new(&descriptor.env["OMO_CODING_AGENT_SESSION_DIR"])
+    assert_eq!(descriptor.env["MAHO_CODING_AGENT_SESSION_DIR"], descriptor.env["SENPI_CODING_AGENT_SESSION_DIR"]);
+    assert!(std::path::Path::new(&descriptor.env["MAHO_CODING_AGENT_SESSION_DIR"])
         .starts_with(dir.path().join("state/sessions/isolated-child")));
     assert_eq!(descriptor.args, ["--mode", "rpc", "--no-extensions", "--extension", "native-team", "--model", "provider/model"]);
 }

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::support::paths::resolve_from;
 
-pub const MEMORY_ROOT_ENV_VAR: &str = "OMO_MEMORY_HOME";
+pub const MEMORY_ROOT_ENV_VAR: &str = "MAHO_MEMORY_HOME";
 pub const AGENTS_DIRNAME: &str = "agents";
 pub const REPO_DIRNAME: &str = "repo";
 pub const RUNTIME_DIRNAME: &str = "runtime";

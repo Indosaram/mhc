@@ -32,7 +32,7 @@ async fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
     std::fs::write(state.join("onboarding-completed"), "{}\n").expect("onboarding already complete");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
         .current_dir(dir.path()).env("HOME", dir.path())
-        .env("OMO_CODING_AGENT_DIR", dir.path().join("agent"))
+        .env("MAHO_CODING_AGENT_DIR", dir.path().join("agent"))
         .env_remove("__PI_INTERNAL_SPAWN")
         .args(["--mode", "rpc", "--offline", "--no-session", "--model", "openai/gpt-4o"])
         .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
