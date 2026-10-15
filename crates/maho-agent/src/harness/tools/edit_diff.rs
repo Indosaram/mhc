@@ -194,6 +194,7 @@ pub fn apply_edits_to_normalized_content(
     } else {
         content.to_owned()
     };
+    let normalized_base = normalize_for_fuzzy_match(&base);
     let mut matched = Vec::new();
     for (i, edit) in edits.iter().enumerate() {
         let found = fuzzy_find_text(&base, &edit.old_text);
@@ -208,7 +209,6 @@ pub fn apply_edits_to_normalized_content(
                 )
             });
         };
-        let normalized_base = normalize_for_fuzzy_match(&base);
         let old = normalize_for_fuzzy_match(&edit.old_text);
         let occurrences = if old.is_empty() {
             normalized_base.encode_utf16().count().saturating_sub(1)

@@ -89,7 +89,8 @@ impl SessionEventFanout{
             let Some(actor)=self.actors.get(&id)else{continue;};
             let placeholders=self.targets.capabilities(&id).unwrap_or_default().iter().any(|capability|capability==crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY);
             let selected=if placeholders{crate::media_placeholders::omit_inline_media(&wire)}else{std::borrow::Cow::Borrowed(&wire)};
-            let line=if placeholders{crate::jsonl::serialize_json_line(&*selected).map_err(|error|error.to_string())?}else{line.clone()};
+            // A borrowed `selected` is `wire` itself, whose bytes are already `line`.
+            let line=match &selected{std::borrow::Cow::Owned(scrubbed)=>crate::jsonl::serialize_json_line(scrubbed).map_err(|error|error.to_string())?,std::borrow::Cow::Borrowed(_)=>line.clone()};
             let keyed=selected["type"]=="message_update"&&!selected["message"].is_null()&&matches!(selected["assistantMessageEvent"]["type"].as_str(),Some("text_delta"|"thinking_delta"|"toolcall_delta"))&&selected["assistantMessageEvent"]["contentIndex"].is_number()&&selected["assistantMessageEvent"]["delta"].is_string();
             let demoted_line=if keyed{
                 Some(crate::jsonl::serialize_json_line(&demote_snapshot(&selected)).map_err(|error|error.to_string())?)

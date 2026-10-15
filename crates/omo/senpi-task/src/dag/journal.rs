@@ -260,12 +260,15 @@ fn publish_commit(store: &Arc<DagFileStore>, run_id: &DagRunId, event: &DagRunEv
             .map(|(_, _, subscribers)| subscribers.clone())
             .unwrap_or_default()
     };
+    let mut pushed = false;
     for subscriber in subscribers {
         if subscriber.active.load(std::sync::atomic::Ordering::SeqCst) {
             commit_delivery().queue.lock().unwrap_or_else(PoisonError::into_inner).push_back((subscriber, event.clone()));
+            pushed = true;
         }
     }
-    if !commit_delivery().running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    // Nothing queued: a running worker drains what exists, and none is needed otherwise.
+    if pushed && !commit_delivery().running.swap(true, std::sync::atomic::Ordering::SeqCst) {
         std::thread::spawn(|| loop {
             let next = commit_delivery().queue.lock().unwrap_or_else(PoisonError::into_inner).pop_front();
             let Some((subscriber, event)) = next else {

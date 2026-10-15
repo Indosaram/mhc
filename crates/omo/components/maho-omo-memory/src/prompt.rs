@@ -83,7 +83,7 @@ impl MemoryPromptHandler {
         let turn = self.pins.advance(ProjectionAdvanceInput { repo: input.repo, session_id: input.session.id, branch: input.session.branch, head: head.clone() }, &|record: &ProjectionPinRecord| { let guard = self.record_pin.lock().unwrap_or_else(std::sync::PoisonError::into_inner); if let Some(recorder) = guard.as_ref() { recorder(record); } }).map_err(|error| MemoryPromptError::Compile(CompileError::Git(error.to_string())))?;
         let options = CompileMemoryBlockOptions { agent_id: input.identity.to_owned() };
         let block = if turn.revision.as_deref() == head.as_deref() {
-            self.cache.compile(input.repo, &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity), &options).map_err(MemoryPromptError::Compile)?
+            self.cache.compile_at_head(input.repo, head.as_deref(), &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity), &options).map_err(MemoryPromptError::Compile)?
         } else {
             // A stale pin uses the separate pinned-revision cache entry so it never evicts the HEAD entry.
             self.cache.compile_at_revision(input.repo, turn.revision.as_deref(), &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity), &options).map_err(MemoryPromptError::Compile)?

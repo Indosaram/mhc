@@ -160,6 +160,12 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         let guarded=work_execution.wait(operation);
         tokio::pin!(guarded);
         let mut bridge_calls=Vec::<super::cell_handler::PendingCellToolCall>::new();
+        // The live snapshot is rebuilt once a burst of kernel frames drains (or every
+        // LIVE_REBUILD_INTERVAL during a sustained burst), and always on host-started, tool-call
+        // completion and detach; the final result comes from `finish`, not from this snapshot.
+        let mut live_built=std::time::Instant::now();
+        let mut detach_watch=work_execution.detached();
+        let mut detach_seen=false;
         let mut result=loop {
             tokio::select! {
                 result=&mut guarded=>break result,
@@ -173,7 +179,11 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                     std::task::Poll::Pending
                 }),if !bridge_calls.is_empty()=>{
                     if let Err(error)=handler.finish_tool_call(completed) {work_execution.cancel(AbortReason::new("Error",error));}
-                    *live.lock().expect("live result lock")=handler.builder.live_result();
+                    *live.lock().expect("live result lock")=handler.builder.live_result();live_built=std::time::Instant::now();
+                },
+                detached=async {detach_watch.wait_for(|detached|*detached).await.is_ok()},if !detach_seen=>{
+                    detach_seen=true;
+                    if detached {*live.lock().expect("live result lock")=handler.builder.live_result();live_built=std::time::Instant::now();}
                 },
                 message=messages.recv()=>if let Some(message)=message {
                     if !active.load(std::sync::atomic::Ordering::SeqCst) {continue;}
@@ -198,7 +208,9 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                         };
                         if let Err(error)=handled {work_execution.cancel(AbortReason::new("Error",error));}
                     }
-                    *live.lock().expect("live result lock")=handler.builder.live_result();
+                    if message["type"]=="host-started" || messages.is_empty() || live_built.elapsed()>=LIVE_REBUILD_INTERVAL {
+                        *live.lock().expect("live result lock")=handler.builder.live_result();live_built=std::time::Instant::now();
+                    }
                 },
                 changed=deadline.changed()=>if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_cell.lock().expect("managed cell lock").record_deadline_expiry(expiry.kind);work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
             }
@@ -306,6 +318,9 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         }
     }}
 }
+
+/// Longest a sustained burst of kernel frames may leave the live (peek) snapshot unrebuilt.
+const LIVE_REBUILD_INTERVAL:std::time::Duration=std::time::Duration::from_millis(50);
 
 /// senpi's `EvalBackgroundCapacityError` catch: the refused cell settles `cancelled` with the
 /// machine-readable capacity code on an error result.

@@ -55,8 +55,20 @@ impl MemoryBlockCache {
         options: &CompileMemoryBlockOptions,
     ) -> Result<String, CompileError> {
         let revision = repo.head().map_err(|e| CompileError::Git(e.to_string()))?;
+        self.compile_at_head(repo, revision.as_deref(), template, options)
+    }
+
+    /// [`Self::compile`] with a HEAD revision the caller already resolved: same cache entry, no
+    /// second `git rev-parse`.
+    pub fn compile_at_head(
+        &self,
+        repo: &GitMemoryRepo,
+        head: Option<&str>,
+        template: &str,
+        options: &CompileMemoryBlockOptions,
+    ) -> Result<String, CompileError> {
         let key = format!("{}:{}", hash_memory_template(template), options.agent_id);
-        self.compile_keyed(repo, key, revision.as_deref(), options)
+        self.compile_keyed(repo, key, head, options)
     }
 
     /// Compiles a memory block at an explicit (pinned) revision, returning the cached string while

@@ -284,7 +284,11 @@ pub fn sanitize_anthropic_tool_pairs_if_changed(payload: &Map<String, Value>) ->
     }
 
     let sanitized = sanitized?;
-    let mut out = payload.clone();
+    // Skip deep-copying the replaced `messages`; the insert keeps its key position.
+    let mut out: Map<String, Value> = payload
+        .iter()
+        .map(|(key, value)| (key.clone(), if key == "messages" { Value::Null } else { value.clone() }))
+        .collect();
     out.insert("messages".to_owned(), Value::Array(sanitized));
     Some(out)
 }

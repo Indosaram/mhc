@@ -1085,7 +1085,10 @@ impl Models {
         options: Option<StreamOptions>,
         transforms: ModelsRequestTransforms,
     ) -> Result<AssistantMessage, crate::utils::event_stream::StreamError> {
-        self.stream(model, context, options, transforms).result().await
+        let stream = self.stream(model, context, options, transforms);
+        // Pop events so their partial-message clones are freed instead of queued until drop.
+        while let Ok(Some(_)) = stream.next().await {}
+        stream.result().await
     }
 
     pub fn stream_simple(
@@ -1113,7 +1116,10 @@ impl Models {
         options: Option<SimpleStreamOptions>,
         transforms: ModelsRequestTransforms,
     ) -> Result<AssistantMessage, crate::utils::event_stream::StreamError> {
-        self.stream_simple(model, context, options, transforms).result().await
+        let stream = self.stream_simple(model, context, options, transforms);
+        // Pop events so their partial-message clones are freed instead of queued until drop.
+        while let Ok(Some(_)) = stream.next().await {}
+        stream.result().await
     }
 
     pub fn stream_deferred(
