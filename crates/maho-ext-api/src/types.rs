@@ -1636,6 +1636,9 @@ struct RuntimeState {
     live_filesystem_policies: BTreeMap<String, Vec<FilesystemPolicy>>,
     live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
     live_erased_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn ErasedToolRenderers>>>,
+    /// Bumped on every change to `live_tools` / `live_tool_renderers` / `live_erased_tool_renderers`,
+    /// so a caller can rebuild a tool or renderer snapshot only when the registry actually moved.
+    tool_generation: u64,
     extension_tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>,
     eval_handle_host: Option<SharedEvalHandleHost>,
 }
@@ -1662,6 +1665,7 @@ impl ExtensionRuntime {
                 state.live_tools.extend(pending.tools);
                 state.live_tool_renderers.extend(pending.tool_renderers);
                 state.live_erased_tool_renderers.extend(pending.erased_tool_renderers);
+                state.tool_generation += 1;
                 if let Some(host) = pending.eval_handle_host { state.eval_handle_host = Some(host); }
             }
             for change in pending.providers { match change {
@@ -1688,8 +1692,10 @@ impl ExtensionRuntime {
     pub fn rollback_registration(&self, checkpoint: RuntimeRegistrationCheckpoint) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let next_id = state.next_classifier_id;
+        let tool_generation = state.tool_generation;
         *state = checkpoint.0;
         state.next_classifier_id = next_id;
+        state.tool_generation = tool_generation + 1;
     }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions = Some(actions); }
     pub fn session_actions(&self) -> Result<Arc<dyn ExtensionSessionActions>, ExtensionFailure> {
@@ -1732,6 +1738,7 @@ impl ExtensionRuntime {
         state.live_markdown_transformers.clear(); state.live_rpc_handlers.clear();
         state.live_flags.clear();
         state.live_tools.clear(); state.live_tool_renderers.clear(); state.live_erased_tool_renderers.clear(); state.extension_tool_executors.clear();
+        state.tool_generation += 1;
         state.eval_handle_host = None;
         state.live_mcp_servers.clear();
         state.live_message_renderers.clear(); state.live_entry_renderers.clear();
@@ -1784,6 +1791,10 @@ impl ExtensionRuntime {
     }
     pub fn live_tools(&self, path: &str) -> Option<Vec<RegisteredTool>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tools.get(path).cloned()
+    }
+    /// Changes whenever the live tool or tool-renderer registrations change.
+    pub fn tool_generation(&self) -> u64 {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tool_generation
     }
     pub fn live_tool_definition(&self, name: &str) -> Option<ToolDefinition> {
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2078,6 +2089,7 @@ impl ExtensionApi {
             state.live_tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
             state.live_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.tool_renderers.clone());
             state.live_erased_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.erased_tool_renderers.clone());
+            state.tool_generation += 1;
         }
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {

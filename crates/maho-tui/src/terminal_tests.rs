@@ -999,6 +999,20 @@ fn restart_inside_the_grace_window_keeps_one_subscription() {
 // ---- terminal-sigwinch.test.ts ----
 
 #[test]
+fn a_hung_up_stdin_is_not_swallowed_as_a_detach_error() {
+    with_env(&[("PI_TUI_KEYBOARD_PROTOCOL", Some("0"))], || {
+        let clock = Arc::new(ManualClock::default());
+        let mut terminal = started_terminal(&clock);
+        let hangup = TerminalError::hangup();
+        assert!(hangup.is_hangup());
+        assert!(!eio_string_code().is_hangup());
+        // EIO stays swallowed (the pgrp may regain the tty); end-of-file reaches the caller.
+        assert_eq!(dispatch_stdin_error(hangup.clone()), Err(hangup));
+        terminal.stop().expect("stop");
+    });
+}
+
+#[test]
 fn does_not_panic_when_kill_returns_eacces_or_eperm_for_self_signal() {
     for kind in [
         std::io::ErrorKind::PermissionDenied,
