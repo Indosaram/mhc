@@ -18,7 +18,7 @@ use super::lsp_daemon_owner_attestation::{
 };
 use crate::runtime::node_platform;
 
-pub const OMO_LSP_DAEMON_DIR_ENV: &str = "OMO_LSP_DAEMON_DIR";
+pub const OMO_LSP_DAEMON_DIR_ENV: &str = "MAHO_LSP_DAEMON_DIR";
 pub const OMO_LSP_DAEMON_VERSION_ENV: &str = "OMO_LSP_DAEMON_VERSION";
 
 #[derive(Default, Clone)]

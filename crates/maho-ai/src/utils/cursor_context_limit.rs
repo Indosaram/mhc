@@ -26,7 +26,7 @@ pub fn resolve_cursor_context_limit_store_path(env: EnvLookup<'_>) -> String {
     if let Some(path) = env_var(env, "CURSOR_CONTEXT_LIMIT_STORE").filter(|p| !p.is_empty()) {
         return path;
     }
-    let agent_dir = env_var(env, "OMO_CODING_AGENT_DIR").or_else(|| env_var(env, "CODING_AGENT_DIR")).unwrap_or_else(|| {
+    let agent_dir = env_var(env, "MAHO_CODING_AGENT_DIR").or_else(|| env_var(env, "CODING_AGENT_DIR")).unwrap_or_else(|| {
         let home = env_var(env, "HOME").unwrap_or_else(|| ".".to_owned());
         format!("{}/.omo/agent", trim_trailing_slash(&home))
     });
@@ -261,7 +261,7 @@ mod tests {
         );
         assert_eq!(
             resolve_cursor_context_limit_store_path(Some(&env(&[
-                ("OMO_CODING_AGENT_DIR", "/tmp/senpi-agent"),
+                ("MAHO_CODING_AGENT_DIR", "/tmp/senpi-agent"),
                 ("CODING_AGENT_DIR", "/tmp/x")
             ]))),
             "/tmp/senpi-agent/cursor-context-limits.json"

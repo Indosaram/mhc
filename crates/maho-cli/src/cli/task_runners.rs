@@ -242,7 +242,7 @@ pub fn native_rpc_options(
     mut parent_env: BTreeMap<String, String>,
     inherited_extensions: Vec<String>,
 ) -> RpcProcessRunnerOptions {
-    parent_env.insert("OMO_CODING_AGENT_DIR".into(), agent_dir.into());
+    parent_env.insert("MAHO_CODING_AGENT_DIR".into(), agent_dir.into());
     // Upstream extensions write process.env (Orca deletes the consumed prefill and publishes the
     // status owner pid), so later children inherit those writes.
     maho_ext_api::process_env::apply(&mut parent_env);
@@ -301,9 +301,9 @@ pub fn authenticated_rpc_options(
 
 fn native_profile(mut descriptor: RpcSpawnDescriptor) -> RpcSpawnDescriptor {
     // The imported builder owns member-environment filtering and isolated session paths.
-    // The native host reads the OMO spelling of that same path.
+    // The native host reads the MAHO spelling of that same path.
     if let Some(path) = descriptor.env.get("SENPI_CODING_AGENT_SESSION_DIR").cloned() {
-        descriptor.env.insert("OMO_CODING_AGENT_SESSION_DIR".into(), path);
+        descriptor.env.insert("MAHO_CODING_AGENT_SESSION_DIR".into(), path);
     }
     descriptor
 }
