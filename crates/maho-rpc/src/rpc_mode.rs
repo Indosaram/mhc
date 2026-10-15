@@ -75,6 +75,13 @@ async fn serve(session:&maho_core::agent_session::AgentSession,capabilities:Vec<
     let last_abort_source:crate::connection_handler::LastAbortSource=Default::default();
     let (event_session,event_abort_source)=(session.weak_accessor(),last_abort_source.clone());
     let subscription=session.subscribe(std::sync::Arc::new(move|event|{
+        // `write_event` keeps only what `to_json_event` reads, so a `message_update` skips
+        // serializing the cumulative `message`/`partial` snapshots it would drop.
+        if let maho_ext_api::AgentSessionEvent::Agent(update@maho_ext_api::AgentEvent::MessageUpdate{message,assistant_message_event})=event
+            &&let Some(mut record)=crate::print_mode::stripped_message_update(message,assistant_message_event){
+            if let Ok(record)=&mut record&&let Some(name)=event_session().and_then(|session|session.message_update_resolved_tool_name(update)){record["resolvedToolName"]=name.into();}
+            let _=sender.send(record);return;
+        }
         let record=match event_session(){Some(session)=>crate::connection_handler::rpc_session_event_record(&session,event,&event_abort_source),None=>crate::session_binding::session_event_record(event)};
         let _=sender.send(record);
     }));

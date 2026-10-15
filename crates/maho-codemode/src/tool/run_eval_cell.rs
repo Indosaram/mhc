@@ -114,6 +114,8 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         Arc::new(move |request,signal,_|complete(request,signal,context.clone())) as super::cell_handler::CellCompletionHandler
     });
     let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.clone(),settings:options.settings.clone(),signal:bridge_signal,complete,eval_handle_host:options.eval_handle_host.clone(),owner_session_id:invocation.owner_session_id.clone(),completion_handles:options.completion_handles.clone(),deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
+    // Frame updates are published with the live snapshot below; `finish` always emits the final one.
+    handler.builder.coalesce_updates();
     let status_tx=messages_tx.clone();
     handler.set_status_emitter(Arc::new(move |event|{let _=status_tx.send(serde_json::json!({"type":"status","event":event}));}));
     let live=Arc::new(Mutex::new(handler.builder.live_result()));
@@ -209,6 +211,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                         if let Err(error)=handled {work_execution.cancel(AbortReason::new("Error",error));}
                     }
                     if message["type"]=="host-started" || messages.is_empty() || live_built.elapsed()>=LIVE_REBUILD_INTERVAL {
+                        handler.builder.flush_update();
                         *live.lock().expect("live result lock")=handler.builder.live_result();live_built=std::time::Instant::now();
                     }
                 },

@@ -919,7 +919,12 @@ impl ModelRuntime {
             loop {match source.next().await {Ok(Some(event))=>target.push(event),Ok(None)=>{target.end(None);break;},Err(error)=>{target.fail(error);break;}}}
         });stream
     }
-    pub async fn complete(&self,model:&Model,context:&Context,options:Option<StreamOptions>) -> Result<AssistantMessage,maho_ai::utils::event_stream::StreamError> {self.stream(model,context,options).result().await}
+    pub async fn complete(&self,model:&Model,context:&Context,options:Option<StreamOptions>) -> Result<AssistantMessage,maho_ai::utils::event_stream::StreamError> {
+        let stream=self.stream(model,context,options);
+        // Pop events so their partial-message clones are freed instead of queued until drop.
+        while let Ok(Some(_))=stream.next().await {}
+        stream.result().await
+    }
 }
 
 /// Where a prepared request goes: straight to the provider (rotation already resolved the slot's

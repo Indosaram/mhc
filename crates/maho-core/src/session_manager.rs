@@ -564,6 +564,8 @@ pub struct SessionManager {
     mirror_trimmed: bool,
     /// senpi `fullEntryCount`: non-header entries in the full history, kept across mirror trims.
     full_entry_count: usize,
+    /// `full_entry_count` at the latest mirror trim: entries before it may be missing from the mirror.
+    trimmed_entry_count: usize,
 }
 
 impl SessionManager {
@@ -600,6 +602,7 @@ impl SessionManager {
             resident_blobs_dir,
             mirror_trimmed: false,
             full_entry_count: 0,
+            trimmed_entry_count: 0,
         };
         if persist && !manager.session_dir.is_empty() {
             let _ = std::fs::create_dir_all(&manager.session_dir);
@@ -811,6 +814,7 @@ impl SessionManager {
         self.session_file = Some(resolve_path(session_file, session_file, &PathInputOptions::default()));
         self.sync_session_file_ownership();
         self.mirror_trimmed = false;
+        self.trimmed_entry_count = 0;
         self.resident_store.clear();
         let Some(current) = self.session_file.clone() else { return Ok(()) };
         if Path::new(&current).exists() {
@@ -888,6 +892,7 @@ impl SessionManager {
         }
         self.file_entries = vec![Value::Object(header)];
         self.mirror_trimmed = false;
+        self.trimmed_entry_count = 0;
         self.full_entry_count = 0;
         self.resident_store.clear();
         if let Some(previous_blobs_dir) = previous_blobs_dir {
@@ -1169,6 +1174,7 @@ impl SessionManager {
         }
         self.resident_store.spill_resident();
         self.mirror_trimmed = true;
+        self.trimmed_entry_count = self.full_entry_count;
         self.file_entries = header.into_iter().chain(retained).collect();
         self.externalize_file_entries();
         self.build_index();
@@ -1332,6 +1338,9 @@ impl SessionManager {
     /// resident tail. `None` when `skip` exceeds the history or the tail no longer holds every
     /// entry after it (a compaction trim dropped some), so callers fall back to `entries()`.
     pub fn entries_after(&self, skip: usize) -> Option<Vec<Value>> {
+        if self.mirror_trimmed && skip < self.trimmed_entry_count {
+            return None;
+        }
         let count = self.full_entry_count.checked_sub(skip)?;
         let resident: Vec<&Value> = self.file_entries.iter().filter(|entry| entry_type(entry) != "session").collect();
         let start = resident.len().checked_sub(count)?;
@@ -2475,6 +2484,26 @@ mod tests {
         manager.set_leaf(Some(&first_id)).expect("reload trimmed history");
         assert_eq!(manager.leaf_id(), Some(first_id.as_str()));
         assert_eq!(manager.file_entries.len(), 7);
+    }
+
+    #[test]
+    fn entries_after_refuses_a_skip_that_predates_a_mirror_trim() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        for _ in 0..4 {
+            manager.append_thinking_level_change("high", None);
+        }
+        manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        manager.append_message(json!({ "role": "assistant", "content": [], "provider": "p", "model": "m" }));
+        let skip = manager.get_entry_count();
+        manager.append_message(json!({ "role": "user", "content": "dropped", "timestamp": 2 }));
+        let kept = manager.append_message(json!({ "role": "user", "content": "kept", "timestamp": 3 }));
+        manager.append_compaction("digest", kept["id"].as_str().expect("kept id"), 10, None, None, None);
+        assert!(manager.entries_after(skip).is_none());
+        let after_trim = manager.get_entry_count();
+        manager.append_message(json!({ "role": "user", "content": "after", "timestamp": 4 }));
+        assert_eq!(manager.entries_after(after_trim).expect("resident tail").len(), 1);
     }
 
     #[test]

@@ -95,17 +95,19 @@ fn entry_id(entry: &Value) -> Option<&str> {
     entry.get("id").and_then(Value::as_str)
 }
 
+/// The cached shape of a session's [`tool_branch_tail`]: the leaf and branch length it was taken
+/// at plus one [`TailMark`] per kept entry. No entry payloads are retained; the hook re-reads the
+/// kept suffix (`marks.len()` entries) on demand, so the cache stays small for long sessions.
 struct CachedBranchTail {
     leaf_id: String,
     len: usize,
-    tail: Arc<Vec<Value>>,
     marks: Vec<TailMark>,
 }
 
-/// Per-session [`tool_branch_tail`] results, extended incrementally: a hook walks only the entries
-/// appended since the cached leaf and re-trims the retained tail, instead of re-walking (and
-/// re-materializing) the branch back to the 6th-newest user prompt on every tool event. Any other
-/// branch change (leaf moved off the cached chain, trimmed history) falls back to the full scan.
+/// Per-session [`tool_branch_tail`] bookkeeping, extended incrementally: a hook walks only the
+/// entries appended since the cached leaf to find where the kept tail starts, instead of
+/// re-scanning the branch back to the 6th-newest user prompt on every tool event. Any other branch
+/// change (leaf moved off the cached chain, trimmed history) falls back to the full scan.
 #[derive(Default)]
 pub struct ToolBranchTailCache {
     sessions: std::sync::Mutex<std::collections::BTreeMap<String, CachedBranchTail>>,
@@ -115,8 +117,8 @@ impl ToolBranchTailCache {
     /// The same `(len, tail)` [`tool_branch_tail`] returns for the current branch.
     pub fn tail(&self, session_id: &str, session_manager: &dyn maho_ext_api::SessionManager) -> (usize, Arc<Vec<Value>>) {
         let cached = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
-        let next = cached.and_then(|cached| Self::extend(cached, session_manager)).unwrap_or_else(|| Self::full(session_manager));
-        let result = (next.len, Arc::clone(&next.tail));
+        let (next, tail) = cached.and_then(|cached| Self::extend(cached, session_manager)).unwrap_or_else(|| Self::full(session_manager));
+        let result = (next.len, Arc::new(tail));
         if !next.leaf_id.is_empty() {
             self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.to_owned(), next);
         }
@@ -127,33 +129,41 @@ impl ToolBranchTailCache {
         self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
     }
 
-    fn full(session_manager: &dyn maho_ext_api::SessionManager) -> CachedBranchTail {
+    fn full(session_manager: &dyn maho_ext_api::SessionManager) -> (CachedBranchTail, Vec<Value>) {
         let (len, tail) = tool_branch_tail(session_manager);
         let marks = tail.iter().map(tail_mark).collect();
         let leaf_id = tail.last().and_then(entry_id).unwrap_or_default().to_owned();
-        CachedBranchTail { leaf_id, len, tail: Arc::new(tail), marks }
+        (CachedBranchTail { leaf_id, len, marks }, tail)
     }
 
-    fn extend(mut cached: CachedBranchTail, session_manager: &dyn maho_ext_api::SessionManager) -> Option<CachedBranchTail> {
+    fn extend(mut cached: CachedBranchTail, session_manager: &dyn maho_ext_api::SessionManager) -> Option<(CachedBranchTail, Vec<Value>)> {
         let (len, walked) = session_manager.get_branch_tail(0, &mut |entry| entry_id(entry) == Some(cached.leaf_id.as_str()));
         let mut walked = walked.into_iter();
         if entry_id(&walked.next()?.data) != Some(cached.leaf_id.as_str()) || len != cached.len + walked.len() {
             return None;
         }
-        if len == cached.len {
-            return Some(cached);
-        }
-        let tail = Arc::make_mut(&mut cached.tail);
-        for entry in walked {
-            cached.marks.push(tail_mark(&entry.data));
-            tail.push(entry.data);
-        }
+        let appended: Vec<Value> = walked.map(|entry| entry.data).collect();
+        cached.marks.extend(appended.iter().map(tail_mark));
         let start = tail_start(&cached.marks);
-        tail.drain(..start);
         cached.marks.drain(..start);
+        let kept = cached.marks.len();
+        let tail = if kept <= appended.len() {
+            let mut appended = appended;
+            appended.drain(..appended.len() - kept);
+            appended
+        } else {
+            // The kept tail reaches back past the appended entries: re-read exactly that suffix.
+            let (reread_len, reread) = session_manager.get_branch_tail(kept, &mut |_| true);
+            let reread: Vec<Value> = reread.into_iter().map(|entry| entry.data).collect();
+            let leaf = appended.last().and_then(entry_id).unwrap_or(cached.leaf_id.as_str());
+            if reread_len != len || reread.len() != kept || reread.last().and_then(entry_id) != Some(leaf) {
+                return None;
+            }
+            reread
+        };
         cached.leaf_id = tail.last().and_then(entry_id)?.to_owned();
         cached.len = len;
-        Some(cached)
+        Some((cached, tail))
     }
 }
 
@@ -292,7 +302,15 @@ mod tests {
             }
             let (len, tail) = cache.tail("session", &branch);
             assert_eq!((len, tail.as_ref().clone()), tool_branch_tail(&branch), "step {step}");
+            // The cache retains only per-entry marks for the kept tail, never the payloads.
+            let sessions = cache.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(cached) = sessions.get("session") {
+                assert_eq!((cached.len, cached.marks.len(), Some(cached.leaf_id.as_str())), (len, tail.len(), tail.last().and_then(entry_id)), "step {step}");
+            }
         }
+        // Re-reading the same branch with nothing appended still yields the identical tail.
+        let (len, tail) = cache.tail("session", &branch);
+        assert_eq!((len, tail.as_ref().clone()), tool_branch_tail(&branch));
         // A branch that no longer extends the cached leaf falls back to the full scan.
         branch.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).truncate(10);
         let (len, tail) = cache.tail("session", &branch);

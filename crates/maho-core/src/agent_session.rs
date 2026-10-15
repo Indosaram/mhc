@@ -3961,12 +3961,14 @@ impl AgentSession {
                     }, ..Default::default()
                 }));
                 let remaining = (schedule.deadline_ms - session.fallback_now()).max(0.0);
+                // Pop events so their partial-message clones are freed instead of queued until drop.
+                let settled = async { while let Ok(Some(_)) = request.next().await {} request.result().await };
                 let result = if ticket.index == 1 {
-                    match tokio::time::timeout(std::time::Duration::from_secs_f64(remaining / 1000.0), request.result()).await {
+                    match tokio::time::timeout(std::time::Duration::from_secs_f64(remaining / 1000.0), settled).await {
                         Ok(result) => result.ok(),
                         Err(_) => continue,
                     }
-                } else { request.result().await.ok() };
+                } else { settled.await.ok() };
                 let ok = result.is_some_and(|message| !matches!(message.stop_reason, StopReason::Error | StopReason::Aborted));
                 let events = lock(&session.probe_scheduler).finish_probe(&ticket, ok);
                 if ok && let Some(controller) = session.retry_fallback.lock().await.as_mut() { controller.cooldowns.clear(&format!("{}/{}", model.provider, model.id)); }

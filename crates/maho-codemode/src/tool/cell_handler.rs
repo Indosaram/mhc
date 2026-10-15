@@ -45,7 +45,7 @@ impl CellHandler {
         match message["type"].as_str() {
             Some("text") => self.builder.push(message["data"].as_str().unwrap_or("")).await?,
             Some("phase") => self.builder.set_phase(message["title"].as_str().unwrap_or("").into()),
-            Some("status") => if self.runtime.settings.status_events { upsert_status_event(&mut self.builder.state.status_events,message["event"].clone());self.builder.emit_update(false); },
+            Some("status") => if self.runtime.settings.status_events { upsert_status_event(&mut self.builder.state.status_events,message["event"].clone());self.builder.request_update(); },
             Some("log") => self.builder.push(&format!("{}\n",message["message"].as_str().unwrap_or(""))).await?,
             Some("display") => self.builder.display(message["mimeType"].as_str().unwrap_or(""),message["dataBase64"].as_str().unwrap_or("")).await?,
             Some("tool-call") => self.handle_tool_call(message).await?,

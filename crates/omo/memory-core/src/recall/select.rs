@@ -5,7 +5,7 @@
 
 use std::cell::OnceCell;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use unicode_normalization::UnicodeNormalization;
@@ -414,12 +414,15 @@ fn fuse_candidates(
     bm25: &[RankedCandidate],
 ) -> Vec<RankedCandidate> {
     let mut fused: Vec<(&str, FusedEntry)> = Vec::new();
+    let mut index_of: HashMap<&str, usize> = HashMap::new();
     let mut vote = |candidate: &RankedCandidate, weight: f64, bm25_rank: f64| {
         let path = path_of(documents, candidate);
-        if let Some((_, entry)) = fused.iter_mut().find(|(existing, _)| *existing == path) {
+        if let Some(&index) = index_of.get(path) {
+            let entry = &mut fused[index].1;
             entry.weight += weight;
             entry.bm25_rank = entry.bm25_rank.min(bm25_rank);
         } else {
+            index_of.insert(path, fused.len());
             fused.push((
                 path,
                 FusedEntry {
