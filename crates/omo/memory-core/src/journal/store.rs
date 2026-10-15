@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::journal::cursor::{
-    ReflectionSnapshot, ReflectionTranscriptState, capture_cursor_snapshot, derive_state,
-    finalize_cursor, initial_reflection_state, parse_state,
+    ReflectionSnapshot, ReflectionTranscriptState, capture_cursor_snapshot, count_completed_steps,
+    derive_state, derive_state_with_total, finalize_cursor, initial_reflection_state, parse_state,
 };
 use crate::journal::entries::{
     TranscriptEntry, TranscriptProjection, parse_transcript_entry, project_transcript_entries,
@@ -167,10 +167,39 @@ impl TranscriptJournal {
             }
             let value: serde_json::Value = serde_json::from_str(trimmed)
                 .map_err(|_| JournalError::InvalidTranscriptJournalRow)?;
-            let entry = parse_transcript_entry(&value)?;
+            let entry = parse_transcript_entry(value)?;
             entries.push(entry);
         }
         Ok(entries)
+    }
+
+    /// Raw transcript text; creates the file when missing, like [`Self::read_entries_unlocked`].
+    fn read_raw_unlocked(&self) -> Result<String, JournalError> {
+        match std::fs::read_to_string(&self.transcript_path) {
+            Ok(content) => Ok(content),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.transcript_path)
+                    .map_err(JournalError::Io)?;
+                Ok(String::new())
+            }
+            Err(err) => Err(JournalError::Io(err)),
+        }
+    }
+
+    /// Validate every row without building entries; returns the completed-step count.
+    fn count_completed_rows_unlocked(&self) -> Result<usize, JournalError> {
+        let raw = self.read_raw_unlocked()?;
+        let mut completed = 0;
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && parse_row_probe(trimmed)?.is_completed_step() {
+                completed += 1;
+            }
+        }
+        Ok(completed)
     }
 
     fn read_state_unlocked(&self) -> Result<ReflectionTranscriptState, JournalError> {
@@ -186,9 +215,9 @@ impl TranscriptJournal {
     fn write_state_unlocked(
         &self,
         state: &ReflectionTranscriptState,
-        entries: &[TranscriptEntry],
+        total_completed_steps: usize,
     ) -> Result<(), JournalError> {
-        let derived = derive_state(state, entries);
+        let derived = derive_state_with_total(state, total_completed_steps);
         let temp_filename = format!(
             "{}.tmp-{}",
             self.state_path
@@ -205,11 +234,20 @@ impl TranscriptJournal {
     }
 
     fn append_unlocked(&self, entries: &[TranscriptEntry]) -> Result<AppendResult, JournalError> {
-        let existing = self.read_entries_unlocked()?;
-        let mut source_ids: HashSet<String> = existing
-            .iter()
-            .map(|e| e.source_line_id().to_string())
-            .collect();
+        let raw = self.read_raw_unlocked()?;
+        let mut existing_completed = 0;
+        let mut source_ids: HashSet<std::borrow::Cow<'_, str>> = HashSet::new();
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let row = parse_row_probe(trimmed)?;
+            if row.is_completed_step() {
+                existing_completed += 1;
+            }
+            source_ids.insert(row.source_line_id);
+        }
         let mut fresh = Vec::new();
         let mut skipped = 0;
         for entry in entries {
@@ -217,8 +255,8 @@ impl TranscriptJournal {
             if source_ids.contains(id) {
                 skipped += 1;
             } else {
-                source_ids.insert(id.to_string());
-                fresh.push(entry.clone());
+                source_ids.insert(std::borrow::Cow::Borrowed(id));
+                fresh.push(entry);
             }
         }
         if !fresh.is_empty() {
@@ -227,20 +265,20 @@ impl TranscriptJournal {
                 .append(true)
                 .open(&self.transcript_path)
                 .map_err(JournalError::Io)?;
-            for entry in &fresh {
+            for entry in fresh.iter().copied() {
                 let json = serde_json::to_string(entry).map_err(JournalError::Json)?;
                 writeln!(file, "{json}").map_err(JournalError::Io)?;
             }
             file.flush().map_err(JournalError::Io)?;
         }
-        let mut all_entries = existing;
-        all_entries.extend(fresh.clone());
+        let appended = fresh.len();
+        let fresh_completed = fresh
+            .iter()
+            .filter(|entry| count_completed_steps(std::slice::from_ref(*entry)) == 1)
+            .count();
         let current_state = self.read_state_unlocked()?;
-        self.write_state_unlocked(&current_state, &all_entries)?;
-        Ok(AppendResult {
-            appended: fresh.len(),
-            skipped,
-        })
+        self.write_state_unlocked(&current_state, existing_completed + fresh_completed)?;
+        Ok(AppendResult { appended, skipped })
     }
 
     /// Reconcile structured transcript messages by projecting and appending new rows.
@@ -271,10 +309,10 @@ impl TranscriptJournal {
     /// Retrieve the current reflection transcript state, recalculating step counters.
     pub fn get_state(&self) -> Result<ReflectionTranscriptState, JournalError> {
         self.locked(None, || {
-            let entries = self.read_entries_unlocked()?;
+            let completed = self.count_completed_rows_unlocked()?;
             let current_state = self.read_state_unlocked()?;
-            let state = derive_state(&current_state, &entries);
-            self.write_state_unlocked(&state, &entries)?;
+            let state = derive_state_with_total(&current_state, completed);
+            self.write_state_unlocked(&state, completed)?;
             Ok(state)
         })
     }
@@ -282,10 +320,10 @@ impl TranscriptJournal {
     /// Update the pending compaction flag in the reflection state file.
     pub fn set_pending_compaction(&self, pending: bool) -> Result<(), JournalError> {
         self.locked(None, || {
-            let entries = self.read_entries_unlocked()?;
+            let completed = self.count_completed_rows_unlocked()?;
             let mut state = self.read_state_unlocked()?;
             state.pending_compaction = Some(pending);
-            self.write_state_unlocked(&state, &entries)
+            self.write_state_unlocked(&state, completed)
         })
     }
 
@@ -309,7 +347,7 @@ impl TranscriptJournal {
             }
             let mut updated_state = state;
             updated_state.last_reflection_started_at = Some((self.now)());
-            self.write_state_unlocked(&updated_state, &entries)?;
+            self.write_state_unlocked(&updated_state, count_completed_steps(&entries))?;
             Ok(Some(snapshot))
         })
     }
@@ -345,8 +383,124 @@ impl TranscriptJournal {
             let current_state = self.read_state_unlocked()?;
             let state = derive_state(&current_state, &entries);
             let final_state = finalize_cursor(&state, &entries, snapshot, success, &(self.now)());
-            self.write_state_unlocked(&final_state, &entries)
+            self.write_state_unlocked(&final_state, count_completed_steps(&entries))
         })
+    }
+}
+
+/// Shape of one optional JSON field, read without allocating its contents.
+enum FieldProbe {
+    Str { empty: bool, blank: bool },
+    Bool,
+    Other,
+}
+
+impl<'de> serde::Deserialize<'de> for FieldProbe {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ProbeVisitor;
+        impl<'v> serde::de::Visitor<'v> for ProbeVisitor {
+            type Value = FieldProbe;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<FieldProbe, E> {
+                Ok(FieldProbe::Str {
+                    empty: v.is_empty(),
+                    blank: v.trim().is_empty(),
+                })
+            }
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<FieldProbe, E> {
+                Ok(FieldProbe::Bool)
+            }
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<FieldProbe, E> {
+                Ok(FieldProbe::Other)
+            }
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<FieldProbe, E> {
+                Ok(FieldProbe::Other)
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<FieldProbe, E> {
+                Ok(FieldProbe::Other)
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<FieldProbe, E> {
+                Ok(FieldProbe::Other)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'v>>(
+                self,
+                mut seq: A,
+            ) -> Result<FieldProbe, A::Error> {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(FieldProbe::Other)
+            }
+            fn visit_map<A: serde::de::MapAccess<'v>>(
+                self,
+                mut map: A,
+            ) -> Result<FieldProbe, A::Error> {
+                while map
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(FieldProbe::Other)
+            }
+        }
+        deserializer.deserialize_any(ProbeVisitor)
+    }
+}
+
+/// Borrowed view of one journal row; validated like [`parse_transcript_entry`].
+#[derive(serde::Deserialize)]
+struct RowProbe<'a> {
+    #[serde(borrow)]
+    kind: std::borrow::Cow<'a, str>,
+    #[serde(borrow)]
+    source_line_id: std::borrow::Cow<'a, str>,
+    #[serde(default)]
+    captured_at: Option<FieldProbe>,
+    #[serde(default)]
+    source_message_id: Option<FieldProbe>,
+    #[serde(default)]
+    text: Option<FieldProbe>,
+    #[serde(default)]
+    name: Option<FieldProbe>,
+    #[serde(rename = "argsText", default)]
+    args_text: Option<FieldProbe>,
+    #[serde(rename = "resultText", default)]
+    result_text: Option<FieldProbe>,
+    #[serde(rename = "resultOk", default)]
+    result_ok: Option<FieldProbe>,
+}
+
+impl RowProbe<'_> {
+    fn is_completed_step(&self) -> bool {
+        self.kind == "assistant"
+            && matches!(self.source_message_id, Some(FieldProbe::Str { empty: false, .. }))
+            && matches!(self.text, Some(FieldProbe::Str { blank: false, .. }))
+    }
+}
+
+fn parse_row_probe(line: &str) -> Result<RowProbe<'_>, JournalError> {
+    // Structs also accept JSON arrays; journal rows must be objects.
+    if !line.starts_with('{') {
+        return Err(JournalError::InvalidTranscriptJournalRow);
+    }
+    let row: RowProbe<'_> =
+        serde_json::from_str(line).map_err(|_| JournalError::InvalidTranscriptJournalRow)?;
+    let is_str = |field: &Option<FieldProbe>| matches!(field, Some(FieldProbe::Str { .. }));
+    let opt_str = |field: &Option<FieldProbe>| matches!(field, None | Some(FieldProbe::Str { .. }));
+    if !is_str(&row.captured_at) || !is_str(&row.source_message_id) {
+        return Err(JournalError::InvalidTranscriptJournalRow);
+    }
+    let valid = if row.kind == "tool_call" {
+        opt_str(&row.name)
+            && opt_str(&row.args_text)
+            && opt_str(&row.result_text)
+            && matches!(row.result_ok, None | Some(FieldProbe::Bool))
+    } else {
+        matches!(&*row.kind, "user" | "assistant" | "reasoning" | "error") && is_str(&row.text)
+    };
+    if valid {
+        Ok(row)
+    } else {
+        Err(JournalError::InvalidTranscriptJournalRow)
     }
 }
 

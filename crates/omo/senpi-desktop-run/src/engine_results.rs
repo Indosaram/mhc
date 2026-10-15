@@ -189,3 +189,74 @@ pub fn expect_ax_nodes(method: &str, value: Value) -> Result<Vec<AxNode>, Deskto
     let list: Vec<AxNodeCustomHelper> = expect_result(method, value)?;
     Ok(list.into_iter().map(|h| h.0).collect())
 }
+
+fn malformed(method: &str, e: &serde_json::Error) -> DesktopError {
+    DesktopError::Service(DesktopServiceError::internal(format!(
+        "desktop engine sent a malformed {method} result: {e}"
+    )))
+}
+
+/// Shape check of [`expect_result`] that borrows `value` instead of consuming it.
+pub(crate) fn check_result<T: for<'de> Deserialize<'de>>(
+    method: &str,
+    value: &Value,
+) -> Result<(), DesktopError> {
+    T::deserialize(value).map(|_| ()).map_err(|e| malformed(method, &e))
+}
+
+/// Shape check of [`expect_ax_node`] that borrows `value`.
+pub(crate) fn check_ax_node(method: &str, value: &Value) -> Result<(), DesktopError> {
+    check_result::<AxNodeCustomHelper>(method, value)
+}
+
+/// Shape check of [`expect_ax_nodes`] that borrows `value`.
+pub(crate) fn check_ax_nodes(method: &str, value: &Value) -> Result<(), DesktopError> {
+    check_result::<Vec<AxNodeCustomHelper>>(method, value)
+}
+
+/// Validates a JSON string without copying it (same error text as `String`).
+struct StrCheck;
+
+impl<'de> Deserialize<'de> for StrCheck {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = StrCheck;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a string")
+            }
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<StrCheck, E> {
+                Ok(StrCheck)
+            }
+        }
+        deserializer.deserialize_str(V)
+    }
+}
+
+/// Field-for-field mirror of [`CaptureResult`] whose `data` is validated, not copied.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct CaptureResultCheck {
+    mode: StrCheck,
+    #[serde(default)]
+    data: Option<StrCheck>,
+    #[serde(default)]
+    mime_type: Option<StrCheck>,
+    #[serde(default)]
+    artifact_path: Option<StrCheck>,
+    width: i64,
+    height: i64,
+    source_width: i64,
+    source_height: i64,
+    scale: f64,
+    target: StrCheck,
+    frame_id: StrCheck,
+    #[serde(default)]
+    note: Option<StrCheck>,
+}
+
+/// Shape check of `expect_result::<CaptureResult>` that never copies the image data.
+pub(crate) fn check_capture(method: &str, value: &Value) -> Result<(), DesktopError> {
+    check_result::<CaptureResultCheck>(method, value)
+}

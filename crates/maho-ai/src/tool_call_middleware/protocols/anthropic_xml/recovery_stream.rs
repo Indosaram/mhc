@@ -179,7 +179,7 @@ impl InvokeRecoveryStreamParser {
         let RecoveryState::Idle { tag } = &self.state else { unreachable!() };
         let mut tag = tag.clone();
         if tag.is_empty() && character != '<' {
-            super::invoke_stream_helpers::emit_text(events, &character.to_string());
+            super::invoke_stream_helpers::emit_text(events, character.encode_utf8(&mut [0u8; 4]));
             return;
         }
         if character == '<' && !tag.is_empty() {
@@ -264,7 +264,7 @@ impl InvokeRecoveryStreamParser {
         }
         let RecoveryState::Active { close_matcher, source, .. } = &mut self.state else { unreachable!() };
         source.push(character);
-        let matched = close_matcher.feed(&character.to_string());
+        let matched = close_matcher.feed(character.encode_utf8(&mut [0u8; 4]));
         if matched {
             self.finish_active(events);
         } else if source.len() == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH {

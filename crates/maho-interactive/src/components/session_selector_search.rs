@@ -78,7 +78,7 @@ fn normalize_whitespace_lower(text: &str) -> String {
         .join(" ")
 }
 
-fn get_session_search_text(session: &SessionInfo) -> String {
+pub(crate) fn get_session_search_text(session: &SessionInfo) -> String {
     format!(
         "{} {} {} {}",
         session.id,
@@ -187,13 +187,16 @@ pub fn parse_search_query(query: &str) -> ParsedSearchQuery {
 }
 
 pub fn match_session(session: &SessionInfo, parsed: &ParsedSearchQuery) -> MatchResult {
-    let text = get_session_search_text(session);
+    match_session_text(&get_session_search_text(session), parsed)
+}
 
+/// [`match_session`] against a precomputed `get_session_search_text`.
+fn match_session_text(text: &str, parsed: &ParsedSearchQuery) -> MatchResult {
     if parsed.mode == SearchMode::Regex {
         let Some(regex) = &parsed.regex else {
             return MatchResult { matches: false, score: 0.0 };
         };
-        return match regex.find(&text) {
+        return match regex.find(text) {
             Some(found) => MatchResult { matches: true, score: found.start() as f64 * 0.1 },
             None => MatchResult { matches: false, score: 0.0 },
         };
@@ -208,7 +211,7 @@ pub fn match_session(session: &SessionInfo, parsed: &ParsedSearchQuery) -> Match
 
     for token in &parsed.tokens {
         if token.kind == TokenKind::Phrase {
-            let normalized = normalized_text.get_or_insert_with(|| normalize_whitespace_lower(&text));
+            let normalized = normalized_text.get_or_insert_with(|| normalize_whitespace_lower(text));
             let phrase = normalize_whitespace_lower(&token.value);
             if phrase.is_empty() {
                 continue;
@@ -220,7 +223,7 @@ pub fn match_session(session: &SessionInfo, parsed: &ParsedSearchQuery) -> Match
             continue;
         }
 
-        let matched = fuzzy_match(&token.value, &text);
+        let matched = fuzzy_match(&token.value, text);
         if !matched.matches {
             return MatchResult { matches: false, score: 0.0 };
         }
@@ -236,14 +239,26 @@ pub fn filter_and_sort_sessions(
     sort_mode: SortMode,
     name_filter: NameFilter,
 ) -> Vec<SessionInfo> {
-    let name_filtered: Vec<SessionInfo> = sessions
-        .iter()
-        .filter(|session| matches_name_filter(session, name_filter))
-        .cloned()
-        .collect();
+    let name_filtered = sessions.iter().filter(|session| matches_name_filter(session, name_filter));
+    if query.trim().is_empty() {
+        return name_filtered.cloned().collect();
+    }
+    let texts: Vec<(&SessionInfo, String)> =
+        name_filtered.map(|session| (session, get_session_search_text(session))).collect();
+    let candidates: Vec<(&SessionInfo, &str)> = texts.iter().map(|(session, text)| (*session, text.as_str())).collect();
+    filter_and_sort_sessions_with_text(candidates, query, sort_mode).into_iter().cloned().collect()
+}
+
+/// [`filter_and_sort_sessions`] over already name-filtered sessions paired with their
+/// `get_session_search_text`, returning borrowed sessions in result order.
+pub(crate) fn filter_and_sort_sessions_with_text<'a>(
+    candidates: Vec<(&'a SessionInfo, &str)>,
+    query: &str,
+    sort_mode: SortMode,
+) -> Vec<&'a SessionInfo> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return name_filtered;
+        return candidates.into_iter().map(|(session, _)| session).collect();
     }
 
     let parsed = parse_search_query(query);
@@ -253,17 +268,18 @@ pub fn filter_and_sort_sessions(
 
     // Recent mode: filter only, keep incoming order.
     if sort_mode == SortMode::Recent {
-        return name_filtered
+        return candidates
             .into_iter()
-            .filter(|session| match_session(session, &parsed).matches)
+            .filter(|(_, text)| match_session_text(text, &parsed).matches)
+            .map(|(session, _)| session)
             .collect();
     }
 
     // Relevance mode: sort by score, tie-break by modified desc.
-    let mut scored: Vec<(SessionInfo, f64)> = name_filtered
+    let mut scored: Vec<(&SessionInfo, f64)> = candidates
         .into_iter()
-        .filter_map(|session| {
-            let result = match_session(&session, &parsed);
+        .filter_map(|(session, text)| {
+            let result = match_session_text(text, &parsed);
             result.matches.then_some((session, result.score))
         })
         .collect();

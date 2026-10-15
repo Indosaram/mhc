@@ -71,13 +71,18 @@ impl AnthropicNativeToolSearchAdapter {
     /// the catalog and the provider/config gate from the bound deps instead of the
     /// per-call arguments. No-op when no deps were bound.
     pub fn apply_before_request_with_deps(&mut self,target:Option<&AnthropicToolSearchTarget<'_>>,payload:&Value)->Value {
+        self.apply_before_request_with_deps_if_changed(target,payload).unwrap_or_else(||payload.clone())
+    }
+    /// Same as `apply_before_request_with_deps`, but `None` when the payload is left untouched,
+    /// so callers can skip copying it. Unsupported providers return before the catalog is built.
+    pub fn apply_before_request_with_deps_if_changed(&mut self,target:Option<&AnthropicToolSearchTarget<'_>>,payload:&Value)->Option<Value> {
         self.injected_last_request=false;
-        let Some(deps)=self.deps.clone() else {return payload.clone();};
-        if self.disabled || !(deps.enabled)() { return payload.clone(); }
+        let deps=self.deps.clone()?;
+        if self.disabled || !supports_anthropic_native_tool_search(target) || !payload.is_object() || !(deps.enabled)() { return None; }
         let catalog=(deps.get_catalog)();
         let config=AnthropicNativeInjectionConfig {search_tool_name:deps.search_tool_name.as_deref(),is_deferrable:deps.is_deferrable.as_ref(),catalog:&catalog,get_tool_definition:deps.get_tool_definition.as_ref()};
         let next=transform_anthropic_native_tool_search(target,payload,&config);
-        self.injected_last_request=next.is_some(); next.unwrap_or_else(||payload.clone())
+        self.injected_last_request=next.is_some(); next
     }
     pub fn note_response_status(&mut self,status:u16)->Option<&str> {
         if status!=400 || !self.injected_last_request || self.disabled { return None; }

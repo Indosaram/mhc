@@ -33,11 +33,13 @@ impl EntryKind {
     }
 }
 
-/// TS `WorkspaceSnapshotEntry`.
+/// TS `WorkspaceSnapshotEntry`. `FileDigest` holds only `file_digest(content)` for a file
+/// whose content no operation edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceSnapshotEntry {
     Missing,
     File { content: String },
+    FileDigest { digest: String },
     Directory { children: Option<Vec<String>> },
 }
 
@@ -49,7 +51,7 @@ impl WorkspaceSnapshotEntry {
     pub fn entry_kind(&self) -> Option<EntryKind> {
         match self {
             Self::Missing => None,
-            Self::File { .. } => Some(EntryKind::File),
+            Self::File { .. } | Self::FileDigest { .. } => Some(EntryKind::File),
             Self::Directory { .. } => Some(EntryKind::Directory),
         }
     }

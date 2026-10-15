@@ -1,36 +1,37 @@
 use serde_json::{Value,json};
-use std::{collections::VecDeque,path::Path};
+use std::{collections::VecDeque,path::Path,sync::Arc};
 
 #[derive(Clone,Debug)]
 pub struct SearchSessionRecord {pub thread: Value,pub recency_at: String,pub searchable_text: String}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct SearchCacheStats {pub hits: usize,pub misses: usize,pub entries: usize}
 pub struct ThreadSearchCache {
-    entries: VecDeque<(String,std::time::SystemTime,SearchSessionRecord)>,max_entries: usize,hits: usize,misses: usize,
+    entries: VecDeque<(String,std::time::SystemTime,Arc<SearchSessionRecord>)>,max_entries: usize,hits: usize,misses: usize,
 }
 impl Default for ThreadSearchCache {fn default() -> Self {Self::new(512)}}
 impl ThreadSearchCache {
     pub fn new(max_entries: usize) -> Self {Self {entries:VecDeque::new(),max_entries:max_entries.max(1),hits:0,misses:0}}
     pub fn stats(&self) -> SearchCacheStats {SearchCacheStats {hits:self.hits,misses:self.misses,entries:self.entries.len()}}
-    pub async fn load(&mut self,directory: &Path) -> std::io::Result<Vec<SearchSessionRecord>> {
+    pub async fn load(&mut self,directory: &Path) -> std::io::Result<Vec<Arc<SearchSessionRecord>>> {
         let mut names = match tokio::fs::read_dir(directory).await {Ok(names)=>names,Err(error) if error.kind() == std::io::ErrorKind::NotFound=>return Ok(Vec::new()),Err(error)=>return Err(error)};
         let mut records = Vec::new();
         while let Some(entry) = names.next_entry().await? {if entry.file_name().to_string_lossy().ends_with(".jsonl") && let Some(record) = self.load_file(&entry.path()).await? {records.push(record);}}
         Ok(records)
     }
-    pub async fn load_file(&mut self,path: &Path) -> std::io::Result<Option<SearchSessionRecord>> {
+    /// Records are shared with the cache, so a hit never copies the transcript.
+    pub async fn load_file(&mut self,path: &Path) -> std::io::Result<Option<Arc<SearchSessionRecord>>> {
         let key = path.display().to_string();
         let modified = match tokio::fs::metadata(path).await {Ok(metadata)=>metadata.modified()?,Err(error) if error.kind() == std::io::ErrorKind::NotFound=>{self.entries.retain(|(name,_,_)|name != &key);return Ok(None)},Err(error)=>return Err(error)};
         let mtime = chrono::DateTime::<chrono::Utc>::from(modified).timestamp_millis();
         if let Some(index) = self.entries.iter().position(|(name,time,_)|name == &key && *time == modified) {
             self.hits += 1;
-            if let Some(entry) = self.entries.remove(index) {let record = entry.2.clone();self.entries.push_back(entry);return Ok(Some(record));}
+            if let Some(entry) = self.entries.remove(index) {let record = Arc::clone(&entry.2);self.entries.push_back(entry);return Ok(Some(record));}
         }
         self.misses += 1;
         let contents = match tokio::fs::read_to_string(path).await {Ok(contents)=>contents,Err(error) if error.kind() == std::io::ErrorKind::NotFound=>{self.entries.retain(|(name,_,_)|name != &key);return Ok(None)},Err(error)=>return Err(error)};
-        let record = parse_search_session(&key,mtime,&contents);
+        let record = parse_search_session(&key,mtime,&contents).map(Arc::new);
         self.entries.retain(|(name,_,_)|name != &key);
-        if let Some(record) = &record {self.entries.push_back((key,modified,record.clone()));while self.entries.len() > self.max_entries {self.entries.pop_front();}}
+        if let Some(record) = &record {self.entries.push_back((key,modified,Arc::clone(record)));while self.entries.len() > self.max_entries {self.entries.pop_front();}}
         Ok(record)
     }
 }

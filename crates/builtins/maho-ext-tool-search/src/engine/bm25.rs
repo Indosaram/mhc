@@ -68,7 +68,8 @@ impl Bm25Index {
             for term in &content { count += 1.0; if entry.term_freq.contains_key(*term) { matched += 1.0; } }
             results.push(Bm25Result { name: entry.doc.name.clone(), score, exact, coverage: matched / count, doc: entry.doc.clone() });
         }
-        let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error));
+        static COLLATOR:std::sync::LazyLock<icu_collator::CollatorBorrowed<'static>>=std::sync::LazyLock::new(||icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error)));
+        let collator=&*COLLATOR;
         results.sort_by(|a,b| b.exact.cmp(&a.exact).then_with(|| b.score.total_cmp(&a.score)).then_with(|| collator.compare(&a.name,&b.name)));
         if let Some(precision) = options.precision {
             let floor = results.iter().find(|r| !r.exact).map_or(0.0, |r| r.score) * precision.min_score_ratio;

@@ -361,8 +361,8 @@ fn rebuilds_geometry_after_content_changes() {
     text_component.borrow_mut().set_text("one\ntwo\nthree");
     let second = render_layout_frame(&root, 10, 4);
 
-    assert_eq!(child(&first, 0).lines.as_ref().map(Vec::len), Some(1));
-    assert_eq!(child(&second, 0).lines.as_ref().map(Vec::len), Some(3));
+    assert_eq!(child(&first, 0).lines.as_ref().map(|lines| lines.len()), Some(1));
+    assert_eq!(child(&second, 0).lines.as_ref().map(|lines| lines.len()), Some(3));
 }
 
 struct CountingComponent {

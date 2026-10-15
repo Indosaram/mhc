@@ -104,7 +104,7 @@ struct State {
     launching: HashSet<String>,
     child_subscribers: HashMap<String, Vec<ChildSubscriber>>,
     released: HashMap<String, i64>,
-    waiters: HashMap<String, Vec<(u64, Sender<TaskRecord>)>>,
+    waiters: HashMap<String, Vec<(u64, Sender<WaitWake>)>>,
     background: HashSet<String>,
     run_stats: HashMap<String, Tracker>,
     next_subscriber_id: u64,
@@ -122,17 +122,67 @@ pub enum WaitError {
     InvalidTaskId(#[from] crate::state::InvalidTaskIdError),
 }
 
+/// What wakes a blocked [`TaskManager::wait_for`].
+enum WaitWake {
+    Settled(Box<TaskRecord>),
+    Aborted,
+}
+
+#[derive(Default)]
+struct AbortState {
+    aborted: bool,
+    next_waker_id: u64,
+    wakers: Vec<(u64, Sender<WaitWake>)>,
+}
+
 /// A cooperative abort for [`TaskManager::wait_for`] (TS `AbortSignal`).
 #[derive(Clone, Default)]
-pub struct AbortSignal(Arc<Mutex<bool>>);
+pub struct AbortSignal(Arc<Mutex<AbortState>>);
 
 impl AbortSignal {
     pub fn abort(&self) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        let wakers = {
+            let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            state.aborted = true;
+            std::mem::take(&mut state.wakers)
+        };
+        for (_, waker) in wakers {
+            let _receiver_gone = waker.send(WaitWake::Aborted).is_err();
+        }
     }
 
     pub fn aborted(&self) -> bool {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).aborted
+    }
+
+    /// Registers a waker pinged by [`Self::abort`]; an already-aborted signal pings at once.
+    fn register(&self, waker: Sender<WaitWake>) -> u64 {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        state.next_waker_id += 1;
+        let id = state.next_waker_id;
+        if state.aborted {
+            let _receiver_gone = waker.send(WaitWake::Aborted).is_err();
+        } else {
+            state.wakers.push((id, waker));
+        }
+        id
+    }
+
+    fn unregister(&self, id: u64) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .wakers
+            .retain(|(waker_id, _)| *waker_id != id);
+    }
+}
+
+/// Drops an [`AbortSignal`] waker registration when `wait_for` returns.
+struct AbortWakerGuard<'a>(&'a AbortSignal, u64);
+
+impl Drop for AbortWakerGuard<'_> {
+    fn drop(&mut self) {
+        self.0.unregister(self.1);
     }
 }
 
@@ -668,16 +718,13 @@ impl TaskManager {
     pub fn find_owned_task(&self, run_id: &str, node_id: &str) -> Option<TaskRecord> {
         self.inner
             .store
-            .list()
-            .ok()?
-            .records
-            .into_iter()
-            .find(|record| {
+            .find_record(|record| {
                 record
                     .owner
                     .as_ref()
                     .is_some_and(|owner| owner.run_id == run_id && owner.node_id == node_id)
             })
+            .ok()?
     }
 
     fn owned_result(&self, owner: &DagTaskOwner) -> Option<OwnedStartResult> {
@@ -817,7 +864,7 @@ impl TaskManager {
             return Err(WaitError::Aborted);
         }
         let id = parse_task_id(task_id)?.to_string();
-        let (waiter_id, receiver) = {
+        let (waiter_id, sender, receiver) = {
             let mut state = lock(&self.inner.state);
             if let Some(current) = self.inner.try_load(&id)
                 && is_terminal_record(&current)
@@ -831,29 +878,29 @@ impl TaskManager {
                 .waiters
                 .entry(id.clone())
                 .or_default()
-                .push((waiter_id, sender));
-            (waiter_id, receiver)
+                .push((waiter_id, sender.clone()));
+            (waiter_id, sender, receiver)
         };
+        let _abort_waker = signal.map(|signal| AbortWakerGuard(signal, signal.register(sender)));
         let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
-        loop {
-            match receiver.recv_timeout(Duration::from_millis(10)) {
-                Ok(record) => return Ok(record),
-                Err(RecvTimeoutError::Disconnected) => return Err(WaitError::Aborted),
-                Err(RecvTimeoutError::Timeout) => {}
-            }
-            let expired = deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline);
-            if expired || signal.is_some_and(AbortSignal::aborted) {
-                self.inner.remove_waiter(&id, waiter_id);
-                if let Ok(record) = receiver.try_recv() {
-                    return Ok(record);
-                }
-                return Err(if expired {
-                    WaitError::TimedOut
-                } else {
-                    WaitError::Aborted
-                });
+        let woke = match deadline {
+            None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(deadline) => receiver
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())),
+        };
+        let error = match woke {
+            Ok(WaitWake::Settled(record)) => return Ok(*record),
+            Err(RecvTimeoutError::Disconnected) => return Err(WaitError::Aborted),
+            Ok(WaitWake::Aborted) => WaitError::Aborted,
+            Err(RecvTimeoutError::Timeout) => WaitError::TimedOut,
+        };
+        self.inner.remove_waiter(&id, waiter_id);
+        while let Ok(wake) = receiver.try_recv() {
+            if let WaitWake::Settled(record) = wake {
+                return Ok(*record);
             }
         }
+        Err(error)
     }
 
     pub fn waiter_key_count(&self) -> usize {
@@ -1704,6 +1751,13 @@ impl Inner {
         let weak = self.this.clone();
         let stats_task = task_id.to_string();
         let stats = handle.subscribe(Arc::new(move |event| {
+            // `RunStatsTracker::accept` ignores every other event type (e.g. streaming deltas).
+            if !matches!(
+                event.event_type.as_str(),
+                "tool_execution_start" | "tool_execution_end" | "message_start" | "message_end"
+            ) {
+                return;
+            }
             if let Some(inner) = weak.upgrade()
                 && let Some(tracker) = lock(&inner.state).run_stats.get_mut(&stats_task)
             {
@@ -1978,7 +2032,7 @@ impl Inner {
             .remove(task_id)
             .unwrap_or_default();
         for (_, waiter) in waiters {
-            let _receiver_gone = waiter.send(record.clone()).is_err();
+            let _receiver_gone = waiter.send(WaitWake::Settled(Box::new(record.clone()))).is_err();
         }
     }
 

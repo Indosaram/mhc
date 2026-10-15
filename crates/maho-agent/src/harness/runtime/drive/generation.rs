@@ -53,7 +53,7 @@ pub async fn run_generation(lane: &dyn RuntimeDriveLane, drive: &Drive, generati
     }).await?;
     if matches!(result, ContinueOperationResult::CancelRequested) { return Ok(ProcedureResult::Continue); }
     let mut transform = HookInvocation::new(lane.name(), &drive.operation_id);
-    transform.messages = messages.clone(); transform.system_prompt = system_prompt.clone();
+    transform.messages = std::mem::take(&mut messages); transform.system_prompt = std::mem::take(&mut system_prompt);
     if let HookResult::TransformContext { messages: replacement, system_prompt: prompt } = lane.hooks().run_with_gate(HookName::TransformContext, transform, &drive.gate, &drive.context).await.map_err(|e| session_invariant_error(e.to_string()))? {
         if let Some(replacement) = replacement { messages = replacement; }
         if let Some(prompt) = prompt { system_prompt = prompt; }

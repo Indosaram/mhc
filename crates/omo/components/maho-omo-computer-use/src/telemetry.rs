@@ -243,6 +243,11 @@ impl ComputerUseTelemetry {
         }
     }
 
+    /// Whether any computer-use permission request is still awaiting its tool result.
+    pub fn has_pending(&self) -> bool {
+        !self.pending_permissions.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+
     pub fn permission_tier_denied(&self, payload: &Value, session_id: &str, backend: &Value) {
         let Some(event) = denied_tool_execution(payload) else {
             return;

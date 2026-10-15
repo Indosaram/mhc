@@ -1,6 +1,9 @@
 //! jsdiff FILE_HEADERS_ONLY unified patch data; no terminal rendering.
 pub fn create_unified_patch(old_path: &str, new_path: &str, old: &str, new: &str, context: usize) -> String {
-    let rows = crate::edit_diff::diff_lines(old, new);
+    create_unified_patch_from_rows(old_path, new_path, &crate::edit_diff::diff_lines(old, new), context)
+}
+/// [`create_unified_patch`] over rows already computed by `diff_lines` for the same inputs.
+pub(crate) fn create_unified_patch_from_rows(old_path: &str, new_path: &str, rows: &[(char, &str)], context: usize) -> String {
     let mut output = format!("--- {old_path}\n+++ {new_path}\n");
     let mut groups: Vec<(usize, usize)> = Vec::new();
     for (index, row) in rows.iter().enumerate() {

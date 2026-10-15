@@ -9,7 +9,7 @@ struct SearchSession {
     cancelled: Arc<AtomicBool>,
     query: String,
     version: u64,
-    entries: Option<Vec<FuzzyFileEntry>>,
+    entries: Option<Arc<Vec<FuzzyFileEntry>>>,
     completed_version: Option<u64>,
 }
 #[derive(Default)]
@@ -70,8 +70,15 @@ impl FuzzyFileSearchService {
         };
         let _active = ActiveSearch { state:self.state.clone(), id, token, cancelled:cancelled.clone() };
         let entries = if query.is_empty() { Vec::new() } else { (self.collect)(roots, cancelled.clone()).await };
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cancelled.load(Ordering::Acquire) || state.disposed { Vec::new() } else { (self.rank)(query, &entries) }
+        let disposed = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disposed;
+        if cancelled.load(Ordering::Acquire) || disposed { return Vec::new(); }
+        // Rank on the blocking pool, without holding the shared state lock.
+        let (rank, query) = (self.rank.clone(), query.to_owned());
+        match tokio::task::spawn_blocking(move || rank(&query, &entries)).await {
+            Ok(files) => files,
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(_) => Vec::new(),
+        }
     }
     pub fn start_session(&self, id: String, roots: Vec<String>) -> Result<(), JsonRpcError> {
         if id.is_empty() { return Err(JsonRpcError::new(-32600, "sessionId must not be empty")); }
@@ -88,7 +95,7 @@ impl FuzzyFileSearchService {
             {
                 let mut state = service.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let Some(session) = state.sessions.get_mut(&id).filter(|session| Arc::ptr_eq(&session.cancelled, &cancelled) && !cancelled.load(Ordering::Acquire)) else { return; };
-                session.entries = Some(entries);
+                session.entries = Some(Arc::new(entries));
             }
             loop {
                 let version = {
@@ -119,14 +126,29 @@ impl FuzzyFileSearchService {
     }
     async fn emit_version(&self, id: &str, cancelled: &Arc<AtomicBool>, version: u64) -> bool {
         tokio::task::yield_now().await;
-        let (query, files) = {
+        let (query, entries) = {
             let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(session) = state.sessions.get(id).filter(|session| Arc::ptr_eq(&session.cancelled, cancelled) && !cancelled.load(Ordering::Acquire) && session.version == version) else { return false; };
             let Some(entries) = &session.entries else { return false; };
             if session.completed_version == Some(version) { return true; }
-            (session.query.clone(), (self.rank)(&session.query, entries))
+            (session.query.clone(), entries.clone())
         };
-        (self.broadcast)(json!({"method":"fuzzyFileSearch/sessionUpdated","params":{"sessionId":id,"query":query,"files":files}}));
+        // Rank on the blocking pool, outside the lock; the version re-check below still gates completion.
+        let (rank, ranked_query) = (self.rank.clone(), query.clone());
+        let files = match tokio::task::spawn_blocking(move || rank(&ranked_query, entries.as_slice())).await {
+            Ok(files) => files,
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            // Only a runtime shutdown cancels the rank; end the session loop.
+            Err(_) => return true,
+        };
+        // The rank yielded the worker; drop a result a newer query or a stop superseded meanwhile.
+        // Checking and broadcasting under the lock keeps `sessionUpdated` in version order, as the
+        // inline rank under the lock did.
+        {
+            let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !state.sessions.get(id).is_some_and(|session| Arc::ptr_eq(&session.cancelled, cancelled) && !cancelled.load(Ordering::Acquire) && session.version == version) { return false; }
+            (self.broadcast)(json!({"method":"fuzzyFileSearch/sessionUpdated","params":{"sessionId":id,"query":query,"files":files}}));
+        }
         {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(session) = state.sessions.get_mut(id).filter(|session| Arc::ptr_eq(&session.cancelled, cancelled) && !cancelled.load(Ordering::Acquire) && session.version == version) else { return false; };

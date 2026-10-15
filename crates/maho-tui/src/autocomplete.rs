@@ -3,6 +3,7 @@
 //! Combined autocomplete provider handling `/` slash commands, `@` and bare-path file
 //! suggestions (fd-backed fuzzy search plus directory listing), and `$` skill invocations.
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -567,6 +568,7 @@ fn walk_directory_with_fd(
 
 pub struct CombinedAutocompleteProvider {
     commands: Vec<CommandSpec>,
+    known_skills: BTreeSet<String>,
     base_path: String,
     fd_path: Option<String>,
 }
@@ -574,6 +576,7 @@ pub struct CombinedAutocompleteProvider {
 impl CombinedAutocompleteProvider {
     pub fn new(commands: Vec<CommandSpec>, base_path: &str, fd_path: Option<String>) -> Self {
         Self {
+            known_skills: known_skill_names(&commands),
             commands,
             base_path: base_path.to_string(),
             fd_path,
@@ -709,17 +712,18 @@ impl CombinedAutocompleteProvider {
         };
 
         let mut suggestions: Vec<AutocompleteItem> = Vec::new();
+        let lower_prefix = search_prefix.to_lowercase();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if !name.to_lowercase().starts_with(&search_prefix.to_lowercase()) {
+            if !name.to_lowercase().starts_with(&lower_prefix) {
                 continue;
             }
 
-            let mut is_directory = entry
-                .file_type()
-                .map(|file_type| file_type.is_dir())
-                .unwrap_or(false);
+            let file_type = entry.file_type();
+            let mut is_directory = file_type.as_ref().map(|file_type| file_type.is_dir()).unwrap_or(false);
+            // Only a symlink (or an unknown type) can resolve to a directory; skip the stat otherwise.
             if !is_directory
+                && file_type.as_ref().ok().is_none_or(|file_type| file_type.is_symlink())
                 && let Ok(metadata) = std::fs::metadata(entry.path())
             {
                 is_directory = metadata.is_dir();
@@ -960,7 +964,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         SuggestionRequest::Ready(self.get_suggestions(lines, cursor_line, cursor_col, force))
     }
     fn get_mention_ranges(&self, line: &str) -> Vec<MentionRange> {
-        find_dollar_skill_mentions(line, &known_skill_names(&self.commands))
+        if !line.contains('$') {
+            return Vec::new();
+        }
+        find_dollar_skill_mentions(line, &self.known_skills)
             .into_iter()
             .map(|mention| MentionRange {
                 start: mention.start,

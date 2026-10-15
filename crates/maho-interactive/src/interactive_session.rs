@@ -40,6 +40,12 @@ pub trait InteractiveSession: Send + Sync {
     /// The remote runtime's mirrored `RpcSessionState`, or `None` for a local session. This is the
     /// typed snapshot the mode reads for remote-authoritative values (name, streaming, model).
     fn remote_state(&self) -> Option<crate::interactive_host_runtime::RemoteSessionState>;
+    /// Run `f` over the mirrored remote state without cloning it; not called for a local session.
+    fn inspect_remote_state(&self, f: &mut dyn FnMut(&crate::interactive_host_runtime::RemoteSessionState)) {
+        if let Some(state) = self.remote_state() {
+            f(&state);
+        }
+    }
     /// Subscribe to decoded remote session events; `None` for a local session. The returned guard
     /// removes the listener when dropped, so a replacement or dispose tears the bridge down.
     fn subscribe_session_events(&self, listener: crate::interactive_host_runtime::SessionEventListener) -> Option<crate::interactive_host_runtime::SessionSubscription>;
@@ -354,6 +360,10 @@ impl InteractiveSession for RemoteInteractiveRuntime {
 
     fn remote_state(&self) -> Option<crate::interactive_host_runtime::RemoteSessionState> {
         Some(self.proxy().state())
+    }
+
+    fn inspect_remote_state(&self, f: &mut dyn FnMut(&crate::interactive_host_runtime::RemoteSessionState)) {
+        self.proxy().inspect_state(f);
     }
 
     fn subscribe_session_events(&self, listener: crate::interactive_host_runtime::SessionEventListener) -> Option<crate::interactive_host_runtime::SessionSubscription> {

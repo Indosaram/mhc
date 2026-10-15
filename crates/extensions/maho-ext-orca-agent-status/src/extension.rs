@@ -177,6 +177,7 @@ impl Extension for OrcaAgentStatus {
                         ExtensionEvent::ToolCall(call) => { extra.insert("tool_name".into(), json!(call.tool_name)); extra.insert("tool_input".into(), call.input.clone()); "tool_call" }
                         ExtensionEvent::ToolExecutionEnd { tool_name, .. } => { extra.insert("tool_name".into(), json!(tool_name)); "tool_execution_end" }
                         ExtensionEvent::MessageEnd { message } => {
+                            if matches!(message, maho_ext_api::AgentMessage::Llm(_)) && message.role() != "assistant" { return Ok(EventResult::None); }
                             let value = serde_json::to_value(message).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                             if value.get("role").and_then(Value::as_str) != Some("assistant") { return Ok(EventResult::None); }
                             let text = extract_assistant_text(&value);

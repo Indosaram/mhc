@@ -221,7 +221,13 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
     fn task_run_epoch(&self, task_id: &str) -> Option<u32> { self.manager.run_epoch(task_id).and_then(|epoch| u32::try_from(epoch).ok()) }
     fn pending(&self, task_id: &str) -> bool { self.manager.is_launching(task_id) }
     fn cancel<'a>(&'a self, task_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), WorkpoolAdmissionError>> + Send + 'a>> {
-        Box::pin(async move { self.manager.cancel_task(task_id, None, CancelOptions::default()).map(|_| ()).map_err(|error| WorkpoolAdmissionError(error.to_string())) })
+        Box::pin(async move {
+            let manager = self.manager.clone();
+            let id = task_id.to_string();
+            tokio::task::spawn_blocking(move || manager.cancel_task(&id, None, CancelOptions::default()).map(|_| ()).map_err(|error| WorkpoolAdmissionError(error.to_string())))
+                .await
+                .map_err(|error| WorkpoolAdmissionError(error.to_string()))?
+        })
     }
     fn wait_for<'a>(&'a self, task_id: &'a str, cancel: &'a mut watch::Receiver<bool>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskRecord, WorkpoolAdmissionError>> + Send + 'a>> {
         Box::pin(async move {

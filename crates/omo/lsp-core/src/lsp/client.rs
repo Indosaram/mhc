@@ -17,6 +17,7 @@ use crate::lsp::workspace_mutation_controller::AcquireMutationLeaseResult;
 use crate::lsp::workspace_mutation_controller::LspRenameResult;
 use crate::lsp::workspace_mutation_controller::WorkspaceMutationController;
 use crate::request_context::resolve_from;
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
@@ -28,6 +29,8 @@ use std::time::Instant;
 const DIAGNOSTICS_FRESHNESS_TIMEOUT_MS: u64 = 3_000;
 const VERSIONLESS_PUBLISH_QUIESCENCE_MS: f64 = 250.0;
 const PRE_COMMIT_ABORT_MESSAGE: &str = "LSP request cancelled before workspace edit commit";
+/// Keeps only the most recent pull-diagnostics failures.
+const DIAGNOSTIC_PULL_ERROR_LIMIT: usize = 100;
 
 /// TS `LspDiagnosticsResult.transientError`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -89,13 +92,13 @@ impl LspClient {
             options.timeouts,
         ));
         let notify_transport = transport.clone();
-        let clear_transport = transport.clone();
         let documents = Arc::new(WorkspaceDocumentState::new(
             Arc::new(move |method, params| {
                 let transport = notify_transport.clone();
                 Box::pin(async move { transport.send_notification(&method, Some(params)).await })
             }),
-            Arc::new(move |uri| clear_transport.clear_stored_diagnostics(uri)),
+            // Push diagnostics live only in the document state, which resets them itself.
+            Arc::new(|_uri: &str| {}),
             WorkspaceDocumentStateOptions {
                 now: None,
                 versionless_publish_quiescence_ms: Some(
@@ -116,7 +119,7 @@ impl LspClient {
         transport.set_publish_diagnostics_hook(Arc::new(move |params| {
             publish_documents.record_published_diagnostics(
                 &params.uri,
-                params.diagnostics.clone(),
+                params.diagnostics,
                 params.version,
             );
         }));
@@ -433,10 +436,15 @@ impl LspClient {
                     }
                     Err(LspError::RequestTimeout { .. }) => push_fallback_only = true,
                     Err(error) => {
-                        self.diagnostic_pull_errors
+                        let mut errors = self
+                            .diagnostic_pull_errors
                             .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .push(error.clone());
+                            .unwrap_or_else(PoisonError::into_inner);
+                        if errors.len() >= DIAGNOSTIC_PULL_ERROR_LIMIT {
+                            errors.remove(0);
+                        }
+                        errors.push(error.clone());
+                        drop(errors);
                         return Err(error);
                     }
                 }
@@ -606,7 +614,7 @@ fn parse_diagnostic_pull_report(value: &Value) -> PullReport {
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .filter_map(|item| Diagnostic::deserialize(item).ok())
                 .collect()
         })
         .unwrap_or_default();

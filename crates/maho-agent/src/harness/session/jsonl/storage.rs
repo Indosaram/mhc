@@ -19,16 +19,13 @@ use super::io::{file_value, parse_jsonl_transaction, publish_file_atomically, pu
 use super::legacy_v3::LegacyV3Source;
 use super::types::{JSONL_STORAGE_VERSION, JsonlStorageHeader, JsonlStorageOptions};
 
-fn split_complete_lines(content: &str) -> (Vec<String>, bool) {
+fn split_complete_lines(content: &str) -> (Vec<&str>, bool) {
     if let Some(body) = content.strip_suffix('\n') {
-        return (body.split('\n').map(str::to_owned).collect(), false);
+        return (body.split('\n').collect(), false);
     }
     match content.rfind('\n') {
         None => (Vec::new(), true),
-        Some(last_newline) => (
-            content[..last_newline].split('\n').map(str::to_owned).collect(),
-            true,
-        ),
+        Some(last_newline) => (content[..last_newline].split('\n').collect(), true),
     }
 }
 

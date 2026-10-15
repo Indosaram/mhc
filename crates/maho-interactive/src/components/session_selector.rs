@@ -6,6 +6,7 @@
 //! the filesystem and trash integration.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -18,7 +19,8 @@ use maho_tui::utils::{truncate_to_width, visible_width};
 
 use super::keybinding_hints::{key_hint, key_text};
 use super::session_selector_search::{
-    NameFilter, SessionInfo, SortMode, filter_and_sort_sessions, has_session_name,
+    NameFilter, SessionInfo, SortMode, filter_and_sort_sessions_with_text, get_session_search_text,
+    has_session_name,
 };
 use super::theme_selector::dynamic_border;
 use crate::theme::theme::{Theme, ThemeBg, ThemeColor};
@@ -284,43 +286,51 @@ pub struct FlatSessionNode {
 
 /// Build a tree from sessions based on parentSessionPath; roots sorted by modified desc.
 pub fn build_session_tree(sessions: &[SessionInfo]) -> Vec<SessionTreeNode> {
-    let mut keys: Vec<String> = Vec::with_capacity(sessions.len());
-    let mut nodes: Vec<SessionTreeNode> = Vec::with_capacity(sessions.len());
-    for session in sessions {
-        keys.push(canonicalize_path(&session.path));
-        nodes.push(SessionTreeNode {
-            session: session.clone(),
+    let sessions: Vec<&SessionInfo> = sessions.iter().collect();
+    build_session_tree_with(&sessions, &canonicalize_path)
+}
+
+/// [`build_session_tree`] over borrowed sessions, resolving canonical paths through `canonical`.
+fn build_session_tree_with(sessions: &[&SessionInfo], canonical: &dyn Fn(&str) -> String) -> Vec<SessionTreeNode> {
+    // First session wins for a duplicated canonical path, as senpi's linear lookup does.
+    let mut index_by_key: HashMap<String, usize> = HashMap::with_capacity(sessions.len());
+    let mut nodes: Vec<Option<SessionTreeNode>> = Vec::with_capacity(sessions.len());
+    for (index, session) in sessions.iter().enumerate() {
+        index_by_key.entry(canonical(session.path.as_str())).or_insert(index);
+        nodes.push(Some(SessionTreeNode {
+            session: (*session).clone(),
             children: Vec::new(),
             latest_activity: session.modified_ms,
-        });
+        }));
     }
 
     let mut children_by_parent: std::collections::BTreeMap<usize, Vec<usize>> =
         std::collections::BTreeMap::new();
     let mut roots: Vec<usize> = Vec::new();
     for (index, session) in sessions.iter().enumerate() {
-        let parent_key = session.parent_session_path.as_deref().map(canonicalize_path);
-        match parent_key.and_then(|key| keys.iter().position(|candidate| *candidate == key)) {
+        let parent_key = session.parent_session_path.as_deref().map(canonical);
+        match parent_key.and_then(|key| index_by_key.get(&key).copied()) {
             Some(parent) => children_by_parent.entry(parent).or_default().push(index),
             None => roots.push(index),
         }
     }
 
+    // Every session has at most one parent, so each node is taken at most once.
     fn build(
         index: usize,
-        nodes: &[SessionTreeNode],
+        nodes: &mut [Option<SessionTreeNode>],
         children_by_parent: &std::collections::BTreeMap<usize, Vec<usize>>,
-    ) -> SessionTreeNode {
-        let mut node = nodes[index].clone();
+    ) -> Option<SessionTreeNode> {
+        let mut node = nodes.get_mut(index)?.take()?;
         node.children = children_by_parent
             .get(&index)
-            .map(|children| children.iter().map(|child| build(*child, nodes, children_by_parent)).collect())
+            .map(|children| children.iter().filter_map(|child| build(*child, nodes, children_by_parent)).collect())
             .unwrap_or_default();
         node.latest_activity = node
             .children
             .iter()
             .fold(node.session.modified_ms, |latest, child| latest.max(child.latest_activity));
-        node
+        Some(node)
     }
 
     fn sort_nodes(nodes: &mut [SessionTreeNode]) {
@@ -331,28 +341,34 @@ pub fn build_session_tree(sessions: &[SessionInfo]) -> Vec<SessionTreeNode> {
     }
 
     let mut tree: Vec<SessionTreeNode> =
-        roots.iter().map(|root| build(*root, &nodes, &children_by_parent)).collect();
+        roots.iter().filter_map(|root| build(*root, &mut nodes, &children_by_parent)).collect();
     sort_nodes(&mut tree);
     tree
 }
 
 /// Flatten a tree into a display list with tree structure metadata.
 pub fn flatten_session_tree(roots: &[SessionTreeNode]) -> Vec<FlatSessionNode> {
+    flatten_session_tree_owned(roots.to_vec())
+}
+
+/// [`flatten_session_tree`] that moves each session out of the tree instead of cloning it.
+fn flatten_session_tree_owned(roots: Vec<SessionTreeNode>) -> Vec<FlatSessionNode> {
     fn walk(
-        node: &SessionTreeNode,
+        node: SessionTreeNode,
         depth: usize,
         ancestor_continues: &[bool],
         is_last: bool,
         result: &mut Vec<FlatSessionNode>,
     ) {
         result.push(FlatSessionNode {
-            session: node.session.clone(),
+            session: node.session,
             depth,
             is_last,
             ancestor_continues: ancestor_continues.to_vec(),
         });
-        for (index, child) in node.children.iter().enumerate() {
-            let child_is_last = index == node.children.len() - 1;
+        let child_count = node.children.len();
+        for (index, child) in node.children.into_iter().enumerate() {
+            let child_is_last = index == child_count - 1;
             // Only show a continuation line for non-root ancestors.
             let continues = depth > 0 && !is_last;
             let mut next = ancestor_continues.to_vec();
@@ -362,10 +378,22 @@ pub fn flatten_session_tree(roots: &[SessionTreeNode]) -> Vec<FlatSessionNode> {
     }
 
     let mut result = Vec::new();
-    for (index, root) in roots.iter().enumerate() {
-        walk(root, 0, &[], index == roots.len() - 1, &mut result);
+    let root_count = roots.len();
+    for (index, root) in roots.into_iter().enumerate() {
+        walk(root, 0, &[], index == root_count - 1, &mut result);
     }
     result
+}
+
+fn canonical_session_paths(sessions: &[SessionInfo]) -> HashMap<String, String> {
+    let mut canonical = HashMap::new();
+    let paths = sessions
+        .iter()
+        .flat_map(|session| std::iter::once(&session.path).chain(session.parent_session_path.as_ref()));
+    for path in paths {
+        canonical.entry(path.clone()).or_insert_with(|| canonicalize_path(path));
+    }
+    canonical
 }
 
 /// senpi's buildTreePrefix.
@@ -386,6 +414,10 @@ pub fn build_tree_prefix(node: &FlatSessionNode) -> String {
 pub struct SessionList {
     theme: Theme,
     all_sessions: Vec<SessionInfo>,
+    /// Canonical path of each session in `all_sessions`, resolved once per session set.
+    canonical_paths: HashMap<String, String>,
+    /// Search text of each session in `all_sessions`, built on the first non-empty query.
+    search_texts: Option<Vec<String>>,
     filtered_sessions: Vec<FlatSessionNode>,
     selected_index: usize,
     search_input: Input,
@@ -425,6 +457,8 @@ impl SessionList {
     ) -> Self {
         let mut list = Self {
             theme: theme.clone(),
+            canonical_paths: canonical_session_paths(&sessions),
+            search_texts: None,
             all_sessions: sessions,
             filtered_sessions: Vec::new(),
             selected_index: 0,
@@ -489,6 +523,8 @@ impl SessionList {
     }
 
     pub fn set_sessions(&mut self, sessions: Vec<SessionInfo>, show_cwd: bool) {
+        self.canonical_paths = canonical_session_paths(&sessions);
+        self.search_texts = None;
         self.all_sessions = sessions;
         self.show_cwd = show_cwd;
         let query = self.search_input.get_value().to_owned();
@@ -497,25 +533,38 @@ impl SessionList {
 
     pub fn filter_sessions(&mut self, query: &str) {
         let trimmed = query.trim();
-        let name_filtered: Vec<SessionInfo> = if self.name_filter == NameFilter::All {
-            self.all_sessions.clone()
-        } else {
-            self.all_sessions
-                .iter()
-                .filter(|session| has_session_name(session))
-                .cloned()
-                .collect()
-        };
+        let named_only = self.name_filter != NameFilter::All;
 
         if self.sort_mode == SortMode::Threaded && trimmed.is_empty() {
-            let roots = build_session_tree(&name_filtered);
-            self.filtered_sessions = flatten_session_tree(&roots);
+            let name_filtered: Vec<&SessionInfo> = self
+                .all_sessions
+                .iter()
+                .filter(|session| !named_only || has_session_name(session))
+                .collect();
+            let canonical_paths = &self.canonical_paths;
+            let canonical =
+                |path: &str| canonical_paths.get(path).cloned().unwrap_or_else(|| canonicalize_path(path));
+            let roots = build_session_tree_with(&name_filtered, &canonical);
+            self.filtered_sessions = flatten_session_tree_owned(roots);
         } else {
-            let filtered = filter_and_sort_sessions(&name_filtered, query, self.sort_mode, NameFilter::All);
+            if !trimmed.is_empty() && self.search_texts.is_none() {
+                self.search_texts = Some(self.all_sessions.iter().map(get_session_search_text).collect());
+            }
+            let search_texts = self.search_texts.as_deref();
+            let candidates: Vec<(&SessionInfo, &str)> = self
+                .all_sessions
+                .iter()
+                .enumerate()
+                .filter(|(_, session)| !named_only || has_session_name(session))
+                .map(|(index, session)| {
+                    (session, search_texts.and_then(|texts| texts.get(index)).map_or("", String::as_str))
+                })
+                .collect();
+            let filtered = filter_and_sort_sessions_with_text(candidates, query, self.sort_mode);
             self.filtered_sessions = filtered
                 .into_iter()
                 .map(|session| FlatSessionNode {
-                    session,
+                    session: session.clone(),
                     depth: 0,
                     is_last: true,
                     ancestor_continues: Vec::new(),
@@ -550,7 +599,10 @@ impl SessionList {
         let Some(current) = &self.current_session_canonical_path else {
             return false;
         };
-        canonicalize_path(path) == *current
+        match self.canonical_paths.get(path) {
+            Some(canonical) => canonical == current,
+            None => canonicalize_path(path) == *current,
+        }
     }
 
     fn render_row(&self, node: &FlatSessionNode, index: usize, width: usize, now: i64) -> String {
@@ -660,8 +712,7 @@ impl Component for SessionList {
         let end_index = (start_index + self.max_visible).min(self.filtered_sessions.len());
 
         let now = now_ms();
-        let nodes: Vec<FlatSessionNode> = self.filtered_sessions[start_index..end_index].to_vec();
-        for (offset, node) in nodes.iter().enumerate() {
+        for (offset, node) in self.filtered_sessions[start_index..end_index].iter().enumerate() {
             lines.push(self.render_row(node, start_index + offset, width, now));
         }
 

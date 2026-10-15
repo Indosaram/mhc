@@ -59,7 +59,8 @@ where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::R
 }
 
 pub fn running_hook_handlers_status_label(handlers:&[ExecutableHookHandler],platform:&str)->String {
-    let ansi=fancy_regex::Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))").expect("status ANSI regex");
+    static ANSI:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy_regex::Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))").expect("status ANSI regex"));
+    let ansi=&*ANSI;
     let labels=handlers.iter().map(|handler| {
         let raw=handler.config.status_message.as_deref().unwrap_or_else(||crate::plugin_loader::select_hook_command_for_platform(handler,platform));
         let stripped=ansi.replace_all(raw,"");let replaced=stripped.replace(['\r','\n','\t']," ");

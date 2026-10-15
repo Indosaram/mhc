@@ -510,6 +510,8 @@ struct BusInner {
     closed_error: Mutex<Option<String>>,
     queue: Mutex<VecDeque<Job>>,
     notify: Notify,
+    /// Set (under the `queue` lock) once the worker drained the queue after close and exited.
+    worker_exited: AtomicBool,
 }
 
 pub struct HarnessEventBus {
@@ -536,13 +538,21 @@ impl HarnessEventBus {
             closed_error: Mutex::new(None),
             queue: Mutex::new(VecDeque::new()),
             notify: Notify::new(),
+            worker_exited: AtomicBool::new(false),
         });
         let worker = inner.clone();
         tokio::spawn(async move {
             loop {
                 let job = {
                     let mut queue = worker.queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                    queue.pop_front()
+                    let job = queue.pop_front();
+                    if job.is_none()
+                        && worker.closed_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some()
+                    {
+                        worker.worker_exited.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    job
                 };
                 match job {
                     Some(job) => job().await,
@@ -591,8 +601,13 @@ impl HarnessEventBus {
         if self.closed_error().is_some() || events.is_empty() {
             return Box::pin(async {});
         }
-        let bound: Vec<(HarnessEvent, Vec<UntypedEventListener>)> =
-            events.into_iter().map(|event| (event.clone(), self.snapshot_recipients(&event))).collect();
+        let bound: Vec<(HarnessEvent, Vec<UntypedEventListener>)> = events
+            .into_iter()
+            .map(|event| {
+                let recipients = self.snapshot_recipients(&event);
+                (event, recipients)
+            })
+            .collect();
         let inner = self.inner.clone();
         let (done_tx, done_rx) = oneshot::channel();
         self.push_job(Box::new(move || {
@@ -663,9 +678,15 @@ impl HarnessEventBus {
     fn push_job(&self, job: Job) {
         {
             let mut queue = self.inner.queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if self.inner.worker_exited.load(Ordering::SeqCst) {
+                // The closed bus already drained every earlier job; run late jobs directly.
+                drop(queue);
+                tokio::spawn(job());
+                return;
+            }
             queue.push_back(job);
         }
-        self.inner.notify.notify_waiters();
+        self.inner.notify.notify_one();
     }
 
     fn install_watcher<T: Clone + Send + Sync + 'static>(
@@ -740,16 +761,23 @@ async fn deliver(
     report_errors: bool,
     context: Context,
 ) {
-    for listener in recipients {
-        let cloned = event.clone();
-        let result = std::panic::AssertUnwindSafe(listener(cloned, context.clone())).catch_unwind().await;
+    // The panic path needs only the type and lane, so the owned event moves into the last listener.
+    let event_type = event.event_type();
+    let lane = event.lane.clone();
+    let last = recipients.len().saturating_sub(1);
+    let mut owned = Some(event);
+    for (index, listener) in recipients.iter().enumerate() {
+        let delivered = if index == last { owned.take() } else { owned.clone() };
+        let Some(delivered) = delivered else {
+            break;
+        };
+        let result = std::panic::AssertUnwindSafe(listener(delivered, context.clone())).catch_unwind().await;
         if let Err(payload) = result {
-            if !report_errors || event.event_type() == "handler_error" {
+            if !report_errors || event_type == "handler_error" {
                 continue;
             }
             let message = panic_message(&payload);
-            let lane = event.lane.clone();
-            let handler_error = HarnessEvent::handler_error(message, "event", event.event_type(), lane);
+            let handler_error = HarnessEvent::handler_error(message, "event", event_type, lane.clone());
             let recipients = snapshot_recipients_of(inner, &handler_error);
             Box::pin(deliver(inner, handler_error, &recipients, false, context.clone())).await;
         }
@@ -863,6 +891,9 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
         let worker = inner.clone();
         tokio::spawn(async move {
             loop {
+                if *worker.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) == WatcherState::Unsubscribed {
+                    break;
+                }
                 let job = {
                     let mut queue = worker.queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     queue.pop_front()
@@ -1006,6 +1037,7 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
         if let Some(callback) = callback {
             callback();
         }
+        self.inner.notify.notify_one();
     }
 
     fn set_unsubscribe(&self, callback: Arc<dyn Fn() + Send + Sync>) {
@@ -1047,7 +1079,7 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push_back((event, context, epoch));
-        self.inner.notify.notify_waiters();
+        self.inner.notify.notify_one();
     }
 }
 

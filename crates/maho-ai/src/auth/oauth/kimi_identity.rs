@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 const KIMI_CLIENT_PLATFORM: &str = "kimi_cli";
 const KIMI_CLIENT_VERSION: &str = "1.0";
@@ -65,10 +65,13 @@ fn platform() -> String {
     }
 }
 
-fn release() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/osrelease")
-        .map(|value| value.trim().to_string())
-        .unwrap_or_default()
+fn release() -> &'static str {
+    static RELEASE: OnceLock<String> = OnceLock::new();
+    RELEASE.get_or_init(|| {
+        std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default()
+    })
 }
 
 fn arch() -> String {
@@ -88,9 +91,18 @@ fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname").map(|value| value.trim().to_string()).unwrap_or_default()
 }
 
-fn device_model() -> String {
-    let current = platform();
-    [current, release(), arch()].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ").trim().to_string()
+fn device_model() -> &'static str {
+    static DEVICE_MODEL: OnceLock<String> = OnceLock::new();
+    DEVICE_MODEL.get_or_init(|| {
+        let current = platform();
+        [current, release().to_string(), arch()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_string()
+    })
 }
 
 fn read_or_mint_device_id() -> String {
@@ -139,8 +151,8 @@ pub fn kimi_code_identity_headers() -> Vec<(String, String)> {
         ("X-Msh-Platform".into(), KIMI_CLIENT_PLATFORM.to_string()),
         ("X-Msh-Version".into(), KIMI_CLIENT_VERSION.to_string()),
         ("X-Msh-Device-Name".into(), sanitize_header_value(&hostname(), "unknown")),
-        ("X-Msh-Device-Model".into(), sanitize_header_value(&device_model(), "unknown")),
-        ("X-Msh-Os-Version".into(), sanitize_header_value(&release(), "unknown")),
+        ("X-Msh-Device-Model".into(), sanitize_header_value(device_model(), "unknown")),
+        ("X-Msh-Os-Version".into(), sanitize_header_value(release(), "unknown")),
         ("X-Msh-Device-Id".into(), sanitize_header_value(&device_id(), "unknown")),
     ]
 }

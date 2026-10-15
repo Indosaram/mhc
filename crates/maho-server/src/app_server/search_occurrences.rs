@@ -28,19 +28,21 @@ pub fn occurrences_response(params: &Value,turns: &[LoggedTurn]) -> Result<Value
     let (id,term,cursor,limit) = parse_occurrence_params(params)?;
     let invalid = |message: &str|JsonRpcError::new(-32600,message);
     let mut occurrences = Vec::new();
+    let needle = term.to_lowercase();
     for turn in turns {
         let final_agent = turn.items.iter().rposition(|item|item.get("type").is_some_and(|value|value == "agentMessage"));
         for (index,item) in turn.items.iter().enumerate() {
+            let kind = item.get("type").unwrap_or(&Value::Null);
+            if *kind != "userMessage" && (*kind != "agentMessage" || Some(index) != final_agent) {continue;}
             let item = Value::Object(item.clone());
-            if item["type"] != "userMessage" && (item["type"] != "agentMessage" || Some(index) != final_agent) {continue;}
             let Some(item_id) = item["id"].as_str().filter(|id|!id.is_empty()) else {continue};
             let text = if item["type"] == "agentMessage" {markdown_to_search_text(item["text"].as_str().unwrap_or_default())} else if let Some(text) = item["content"].as_str() {text.into()} else {item["content"].as_array().into_iter().flatten().filter(|input|input["type"] == "text").filter_map(|input|input["text"].as_str()).collect()};
-            let lower = text.to_lowercase();let needle = term.to_lowercase();let mut offset = 0;let mut occurrence_index = 0;
+            let lower = text.to_lowercase();let mut offset = 0;let mut occurrence_index = 0;
             let mut spans = Vec::new();let mut lower_offset = 0;let mut original_offset = 0;
             for character in text.chars() {let folded = character.to_lowercase().collect::<String>();spans.push((lower_offset,lower_offset+folded.len(),original_offset,original_offset+character.len_utf8()));lower_offset += folded.len();original_offset += character.len_utf8();}
             while let Some(found) = lower[offset..].find(&needle) {
                 let start = offset+found;let end = start+needle.len();offset = end;
-                let first = spans.iter().find(|span|span.0 <= start && start < span.1);let last = spans.iter().find(|span|span.0 < end && end <= span.1);
+                let first = spans.get(spans.partition_point(|span|span.1 <= start)).filter(|span|span.0 <= start);let last = spans.get(spans.partition_point(|span|span.1 < end)).filter(|span|span.0 < end);
                 if let (Some(first),Some(last)) = (first,last) {
                     let prefix = &text[..first.2];let suffix = &text[last.3..];let before = prefix.chars().count().saturating_sub(49);
                     let snippet_start = prefix.char_indices().nth(before).map_or(prefix.len(),|(index,_)|index);

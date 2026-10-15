@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::backend::{error_text, IsolationError, Result};
 use crate::git::baseline::{RepoBaseline, WorktreeBaseline};
-use crate::git::command::{git_text, run_git, str_args, GitOptions};
+use crate::git::command::{git_text, run_git, run_git_with_input, str_args, GitOptions};
 use crate::git::delta::{capture_delta_patch, DeltaPatchResult, NestedPatch};
 use crate::git::synthetic_tree::write_synthetic_tree;
 use crate::merge::shared::{
@@ -63,9 +63,8 @@ fn filtered_tree(repo_root: &Path, base: &str, patch: &str) -> Result<String> {
     let result = (|| {
         run_git(&str_args(&["read-tree", base]), &options)?;
         if !patch.trim().is_empty() {
-            let mut apply_options = options.clone();
-            apply_options.input = Some(patch.as_bytes().to_vec());
-            let applied = run_git(
+            let input: Arc<[u8]> = Arc::from(patch.as_bytes());
+            let applied = run_git_with_input(
                 &str_args(&[
                     "apply",
                     "--cached",
@@ -73,13 +72,14 @@ fn filtered_tree(repo_root: &Path, base: &str, patch: &str) -> Result<String> {
                     "--whitespace=nowarn",
                     "-",
                 ]),
-                &apply_options,
+                &options,
+                Some(Arc::clone(&input)),
             );
             match applied {
                 Ok(_) => {}
                 Err(error) if matches!(&error, IsolationError::Git { .. }) => {
                     run_git(&str_args(&["read-tree", base]), &options)?;
-                    run_git(
+                    run_git_with_input(
                         &str_args(&[
                             "apply",
                             "--cached",
@@ -88,7 +88,8 @@ fn filtered_tree(repo_root: &Path, base: &str, patch: &str) -> Result<String> {
                             "--whitespace=nowarn",
                             "-",
                         ]),
-                        &apply_options,
+                        &options,
+                        Some(input),
                     )?;
                 }
                 Err(error) => return Err(error),
@@ -222,10 +223,10 @@ pub fn commit_to_branch_locked(
     } else {
         // Seed WIP-side blobs in both object databases. Diffing cumulative child states
         // against this tree subtracts inherited WIP even when a child used `git add .`.
-        let wip = vec![
-            baseline.root.staged.clone(),
-            baseline.root.unstaged.clone(),
-            baseline.root.untracked_patch.clone(),
+        let wip = [
+            baseline.root.staged.as_str(),
+            baseline.root.unstaged.as_str(),
+            baseline.root.untracked_patch.as_str(),
         ];
         let dirty_tree = write_synthetic_tree(isolation_dir, &base_sha, &wip)?;
         write_synthetic_tree(repo_root, &base_sha, &wip)?;

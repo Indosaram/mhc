@@ -100,7 +100,7 @@ pub fn measure_facts_payload_bytes(payload: &FactsPayload) -> usize {
 pub fn select_capped_facts_batch(input: &CappedFactsBatchInput) -> CappedFactsBatch {
     let max_bytes = input.max_bytes.unwrap_or(MAX_FACTS_PAYLOAD_BYTES);
     let starvation_ms = input.starvation_ms.unwrap_or(FACTS_STARVATION_MS);
-    let envelope_bytes = measure_facts_payload_bytes(&input.envelope.to_payload(Vec::new()));
+    let envelope_bytes = measure_entries_bytes(&input.envelope, &[]);
     if envelope_bytes > max_bytes {
         return CappedFactsBatch {
             selected: Vec::new(),
@@ -114,28 +114,26 @@ pub fn select_capped_facts_batch(input: &CappedFactsBatchInput) -> CappedFactsBa
     let ordered_buckets = order_conversations(groups, now_millis, starvation_ms);
 
     let mut oversized = Vec::new();
-    let mut selected = Vec::new();
+    let mut selected: Vec<&FactsQueueEntry> = Vec::new();
 
     for bucket in ordered_buckets {
         for candidate in bucket {
-            let single = input.envelope.to_payload(vec![candidate.clone()]);
-            if measure_facts_payload_bytes(&single) > max_bytes {
-                oversized.push(candidate);
-                break;
-            }
-            let mut next = selected.clone();
-            next.push(candidate.clone());
-            let next_payload = input.envelope.to_payload(next);
-            if measure_facts_payload_bytes(&next_payload) > max_bytes {
+            if measure_entries_bytes(&input.envelope, &[candidate]) > max_bytes {
+                oversized.push(candidate.clone());
                 break;
             }
             selected.push(candidate);
+            if measure_entries_bytes(&input.envelope, &selected) > max_bytes {
+                selected.pop();
+                break;
+            }
         }
     }
 
-    let ordered_selected = group_by_conversation(&selected)
+    let ordered_selected = group_by_conversation(selected)
         .into_iter()
         .flat_map(|(_, bucket)| bucket)
+        .cloned()
         .collect();
 
     CappedFactsBatch {
@@ -145,9 +143,56 @@ pub fn select_capped_facts_batch(input: &CappedFactsBatchInput) -> CappedFactsBa
     }
 }
 
-fn group_by_conversation(entries: &[FactsQueueEntry]) -> Vec<(String, Vec<FactsQueueEntry>)> {
+/// Borrowed payload view that serializes byte-identically to [`FactsPayload`].
+#[derive(Serialize)]
+struct FactsPayloadView<'a> {
+    version: u32,
+    identity: &'a str,
+    today: &'a str,
+    #[serde(rename = "knownPeople")]
+    known_people: &'a [FactsKnownPerson],
+    #[serde(rename = "primaryHuman")]
+    primary_human: &'a FactsPrimaryHuman,
+    entries: &'a [&'a FactsQueueEntry],
+}
+
+/// Byte counter used to measure serialized output without buffering it.
+struct ByteCounter(usize);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Same result as [`measure_facts_payload_bytes`] for `envelope` plus `entries`, without cloning.
+fn measure_entries_bytes(envelope: &FactsPayloadEnvelope, entries: &[&FactsQueueEntry]) -> usize {
+    let view = FactsPayloadView {
+        version: envelope.version,
+        identity: &envelope.identity,
+        today: &envelope.today,
+        known_people: &envelope.known_people,
+        primary_human: &envelope.primary_human,
+        entries,
+    };
+    let mut counter = ByteCounter(0);
+    match serde_json::to_writer_pretty(&mut counter, &view) {
+        Ok(()) => counter.0 + 1,
+        // Mirrors `serialize_facts_payload`, which renders a failure as an empty string plus newline.
+        Err(_) => 1,
+    }
+}
+
+fn group_by_conversation<'a>(
+    entries: impl IntoIterator<Item = &'a FactsQueueEntry>,
+) -> Vec<(String, Vec<&'a FactsQueueEntry>)> {
     let mut order = Vec::new();
-    let mut map: std::collections::HashMap<String, Vec<FactsQueueEntry>> =
+    let mut map: std::collections::HashMap<String, Vec<&'a FactsQueueEntry>> =
         std::collections::HashMap::new();
 
     for entry in entries {
@@ -155,7 +200,7 @@ fn group_by_conversation(entries: &[FactsQueueEntry]) -> Vec<(String, Vec<FactsQ
         if !map.contains_key(&conv_id) {
             order.push(conv_id.clone());
         }
-        map.entry(conv_id).or_default().push(entry.clone());
+        map.entry(conv_id).or_default().push(entry);
     }
 
     let mut result = Vec::with_capacity(order.len());
@@ -176,11 +221,11 @@ fn waited_ms(entry: &FactsQueueEntry, now_millis: i64) -> i64 {
 }
 
 fn order_conversations(
-    groups: Vec<(String, Vec<FactsQueueEntry>)>,
+    groups: Vec<(String, Vec<&FactsQueueEntry>)>,
     now_millis: i64,
     starvation_ms: i64,
-) -> Vec<Vec<FactsQueueEntry>> {
-    let mut buckets: Vec<Vec<FactsQueueEntry>> = groups.into_iter().map(|(_, b)| b).collect();
+) -> Vec<Vec<&FactsQueueEntry>> {
+    let mut buckets: Vec<Vec<&FactsQueueEntry>> = groups.into_iter().map(|(_, b)| b).collect();
     buckets.sort_by(|left, right| {
         let left_wait = left.first().map(|e| waited_ms(e, now_millis)).unwrap_or(0);
         let right_wait = right.first().map(|e| waited_ms(e, now_millis)).unwrap_or(0);

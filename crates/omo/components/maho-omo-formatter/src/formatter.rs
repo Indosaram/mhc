@@ -266,13 +266,13 @@ pub fn language_for_path(path: &Path) -> String {
     }
 }
 
-pub fn is_git_ignored(file_path: &Path, cwd: &Path) -> bool {
+pub async fn is_git_ignored(file_path: &Path, cwd: &Path) -> bool {
     let relative_path = match file_path.strip_prefix(cwd) {
         Ok(p) => p,
         Err(_) => file_path,
     };
 
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = tokio::process::Command::new("git");
     cmd.args(["check-ignore", "-q", "--"]);
     cmd.arg(relative_path);
     cmd.current_dir(cwd);
@@ -282,12 +282,11 @@ pub fn is_git_ignored(file_path: &Path, cwd: &Path) -> bool {
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    match cmd.status() {
+    match cmd.status().await {
         Ok(status) => status.success(),
         Err(_) => false,
     }
@@ -529,7 +528,7 @@ impl FormatterStep {
             // Lexical normalization matching upstream resolve(cwd, rawPath)
             let file_path = normalize_resolved_path(cwd, &raw_path);
 
-            if !file_path.exists() || is_git_ignored(&file_path, cwd) {
+            if !file_path.exists() {
                 continue;
             }
 
@@ -561,6 +560,12 @@ impl FormatterStep {
 
             let language = language_for_path(&file_path);
             if resolve_format_mode(&self.config, &language) == FormatMode::Off {
+                continue;
+            }
+
+            // Checked after the side-effect-free formatter/mode gates so no `git` process is
+            // spawned for files that would never be formatted.
+            if is_git_ignored(&file_path, cwd).await {
                 continue;
             }
 

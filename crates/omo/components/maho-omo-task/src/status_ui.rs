@@ -29,6 +29,8 @@ struct State {
     subscriptions: BTreeMap<String, Unsubscribe>,
     pending: Option<u64>,
     live_refresh: Option<u64>,
+    /// A child event arrived since the last record refresh; the next render refreshes first.
+    records_stale: bool,
 }
 pub struct TaskStatusUi {
     pub manager: Arc<dyn StatusUiManager>,
@@ -48,6 +50,8 @@ impl TaskStatusUi {
     }
     fn refresh_cached_records(self: &Arc<Self>) -> bool {
         if self.ui().is_none() { return false }
+        // Clear before listing so a child event racing `list` re-marks the cache stale.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).records_stale = false;
         let session = self.runtime.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned);
         let records = session.map_or_else(Vec::new, |session| self.manager.list(&session));
         let active: Vec<_> = records.iter().filter(|record| !is_terminal(record.status) && self.manager.was_background(&record.task_id)).map(|record| record.task_id.clone()).collect();
@@ -62,7 +66,7 @@ impl TaskStatusUi {
             let listener = Arc::new(move |event: &ManagedChildEvent| {
                 if let Some(ui) = weak.upgrade() && let Some(activity) = activity_from_event(event) {
                     ui.state.lock().unwrap_or_else(PoisonError::into_inner).activity.insert(task_id.clone(), activity);
-                    ui.schedule_sync();
+                    ui.schedule_activity_sync();
                 }
             });
             if let Some(unsubscribe) = self.manager.subscribe_child(&id, listener) { state.subscriptions.insert(id, unsubscribe); }
@@ -90,11 +94,21 @@ impl TaskStatusUi {
         let weak = Arc::downgrade(self);
         state.pending = Some(self.timers.set(Box::new(move || { if let Some(ui) = weak.upgrade() { ui.state.lock().unwrap_or_else(PoisonError::into_inner).pending = None; if refreshed { ui.render_cached_records(); } else { ui.sync_now(); } } }), 250));
     }
+    /// Child-activity variant of [`Self::schedule_sync`]: defers the record refresh to render time
+    /// instead of re-listing every record on each child event.
+    fn schedule_activity_sync(self: &Arc<Self>) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.records_stale = true;
+        if state.live_refresh.is_some() { return }
+        if let Some(handle) = state.pending.take() { self.timers.clear(handle); }
+        let weak = Arc::downgrade(self);
+        state.pending = Some(self.timers.set(Box::new(move || { if let Some(ui) = weak.upgrade() { ui.state.lock().unwrap_or_else(PoisonError::into_inner).pending = None; ui.sync_now(); } }), 250));
+    }
     fn schedule_live_refresh(self: &Arc<Self>) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.live_refresh.is_some() { return }
         let weak = Arc::downgrade(self);
-        state.live_refresh = Some(self.timers.set(Box::new(move || { if let Some(ui) = weak.upgrade() { ui.state.lock().unwrap_or_else(PoisonError::into_inner).live_refresh = None; ui.render_cached_records(); } }), 250));
+        state.live_refresh = Some(self.timers.set(Box::new(move || { if let Some(ui) = weak.upgrade() { let stale = { let mut state = ui.state.lock().unwrap_or_else(PoisonError::into_inner); state.live_refresh = None; std::mem::take(&mut state.records_stale) }; if stale { ui.sync_now(); } else { ui.render_cached_records(); } } }), 250));
     }
     fn clear_live_refresh(&self) { if let Some(handle) = self.state.lock().unwrap_or_else(PoisonError::into_inner).live_refresh.take() { self.timers.clear(handle); } }
     pub fn dispose(&self) {

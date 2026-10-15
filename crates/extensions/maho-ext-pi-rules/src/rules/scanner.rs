@@ -23,7 +23,8 @@ fn scan_directory(path:&Path, depth:usize, max_depth:usize, excluded:&[&str], vi
         let language=if language=="C"||language=="POSIX"{"en-US".into()}else{language.replace('_',"-")};
         language.parse::<icu_locale_core::Locale>().map(Into::into).unwrap_or_default()
     });
-    let collator=icu_collator::Collator::try_new(*preferences,Default::default()).unwrap_or_else(|error|unreachable!("compiled collation data: {error}"));
+    static COLLATOR:std::sync::OnceLock<icu_collator::CollatorBorrowed<'static>>=std::sync::OnceLock::new();
+    let collator=COLLATOR.get_or_init(||icu_collator::Collator::try_new(*preferences,Default::default()).unwrap_or_else(|error|unreachable!("compiled collation data: {error}")));
     entries.sort_by(|left,right|collator.compare(&left.file_name().to_string_lossy(),&right.file_name().to_string_lossy()));
     for entry in entries {
         let path=entry.path(); let name=entry.file_name(); let name=name.to_string_lossy();

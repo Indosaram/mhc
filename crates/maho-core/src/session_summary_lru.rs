@@ -1,6 +1,7 @@
 //! Port of senpi packages/coding-agent/src/core/session-summary-lru.ts.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::session_summary::SessionSummary;
 
@@ -13,7 +14,7 @@ pub struct FileStamp {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SummaryEntry {
     pub stamp: FileStamp,
-    pub summary: SessionSummary,
+    pub summary: Arc<SessionSummary>,
     pub mtime: chrono::DateTime<chrono::Utc>,
 }
 
@@ -103,14 +104,14 @@ mod tests {
     fn entry(text: &str) -> SummaryEntry {
         SummaryEntry {
             stamp: FileStamp { size: 1, mtime_ms: 1.0 },
-            summary: SessionSummary {
+            summary: Arc::new(SessionSummary {
                 header: json!({ "type": "session", "id": "s" }),
                 name: None,
                 first_user_message: String::new(),
                 message_count: 0,
                 last_activity_time: None,
                 all_messages_text: text.to_owned(),
-            },
+            }),
             mtime: chrono::Utc::now(),
         }
     }

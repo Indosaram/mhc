@@ -10,12 +10,14 @@ async fn wait_for_run_state(directory: &Path, ready: impl Fn() -> bool, deadline
     if ready() { return SentinelWaitResult::Present; }
     let timeout = tokio::time::sleep(Duration::from_secs_f64((deadline_at - now()).max(0.0) / 1000.0));
     tokio::pin!(timeout);
-    let mut recheck = tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_millis(25), Duration::from_millis(25));
     let abort = async { match signal { Some(signal) => signal.cancelled().await, None => std::future::pending().await } };
     tokio::pin!(abort);
     let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| { let _ = events.send(event); }).ok();
     if watcher.as_mut().is_some_and(|watcher| watcher.watch(directory, notify::RecursiveMode::NonRecursive).is_err()) { watcher = None; }
+    // With a live watcher the re-check is only a safety net; without one it is the sole observer.
+    let recheck_every = |watched: bool| Duration::from_millis(if watched { 1000 } else { 25 });
+    let mut recheck = tokio::time::interval_at(tokio::time::Instant::now() + recheck_every(watcher.is_some()), recheck_every(watcher.is_some()));
     if ready() { return SentinelWaitResult::Present; }
     loop {
         tokio::select! {
@@ -23,7 +25,10 @@ async fn wait_for_run_state(directory: &Path, ready: impl Fn() -> bool, deadline
             _ = &mut timeout => return SentinelWaitResult::Timeout,
             event = received.recv(), if watcher.is_some() => match event {
                 Some(Ok(_)) => if ready() { return SentinelWaitResult::Present; },
-                _ => watcher = None,
+                _ => {
+                    watcher = None;
+                    recheck = tokio::time::interval_at(tokio::time::Instant::now() + recheck_every(false), recheck_every(false));
+                }
             },
             _ = recheck.tick() => if ready() { return SentinelWaitResult::Present; },
         }

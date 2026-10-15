@@ -96,6 +96,24 @@ impl<S: XServer> X11Capture<S> {
             .map(|display| display.pixel_y.saturating_add(display.pixel_height))
             .max()
             .unwrap_or(1);
+        if let [display] = displays.as_slice() {
+            if display.pixel_x == 0 && display.pixel_y == 0 {
+                // One display at the origin: the composite would be the
+                // capture itself, so skip the extra frame and copy.
+                let image = self.capture_rect(RootRect {
+                    x: display.x,
+                    y: display.y,
+                    width: display.width,
+                    height: display.height,
+                })?;
+                if image.dimensions() == (width, height) {
+                    return Ok((image, frame));
+                }
+                let mut composite = RgbaImage::new(width, height);
+                imageops::replace(&mut composite, &image, 0, 0);
+                return Ok((composite, frame));
+            }
+        }
         let mut composite = RgbaImage::new(width, height);
         for display in &displays {
             let image = self.capture_rect(RootRect {

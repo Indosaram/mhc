@@ -1175,6 +1175,9 @@ impl TuiAltScreen {
         let lines = boxed.and_then(|boxed| boxed.scroll_content_lines.as_ref());
         let Some(lines) = lines.filter(|_| !search.query.trim().is_empty()) else {
             search.matches.clear();
+            // Forget the cached query too, so the next non-blank query always reports `changed`
+            // and repopulates `search.matches` (the index returns no matches when unchanged).
+            search.index = AltScreenSearchIndex::new();
             search.selected_index = -1;
             search.selected_key = None;
             search.selection_mode = SearchSelectionMode::Retain;
@@ -1184,7 +1187,9 @@ impl TuiAltScreen {
 
         let should_reveal_selection = search.selection_mode != SearchSelectionMode::Retain;
         let result = search.index.search(lines, &search.query);
-        search.matches = result.matches;
+        if result.changed {
+            search.matches = result.matches;
+        }
         if !result.changed && search.selection_mode == SearchSelectionMode::Retain {
             return false;
         }
@@ -1627,7 +1632,7 @@ impl TuiAltScreen {
             return None;
         }
         let pointer_row = y.min(visible_bottom).max(visible_top);
-        let max_content_row = (boxed.scroll_content_lines.as_ref().map_or(1, Vec::len) as i64 - 1).max(0);
+        let max_content_row = (boxed.scroll_content_lines.as_ref().map_or(1, |lines| lines.len()) as i64 - 1).max(0);
         let row = (scroll_view.borrow().scroll_top() as i64 + pointer_row - boxed.rect.y).min(max_content_row).max(0);
         let col = (x - boxed.rect.x).min(boxed.rect.width as i64 - 1).max(0);
         Some(SelectionPoint { row: row as usize, col: col as usize, scroll_view: Some(Rc::clone(scroll_view)), boundary: false })
@@ -1995,7 +2000,7 @@ impl TuiAltScreen {
     fn get_active_selection_text(&self) -> Option<String> {
         let (start, end) = self.get_selection_bounds()?;
         let source_lines: &[String] = match &start.scroll_view {
-            Some(scroll_view) => get_scroll_view_box(self.current_layout.as_ref()?, scroll_view)?.scroll_content_lines.as_deref()?,
+            Some(scroll_view) => get_scroll_view_box(self.current_layout.as_ref()?, scroll_view)?.scroll_content_lines.as_deref().map(Vec::as_slice)?,
             None => self.previous_screen.as_slice(),
         };
         let start_point = ScreenPoint::from(&start);

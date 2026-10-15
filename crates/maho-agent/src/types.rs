@@ -149,7 +149,7 @@ pub struct BeforeToolCallContext {
     pub assistant_message: AssistantMessage,
     pub tool_call: AgentToolCall,
     pub args: Value,
-    pub context: AgentContext,
+    pub context: Arc<AgentContext>,
 }
 
 /// Context passed to `afterToolCall`.
@@ -160,7 +160,7 @@ pub struct AfterToolCallContext {
     pub args: Value,
     pub result: AgentToolResult,
     pub is_error: bool,
-    pub context: AgentContext,
+    pub context: Arc<AgentContext>,
 }
 
 /// Context passed to `shouldStopAfterTurn`.
@@ -415,6 +415,10 @@ impl AgentState {
 
     pub fn set_messages(&mut self, messages: Vec<AgentMessage>) {
         self.messages = messages;
+    }
+
+    pub fn push_message(&mut self, message: AgentMessage) {
+        self.messages.push(message);
     }
 
     pub fn messages(&self) -> &[AgentMessage] {

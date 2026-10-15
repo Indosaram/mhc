@@ -64,6 +64,9 @@ impl TurnEngine {
         let listener = send.clone();
         let subscription = guard.session.subscribe(Arc::new(move |event| {
             let value = match event {
+                // The projector reads only the message role/responseId and the update's own fields, so
+                // a streamed update skips encoding the accumulated message and its `partial` copy.
+                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::MessageUpdate { message, assistant_message_event }) => message_update_value(message, assistant_message_event),
                 maho_ext_api::AgentSessionEvent::Agent(event) => serde_json::to_value(event),
                 maho_ext_api::AgentSessionEvent::AgentEnd { .. } => Ok(json!({"type":"agent_end"})),
                 // senpi `ensureSessionSubscription` forwards every session event; the projector turns
@@ -204,8 +207,8 @@ impl TurnEngine {
     /// interrupted, emitting its terminal notifications) for every loaded thread's active turn.
     pub async fn interrupt_active_turns(&self, threads: &ThreadRegistry) {
         let mut entries = Vec::new();
-        for thread in threads.list_loaded().await {
-            if let Some(id) = thread["id"].as_str() && let Ok(entry) = threads.get_loaded_thread(id).await { entries.push(entry); }
+        for id in threads.loaded_ids().await {
+            if let Ok(entry) = threads.get_loaded_thread(&id).await { entries.push(entry); }
         }
         futures_util::future::join_all(entries.iter().map(|entry| async move {
             let (session, active) = {
@@ -237,12 +240,33 @@ impl TurnEngine {
         for notification in notifications {
             if notification["method"] == "item/completed" && let Some(item) = notification["params"]["item"].as_object() {
                 let mut log = self.log.lock().await;
-                let logged = super::turn_runtime::read_logged_items(&mut log, thread_id, turn_id).iter().any(|logged| logged["id"] == item["id"]);
+                let logged = log.has_item(thread_id, turn_id, item.get("id").unwrap_or(&Value::Null));
                 if !logged && let Err(error) = log.append_item(thread_id, turn_id, item.clone()) { eprintln!("app-server turn log: {error}"); }
             }
             emit(&core, entry, notification).await;
         }
     }
+}
+
+/// The `message_update` fields the projector reads, without the accumulated message or `partial`.
+fn message_update_value(message: &maho_ext_api::AgentMessage, update: &maho_ai::types::AssistantMessageEvent) -> serde_json::Result<Value> {
+    use maho_ai::types::AssistantMessageEvent as Update;
+    let response_id = match message { maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => message.response_id.as_deref(), _ => None };
+    let update = match update {
+        Update::Start { .. } => json!({"type":"start"}),
+        Update::TextStart { content_index, .. } => json!({"type":"text_start","contentIndex":content_index}),
+        Update::TextDelta { content_index, delta, .. } => json!({"type":"text_delta","contentIndex":content_index,"delta":delta}),
+        Update::TextEnd { content_index, content, .. } => json!({"type":"text_end","contentIndex":content_index,"content":content}),
+        Update::ThinkingStart { content_index, .. } => json!({"type":"thinking_start","contentIndex":content_index}),
+        Update::ThinkingDelta { content_index, delta, .. } => json!({"type":"thinking_delta","contentIndex":content_index,"delta":delta}),
+        Update::ThinkingEnd { content_index, content, .. } => json!({"type":"thinking_end","contentIndex":content_index,"content":content}),
+        Update::ToolcallStart { content_index, .. } => json!({"type":"toolcall_start","contentIndex":content_index}),
+        Update::ToolcallDelta { content_index, delta, .. } => json!({"type":"toolcall_delta","contentIndex":content_index,"delta":delta}),
+        Update::ToolcallEnd { content_index, tool_call, .. } => json!({"type":"toolcall_end","contentIndex":content_index,"toolCall":serde_json::to_value(tool_call)?}),
+        Update::Done { reason, .. } => json!({"type":"done","reason":serde_json::to_value(reason)?}),
+        Update::Error { reason, error } => json!({"type":"error","reason":serde_json::to_value(reason)?,"error":serde_json::to_value(error)?}),
+    };
+    Ok(json!({"type":"message_update","message":{"role":message.role(),"responseId":response_id},"assistantMessageEvent":update}))
 }
 
 /// senpi `buildExtensionUserMessage`.

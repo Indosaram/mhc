@@ -8,7 +8,11 @@ pub struct TerminateProcessTreesOptions {
 
 pub async fn is_process_alive(pid: u32) -> bool {
     if pid == 0 { return false; }
-    tokio::process::Command::new("kill").args(["-0", "--", &pid.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().await.is_ok_and(|status| status.success())
+    // Same answer as `kill -0` (EPERM and ESRCH both read as not alive) without spawning a process.
+    #[cfg(unix)]
+    { i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok()) }
+    #[cfg(not(unix))]
+    { tokio::process::Command::new("kill").args(["-0", "--", &pid.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().await.is_ok_and(|status| status.success()) }
 }
 
 pub async fn signal_process(pid: u32, signal: &str) -> bool {

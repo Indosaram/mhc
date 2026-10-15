@@ -125,7 +125,7 @@ impl AntmlInvokeRecoveryStreamParser {
                     self.pending = PendingState::Opening(character.to_string());
                     return;
                 }
-                self.collect_inner(events, &character.to_string(), false);
+                self.collect_inner(events, character.encode_utf8(&mut [0u8; 4]), false);
             }
         }
     }

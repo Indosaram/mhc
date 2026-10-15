@@ -19,8 +19,10 @@ pub fn aborted_error_label(
         None => {}
     }
     if let Some(p) = persisted {
-        let provider_retry = regex::Regex::new(r"^Provider retry failed after \d+ attempts?$")
-            .is_ok_and(|r| r.is_match(p));
+        static PROVIDER_RETRY: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"^Provider retry failed after \d+ attempts?$").ok()
+        });
+        let provider_retry = PROVIDER_RETRY.as_ref().is_some_and(|r| r.is_match(p));
         if matches!(
             p,
             "Operation aborted" | "System operation aborted" | "Provider request failed"

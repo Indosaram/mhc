@@ -128,9 +128,9 @@ impl TuiMainScreen {
 
         fn visit(component: &Rc<RefCell<dyn Component>>, out: &mut Vec<Rc<RefCell<dyn Component>>>) {
             out.push(Rc::clone(component));
-            let children = component.borrow().as_container().map(|c| c.children.clone());
-            if let Some(children) = children {
-                for child in &children {
+            let component = component.borrow();
+            if let Some(container) = component.as_container() {
+                for child in &container.children {
                     visit(child, out);
                 }
             }
@@ -140,9 +140,14 @@ impl TuiMainScreen {
             visit(&root, &mut components);
         }
 
-        let previous_lines = self.base.state.borrow().previous_lines.clone();
-        let lines_changed = previous_lines.len() != self.committed_mouse_lines.len()
-            || previous_lines.iter().zip(self.committed_mouse_lines.iter()).any(|(a, b)| a != b);
+        let lines_changed = {
+            let state = self.base.state.borrow();
+            let lines_changed = state.previous_lines != self.committed_mouse_lines;
+            if lines_changed {
+                self.committed_mouse_lines = state.previous_lines.clone();
+            }
+            lines_changed
+        };
         let components_changed = components.len() != self.committed_mouse_components.len()
             || components
                 .iter()
@@ -151,7 +156,6 @@ impl TuiMainScreen {
         if lines_changed || components_changed {
             self.layout_revision += 1;
         }
-        self.committed_mouse_lines = previous_lines;
         self.committed_mouse_components = components;
         self.base.calibrate_mouse_anchor(terminal);
     }

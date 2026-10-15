@@ -95,7 +95,6 @@ pub struct ToolExecutionComponent {
     todo_strike_frames_left: Option<i64>,
     result: Option<ToolExecutionResult>,
     cached_lines: Option<Vec<String>>,
-    cached_signature: Option<String>,
     cached_width: Option<usize>,
     last_display_signature: Option<String>,
     theme: Theme,
@@ -104,6 +103,8 @@ pub struct ToolExecutionComponent {
     now_ms: f64,
     custom: Option<Rc<RefCell<dyn ToolRenderers>>>,
     renderer_invalidated: Rc<std::cell::Cell<bool>>,
+    /// Memoized `exploration_call` result; dropped with the render cache on every state change.
+    pub(super) exploration_cache: RefCell<Option<Option<super::exploration_call::ExplorationCall>>>,
 }
 
 struct ToolExecutionRendererIdentity {
@@ -147,7 +148,6 @@ impl ToolExecutionComponent {
             todo_strike_frames_left: None,
             result: None,
             cached_lines: None,
-            cached_signature: None,
             cached_width: None,
             last_display_signature: None,
             theme,
@@ -156,6 +156,7 @@ impl ToolExecutionComponent {
             now_ms: 0.,
             custom: custom.clone(),
             renderer_invalidated: Rc::new(std::cell::Cell::new(false)),
+            exploration_cache: RefCell::new(None),
         };
         let initial = component.create_render_state();
         if presentation == ToolExecutionPresentation::Grok {
@@ -215,6 +216,19 @@ impl ToolExecutionComponent {
         (self.create_render_state(), self.identity.tool_name.clone(), self.presentation)
     }
 
+    /// Borrowed view of what exploration grouping reads: tool name, presentation, args,
+    /// `is_partial`, `is_error` and cwd, without building a render state.
+    pub fn exploration_view(&self) -> (&str, ToolExecutionPresentation, &Value, bool, bool, &str) {
+        (
+            self.identity.tool_name.as_str(),
+            self.presentation,
+            &self.args,
+            self.is_partial,
+            self.is_error(),
+            self.identity.cwd.as_str(),
+        )
+    }
+
     pub fn identity(&self) -> (String, String, String) {
         (self.identity.tool_name.clone(), self.identity.tool_call_id.clone(), self.identity.cwd.clone())
     }
@@ -252,6 +266,7 @@ impl ToolExecutionComponent {
     pub fn stop_animation(&mut self) {
         self.spinner_frame = None;
         self.todo_strike_frames_left = None;
+        self.invalidate_render_cache();
     }
 
     pub fn set_expanded(&mut self, expanded: bool) {
@@ -442,8 +457,8 @@ impl ToolExecutionComponent {
 
     fn invalidate_render_cache(&mut self) {
         self.cached_lines = None;
-        self.cached_signature = None;
         self.cached_width = None;
+        self.exploration_cache.replace(None);
     }
 }
 
@@ -458,10 +473,10 @@ impl Component for ToolExecutionComponent {
             return lines;
         }
 
-        let signature = self.create_render_signature();
+        // Every state change reaches `update_display` (or `stop_animation`), which drops this cache,
+        // so a cached frame for this width is current.
         if let Some(cached) = &self.cached_lines
             && self.cached_width == Some(width)
-            && self.cached_signature.as_ref() == Some(&signature)
         {
             return cached.clone();
         }
@@ -490,7 +505,6 @@ impl Component for ToolExecutionComponent {
         }
 
         self.cached_width = Some(width);
-        self.cached_signature = Some(signature);
         self.cached_lines = Some(lines.clone());
         lines
     }

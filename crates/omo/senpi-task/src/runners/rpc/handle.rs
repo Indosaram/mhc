@@ -1,5 +1,6 @@
 //! `runners/rpc/handle.ts`: the steerable handle over one RPC child, tracking each turn's outcome.
 
+use std::borrow::Cow;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread;
 use std::time::Duration;
@@ -463,7 +464,7 @@ fn read_session_id(response: &Value) -> Option<String> {
 
 /// `manager/child-handle.ts` `rpcOutcome`: when `agent_end` carries no assistant message, the turn
 /// is classified from the terminal `message_end` observed during it.
-fn with_terminal_fallback(event: &Value, terminal: Option<&Value>) -> Value {
+fn with_terminal_fallback<'a>(event: &'a Value, terminal: Option<&Value>) -> Cow<'a, Value> {
     let has_assistant = event
         .get("messages")
         .and_then(Value::as_array)
@@ -476,9 +477,9 @@ fn with_terminal_fallback(event: &Value, terminal: Option<&Value>) -> Value {
         Some(message) if !has_assistant => {
             let mut effective = event.clone();
             effective["messages"] = json!([message]);
-            effective
+            Cow::Owned(effective)
         }
-        _ => event.clone(),
+        _ => Cow::Borrowed(event),
     }
 }
 
@@ -497,20 +498,33 @@ fn terminal_message(message: &Value) -> Option<RpcTerminalAssistantMessage> {
 /// Project an untrusted wire event onto the manager's event shape.
 pub fn managed_event(event: &Value) -> ManagedChildEvent {
     let string = |key: &str| event.get(key).and_then(Value::as_str).map(str::to_string);
-    let value = |key: &str| event.get(key).cloned();
+    let event_type = string("type").unwrap_or_default();
+    // Payloads are cloned only for the event types whose consumers read them; streaming
+    // deltas (`message_update`, `tool_execution_update`) would otherwise deep-copy the
+    // whole partial message per subscriber.
+    let value_for = |key: &str, wanted: bool| {
+        if wanted {
+            event.get(key).cloned()
+        } else {
+            None
+        }
+    };
+    let is_message = matches!(event_type.as_str(), "message_start" | "message_end");
+    let is_tool_start = event_type == "tool_execution_start";
+    let is_tool_end = event_type == "tool_execution_end";
     ManagedChildEvent {
-        event_type: string("type").unwrap_or_default(),
-        message: value("message"),
+        message: value_for("message", is_message),
         tool_call_id: string("toolCallId"),
         tool_name: string("toolName"),
-        args: value("args"),
-        input: value("input"),
-        result: value("result"),
+        args: value_for("args", is_tool_start),
+        input: value_for("input", is_tool_start),
+        result: value_for("result", is_tool_end),
         is_error: event.get("isError").and_then(Value::as_bool),
         to: string("to"),
         from: string("from"),
         chain_key: string("chainKey"),
         reason: string("reason"),
         last_error: string("lastError"),
+        event_type,
     }
 }

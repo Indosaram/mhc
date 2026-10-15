@@ -27,6 +27,9 @@ fn jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
 }
 pub fn trigram_jaccard(a: &str, b: &str) -> f64 { jaccard(&word_trigrams(a), &word_trigrams(b)) }
 pub fn is_near_duplicate_of_previous_turn(candidate: &str, previous: &str) -> bool { trigram_jaccard(candidate, previous) >= REPETITIVE_TURNS_SIMILARITY_THRESHOLD }
+/// Trigram set of an already-normalized turn, computed once so streaming checks can reuse it.
+pub fn turn_trigrams(normalized: &str) -> BTreeSet<String> { word_trigrams(normalized) }
+pub fn is_near_duplicate_of_previous_grams(candidate: &str, previous: &BTreeSet<String>) -> bool { jaccard(&word_trigrams(candidate), previous) >= REPETITIVE_TURNS_SIMILARITY_THRESHOLD }
 pub struct TurnEntry { pub normalized: String, pub grams: BTreeSet<String> }
 #[derive(Default)]
 pub struct RepetitiveTurnsState { pub history: Vec<TurnEntry>, pub streak: u32, pub latched: bool }

@@ -1,13 +1,14 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::backend::Result;
-use crate::git::command::{run_git, str_args, GitOptions};
+use crate::git::command::{run_git, run_git_with_input, str_args, GitOptions};
 use crate::util::mkdtemp;
 
 pub fn write_synthetic_tree(
     object_repo_dir: &Path,
     head_commit: &str,
-    patches: &[String],
+    patches: &[impl AsRef<str>],
 ) -> Result<String> {
     let dir = mkdtemp("isolation-index-")?;
     let index_file = dir.join("index");
@@ -23,12 +24,12 @@ pub fn write_synthetic_tree(
         };
         run_git(&str_args(&["read-tree", head]), &options)?;
         for patch in patches {
+            let patch = patch.as_ref();
             if patch.trim().is_empty() {
                 continue;
             }
-            let mut apply_options = options.clone();
-            apply_options.input = Some(patch.clone().into_bytes());
-            run_git(
+            let input: Arc<[u8]> = Arc::from(patch.as_bytes());
+            run_git_with_input(
                 &str_args(&[
                     "apply",
                     "--cached",
@@ -36,7 +37,8 @@ pub fn write_synthetic_tree(
                     "--whitespace=nowarn",
                     "-",
                 ]),
-                &apply_options,
+                &options,
+                Some(input),
             )?;
         }
         let output = run_git(&str_args(&["write-tree"]), &options)?;

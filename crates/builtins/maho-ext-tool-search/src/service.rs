@@ -73,6 +73,10 @@ impl ToolSearchService {
         let catalog=self.get_catalog()?; if !catalog.iter().any(|doc|doc.name==name) { return Ok(false); }
         self.activate_names(&[name.into()],&catalog)?; Ok(self.runtime.session_actions()?.get_active_tools()?.iter().any(|active|active==name))
     }
+    /// Whether `maybe_rehydrate_from_history` would scan; lets callers skip serializing history.
+    pub fn needs_history_scan(&mut self)->Result<bool,ExtensionFailure> {
+        self.refresh_extension_docs()?; Ok(self.history_scanned_generation!=Some(self.registry_generation))
+    }
     pub fn maybe_rehydrate_from_history(&mut self,messages:&[Value])->Result<Vec<String>,ExtensionFailure> {
         let catalog=self.get_catalog()?; if self.history_scanned_generation==Some(self.registry_generation) { return Ok(vec![]); }
         self.history_scanned_generation=Some(self.registry_generation);
@@ -81,7 +85,8 @@ impl ToolSearchService {
     }
     fn refresh_extension_docs(&mut self)->Result<(),ExtensionFailure> {
         let mut docs:Vec<_>=self.actions.get_all_tools()?.into_iter().filter(|tool|tool.exposure==ToolExposure::Search && tool.allow_lazy_activation).filter_map(extension_document).collect();
-        let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error));
+        static COLLATOR:std::sync::LazyLock<icu_collator::CollatorBorrowed<'static>>=std::sync::LazyLock::new(||icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error)));
+        let collator=&*COLLATOR;
         docs.sort_by(|a,b|collator.compare(&a.name,&b.name));
         if docs==self.extension_docs { return Ok(()); }
         self.extension_docs=docs; self.registry_generation+=1; self.sync_tool_search_lifecycle()

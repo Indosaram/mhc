@@ -58,7 +58,7 @@ fn scan<'a>(entries: &'a [Value], prices: &dyn ModelPriceSource) -> Result<Scan<
             Some("compaction" | "branch_summary") => result.previous = None,
             Some("message") => {
                 let Some(message) = entry.get("message").filter(|m| m.get("role").and_then(Value::as_str) == Some("assistant")) else { continue; };
-                let request: Request = serde_json::from_value(message.clone())?;
+                let request: Request = Request::deserialize(message)?;
                 if let Some(miss) = detect_miss(result.previous.as_ref(), &request, prices) {
                     result.totals.missed_tokens += miss.missed_tokens;
                     result.totals.missed_cost += miss.missed_cost;
@@ -81,7 +81,7 @@ fn scan<'a>(entries: &'a [Value], prices: &dyn ModelPriceSource) -> Result<Scan<
 pub fn compute_cache_waste(entries: &[Value], prices: &dyn ModelPriceSource) -> Result<CacheWasteTotals, serde_json::Error> { Ok(scan(entries, prices)?.totals) }
 pub fn collect_cache_misses<'a>(entries: &'a [Value], prices: &dyn ModelPriceSource) -> Result<Vec<(&'a Value, CacheMiss)>, serde_json::Error> { Ok(scan(entries, prices)?.misses) }
 pub fn detect_cache_miss(entries: &[Value], message: &Value, prices: &dyn ModelPriceSource) -> Result<Option<CacheMiss>, serde_json::Error> {
-    Ok(detect_miss(scan(entries, prices)?.previous.as_ref(), &serde_json::from_value(message.clone())?, prices))
+    Ok(detect_miss(scan(entries, prices)?.previous.as_ref(), &Request::deserialize(message)?, prices))
 }
 
 #[cfg(test)]

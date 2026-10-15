@@ -27,6 +27,11 @@ impl ModelRegistry {
             provider.filter_models(self.model_runtime.get_models(Some(provider.id())),credential.as_ref())
         }).collect()
     }
+    /// Distinct providers in `get_available()`, without cloning the snapshot once one exists.
+    pub fn available_provider_count(&self) -> usize {
+        if self.model_runtime.has_availability_snapshot() {return self.model_runtime.available_provider_count();}
+        self.get_available().iter().map(|model| model.provider.as_str()).collect::<std::collections::HashSet<_>>().len()
+    }
     pub fn has_configured_auth(&self,model:&Model) -> bool {self.auth_storage.get(&model.provider).is_some()||self.model_runtime.get_provider_auth_status(&model.provider).configured}
     pub fn get_provider_auth_status(&self,id:&str) -> AuthStatus {self.model_runtime.get_provider_auth_status(id)}
     pub fn get_provider(&self,id:&str) -> Option<Arc<dyn Provider>> {self.model_runtime.get_provider(id)}

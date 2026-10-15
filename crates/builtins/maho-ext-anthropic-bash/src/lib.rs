@@ -32,7 +32,11 @@ impl Extension for AnthropicBash {
     fn register(&self, api: &mut ExtensionApi) {
         api.on(EventKind::BeforeProviderRequest, Arc::new(|event, ctx| Box::pin(async move {
             let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else { return Ok(EventResult::None) };
-            let result = add_anthropic_bash_to_payload(ctx.model.as_ref().map(|model| model.api.as_str()), payload, is_anthropic_bash_enabled());
+            let api = ctx.model.as_ref().map(|model| model.api.as_str());
+            let enabled = is_anthropic_bash_enabled();
+            // Same gate as `add_anthropic_bash_to_payload`: leave the payload untouched without copying it.
+            if api != Some("anthropic-messages") || !enabled || !payload.is_object() { return Ok(EventResult::None); }
+            let result = add_anthropic_bash_to_payload(api, payload, enabled);
             Ok(EventResult::ProviderPayload(result))
         })));
         api.on(EventKind::BeforeAgentStart, Arc::new(|event, ctx| Box::pin(async move {

@@ -16,13 +16,11 @@ use crate::lsp::transport_protocol::DiagnosticsParams;
 use crate::lsp::transport_protocol::create_lsp_spawn_env;
 use crate::lsp::transport_protocol::parse_configuration_items;
 use crate::lsp::transport_protocol::parse_diagnostics_params;
-use crate::lsp::types::Diagnostic;
 use crate::lsp::types::ResolvedServer;
 use crate::lsp::workspace_mutation_controller::WorkspaceApplyEditResponse;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -43,14 +41,15 @@ pub struct LspClientTimeoutOptions {
 
 pub type WorkspaceApplyEditHandler =
     Arc<dyn Fn(Value) -> BoxFuture<WorkspaceApplyEditResponse> + Send + Sync>;
-pub type PublishDiagnosticsHook = Arc<dyn Fn(&DiagnosticsParams) + Send + Sync>;
+pub type PublishDiagnosticsHook = Arc<dyn Fn(DiagnosticsParams) + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// TS `LspClientTransport` + `LspClientConnection`: owns the server process, the
-/// JSON-RPC connection, stderr capture and the raw push-diagnostics store.
+/// JSON-RPC connection and stderr capture. Push diagnostics are forwarded to the
+/// publish hook; open-document state owns the diagnostics cache.
 pub struct LspClientTransport {
     root: String,
     server: ResolvedServer,
@@ -60,7 +59,6 @@ pub struct LspClientTransport {
     connection: Mutex<Option<JsonRpcConnection>>,
     stderr_buffer: Arc<Mutex<VecDeque<String>>>,
     process_exited: Arc<AtomicBool>,
-    diagnostics_store: Arc<Mutex<HashMap<String, Vec<Diagnostic>>>>,
     workspace_apply_edit_handler: Mutex<Option<WorkspaceApplyEditHandler>>,
     publish_diagnostics_hook: Mutex<Option<PublishDiagnosticsHook>>,
     diagnostic_pull_supported: AtomicBool,
@@ -91,7 +89,6 @@ impl LspClientTransport {
             connection: Mutex::new(None),
             stderr_buffer: Arc::default(),
             process_exited: Arc::new(AtomicBool::new(false)),
-            diagnostics_store: Arc::default(),
             workspace_apply_edit_handler: Mutex::new(None),
             publish_diagnostics_hook: Mutex::new(None),
             diagnostic_pull_supported: AtomicBool::new(false),
@@ -146,17 +143,6 @@ impl LspClientTransport {
 
     pub fn set_document_formatting_supported(&self, supported: bool) {
         self.document_formatting_supported.store(supported, Ordering::SeqCst);
-    }
-
-    pub fn clear_stored_diagnostics(&self, uri: &str) {
-        lock(&self.diagnostics_store).remove(uri);
-    }
-
-    pub fn get_stored_diagnostics(&self, uri: &str) -> Vec<Diagnostic> {
-        lock(&self.diagnostics_store)
-            .get(uri)
-            .cloned()
-            .unwrap_or_default()
     }
 
     fn stderr_tail(&self, count: usize) -> Option<String> {
@@ -233,16 +219,13 @@ impl LspClientTransport {
         *lock(&self.process) = Some(process);
         let connection = JsonRpcConnection::new(stdout, stdin);
 
-        let store = self.diagnostics_store.clone();
         let hook = lock(&self.publish_diagnostics_hook).clone();
         connection.on_notification("textDocument/publishDiagnostics", move |params| {
             if let Some(params) =
                 parse_diagnostics_params(&params).filter(|params| !params.uri.is_empty())
+                && let Some(hook) = &hook
             {
-                lock(&store).insert(params.uri.clone(), params.diagnostics.clone());
-                if let Some(hook) = &hook {
-                    hook(&params);
-                }
+                hook(params);
             }
             Ok(())
         });
@@ -411,7 +394,6 @@ impl LspClientTransport {
             }
         }
         self.process_exited.store(true, Ordering::SeqCst);
-        lock(&self.diagnostics_store).clear();
     }
 
     /// TS `LspClientConnection.initialize`.

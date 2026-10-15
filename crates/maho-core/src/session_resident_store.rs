@@ -163,7 +163,6 @@ impl ResidentStringStore {
         {
             let mut inner = self.inner.lock().expect("resident store lock");
             if let Some(resident) = inner.strings.shift_remove(id) {
-                let resident = resident.clone();
                 inner.strings.insert(id.to_owned(), resident.clone());
                 return resident;
             }

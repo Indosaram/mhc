@@ -14,6 +14,8 @@ pub type DecodedLine = Result<Value, (String, serde_json::Error)>;
 #[derive(Debug, Default)]
 pub struct LineBuffer {
     buffer: Vec<u8>,
+    /// Prefix of `buffer` already known to contain no newline.
+    scanned: usize,
 }
 
 impl LineBuffer {
@@ -25,16 +27,25 @@ impl LineBuffer {
     pub fn push(&mut self, chunk: &[u8]) -> Vec<DecodedLine> {
         self.buffer.extend_from_slice(chunk);
         let mut decoded = Vec::new();
-        while let Some(index) = self.buffer.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = self.buffer.drain(..=index).collect();
-            let raw = String::from_utf8_lossy(&line[..index]);
+        let mut start = 0;
+        let mut search_from = self.scanned;
+        while let Some(offset) = self.buffer[search_from..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let index = search_from + offset;
+            let raw = String::from_utf8_lossy(&self.buffer[start..index]);
             let raw = raw.trim();
+            start = index + 1;
+            search_from = start;
             if raw.is_empty() {
                 continue;
             }
             decoded
                 .push(serde_json::from_str::<Value>(raw).map_err(|error| (raw.to_string(), error)));
         }
+        self.buffer.drain(..start);
+        self.scanned = self.buffer.len();
         decoded
     }
 }

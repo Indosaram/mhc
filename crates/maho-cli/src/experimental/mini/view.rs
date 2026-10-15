@@ -257,22 +257,31 @@ pub async fn run_view(client: &AttachedSession, _cwd: &str) -> Result<(), String
         }),
     );
     let mut last_lane: Option<Value> = None;
+    let mut last_revision: Option<u64> = None;
     let result = loop {
         terminal.pump(16).map_err(|error| error.to_string())?;
+        let mut dirty = last_revision.is_none();
         if resized.replace(false) {
             renderer.base.invalidate();
+            dirty = true;
         }
         while let Some(data) = input.borrow_mut().pop_front() {
+            dirty = true;
             if renderer.base.has_overlay() {
                 renderer.base.handle_terminal_input(&data, false);
                 continue;
             }
             view.borrow_mut().dispatch_input(&data);
         }
-        let snapshot = client.state();
-        if last_lane.as_ref() != Some(&snapshot.lane) {
-            last_lane = Some(snapshot.lane.clone());
-            view.borrow_mut().set_state(project_lane_snapshot(&snapshot.lane));
+        let revision = client.revision();
+        if last_revision != Some(revision) {
+            last_revision = Some(revision);
+            let snapshot = client.state();
+            if last_lane.as_ref() != Some(&snapshot.lane) {
+                view.borrow_mut().set_state(project_lane_snapshot(&snapshot.lane));
+                last_lane = Some(snapshot.lane);
+                dirty = true;
+            }
         }
         if view.borrow().should_exit() {
             break Ok(());
@@ -288,7 +297,9 @@ pub async fn run_view(client: &AttachedSession, _cwd: &str) -> Result<(), String
                 break Err(error);
             }
         }
-        renderer.do_render(&mut terminal);
+        if dirty {
+            renderer.do_render(&mut terminal);
+        }
         tokio::task::yield_now().await;
     };
     renderer.before_terminal_stop(&mut terminal, false);

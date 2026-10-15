@@ -66,7 +66,7 @@ fn cap_scaling_adjusts_geometry() {
         max_height: Some(400),
         ..CaptureCaps::default()
     };
-    let image = apply_capture_caps(image, &mut f, &caps).unwrap();
+    let image = apply_capture_caps(&image, &mut f, &caps).unwrap();
     assert_eq!((image.width(), image.height()), (400, 300));
     assert_eq!(f.map_point(200.0, 100.0, None).unwrap(), (300.0, 150.0));
 }
@@ -78,7 +78,7 @@ fn uncapped_composite_over_max_composite_pixels_is_capture_failed() {
     let image = RgbaImage::new(20_000, 20_000);
     let mut geometry = FrameGeometry::identity_global();
     // When: no caps shrink it.
-    let error = apply_capture_caps(image, &mut geometry, &CaptureCaps::default()).unwrap_err();
+    let error = apply_capture_caps(&image, &mut geometry, &CaptureCaps::default()).unwrap_err();
     // Then
     assert_eq!(error.code, ErrorCode::CaptureFailed);
 }

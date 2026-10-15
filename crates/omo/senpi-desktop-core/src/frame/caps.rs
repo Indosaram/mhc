@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use image::imageops::FilterType;
 use image::RgbaImage;
 
@@ -9,11 +11,11 @@ pub const MAX_COMPOSITE_PIXELS: u64 = 268_435_456;
 
 /// Downscales `image` to fit `caps` (aspect preserved) and rescales the frame
 /// so later pointer coordinates still map back to the right logical points.
-pub fn apply_capture_caps(
-    image: RgbaImage,
+pub fn apply_capture_caps<'a>(
+    image: &'a RgbaImage,
     geometry: &mut FrameGeometry,
     caps: &CaptureCaps,
-) -> CoreResult<RgbaImage> {
+) -> CoreResult<Cow<'a, RgbaImage>> {
     if image.width() == 0 || image.height() == 0 {
         return Err(DesktopError::capture_failed("capture returned an empty image"));
     }
@@ -37,15 +39,15 @@ pub fn apply_capture_caps(
         )));
     }
     if width == image.width() && height == image.height() {
-        return Ok(image);
+        return Ok(Cow::Borrowed(image));
     }
     let ratio_x = f64::from(width) / f64::from(image.width());
     let ratio_y = f64::from(height) / f64::from(image.height());
     geometry.scaled(ratio_x, ratio_y, width, height);
-    Ok(image::imageops::resize(
-        &image,
+    Ok(Cow::Owned(image::imageops::resize(
+        image,
         width,
         height,
         FilterType::Triangle,
-    ))
+    )))
 }

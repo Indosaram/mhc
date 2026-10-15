@@ -5,7 +5,7 @@
 //! survivors when one is deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 
@@ -22,7 +22,7 @@ static PASTE_MARKER_SINGLE: LazyLock<Regex> = LazyLock::new(|| {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasteMarkerEntry {
-    pub content: String,
+    pub content: Arc<str>,
     pub marker: String,
     pub line_count: u64,
     pub char_count: u64,
@@ -31,7 +31,7 @@ pub struct PasteMarkerEntry {
 /// Paste registry state for transfer between editor instances.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EditorPasteState {
-    pub pastes: BTreeMap<u64, String>,
+    pub pastes: BTreeMap<u64, Arc<str>>,
     pub markers: Option<BTreeMap<u64, String>>,
     pub paste_counter: u64,
 }
@@ -74,7 +74,7 @@ fn count_lines(content: &str) -> u64 {
     line_count
 }
 
-fn create_entry(id: u64, content: &str, marker: Option<&str>) -> PasteMarkerEntry {
+fn create_entry(id: u64, content: &Arc<str>, marker: Option<&str>) -> PasteMarkerEntry {
     let char_count = content.encode_utf16().count() as u64;
     let line_count = marker
         .and_then(|marker| PASTE_MARKER_SINGLE.captures(marker))
@@ -92,7 +92,7 @@ fn create_entry(id: u64, content: &str, marker: Option<&str>) -> PasteMarkerEntr
         _ => canonical,
     };
     PasteMarkerEntry {
-        content: content.to_string(),
+        content: Arc::clone(content),
         marker,
         line_count,
         char_count,
@@ -314,7 +314,7 @@ impl PasteMarkerRegistry {
         self.entries.insert(
             id,
             PasteMarkerEntry {
-                content: content.to_string(),
+                content: Arc::from(content),
                 marker: marker.clone(),
                 line_count,
                 char_count,

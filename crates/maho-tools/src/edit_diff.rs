@@ -97,13 +97,14 @@ pub fn apply_edits_to_normalized_content(content: &str, edits: &[Edit], path: &s
     }
     let fuzzy = edits.iter().any(|e| fuzzy_find_text(content, &e.old_text).used_fuzzy_match);
     let base = if fuzzy { normalize_for_fuzzy_match(content) } else { content.into() };
+    let normalized_base = normalize_for_fuzzy_match(&base);
     let mut matched = Vec::new();
     for (index, edit) in edits.iter().enumerate() {
         let found = fuzzy_find_text(&base, &edit.old_text);
         let Some(at) = found.index else { return Err(ToolError::Message(if count == 1 {
             format!("Could not find the exact text in {path}. The old text must match exactly including all whitespace and newlines.")
         } else { format!("Could not find edits[{index}] in {path}. The oldText must match exactly including all whitespace and newlines.") })); };
-        let occurrences = normalize_for_fuzzy_match(&base).matches(&normalize_for_fuzzy_match(&edit.old_text)).count();
+        let occurrences = normalized_base.matches(&normalize_for_fuzzy_match(&edit.old_text)).count();
         if occurrences > 1 { return Err(ToolError::Message(if count == 1 {
             format!("Found {occurrences} occurrences of the text in {path}. The text must be unique. Please provide more context to make it unique.")
         } else { format!("Found {occurrences} occurrences of edits[{index}] in {path}. Each oldText must be unique. Please provide more context to make it unique.") })); }
@@ -122,38 +123,64 @@ pub fn apply_edits_to_normalized_content(content: &str, edits: &[Edit], path: &s
     Ok(AppliedEditsResult { base_content: content.into(), new_content })
 }
 
+/// One forward Myers step `d` over `v`; returns true when the end point is reached.
+fn myers_step(v: &mut [usize], d: usize, offset: usize, a: &[&str], b: &[&str]) -> bool {
+    for step in (0..=2*d).step_by(2) {
+        let k = offset + step - d;
+        let mut x = if step == 0 || (step != 2*d && v[k-1] < v[k+1]) { v[k+1] } else { v[k-1]+1 };
+        let mut y = x + d - step;
+        while x < a.len() && y < b.len() && a[x] == b[y] { x += 1; y += 1; }
+        v[k] = x;
+        if x == a.len() && y == b.len() { return true; }
+    }
+    false
+}
 /// Myers shortest edit script over newline-preserving tokens. Deletions precede additions.
+///
+/// The backtrack needs the `v` state before every step. Instead of keeping all D snapshots
+/// (O(D*(N+M)) memory), only every `interval`-th snapshot band is kept and each block is
+/// replayed during the backtrack; the replay is deterministic, so the script is unchanged.
 pub(crate) fn diff_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
     let a: Vec<_> = old.split_inclusive('\n').collect();
     let b: Vec<_> = new.split_inclusive('\n').collect();
     let max = a.len() + b.len();
     let offset = max + 1;
+    // Before step d only diagonals offset-d+1..=offset+d-1 are written; the backtrack reads one past each edge.
+    let band = |v: &[usize], d: usize| v[offset-d-1..=offset+d+1].to_vec();
+    let mut interval = 1;
+    while interval * interval < max + 1 { interval += 1; }
     let mut v = vec![0usize; 2 * max + 3];
-    let mut trace = Vec::new();
+    let mut checkpoints = Vec::new();
     let mut distance = 0;
-    'search: for d in 0..=max {
-        trace.push(v.clone());
-        for step in (0..=2*d).step_by(2) {
-            let k = offset + step - d;
-            let mut x = if step == 0 || (step != 2*d && v[k-1] < v[k+1]) { v[k+1] } else { v[k-1]+1 };
-            let mut y = x + d - step;
-            while x < a.len() && y < b.len() && a[x] == b[y] { x += 1; y += 1; }
-            v[k] = x;
-            if x == a.len() && y == b.len() { distance = d; break 'search; }
-        }
+    for d in 0..=max {
+        if d % interval == 0 { checkpoints.push(band(&v, d)); }
+        if myers_step(&mut v, d, offset, &a, &b) { distance = d; break; }
     }
     let (mut x, mut y) = (a.len(), b.len());
     let mut edits = Vec::new();
-    for d in (0..=distance).rev() {
-        let v = &trace[d];
-        let k = offset + x - y;
-        let previous_k = if k == offset-d || (k != offset+d && v[k-1] < v[k+1]) { k+1 } else { k-1 };
-        let previous_x = v[previous_k];
-        let previous_y = if previous_k >= offset { previous_x.saturating_sub(previous_k-offset) } else { previous_x + offset-previous_k };
-        while x > previous_x && y > previous_y { x -= 1; y -= 1; edits.push((' ', a[x])); }
-        if d > 0 {
-            if x == previous_x { y -= 1; edits.push(('+', b[y])); }
-            else { x -= 1; edits.push(('-', a[x])); }
+    for (block, checkpoint) in checkpoints.iter().enumerate().rev() {
+        let start = block * interval;
+        let end = (start + interval - 1).min(distance);
+        v.fill(0);
+        v[offset-start-1..=offset+start+1].copy_from_slice(checkpoint);
+        let mut trace = Vec::with_capacity(end - start + 1);
+        for d in start..=end {
+            trace.push(band(&v, d));
+            if d < end { myers_step(&mut v, d, offset, &a, &b); }
+        }
+        for d in (start..=end).rev() {
+            let snapshot = &trace[d - start];
+            let lo = offset - d - 1;
+            let at = |index: usize| snapshot[index - lo];
+            let k = offset + x - y;
+            let previous_k = if k == offset-d || (k != offset+d && at(k-1) < at(k+1)) { k+1 } else { k-1 };
+            let previous_x = at(previous_k);
+            let previous_y = if previous_k >= offset { previous_x.saturating_sub(previous_k-offset) } else { previous_x + offset-previous_k };
+            while x > previous_x && y > previous_y { x -= 1; y -= 1; edits.push((' ', a[x])); }
+            if d > 0 {
+                if x == previous_x { y -= 1; edits.push(('+', b[y])); }
+                else { x -= 1; edits.push(('-', a[x])); }
+            }
         }
     }
     edits.reverse();
@@ -167,7 +194,10 @@ pub(crate) fn diff_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)>
     edits
 }
 pub fn generate_diff_string(old: &str, new: &str, context: usize) -> EditDiffResult {
-    let rows = diff_lines(old, new);
+    generate_diff_string_from_rows(&diff_lines(old, new), old, new, context)
+}
+/// [`generate_diff_string`] over rows already computed by [`diff_lines`] for the same inputs.
+pub(crate) fn generate_diff_string_from_rows(rows: &[(char, &str)], old: &str, new: &str, context: usize) -> EditDiffResult {
     let width = old.split('\n').count().max(new.split('\n').count()).to_string().len();
     let mut output = Vec::new(); let (mut old_line, mut new_line) = (1,1); let mut first = None; let mut index = 0;
     while index < rows.len() {
@@ -200,4 +230,86 @@ pub async fn compute_edits_diff(path: &str, edits: &[Edit], cwd: &std::path::Pat
     let normalized = normalize_to_lf(text.strip_prefix('\u{feff}').unwrap_or(&text));
     let result = apply_edits_to_normalized_content(&normalized, edits, path)?;
     Ok(generate_diff_string(&result.base_content, &result.new_content, 4))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::diff_lines;
+
+    /// The previous full-trace implementation, kept as the oracle for `diff_lines`.
+    fn reference_diff_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
+        let a: Vec<_> = old.split_inclusive('\n').collect();
+        let b: Vec<_> = new.split_inclusive('\n').collect();
+        let max = a.len() + b.len();
+        let offset = max + 1;
+        let mut v = vec![0usize; 2 * max + 3];
+        let mut trace = Vec::new();
+        let mut distance = 0;
+        'search: for d in 0..=max {
+            trace.push(v.clone());
+            for step in (0..=2*d).step_by(2) {
+                let k = offset + step - d;
+                let mut x = if step == 0 || (step != 2*d && v[k-1] < v[k+1]) { v[k+1] } else { v[k-1]+1 };
+                let mut y = x + d - step;
+                while x < a.len() && y < b.len() && a[x] == b[y] { x += 1; y += 1; }
+                v[k] = x;
+                if x == a.len() && y == b.len() { distance = d; break 'search; }
+            }
+        }
+        let (mut x, mut y) = (a.len(), b.len());
+        let mut edits = Vec::new();
+        for d in (0..=distance).rev() {
+            let v = &trace[d];
+            let k = offset + x - y;
+            let previous_k = if k == offset-d || (k != offset+d && v[k-1] < v[k+1]) { k+1 } else { k-1 };
+            let previous_x = v[previous_k];
+            let previous_y = if previous_k >= offset { previous_x.saturating_sub(previous_k-offset) } else { previous_x + offset-previous_k };
+            while x > previous_x && y > previous_y { x -= 1; y -= 1; edits.push((' ', a[x])); }
+            if d > 0 {
+                if x == previous_x { y -= 1; edits.push(('+', b[y])); }
+                else { x -= 1; edits.push(('-', a[x])); }
+            }
+        }
+        edits.reverse();
+        let mut index = 0;
+        while index < edits.len() {
+            if edits[index].0 == ' ' { index += 1; continue; }
+            let end = edits[index..].iter().position(|e| e.0 == ' ').map_or(edits.len(), |n| index+n);
+            edits[index..end].sort_by_key(|e| if e.0 == '-' { 0 } else { 1 }); index = end;
+        }
+        edits
+    }
+
+    fn pseudo_random_text(seed: u64, lines: usize, alphabet: u64) -> String {
+        let mut state = seed;
+        (0..lines).map(|_| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            format!("line {}\n", (state >> 33) % alphabet)
+        }).collect()
+    }
+
+    #[test]
+    fn checkpointed_diff_matches_full_trace_reference() {
+        let full_old: String = (0..200).map(|i| format!("old {i}\n")).collect();
+        let full_new: String = (0..150).map(|i| format!("new {i}\n")).collect();
+        let mut cases: Vec<(String, String)> = vec![
+            (String::new(), String::new()),
+            (String::new(), "a\nb".into()),
+            ("a\nb".into(), String::new()),
+            ("a\n".into(), "a\na\n".into()),
+            ("a\nb\nc\n".into(), "a\nx\nc\n".into()),
+            ("a\nb\nc".into(), "a\nb\nc\n".into()),
+            (full_old.clone(), full_new.clone()),
+            (full_old, String::new()),
+            (String::new(), full_new),
+        ];
+        for seed in 0..24 {
+            let old = pseudo_random_text(seed, 40 + (seed as usize * 7) % 90, 3 + seed % 6);
+            let new = pseudo_random_text(seed + 1000, 30 + (seed as usize * 11) % 100, 3 + seed % 6);
+            cases.push((old, new));
+        }
+        for (old, new) in &cases {
+            assert_eq!(diff_lines(old, new), reference_diff_lines(old, new), "old={old:?} new={new:?}");
+        }
+    }
 }

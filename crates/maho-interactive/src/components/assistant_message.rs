@@ -13,7 +13,7 @@ use super::assistant_render_descriptors::{
     create_assistant_render_descriptors, AssistantRenderDescriptor, AssistantRenderDescriptorOptions, DescriptorKind,
 };
 use super::markdown_transform::{create_markdown_transform, get_markdown_theme, MessageType, TransformedMarkdown};
-use super::render_signature::create_bounded_render_signature;
+use super::render_signature::{serialize_bounded_render_summary, summarize_bounded_render_value};
 use crate::theme::{Theme, ThemeColor};
 
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
@@ -336,14 +336,23 @@ impl AssistantMessageComponent {
     }
 
     fn create_message_signature(&self, message: &Value) -> String {
-        create_bounded_render_signature(&json!({
-            "content": message["content"].clone(),
-            "hiddenThinkingLabel": self.hidden_thinking_label,
-            "hideThinkingBlock": self.hide_thinking_block,
-            "thinkingVisibilityOverrides": overrides_to_value(&self.thinking_visibility_overrides),
-            "errorState": [message["diagnostics"].clone(), message["errorMessage"].clone()],
-            "stopReason": message["stopReason"].clone(),
-        }))
+        // Summarize the content in place and splice it into the summarized object; this equals the
+        // bounded signature of the object holding a copy of the content, without the copy.
+        let mut signature = summarize_bounded_render_value(
+            &json!({
+                "content": Value::Null,
+                "hiddenThinkingLabel": self.hidden_thinking_label,
+                "hideThinkingBlock": self.hide_thinking_block,
+                "thinkingVisibilityOverrides": overrides_to_value(&self.thinking_visibility_overrides),
+                "errorState": [message["diagnostics"].clone(), message["errorMessage"].clone()],
+                "stopReason": message["stopReason"].clone(),
+            }),
+            0,
+        );
+        if let Some(object) = signature.as_object_mut() {
+            object.insert(String::from("content"), summarize_bounded_render_value(&message["content"], 1));
+        }
+        serialize_bounded_render_summary(&signature)
     }
 
     fn refresh_content(&mut self) {

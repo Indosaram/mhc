@@ -107,7 +107,8 @@ impl TaskComponent {
                 match event {
                     ExtensionEvent::SessionStart(_) => {
                         component.transitions.lock().unwrap_or_else(PoisonError::into_inner).resolve(Some(session)).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                        let reconciliation=component.engine.lifecycle.reconcile_on_session_start(Some(session)).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                        let (lifecycle, owned_session) = (component.engine.lifecycle.clone(), session.to_owned());
+                        let reconciliation=tokio::task::spawn_blocking(move || lifecycle.reconcile_on_session_start(Some(&owned_session))).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                         let mut records=Vec::<senpi_task::state::TaskRecord>::new();
                         for outcome in reconciliation.outcomes { if let Some(record)=component.engine.manager.get(&outcome.task_id) { records.push(record); } }
                         for entry in component.engine.manager.list(&ListScope::ParentSession(session.into())) {
@@ -121,7 +122,8 @@ impl TaskComponent {
                         let delivery = component.delivery.lock().unwrap_or_else(PoisonError::into_inner);
                         component.engine.notifier.reconcile_unnotified_notifications(ReconcileUnnotifiedNotificationsInput { session_id: session, parent_state }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                         drop(delivery);
-                        component.engine.lifecycle.cleanup_expired_records().map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                        let lifecycle = component.engine.lifecycle.clone();
+                        tokio::task::spawn_blocking(move || lifecycle.cleanup_expired_records()).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                         if let Some(team)=team && let Err(error)=team.pollers.tick() { maho_ext_api::diagnostic(&format!("task session-start lead poll failed: {error}")); }
                         // Upstream order: statusUi.scheduleSync() then taskRpc.attach().
                         component.status.schedule_sync();

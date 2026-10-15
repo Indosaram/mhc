@@ -7,6 +7,8 @@ pub const MIN_TOOL_ARGS_PARSE_DELTA: usize = 64;
 struct State {
     component: usize,
     target: String,
+    /// `target.encode_utf16().count()`, maintained whenever `target` changes.
+    target_utf16_len: usize,
     revealed: f64,
     rendered: usize,
     last_tick: f64,
@@ -49,17 +51,18 @@ impl ToolArgsRevealController {
             self.finish(id);
             return (false, None);
         }
-        let count = partial.encode_utf16().count();
         let reset = self
             .states
             .get(id)
             .is_none_or(|s| s.component != component || !partial.starts_with(&s.target));
         let result = if reset {
+            let count = partial.encode_utf16().count();
             self.states.insert(
                 id.into(),
                 State {
                     component,
                     target: partial.into(),
+                    target_utf16_len: count,
                     revealed: count as f64,
                     rendered: count,
                     last_tick: now,
@@ -68,8 +71,11 @@ impl ToolArgsRevealController {
             Some(parse_streaming_json(Some(partial)))
         } else {
             if let Some(state) = self.states.get_mut(id) {
-                let caught = state.revealed >= state.target.encode_utf16().count() as f64;
-                state.target = partial.into();
+                let caught = state.revealed >= state.target_utf16_len as f64;
+                let appended = &partial[state.target.len()..];
+                state.target_utf16_len += appended.encode_utf16().count();
+                state.target.push_str(appended);
+                let count = state.target_utf16_len;
                 if caught && state.revealed < (count as f64) {
                     state.last_tick = now;
                 }
@@ -113,7 +119,7 @@ impl ToolArgsRevealController {
     fn has_backlog(&self) -> bool {
         self.states
             .values()
-            .any(|s| s.revealed < (s.target.encode_utf16().count() as f64))
+            .any(|s| s.revealed < (s.target_utf16_len as f64))
     }
     fn sync(&mut self, now: f64, restart: bool) {
         if !self.has_backlog() {
@@ -124,7 +130,7 @@ impl ToolArgsRevealController {
         if restart || self.timer_fps != Some(fps) {
             self.timer_fps = Some(fps);
             for s in self.states.values_mut() {
-                if s.revealed < (s.target.encode_utf16().count() as f64) {
+                if s.revealed < (s.target_utf16_len as f64) {
                     s.last_tick = now;
                 }
             }
@@ -136,7 +142,7 @@ impl ToolArgsRevealController {
         }
         let mut outputs = Vec::new();
         for (id, s) in &mut self.states {
-            let total = s.target.encode_utf16().count();
+            let total = s.target_utf16_len;
             let backlog = total as f64 - s.revealed;
             if backlog <= 0. {
                 continue;

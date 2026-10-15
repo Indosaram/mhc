@@ -23,7 +23,9 @@ async fn registered_native_image_handler_uses_effective_model_and_scrubs_history
     let model=serde_json::from_value(serde_json::json!({"id":"native","name":"Native","api":"openai-responses","provider":"openai","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100}))?;
     let mut request=ExtensionEvent::BeforeProviderRequest{model:Some(model),payload:serde_json::json!({"model":"native","tools":[{"name":"generate_image"},{"name":"other"}]}),headers:None};
     let outcome=async{
-        let EventResult::ProviderPayload(payload)=(api.registered.handlers[&EventKind::BeforeProviderRequest][0])(&mut request,&ctx).await?else{panic!("payload")};
+        let original=match &request{ExtensionEvent::BeforeProviderRequest{payload,..}=>payload.clone(),_=>unreachable!("request is a provider request")};
+        // `None` means the handler left the payload untouched.
+        let payload=match (api.registered.handlers[&EventKind::BeforeProviderRequest][0])(&mut request,&ctx).await?{EventResult::ProviderPayload(payload)=>payload,EventResult::None=>original,_=>panic!("payload")};
         let native=maho_ext_openai_image_gen::gate::is_open_ai_image_gen_enabled();
         assert_eq!(maho_ext_imagegen::state::is_native_bypass(),native);
         let tools=payload["tools"].as_array().ok_or("tools")?;

@@ -219,7 +219,7 @@ fn resolve_path(cwd: &Path, path: &str) -> PathBuf {
 fn write_commit_receipt(session: &MemoryEngineSession, paths: &MemoryIdentityPaths, tool_call_id: Option<&str>, commit: Option<&MemoryToolCommit>) {
     let (Some(tool_call_id), Some(commit)) = (tool_call_id, commit) else { return; };
     let written = session.repo
-        .log(Some(&GitLogOptions { range: Some(commit.sha.clone()), paths: None, limit: Some(1), include_paths: true }))
+        .log(Some(&GitLogOptions { range: Some(commit.sha.clone()), paths: None, limit: Some(1), include_paths: true, grep: None }))
         .map_err(|error| error.to_string())
         .and_then(|log| {
             let entry = log.into_iter().next();

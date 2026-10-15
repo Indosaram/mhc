@@ -1,5 +1,6 @@
 //! Port of TS `workspace-edit-snapshot.ts`.
 
+use super::path::file_digest;
 use super::path::read_dir_sorted;
 use super::path::snapshot_path;
 use super::types::ParsedWorkspaceOperation;
@@ -12,9 +13,23 @@ use std::path::Path;
 struct Builder<'a> {
     workspace_root: &'a str,
     snapshots: IndexMap<String, WorkspaceSnapshotEntry>,
+    /// Text-edit targets; simulation reads their content.
+    text_targets: Vec<&'a str>,
+    /// Rename sources; when any text edit exists, files under them keep content too,
+    /// since a later edit may target the moved file.
+    rename_sources: Vec<&'a str>,
 }
 
 impl Builder<'_> {
+    fn needs_content(&self, path: &str) -> bool {
+        self.text_targets.contains(&path)
+            || (!self.text_targets.is_empty()
+                && self
+                    .rename_sources
+                    .iter()
+                    .any(|source| Path::new(path).starts_with(source)))
+    }
+
     fn add(&mut self, path: &str, include_children: bool) -> Result<(), String> {
         let mut candidate = path.to_string();
         loop {
@@ -24,7 +39,16 @@ impl Builder<'_> {
                 Some(_) => false,
             };
             if refresh {
-                let entry = snapshot_path(&candidate, include_children && candidate == path)?;
+                let mut entry = snapshot_path(&candidate, include_children && candidate == path)?;
+                let digest = match &entry {
+                    WorkspaceSnapshotEntry::File { content } if !self.needs_content(&candidate) => {
+                        Some(file_digest(content))
+                    }
+                    _ => None,
+                };
+                if let Some(digest) = digest {
+                    entry = WorkspaceSnapshotEntry::FileDigest { digest };
+                }
                 self.snapshots.insert(candidate.clone(), entry);
             }
             if candidate == self.workspace_root {
@@ -55,6 +79,20 @@ pub fn snapshot_operations(
     let mut builder = Builder {
         workspace_root,
         snapshots: IndexMap::new(),
+        text_targets: operations
+            .iter()
+            .filter_map(|operation| match operation {
+                ParsedWorkspaceOperation::Text { path, .. } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect(),
+        rename_sources: operations
+            .iter()
+            .filter_map(|operation| match operation {
+                ParsedWorkspaceOperation::Rename { old_path, .. } => Some(old_path.as_str()),
+                _ => None,
+            })
+            .collect(),
     };
     builder.add(workspace_root, false)?;
     for operation in operations {

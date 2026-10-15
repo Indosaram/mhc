@@ -337,9 +337,12 @@ impl AgentSessionRuntime {
         // senpi takes the shared host's write grant for the destination before copying into it.
         crate::session_write_reservation::reserve_session_write(&destination);
         if !stored {
-            let mut input = std::fs::File::open(source)?;
-            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination)?;
-            std::io::copy(&mut input, &mut output)?;
+            let (source, target) = (source.to_path_buf(), destination.clone());
+            tokio::task::spawn_blocking(move || -> std::io::Result<u64> {
+                let mut input = std::fs::File::open(source)?;
+                let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&target)?;
+                std::io::copy(&mut input, &mut output)
+            }).await.map_err(std::io::Error::other)??;
         }
         let manager = crate::session_manager::SessionManager::open(&destination, Some(&directory), cwd_override, None)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;

@@ -119,7 +119,14 @@ pub async fn aggregate_diagnostics_for_directory(
     };
     let all_files = match &options.list_files {
         Some(list_files) => list_files(&abs_dir, extension, max_files + 1),
-        None => collect_files_with_extension(&abs_dir, extension, max_files + 1),
+        None => {
+            let (dir, ext) = (abs_dir.clone(), extension.to_string());
+            tokio::task::spawn_blocking(move || {
+                collect_files_with_extension(&dir, &ext, max_files + 1)
+            })
+            .await
+            .map_err(|error| LspError::other(error.to_string()))?
+        }
     };
     let was_capped = all_files.len() > max_files;
     let files_to_process: Vec<String> = all_files.into_iter().take(max_files).collect();

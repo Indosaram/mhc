@@ -228,7 +228,7 @@ fn fixture_with_cancel(nodes: Vec<DagNode>, cancel: Option<DagCancel>) -> Harnes
         if subscribed_run_id != &run_id() {
             return Box::new(|| {});
         }
-        journal_for_subscribe.subscribe(Arc::new(move |_event: &DagRunEvent| listener()))
+        journal_for_subscribe.subscribe(listener)
     });
     let surface = create_dag_wait_surface(DagWaitSurfaceOptions {
         store: Arc::clone(&store),

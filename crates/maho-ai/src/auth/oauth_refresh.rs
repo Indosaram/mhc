@@ -143,10 +143,14 @@ pub async fn refresh_oauth_credential(request: OAuthRefreshRequest) -> Result<Op
         let inflight = inflight.clone();
         async move {
             loop {
+                // Register for the wakeup before checking `result` so a
+                // `notify_waiters` between the check and the await is not lost.
+                let mut notified = std::pin::pin!(inflight.done.notified());
+                notified.as_mut().enable();
                 if let Some(result) = inflight.result.lock().unwrap_or_else(|p| p.into_inner()).clone() {
                     return result;
                 }
-                inflight.done.notified().await;
+                notified.await;
             }
         }
     };

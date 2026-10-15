@@ -6,8 +6,8 @@ use serde_json::{Map, Value};
 
 const SYNTHETIC_OUTPUT: &str = "Tool output unavailable (interrupted before result)";
 
-fn has_messages_array(payload: &Map<String, Value>) -> Option<Vec<Value>> {
-    payload.get("messages").and_then(Value::as_array).cloned()
+fn has_messages_array(payload: &Map<String, Value>) -> Option<&Vec<Value>> {
+    payload.get("messages").and_then(Value::as_array)
 }
 
 fn is_content_block_param(value: &Value) -> bool {
@@ -184,9 +184,13 @@ fn remove_orphan_results(message: &Value) -> (Option<Value>, bool) {
 /// Repairs Anthropic client tool_use/tool_result adjacency and duplicate tool_use ids without
 /// mutating the input payload.
 pub fn sanitize_anthropic_tool_pairs(payload: &Map<String, Value>) -> Map<String, Value> {
-    let Some(messages) = has_messages_array(payload) else {
-        return payload.clone();
-    };
+    sanitize_anthropic_tool_pairs_if_changed(payload).unwrap_or_else(|| payload.clone())
+}
+
+/// Same repair as [`sanitize_anthropic_tool_pairs`], but `None` when nothing changes so callers
+/// can skip copying the payload.
+pub fn sanitize_anthropic_tool_pairs_if_changed(payload: &Map<String, Value>) -> Option<Map<String, Value>> {
+    let messages = has_messages_array(payload)?;
 
     let mut changed = false;
     let mut used_tool_use_ids: HashSet<String> = HashSet::new();
@@ -249,11 +253,11 @@ pub fn sanitize_anthropic_tool_pairs(payload: &Map<String, Value>) -> Map<String
     }
 
     if !changed {
-        return payload.clone();
+        return None;
     }
     let mut out = payload.clone();
     out.insert("messages".to_owned(), Value::Array(sanitized));
-    out
+    Some(out)
 }
 
 #[cfg(test)]
@@ -380,5 +384,6 @@ mod tests {
         });
 
         assert_eq!(sanitize(&payload), payload);
+        assert_eq!(sanitize_anthropic_tool_pairs_if_changed(payload.as_object().expect("object payload")), None);
     }
 }

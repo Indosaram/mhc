@@ -20,11 +20,24 @@ const TOMBSTONE_SUFFIX: &str = ".json.expunging";
 /// The post-commit observer every manager/lifecycle clone shares.
 type MutationListener = std::sync::Arc<dyn Fn() + Send + Sync>;
 
+/// A parsed record plus the exact file text it was parsed from. Reuse is keyed on content, not
+/// metadata: a same-length rewrite inside one mtime tick (or onto a reused inode) must never
+/// serve a stale record, so only the JSON parse is skipped, never the read.
+#[derive(Clone)]
+struct CachedRecord {
+    text: String,
+    record: TaskRecord,
+    warnings: Vec<String>,
+}
+
+type ListCache = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, CachedRecord>>>;
+
 /// File-backed task record store rooted at the resolved state directory.
 #[derive(Clone)]
 pub struct TaskRecordStore {
     state_dir: PathBuf,
     mutation_listener: std::sync::Arc<std::sync::Mutex<Option<MutationListener>>>,
+    list_cache: ListCache,
 }
 
 impl std::fmt::Debug for TaskRecordStore {
@@ -43,6 +56,7 @@ impl TaskRecordStore {
         Self {
             state_dir: resolve_state_dir(config),
             mutation_listener: Default::default(),
+            list_cache: Default::default(),
         }
     }
 
@@ -126,11 +140,33 @@ impl TaskRecordStore {
             })
             .collect();
         files.sort();
+        self.list_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|path, _| files.binary_search(path).is_ok());
         let mut records = Vec::new();
         let mut diagnostics = Vec::new();
         for path in files {
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            {
+                let cache = self.list_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(cached) = cache.get(&path).filter(|cached| cached.text == text) {
+                    records.push(cached.record.clone());
+                    diagnostics.extend(cached.warnings.iter().map(|message| {
+                        TaskRecordDiagnostic::ParseWarning {
+                            path: path.clone(),
+                            message: message.clone(),
+                        }
+                    }));
+                    continue;
+                }
+            }
             let mut warnings = Vec::new();
-            match read_record(&path, &mut warnings) {
+            match self.parse_and_cache(&path, text, &mut warnings) {
                 Ok(Some(record)) => {
                     records.push(record);
                     diagnostics.extend(warnings.into_iter().map(|message| {
@@ -151,6 +187,76 @@ impl TaskRecordStore {
             records,
             diagnostics,
         })
+    }
+
+    /// First record, in [`Self::list`] order, matching `pred`; stops scanning at the match.
+    /// Parse errors are skipped as in `list`. Shares the list cache, which is revalidated by
+    /// file stamp on every read, so cross-process owner claims are always seen.
+    pub fn find_record(
+        &self,
+        mut pred: impl FnMut(&TaskRecord) -> bool,
+    ) -> Result<Option<TaskRecord>, StoreError> {
+        let tasks_dir = self.tasks_dir();
+        std::fs::create_dir_all(&tasks_dir)?;
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&tasks_dir)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .collect();
+        files.sort();
+        for path in files {
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            {
+                let cache = self.list_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(cached) = cache.get(&path).filter(|cached| cached.text == text) {
+                    if pred(&cached.record) {
+                        return Ok(Some(cached.record.clone()));
+                    }
+                    continue;
+                }
+            }
+            match self.parse_and_cache(&path, text, &mut Vec::new()) {
+                Ok(Some(record)) if pred(&record) => return Ok(Some(record)),
+                Ok(_) | Err(StoreError::Parse(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Parses already-read `text` for `path` outside the cache lock and caches the parse keyed by
+    /// that exact text; a failed parse drops any entry for the path.
+    fn parse_and_cache(
+        &self,
+        path: &Path,
+        text: String,
+        warnings: &mut Vec<String>,
+    ) -> Result<Option<TaskRecord>, StoreError> {
+        let parsed = parse_record_text(path, &text, warnings);
+        let mut cache = self.list_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &parsed {
+            Ok(Some(record)) => {
+                cache.insert(
+                    path.to_path_buf(),
+                    CachedRecord {
+                        text,
+                        record: record.clone(),
+                        warnings: warnings.clone(),
+                    },
+                );
+            }
+            _ => {
+                cache.remove(path);
+            }
+        }
+        parsed
     }
 
     pub fn append_event(
@@ -313,7 +419,11 @@ fn read_record(path: &Path, warnings: &mut Vec<String>) -> Result<Option<TaskRec
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let value: Value = serde_json::from_str(&text)
+    parse_record_text(path, &text, warnings)
+}
+
+fn parse_record_text(path: &Path, text: &str, warnings: &mut Vec<String>) -> Result<Option<TaskRecord>, StoreError> {
+    let value: Value = serde_json::from_str(text)
         .map_err(|error| StoreError::Parse(format!("JSON Parse error: {error}")))?;
     parse_task_record(&value, &path.to_string_lossy(), warnings)
         .map(Some)

@@ -73,10 +73,10 @@ pub fn assert_valid_session_id(id: &str) {
     }
 }
 
-fn generate_id(by_id: &HashMap<String, Value>) -> String {
+fn generate_id(exists: impl Fn(&str) -> bool) -> String {
     for _ in 0..100 {
         let id = uuid::Uuid::new_v4().to_string()[..8].to_owned();
-        if !by_id.contains_key(&id) {
+        if !exists(&id) {
             return id;
         }
     }
@@ -95,7 +95,7 @@ fn migrate_v1_to_v2(entries: &mut [Value]) {
             entries[index]["version"] = Value::from(2);
             continue;
         }
-        let id = generate_id(&ids);
+        let id = generate_id(|candidate| ids.contains_key(candidate));
         ids.insert(id.clone(), Value::Null);
         entries[index]["id"] = Value::from(id.clone());
         match &prev_id {
@@ -176,11 +176,11 @@ pub fn get_latest_compaction_entry(entries: &[Value]) -> Option<Value> {
     entries.iter().rev().find(|entry| entry_type(entry) == "compaction").cloned()
 }
 
-fn build_entry_index(entries: &[Value]) -> HashMap<String, Value> {
+fn build_entry_index(entries: &[Value]) -> HashMap<&str, &Value> {
     let mut index = HashMap::new();
     for entry in entries {
         if let Some(id) = entry.get("id").and_then(Value::as_str) {
-            index.insert(id.to_owned(), entry.clone());
+            index.insert(id, entry);
         }
     }
     index
@@ -189,15 +189,14 @@ fn build_entry_index(entries: &[Value]) -> HashMap<String, Value> {
 pub fn build_session_path(entries: &[Value], leaf_id: Option<&str>) -> Vec<Value> {
     let index = build_entry_index(entries);
     let mut leaf = match leaf_id {
-        None => entries.last().cloned(),
+        None => entries.last(),
         Some("") => return Vec::new(),
-        Some(id) => index.get(id).cloned().or_else(|| entries.last().cloned()),
+        Some(id) => index.get(id).copied().or_else(|| entries.last()),
     };
     let mut path = Vec::new();
     while let Some(current) = leaf {
-        let parent_id = current.get("parentId").and_then(Value::as_str).map(str::to_owned);
-        path.push(current);
-        leaf = parent_id.and_then(|parent| index.get(&parent).cloned());
+        path.push(current.clone());
+        leaf = current.get("parentId").and_then(Value::as_str).and_then(|parent| index.get(parent).copied());
     }
     path.reverse();
     path
@@ -1050,8 +1049,7 @@ impl SessionManager {
     }
 
     fn next_entry_id(&self) -> String {
-        let existing: HashMap<String, Value> = self.by_id.keys().map(|id| (id.clone(), Value::Null)).collect();
-        generate_id(&existing)
+        generate_id(|id| self.by_id.contains_key(id))
     }
 
     fn base_entry(&self, entry_type_name: &str) -> Map<String, Value> {
@@ -1322,8 +1320,8 @@ impl SessionManager {
     /// The resident mirror's entries, materialized; after a compaction trim this is the bounded
     /// post-compaction view rather than the full history.
     fn compact_entries(&self) -> Vec<Value> {
-        let entries: Vec<Value> = self.file_entries.iter().filter(|entry| entry_type(entry) != "session").cloned().collect();
-        crate::session_entry_materializer::materialize_session_entries(&entries, &self.resident_store, || self.load_full_history_entries(), |_| {})
+        let entries = self.file_entries.iter().filter(|entry| entry_type(entry) != "session");
+        crate::session_entry_materializer::materialize_session_entries(entries, &self.resident_store, || self.load_full_history_entries(), |_| {})
     }
 
     pub fn header(&self) -> Option<Value> {
@@ -1418,6 +1416,27 @@ impl SessionManager {
                 .and_then(|order| self.file_entries.get(*order));
         }
         false
+    }
+
+    /// Id of the entry nearest the current leaf whose `type` is `kind` (and, when `role` is given,
+    /// whose `message.role` matches), walking resident entries by reference via `parentId` the
+    /// way `current_branch()` does, without materializing anything: `type`, `id`, `parentId` and
+    /// `role` are short strings that are never externalized.
+    pub fn latest_branch_entry_id_by_type(&self, kind: &str, role: Option<&str>) -> Option<String> {
+        let mut current = self.leaf_id.as_deref().and_then(|id| self.by_id.get(id)).and_then(|order| self.file_entries.get(*order));
+        while let Some(entry) = current {
+            if entry_type(entry) == kind
+                && role.is_none_or(|role| entry.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some(role))
+            {
+                return entry.get("id").and_then(Value::as_str).map(str::to_owned);
+            }
+            current = entry
+                .get("parentId")
+                .and_then(Value::as_str)
+                .and_then(|parent| self.by_id.get(parent))
+                .and_then(|order| self.file_entries.get(*order));
+        }
+        None
     }
 
     pub fn label(&self, id: &str) -> Option<&str> {
@@ -1588,7 +1607,7 @@ impl SessionManager {
         let mut parent_id = path_without_labels.last().and_then(|entry| entry.get("id")).cloned().unwrap_or(Value::Null);
         let mut label_entries = Vec::new();
         for (target_id, label, label_timestamp) in labels_to_write {
-            let id = generate_id(&path_entry_ids);
+            let id = generate_id(|candidate| path_entry_ids.contains_key(candidate));
             path_entry_ids.insert(id.clone(), Value::Null);
             label_entries.push(json!({
                 "type": "label",
@@ -1779,6 +1798,24 @@ mod tests {
         assert_eq!(entries.len(), 5);
         let reserialized: String = entries.iter().map(|entry| format!("{}\n", serialize_entry(entry))).collect();
         assert_eq!(reserialized, content);
+    }
+
+    #[test]
+    fn latest_branch_entry_id_by_type_matches_materialized_branch_lookup() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        assert_eq!(manager.latest_branch_entry_id_by_type("compaction", None), None);
+        let user = manager.append_message(json!({ "role": "user", "content": "hi", "timestamp": 1 }));
+        let assistant = manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 2 }));
+        let compaction = manager.append_compaction("summary", user["id"].as_str().expect("id"), 10, None, None, None);
+        manager.append_message(json!({ "role": "user", "content": "again", "timestamp": 3 }));
+        let expected = |kind: &str, role: Option<&str>| manager.current_branch().into_iter().rev()
+            .find(|entry| entry["type"] == kind && role.is_none_or(|role| entry["message"]["role"] == role))
+            .and_then(|entry| entry["id"].as_str().map(str::to_owned));
+        assert_eq!(manager.latest_branch_entry_id_by_type("compaction", None), compaction["id"].as_str().map(str::to_owned));
+        assert_eq!(manager.latest_branch_entry_id_by_type("message", Some("assistant")), assistant["id"].as_str().map(str::to_owned));
+        for (kind, role) in [("compaction", None), ("message", Some("assistant")), ("message", Some("user")), ("label", None)] {
+            assert_eq!(manager.latest_branch_entry_id_by_type(kind, role), expected(kind, role));
+        }
     }
 
     #[test]

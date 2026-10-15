@@ -548,13 +548,18 @@ fn codex_user_agent() -> String {
 
 #[cfg(unix)]
 fn os_release() -> String {
-    std::process::Command::new("uname")
-        .arg("-r")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .unwrap_or_default()
+    static OS_RELEASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    OS_RELEASE
+        .get_or_init(|| {
+            std::process::Command::new("uname")
+                .arg("-r")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+                .unwrap_or_default()
+        })
+        .clone()
 }
 
 #[cfg(not(unix))]

@@ -188,14 +188,15 @@ pub fn truncate_tail(content: &str, options: TruncationOptions) -> TruncationRes
             if output_lines_arr.is_empty() {
                 let truncated_line = truncate_string_to_bytes_from_end(line, max_bytes);
                 output_bytes_count = utf8_byte_length(&truncated_line);
-                output_lines_arr.insert(0, truncated_line);
+                output_lines_arr.push(truncated_line);
                 last_line_partial = true;
             }
             break;
         }
-        output_lines_arr.insert(0, (*line).to_string());
+        output_lines_arr.push((*line).to_string());
         output_bytes_count += line_bytes;
     }
+    output_lines_arr.reverse();
 
     if output_lines_arr.len() as u64 >= max_lines && output_bytes_count <= max_bytes {
         truncated_by = TruncatedBy::Lines;

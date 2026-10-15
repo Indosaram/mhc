@@ -1,7 +1,7 @@
 //! Port of senpi packages/agent/src/harness/messages.ts.
 
 use maho_ai::types::{ContentBlock, Message, TextContent, UserContent, UserMessage};
-use maho_ai::utils::drop_failed_assistant_turns::drop_failed_assistant_turns;
+use maho_ai::utils::drop_failed_assistant_turns::drop_failed_assistant_turns_owned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -308,5 +308,5 @@ pub fn convert_to_llm(messages: Vec<AgentMessage>) -> Vec<Message> {
             },
         })
         .collect();
-    drop_failed_assistant_turns(&converted)
+    drop_failed_assistant_turns_owned(converted)
 }

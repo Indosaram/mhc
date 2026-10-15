@@ -264,7 +264,11 @@ fn find_top_level_property_value_start(chars: &[char], property: &str) -> Option
 
 fn extract_top_level_string_property(text: &str, property: &str) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
-    let value_start = find_top_level_property_value_start(&chars, property)?;
+    extract_top_level_string_property_from_chars(&chars, property)
+}
+
+fn extract_top_level_string_property_from_chars(chars: &[char], property: &str) -> Option<String> {
+    let value_start = find_top_level_property_value_start(chars, property)?;
     if value_start >= chars.len() || chars[value_start] != '"' {
         return None;
     }
@@ -407,8 +411,8 @@ struct ArgumentsProgress {
 }
 
 fn extract_arguments_progress(tool_call_json: &str) -> ArgumentsProgress {
-    let tool_name = extract_top_level_string_property(tool_call_json, "name");
     let chars: Vec<char> = tool_call_json.chars().collect();
+    let tool_name = extract_top_level_string_property_from_chars(&chars, "name");
     let Some(arguments_start) = find_top_level_property_value_start(&chars, "arguments") else {
         return ArgumentsProgress { tool_name, arguments_text: None, arguments_complete: false };
     };
@@ -466,9 +470,8 @@ fn emit_tool_call_progress(state: &mut JsonMixStreamState, events: &mut Vec<Stre
     }
 
     let progress = extract_arguments_progress(&state.current_tool_call_json);
-    let tool_names = normalize_tool_names(tools);
     let (Some(tool_name), Some(arguments_text), true) = (progress.tool_name, progress.arguments_text, progress.arguments_complete) else { return };
-    if !tool_names.contains(tool_name.as_str()) {
+    if !tools.iter().any(|tool| tool.name == tool_name) {
         return;
     }
 

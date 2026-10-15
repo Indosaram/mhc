@@ -4,7 +4,6 @@
 //! call boundary.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -110,7 +109,7 @@ pub async fn run_agent_loop(
     stream_fn: Option<StreamFn>,
 ) -> Vec<AgentMessage> {
     let mut new_messages: Vec<AgentMessage> = prompts.clone();
-    let mut current_context = context.clone();
+    let mut current_context = context;
     current_context.messages.extend(prompts.iter().cloned());
 
     send(&emit, AgentEvent::AgentStart).await;
@@ -140,7 +139,7 @@ pub async fn run_agent_loop_continue(
     }
 
     let mut new_messages: Vec<AgentMessage> = Vec::new();
-    let current_context = context.clone();
+    let current_context = context;
 
     send(&emit, AgentEvent::AgentStart).await;
     send(&emit, AgentEvent::TurnStart).await;
@@ -494,7 +493,6 @@ async fn stream_assistant_response(
     stream_function: StreamFn,
     stream_idle_timeout_ms: Option<u64>,
 ) -> StreamedAssistantResponse {
-    let mut partial_message: Option<AssistantMessage> = None;
     let mut added_partial = false;
     // Tool results delivered by a provider that executes tools mid-stream
     // (Cursor's exec channel). Buffered here and appended by the caller right
@@ -593,40 +591,39 @@ async fn stream_assistant_response(
             }
             match &event {
                 AssistantMessageEvent::Start { partial } => {
-                    partial_message = Some(partial.clone());
                     context.messages.push(assistant_event(partial));
                     added_partial = true;
                     send(emit, AgentEvent::MessageStart { message: assistant_event(partial) }).await;
                 }
                 AssistantMessageEvent::ThinkingStart { content_index, partial } => {
-                    if partial_message.is_some() {
+                    if added_partial {
                         let timing = thinking_timing
                             .entry(*content_index)
                             .or_insert(ThinkingTiming { started_at: now_ms(), ended_at: None });
                         let (started_at, ended_at) = (timing.started_at, timing.ended_at);
                         let mut updated = partial.clone();
                         set_thinking_block_timing(&mut updated, *content_index, started_at, ended_at);
-                        emit_message_update(emit, context, &mut partial_message, updated, &event).await;
+                        emit_message_update(emit, context, updated, &event).await;
                     }
                 }
                 AssistantMessageEvent::ThinkingDelta { content_index, partial, .. } => {
-                    if partial_message.is_some() {
+                    if added_partial {
                         let mut updated = partial.clone();
                         if let Some(timing) = thinking_timing.get(content_index) {
                             set_thinking_block_timing(&mut updated, *content_index, timing.started_at, timing.ended_at);
                         }
-                        emit_message_update(emit, context, &mut partial_message, updated, &event).await;
+                        emit_message_update(emit, context, updated, &event).await;
                     }
                 }
                 AssistantMessageEvent::ThinkingEnd { content_index, partial, .. } => {
-                    if partial_message.is_some() {
+                    if added_partial {
                         let mut updated = partial.clone();
                         if let Some(timing) = thinking_timing.get_mut(content_index) {
                             timing.ended_at = Some(now_ms());
                             let (started_at, ended_at) = (timing.started_at, timing.ended_at);
                             set_thinking_block_timing(&mut updated, *content_index, started_at, ended_at);
                         }
-                        emit_message_update(emit, context, &mut partial_message, updated, &event).await;
+                        emit_message_update(emit, context, updated, &event).await;
                     }
                 }
                 AssistantMessageEvent::TextStart { partial, .. }
@@ -635,8 +632,8 @@ async fn stream_assistant_response(
                 | AssistantMessageEvent::ToolcallStart { partial, .. }
                 | AssistantMessageEvent::ToolcallDelta { partial, .. }
                 | AssistantMessageEvent::ToolcallEnd { partial, .. } => {
-                    if partial_message.is_some() {
-                        emit_message_update(emit, context, &mut partial_message, partial.clone(), &event).await;
+                    if added_partial {
+                        emit_message_update(emit, context, partial.clone(), &event).await;
                     }
                 }
                 AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
@@ -675,14 +672,17 @@ async fn stream_assistant_response(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
+            // The streamed partial lives in the context slot added at `Start`.
+            let partial_message =
+                if added_partial { context.messages.last().and_then(AgentMessage::as_assistant) } else { None };
             if is_stream_idle_timeout_error(&error)
                 && should_finalize_idle_as_stop(
-                    partial_message.as_ref(),
+                    partial_message,
                     &buffered,
                     |call| is_cursor_exec_resolved(call, &buffered),
                 )
             {
-                let partial = partial_message.clone();
+                let partial = partial_message.cloned();
                 let mut final_message = AssistantMessage {
                     content: partial
                         .as_ref()
@@ -726,7 +726,7 @@ async fn stream_assistant_response(
                     &config.model,
                     reason,
                     &error,
-                    partial_message.as_ref(),
+                    partial_message,
                 );
                 propagate_thinking_timing(&mut final_message, &thinking_timing);
                 if added_partial {
@@ -767,18 +767,17 @@ async fn stream_assistant_response(
 async fn emit_message_update(
     emit: &AgentEventSink,
     context: &mut AgentContext,
-    partial_message: &mut Option<AssistantMessage>,
     updated: AssistantMessage,
     event: &AssistantMessageEvent,
 ) {
-    *partial_message = Some(updated.clone());
+    let message = AgentMessage::Llm(Message::Assistant(Box::new(updated)));
     if let Some(last) = context.messages.last_mut() {
-        *last = assistant_event(&updated);
+        *last = message.clone();
     }
     send(
         emit,
         AgentEvent::MessageUpdate {
-            message: assistant_event(&updated),
+            message,
             assistant_message_event: event.clone(),
         },
     )
@@ -1038,6 +1037,8 @@ async fn execute_tool_calls(
             _ => None,
         })
         .collect();
+    // One snapshot per batch, shared by every spawned call and hook context.
+    let current_context = &Arc::new(current_context.clone());
     if config.tool_execution_mode() == ToolExecutionMode::Sequential {
         return execute_tool_calls_sequential(current_context, assistant_message, &tool_calls, config, signal, emit).await;
     }
@@ -1045,7 +1046,7 @@ async fn execute_tool_calls(
 }
 
 async fn execute_tool_calls_sequential(
-    current_context: &AgentContext,
+    current_context: &Arc<AgentContext>,
     assistant_message: &AssistantMessage,
     tool_calls: &[AgentToolCall],
     config: &AgentLoopConfig,
@@ -1123,7 +1124,7 @@ async fn await_finalized(receiver: &FinalizedReceiver) -> Option<FinalizedToolCa
 }
 
 async fn execute_tool_calls_parallel(
-    current_context: &AgentContext,
+    current_context: &Arc<AgentContext>,
     assistant_message: &AssistantMessage,
     tool_calls: &[AgentToolCall],
     config: &AgentLoopConfig,
@@ -1176,7 +1177,7 @@ async fn execute_tool_calls_parallel(
         };
 
         let (sender, receiver) = finalized_channel();
-        let context = current_context.clone();
+        let context = Arc::clone(current_context);
         let assistant = assistant_message.clone();
         let preparation = preparation.clone();
         let config = config.clone();
@@ -1225,7 +1226,7 @@ async fn execute_tool_calls_parallel(
 }
 
 async fn run_prepared_tool_call(
-    current_context: &AgentContext,
+    current_context: &Arc<AgentContext>,
     assistant_message: &AssistantMessage,
     preparation: &ToolCallPreparation,
     config: &AgentLoopConfig,
@@ -1308,7 +1309,7 @@ pub fn prepare_agent_tool_call(tool: &AgentTool, tool_call: &AgentToolCall) -> R
 }
 
 async fn prepare_tool_call(
-    current_context: &AgentContext,
+    current_context: &Arc<AgentContext>,
     assistant_message: &AssistantMessage,
     tool_call: &AgentToolCall,
     tool: Option<&AgentTool>,
@@ -1364,7 +1365,7 @@ async fn prepare_tool_call(
 }
 
 async fn prepare_resolved_tool_call(
-    current_context: &AgentContext,
+    current_context: &Arc<AgentContext>,
     assistant_message: &AssistantMessage,
     tool_call: &AgentToolCall,
     tool: &AgentTool,
@@ -1389,7 +1390,7 @@ async fn prepare_resolved_tool_call(
                 assistant_message: assistant_message.clone(),
                 tool_call: prepared_tool_call.tool_call.clone(),
                 args: validated_args.clone(),
-                context: current_context.clone(),
+                context: Arc::clone(current_context),
             },
             signal.clone(),
         )
@@ -1457,27 +1458,35 @@ async fn execute_prepared_tool_call(
             is_error: true,
         };
     };
-    let update_events: Arc<Mutex<Vec<maho_ai::types::BoxFuture<'static, ()>>>> = Arc::new(Mutex::new(Vec::new()));
-    let accepting_updates = Arc::new(AtomicBool::new(true));
+    // Updates are delivered in order as they arrive by one drainer task; dropping the
+    // sender (taken out of the shared slot at settle/abort) stops accepting updates and
+    // lets the drainer finish, so every accepted update lands before the outcome.
+    let (update_tx, mut update_rx) = tokio::sync::mpsc::unbounded_channel::<maho_ai::types::BoxFuture<'static, ()>>();
+    let update_sender = Arc::new(Mutex::new(Some(update_tx)));
+    let update_drainer = tokio::spawn(async move {
+        while let Some(update) = update_rx.recv().await {
+            update.await;
+        }
+    });
 
     let on_update: AgentToolUpdateCallback = {
         let emit = emit.clone();
-        let updates = update_events.clone();
-        let accepting_updates = accepting_updates.clone();
+        let update_sender = update_sender.clone();
         let tool_call_id = tool_call.id.clone();
         let tool_name = tool_call.name.clone();
         let args = serde_json::Value::Object(tool_call.arguments.clone());
         Arc::new(move |partial_result: AgentToolResult| {
-            if !accepting_updates.load(Ordering::SeqCst) {
+            let sender = update_sender.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(sender) = sender.as_ref() else {
                 return;
-            }
+            };
             let event = AgentEvent::ToolExecutionUpdate {
                 tool_call_id: tool_call_id.clone(),
                 tool_name: tool_name.clone(),
                 args: args.clone(),
                 partial_result: serde_json::to_value(&partial_result).unwrap_or(serde_json::Value::Null),
             };
-            updates.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(emit(event));
+            let _ = sender.send(emit(event));
         })
     };
 
@@ -1505,45 +1514,23 @@ async fn execute_prepared_tool_call(
         Some(receiver.await)
     };
 
-    let outcome = match settled {
-        None => {
-            accepting_updates.store(false, Ordering::SeqCst);
-            let pending: Vec<_> = update_events
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .drain(..)
-                .collect();
-            for event in pending {
-                event.await;
-            }
-            return ExecutedToolCallOutcome {
-                result: create_error_tool_result("Tool execution aborted"),
-                is_error: true,
-            };
-        }
-        Some(Ok(result)) => {
-            accepting_updates.store(false, Ordering::SeqCst);
-            let pending: Vec<_> = update_events
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .drain(..)
-                .collect();
-            for event in pending {
-                event.await;
-            }
-            ExecutedToolCallOutcome { is_error: result.is_error == Some(true), result }
-        }
+    update_sender.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+    let _ = update_drainer.await;
+    match settled {
+        None => ExecutedToolCallOutcome {
+            result: create_error_tool_result("Tool execution aborted"),
+            is_error: true,
+        },
+        Some(Ok(result)) => ExecutedToolCallOutcome { is_error: result.is_error == Some(true), result },
         Some(Err(_)) => ExecutedToolCallOutcome {
             result: create_error_tool_result("Tool execution was cancelled"),
             is_error: true,
         },
-    };
-    accepting_updates.store(false, Ordering::SeqCst);
-    outcome
+    }
 }
 
 async fn finalize_executed_tool_call(
-    current_context: &AgentContext,
+    current_context: &Arc<AgentContext>,
     assistant_message: &AssistantMessage,
     prepared: &ToolCallPreparation,
     executed: ExecutedToolCallOutcome,
@@ -1568,7 +1555,7 @@ async fn finalize_executed_tool_call(
                 args: args.clone(),
                 result: result.clone(),
                 is_error,
-                context: current_context.clone(),
+                context: Arc::clone(current_context),
             },
             signal.clone(),
         )

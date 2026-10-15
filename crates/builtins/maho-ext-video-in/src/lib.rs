@@ -39,9 +39,31 @@ pub async fn read_video(path: &Path, signal: &AbortSignal) -> Result<ToolResult,
     if !stats.is_file() { return Err(ToolError::Message(format!("\"{}\" is not a regular file.",path.display()))); }
     if stats.len() == 0 { return Err(ToolError::Message(format!("\"{}\" is empty.",path.display()))); }
     if stats.len() > MAX_VIDEO_BYTES { return Err(ToolError::Message(format!("\"{}\" is {} bytes, which exceeds the maximum 100MB for video files. Create a smaller clip (e.g. with ffmpeg) and read that instead.",path.display(),stats.len()))); }
-    let data = tokio::fs::read(path).await?;
+    let data = encode_file_base64(path, stats.len()).await?;
     signal.check()?;
-    Ok(ToolResult { content: vec![ToolContent::text(format!("Read video file \"{}\" [{mime}, {} bytes]. The video is attached below.",path.file_name().unwrap_or_default().to_string_lossy(),stats.len())), ToolContent::Image { data: STANDARD.encode(data), mime_type: mime.into() }], details: None })
+    Ok(ToolResult { content: vec![ToolContent::text(format!("Read video file \"{}\" [{mime}, {} bytes]. The video is attached below.",path.file_name().unwrap_or_default().to_string_lossy(),stats.len())), ToolContent::Image { data, mime_type: mime.into() }], details: None })
+}
+
+/// Streams the file through a 3-byte-aligned buffer into one pre-sized base64 string, so the raw
+/// bytes and the encoding are never both fully resident. Output equals `STANDARD.encode(file)`.
+async fn encode_file_base64(path: &Path, len: u64) -> std::io::Result<String> {
+    use tokio::io::AsyncReadExt;
+    const CHUNK: usize = 3 * 256 * 1024;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut encoded = String::with_capacity(usize::try_from(len.div_ceil(3).saturating_mul(4)).unwrap_or(0));
+    let mut buffer = vec![0u8; CHUNK];
+    loop {
+        let mut filled = 0;
+        while filled < CHUNK {
+            let read = file.read(&mut buffer[filled..]).await?;
+            if read == 0 { break; }
+            filled += read;
+        }
+        if filled == 0 { break; }
+        STANDARD.encode_string(&buffer[..filled], &mut encoded);
+        if filled < CHUNK { break; }
+    }
+    Ok(encoded)
 }
 
 pub struct VideoIn;

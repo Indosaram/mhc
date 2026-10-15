@@ -12,7 +12,18 @@ const SIGNATURE_OBJECT_KEY_LIMIT: usize = 80;
 const SIGNATURE_DEPTH_LIMIT: usize = 8;
 
 pub fn create_bounded_render_signature(value: &Value) -> String {
-    serde_json::to_string(&summarize_value(value, 0)).unwrap_or_else(|_| String::from("null"))
+    serialize_bounded_render_summary(&summarize_value(value, 0))
+}
+
+/// The bounded summary of `value` found at nesting `depth`, as `create_bounded_render_signature`
+/// computes it for each nested value.
+pub fn summarize_bounded_render_value(value: &Value, depth: usize) -> Value {
+    summarize_value(value, depth)
+}
+
+/// Serialize a summary produced by [`summarize_bounded_render_value`] into a signature.
+pub fn serialize_bounded_render_summary(summary: &Value) -> String {
+    serde_json::to_string(summary).unwrap_or_else(|_| String::from("null"))
 }
 
 fn summarize_string(text: &str) -> Value {

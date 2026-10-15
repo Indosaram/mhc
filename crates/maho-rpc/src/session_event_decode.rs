@@ -1,5 +1,6 @@
 //! Inverse of `session_binding::session_event_record`. The `agent_end` and `message_update` tags
 //! exist in both the agent and session unions, so those collisions are resolved explicitly.
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -10,11 +11,11 @@ use maho_ext_api::{
 };
 
 fn get<T: DeserializeOwned>(record: &Value, key: &str) -> Option<T> {
-    serde_json::from_value(record.get(key)?.clone()).ok()
+    T::deserialize(record.get(key)?).ok()
 }
 
 fn agent(record: &Value) -> Option<AgentSessionEvent> {
-    serde_json::from_value::<AgentEvent>(record.clone()).ok().map(AgentSessionEvent::Agent)
+    AgentEvent::deserialize(record).ok().map(AgentSessionEvent::Agent)
 }
 
 fn reason(value: &str) -> Option<CompactionReason> {

@@ -103,6 +103,29 @@ impl TurnLog {
         turn.error = completion.error;
         Ok(())
     }
+    /// Borrowed turns of one thread (empty when none were logged).
+    pub fn turns(&self, thread_id: &str) -> &[LoggedTurn] {
+        self.turns_by_thread_id.get(thread_id).map(Vec::as_slice).unwrap_or_default()
+    }
+    /// Borrowed items of one logged turn, without cloning the thread's history.
+    pub fn turn_items(&self, thread_id: &str, turn_id: &str) -> Option<&[WireItem]> {
+        self.turns(thread_id)
+            .iter()
+            .find(|turn| turn.turn_id == turn_id)
+            .map(|turn| turn.items.as_slice())
+    }
+    /// Whether the turn already logged an item whose `id` equals `item_id`.
+    pub fn has_item(&self, thread_id: &str, turn_id: &str, item_id: &serde_json::Value) -> bool {
+        self.turn_items(thread_id, turn_id).is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("id").unwrap_or(&serde_json::Value::Null) == item_id)
+        })
+    }
+    /// Drop a deleted thread's log; nothing can read it afterwards.
+    pub fn remove_thread(&mut self, thread_id: &str) {
+        self.turns_by_thread_id.remove(thread_id);
+    }
     pub fn read_turns(&mut self, thread_id: &str) -> Vec<LoggedTurn> {
         self.turns_by_thread_id
             .entry(thread_id.into())

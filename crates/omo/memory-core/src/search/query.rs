@@ -206,7 +206,11 @@ pub fn parse_query(query: &str) -> ParsedQuery {
 
 /// Returns the letta score, or None when any term or phrase is absent.
 pub fn match_score(text: &str, query: &ParsedQuery) -> Option<f64> {
-    let haystack = normalize_text(text);
+    match_score_normalized(&normalize_text(text), query)
+}
+
+/// [`match_score`] over a haystack already passed through [`normalize_text`] (which is idempotent).
+pub(crate) fn match_score_normalized(haystack: &str, query: &ParsedQuery) -> Option<f64> {
     if haystack.is_empty() {
         return None;
     }

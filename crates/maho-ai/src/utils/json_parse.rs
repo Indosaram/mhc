@@ -137,12 +137,11 @@ impl PartialParser {
     }
 
     fn literal(&mut self, word: &str) -> bool {
-        let rest = self.substring(self.index as isize, self.len() as isize);
         let word_len = word.chars().count();
         let remaining = self.len() - self.index;
         let full = self.substring(self.index as isize, (self.index + word_len) as isize) == word;
         let min_remaining = if word == "-Infinity" { 2 } else { 0 };
-        if full || (remaining < word_len && remaining >= min_remaining && word.starts_with(rest.as_str())) {
+        if full || (remaining < word_len && remaining >= min_remaining && word.starts_with(self.substring(self.index as isize, self.len() as isize).as_str())) {
             self.index += word_len;
             return true;
         }

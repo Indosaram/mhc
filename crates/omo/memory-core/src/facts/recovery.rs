@@ -1,6 +1,6 @@
 //! Application and boundary verification of facts recovery plans.
 
-use crate::git::{GitCommitAuthor, GitError, GitMemoryRepo, MemoryCommit};
+use crate::git::{GitCommitAuthor, GitError, GitLogOptions, GitMemoryRepo, MemoryCommit};
 
 use super::mutation_plan::FactsApplyRecovery;
 use super::recovery_mutation::{
@@ -108,7 +108,13 @@ pub fn find_facts_batch_receipt(
     repo: &GitMemoryRepo,
     batch_id: &str,
 ) -> Result<Option<MemoryCommit>, GitError> {
-    Ok(repo.log(None)?.into_iter().find(|commit| {
+    // Prefilter in git on the bare id: every commit whose parsed trailer equals `batch_id` has it as
+    // a substring of the message, so this is a superset and the exact trailer check below decides.
+    let options = GitLogOptions {
+        grep: (!batch_id.is_empty()).then(|| batch_id.to_string()),
+        ..Default::default()
+    };
+    Ok(repo.log(Some(&options))?.into_iter().find(|commit| {
         commit.trailers.get("Omo-Facts-Batch").map(String::as_str) == Some(batch_id)
     }))
 }

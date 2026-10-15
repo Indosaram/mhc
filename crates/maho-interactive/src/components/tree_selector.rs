@@ -21,6 +21,8 @@ use super::keybinding_hints::{format_key_text, key_hint};
 use super::theme_selector::dynamic_border;
 use crate::theme::theme::{Theme, ThemeBg, ThemeColor};
 
+static NULL_VALUE: Value = Value::Null;
+
 /// Callback shapes senpi stores as plain function fields.
 pub type EntrySelectHandler = Box<dyn FnMut(&str)>;
 pub type VoidHandler = Box<dyn FnMut()>;
@@ -40,7 +42,9 @@ pub struct GutterInfo {
 /// Flattened tree node for navigation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlatNode {
-    pub node: SessionTreeNode,
+    /// The tree node without its children (the flat list already holds them), shared so filtering
+    /// and rendering do not deep-copy entries.
+    pub node: Rc<SessionTreeNode>,
     /// Indentation level (each level = 3 chars).
     pub indent: usize,
     /// Whether to show a connector; true if the parent has multiple children.
@@ -198,8 +202,8 @@ enum BranchDirection {
     Down,
 }
 
-struct StackItem {
-    node: SessionTreeNode,
+struct StackItem<'a> {
+    node: &'a SessionTreeNode,
     indent: usize,
     just_branched: bool,
     show_connector: bool,
@@ -220,6 +224,9 @@ pub struct TreeList {
     filter_mode: FilterMode,
     search_query: String,
     tool_call_map: BTreeMap<String, ToolCallInfo>,
+    /// Lowercased senpi getSearchableText per entry id, built on the first search and dropped on
+    /// label edits.
+    searchable_text: Option<BTreeMap<String, String>>,
     multiple_roots: bool,
     show_label_timestamps: bool,
     active_path_ids: BTreeSet<String>,
@@ -258,6 +265,7 @@ impl TreeList {
             filter_mode: initial_filter_mode.unwrap_or(FilterMode::Default),
             search_query: String::new(),
             tool_call_map: BTreeMap::new(),
+            searchable_text: None,
             multiple_roots: tree.len() > 1,
             show_label_timestamps: false,
             active_path_ids: BTreeSet::new(),
@@ -305,7 +313,7 @@ impl TreeList {
     }
 
     pub fn get_selected_node(&self) -> Option<&SessionTreeNode> {
-        self.filtered_nodes.get(self.selected_index).map(|flat| &flat.node)
+        self.filtered_nodes.get(self.selected_index).map(|flat| flat.node.as_ref())
     }
 
     pub fn show_label_timestamps(&self) -> bool {
@@ -396,11 +404,11 @@ impl TreeList {
         let mut ordered_roots: Vec<&SessionTreeNode> = roots.iter().collect();
         ordered_roots
             .sort_by_key(|node| !contains_active.get(&entry_id(&node.entry)).copied().unwrap_or(false));
-        let mut stack: Vec<StackItem> = Vec::new();
+        let mut stack: Vec<StackItem<'_>> = Vec::new();
         for (index, root) in ordered_roots.iter().enumerate().rev() {
             let is_last = index == ordered_roots.len() - 1;
             stack.push(StackItem {
-                node: (*root).clone(),
+                node: root,
                 indent: if multiple_roots { 1 } else { 0 },
                 just_branched: multiple_roots,
                 show_connector: multiple_roots,
@@ -435,7 +443,12 @@ impl TreeList {
             }
 
             result.push(FlatNode {
-                node: item.node.clone(),
+                node: Rc::new(SessionTreeNode {
+                    entry: item.node.entry.clone(),
+                    children: Vec::new(),
+                    label: item.node.label.clone(),
+                    label_timestamp: item.node.label_timestamp.clone(),
+                }),
                 indent: item.indent,
                 show_connector: item.show_connector,
                 is_last: item.is_last,
@@ -480,7 +493,7 @@ impl TreeList {
             for (index, child) in ordered_children.iter().enumerate().rev() {
                 let child_is_last = index == ordered_children.len() - 1;
                 stack.push(StackItem {
-                    node: (*child).clone(),
+                    node: child,
                     indent: child_indent,
                     just_branched: multiple_children,
                     show_connector: multiple_children,
@@ -512,14 +525,17 @@ impl TreeList {
 
         let current_leaf = self.current_leaf_id.clone();
         let filter_mode = self.filter_mode;
-        let searchable = self.build_searchable_text();
+        if !search_tokens.is_empty() && self.searchable_text.is_none() {
+            self.searchable_text = Some(self.build_searchable_text());
+        }
+        let searchable = self.searchable_text.as_ref();
         let mut filtered: Vec<FlatNode> = Vec::new();
         for flat in &self.flat_nodes {
             let entry = &flat.node.entry;
             let is_current_leaf = current_leaf.as_deref() == Some(entry_id(entry).as_str());
 
             if entry_type(entry) == "message" && message_role(entry) == Some("assistant") && !is_current_leaf {
-                let message = entry.get("message").cloned().unwrap_or(Value::Null);
+                let message = entry.get("message").unwrap_or(&NULL_VALUE);
                 let stop_reason = message.get("stopReason").and_then(Value::as_str);
                 let has_text = has_text_content(message.get("content"));
                 let is_error_or_aborted = stop_reason.is_some_and(|reason| reason != "stop" && reason != "toolUse");
@@ -553,10 +569,8 @@ impl TreeList {
 
             if !search_tokens.is_empty() {
                 let node_text = searchable
-                    .get(&entry_id_of(flat))
-                    .cloned()
-                    .unwrap_or_default()
-                    .to_lowercase();
+                    .and_then(|searchable| searchable.get(&entry_id_of(flat)))
+                    .map_or("", String::as_str);
                 if !search_tokens.iter().all(|token| node_text.contains(token)) {
                     continue;
                 }
@@ -596,7 +610,7 @@ impl TreeList {
     fn build_searchable_text(&self) -> BTreeMap<String, String> {
         let mut map = BTreeMap::new();
         for flat in &self.flat_nodes {
-            map.insert(entry_id_of(flat), self.get_searchable_text(&flat.node));
+            map.insert(entry_id_of(flat), self.get_searchable_text(&flat.node).to_lowercase());
         }
         map
     }
@@ -721,7 +735,7 @@ impl TreeList {
         }
         match entry_type(entry) {
             "message" => {
-                let message = entry.get("message").cloned().unwrap_or(Value::Null);
+                let message = entry.get("message").unwrap_or(&NULL_VALUE);
                 parts.push(message_role(entry).unwrap_or_default().to_owned());
                 if let Some(content) = message.get("content") {
                     parts.push(self.extract_content(Some(content)));
@@ -908,7 +922,7 @@ impl TreeList {
         let entry = &node.entry;
         let result = match entry_type(entry) {
             "message" => {
-                let message = entry.get("message").cloned().unwrap_or(Value::Null);
+                let message = entry.get("message").unwrap_or(&NULL_VALUE);
                 match message_role(entry).unwrap_or_default() {
                     "user" => format!(
                         "{}{}",
@@ -1106,8 +1120,9 @@ impl TreeList {
     pub fn update_node_label(&mut self, entry_id: &str, label: Option<&str>, label_timestamp: Option<&str>) {
         for flat in &mut self.flat_nodes {
             if entry_id_of(flat) == entry_id {
-                flat.node.label = label.map(str::to_owned);
-                flat.node.label_timestamp = label.map(|_| {
+                let node = Rc::make_mut(&mut flat.node);
+                node.label = label.map(str::to_owned);
+                node.label_timestamp = label.map(|_| {
                     label_timestamp
                         .map(str::to_owned)
                         .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_owned())
@@ -1115,6 +1130,7 @@ impl TreeList {
                 break;
             }
         }
+        self.searchable_text = None;
     }
 
     pub fn copy_selected(&mut self) {
@@ -1148,7 +1164,7 @@ impl TreeList {
         let entry = &node.entry;
         let text = match entry_type(entry) {
             "message" => {
-                let message = entry.get("message").cloned().unwrap_or(Value::Null);
+                let message = entry.get("message").unwrap_or(&NULL_VALUE);
                 if message_role(entry) == Some("bashExecution") {
                     message.get("command").and_then(Value::as_str).map(str::to_owned)
                 } else if message.get("content").is_some() {
@@ -1200,7 +1216,7 @@ impl Component for TreeList {
 
         let mut rendered_rows: Vec<HorizontalViewportRow> = Vec::new();
         for index in start_index..end_index {
-            let flat_node = self.filtered_nodes[index].clone();
+            let flat_node = &self.filtered_nodes[index];
             let is_selected = index == self.selected_index;
 
             let cursor = if is_selected {
@@ -1227,7 +1243,7 @@ impl Component for TreeList {
             };
 
             let total_chars = display_indent * 3;
-            let entry_id_value = entry_id_of(&flat_node);
+            let entry_id_value = entry_id_of(flat_node);
             let is_folded = self.folded_nodes.contains(&entry_id_value);
             let mut prefix_chars: Vec<char> = Vec::with_capacity(total_chars);
             for i in 0..total_chars {

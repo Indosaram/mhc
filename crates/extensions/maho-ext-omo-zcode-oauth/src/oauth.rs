@@ -22,9 +22,9 @@ fn select_default(value: Option<&Value>) -> Option<&Value> {
     value.and_then(Value::as_array).and_then(|entries| entries.iter().filter(|entry| entry.is_object()).find(|entry| entry.get("isDefault") == Some(&Value::Bool(true))).or_else(|| entries.iter().find(|entry| entry.is_object())))
 }
 pub fn redact_secrets(text: &str) -> String {
-    let jwt = regex::Regex::new(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").expect("constant JWT expression");
-    let secret = regex::Regex::new(r"[A-Za-z0-9_-]{40,}").expect("constant secret expression");
-    secret.replace_all(&jwt.replace_all(text, "[redacted-jwt]"), "[redacted]").into_owned()
+    static JWT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").expect("constant JWT expression"));
+    static SECRET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"[A-Za-z0-9_-]{40,}").expect("constant secret expression"));
+    SECRET.replace_all(&JWT.replace_all(text, "[redacted-jwt]"), "[redacted]").into_owned()
 }
 pub fn callback_code(input: &str, state: &str) -> Result<String, ExtensionFailure> {
     let input = input.trim();

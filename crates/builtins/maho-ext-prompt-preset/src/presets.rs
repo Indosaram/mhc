@@ -41,8 +41,16 @@ pub fn resolve_preset(model: ModelMetadata<'_>, setting: PromptPresetName, mut o
 }
 #[derive(Clone, Copy)]
 pub struct ModelMetadata<'a> { pub id: &'a str, pub provider: &'a str, pub name: Option<&'a str>, pub prompt_preset: Option<&'a str> }
-fn normalized(value: &str) -> String { regex::Regex::new(r"\s+").map_or_else(|_| value.to_lowercase(), |pattern| pattern.replace_all(&value.to_lowercase(), "-").into_owned()) }
-fn signal(value: &str, patterns: &[&str]) -> bool { let value = normalized(value); patterns.iter().any(|pattern| regex::Regex::new(pattern).is_ok_and(|pattern| pattern.is_match(&value))) }
+fn normalized(value: &str) -> String {
+ static WHITESPACE: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| regex::Regex::new(r"\s+").ok());
+ WHITESPACE.as_ref().map_or_else(|| value.to_lowercase(), |pattern| pattern.replace_all(&value.to_lowercase(), "-").into_owned())
+}
+/// Model-matching patterns are fixed literals; compile each once instead of on every resolution.
+fn compiled(pattern: &str) -> Option<regex::Regex> {
+ static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Option<regex::Regex>>>> = std::sync::LazyLock::new(Default::default);
+ CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(pattern.to_owned()).or_insert_with(|| regex::Regex::new(pattern).ok()).clone()
+}
+fn signal(value: &str, patterns: &[&str]) -> bool { let value = normalized(value); patterns.iter().any(|pattern| compiled(pattern).is_some_and(|pattern| pattern.is_match(&value))) }
 fn model_signal(model: ModelMetadata<'_>, patterns: &[&str]) -> bool { signal(model.id, patterns) || model.name.is_some_and(|name| signal(name, patterns)) }
 pub fn resolve_preset_name(model: ModelMetadata<'_>, setting: PromptPresetName) -> Option<PromptPresetName> {
  if setting != PromptPresetName::Auto { return Some(setting); }

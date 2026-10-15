@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once, OnceLock, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const DAG_LEASE_WATCH_INTERVAL_MS: u64 = 1_000;
 
@@ -134,18 +134,59 @@ fn cancel_watch(state: &Arc<WatchState>, key: u64) {
     }
 }
 
+/// One shared timer thread serves every default-timer watch: each poll tick re-arms a queue entry
+/// instead of spawning a thread, and clearing a timer removes its entry so nothing sleeps on.
+struct DefaultTimers {
+    queue: Mutex<std::collections::BTreeMap<(Instant, DagLeaseWatchTimerHandle), DagLeaseWatchCallback>>,
+    changed: Condvar,
+}
+
+fn default_timers() -> &'static DefaultTimers {
+    static TIMERS: OnceLock<DefaultTimers> = OnceLock::new();
+    static WORKER: Once = Once::new();
+    let timers = TIMERS.get_or_init(|| DefaultTimers { queue: Mutex::new(std::collections::BTreeMap::new()), changed: Condvar::new() });
+    WORKER.call_once(|| {
+        let _ = thread::Builder::new().name("dag-lease-watch".into()).spawn(move || run_default_timers(timers));
+    });
+    timers
+}
+
+fn run_default_timers(timers: &'static DefaultTimers) {
+    let mut queue = lock(&timers.queue);
+    loop {
+        let next = queue.first_key_value().map(|(&key, _)| key);
+        let Some((deadline, handle)) = next else {
+            queue = timers.changed.wait(queue).unwrap_or_else(PoisonError::into_inner);
+            continue;
+        };
+        let now = Instant::now();
+        if deadline > now {
+            queue = timers.changed.wait_timeout(queue, deadline - now).unwrap_or_else(PoisonError::into_inner).0;
+            continue;
+        }
+        let callback = queue.remove(&(deadline, handle));
+        drop(queue);
+        if let Some(callback) = callback {
+            // A faulting callback must not take down the shared timer thread for other watches.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()));
+        }
+        queue = lock(&timers.queue);
+    }
+}
+
 fn default_set_timer(callback: DagLeaseWatchCallback, delay_ms: u64) -> DagLeaseWatchTimerHandle {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let handle = NEXT.fetch_add(1, Ordering::Relaxed);
-    let _ = thread::Builder::new().name("dag-lease-watch".into()).spawn(move || {
-        thread::park_timeout(Duration::from_millis(delay_ms));
-        callback();
-    });
+    let timers = default_timers();
+    lock(&timers.queue).insert((Instant::now() + Duration::from_millis(delay_ms), handle), callback);
+    timers.changed.notify_all();
     handle
 }
 
-fn default_clear_timer(_handle: DagLeaseWatchTimerHandle) {
-    // Thread timers cannot be interrupted; the watch's active guard makes cancellation inert.
+fn default_clear_timer(handle: DagLeaseWatchTimerHandle) {
+    let timers = default_timers();
+    lock(&timers.queue).retain(|&(_, queued), _| queued != handle);
+    timers.changed.notify_all();
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

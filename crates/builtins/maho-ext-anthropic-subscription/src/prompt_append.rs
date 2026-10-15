@@ -15,7 +15,7 @@ pub fn project_rules(prompt:Option<&str>)->Option<&str> {
 }
 pub fn skills(prompt:Option<&str>,global_root:&std::path::Path,project_root:&std::path::Path)->Option<String> {
     let prompt=prompt?;let start=prompt.find("The following skills provide specialized instructions for specific tasks.")?;let end=start+prompt[start..].find("</available_skills>")?+"</available_skills>".len();let block=prompt[start..end].trim();
-    let regex=regex::Regex::new(r"<location>([^<]+)</location>").expect("location regex");Some(regex.replace_all(block,|capture:&regex::Captures<'_>| {
+    static LOCATION:std::sync::LazyLock<regex::Regex>=std::sync::LazyLock::new(||regex::Regex::new(r"<location>([^<]+)</location>").expect("location regex"));let regex=&*LOCATION;Some(regex.replace_all(block,|capture:&regex::Captures<'_>| {
         let location=&capture[1];for (root,prefix) in [(global_root,"~/.claude/skills/"),(project_root,".claude/skills/")] {
             let root=root.to_string_lossy();if location.starts_with(root.as_ref()) {let suffix=location[root.len()..].trim_start_matches('/').trim_start_matches('.');return format!("<location>{prefix}{suffix}</location>");}
         }capture[0].to_owned()

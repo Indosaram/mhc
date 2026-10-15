@@ -344,6 +344,8 @@ pub struct NodeTextLineReader {
 
 struct ReaderState {
     buffered: String,
+    /// Byte offset of the first unread character in `buffered`.
+    start: usize,
     pending: Vec<u8>,
     ended: bool,
     closed: bool,
@@ -354,7 +356,7 @@ impl NodeTextLineReader {
         Self {
             file: Mutex::new(file),
             path,
-            state: Mutex::new(ReaderState { buffered: String::new(), pending: Vec::new(), ended: false, closed: false }),
+            state: Mutex::new(ReaderState { buffered: String::new(), start: 0, pending: Vec::new(), ended: false, closed: false }),
         }
     }
 }
@@ -372,16 +374,19 @@ impl TextLineReader for NodeTextLineReader {
             loop {
                 {
                     let mut state = self.state.lock().expect("line reader poisoned");
-                    if let Some(newline) = state.buffered.find('\n') {
-                        let text = state.buffered[..newline].to_string();
-                        state.buffered = state.buffered[newline + 1..].to_string();
+                    let start = state.start;
+                    if let Some(newline) = state.buffered[start..].find('\n') {
+                        let text = state.buffered[start..start + newline].to_string();
+                        state.start = start + newline + 1;
                         return ok(Some(TextLine { text, terminated: true }));
                     }
                     if state.ended {
-                        if state.buffered.is_empty() {
+                        if state.buffered.len() == start {
                             return ok(None);
                         }
-                        let text = std::mem::take(&mut state.buffered);
+                        let mut text = std::mem::take(&mut state.buffered);
+                        text.replace_range(..start, "");
+                        state.start = 0;
                         return ok(Some(TextLine { text, terminated: false }));
                     }
                 }
@@ -396,6 +401,8 @@ impl TextLineReader for NodeTextLineReader {
                     return aborted;
                 }
                 let mut state = self.state.lock().expect("line reader poisoned");
+                let start = std::mem::take(&mut state.start);
+                state.buffered.replace_range(..start, "");
                 match read {
                     Ok(0) => {
                         state.ended = true;
@@ -423,6 +430,7 @@ impl TextLineReader for NodeTextLineReader {
             }
             state.closed = true;
             state.buffered.clear();
+            state.start = 0;
         })
     }
 }
@@ -976,6 +984,9 @@ impl NodeExecutionEnv {
             .stdin(if command_from_stdin { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Make the shell a process-group leader so `kill_process_tree`'s `kill -9 -{pid}` reaches grandchildren.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut process, 0);
 
         let mut child: Child = match process.spawn() {
             Ok(child) => child,
@@ -990,7 +1001,7 @@ impl NodeExecutionEnv {
             let _ = stdin.write_all(command.as_bytes());
         }
 
-        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(EXEC_CHUNK_CHANNEL_CAPACITY);
         let mut stdout_pipe = child.stdout.take();
         let mut stderr_pipe = child.stderr.take();
         let mut readers = Vec::new();
@@ -1073,10 +1084,11 @@ impl NodeExecutionEnv {
             }
         }
 
-        for reader in readers {
-            let _ = reader.join();
-        }
-        let _ = waiter.join();
+        // Reader threads exit on EOF or once `chunk_rx` is dropped; never block a runtime worker joining them,
+        // since a background grandchild may keep the pipes open indefinitely.
+        drop(chunk_rx);
+        drop(readers);
+        drop(waiter);
         {
             let mut active = self.active_child_pids.lock().expect("active pids poisoned");
             if let Some(index) = active.iter().position(|active_pid| *active_pid == pid) {
@@ -1114,13 +1126,15 @@ impl NodeExecutionEnv {
     }
 }
 
-fn read_stream(mut pipe: impl Read, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) {
+const EXEC_CHUNK_CHANNEL_CAPACITY: usize = 64;
+
+fn read_stream(mut pipe: impl Read, tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
     let mut buffer = [0u8; 8192];
     loop {
         match pipe.read(&mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(count) => {
-                if tx.send(buffer[..count].to_vec()).is_err() {
+                if tx.blocking_send(buffer[..count].to_vec()).is_err() {
                     break;
                 }
             }

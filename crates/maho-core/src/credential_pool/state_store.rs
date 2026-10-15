@@ -204,7 +204,9 @@ impl CredentialSlotRepository {
         let content = std::fs::read_to_string(&self.path).unwrap_or_default();
         let document = parse_document(&content);
         let (result, next) = mutate(document);
-        if let Some(next) = next {
+        if let Some(next) = next
+            && serialize_document(&next) != content
+        {
             write_document(&self.path, &next)?;
         }
         Ok(result)

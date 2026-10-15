@@ -46,7 +46,8 @@ pub fn register_state_hooks(api:&mut maho_ext_api::ExtensionApi,actions:std::syn
     api.on(maho_ext_api::EventKind::MessageEnd,std::sync::Arc::new(move |event,ctx| {
         let actions=actions.clone(); let accessors=accessors.clone();
         Box::pin(async move {
-            if let maho_ext_api::ExtensionEvent::MessageEnd{message}=event {
+            // Only assistant messages can carry todo tool calls; skip serializing the rest.
+            if let maho_ext_api::ExtensionEvent::MessageEnd{message}=event && message.as_assistant().is_some() {
                 let message=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                 for phases in native_todo_updates(&message) {
                     accessors.set_current_phases(phases.clone());

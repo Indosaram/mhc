@@ -17,15 +17,25 @@ pub fn create_workpool_yield_capability(
     emit: Option<WorkpoolEventSink>,
 ) -> impl Fn(Value) -> Result<(PoolId, u32, Vec<WorkpoolYieldReceipt>), WorkpoolError> {
     let task_id = task_id.into();
+    let bound_pool: std::sync::Mutex<Option<PoolId>> = std::sync::Mutex::new(None);
     move |value| {
         let envelope = value.as_object().ok_or_else(invalid_envelope)?;
         if envelope.len() != 2 || envelope.get("op").and_then(Value::as_str) != Some("yield") {
             return Err(invalid_envelope());
         }
         let results = envelope.get("results").and_then(Value::as_array).ok_or_else(invalid_envelope)?;
-        let pool = store.list_result()?.into_iter().find(|candidate| candidate.items.iter().any(|item|
-            item.binding.as_ref().is_some_and(|binding| binding.task_id == task_id))
-        ).ok_or_else(|| WorkpoolError::new(WorkpoolErrorCode::WorkerUnassigned, "Worker has no pool assignment."))?;
+        let is_bound = |candidate: &super::types::WorkpoolRecord| candidate.items.iter().any(|item|
+            item.binding.as_ref().is_some_and(|binding| binding.task_id == task_id));
+        // A worker task is only ever bound inside the pool that admitted it, so the pool found by
+        // the first full scan is reused while it still holds a binding for this task.
+        let cached = bound_pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let cached = cached.and_then(|pool_id| store.load(&pool_id).ok()).filter(&is_bound);
+        let pool = match cached {
+            Some(pool) => pool,
+            None => store.list_result()?.into_iter().find(&is_bound)
+                .ok_or_else(|| WorkpoolError::new(WorkpoolErrorCode::WorkerUnassigned, "Worker has no pool assignment."))?,
+        };
+        *bound_pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pool.pool_id.clone());
         let task = tasks.load(&task_id).map_err(store_error)?;
         if pool.status == super::types::WorkpoolStatus::Cancelled
             || task.as_ref().is_none_or(|task| task.notification.run_epoch != i64::from(run_epoch))
@@ -37,6 +47,7 @@ pub fn create_workpool_yield_capability(
         }
         let turn = (pool.pool_id.clone(), pool.generation, task_id.clone(), run_epoch);
         let mut receipts = Vec::with_capacity(results.len());
+        let mut events: Option<YieldEventCache> = None;
         for raw in results {
             let result: WorkpoolYieldValue = match parse_yield_result(raw) {
                 Ok(result) => result,
@@ -45,7 +56,7 @@ pub fn create_workpool_yield_capability(
                     continue;
                 }
             };
-            let receipt = accept_yield(&store, &tasks, &turn, result)?;
+            let receipt = accept_yield(&store, &tasks, &turn, result, &mut events)?;
             if let WorkpoolYieldReceipt::Accepted { item_id, .. } = &receipt && let Some(emit) = &emit {
                     emit(WorkpoolEvent {
                         pool_id: turn.0.clone(), kind: WorkpoolEventKind::ItemResult,
@@ -59,11 +70,20 @@ pub fn create_workpool_yield_capability(
     }
 }
 
+/// Durable yield events read once per yield call, keyed by the log length they reflect. Yield
+/// events are only appended under the pool store gate, so an unchanged length means no new ones.
+type YieldEventCache = (Option<u64>, Vec<WorkpoolYieldEvent>);
+
+fn yield_log_len(tasks: &TaskRecordStore, task_id: &str) -> Option<u64> {
+    std::fs::metadata(tasks.state_dir().join("logs").join(format!("{task_id}.jsonl"))).ok().map(|metadata| metadata.len())
+}
+
 fn accept_yield(
     pools: &WorkpoolStore,
     tasks: &TaskRecordStore,
     turn: &(PoolId, u32, String, u32),
     result: WorkpoolYieldValue,
+    cache: &mut Option<YieldEventCache>,
 ) -> Result<WorkpoolYieldReceipt, WorkpoolError> {
     let mut receipt = WorkpoolYieldReceipt::Refused(refuse_yield(
         "stale_assignment", "Key is not assigned to this worker turn.", Some(result.key().to_string()),
@@ -96,9 +116,14 @@ fn accept_yield(
             || item.delivery.as_ref().is_some_and(|delivery| delivery.phase == super::types::WorkpoolDeliveryPhase::Queued)
         { return Ok(pool.clone()) }
 
-        let events = read_yield_events(&*tasks, &turn.0, &turn.2, turn.3, turn.1).map_err(|error|
-            WorkpoolError::new(WorkpoolErrorCode::StoreCorrupt, format!("Could not read durable yield events: {error}"))
-        )?;
+        let log_len = yield_log_len(tasks, &turn.2);
+        if cache.as_ref().is_none_or(|(cached_len, _)| *cached_len != log_len) {
+            let read = read_yield_events(&*tasks, &turn.0, &turn.2, turn.3, turn.1).map_err(|error|
+                WorkpoolError::new(WorkpoolErrorCode::StoreCorrupt, format!("Could not read durable yield events: {error}"))
+            )?;
+            *cache = Some((log_len, read));
+        }
+        let events = cache.as_ref().map_or(&[][..], |(_, events)| events.as_slice());
         if let Some(prior) = events.iter().find(|event| event.item_id == item.item_id && event.result.key() == item.key) {
             receipt = if prior.sha256 == sha256 {
                 WorkpoolYieldReceipt::Duplicate { key: item.key.clone(), item_id: item.item_id.clone() }
@@ -111,8 +136,12 @@ fn accept_yield(
             pool_id: turn.0.clone(), generation: turn.1, task_id: turn.2.clone(),
             run_epoch: turn.3, item_id: item.item_id.clone(), result: result.clone(), sha256,
         };
-        let payload = serde_json::to_value(durable).map_err(|error| WorkpoolError::new(WorkpoolErrorCode::StoreCorrupt, error.to_string()))?;
+        let payload = serde_json::to_value(&durable).map_err(|error| WorkpoolError::new(WorkpoolErrorCode::StoreCorrupt, error.to_string()))?;
         tasks.append_event(&turn.2, &PersistedTaskEvent { event_type: "workpool_yield".into(), payload }).map_err(store_error)?;
+        if let Some((cached_len, events)) = cache.as_mut() {
+            *cached_len = yield_log_len(tasks, &turn.2);
+            events.push(durable);
+        }
         receipt = WorkpoolYieldReceipt::Accepted { key: item.key.clone(), item_id: item.item_id.clone() };
         if uncertain { return Ok(pool.clone()) }
         let mut next = pool.clone();

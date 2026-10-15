@@ -1,4 +1,4 @@
-use memory_core::{compile::{cache::MemoryBlockCache, compile::{CompileError, CompileMemoryBlockOptions, compile_memory_block_at_revision}, render::{RenderError, mark_memory_block, replace_memory_block}}, git::GitMemoryRepo};
+use memory_core::{compile::{cache::MemoryBlockCache, compile::{CompileError, CompileMemoryBlockOptions}, render::{RenderError, mark_memory_block, replace_memory_block}}, git::GitMemoryRepo};
 use crate::projection_pin::{NativeProjectionPins, ProjectionAdvanceInput, ProjectionPinRecord, ProjectionPins, ProjectionTurn, render_projected_changes_line};
 
 pub const MEMORY_PROMPT_TEMPLATE: &str = "omo-senpi:before_agent_start:v3";
@@ -85,8 +85,8 @@ impl MemoryPromptHandler {
         let block = if turn.revision.as_deref() == head.as_deref() {
             self.cache.compile(input.repo, &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity), &options).map_err(MemoryPromptError::Compile)?
         } else {
-            // `MemoryBlockCache` keys by HEAD alone, so a stale pin compiles at its revision directly.
-            compile_memory_block_at_revision(input.repo, turn.revision.as_deref(), &options).map_err(MemoryPromptError::Compile)?
+            // A stale pin uses the separate pinned-revision cache entry so it never evicts the HEAD entry.
+            self.cache.compile_at_revision(input.repo, turn.revision.as_deref(), &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity), &options).map_err(MemoryPromptError::Compile)?
         };
         let composed = if input.search_exposure { format!("{block}\n\n{MEMORY_TOOL_DISCOVERY_NOTE}") } else { block };
         let system_prompt = replace_memory_block(input.system_prompt, &mark_memory_block(input.identity, &composed)).map_err(MemoryPromptError::Render)?;

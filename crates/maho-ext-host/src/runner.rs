@@ -261,7 +261,7 @@ impl ExtensionSessionSettings for ContextSessionManager {
 
 #[derive(Clone)]
 pub struct ExtensionRunner {
-    pub extensions: Vec<LoadedExtension>, pub runtime: ExtensionRuntime, pub events: EventBus,
+    pub extensions: Arc<Vec<LoadedExtension>>, pub runtime: ExtensionRuntime, pub events: EventBus,
     context: ExtensionContext, error_listeners: Vec<ErrorListener>, pub errors: Vec<ExtensionError>,
     pub warnings: Vec<String>, pub shutdown_warn_ms: u64, pub shutdown_timeout_ms: u64,
     hook_observer: Option<HookObserver>, warning_listener: Option<WarningListener>, next_hook_index: u64,
@@ -283,7 +283,7 @@ impl Extension for SharedExtension {
 }
 impl ExtensionRunner {
     pub fn new(extensions: Vec<LoadedExtension>, runtime: ExtensionRuntime, events: EventBus, context: ExtensionContext) -> Self {
-        Self { extensions, runtime, events, factory_context: context.clone(), context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
+        Self { extensions: Arc::new(extensions), runtime, events, factory_context: context.clone(), context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
             shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None, runtime_factory: None, context_session_manager: Arc::new(std::sync::Mutex::new(None)), session_error_listener: None }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
@@ -391,7 +391,7 @@ impl ExtensionRunner {
     }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
-        for extension in &self.extensions {
+        for extension in self.extensions.iter() {
             for activator in &extension.lazy_tool_activators { actions.register_lazy_tool_activator(Arc::clone(activator))?; }
             for source in &extension.native_tool_search_injection_failure_sources { actions.register_native_tool_search_injection_failure_source(Arc::clone(source))?; }
             for (name, hint) in &extension.removed_tool_hints { actions.register_removed_tool_hint(name, hint)?; }
@@ -445,13 +445,13 @@ impl ExtensionRunner {
     }
     pub fn get_shortcuts(&self) -> BTreeMap<String, ExtensionShortcut> {
         let mut shortcuts = BTreeMap::new();
-        for extension in &self.extensions { for (key, shortcut) in self.runtime.live_shortcuts(&extension.identity.path).unwrap_or_else(|| extension.shortcuts.clone()) { shortcuts.insert(key.to_lowercase(), shortcut); } }
+        for extension in self.extensions.iter() { for (key, shortcut) in self.runtime.live_shortcuts(&extension.identity.path).unwrap_or_else(|| extension.shortcuts.clone()) { shortcuts.insert(key.to_lowercase(), shortcut); } }
         shortcuts
     }
     pub fn resolve_shortcuts(&self, builtins: &BTreeMap<String, BuiltinShortcut>) -> (BTreeMap<String, ExtensionShortcut>, Vec<ShortcutDiagnostic>) {
         let mut shortcuts: BTreeMap<String, ExtensionShortcut> = BTreeMap::new();
         let mut diagnostics = Vec::new();
-        for extension in &self.extensions {
+        for extension in self.extensions.iter() {
             for (key, shortcut) in self.runtime.live_shortcuts(&extension.identity.path).unwrap_or_else(|| extension.shortcuts.clone()) {
                 let normalized = key.to_lowercase();
                 if let Some(builtin) = builtins.get(&normalized) {
@@ -471,7 +471,7 @@ impl ExtensionRunner {
     }
     pub fn transform_markdown(&self, markdown: &str, context: &MarkdownTransformContext) -> String {
         let mut transformed = markdown.to_owned();
-        for extension in &self.extensions { if let Some(transformer) = self.runtime.live_markdown_transformer(&extension.identity.path).or_else(|| extension.markdown_transformer.clone()) { transformed = transformer(&transformed, context); } }
+        for extension in self.extensions.iter() { if let Some(transformer) = self.runtime.live_markdown_transformer(&extension.identity.path).or_else(|| extension.markdown_transformer.clone()) { transformed = transformer(&transformed, context); } }
         transformed
     }
     pub async fn handle_rpc_request(&self, name: &str, data: JsonValue) -> Result<JsonValue, ExtensionFailure> {
@@ -548,7 +548,9 @@ impl ExtensionRunner {
     fn report(&mut self, path: &str, kind: EventKind, error: ExtensionFailure) {
         self.emit_error(ExtensionError { extension_path: path.into(), event: kind.as_str().into(), error: error.message, stack: error.stack });
     }
-    pub fn has_handlers(&self, kind: EventKind) -> bool { !self.handlers(kind).is_empty() }
+    pub fn has_handlers(&self, kind: EventKind) -> bool {
+        self.extensions.iter().any(|e| e.handlers.get(&kind).is_some_and(|handlers| !handlers.is_empty()) || self.runtime.has_live_handlers(&e.identity.path, kind))
+    }
     fn handlers(&self, kind: EventKind) -> Vec<(String, ExtensionHandler)> {
         self.extensions.iter().flat_map(|e| {
             // Load-registered handlers stay authoritative; a late runtime registration (e.g. the
@@ -571,7 +573,7 @@ impl ExtensionRunner {
     }
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
         let mut tools: Vec<RegisteredTool> = Vec::new();
-        for ext in &self.extensions {
+        for ext in self.extensions.iter() {
             let mut merged = ext.tools.clone();
             if let Some(live) = self.runtime.live_tools(&ext.identity.path) {
                 for tool in live {
@@ -596,7 +598,7 @@ impl ExtensionRunner {
     }
     pub fn get_tool_renderers<TState: 'static, TArgs: 'static>(&self, name: &str) -> Option<Arc<ToolRenderers<TState, TArgs>>> {
         let mut selected: Option<&LoadedExtension> = None;
-        for extension in &self.extensions {
+        for extension in self.extensions.iter() {
             if self.runtime.live_tools(&extension.identity.path).unwrap_or_else(|| extension.tools.clone()).iter().any(|tool| tool.definition.name == name)
                 && selected.is_none_or(|current| current.source_info.source == "builtin" && extension.source_info.source != "builtin") { selected = Some(extension); }
         }
@@ -607,7 +609,7 @@ impl ExtensionRunner {
     /// selection as [`Self::get_tool_renderers`].
     pub fn get_erased_tool_renderers(&self, name: &str) -> Option<Arc<dyn ErasedToolRenderers>> {
         let mut selected: Option<&LoadedExtension> = None;
-        for extension in &self.extensions {
+        for extension in self.extensions.iter() {
             if self.runtime.live_tools(&extension.identity.path).unwrap_or_else(|| extension.tools.clone()).iter().any(|tool| tool.definition.name == name)
                 && selected.is_none_or(|current| current.source_info.source == "builtin" && extension.source_info.source != "builtin") { selected = Some(extension); }
         }
@@ -684,15 +686,15 @@ impl ExtensionRunner {
         Ok(result)
     }
     pub fn get_flags(&self) -> BTreeMap<String, ExtensionFlag> {
-        let mut flags = BTreeMap::new(); for ext in &self.extensions { for flag in self.runtime.live_flags(&ext.identity.path).unwrap_or_else(|| ext.flags.clone()) { flags.entry(flag.name.clone()).or_insert(flag); }} flags
+        let mut flags = BTreeMap::new(); for ext in self.extensions.iter() { for flag in self.runtime.live_flags(&ext.identity.path).unwrap_or_else(|| ext.flags.clone()) { flags.entry(flag.name.clone()).or_insert(flag); }} flags
     }
     pub fn get_registered_mcp_servers(&self) -> Vec<RegisteredMcpServerDeclaration> {
         let mut servers: Vec<RegisteredMcpServerDeclaration> = Vec::new();
-        for ext in &self.extensions { for server in self.runtime.live_mcp_servers(&ext.identity.path).unwrap_or_else(|| ext.mcp_servers.clone()) { if !servers.iter().any(|s| s.name == server.name) { servers.push(server); } }} servers
+        for ext in self.extensions.iter() { for server in self.runtime.live_mcp_servers(&ext.identity.path).unwrap_or_else(|| ext.mcp_servers.clone()) { if !servers.iter().any(|s| s.name == server.name) { servers.push(server); } }} servers
     }
     pub fn get_mcp_server_diagnostics(&self) -> Vec<String> {
         let mut owners: BTreeMap<String, &str> = BTreeMap::new(); let mut warnings = Vec::new();
-        for ext in &self.extensions { for server in self.runtime.live_mcp_servers(&ext.identity.path).unwrap_or_else(|| ext.mcp_servers.clone()) {
+        for ext in self.extensions.iter() { for server in self.runtime.live_mcp_servers(&ext.identity.path).unwrap_or_else(|| ext.mcp_servers.clone()) {
             if let Some(owner) = owners.get(server.name.as_str()) {
                 warnings.push(format!("MCP server '{}' declared by both {} and {}; keeping first declaration from {}.", server.name, owner, ext.identity.path, owner));
             } else { owners.insert(server.name, &ext.identity.path); }
@@ -827,9 +829,11 @@ impl ExtensionRunner {
     /// `getSessionContextEntryId` onto the cloned messages); missing positions are unstamped.
     pub async fn emit_context(&mut self, messages: &[AgentMessage], entry_ids: &[Option<String>], exclude_path: Option<&str>) -> Result<Vec<AgentMessage>, ExtensionFailure> {
         self.runtime.assert_active()?;
+        let handlers = self.handlers(EventKind::Context);
+        if handlers.is_empty() { return Ok(messages.to_vec()); }
         let entry_ids = (0..messages.len()).map(|index| entry_ids.get(index).cloned().flatten()).collect();
         let mut event = ExtensionEvent::Context { messages: messages.to_vec(), entry_ids };
-        for (path, handler) in self.handlers(EventKind::Context) {
+        for (path, handler) in handlers {
             if exclude_path == Some(path.as_str()) { continue; }
             let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {

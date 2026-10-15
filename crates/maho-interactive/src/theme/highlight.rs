@@ -1,5 +1,5 @@
 use super::theme::{Theme, ThemeColor};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 use syntect::{
     parsing::{ParseState, ScopeStack, SyntaxSet},
     util::LinesWithEndings,
@@ -118,8 +118,9 @@ fn scope_color(scope: &str, text: &str, lang: &str) -> Option<ThemeColor> {
 }
 /// Like highlight.js, the innermost scope with a colour wins; inside a `meta` span only strings,
 /// comments, literals and keywords keep their own colour.
-fn token_color(stack: &ScopeStack, text: &str, lang: &str) -> Option<ThemeColor> {
-    let scopes = stack.as_slice().iter().rev().map(|s| s.to_string()).collect::<Vec<_>>();
+/// `scopes` is the stack innermost-first, stringified once per stack change; `in_meta` is whether
+/// any of them is a `meta` span.
+fn token_color(scopes: &[String], in_meta: bool, text: &str, lang: &str) -> Option<ThemeColor> {
     let color = scopes.iter().find_map(|scope| scope_color(scope, text, lang));
     let keeps_color = matches!(
         color,
@@ -130,7 +131,7 @@ fn token_color(stack: &ScopeStack, text: &str, lang: &str) -> Option<ThemeColor>
                 | ThemeColor::SyntaxKeyword
         )
     );
-    if !keeps_color && scopes.iter().any(|scope| is_meta(scope)) {
+    if !keeps_color && in_meta {
         return Some(ThemeColor::Muted);
     }
     color
@@ -149,6 +150,16 @@ pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<Stri
     let mut stack = ScopeStack::new();
     let mut output = String::new();
     let mut runs: Vec<(Option<ThemeColor>, String)> = Vec::new();
+    let mut scopes: Vec<String> = Vec::new();
+    let mut in_meta = false;
+    let mut scopes_stale = false;
+    let refresh = |stack: &ScopeStack, scopes: &mut Vec<String>, in_meta: &mut bool, stale: &mut bool| {
+        if *stale {
+            *scopes = stack.as_slice().iter().rev().map(|s| s.to_string()).collect();
+            *in_meta = scopes.iter().any(|scope| is_meta(scope));
+            *stale = false;
+        }
+    };
     for line in LinesWithEndings::from(code) {
         let Ok(ops) = parser.parse_line(line, syntax_set) else {
             return code.split('\n').map(str::to_owned).collect();
@@ -157,16 +168,19 @@ pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<Stri
         for (index, op) in ops {
             if index > previous {
                 let text = &line[previous..index];
-                append_run(&mut runs, token_color(&stack, text, language), text);
+                refresh(&stack, &mut scopes, &mut in_meta, &mut scopes_stale);
+                append_run(&mut runs, token_color(&scopes, in_meta, text, language), text);
             }
             if stack.apply(&op).is_err() {
                 return code.split('\n').map(str::to_owned).collect();
             }
+            scopes_stale = true;
             previous = index;
         }
         if previous < line.len() {
             let text = &line[previous..];
-            append_run(&mut runs, token_color(&stack, text, language), text);
+            refresh(&stack, &mut scopes, &mut in_meta, &mut scopes_stale);
+            append_run(&mut runs, token_color(&scopes, in_meta, text, language), text);
         }
     }
     for (color, text) in runs {
@@ -180,8 +194,10 @@ pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<Stri
     }
     // highlight.js's Rust grammar marks the binding after `let` as a variable; the TextMate
     // grammar has no scope for it.
+    static LET_BINDING: LazyLock<Option<regex::Regex>> =
+        LazyLock::new(|| regex::Regex::new(r"let(?:\x1b\[[0-9;]*m)*\s+([a-zA-Z_][a-zA-Z0-9_]*)").ok());
     if language == "rust"
-        && let Ok(re) = regex::Regex::new(r"let(?:\x1b\[[0-9;]*m)*\s+([a-zA-Z_][a-zA-Z0-9_]*)")
+        && let Some(re) = LET_BINDING.as_ref()
     {
         output = re
             .replace_all(&output, |caps: &regex::Captures<'_>| {

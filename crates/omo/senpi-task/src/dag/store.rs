@@ -443,16 +443,21 @@ impl DagFileStore {
         let mut head_seq = 0;
         let mut has_more = false;
         for_each_json_line(&path, |value| {
-            let event = parse_event(value, &path, run_id, self.clock())?;
-            head_seq = head_seq.max(event.seq);
-            if event.seq <= since_seq_exclusive {
+            // Envelope-validate every line, but only deserialize the full event (definitions can be
+            // large) for lines inside the requested window.
+            let seq = parse_event_envelope(&value, &path, run_id, self.clock())?
+                .as_u64()
+                .ok_or_else(|| corrupt(&path, Some(run_id), "invalid DAG event envelope", self.clock()))?;
+            head_seq = head_seq.max(seq);
+            if seq <= since_seq_exclusive {
                 return Ok(());
             }
             if let Some(through) = options.through_seq
-                && event.seq > through
+                && seq > through
             {
                 return Ok(());
             }
+            let event = parse_event(value, &path, run_id, self.clock())?;
             if let Some(lane) = options.lane
                 && event.lane != lane
             {

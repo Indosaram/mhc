@@ -10,6 +10,25 @@ fn is_failed_stop(stop_reason: StopReason) -> bool {
 /// Drop assistant turns that ended in "error"/"aborted", plus tool results whose id was declared only
 /// by dropped assistants. Every other message and the order are preserved.
 pub fn drop_failed_assistant_turns(messages: &[Message]) -> Vec<Message> {
+    let failed_ids = failed_tool_call_ids(messages);
+    messages.iter().filter(|message| keep(message, &failed_ids)).cloned().collect()
+}
+
+/// Owned variant of [`drop_failed_assistant_turns`]: same output and order, without cloning kept messages.
+pub fn drop_failed_assistant_turns_owned(messages: Vec<Message>) -> Vec<Message> {
+    let failed_ids = failed_tool_call_ids(&messages);
+    messages.into_iter().filter(|message| keep(message, &failed_ids)).collect()
+}
+
+fn keep(message: &Message, failed_ids: &HashSet<String>) -> bool {
+    match message {
+        Message::Assistant(assistant) => !is_failed_stop(assistant.stop_reason),
+        Message::ToolResult(result) => !failed_ids.contains(&result.tool_call_id),
+        _ => true,
+    }
+}
+
+fn failed_tool_call_ids(messages: &[Message]) -> HashSet<String> {
     let mut kept_ids = HashSet::new();
     let mut failed_ids = HashSet::new();
     for message in messages {
@@ -25,15 +44,7 @@ pub fn drop_failed_assistant_turns(messages: &[Message]) -> Vec<Message> {
     for id in &kept_ids {
         failed_ids.remove(id);
     }
-    messages
-        .iter()
-        .filter(|message| match message {
-            Message::Assistant(assistant) => !is_failed_stop(assistant.stop_reason),
-            Message::ToolResult(result) => !failed_ids.contains(&result.tool_call_id),
-            _ => true,
-        })
-        .cloned()
-        .collect()
+    failed_ids
 }
 
 #[cfg(test)]
@@ -97,5 +108,20 @@ mod tests {
     fn drops_an_aborted_turn_the_same_as_an_errored_one() {
         let list = messages(json!([assistant("aborted", None)]));
         assert!(drop_failed_assistant_turns(&list).is_empty());
+    }
+
+    #[test]
+    fn owned_variant_matches_the_slice_variant() {
+        let list = messages(json!([
+            {"role": "user", "content": "hi", "timestamp": 0},
+            assistant("error", Some("call_1")),
+            tool_result("call_1"),
+            assistant("stop", Some("call_2")),
+            tool_result("call_2"),
+        ]));
+        let borrowed = drop_failed_assistant_turns(&list);
+        let owned = drop_failed_assistant_turns_owned(list);
+        assert_eq!(roles(&owned), roles(&borrowed));
+        assert_eq!(roles(&owned), vec!["user", "assistant", "toolResult"]);
     }
 }

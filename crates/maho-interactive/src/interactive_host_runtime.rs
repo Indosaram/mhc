@@ -314,6 +314,11 @@ impl RemoteSessionProxy {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
+    /// Read the mirrored state under the lock without cloning it. `f` must not call back into the proxy.
+    pub fn inspect_state<R>(&self, f: impl FnOnce(&RemoteSessionState) -> R) -> R {
+        self.read(f)
+    }
+
     /// senpi's `performRefresh` state commit.
     pub fn set_state(&self, state: RemoteSessionState) {
         *self.next_queued_input_order.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = state.next_queued_input_order();

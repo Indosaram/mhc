@@ -56,7 +56,34 @@ impl MemoryBlockCache {
     ) -> Result<String, CompileError> {
         let revision = repo.head().map_err(|e| CompileError::Git(e.to_string()))?;
         let key = format!("{}:{}", hash_memory_template(template), options.agent_id);
-        let variant = revision.as_deref().unwrap_or("no-head").to_string();
+        self.compile_keyed(repo, key, revision.as_deref(), options)
+    }
+
+    /// Compiles a memory block at an explicit (pinned) revision, returning the cached string while
+    /// template and revision match. Kept apart from the HEAD entry so a lagging pin never evicts it.
+    pub fn compile_at_revision(
+        &self,
+        repo: &GitMemoryRepo,
+        revision: Option<&str>,
+        template: &str,
+        options: &CompileMemoryBlockOptions,
+    ) -> Result<String, CompileError> {
+        let key = format!(
+            "{}:{}:pinned",
+            hash_memory_template(template),
+            options.agent_id
+        );
+        self.compile_keyed(repo, key, revision, options)
+    }
+
+    fn compile_keyed(
+        &self,
+        repo: &GitMemoryRepo,
+        key: String,
+        revision: Option<&str>,
+        options: &CompileMemoryBlockOptions,
+    ) -> Result<String, CompileError> {
+        let variant = revision.unwrap_or("no-head").to_string();
 
         {
             let guard = self
@@ -70,7 +97,7 @@ impl MemoryBlockCache {
             }
         }
 
-        match compile_memory_block_at_revision(repo, revision.as_deref(), options) {
+        match compile_memory_block_at_revision(repo, revision, options) {
             Ok(compiled) => {
                 let mut guard = self
                     .entries

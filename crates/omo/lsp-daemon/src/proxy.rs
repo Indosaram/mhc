@@ -3,7 +3,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -65,48 +65,59 @@ impl std::error::Error for ProxyError {}
 /// so the stdio server sees end-of-input as soon as the startup watchdog fires or the
 /// proxy stops, even while the underlying read is still blocked (TS `input.destroy()`).
 struct LifecycleInput {
-    chunks: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    chunks: std::sync::mpsc::Receiver<InputEvent>,
     pending: Vec<u8>,
-    ended: Arc<AtomicBool>,
+    ended: bool,
     lifecycle: AbortController,
 }
 
-const INPUT_STOP_CHECK: Duration = Duration::from_millis(10);
+/// Pump-thread chunk, or an explicit end-of-input (EOF, startup watchdog).
+enum InputEvent {
+    Chunk(std::io::Result<Vec<u8>>),
+    End,
+}
 
 impl LifecycleInput {
     fn spawn<R: Read + Send + 'static>(
         mut inner: R,
-        ended: Arc<AtomicBool>,
+        sender: Sender<InputEvent>,
+        chunks: std::sync::mpsc::Receiver<InputEvent>,
         lifecycle: AbortController,
     ) -> Self {
-        let (sender, chunks) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut buffer = vec![0_u8; 8192];
             loop {
                 match inner.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(read) => {
-                        if sender.send(Ok(buffer[..read].to_vec())).is_err() {
+                        if sender
+                            .send(InputEvent::Chunk(Ok(buffer[..read].to_vec())))
+                            .is_err()
+                        {
                             break;
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(error) => {
-                        let _ignored = sender.send(Err(error));
+                        let _ignored = sender.send(InputEvent::Chunk(Err(error)));
                         break;
                     }
                 }
             }
+            // Other senders (watchdog, proxy shutdown) keep the channel open, so the
+            // pump's own end of input must be explicit.
+            let _ignored = sender.send(InputEvent::End);
         });
         Self {
             chunks,
             pending: Vec::new(),
-            ended,
+            ended: false,
             lifecycle,
         }
     }
 
-    fn end(&self) -> std::io::Result<usize> {
+    fn end(&mut self) -> std::io::Result<usize> {
+        self.ended = true;
         self.lifecycle.abort();
         Ok(0)
     }
@@ -115,17 +126,16 @@ impl LifecycleInput {
 impl Read for LifecycleInput {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         while self.pending.is_empty() {
-            if self.ended.load(Ordering::SeqCst) {
+            if self.ended {
                 return self.end();
             }
-            match self.chunks.recv_timeout(INPUT_STOP_CHECK) {
-                Ok(Ok(chunk)) => self.pending = chunk,
-                Ok(Err(error)) => {
+            match self.chunks.recv() {
+                Ok(InputEvent::Chunk(Ok(chunk))) => self.pending = chunk,
+                Ok(InputEvent::Chunk(Err(error))) => {
                     self.lifecycle.abort();
                     return Err(error);
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return self.end(),
+                Ok(InputEvent::End) | Err(std::sync::mpsc::RecvError) => return self.end(),
             }
         }
         let count = self.pending.len().min(buffer.len());
@@ -157,13 +167,13 @@ where
         .startup_timeout_ms
         .unwrap_or(DEFAULT_STARTUP_TIMEOUT_MS);
     let lifecycle = AbortController::new();
-    let ended = Arc::new(AtomicBool::new(false));
+    let (input_sender, input_events) = std::sync::mpsc::channel();
     let first_request = Arc::new(StartupGate::default());
     let watchdog = (startup_timeout_ms > 0).then(|| {
         spawn_startup_watchdog(
             startup_timeout_ms,
             Arc::clone(&first_request),
-            Arc::clone(&ended),
+            input_sender.clone(),
             lifecycle.clone(),
             Arc::clone(&stderr),
         )
@@ -171,7 +181,7 @@ where
 
     let (input, parse_payloads) = ParseErrorPayloadReader::wrap(input);
     let result = serve(
-        LifecycleInput::spawn(input, Arc::clone(&ended), lifecycle.clone()),
+        LifecycleInput::spawn(input, input_sender.clone(), input_events, lifecycle.clone()),
         parse_payloads,
         output,
         &options,
@@ -180,7 +190,7 @@ where
         &stderr,
     );
     first_request.disarm();
-    ended.store(true, Ordering::SeqCst);
+    let _ignored = input_sender.send(InputEvent::End);
     if let Some(watchdog) = watchdog {
         let _joined = watchdog.join();
     }
@@ -348,7 +358,7 @@ impl StartupGate {
 fn spawn_startup_watchdog(
     timeout_ms: u64,
     gate: Arc<StartupGate>,
-    ended: Arc<AtomicBool>,
+    input_end: Sender<InputEvent>,
     lifecycle: AbortController,
     stderr: StderrSink,
 ) -> std::thread::JoinHandle<()> {
@@ -356,7 +366,7 @@ fn spawn_startup_watchdog(
         if gate.wait_disarmed(Duration::from_millis(timeout_ms)) {
             return;
         }
-        ended.store(true, Ordering::SeqCst);
+        let _ignored = input_end.send(InputEvent::End);
         lifecycle.abort();
         let message =
             format!("[lsp-daemon] no MCP request received within {timeout_ms}ms; exiting\n");

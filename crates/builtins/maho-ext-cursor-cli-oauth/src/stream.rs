@@ -119,26 +119,26 @@ pub fn spawn_attempt(input:SpawnAttemptInput)->crate::session_router::AttemptRec
 }
 #[derive(Clone,Copy,PartialEq)]
 enum OpenKind {Text,Thinking}
-pub struct StreamMapper {pub stream:AssistantMessageEventStream,pub output:AssistantMessage,started:bool,open:Option<OpenKind>,index:usize,text:String,accumulated:String}
+pub struct StreamMapper {pub stream:AssistantMessageEventStream,pub output:AssistantMessage,started:bool,open:Option<OpenKind>,index:usize,accumulated:String}
 impl StreamMapper {
     pub fn new(model:&Model,at:i64)->Self {
-        Self {stream:create_assistant_message_event_stream(),output:AssistantMessage {content:Vec::new(),api:model.api.clone(),provider:model.provider.clone(),model:model.id.clone(),response_model:None,response_id:None,provider_thinking_level:None,diagnostics:None,usage:Usage::default(),stop_reason:StopReason::Stop,stop_details:None,deferred:None,error_message:None,abort_source:None,raw_stop_reason:None,end_turn:None,timestamp:at},started:false,open:None,index:0,text:String::new(),accumulated:String::new()}
+        Self {stream:create_assistant_message_event_stream(),output:AssistantMessage {content:Vec::new(),api:model.api.clone(),provider:model.provider.clone(),model:model.id.clone(),response_model:None,response_id:None,provider_thinking_level:None,diagnostics:None,usage:Usage::default(),stop_reason:StopReason::Stop,stop_details:None,deferred:None,error_message:None,abort_source:None,raw_stop_reason:None,end_turn:None,timestamp:at},started:false,open:None,index:0,accumulated:String::new()}
     }
     fn close_open(&mut self) {
         if let Some(kind)=self.open.take() {
-            let event=match kind {OpenKind::Text=>Event::TextEnd {content_index:self.index,content:self.text.clone(),partial:self.output.clone()},OpenKind::Thinking=>Event::ThinkingEnd {content_index:self.index,content:self.text.clone(),partial:self.output.clone()}};self.stream.push(event);
+            let content=match &self.output.content[self.index] {ContentBlock::Text(block)=>block.text.clone(),ContentBlock::Thinking(block)=>block.thinking.clone(),_=>String::new()};
+            let event=match kind {OpenKind::Text=>Event::TextEnd {content_index:self.index,content,partial:self.output.clone()},OpenKind::Thinking=>Event::ThinkingEnd {content_index:self.index,content,partial:self.output.clone()}};self.stream.push(event);
         }
     }
     fn ensure_open(&mut self,kind:OpenKind) {
         if self.open==Some(kind) {return;}self.close_open();
         if !self.started {self.started=true;self.stream.push(Event::Start {partial:self.output.clone()});}
         self.output.content.push(match kind {OpenKind::Text=>ContentBlock::Text(TextContent::default()),OpenKind::Thinking=>ContentBlock::Thinking(ThinkingContent::default())});
-        self.index=self.output.content.len()-1;self.open=Some(kind);self.text.clear();self.accumulated.clear();
+        self.index=self.output.content.len()-1;self.open=Some(kind);self.accumulated.clear();
         self.stream.push(match kind {OpenKind::Text=>Event::TextStart {content_index:self.index,partial:self.output.clone()},OpenKind::Thinking=>Event::ThinkingStart {content_index:self.index,partial:self.output.clone()}});
     }
     fn delta(&mut self,text:&str) {
-        self.text.push_str(text);
-        match &mut self.output.content[self.index] {ContentBlock::Text(block)=>block.text.clone_from(&self.text),ContentBlock::Thinking(block)=>block.thinking.clone_from(&self.text),_=>{}}
+        match &mut self.output.content[self.index] {ContentBlock::Text(block)=>block.text.push_str(text),ContentBlock::Thinking(block)=>block.thinking.push_str(text),_=>{}}
         self.stream.push(match self.open {Some(OpenKind::Thinking)=>Event::ThinkingDelta {content_index:self.index,delta:text.into(),partial:self.output.clone()},_=>Event::TextDelta {content_index:self.index,delta:text.into(),partial:self.output.clone()}});
     }
     pub fn apply(&mut self,event:&Value,model:&Model,sent_prompt_tokens:u64) {

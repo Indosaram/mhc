@@ -98,6 +98,8 @@ pub struct FooterDataProvider {
     extension_statuses: Mutex<BTreeMap<String, String>>,
     cached_branch: Mutex<Option<Option<String>>>,
     git_paths: Mutex<Option<Option<GitPaths>>>,
+    /// HEAD mtime at the last plain (non-probe) branch read; `refresh_branch` skips unchanged HEADs.
+    head_mtime: Mutex<Option<std::time::SystemTime>>,
     branch_change_callbacks: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
     available_provider_count: Mutex<usize>,
     disposed: Mutex<bool>,
@@ -110,6 +112,7 @@ impl FooterDataProvider {
             extension_statuses: Mutex::new(BTreeMap::new()),
             cached_branch: Mutex::new(None),
             git_paths: Mutex::new(Some(find_git_paths(cwd))),
+            head_mtime: Mutex::new(None),
             branch_change_callbacks: Mutex::new(Vec::new()),
             available_provider_count: Mutex::new(0),
             disposed: Mutex::new(false),
@@ -171,6 +174,7 @@ impl FooterDataProvider {
         }
         *Self::lock(&self.cached_branch) = None;
         *Self::lock(&self.git_paths) = Some(find_git_paths(cwd));
+        *Self::lock(&self.head_mtime) = None;
         self.notify_branch_change();
     }
 
@@ -223,8 +227,22 @@ impl FooterDataProvider {
         if *Self::lock(&self.disposed) {
             return;
         }
-        let needs_probe = self.read_branch_from_head().needs_git_probe;
-        let next = if needs_probe { self.resolve_git_branch() } else { self.read_branch_from_head().branch };
+        let mtime = Self::lock(&self.git_paths)
+            .clone()
+            .flatten()
+            .and_then(|paths| std::fs::metadata(&paths.head_path).ok())
+            .and_then(|metadata| metadata.modified().ok());
+        if mtime.is_some()
+            && *Self::lock(&self.head_mtime) == mtime
+            && Self::lock(&self.cached_branch).is_some()
+            && !self.should_poll_git_head()
+        {
+            return;
+        }
+        let head = self.read_branch_from_head();
+        // A reftable HEAD never changes on branch switches, so only plain reads may be skipped later.
+        *Self::lock(&self.head_mtime) = if head.needs_git_probe { None } else { mtime };
+        let next = if head.needs_git_probe { self.resolve_git_branch() } else { head.branch };
         let mut cached = Self::lock(&self.cached_branch);
         let previous = cached.clone();
         let changed = previous.is_some() && previous.clone().flatten() != next;

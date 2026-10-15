@@ -206,11 +206,28 @@ fn boulder_continuation_will_fire(cwd: &str, session_id: &str) -> bool {
 }
 
 fn transcript_shows_context_pressure(transcript_path: &str) -> bool {
-    let Ok(transcript) = fs::read_to_string(transcript_path) else {
+    use std::io::BufRead;
+    let Ok(file) = fs::File::open(transcript_path) else {
         return false;
     };
-    let lower = transcript.to_lowercase();
-    CONTEXT_PRESSURE_MARKERS.iter().any(|m| lower.contains(m))
+    // Pin `read_to_string` semantics: any read or UTF-8 error makes the whole transcript `false`,
+    // even after an earlier line matched; markers never span a newline.
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    let mut found = false;
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return found,
+            Ok(_) => {
+                if !found {
+                    let lower = line.to_lowercase();
+                    found = CONTEXT_PRESSURE_MARKERS.iter().any(|m| lower.contains(m));
+                }
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 fn boulder_plan_has_checklist(cwd: &str, entry: &serde_json::Map<String, Value>) -> bool {

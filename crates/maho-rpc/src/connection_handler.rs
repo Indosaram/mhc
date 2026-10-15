@@ -173,6 +173,21 @@ pub fn session_model_entry_json(entry:&maho_core::agent_session::SessionModelEnt
 }
 /// Milliseconds since the epoch, the clock the RPC host stamps records with.
 pub fn now_ms()->f64{std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.,|elapsed|elapsed.as_secs_f64()*1000.)}
+/// trust.json path, cwd and file stamp (mtime, len) of the last lookup, with its answer.
+type TrustLookup=(String,String,Option<(std::time::SystemTime,u64)>,bool);
+static LAST_TRUST_LOOKUP:std::sync::Mutex<Option<TrustLookup>>=std::sync::Mutex::new(None);
+/// `ProjectTrustStore::get` behind a stat-keyed memo: snapshots are rebuilt on every session event,
+/// and the store answer only changes when trust.json itself does.
+fn project_trusted(agent_dir:&str,cwd:String)->bool{
+    let store=maho_core::ProjectTrustStore::new(agent_dir);
+    let stamp=std::fs::metadata(store.trust_path()).ok().and_then(|metadata|Some((metadata.modified().ok()?,metadata.len())));
+    let mut last=LAST_TRUST_LOOKUP.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((path,cached_cwd,cached_stamp,trusted))=last.as_ref()&&path==store.trust_path()&&*cached_cwd==cwd&&*cached_stamp==stamp{return *trusted;}
+    let decision=store.get(&cwd);let trusted=decision.as_ref().is_ok_and(|decision|*decision==Some(true));
+    // A failed lookup (lock timeout, bad file) is retried next time rather than memoized.
+    *last=decision.is_ok().then(||(store.trust_path().to_owned(),cwd,stamp,trusted));
+    trusted
+}
 /// Project one session into the wire state shape (senpi `buildRpcSessionState`).
 ///
 /// Shared with `open_session` so both surfaces answer with the SAME fields, instead of a
@@ -180,7 +195,7 @@ pub fn now_ms()->f64{std::time::SystemTime::now().duration_since(std::time::UNIX
 pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&str>)->serde_json::Value{
     // senpi's `buildRpcSessionState` consults the project-trust store directly (not the settings
     // manager's cached copy) and always publishes the session manager's accumulated usage totals.
-    let project_trusted=maho_core::ProjectTrustStore::new(&session.agent_dir()).get(&session.cwd()).is_ok_and(|decision|decision==Some(true));
+    let project_trusted=project_trusted(&session.agent_dir(),session.cwd());
     let usage_totals=session.with_session_manager(|manager|manager.usage_totals().clone());
     let mut state=serde_json::json!({
         "model":session.model(),
@@ -200,7 +215,7 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
         "projectTrusted":project_trusted,
         "usageTotals":{"input":usage_totals.input,"output":usage_totals.output,"cacheRead":usage_totals.cache_read,"cacheWrite":usage_totals.cache_write,"cost":usage_totals.cost},
         "autoCompactionEnabled":session.auto_compaction_enabled(),
-        "messageCount":session.messages().len(),
+        "messageCount":session.message_count(),
         "pendingMessageCount":session.pending_message_count(),
         "steering":session.get_steering_messages(),
         "followUp":session.get_follow_up_messages(),

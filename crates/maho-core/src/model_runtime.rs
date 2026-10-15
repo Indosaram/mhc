@@ -552,6 +552,8 @@ impl ModelRuntime {
         }
     }
     pub fn get_available_snapshot(&self) -> Vec<Model> { self.availability_state().snapshot.available.clone() }
+    /// Distinct providers in the availability snapshot, counted under the lock without cloning models.
+    pub fn available_provider_count(&self) -> usize { self.availability_state().snapshot.available.iter().map(|model| model.provider.as_str()).collect::<HashSet<_>>().len() }
     /// True only when the most recent availability refresh completed without error.
     pub fn has_fresh_availability_snapshot(&self) -> bool { let guard = self.availability_state(); guard.initialized && guard.error.is_none() }
     pub fn has_availability_snapshot(&self) -> bool { self.availability_state().initialized }

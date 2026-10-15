@@ -84,16 +84,20 @@ pub async fn build_session_context(
     options: Option<&SessionContextBuildOptions>,
     context: &Context,
 ) -> Vec<AgentMessage> {
-    let entries = build_context_entries(path_entries);
+    // Same selection as `build_context_entries`, borrowed: last compaction onward, else the whole path.
+    let start = path_entries
+        .iter()
+        .rposition(|entry| entry.entry_type() == super::types::EntryType::Compaction)
+        .unwrap_or(0);
     let mut messages: Vec<AgentMessage> = Vec::new();
-    for entry in entries {
+    for entry in &path_entries[start..] {
         let EntryKind::Custom { custom_type, .. } = &entry.kind else {
-            messages.extend(session_entry_to_context_messages(&entry));
+            messages.extend(session_entry_to_context_messages(entry));
             continue;
         };
         let projector = options.and_then(|options| options.entry_projectors.get(custom_type));
         if let Some(projector) = projector
-            && let Some(projected) = projector(&entry, context).await {
+            && let Some(projected) = projector(entry, context).await {
                 messages.extend(projected);
             }
     }

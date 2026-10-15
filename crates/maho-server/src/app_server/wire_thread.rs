@@ -71,9 +71,8 @@ pub async fn build_wire_thread(entry: &ThreadEntry, log: &mut TurnLog, include_t
         None => None,
     };
     let turns = if include_turns {
-        let logged = log.read_turns(&entry.id);
-        let logged = if logged.is_empty() {entry.session.with_session_manager(|manager|turns_from_session_entries(&manager.entries(),&entry.created_at))} else {logged};
-        logged.iter().map(logged_turn_to_wire_turn).collect::<Vec<_>>()
+        let logged = log.turns(&entry.id);
+        if logged.is_empty() {entry.session.with_session_manager(|manager|turns_from_session_entries(&manager.entries(),&entry.created_at)).iter().map(logged_turn_to_wire_turn).collect::<Vec<_>>()} else {logged.iter().map(logged_turn_to_wire_turn).collect::<Vec<_>>()}
     } else { Vec::new() };
-    Ok(json!({"id":entry.id,"sessionId":entry.session.session_id(),"forkedFromId":null,"parentThreadId":null,"preview":entry.session.get_user_messages_for_forking().first().map(|(_,text)|text.as_str()).unwrap_or_default(),"ephemeral":false,"modelProvider":model.provider,"createdAt":iso_seconds(&entry.created_at),"updatedAt":iso_seconds(&entry.updated_at),"recencyAt":iso_seconds(&entry.updated_at),"status":if entry.active_turn.is_some() {json!({"type":"active","activeFlags":[]})} else {json!({"type":"idle"})},"path":path,"cwd":entry.cwd,"cliVersion":version,"source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":git_info,"name":entry.session.session_name(),"turns":turns}))
+    Ok(json!({"id":entry.id,"sessionId":entry.session.session_id(),"forkedFromId":null,"parentThreadId":null,"preview":entry.preview().unwrap_or_default(),"ephemeral":false,"modelProvider":model.provider,"createdAt":iso_seconds(&entry.created_at),"updatedAt":iso_seconds(&entry.updated_at),"recencyAt":iso_seconds(&entry.updated_at),"status":if entry.active_turn.is_some() {json!({"type":"active","activeFlags":[]})} else {json!({"type":"idle"})},"path":path,"cwd":entry.cwd,"cliVersion":version,"source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":git_info,"name":entry.session.session_name(),"turns":turns}))
 }

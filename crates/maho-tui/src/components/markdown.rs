@@ -1,7 +1,9 @@
 //! Port of senpi `packages/tui/src/components/markdown.ts`.
 
-use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+
+use indexmap::IndexMap;
 
 use crate::components::latex::latex_to_unicode;
 use crate::components::markdown_lexer::Lexer;
@@ -63,78 +65,41 @@ pub struct MarkdownOptions {
 
 const RENDER_CACHE_MAX: usize = 256;
 const PARSE_CACHE_MAX: usize = 128;
-const CONTENT_KEY_CACHE_MAX: usize = 128;
 const HIGHLIGHT_CACHE_MAX: usize = 512;
 const MAX_HIGHLIGHT_BYTES: usize = 200_000;
 const MAX_HIGHLIGHT_LINES: usize = 2000;
 
-static OBJECT_IDS: LazyLock<Mutex<ObjectIds>> = LazyLock::new(|| Mutex::new(ObjectIds::default()));
-static RENDER_CACHE: LazyLock<Mutex<HashMap<String, CacheEntry<Vec<String>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static PARSE_CACHE: LazyLock<Mutex<HashMap<String, CacheEntry<Vec<Token>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static CONTENT_KEY_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static HIGHLIGHT_CACHE: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+type LruCache<T> = LazyLock<Mutex<IndexMap<String, CacheEntry<T>>>>;
+
+static NEXT_STYLE_ID: AtomicU64 = AtomicU64::new(0);
+static RENDER_CACHE: LruCache<Arc<Vec<String>>> =
+    LazyLock::new(|| Mutex::new(IndexMap::new()));
+static PARSE_CACHE: LruCache<Arc<Vec<Token>>> =
+    LazyLock::new(|| Mutex::new(IndexMap::new()));
+static HIGHLIGHT_CACHE: LazyLock<Mutex<IndexMap<String, Arc<Vec<String>>>>> =
+    LazyLock::new(|| Mutex::new(IndexMap::new()));
 static HIGHLIGHT_CALL_COUNT: LazyLock<Mutex<usize>> = LazyLock::new(|| Mutex::new(0));
 
-#[derive(Default)]
-struct ObjectIds {
-    next: u64,
-    ids: HashMap<u64, u64>,
-}
-
-#[derive(Clone)]
 struct CacheEntry<T> {
-    source: String,
+    source: Arc<str>,
     value: T,
 }
 
-fn object_id<T: ?Sized>(pointer: *const T) -> u64 {
-    let key = pointer as *const () as u64;
-    let mut state = OBJECT_IDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(id) = state.ids.get(&key) {
-        return *id;
+fn cache_set<T>(cache: &mut IndexMap<String, T>, key: String, value: T, max_size: usize) {
+    cache.shift_remove(&key);
+    cache.insert(key, value);
+    if cache.len() > max_size {
+        cache.shift_remove_index(0);
     }
-    let id = state.next;
-    state.next += 1;
-    state.ids.insert(key, id);
-    id
-}
-
-fn cache_set<T>(cache: &mut HashMap<String, T>, key: String, value: T, max_size: usize) {
-    cache.remove(&key);
-    cache.insert(key.clone(), value);
-    if cache.len() > max_size
-        && let Some(oldest) = cache.keys().next().cloned() {
-            cache.remove(&oldest);
-        }
 }
 
 fn content_key(text: &str) -> String {
-    {
-        let mut cache = CONTENT_KEY_CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(cached) = cache.get(text) {
-            let cached = cached.clone();
-            cache_set(&mut cache, text.to_string(), cached.clone(), CONTENT_KEY_CACHE_MAX);
-            return cached;
-        }
-    }
-
     let mut hash: u32 = 2_166_136_261;
     for unit in text.encode_utf16() {
         hash ^= u32::from(unit);
         hash = hash.wrapping_mul(16_777_619);
     }
-    let key = format!("{}:{}", text.encode_utf16().count(), radix36(hash));
-    let mut cache = CONTENT_KEY_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache_set(&mut cache, text.to_string(), key.clone(), CONTENT_KEY_CACHE_MAX);
-    key
+    format!("{}:{}", text.encode_utf16().count(), radix36(hash))
 }
 
 fn radix36(mut value: u32) -> String {
@@ -157,10 +122,6 @@ pub fn clear_render_cache() {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
     PARSE_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
-    CONTENT_KEY_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
@@ -196,6 +157,7 @@ pub struct Markdown {
     theme: MarkdownTheme,
     options: MarkdownOptions,
     default_style_prefix: Option<String>,
+    style_id: u64,
     cached_text: Option<String>,
     cached_width: Option<usize>,
     cached_lines: Option<Vec<String>>,
@@ -218,6 +180,7 @@ impl Markdown {
             theme,
             options,
             default_style_prefix: None,
+            style_id: NEXT_STYLE_ID.fetch_add(1, Ordering::Relaxed),
             cached_text: None,
             cached_width: None,
             cached_lines: None,
@@ -241,7 +204,7 @@ impl Markdown {
 
     fn style_id(&self) -> u64 {
         match &self.default_text_style {
-            Some(style) => object_id(style as *const DefaultTextStyle),
+            Some(_) => self.style_id,
             None => u64::MAX,
         }
     }
@@ -298,8 +261,8 @@ impl Markdown {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = cache.get(&render_key)
-                && entry.source == normalized_text {
-                    let lines = entry.value.clone();
+                && *entry.source == *normalized_text {
+                    let lines = entry.value.to_vec();
                     drop(cache);
                     self.cached_text = Some(self.text.clone());
                     self.cached_width = Some(width);
@@ -308,6 +271,7 @@ impl Markdown {
                 }
         }
 
+        let normalized_source: Arc<str> = Arc::from(normalized_text.as_str());
         let tokens = {
             let cached = {
                 let cache = PARSE_CACHE
@@ -315,8 +279,8 @@ impl Markdown {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache
                     .get(&normalized_content_key)
-                    .filter(|entry| entry.source == normalized_text)
-                    .map(|entry| entry.value.clone())
+                    .filter(|entry| *entry.source == *normalized_text)
+                    .map(|entry| Arc::clone(&entry.value))
             };
             match cached {
                 Some(tokens) => tokens,
@@ -324,6 +288,7 @@ impl Markdown {
                     let mut lexer = Lexer::new();
                     let mut tokens = lexer.lex(&normalized_text);
                     trim_partial_closing_fences(&mut tokens);
+                    let tokens = Arc::new(tokens);
                     let mut cache = PARSE_CACHE
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -331,8 +296,8 @@ impl Markdown {
                         &mut cache,
                         normalized_content_key.clone(),
                         CacheEntry {
-                            source: normalized_text.clone(),
-                            value: tokens.clone(),
+                            source: Arc::clone(&normalized_source),
+                            value: Arc::clone(&tokens),
                         },
                         PARSE_CACHE_MAX,
                     );
@@ -415,8 +380,8 @@ impl Markdown {
                 &mut cache,
                 render_key,
                 CacheEntry {
-                    source: normalized_text,
-                    value: result.clone(),
+                    source: normalized_source,
+                    value: Arc::new(result.clone()),
                 },
                 RENDER_CACHE_MAX,
             );
@@ -539,7 +504,7 @@ impl Markdown {
         code.len() > MAX_HIGHLIGHT_BYTES
     }
 
-    fn highlight_code_block(&self, code: &str, lang: Option<&str>) -> Option<Vec<String>> {
+    fn highlight_code_block(&self, code: &str, lang: Option<&str>) -> Option<Arc<Vec<String>>> {
         let highlight = self.theme.highlight_code.clone()?;
         if self.exceeds_highlight_cap(code) {
             return None;
@@ -549,20 +514,20 @@ impl Markdown {
             let mut cache = HIGHLIGHT_CACHE
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(cached) = cache.get(&key) {
-                let cached = cached.clone();
-                cache_set(&mut cache, key, cached.clone(), HIGHLIGHT_CACHE_MAX);
-                return Some(cached);
+            if let Some(index) = cache.get_index_of(&key) {
+                let last = cache.len() - 1;
+                cache.move_index(index, last);
+                return cache.get_index(last).map(|(_, cached)| Arc::clone(cached));
             }
         }
         *HIGHLIGHT_CALL_COUNT
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
-        let highlighted = highlight(code, lang);
+        let highlighted = Arc::new(highlight(code, lang));
         let mut cache = HIGHLIGHT_CACHE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache_set(&mut cache, key, highlighted.clone(), HIGHLIGHT_CACHE_MAX);
+        cache_set(&mut cache, key, Arc::clone(&highlighted), HIGHLIGHT_CACHE_MAX);
         Some(highlighted)
     }
 
@@ -576,7 +541,7 @@ impl Markdown {
         lines.push((self.theme.code_block_border)(&format!("```{}", lang.unwrap_or(""))));
         match self.highlight_code_block(code, lang) {
             Some(highlighted) => {
-                for line in highlighted {
+                for line in highlighted.iter() {
                     lines.push(format!("{indent}{line}"));
                 }
             }
@@ -661,11 +626,11 @@ impl Markdown {
                 let resolved = style_context
                     .clone()
                     .unwrap_or_else(|| self.default_inline_style_context());
-                let inner: Vec<Token> = tokens
-                    .as_ref()
-                    .map(|inline| inline.tokens().to_vec())
-                    .unwrap_or_else(|| vec![token.clone()]);
-                lines.push(self.render_inline_tokens(&inner, Some(&resolved)));
+                let inner: &[Token] = match tokens {
+                    Some(inline) => inline.tokens(),
+                    None => std::slice::from_ref(token),
+                };
+                lines.push(self.render_inline_tokens(inner, Some(&resolved)));
             }
 
             Token::Code { text, lang, .. } => {
@@ -800,25 +765,21 @@ impl Markdown {
                 Token::Text { text, tokens, .. } => {
                     match tokens {
                         Some(inline) if !inline.tokens().is_empty() => {
-                            let inner = inline.tokens().to_vec();
-                            result.push_str(&self.render_inline_tokens(&inner, Some(&resolved)));
+                            result.push_str(&self.render_inline_tokens(inline.tokens(), Some(&resolved)));
                         }
                         _ => result.push_str(&apply_text_with_newlines(text)),
                     }
                 }
                 Token::Paragraph { tokens, .. } => {
-                    let inner = tokens.tokens().to_vec();
-                    result.push_str(&self.render_inline_tokens(&inner, Some(&resolved)));
+                    result.push_str(&self.render_inline_tokens(tokens.tokens(), Some(&resolved)));
                 }
                 Token::Strong { tokens, .. } => {
-                    let inner = tokens.tokens().to_vec();
-                    let content = self.render_inline_tokens(&inner, Some(&resolved));
+                    let content = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
                     result.push_str(&(self.theme.bold)(&content));
                     result.push_str(&style_prefix);
                 }
                 Token::Em { tokens, .. } => {
-                    let inner = tokens.tokens().to_vec();
-                    let content = self.render_inline_tokens(&inner, Some(&resolved));
+                    let content = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
                     result.push_str(&(self.theme.italic)(&content));
                     result.push_str(&style_prefix);
                 }
@@ -839,8 +800,7 @@ impl Markdown {
                 }
                 Token::Link { tokens, href, text, .. } => {
                     {
-                        let inner = tokens.tokens().to_vec();
-                        let link_text = self.render_inline_tokens(&inner, Some(&resolved));
+                        let link_text = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
                         let styled_link = (self.theme.link)(&(self.theme.underline)(&link_text));
                         if get_capabilities().hyperlinks {
                             result.push_str(&hyperlink(&styled_link, href));
@@ -860,8 +820,7 @@ impl Markdown {
                 }
                 Token::Br { .. } => result.push('\n'),
                 Token::Del { tokens, .. } => {
-                    let inner = tokens.tokens().to_vec();
-                    let content = self.render_inline_tokens(&inner, Some(&resolved));
+                    let content = self.render_inline_tokens(tokens.tokens(), Some(&resolved));
                     result.push_str(&(self.theme.strikethrough)(&content));
                     result.push_str(&style_prefix);
                 }
@@ -923,8 +882,8 @@ impl Markdown {
                 "- ".to_string()
             };
             let (task, checked, item_tokens) = match item {
-                Token::ListItem { task, checked, tokens, .. } => (*task, *checked, tokens.clone()),
-                _ => (false, false, Vec::new()),
+                Token::ListItem { task, checked, tokens, .. } => (*task, *checked, tokens.as_slice()),
+                _ => (false, false, &[][..]),
             };
             let task_marker = if task {
                 format!("[{}] ", if checked { "x" } else { " " })
@@ -937,7 +896,7 @@ impl Markdown {
             let item_width = 1.max(width.saturating_sub(visible_width(&first_prefix)));
             let mut rendered_any_line = false;
 
-            for item_token in &item_tokens {
+            for item_token in item_tokens {
                 if let Token::List { .. } = item_token {
                     lines.extend(self.render_list(item_token, depth + 1, width, style_context));
                     rendered_any_line = true;
@@ -1033,19 +992,25 @@ impl Markdown {
         let max_unbroken_word_width = 30usize;
         let mut natural_widths: Vec<usize> = vec![0; num_cols];
         let mut min_word_widths: Vec<usize> = vec![0; num_cols];
+        let mut header_texts: Vec<String> = Vec::with_capacity(num_cols);
         for (index, cell) in header.iter().enumerate() {
             let header_text = self.render_cell_tokens(&cell.tokens, style_context);
             natural_widths[index] = visible_width(&header_text);
             min_word_widths[index] =
                 1.max(self.get_longest_word_width(&header_text, Some(max_unbroken_word_width)));
+            header_texts.push(header_text);
         }
+        let mut row_texts: Vec<Vec<String>> = Vec::with_capacity(rows.len());
         for row in rows {
+            let mut cell_texts: Vec<String> = Vec::with_capacity(row.len());
             for (index, cell) in row.iter().enumerate() {
                 let cell_text = self.render_cell_tokens(&cell.tokens, style_context);
                 natural_widths[index] = natural_widths[index].max(visible_width(&cell_text));
                 min_word_widths[index] = min_word_widths[index]
                     .max(self.get_longest_word_width(&cell_text, Some(max_unbroken_word_width)));
+                cell_texts.push(cell_text);
             }
+            row_texts.push(cell_texts);
         }
 
         let mut min_column_widths = min_word_widths.clone();
@@ -1136,13 +1101,10 @@ impl Markdown {
         lines.push(format!("\u{250c}\u{2500}{}\u{2500}\u{2510}", top_border_cells.join("\u{2500}\u{252c}\u{2500}")));
 
         let style_prefix = style_context.map(|context| context.style_prefix.clone()).unwrap_or_default();
-        let header_cell_lines: Vec<Vec<String>> = header
+        let header_cell_lines: Vec<Vec<String>> = header_texts
             .iter()
             .enumerate()
-            .map(|(index, cell)| {
-                let text = self.render_cell_tokens(&cell.tokens, style_context);
-                self.wrap_cell_text(&text, column_widths[index], &style_prefix)
-            })
+            .map(|(index, text)| self.wrap_cell_text(text, column_widths[index], &style_prefix))
             .collect();
         let header_line_count = header_cell_lines.iter().map(Vec::len).max().unwrap_or(0);
 
@@ -1172,14 +1134,11 @@ impl Markdown {
         );
         lines.push(separator_line.clone());
 
-        for (row_index, row) in rows.iter().enumerate() {
+        for (row_index, row) in row_texts.iter().enumerate() {
             let row_cell_lines: Vec<Vec<String>> = row
                 .iter()
                 .enumerate()
-                .map(|(index, cell)| {
-                    let text = self.render_cell_tokens(&cell.tokens, style_context);
-                    self.wrap_cell_text(&text, column_widths[index], &style_prefix)
-                })
+                .map(|(index, text)| self.wrap_cell_text(text, column_widths[index], &style_prefix))
                 .collect();
             let row_line_count = row_cell_lines.iter().map(Vec::len).max().unwrap_or(0);
             for line_index in 0..row_line_count {
@@ -1223,8 +1182,7 @@ impl Markdown {
         inline: &crate::components::markdown_token::Inline,
         style_context: Option<&InlineStyleContext>,
     ) -> String {
-        let tokens = inline.tokens().to_vec();
-        self.render_inline_tokens(&tokens, style_context)
+        self.render_inline_tokens(inline.tokens(), style_context)
     }
 }
 

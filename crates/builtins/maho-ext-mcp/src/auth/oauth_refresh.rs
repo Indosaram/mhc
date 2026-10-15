@@ -16,7 +16,9 @@ impl McpRefreshManager {
     pub fn new(provider:Arc<McpOAuthProvider>,client:reqwest::Client)->Self {Self::new_with_options(provider,client,RefreshManagerOptions::default())}
     pub fn new_with_options(provider:Arc<McpOAuthProvider>,client:reqwest::Client,options:RefreshManagerOptions)->Self {Self {provider,client,inflight:tokio::sync::Mutex::new(None),discover:options.discover,max_retries:options.max_retries.unwrap_or(2),retry_delay:std::time::Duration::from_millis(options.retry_delay_ms.unwrap_or(50))}}
     pub async fn ensure_fresh(&self)->Result<Option<OAuthTokens>,OAuthRequestError> {
-        let record=self.provider.store.read()?;let now=chrono::Utc::now().timestamp_millis() as f64;
+        // tokens.json read + parse is blocking file I/O; keep it off the async workers.
+        let provider=self.provider.clone();
+        let record=tokio::task::spawn_blocking(move ||provider.store.read()).await.map_err(|error|OAuthRequestError::Invalid(error.to_string()))??;let now=chrono::Utc::now().timestamp_millis() as f64;
         if record.as_ref().and_then(|record|record.access_token.as_ref()).is_none(){return Ok(None);}
         if !is_token_stale(record.as_ref(),now){return Ok(stored_auth_to_tokens(record.as_ref(),now));}
         self.refresh().await.map(Some)

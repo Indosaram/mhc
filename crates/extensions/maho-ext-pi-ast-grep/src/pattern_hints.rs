@@ -1,16 +1,26 @@
-fn matches(expression: &str, text: &str) -> bool {
-    regex::Regex::new(expression).expect("static upstream regex").is_match(text)
+use std::sync::LazyLock;
+use regex::Regex;
+
+fn matches(expression: &LazyLock<Regex>, text: &str) -> bool {
+    expression.is_match(text)
 }
+static REGEX_ESCAPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x5c[wWdDsSbB]").expect("static upstream regex"));
+static CHARACTER_CLASS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[a-zA-Z0-9]-[a-zA-Z0-9]\]").expect("static upstream regex"));
+static WILDCARD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z0-9_]\.[*+]").expect("static upstream regex"));
+static ALTERNATION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[-A-Za-z0-9_.*]+\|[-A-Za-z0-9_.*|]+$").expect("static upstream regex"));
+static JS_FUNCTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(export\s+)?(async\s+)?function\s+\$[A-Z_]+\s*$").expect("static upstream regex"));
+static GO_FUNCTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^func\s+\$[A-Z_]+\s*$").expect("static upstream regex"));
+static RUST_FUNCTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^fn\s+\$[A-Z_]+\s*$").expect("static upstream regex"));
 
 pub fn detect_regex_misuse(pattern: &str) -> Option<String> {
     let src = pattern.trim();
-    let hint = if matches(r"\x5c[wWdDsSbB]", src) {
+    let hint = if matches(&REGEX_ESCAPE, src) {
         r#"Hint: "\w", "\d", "\s", "\b" are regex escapes. ast-grep matches AST nodes, not text - use $VAR for identifiers, $$$ for node lists, or switch to grep for text search."#
-    } else if matches(r"\[[a-zA-Z0-9]-[a-zA-Z0-9]\]", src) {
+    } else if matches(&CHARACTER_CLASS, src) {
         r#"Hint: "[a-z]" and similar character classes are regex, not AST. Use $VAR to match any identifier, or switch to grep for text search."#
-    } else if !src.contains('$') && matches(r"[A-Za-z0-9_]\.[*+]", src) {
+    } else if !src.contains('$') && matches(&WILDCARD, src) {
         r#"Hint: ".*" and ".+" are regex wildcards. In ast-grep use $$$ for multiple AST nodes and $VAR for a single node. For text patterns, switch to grep."#
-    } else if matches(r"^[-A-Za-z0-9_.*]+\|[-A-Za-z0-9_.*|]+$", src) {
+    } else if matches(&ALTERNATION, src) {
         r#"Hint: "|" is regex alternation and does NOT work in ast-grep patterns. Options: (a) fire one ast_grep_search per alternative, or (b) switch to grep with a regex pattern like "foo|bar"."#
     } else { return None; };
     Some(hint.to_owned())
@@ -21,13 +31,13 @@ pub fn detect_language_specific_mistake(pattern: &str, language: &str) -> Option
     if language == "python" && (src.starts_with("class ") || src.starts_with("def ") || src.starts_with("async def ")) && src.ends_with(':') {
         return Some(format!("Hint: Remove trailing colon. Try: \"{}\"", &src[..src.len() - 1]));
     }
-    if ["javascript", "typescript", "tsx"].contains(&language) && matches(r"(?i)^(export\s+)?(async\s+)?function\s+\$[A-Z_]+\s*$", src) {
+    if ["javascript", "typescript", "tsx"].contains(&language) && matches(&JS_FUNCTION, src) {
         return Some("Hint: Function patterns need params and body. Try \"function $NAME($$$) { $$$ }\"".into());
     }
-    if language == "go" && matches(r"(?i)^func\s+\$[A-Z_]+\s*$", src) {
+    if language == "go" && matches(&GO_FUNCTION, src) {
         return Some("Hint: Go function patterns need params and body. Try \"func $NAME($$$) { $$$ }\"".into());
     }
-    if language == "rust" && matches(r"(?i)^fn\s+\$[A-Z_]+\s*$", src) {
+    if language == "rust" && matches(&RUST_FUNCTION, src) {
         return Some("Hint: Rust fn patterns need params and body. Try \"fn $NAME($$$) { $$$ }\"".into());
     }
     None

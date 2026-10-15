@@ -422,18 +422,8 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
             *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = recovered;
             return Ok(None);
         }
-        let tail_seq = self
-            .store
-            .read_events(
-                &self.run_id,
-                recovered.checkpoint_seq(),
-                &DagEventReadOptions {
-                    limit: 1,
-                    ..Default::default()
-                },
-            )?
-            .head_seq;
-        let seq = recovered.checkpoint_seq().max(tail_seq) + 1;
+        // `recover_checkpoint` replayed every event past the checkpoint, so its seq is the log tail.
+        let seq = recovered.checkpoint_seq() + 1;
         let event = DagRunEvent {
             schema_version: SchemaVersion1,
             run_id: self.run_id.clone(),

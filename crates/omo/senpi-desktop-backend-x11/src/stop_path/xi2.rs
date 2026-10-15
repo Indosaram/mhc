@@ -15,7 +15,7 @@ use x11rb::protocol::xproto::{
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
-use super::chord::{Hotkey, Pressed};
+use super::chord::{ChordCodes, Hotkey, Pressed};
 use super::Shared;
 use crate::input::Keymap;
 
@@ -105,15 +105,22 @@ impl Session {
     /// arrives.
     fn listen(&self, shared: &Shared) {
         let mut pressed = Pressed::default();
+        let mut cached: Option<(Hotkey, Result<ChordCodes, StopPathError>)> = None;
         while let Ok(event) = self.conn.wait_for_event() {
             match event {
                 Event::XinputRawKeyPress(raw) => {
-                    // Resolved per press, so a chord replaced by a later
-                    // `start()` applies to the running connection.
-                    let chord = shared.hotkey.lock().resolve(&self.keymap);
+                    // Re-resolved whenever the chord changes, so a chord
+                    // replaced by a later `start()` applies to the running
+                    // connection.
+                    {
+                        let hotkey = shared.hotkey.lock();
+                        if cached.as_ref().is_none_or(|(seen, _)| *seen != *hotkey) {
+                            cached = Some((hotkey.clone(), hotkey.resolve(&self.keymap)));
+                        }
+                    }
                     let code = u8::try_from(raw.detail);
-                    if let (Ok(code), Ok(chord)) = (code, chord) {
-                        if pressed.press(code, &chord) {
+                    if let (Ok(code), Some((_, Ok(chord)))) = (code, &cached) {
+                        if pressed.press(code, chord) {
                             shared.chord_pressed();
                         }
                     }

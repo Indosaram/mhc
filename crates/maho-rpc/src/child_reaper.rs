@@ -21,6 +21,8 @@ impl<S:ChildReaperSyscalls> ChildReaper<S> {
     pub fn new(syscalls:S,min_waitable_ms:u64) -> Self { Self { syscalls,tracked:Vec::new(),min_waitable_ms:min_waitable_ms.max(MIN_WAITABLE_FLOOR_MS),last_warn_at:None } }
     pub fn waiting_pids(&self) -> Vec<i32> { self.tracked.iter().filter(|c| c.waitable_since.is_some()).map(|c| c.pid).collect() }
     pub fn tick(&mut self,now:u64) -> Option<String> {
+        // Nothing exited and nothing is mid-window: a scan could neither reap nor warn.
+        if !self.tracked.iter().any(|c| c.waitable_since.is_some()) && !self.syscalls.any_waitable() { return None; }
         let children=self.syscalls.list_direct_children();self.tracked.retain(|c| children.contains(&c.pid));
         let mut reaped=Vec::new();
         for pid in children {

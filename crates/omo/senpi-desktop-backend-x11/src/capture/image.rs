@@ -58,7 +58,12 @@ impl ComponentMask {
 
     /// Scales the channel to 0..=255 with rounding.
     fn decode(self, pixel: u32) -> u8 {
-        let component = u64::from((pixel & self.mask) >> self.shift);
+        let component = (pixel & self.mask) >> self.shift;
+        if self.max == 255 {
+            // 8-bit channel: the scale below is the identity.
+            return u8::try_from(component).unwrap_or(u8::MAX);
+        }
+        let component = u64::from(component);
         let max = u64::from(self.max);
         u8::try_from((component * 255 + max / 2) / max).unwrap_or(u8::MAX)
     }

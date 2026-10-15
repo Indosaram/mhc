@@ -18,6 +18,10 @@ use super::visual_truncate::truncate_to_visual_lines;
 use crate::theme::{Theme, ThemeColor};
 
 const PREVIEW_LINES: usize = 20;
+/// `truncate_tail` only ever returns the last `DEFAULT_MAX_LINES` lines. Keeping two more entries
+/// guarantees that once older lines are dropped the retained tail is still over the line limit, so
+/// its truncation result (content and `truncated`) equals the one for the full output.
+const RETAINED_OUTPUT_LINES: usize = DEFAULT_MAX_LINES + 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BashStatus {
@@ -63,6 +67,7 @@ impl Component for CachedPreview {
 
 pub struct BashExecutionComponent {
     command: String,
+    command_header: String,
     output_lines: Vec<String>,
     status: BashStatus,
     exit_code: Option<i32>,
@@ -90,6 +95,7 @@ impl BashExecutionComponent {
         )));
         Self {
             command: command.to_owned(),
+            command_header: format_command_header(command, false, &theme),
             output_lines: Vec::new(),
             status: BashStatus::Running,
             exit_code: None,
@@ -117,6 +123,10 @@ impl BashExecutionComponent {
             self.output_lines.extend(new_lines[1..].iter().map(|line| (*line).to_owned()));
         } else {
             self.output_lines.extend(new_lines.iter().map(|line| (*line).to_owned()));
+        }
+        let excess = self.output_lines.len().saturating_sub(RETAINED_OUTPUT_LINES);
+        if excess > 0 {
+            self.output_lines.drain(..excess);
         }
         self.update_display();
     }
@@ -164,11 +174,7 @@ impl BashExecutionComponent {
 
         self.content.clear();
 
-        self.content.add_child(Rc::new(RefCell::new(Text::with_padding(
-            format_command_header(&self.command, false, &self.theme),
-            1,
-            0,
-        ))));
+        self.content.add_child(Rc::new(RefCell::new(Text::with_padding(self.command_header.clone(), 1, 0))));
 
         if !available_lines.is_empty() {
             if self.expanded {
@@ -239,6 +245,8 @@ impl BashExecutionComponent {
         }
     }
 
+    /// The retained output tail (the last `DEFAULT_MAX_LINES + 2` lines), which covers everything
+    /// the component can display.
     pub fn get_output(&self) -> String {
         self.output_lines.join("\n")
     }

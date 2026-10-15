@@ -92,13 +92,15 @@ impl WorkpoolEngine {
         if caller.session_id.trim().is_empty() {
             return Err(WorkpoolError::new(super::types::WorkpoolErrorCode::ScopeDenied, "A host session identity is required."));
         }
-        for pool in self.store.list_result()? {
-            let assigned = pool.workers.iter().map(|worker| worker.task_id.as_str())
-                .chain(pool.items.iter().filter_map(|item| item.binding.as_ref().map(|binding| binding.task_id.as_str())));
-            for id in assigned {
-                if self.admission.get(id).is_some_and(|task| task.child_session_id.as_deref() == Some(caller.session_id.as_str())) {
-                    return Err(WorkpoolError::new(super::types::WorkpoolErrorCode::ScopeDenied, "Assigned workers may only yield their current assignment."));
-                }
+        let assigned: std::collections::BTreeSet<String> = self.store.list_result()?.into_iter().flat_map(|pool| {
+            let WorkpoolRecord { workers, items, .. } = pool;
+            workers.into_iter().map(|worker| worker.task_id)
+                .chain(items.into_iter().filter_map(|item| item.binding.map(|binding| binding.task_id)))
+                .collect::<Vec<_>>()
+        }).collect();
+        for id in &assigned {
+            if self.admission.get(id).is_some_and(|task| task.child_session_id.as_deref() == Some(caller.session_id.as_str())) {
+                return Err(WorkpoolError::new(super::types::WorkpoolErrorCode::ScopeDenied, "Assigned workers may only yield their current assignment."));
             }
         }
         Ok(())

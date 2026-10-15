@@ -17,9 +17,9 @@ impl Extension for FallbackArchitectComponent {
         }));
         let message_state=Arc::clone(&state);
         api.on(EventKind::MessageEnd,Arc::new(move |event,_| { let state=Arc::clone(&message_state); Box::pin(async move {
-            if let ExtensionEvent::MessageEnd{message}=event {
+            if let ExtensionEvent::MessageEnd{message}=event && message.role()=="assistant" {
                 let value=serde_json::to_value(message).map_err(|e|ExtensionFailure::new(e.to_string()))?;
-                if value["role"]=="assistant" { state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).refusal_pending=is_refusal_like_message(&value); }
+                state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).refusal_pending=is_refusal_like_message(&value);
             }
             Ok(EventResult::None)
         }) }));

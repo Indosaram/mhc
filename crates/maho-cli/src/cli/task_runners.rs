@@ -198,24 +198,64 @@ impl senpi_task::runners::in_process::shared_tool_filter::ChildTool for NativePa
         let name = self.name.clone();
         let tool_call_id = tool_call_id.to_owned();
         let input = input.clone();
-        let execute = move || executor.block_on(parent.execute_tool_with_call_id(&tool_call_id, &name, input,
-            maho_core::agent_session::ExecuteToolOptions { signal: None, activate_inactive_tool: None }));
-        let result = if tokio::runtime::Handle::try_current().is_ok() {
+        let execute = move || run_native_parent_tool(&executor, &parent, &tool_call_id, &name, input, None);
+        if tokio::runtime::Handle::try_current().is_ok() {
             std::thread::Builder::new().name("native-parent-tool".into()).spawn(execute)
                 .map_err(|error| failure(error.to_string()))?.join()
                 .map_err(|_| failure("Native parent tool worker panicked".into()))?
         } else {
             execute()
-        }.map_err(|error| failure(error.to_string()))?;
-        if result.is_error == Some(true) {
-            let message = result.content.iter().filter_map(|part| match part {
-                maho_ai::types::ContentBlock::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
-            return Err(failure(message));
         }
-        serde_json::to_value(result).map_err(|error| failure(error.to_string()))
     }
+
+    /// Runs the blocking parent execution on tokio's blocking pool so the async caller's worker
+    /// thread is not parked on a dedicated OS thread's `join()`.
+    fn execute_async<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        input: &'a serde_json::Value,
+        signal: Option<maho_ai::utils::abort::AbortSignal>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, senpi_task::host::HostError>> + Send + 'a>> {
+        Box::pin(async move {
+            let failure = |message: String| senpi_task::host::HostError { message };
+            if let Some(signal) = &signal {
+                signal.throw_if_aborted().map_err(|error| failure(error.to_string()))?;
+            }
+            if tokio::runtime::Handle::try_current().is_err() {
+                return self.execute(tool_call_id, input);
+            }
+            let parent = (self.parent)().ok_or_else(|| failure("Parent session retired".into()))?;
+            let executor = self.executor.clone();
+            let name = self.name.clone();
+            let tool_call_id = tool_call_id.to_owned();
+            let input = input.clone();
+            tokio::task::spawn_blocking(move || run_native_parent_tool(&executor, &parent, &tool_call_id, &name, input, signal))
+                .await
+                .map_err(|_| failure("Native parent tool worker panicked".into()))?
+        })
+    }
+}
+
+fn run_native_parent_tool(
+    executor: &tokio::runtime::Handle,
+    parent: &maho_core::agent_session::AgentSession,
+    tool_call_id: &str,
+    name: &str,
+    input: serde_json::Value,
+    signal: Option<maho_ai::utils::abort::AbortSignal>,
+) -> Result<serde_json::Value, senpi_task::host::HostError> {
+    let failure = |message: String| senpi_task::host::HostError { message };
+    let result = executor.block_on(parent.execute_tool_with_call_id(tool_call_id, name, input,
+        maho_core::agent_session::ExecuteToolOptions { signal, activate_inactive_tool: None }))
+        .map_err(|error| failure(error.to_string()))?;
+    if result.is_error == Some(true) {
+        let message = result.content.iter().filter_map(|part| match part {
+            maho_ai::types::ContentBlock::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>().join("\n");
+        return Err(failure(message));
+    }
+    serde_json::to_value(result).map_err(|error| failure(error.to_string()))
 }
 
 pub fn live_parent_tools(

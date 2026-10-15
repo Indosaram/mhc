@@ -104,9 +104,8 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
                 }
             };
 
-            let raw_value = match &result.details.value {
-                Some(v) => v.clone(),
-                None => return Ok(result.to_tool_result()),
+            let Some(raw_value) = result.details.value.clone() else {
+                return Ok(result.to_tool_result());
             };
 
             let outcome: ActionsOutcome = match serde_json::from_value(raw_value.clone()) {
@@ -118,10 +117,10 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
 
             let images: Vec<ToolContent> = result
                 .content
-                .iter()
+                .into_iter()
                 .filter_map(|d| match d {
                     ComputerDisplay::Image { data, mime_type } => {
-                        Some(ToolContent::Image { data: data.clone(), mime_type: mime_type.clone() })
+                        Some(ToolContent::Image { data, mime_type })
                     }
                     _ => None,
                 })

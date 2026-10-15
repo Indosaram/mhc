@@ -21,25 +21,25 @@ pub struct CellState {
     pub status: String,
 }
 
-pub struct CellResultBuilder { pub state: CellState, output: EvalOutputCollector }
+// `state.output` holds the finished output only; while running, `details` reads the collector's
+// aggregate directly instead of copying it into `state.output` on every frame.
+pub struct CellResultBuilder { pub state: CellState, output: EvalOutputCollector, finished: bool }
 
 impl CellResultBuilder {
     pub fn new(mut state: CellState, options: EvalOutputOptions) -> Self {
         if state.status != "queued" { state.status = "running".into(); }
-        let builder = Self {state,output:EvalOutputCollector::new(options)};
+        let builder = Self {state,output:EvalOutputCollector::new(options),finished:false};
         builder.emit_update(false);
         builder
     }
 
     pub async fn push(&mut self, text: &str) -> Result<(), String> {
         self.output.push(text).await?;
-        self.state.output = self.output.aggregate_text().into();
         self.emit_update(false);
         Ok(())
     }
     pub async fn display(&mut self, mime_type: &str, data_base64: &str) -> Result<(), String> {
         self.output.display(mime_type,data_base64).await?;
-        self.state.output = self.output.aggregate_text().into();
         self.emit_update(false);
         Ok(())
     }
@@ -71,6 +71,7 @@ impl CellResultBuilder {
     async fn finish(&mut self, is_error: bool) -> Result<AgentToolResult, String> {
         let output=self.output.finish().await?;
         self.state.output=output.output.clone();
+        self.finished=true;
         let details=self.details(Some(&output),is_error);
         self.emit_update(is_error);
         let text=if !output.output.is_empty() {output.output.clone()} else if !output.images.is_empty() {format!("(displayed {} image{}; no text output)",output.images.len(),if output.images.len()==1 {""} else {"s"})} else {"(no output)".into()};
@@ -96,7 +97,8 @@ impl CellResultBuilder {
 
     fn details(&self, output: Option<&EvalOutputResult>, is_error: bool) -> Value {
         let state=&self.state;
-        let mut cell=json!({"index":0,"summary":state.input.summary,"code":state.input.code,"language":state.input.language,"output":state.output,"status":state.status,"durationMs":state.duration_ms});
+        let cell_output=if self.finished {state.output.as_str()} else {self.output.aggregate_text()};
+        let mut cell=json!({"index":0,"summary":state.input.summary,"code":state.input.code,"language":state.input.language,"output":cell_output,"status":state.status,"durationMs":state.duration_ms});
         if state.status!="queued" {cell["startedAt"]=json!(state.run_started_at.unwrap_or(state.started_at));}
         if let Some(runtime)=&state.runtime {cell["runtime"]=json!(runtime);}
         if let Some(queued)=&state.queued_behind {cell["queuedBehind"]=json!(queued);}
@@ -124,9 +126,10 @@ impl CellResultBuilder {
         }
         let aggregate=self.output.aggregate_text();
         let trailing=aggregate.ends_with('\n');
-        let mut lines:Vec<_>=aggregate.split('\n').collect();
-        if trailing {lines.pop();}
-        let output=format!("{}{}",lines.into_iter().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"),if trailing {"\n"} else {""});
+        let body=if trailing {&aggregate[..aggregate.len()-1]} else {aggregate};
+        // Only the last 8 lines are shown; find them from the end instead of splitting it all.
+        let start=body.rmatch_indices('\n').nth(7).map_or(0,|(index,_)|index+1);
+        let output=format!("{}{}",&body[start..],if trailing {"\n"} else {""});
         let language=serde_json::to_value(state.input.language).expect("language value");
         format!("1/1 cells {}\n[1] {} {} {}{}",state.status,language.as_str().expect("language string"),state.input.summary,state.status,if output.is_empty() {String::new()} else {format!("\n{output}")})
     }

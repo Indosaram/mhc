@@ -103,11 +103,18 @@ impl WorkpoolDispatcher {
 
 fn pump(store: &WorkpoolStore, admission: &Arc<dyn WorkpoolAdmission + Send + Sync>, emit: &Emit, authorize: &Authorize,
     state: &Arc<Mutex<DispatcherState>>, pool_id: &str) -> Result<(), WorkpoolError> {
-    let pool = store.load(pool_id)?;
+    let pool = Arc::new(store.load(pool_id)?);
     if !matches!(pool.status, WorkpoolStatus::Open | WorkpoolStatus::Closing) { return Ok(()); }
     let mut reserved_workers: BTreeSet<String> = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending.values()
         .filter_map(|pending| pending.worker_id.clone()).collect();
     for snapshot in &pool.items {
+        // Only Queued items and Assigned items with a queued delivery are dispatchable, and no
+        // transition leads back to either state, so other snapshots need no fresh reload.
+        if snapshot.status != WorkpoolItemStatus::Queued && !(snapshot.status == WorkpoolItemStatus::Assigned
+            && snapshot.delivery.as_ref().is_some_and(|delivery| delivery.phase == WorkpoolDeliveryPhase::Queued)) { continue; }
+        // Items already awaiting admission need no fresh reload; the post-load check below still
+        // covers requests inserted while the load runs.
+        if state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending.contains_key(&snapshot.item_id) { continue; }
         let fresh = store.load(pool_id)?;
         let Some(item) = fresh.items.iter().find(|candidate| candidate.item_id == snapshot.item_id).cloned() else { continue };
         if state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending.contains_key(&item.item_id) { continue; }
@@ -132,7 +139,7 @@ fn pump(store: &WorkpoolStore, admission: &Arc<dyn WorkpoolAdmission + Send + Sy
             let state = Arc::clone(state);
             Arc::new(move |next_pool| enqueue_schedule(store.clone(), Arc::clone(&admission), Arc::clone(&emit), Arc::clone(&authorize), Arc::clone(&state), next_pool))
         };
-        let request = DispatcherRequest { pool: pool.clone(), item: item.clone(), worker: idle.clone(), store: store.clone(),
+        let request = DispatcherRequest { pool: Arc::clone(&pool), item: item.clone(), worker: idle.clone(), store: store.clone(),
             admission: Arc::clone(admission), emit: Arc::clone(emit), authorize: Arc::clone(authorize), state: Arc::clone(state),
             bound_task: Arc::clone(&bound_task), generation: pool.generation, schedule };
         state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending.insert(item.item_id.clone(), PendingRequest {
@@ -186,7 +193,7 @@ fn enqueue_schedule(store: WorkpoolStore, admission: Arc<dyn WorkpoolAdmission +
 }
 
 struct DispatcherRequest {
-    pool: WorkpoolRecord, item: WorkpoolItem, worker: Option<WorkpoolWorker>, store: WorkpoolStore,
+    pool: Arc<WorkpoolRecord>, item: WorkpoolItem, worker: Option<WorkpoolWorker>, store: WorkpoolStore,
     admission: Arc<dyn WorkpoolAdmission + Send + Sync>, emit: Emit, authorize: Authorize, state: Arc<Mutex<DispatcherState>>,
     bound_task: Arc<Mutex<Option<String>>>, generation: u32, schedule: Schedule,
 }

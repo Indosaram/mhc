@@ -4,11 +4,13 @@ use crate::session_stream::SessionRegistry;
 
 pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<SessionRegistry>>) {
     let boundary = Arc::new(std::sync::Mutex::new(crate::session_commit_boundary::AssistantCommitBoundary::default()));
+    // Latest resident streamed assistant per session; serialized and hashed once at MessageEnd instead of per delta.
+    let provider_final = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, maho_ext_api::AgentMessage>::new()));
     for kind in [EventKind::SessionStart, EventKind::SessionCompact, EventKind::SessionTree, EventKind::ModelSelect, EventKind::ThinkingLevelSelect, EventKind::SessionShutdown, EventKind::SessionExtensionsRemoved, EventKind::MessageUpdate, EventKind::MessageEnd] {
-        let registry = registry.clone(); let boundary = boundary.clone();
+        let registry = registry.clone(); let boundary = boundary.clone(); let provider_final = provider_final.clone();
         let runtime = api.runtime.clone(); let cwd = api.cwd.clone(); let profile = api.profile.clone();
         api.on(kind, Arc::new(move |event, ctx| {
-            let registry = registry.clone(); let boundary = boundary.clone();
+            let registry = registry.clone(); let boundary = boundary.clone(); let provider_final = provider_final.clone();
             let runtime = runtime.clone(); let cwd = cwd.clone(); let profile = profile.clone(); Box::pin(async move {
                 runtime.assert_active()?;
                 let session = ctx.session_manager.session_id().to_owned();
@@ -48,10 +50,13 @@ pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<Session
                     ExtensionEvent::ThinkingLevelSelect { .. } | ExtensionEvent::SessionShutdown(_) => { registry.close(&session).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; },
                     ExtensionEvent::SessionExtensionsRemoved { .. } => { registry.close(&session).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; registry.bindings.forget(&session); registry.bindings.remember_invalidation(&session, Some("extensions_removed")); },
                     ExtensionEvent::MessageUpdate { message, .. } => {
-                        let message = serde_json::to_value(message).expect("message");
-                        if message["role"] == "assistant" && registry.entries.get(&session).is_some_and(|entry| crate::session_commit_boundary::is_resident_assistant(&message, &entry.model_id)) { boundary.lock().expect("boundary").capture_provider_final(&session, &message); }
+                        if let maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) = message
+                            && assistant.api == "claude-sdk-oauth" && assistant.provider == "anthropic-subscription"
+                            && registry.entries.get(&session).is_some_and(|entry| assistant.model == entry.model_id) { provider_final.lock().expect("provider final").insert(session.clone(), message.clone()); }
                     },
                     ExtensionEvent::MessageEnd { message } => {
+                        let streamed = provider_final.lock().expect("provider final").remove(&session);
+                        if let Some(streamed) = streamed { boundary.lock().expect("boundary").capture_provider_final(&session, &serde_json::to_value(&streamed).expect("message")); }
                         let message = serde_json::to_value(message).expect("message");
                         if message["role"] == "assistant" {
                             if crate::session_commit_boundary::is_terminal_failure(&message) { boundary.lock().expect("boundary").forget(&session); }

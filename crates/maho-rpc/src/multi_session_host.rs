@@ -557,7 +557,9 @@ impl HostCore{
             let env:HashMap<String,String>=std::env::vars().collect();
             let reader=std::sync::Arc::clone(&core);let publisher=std::sync::Arc::clone(&core);
             let memory=move||{
-                let rss_mb=crate::host_process_metrics::read_host_process_metrics(std::process::id(),std::env::consts::OS).rss_mb.and_then(|mb|u64::try_from(mb).ok()).unwrap_or(0);
+                // Only RSS is consumed, so skip the per-process fd walk of `read_host_process_metrics`.
+                let rows=crate::host_process_table::load_process_table_reader(std::env::consts::OS).and_then(|read|read());
+                let rss_mb=rows.map_or_else(crate::host_process_metrics::HostProcessMetrics::default,|rows|crate::host_process_metrics::metrics_from_rows(&rows,std::process::id(),None)).rss_mb.and_then(|mb|u64::try_from(mb).ok()).unwrap_or(0);
                 // A held registry lock means the host is serving sessions right now.
                 let sessions=match &reader.workers{Some(workers)=>workers.size() as u64,None=>reader.registry.try_lock().map_or(1,|registry|registry.size() as u64)};
                 (rss_mb*1_048_576,sessions,crate::connection_handler::now_ms() as u64)

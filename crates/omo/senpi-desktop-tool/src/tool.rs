@@ -53,22 +53,22 @@ pub struct ComputerToolResult {
 }
 
 impl ComputerToolResult {
-    pub fn to_tool_result(&self) -> ToolResult {
+    pub fn to_tool_result(self) -> ToolResult {
+        let details = serde_json::to_value(&self.details).ok();
         let content = self
             .content
-            .iter()
+            .into_iter()
             .map(|disp| match disp {
                 ComputerDisplay::Text { text } => ToolContent::Text {
-                    text: text.clone(),
+                    text,
                     audience: None,
                 },
                 ComputerDisplay::Image { data, mime_type } => ToolContent::Image {
-                    data: data.clone(),
-                    mime_type: mime_type.clone(),
+                    data,
+                    mime_type,
                 },
             })
             .collect();
-        let details = serde_json::to_value(&self.details).ok();
         ToolResult { content, details }
     }
 }
@@ -155,7 +155,7 @@ pub async fn run_computer(
         }
     } else {operation.await?};
 
-    let mut content = outcome.displays.clone();
+    let mut content = outcome.displays;
     if let Some(value) = &outcome.return_value {
         let text = match value {
             Value::String(text) => text.clone(),

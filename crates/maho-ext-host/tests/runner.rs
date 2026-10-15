@@ -305,7 +305,7 @@ async fn invalidating_tool_hook_does_not_publish_mutated_input() {
             Ok(EventResult::None)
         })
     });
-    runner.extensions.push(extension("invalidate", EventKind::ToolCall, handler));
+    Arc::make_mut(&mut runner.extensions).push(extension("invalidate", EventKind::ToolCall, handler));
     let mut event = ToolCallEvent { tool_call_id: "call".into(), tool_name: "bash".into(), input: JsonValue::Null };
     assert_eq!(runner.emit_tool_call(&mut event).await.unwrap_err().message, "replaced during tool hook");
     assert_eq!(event.input, JsonValue::Null);
@@ -469,7 +469,7 @@ async fn retained_api_event_registration_updates_an_existing_runner() {
         Box::pin(async { Ok(EventResult::None) })
     }));
     scope.commit_registration().unwrap();
-    runner.extensions.push(api.registered.clone());
+    Arc::make_mut(&mut runner.extensions).push(api.registered.clone());
     runner.emit(ExtensionEvent::AgentStart).await.unwrap();
     let second = calls.clone();
     api.on(EventKind::AgentStart, Arc::new(move |_, _| {
@@ -491,7 +491,7 @@ async fn invalidated_empty_dispatch_and_handled_input_reject_stale_results() {
     assert_eq!(empty.emit_user_bash("true".into(), false, "/tmp".into()).await.err().unwrap().message, "stale");
     let mut active = runner(vec![]);
     let runtime = active.runtime.clone();
-    active.extensions.push(extension("invalidate", EventKind::Input, Arc::new(move |_, _| {
+    Arc::make_mut(&mut active.extensions).push(extension("invalidate", EventKind::Input, Arc::new(move |_, _| {
         let runtime = runtime.clone();
         Box::pin(async move { runtime.invalidate("replaced during input"); Ok(EventResult::Input(InputEventResult::Handled)) })
     })));
@@ -522,7 +522,7 @@ async fn shutdown_budget_is_resolved_only_when_handlers_exist() {
     let event = || ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
     runner.emit(event()).await.unwrap();
     assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
-    runner.extensions.push(extension("handler", EventKind::SessionShutdown, none()));
+    Arc::make_mut(&mut runner.extensions).push(extension("handler", EventKind::SessionShutdown, none()));
     runner.emit(event()).await.unwrap();
     assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!((runner.shutdown_warn_ms, runner.shutdown_timeout_ms), (0, 25));
@@ -1749,7 +1749,7 @@ async fn retained_api_commands_reach_existing_runner_and_replace_context_handler
     let scope = runner.runtime.registration_scope();
     let mut api = ExtensionApi::new(LoadedExtension::new("late-command", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
     scope.commit_registration().unwrap();
-    runner.extensions.push(api.registered.clone());
+    Arc::make_mut(&mut runner.extensions).push(api.registered.clone());
     api.register_command_with_context("late", None, None, Arc::new(|_, _| Box::pin(async { Err("context handler".into()) })));
     api.register_filesystem_policy(FilesystemPolicy { check: Arc::new(|_| Box::pin(async { Ok(FilesystemPolicyDecision::Allow) })), denied_roots: Some(vec!["/late-root".into()]) });
     assert_eq!(runner.get_filesystem_policy_denied_roots(), vec![std::path::PathBuf::from("/late-root")]);
@@ -1841,7 +1841,7 @@ fn retained_context_observes_live_mcp_declarations() {
     let scope = runner.runtime.registration_scope();
     let mut api = ExtensionApi::new(LoadedExtension::new("mcp", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
     scope.commit_registration().unwrap();
-    runner.extensions.push(api.registered.clone());
+    Arc::make_mut(&mut runner.extensions).push(api.registered.clone());
     runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) })).unwrap();
     let retained = runner.create_context().unwrap();
     api.register_mcp_server("live", McpServerDeclaration { command: Some("first".into()), ..Default::default() });

@@ -47,13 +47,22 @@ pub async fn start_websocket_listener(host: &str, port: u16, auth: ResolvedWebSo
     Ok(WebSocketListenerHandle { address, core, shutdown, task })
 }
 
+/// Node's default `--max-http-header-size`: a request head larger than this is refused.
+const MAX_HEADER_BYTES: usize = 16 * 1024;
+
 async fn serve_tcp_connection(mut stream: TcpStream, core: Arc<RwLock<ServerCore>>, auth: Arc<ResolvedWebSocketListenerAuth>, id: String, queue_limit: usize) -> Result<(),JsonRpcError> {
     let mut buffered = Vec::new();
     loop {
         let mut headers = [httparse::EMPTY_HEADER;124];
         let mut request = httparse::Request::new(&mut headers);
         match request.parse(&buffered).map_err(|error|JsonRpcError::new(-32603,error.to_string()))? {
-            httparse::Status::Partial => {},
+            httparse::Status::Partial => {
+                if buffered.len() > MAX_HEADER_BYTES {
+                    stream.write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nconnection: close\r\n\r\n").await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+                    stream.shutdown().await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+                    return Ok(());
+                }
+            },
             httparse::Status::Complete(header_bytes) => {
                 let upgrade = request.headers.iter().any(|header|header.name.eq_ignore_ascii_case("upgrade"));
                 if upgrade {
@@ -73,13 +82,17 @@ async fn serve_tcp_connection(mut stream: TcpStream, core: Arc<RwLock<ServerCore
                     return Ok(());
                 }
                 let consumed = header_bytes.checked_add(body_bytes).ok_or_else(||JsonRpcError::new(-32603,"Invalid content length"))?;
-                while buffered.len() < consumed {
+                // Discard the declared body in fixed chunks instead of buffering it whole.
+                let mut remaining = consumed.saturating_sub(buffered.len());
+                buffered.drain(..consumed.min(buffered.len()));
+                while remaining > 0 {
                     let mut bytes = [0;4096];
                     let read = stream.read(&mut bytes).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
                     if read == 0 {return Ok(());}
-                    buffered.extend_from_slice(&bytes[..read]);
+                    let discarded = read.min(remaining);
+                    remaining -= discarded;
+                    buffered.extend_from_slice(&bytes[discarded..read]);
                 }
-                buffered.drain(..consumed);
                 continue;
             },
         }

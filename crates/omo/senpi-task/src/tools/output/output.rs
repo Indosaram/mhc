@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::manager::helpers::in_session;
 use crate::manager::types::ListScope;
 use crate::state::TaskRecord;
 use crate::tools::control::caller_session::default_resolve_caller_session_id;
@@ -121,6 +122,15 @@ pub fn run_task_output(
     let Some(id_or_name) = params.task_id.as_deref().or(params.name.as_deref()) else {
         return Ok(invalid_arguments("Provide task_id or name to identify the child task."));
     };
+
+    // Fast path: a task id owned by the caller's session resolves with one record load instead of
+    // listing every record in the state dir. Same id-first precedence and fail-closed scope.
+    if let Some(session_id) = caller_session_id
+        && let Some(record) = deps.manager.get(id_or_name)
+        && in_session(&record, session_id)
+    {
+        return output_for_record(deps, &record, params);
+    }
 
     let candidates = scoped_candidates(deps.manager.as_ref(), caller_session_id);
     let Some(record) = resolve_target(&candidates, id_or_name) else {

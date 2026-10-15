@@ -53,8 +53,10 @@ pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDe
                 check_filesystem_policy(policy.as_ref(), &path, FilesystemOperation::Enumerate, "ls").await?;
                 if !ops.exists(&path).await? { return Err(ToolError::Message(format!("Path not found: {}", path.display()))); }
                 if !ops.is_directory(&path).await? { return Err(ToolError::Message(format!("Not a directory: {}", path.display()))); }
-                let mut entries = ops.readdir(&path).await.map_err(|e| ToolError::Message(format!("Cannot read directory: {e}")))?;
-                entries.sort_by(|a, b| locale_compare(&a.to_lowercase(), &b.to_lowercase()));
+                let entries = ops.readdir(&path).await.map_err(|e| ToolError::Message(format!("Cannot read directory: {e}")))?;
+                let mut keyed: Vec<(String, String)> = entries.into_iter().map(|entry| (entry.to_lowercase(), entry)).collect();
+                keyed.sort_by(|a, b| locale_compare(&a.0, &b.0));
+                let entries: Vec<String> = keyed.into_iter().map(|(_, entry)| entry).collect();
                 let mut results = Vec::new(); let mut limited = false;
                 for entry in entries {
                     if results.len() >= limit { limited = true; break; }

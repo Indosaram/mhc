@@ -64,10 +64,10 @@ pub fn register_goal_lifecycle(api:&mut ExtensionApi,resolve:GoalStoreResolver,s
                         let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.agent_turn_in_progress=true;state.turn_usage.reset();state.blocked_this_turn_goal_id=None;state.completed_this_turn_goal_id=None;
                         if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active){state.begin_agent_goal_accounting(goal,now_milliseconds());}else{state.agent_goal_accounting=None;}
                     }
-                    ExtensionEvent::MessageEnd{message}=>{let message=serde_json::to_value(message).map_err(|error|ExtensionFailure::new(error.to_string()))?;state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).turn_usage.note_message_end(&message);}
+                    ExtensionEvent::MessageEnd{message}=>{if !may_be_assistant(message){return Ok(EventResult::None);}let message=serde_json::to_value(message).map_err(|error|ExtensionFailure::new(error.to_string()))?;state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).turn_usage.note_message_end(&message);}
                     ExtensionEvent::AgentEnd{messages,..}=>{
                         let aborted=abort.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().is_some_and(|signal|signal.is_aborted());
-                        let messages=messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>().map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                        let messages=messages.iter().filter(|message|may_be_assistant(message)).map(serde_json::to_value).collect::<Result<Vec<_>,_>>().map_err(|error|ExtensionFailure::new(error.to_string()))?;
                         let mut goal={let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let mode=if state.blocked_this_turn_goal_id.is_some(){GoalAccountingMode::ActiveOrBlocked}else if state.completed_this_turn_goal_id.is_none(){GoalAccountingMode::Active}else{GoalAccountingMode::ActiveOrComplete};let goal=state.account_current_agent_turn(&reference,mode,Some(&messages),now_milliseconds()).map_err(ExtensionFailure::new)?;state.agent_turn_in_progress=false;state.blocked_this_turn_goal_id=None;state.completed_this_turn_goal_id=None;goal};
                         if aborted&&goal.as_ref().is_some_and(|goal|goal.status==GoalStatus::Active){goal=Some(super::store::update_goal(&reference,&GoalUpdate{status:Some(GoalStatus::Blocked),reason:Some("user interrupted the turn".into()),..Default::default()},GoalUpdateSource::Model).map_err(ExtensionFailure::new)?);}
                         {let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active){state.begin_agent_goal_accounting(goal,now_milliseconds());}else{state.clear_agent_goal_accounting();}}
@@ -83,6 +83,8 @@ pub fn register_goal_lifecycle(api:&mut ExtensionApi,resolve:GoalStoreResolver,s
     }
     state
 }
+/// Typed LLM messages that are not assistant turns carry no usage, so they need no JSON projection.
+fn may_be_assistant(message:&maho_ext_api::AgentMessage)->bool{!matches!(message,maho_ext_api::AgentMessage::Llm(_))||message.role()=="assistant"}
 pub fn queue_goal_continuation(ctx:&ExtensionContext,goal:&Goal,send:&(dyn Fn(String)->Result<(),ExtensionFailure>+Send+Sync))->Result<(),ExtensionFailure>{
     if super::continuation::should_queue_goal_continuation_when_idle(Some(goal),(ctx.is_idle_fn)(),ctx.has_pending_messages()?){send(super::prompt::build_continuation_prompt(goal))?;}Ok(())
 }

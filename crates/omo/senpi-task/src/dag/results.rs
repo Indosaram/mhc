@@ -197,6 +197,11 @@ pub fn read_dag_node_result(input: DagNodeResultReadInput<'_>) -> Option<DagNode
     Some(DagNodeResultRead { output, run_stats })
 }
 
+/// The run_stats sidecar alone, for callers that already hold the output text.
+pub(crate) fn read_dag_node_run_stats(input: DagNodeResultReadInput<'_>) -> Option<TaskRunStats> {
+    read_stats(&stats_path(&input.store.paths.result(input.run_id, input.node_id)))
+}
+
 fn read_stats(path: &Path) -> Option<TaskRunStats> {
     let raw = read_text_file(path)?;
     let sidecar: StatsSidecar = serde_json::from_str(&raw).ok()?;

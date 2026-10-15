@@ -29,29 +29,39 @@ fn compact_delta(value:&Value)->Option<(&str,f64,&str)>{
     if !matches!(kind,"text_delta"|"thinking_delta"|"toolcall_delta"){return None;}
     Some((kind,event["contentIndex"].as_f64()?,event["delta"].as_str()?))
 }
-struct Record{value:Value,key:Option<String>}
-#[derive(Default)]pub struct RecordQueue{records:VecDeque<Record>,latest:BTreeSet<String>}
+struct Record{value:Value,key:Option<String>,bytes:usize}
+/// Serialized JSONL size of one record, kept per record so the buffered total is O(1).
+fn line_len(value:&Value)->usize{value.to_string().len()+1}
+#[derive(Default)]pub struct RecordQueue{records:VecDeque<Record>,latest:BTreeSet<String>,bytes:usize}
 impl RecordQueue{
-    pub fn append(&mut self,value:Value){
+    fn resize(&mut self,index:usize){let bytes=line_len(&self.records[index].value);self.bytes=self.bytes-self.records[index].bytes+bytes;self.records[index].bytes=bytes;}
+    fn remove_at(&mut self,index:usize){if let Some(record)=self.records.remove(index){self.bytes-=record.bytes;}}
+    pub fn append(&mut self,value:Value){let bytes=line_len(&value);self.append_with_len(value,bytes);}
+    /// `append` with the record's already-measured JSONL size (`bytes == line_len(&value)`).
+    fn append_with_len(&mut self,value:Value,bytes:usize){
         let key=if compact_delta(&value).is_some(){Some("message".to_owned())}else if value["type"]=="tool_execution_update"{value["toolCallId"].as_str().map(|id|format!("tool:{id}"))}else{None};
         if let Some(key)=&key{
             if self.latest.contains(key)&&let Some(index)=self.records.iter().position(|record|record.key.as_ref()==Some(key)){
                 if key=="message"{
                     self.records[index].value["message"]=Value::Null;self.records[index].value["assistantMessageEvent"]["partial"]=Value::Null;
+                    let mut merged_away=false;
                     if index>0{
                         let current=compact_delta(&self.records[index].value);let previous=compact_delta(&self.records[index-1].value);
                         if let (Some((kind,content,delta)),Some((previous_kind,previous_content,previous_delta)))=(current,previous)&&self.records[index-1].value["message"].is_null()&&kind==previous_kind&&content==previous_content{
-                            let merged=format!("{previous_delta}{delta}");self.records[index-1].value["assistantMessageEvent"]["delta"]=merged.into();self.records.remove(index);
+                            let merged=format!("{previous_delta}{delta}");self.records[index-1].value["assistantMessageEvent"]["delta"]=merged.into();self.resize(index-1);self.remove_at(index);merged_away=true;
                         }
                     }
+                    if !merged_away{self.resize(index);}
                     for record in &mut self.records{if record.key.as_ref()==Some(key){record.key=None;}}
-                }else{self.records.remove(index);}
+                }else{self.remove_at(index);}
             }
             self.latest.insert(key.clone());
         }else{self.latest.clear();for record in &mut self.records{record.key=None;}}
-        self.records.push_back(Record{value,key});
+        self.bytes+=bytes;
+        self.records.push_back(Record{value,key,bytes});
     }
-    pub fn pop(&mut self)->Option<Value>{let record=self.records.pop_front()?;if let Some(key)=record.key{self.latest.remove(&key);}Some(record.value)}
+    pub fn pop(&mut self)->Option<Value>{self.pop_sized().map(|(value,_)|value)}
+    fn pop_sized(&mut self)->Option<(Value,usize)>{let record=self.records.pop_front()?;self.bytes-=record.bytes;if let Some(key)=record.key{self.latest.remove(&key);}Some((record.value,record.bytes))}
 }
 #[derive(Default)]pub struct SessionRecordScheduler{queues:BTreeMap<(Option<String>,String),RecordQueue>,ready:VecDeque<(Option<String>,String)>,in_flight:Option<(Option<String>,String)>,in_flight_bytes:usize,reservations:CloseResponseReservations,sealed:BTreeSet<String>}
 pub struct SessionWriterActor{
@@ -101,7 +111,7 @@ impl SessionWriterActor{
         if records+reserved_records>=MAX_SHARED_STDIO_QUEUE_RECORDS||bytes+reserved_bytes+incoming>MAX_SHARED_STDIO_QUEUE_BYTES{
             return Err("session_output_overflow, resync required".into());
         }
-        scheduler.enqueue(session_id,None,value);
+        scheduler.enqueue_sized(session_id,value,incoming);
         let _=self.state.send_replace(Ok(false));self.changed.notify_one();Ok(())
     }
     pub fn reserve_close_response(&self,session_id:&str,response:&Value,terminal:bool)->Result<Option<u64>,String>{
@@ -133,8 +143,7 @@ impl SessionWriterActor{
 impl Drop for SessionWriterActor{fn drop(&mut self){self.task.abort();}}
 impl SessionRecordScheduler{
     pub fn buffered_size(&self)->(usize,usize){
-        let records=self.queues.values().flat_map(|queue|queue.records.iter());
-        records.fold((usize::from(self.in_flight.is_some()),self.in_flight_bytes),|(count,bytes),record|(count+1,bytes+record.value.to_string().len()+1))
+        self.queues.values().fold((usize::from(self.in_flight.is_some()),self.in_flight_bytes),|(count,bytes),queue|(count+queue.records.len(),bytes+queue.bytes))
     }
     pub async fn drain(&mut self,writer:&mut(impl tokio::io::AsyncWrite+Unpin))->std::io::Result<()>{
         use tokio::io::AsyncWriteExt;
@@ -151,10 +160,16 @@ impl SessionRecordScheduler{
         self.queues.entry(key.clone()).or_default().append(value);
         if self.in_flight.as_ref()!=Some(&key)&&!self.ready.contains(&key){self.ready.push_back(key);}
     }
+    /// Untargeted `enqueue` reusing the size the caller already serialized for its overflow check.
+    fn enqueue_sized(&mut self,session_id:&str,value:Value,bytes:usize){
+        let key=(None,session_id.to_owned());
+        self.queues.entry(key.clone()).or_default().append_with_len(value,bytes);
+        if self.in_flight.as_ref()!=Some(&key)&&!self.ready.contains(&key){self.ready.push_back(key);}
+    }
     pub fn next_record(&mut self)->Option<(Option<String>,Value)>{
         if self.in_flight.is_some(){return None;}
-        let key=self.ready.pop_front()?;let value=self.queues.get_mut(&key)?.pop()?;
-        self.in_flight_bytes=value.to_string().len()+1;
+        let key=self.ready.pop_front()?;let (value,bytes)=self.queues.get_mut(&key)?.pop_sized()?;
+        self.in_flight_bytes=bytes;
         self.in_flight=Some(key.clone());Some((key.0,value))
     }
     pub fn acknowledge_write(&mut self){

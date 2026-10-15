@@ -51,13 +51,18 @@ impl ToolResultRevealController {
         result: Value,
         now: f64,
     ) -> (bool, Option<Value>) {
-        let text = first_text(&result).map(str::to_owned);
-        if !self.smooth || text.is_none() {
+        if !self.smooth || first_text(&result).is_none() {
             self.states.remove(id);
             self.sync(now, false);
             return (false, None);
         }
-        let text = text.unwrap_or_default();
+        // Move the text out of the result instead of copying it: `display` always rewrites
+        // `content[0].text`, so the stored target never needs its own copy.
+        let mut result = result;
+        let text = match result.pointer_mut("/content/0/text").map(Value::take) {
+            Some(Value::String(text)) => text,
+            _ => String::new(),
+        };
         let reset = self
             .states
             .get(id)

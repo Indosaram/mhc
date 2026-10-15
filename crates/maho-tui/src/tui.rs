@@ -2677,9 +2677,18 @@ impl TuiBase {
         None
     }
 
+    /// Whether `normalize_terminal_output` can change `line` (TAB or Thai/Lao AM vowel);
+    /// otherwise the normalized form is just `line` + `SEGMENT_RESET` and needs no memo.
+    fn needs_terminal_normalization(line: &str) -> bool {
+        line.contains(['\t', '\u{0e33}', '\u{0eb3}'])
+    }
+
     fn normalize_line(state: &mut TuiBaseState, line: &str) -> (String, bool) {
         if is_image_line(line) {
             return (line.to_string(), false);
+        }
+        if !Self::needs_terminal_normalization(line) {
+            return (format!("{line}{SEGMENT_RESET}"), true);
         }
         if let Some(cached) = state.normalize_memo.get(line) {
             return (cached.clone(), false);
@@ -2690,7 +2699,7 @@ impl TuiBase {
     }
 
     pub(crate) fn apply_line_reset_result(state: &mut TuiBaseState, lines: &[String]) -> NormalizedLinesResult {
-        let previous_memo = std::mem::take(&mut state.normalize_memo);
+        let mut previous_memo = std::mem::take(&mut state.normalize_memo);
         let mut next_memo = std::collections::HashMap::new();
         let mut normalized_lines = Vec::with_capacity(lines.len());
         for line in lines {
@@ -2698,10 +2707,14 @@ impl TuiBase {
                 normalized_lines.push(line.clone());
                 continue;
             }
+            if !Self::needs_terminal_normalization(line) {
+                normalized_lines.push(format!("{line}{SEGMENT_RESET}"));
+                continue;
+            }
             let normalized = next_memo
                 .get(line)
                 .cloned()
-                .or_else(|| previous_memo.get(line).cloned())
+                .or_else(|| previous_memo.remove(line))
                 .unwrap_or_else(|| format!("{}{}", normalize_terminal_output(line), SEGMENT_RESET));
             next_memo.insert(line.clone(), normalized.clone());
             normalized_lines.push(normalized);
@@ -2746,15 +2759,25 @@ impl TuiBase {
             }
         }
 
+        // Nothing changed: `do_render` takes the no-change path without needing the lines.
+        if first_raw_changed.is_none() {
+            return NormalizedLinesResult {
+                lines: Vec::new(),
+                first_raw_changed,
+                compare_end_exclusive: window_end,
+                bounded: true,
+            };
+        }
+
         let mut lines = state.previous_lines.clone();
-        if first_raw_changed.is_some() {
-            for i in window_start..window_end {
-                if raw_lines[i] == state.previous_raw_lines[i] {
-                    continue;
-                }
-                let (normalized, _) = Self::normalize_line(state, &raw_lines[i]);
-                lines[i] = normalized;
+        for i in window_start..window_end {
+            if raw_lines[i] == state.previous_raw_lines[i] {
+                continue;
             }
+            // The replaced raw row will not be looked up again; keep the memo from growing.
+            state.normalize_memo.remove(state.previous_raw_lines[i].as_str());
+            let (normalized, _) = Self::normalize_line(state, &raw_lines[i]);
+            lines[i] = normalized;
         }
 
         NormalizedLinesResult {
@@ -2844,10 +2867,10 @@ impl TuiBase {
         }
 
         let cursor_pos = self.extract_cursor_position(&mut new_lines, height);
-        let raw_lines = new_lines.clone();
+        let raw_lines = std::mem::take(&mut new_lines);
 
         let preserve_mux_scrollback = self.should_preserve_mux_scrollback();
-        let normalized = {
+        let mut normalized = {
             let mut state = self.state.borrow_mut();
             Self::apply_viewport_line_resets(
                 &mut state,
@@ -2857,20 +2880,38 @@ impl TuiBase {
                 !width_changed && !height_changed,
             )
         };
-        new_lines = normalized.lines.clone();
+        if normalized.bounded && normalized.first_raw_changed.is_none() {
+            // Bounded and unchanged: the normalized frame equals `previous_lines`. Only the
+            // clear-on-shrink redraw needs the lines; otherwise this is the no-change path below.
+            let clear_on_shrink_needed = {
+                let state = self.state.borrow();
+                state.clear_on_shrink
+                    && raw_lines.len() < state.max_lines_rendered
+                    && state.overlay_stack.is_empty()
+            };
+            if !clear_on_shrink_needed {
+                self.position_hardware_cursor(terminal, cursor_pos, raw_lines.len());
+                let mut state = self.state.borrow_mut();
+                state.previous_viewport_top = prev_viewport_top;
+                state.previous_height = height as i64;
+                return;
+            }
+            normalized.lines = self.state.borrow().previous_lines.clone();
+        }
+        new_lines = std::mem::take(&mut normalized.lines);
 
         let previous_lines_len = self.state.borrow().previous_lines.len();
 
         // First render: emit everything without clearing.
         if previous_lines_len == 0 && !width_changed && !height_changed {
             self.log_redraw("first render", new_lines.len(), height);
-            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, false, false);
+            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, false, false);
             return;
         }
 
         if width_changed {
             self.log_redraw(&format!("terminal width changed ({previous_width} -> {width})"), new_lines.len(), height);
-            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
+            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
             return;
         }
 
@@ -2880,11 +2921,13 @@ impl TuiBase {
         if height_changed && !is_termux_session() {
             self.log_redraw(&format!("terminal height changed ({previous_height} -> {height})"), new_lines.len(), height);
             if preserve_mux_scrollback {
-                if !self.render_mux_viewport_repaint(terminal, &new_lines, &raw_lines, cursor_pos, width, height, None) {
-                    self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
+                if let Err((new_lines, raw_lines)) =
+                    self.render_mux_viewport_repaint(terminal, new_lines, raw_lines, cursor_pos, width, height, None)
+                {
+                    self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, false);
                 }
             } else {
-                self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, true);
+                self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, true);
             }
             return;
         }
@@ -2898,7 +2941,7 @@ impl TuiBase {
         if clear_on_shrink_needed {
             let max_lines_rendered = self.state.borrow().max_lines_rendered;
             self.log_redraw(&format!("clearOnShrink (maxLinesRendered={max_lines_rendered})"), new_lines.len(), height);
-            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
+            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
             return;
         }
 
@@ -2968,7 +3011,7 @@ impl TuiBase {
         let insert_scroll_plan =
             self.create_viewport_insert_scroll_plan(&new_lines, prev_viewport_top, height, line_count_delta);
         if let Some(plan) = insert_scroll_plan {
-            self.render_viewport_insert_scroll(terminal, plan, &new_lines, &raw_lines, cursor_pos, width, height);
+            self.render_viewport_insert_scroll(terminal, plan, new_lines, raw_lines, cursor_pos, width, height);
             return;
         }
 
@@ -2976,8 +3019,8 @@ impl TuiBase {
         if first_changed >= new_lines.len() {
             self.render_trailing_deletion(
                 terminal,
-                &new_lines,
-                &raw_lines,
+                new_lines,
+                raw_lines,
                 cursor_pos,
                 first_changed,
                 last_changed,
@@ -3024,14 +3067,14 @@ impl TuiBase {
                 if line_count_delta != 0 {
                     if preserve_mux_scrollback {
                         // Above-viewport scrollback may stay stale in mux panes; only the visible viewport is repainted.
-                        if !self.render_mux_viewport_repaint(
-                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, Some(viewport_top),
+                        if let Err((new_lines, raw_lines)) = self.render_mux_viewport_repaint(
+                            terminal, new_lines, raw_lines, cursor_pos, width, height, Some(viewport_top),
                         ) {
-                            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
+                            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, false);
                         }
                     } else {
                         self.render_scrollback_replay(
-                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
+                            terminal, new_lines, raw_lines, cursor_pos, width, height, prev_viewport_top,
                             hardware_cursor_row,
                         );
                     }
@@ -3040,8 +3083,8 @@ impl TuiBase {
                 let mut state = self.state.borrow_mut();
                 state.cursor_row = new_lines.len().saturating_sub(1);
                 state.max_lines_rendered = state.max_lines_rendered.max(new_lines.len());
-                state.previous_lines = new_lines.clone();
-                state.previous_raw_lines = raw_lines.clone();
+                state.previous_lines = new_lines;
+                state.previous_raw_lines = raw_lines;
                 state.previous_width = width as i64;
                 state.previous_height = height as i64;
                 state.previous_viewport_top = viewport_top;
@@ -3051,21 +3094,21 @@ impl TuiBase {
             if viewport_top != prev_viewport_top {
                 if line_count_delta != 0 {
                     if preserve_mux_scrollback {
-                        if !self.render_mux_viewport_repaint(
-                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, Some(viewport_top),
+                        if let Err((new_lines, raw_lines)) = self.render_mux_viewport_repaint(
+                            terminal, new_lines, raw_lines, cursor_pos, width, height, Some(viewport_top),
                         ) {
-                            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
+                            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, false);
                         }
                     } else {
                         self.render_scrollback_replay(
-                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
+                            terminal, new_lines, raw_lines, cursor_pos, width, height, prev_viewport_top,
                             hardware_cursor_row,
                         );
                     }
                     return;
                 }
                 self.render_viewport_shift(
-                    terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
+                    terminal, new_lines, raw_lines, cursor_pos, width, height, prev_viewport_top,
                     viewport_top, hardware_cursor_row,
                 );
                 return;
@@ -3076,7 +3119,7 @@ impl TuiBase {
         }
 
         self.render_changed_range(
-            terminal, &mut new_lines, &raw_lines, cursor_pos, width, height, first_changed, last_changed,
+            terminal, new_lines, raw_lines, cursor_pos, width, height, first_changed, last_changed,
             append_start, &mut prev_viewport_top, &mut viewport_top, &mut hardware_cursor_row,
             needs_kitty_expansion,
         );
@@ -3090,7 +3133,6 @@ impl TuiBase {
     ) -> (usize, usize) {
         let mut expanded_first = first_changed;
         let mut expanded_last = last_changed;
-        let previous_lines = self.state.borrow().previous_lines.clone();
         let mut expand_for = |lines: &[String]| {
             for i in 0..lines.len() {
                 if extract_kitty_image_ids(&lines[i]).is_empty() {
@@ -3103,7 +3145,7 @@ impl TuiBase {
                 }
             }
         };
-        expand_for(&previous_lines);
+        expand_for(&self.state.borrow().previous_lines);
         expand_for(new_lines);
         (expanded_first, expanded_last)
     }
@@ -3200,8 +3242,8 @@ impl TuiBase {
         &mut self,
         terminal: &mut dyn Terminal,
         plan: ViewportInsertScrollPlan,
-        new_lines: &[String],
-        raw_lines: &[String],
+        new_lines: Vec<String>,
+        raw_lines: Vec<String>,
         cursor_pos: Option<(usize, usize)>,
         width: usize,
         height: usize,
@@ -3232,13 +3274,14 @@ impl TuiBase {
         buffer = self.finish_frame(buffer, cursor_pos, new_lines.len(), final_cursor_row);
         write_bounded(terminal, &buffer);
 
+        let kitty_image_ids = Self::collect_kitty_image_ids(&new_lines);
         let mut state = self.state.borrow_mut();
         state.cursor_row = new_lines.len().saturating_sub(1);
         state.max_lines_rendered = state.max_lines_rendered.max(new_lines.len());
         state.previous_viewport_top = plan.viewport_top;
-        state.previous_lines = new_lines.to_vec();
-        state.previous_raw_lines = raw_lines.to_vec();
-        state.previous_kitty_image_ids = Self::collect_kitty_image_ids(new_lines);
+        state.previous_lines = new_lines;
+        state.previous_raw_lines = raw_lines;
+        state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.placement_epoch += 1;
@@ -3248,8 +3291,8 @@ impl TuiBase {
     fn render_scrollback_replay(
         &mut self,
         terminal: &mut dyn Terminal,
-        new_lines: &[String],
-        raw_lines: &[String],
+        new_lines: Vec<String>,
+        raw_lines: Vec<String>,
         cursor_pos: Option<(usize, usize)>,
         width: usize,
         height: usize,
@@ -3282,13 +3325,14 @@ impl TuiBase {
         buffer = self.finish_frame(buffer, cursor_pos, new_lines.len(), buffer_length.saturating_sub(1));
         write_bounded(terminal, &buffer);
 
+        let kitty_image_ids = Self::collect_kitty_image_ids(&new_lines);
         let mut state = self.state.borrow_mut();
         state.cursor_row = new_lines.len().saturating_sub(1);
         state.max_lines_rendered = new_lines.len();
         state.previous_viewport_top = buffer_length.saturating_sub(height);
-        state.previous_lines = new_lines.to_vec();
-        state.previous_raw_lines = raw_lines.to_vec();
-        state.previous_kitty_image_ids = Self::collect_kitty_image_ids(new_lines);
+        state.previous_lines = new_lines;
+        state.previous_raw_lines = raw_lines;
+        state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.placement_epoch += 1;
@@ -3296,27 +3340,28 @@ impl TuiBase {
 
     /// senpi's `renderMuxViewportRepaint`: repaint only the visible rows (no `2J`/`3J`) so a
     /// multiplexer pane keeps its scrollback. `viewport_top` defaults to the bottom of
-    /// `new_lines`. Returns `false` without writing when a visible row is an image line.
+    /// `new_lines`. Returns the lines back as `Err` without writing when a visible row is an
+    /// image line, so the caller can fall back to a full render.
     #[allow(clippy::too_many_arguments)]
     fn render_mux_viewport_repaint(
         &mut self,
         terminal: &mut dyn Terminal,
-        new_lines: &[String],
-        raw_lines: &[String],
+        new_lines: Vec<String>,
+        raw_lines: Vec<String>,
         cursor_pos: Option<(usize, usize)>,
         width: usize,
         height: usize,
         viewport_top: Option<usize>,
-    ) -> bool {
+    ) -> Result<(), (Vec<String>, Vec<String>)> {
         let viewport_top = viewport_top.unwrap_or_else(|| new_lines.len().saturating_sub(height));
         let (previous_viewport_top, hardware_cursor_row) = {
             let state = self.state.borrow();
             let previous_visible = Self::get_viewport_rows(&state.previous_lines, state.previous_viewport_top, height);
-            let next_visible = Self::get_viewport_rows(new_lines, viewport_top, height);
+            let next_visible = Self::get_viewport_rows(&new_lines, viewport_top, height);
             if previous_visible.iter().any(|line| is_image_line(line))
                 || next_visible.iter().any(|line| is_image_line(line))
             {
-                return false;
+                return Err((new_lines, raw_lines));
             }
             (state.previous_viewport_top, state.hardware_cursor_row)
         };
@@ -3341,26 +3386,27 @@ impl TuiBase {
         buffer = self.finish_frame(buffer, cursor_pos, new_lines.len(), final_cursor_row);
         write_bounded(terminal, &buffer);
 
+        let kitty_image_ids = Self::collect_kitty_image_ids(&new_lines);
         let mut state = self.state.borrow_mut();
         state.mux_viewport_repaint_count += 1;
         state.cursor_row = new_lines.len().saturating_sub(1);
         state.max_lines_rendered = new_lines.len();
         state.previous_viewport_top = viewport_top;
-        state.previous_lines = new_lines.to_vec();
-        state.previous_raw_lines = raw_lines.to_vec();
-        state.previous_kitty_image_ids = Self::collect_kitty_image_ids(new_lines);
+        state.previous_lines = new_lines;
+        state.previous_raw_lines = raw_lines;
+        state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.placement_epoch += 1;
-        true
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
     fn render_viewport_shift(
         &mut self,
         terminal: &mut dyn Terminal,
-        new_lines: &[String],
-        raw_lines: &[String],
+        new_lines: Vec<String>,
+        raw_lines: Vec<String>,
         cursor_pos: Option<(usize, usize)>,
         width: usize,
         height: usize,
@@ -3394,13 +3440,14 @@ impl TuiBase {
         buffer = self.finish_frame(buffer, cursor_pos, new_lines.len(), final_cursor_row);
         write_bounded(terminal, &buffer);
 
+        let kitty_image_ids = Self::collect_kitty_image_ids(&new_lines);
         let mut state = self.state.borrow_mut();
         state.cursor_row = new_lines.len().saturating_sub(1);
         state.max_lines_rendered = state.max_lines_rendered.max(new_lines.len());
         state.previous_viewport_top = viewport_top;
-        state.previous_lines = new_lines.to_vec();
-        state.previous_raw_lines = raw_lines.to_vec();
-        state.previous_kitty_image_ids = Self::collect_kitty_image_ids(new_lines);
+        state.previous_lines = new_lines;
+        state.previous_raw_lines = raw_lines;
+        state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
     }
@@ -3409,8 +3456,8 @@ impl TuiBase {
     fn render_trailing_deletion(
         &mut self,
         terminal: &mut dyn Terminal,
-        new_lines: &[String],
-        raw_lines: &[String],
+        new_lines: Vec<String>,
+        raw_lines: Vec<String>,
         cursor_pos: Option<(usize, usize)>,
         first_changed: usize,
         last_changed: usize,
@@ -3465,10 +3512,11 @@ impl TuiBase {
         } else {
             self.position_hardware_cursor(terminal, cursor_pos, new_lines.len());
         }
+        let kitty_image_ids = Self::collect_kitty_image_ids(&new_lines);
         let mut state = self.state.borrow_mut();
-        state.previous_lines = new_lines.to_vec();
-        state.previous_raw_lines = raw_lines.to_vec();
-        state.previous_kitty_image_ids = Self::collect_kitty_image_ids(new_lines);
+        state.previous_lines = new_lines;
+        state.previous_raw_lines = raw_lines;
+        state.previous_kitty_image_ids = kitty_image_ids;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.previous_viewport_top = prev_viewport_top;
@@ -3519,8 +3567,8 @@ impl TuiBase {
     fn render_changed_range(
         &mut self,
         terminal: &mut dyn Terminal,
-        new_lines: &mut [String],
-        raw_lines: &[String],
+        mut new_lines: Vec<String>,
+        raw_lines: Vec<String>,
         cursor_pos: Option<(usize, usize)>,
         width: usize,
         height: usize,
@@ -3569,7 +3617,7 @@ impl TuiBase {
             let line = new_lines[i].clone();
             let is_image = is_image_line(&line);
             let image_reserved_rows = if is_image {
-                Self::get_kitty_image_reserved_rows(new_lines, i, render_end)
+                Self::get_kitty_image_reserved_rows(&new_lines, i, render_end)
             } else {
                 1
             };
@@ -3588,7 +3636,7 @@ impl TuiBase {
             buffer += &format!("\x1b[2K{SEGMENT_RESET}");
             let line_width = visible_width(&line);
             if !is_image && line_width > width {
-                self.log_over_wide_render(new_lines, width, i, line_width);
+                self.log_over_wide_render(&new_lines, width, i, line_width);
                 let truncated_line = format!("{}{}", slice_by_column(&line, 0, width, true), SEGMENT_RESET);
                 new_lines[i] = truncated_line.clone();
                 buffer += &truncated_line;
@@ -3621,19 +3669,20 @@ impl TuiBase {
             self.write_tui_debug_dump(TuiDebugFrame {
                 first_changed, viewport_top: *viewport_top, height, line_diff,
                 hardware_cursor_row: *hardware_cursor_row, render_end, final_cursor_row, cursor_pos,
-            }, new_lines, &buffer);
+            }, &new_lines, &buffer);
         }
 
         write_bounded(terminal, &buffer);
 
+        let kitty_image_ids = needs_kitty_expansion.then(|| Self::collect_kitty_image_ids(&new_lines));
         let mut state = self.state.borrow_mut();
         state.cursor_row = new_lines.len().saturating_sub(1);
         state.max_lines_rendered = state.max_lines_rendered.max(new_lines.len());
         state.previous_viewport_top = (*prev_viewport_top).max(final_cursor_row.saturating_sub(height) + 1);
-        state.previous_lines = new_lines.to_vec();
-        state.previous_raw_lines = raw_lines.to_vec();
-        if needs_kitty_expansion {
-            state.previous_kitty_image_ids = Self::collect_kitty_image_ids(new_lines);
+        state.previous_lines = new_lines;
+        state.previous_raw_lines = raw_lines;
+        if let Some(kitty_image_ids) = kitty_image_ids {
+            state.previous_kitty_image_ids = kitty_image_ids;
         }
         state.previous_width = width as i64;
         state.previous_height = height as i64;
@@ -3643,8 +3692,8 @@ impl TuiBase {
     fn full_render(
         &mut self,
         terminal: &mut dyn Terminal,
-        new_lines: &[String],
-        raw_lines: &[String],
+        new_lines: Vec<String>,
+        raw_lines: Vec<String>,
         cursor_pos: Option<(usize, usize)>,
         width: usize,
         height: usize,
@@ -3674,7 +3723,7 @@ impl TuiBase {
             let line = &new_lines[i];
             let is_image = is_image_line(line);
             let image_reserved_rows = if is_image {
-                Self::get_kitty_image_reserved_rows(new_lines, i, new_lines.len() - 1)
+                Self::get_kitty_image_reserved_rows(&new_lines, i, new_lines.len() - 1)
             } else {
                 1
             };
@@ -3704,9 +3753,9 @@ impl TuiBase {
         }
         let buffer_length = height.max(new_lines.len());
         state.previous_viewport_top = buffer_length.saturating_sub(height);
-        state.previous_lines = new_lines.to_vec();
-        state.previous_raw_lines = raw_lines.to_vec();
-        state.previous_kitty_image_ids = Self::collect_kitty_image_ids(new_lines);
+        state.previous_kitty_image_ids = Self::collect_kitty_image_ids(&new_lines);
+        state.previous_lines = new_lines;
+        state.previous_raw_lines = raw_lines;
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.placement_epoch += 1;

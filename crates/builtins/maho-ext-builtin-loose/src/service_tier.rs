@@ -85,7 +85,11 @@ impl Extension for ServiceTierExtension{
             if let ExtensionEvent::BeforeProviderRequest{payload,..}=event{
                 let model=ctx.model.as_ref();let memory=model.map(|model|memory_model(ctx,host.as_ref(),model));let catalog=model.and_then(|model|host.catalog_tier(model));
                 let state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                return Ok(EventResult::ProviderPayload(add_service_tier_to_payload(model.map(|model|model.api.as_str()),payload.clone(),effective_service_tier(model.map(|model|model.api.as_str()),state.fast,ctx.service_tier,state.global,state.memory,memory.as_ref().map(key)==state.key,catalog==Some(ServiceTier::Priority)))));
+                let api=model.map(|model|model.api.as_str());
+                let tier=effective_service_tier(api,state.fast,ctx.service_tier,state.global,state.memory,memory.as_ref().map(key)==state.key,catalog==Some(ServiceTier::Priority));
+                // Same gate as `add_service_tier_to_payload`: skip copying a payload it would leave untouched.
+                if !(supports_service_tier(api)&&tier.is_some()&&payload.as_object().is_some_and(|object|!object.contains_key("service_tier"))){return Ok(EventResult::None);}
+                return Ok(EventResult::ProviderPayload(add_service_tier_to_payload(api,payload.clone(),tier)));
             }
             let model=match event{ExtensionEvent::ModelSelect(event)=>Some(&event.model),_=>ctx.model.as_ref()};
             let memory=model.map(|model|memory_model(ctx,host.as_ref(),model));let remembered=memory.as_ref().map(|model|host.remembered(ctx,model)).transpose()?.flatten();

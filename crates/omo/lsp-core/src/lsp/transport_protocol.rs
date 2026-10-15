@@ -1,4 +1,5 @@
 use crate::lsp::types::Diagnostic;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -61,7 +62,7 @@ pub fn parse_diagnostic(value: &Value) -> Option<Diagnostic> {
         return None;
     }
     value.get("message")?.as_str()?;
-    serde_json::from_value(value.clone()).ok()
+    Diagnostic::deserialize(value).ok()
 }
 
 /// TS `createLspSpawnEnv`: currently a copy of the input environment.

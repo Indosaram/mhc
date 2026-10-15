@@ -244,7 +244,7 @@ fn run_tool_response(
         None => run_git_bash_command(&input).map_err(|error| error.to_string()),
     };
     match result {
-        Ok(result) => tool_response(id, run_payload(&result), false),
+        Ok(result) => tool_response(id, run_payload(result), false),
         Err(message) => tool_response(id, message, true),
     }
 }
@@ -451,11 +451,11 @@ fn diagnose_payload(resolution: &GitBashResolution, platform: &str) -> String {
     }))
 }
 
-fn run_payload(result: &GitBashRunResult) -> String {
+fn run_payload(result: GitBashRunResult) -> String {
     to_pretty_json(&json!({
         "exitCode": result.exit_code,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
+        "stdout": Value::String(result.stdout),
+        "stderr": Value::String(result.stderr),
         "timedOut": result.timed_out,
     }))
 }

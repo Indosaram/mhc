@@ -6,18 +6,22 @@ use super::eval_prompt_template::EVAL_PROMPT_TEMPLATE;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvalEmphasisStyle { Default, Claude, Codex, Gpt, Kimi }
 
+static GPT_CODE_MODE_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)(^|[/.:])gpt[-.]").expect("model pattern"));
+static EMPHASIS_PATTERNS: std::sync::LazyLock<[(regex::Regex, EvalEmphasisStyle); 3]> = std::sync::LazyLock::new(|| [
+    (r"(?i)(^|[/.:])claude[-.]|(^|[/.:@-])glm[-.]?\d", EvalEmphasisStyle::Claude),
+    (r"(?i)(^|[/.:])kimi[-.]", EvalEmphasisStyle::Kimi),
+    (r"(?i)(^|[/.:])(gpt|chatgpt|codex)[-.]|(^|[/.:])o[134]([-.]|$)", EvalEmphasisStyle::Codex),
+].map(|(pattern, style)| (regex::Regex::new(pattern).expect("model pattern"), style)));
+static EXCESS_NEWLINES_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\n{3,}").expect("newline pattern"));
+
 pub fn is_gpt_code_mode_model(model_id: Option<&str>) -> bool {
-    model_id.is_some_and(|id| regex::Regex::new(r"(?i)(^|[/.:])gpt[-.]").expect("model pattern").is_match(id))
+    model_id.is_some_and(|id| GPT_CODE_MODE_PATTERN.is_match(id))
 }
 
 pub fn eval_emphasis_style(model_id: Option<&str>) -> EvalEmphasisStyle {
     let Some(id) = model_id.filter(|id| !id.is_empty()) else { return EvalEmphasisStyle::Default; };
     if is_gpt_code_mode_model(Some(id)) { return EvalEmphasisStyle::Gpt; }
-    for (pattern, style) in [
-        (r"(?i)(^|[/.:])claude[-.]|(^|[/.:@-])glm[-.]?\d", EvalEmphasisStyle::Claude),
-        (r"(?i)(^|[/.:])kimi[-.]", EvalEmphasisStyle::Kimi),
-        (r"(?i)(^|[/.:])(gpt|chatgpt|codex)[-.]|(^|[/.:])o[134]([-.]|$)", EvalEmphasisStyle::Codex),
-    ] { if regex::Regex::new(pattern).expect("model pattern").is_match(id) { return style; } }
+    for (pattern, style) in EMPHASIS_PATTERNS.iter() { if pattern.is_match(id) { return *style; } }
     EvalEmphasisStyle::Default
 }
 
@@ -68,7 +72,7 @@ pub fn build_eval_prompt(enabled: &Languages, options: &EvalPromptOptions) -> Re
     ] { context.insert(key.to_owned(), serde_json::Value::String(value)); }
     let (rendered, index, _) = render_until(EVAL_PROMPT_TEMPLATE, &context, 0, &[])?;
     if index != EVAL_PROMPT_TEMPLATE.len() { return Err(EvalPromptError("unexpected template close tag".into())); }
-    let description = regex::Regex::new(r"\n{3,}").expect("newline pattern").replace_all(&rendered, "\n\n").trim().to_owned();
+    let description = EXCESS_NEWLINES_PATTERN.replace_all(&rendered, "\n\n").trim().to_owned();
     let guideline = match style {
         EvalEmphasisStyle::Gpt if options.monitor => "Use eval to compose tool work in one cell; a wait or a long run starts through `tool.monitor` in that cell, so no cell sits on it and nothing polls.",
         EvalEmphasisStyle::Default => "Prefer eval when a step's calls are independent: one cell runs them together and keeps every failure in its result; edits and result-dependent calls go one at a time, each observed before the next.",

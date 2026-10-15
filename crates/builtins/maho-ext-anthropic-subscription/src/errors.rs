@@ -42,7 +42,12 @@ pub fn sdk_assistant_failure(message: &Value) -> Option<String> {
     Some(if text.is_empty() { error.into() } else if error == "unknown" { text.into() } else { format!("{text} ({error})") })
 }
 
-fn matches(pattern: &str, text: &str) -> bool { Regex::new(pattern).is_ok_and(|regex| regex.is_match(text)) }
+/// The classifier's pattern set is fixed, so each pattern compiles once per process.
+fn matches(pattern: &str, text: &str) -> bool {
+    static COMPILED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Option<Regex>>>> = std::sync::LazyLock::new(Default::default);
+    let mut compiled = COMPILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    compiled.entry(pattern.to_owned()).or_insert_with(|| Regex::new(pattern).ok()).as_ref().is_some_and(|regex| regex.is_match(text))
+}
 
 pub fn classify_sdk_error(error: &Value) -> SdkErrorClassification {
     use SdkErrorKind::*;

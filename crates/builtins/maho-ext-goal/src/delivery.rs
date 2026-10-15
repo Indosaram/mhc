@@ -100,8 +100,7 @@ impl GoalDelivery {
                     if !self.runtime.maybe_prompt_resume_stopped_goal(ctx,reason,Some(goal),&self.queue_callback()).await? {
                         let active=self.runtime.monitor.lock().map_err(failure)?.has_active_wake_sources();
                         if start.reason==maho_ext_api::SessionReason::Reload&&active { let parked=crate::parked_wait::find_parked_goal_wait(&ctx.session_manager.get_branch(),&goal.id); self.backstop(ctx,goal,parked.as_ref()).await?; }
-                        else if crate::index::count_trailing_goal_continuation_entries(&ctx.session_manager.get_branch())>=usize::try_from(GOAL_CONTINUATION_CAP).map_err(failure)? {
-                            let count=crate::index::count_trailing_goal_continuation_entries(&ctx.session_manager.get_branch());
+                        else if let Some(count)=Some(crate::index::count_trailing_goal_continuation_entries(&ctx.session_manager.get_branch())).filter(|count|usize::try_from(GOAL_CONTINUATION_CAP).is_ok_and(|cap|*count>=cap)) {
                             self.runtime.arm_suppressed_load_resume().await; ctx.ui.notify(&format!("Goal auto-continuation suppressed for this resumed session ({count} historical continuations). Send a message to resume."),maho_ext_api::NotificationType::Info);
                         } else { self.queue(ctx,goal,GoalContinuationPath::SessionStart).await?; }
                     }

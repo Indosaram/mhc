@@ -132,7 +132,14 @@ impl Extension for HerdrExtension{
                 let mut guard=state.lock().expect("reporter lock");
                 let poll_state=state.clone();let poll_ctx=ctx.clone();guard.poll=Some(tokio::spawn(async move{
                     let mut interval=tokio::time::interval_at(tokio::time::Instant::now()+std::time::Duration::from_secs(4),std::time::Duration::from_secs(4));
-                    loop{interval.tick().await;{let mut guard=poll_state.lock().expect("reporter lock");if guard.stopped{break;}guard.state.child_count=count_running_child_tasks(&poll_ctx.cwd,poll_ctx.session_manager.session_id());}publish(poll_state.clone()).await;}
+                    loop{
+                        interval.tick().await;
+                        if poll_state.lock().expect("reporter lock").stopped{break;}
+                        let cwd=poll_ctx.cwd.clone();let session=poll_ctx.session_manager.session_id().to_owned();
+                        let Ok(count)=tokio::task::spawn_blocking(move||count_running_child_tasks(&cwd,&session)).await else{break};
+                        {let mut guard=poll_state.lock().expect("reporter lock");if guard.stopped{break;}guard.state.child_count=count;}
+                        publish(poll_state.clone()).await;
+                    }
                 }));
                 Ok(EventResult::None)
             })

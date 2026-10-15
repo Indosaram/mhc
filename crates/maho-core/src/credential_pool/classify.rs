@@ -3,6 +3,8 @@
 //! deviation: DEFAULT_SLOT_BLOCK_MS / MAX_SLOT_BLOCK_MS live in maho-ai's auth/pool/failover, which
 //! is still the todo-13 stub; the two constants are declared here until that module lands.
 
+use std::sync::LazyLock;
+
 use regex::Regex;
 use serde_json::Value;
 
@@ -56,6 +58,17 @@ fn regex(pattern: &str) -> Regex {
     Regex::new(pattern).expect("classify regex")
 }
 
+static AUTH_ERROR: LazyLock<Regex> = LazyLock::new(|| regex(r"invalid[ _-]?(?:api[ _-]?)?key|authentication[_ ]?error|invalid x-api-key|unauthorized"));
+static FORBIDDEN_CREDENTIAL: LazyLock<Regex> = LazyLock::new(|| regex(r"account|credential|token|api[ _-]?key|organization|subscription"));
+static BILLING: LazyLock<Regex> = LazyLock::new(|| regex(r"billing|credits?[ _-]?(?:required|exhausted|balance)|insufficient[ _-]?(?:funds|quota|credit)|payment[ _-]?required|quota[ _-]?exhausted"));
+static RATE_LIMIT: LazyLock<Regex> = LazyLock::new(|| regex(r"rate[ _-]?limit|too many requests|resource_exhausted"));
+static FAIL_REQUEST: LazyLock<Regex> = LazyLock::new(|| regex(r"context[ _-]?(?:length|window)|maximum context|invalid[ _-]?model|model[ _-]?not[ _-]?found|malformed[ _-]?stream|premature[ _-]?(?:close|stream)"));
+static WEBSOCKET_POLICY_CLOSE: LazyLock<Regex> = LazyLock::new(|| regex(r"websocket closed 100[89]\b"));
+static WEBSOCKET_TRANSIENT: LazyLock<Regex> = LazyLock::new(|| regex(r"websocket (?:closed|error|connect timeout|liveness timeout)"));
+static OVERLOADED: LazyLock<Regex> = LazyLock::new(|| regex(r"overloaded"));
+static NETWORK: LazyLock<Regex> = LazyLock::new(|| regex(r"econnreset|econnrefused|etimedout|enotfound|socket hang up|fetch failed|network error|request timed out"));
+static ABORT: LazyLock<Regex> = LazyLock::new(|| regex(r"\baborted?\b"));
+
 fn thrown_error(error: &Value) -> maho_ai::utils::error_body::ThrownProviderError {
     use maho_ai::utils::error_body::{SdkErrorShape, ThrownProviderError};
     let Some(object) = error.as_object() else {
@@ -88,23 +101,22 @@ pub fn classify_credential_failure(error: &Value, context: &ClassifyContext) -> 
     if text.contains(PROVIDER_NOT_CONFIGURED_PREFIX) {
         return CredentialAction::Failover { block: CredentialBlock::AuthError };
     }
-    if status == Some(401) || regex(r"invalid[ _-]?(?:api[ _-]?)?key|authentication[_ ]?error|invalid x-api-key|unauthorized").is_match(&text) {
+    if status == Some(401) || AUTH_ERROR.is_match(&text) {
         return CredentialAction::Failover { block: CredentialBlock::AuthError };
     }
     if status == Some(403) {
-        return if regex(r"account|credential|token|api[ _-]?key|organization|subscription").is_match(&text) {
+        return if FORBIDDEN_CREDENTIAL.is_match(&text) {
             CredentialAction::Failover { block: CredentialBlock::AuthError }
         } else {
             CredentialAction::FailRequest
         };
     }
     if status == Some(402)
-        || regex(r"billing|credits?[ _-]?(?:required|exhausted|balance)|insufficient[ _-]?(?:funds|quota|credit)|payment[ _-]?required|quota[ _-]?exhausted")
-            .is_match(&text)
+        || BILLING.is_match(&text)
     {
         return CredentialAction::Failover { block: CredentialBlock::AccountDisabled };
     }
-    if status == Some(429) || regex(r"rate[ _-]?limit|too many requests|resource_exhausted").is_match(&text) {
+    if status == Some(429) || RATE_LIMIT.is_match(&text) {
         let hint = maho_ai::utils::retry_hint::extract_429_retry_after_ms(
             &maho_ai::utils::retry_hint::RetryHintInput { status: Some(status.unwrap_or(429)), headers: None, body_text: &text },
             None,
@@ -116,23 +128,23 @@ pub fn classify_credential_failure(error: &Value, context: &ClassifyContext) -> 
     if is_overflow_text(&text)
         || status == Some(400)
         || status == Some(404)
-        || regex(r"context[ _-]?(?:length|window)|maximum context|invalid[ _-]?model|model[ _-]?not[ _-]?found|malformed[ _-]?stream|premature[ _-]?(?:close|stream)").is_match(&text)
+        || FAIL_REQUEST.is_match(&text)
     {
         return CredentialAction::FailRequest;
     }
-    if regex(r"websocket closed 100[89]\b").is_match(&text) {
+    if WEBSOCKET_POLICY_CLOSE.is_match(&text) {
         return CredentialAction::FailRequest;
     }
-    if regex(r"websocket (?:closed|error|connect timeout|liveness timeout)").is_match(&text) {
+    if WEBSOCKET_TRANSIENT.is_match(&text) {
         return CredentialAction::RetrySame { max_attempts: RETRY_SAME_MAX_ATTEMPTS };
     }
     if status == Some(529)
-        || regex(r"overloaded").is_match(&text)
+        || OVERLOADED.is_match(&text)
         || matches!(status, Some(code) if (500..600).contains(&code))
     {
         return CredentialAction::RetrySame { max_attempts: RETRY_SAME_MAX_ATTEMPTS };
     }
-    if status == Some(408) || regex(r"econnreset|econnrefused|etimedout|enotfound|socket hang up|fetch failed|network error|request timed out").is_match(&text) {
+    if status == Some(408) || NETWORK.is_match(&text) {
         return CredentialAction::RetrySame { max_attempts: RETRY_SAME_MAX_ATTEMPTS };
     }
     CredentialAction::FailRequest
@@ -142,7 +154,7 @@ fn is_abort(error: &Value, message: &str) -> bool {
     if error.get("name").and_then(Value::as_str) == Some("AbortError") {
         return true;
     }
-    regex(r"\baborted?\b").is_match(message)
+    ABORT.is_match(message)
 }
 
 fn is_overflow_text(text: &str) -> bool {

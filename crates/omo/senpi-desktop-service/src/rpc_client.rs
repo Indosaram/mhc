@@ -295,7 +295,7 @@ impl RpcClient {
     }
 
     pub async fn handle_line(&self, line: &str) {
-        let parsed: Value = match serde_json::from_str(line) {
+        let mut parsed: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => {
                 self.alive.store(false, Ordering::SeqCst);
@@ -320,7 +320,9 @@ impl RpcClient {
             return;
         }
 
-        let obj = parsed.as_object().unwrap();
+        let Some(obj) = parsed.as_object_mut() else {
+            return;
+        };
         if let Some(method_val) = obj.get("method")
             && obj.get("id").is_none() {
                 if let Some(method) = method_val.as_str() {
@@ -342,8 +344,8 @@ impl RpcClient {
                 return;
             }
 
-            if let Some(result) = obj.get("result") {
-                let _ = pending.tx.send(Ok(result.clone()));
+            if let Some(result) = obj.remove("result") {
+                let _ = pending.tx.send(Ok(result));
             } else if let Some(error) = obj.get("error").and_then(|e| e.as_object())
                 && let Some(code) = error.get("code").and_then(Value::as_i64)
                 && let Some(message) = error.get("message").and_then(Value::as_str)

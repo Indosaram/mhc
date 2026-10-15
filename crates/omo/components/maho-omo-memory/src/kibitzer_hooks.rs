@@ -41,6 +41,11 @@ pub trait KibitzerHookSink: Send + Sync {
     fn on_agent_settled(&self, session_id: &str);
     fn on_session_shutdown(&self, session_id: &str);
     fn on_compaction_accepted(&self, session_id: &str);
+    /// Whether the next `kind` hook for `session_id` reads its `entries`; `false` skips cloning the
+    /// branch (the sink then receives an empty slice it never reads).
+    fn wants_branch(&self, _kind: maho_ext_api::EventKind, _session_id: &str) -> bool {
+        true
+    }
 }
 
 pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<dyn KibitzerHookSink>, gate_resolver: KibitzerGateResolver) {
@@ -61,9 +66,10 @@ pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<d
             // Capture the REAL branch snapshot synchronously, while the ctx is alive: the host
             // disposes the context when the handler returns. The consumer derives the events cursor
             // from this branch LENGTH - never a synthetic monotonic counter.
-            let entries: Vec<Value> = if kind == maho_ext_api::EventKind::BeforeAgentStart
+            let entries: Vec<Value> = if (kind == maho_ext_api::EventKind::BeforeAgentStart
                 || kind == maho_ext_api::EventKind::ToolCall
-                || kind == maho_ext_api::EventKind::ToolResult
+                || kind == maho_ext_api::EventKind::ToolResult)
+                && sink.wants_branch(kind, session_id)
             {
                 context.session_manager.get_branch().into_iter().map(|entry| entry.data).collect()
             } else {

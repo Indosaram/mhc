@@ -45,7 +45,6 @@ impl InvokeStreamParser {
         self.pending_fragment = None;
 
         while !self.buffer.is_empty() {
-            let resolver = self.resolver();
             let invoke_open_tag = find_invoke_open_tag(&self.buffer, 0);
             let function_calls_open_tag = find_function_calls_open_tag(&self.buffer, 0);
 
@@ -82,6 +81,7 @@ impl InvokeStreamParser {
                     continue;
                 }
 
+                let resolver = self.resolver();
                 let tool = resolver.resolve(&invoke_open_tag.tool_name).cloned();
                 let block = scan_invoke_block(&self.buffer, &invoke_open_tag);
                 if tool.is_none() {

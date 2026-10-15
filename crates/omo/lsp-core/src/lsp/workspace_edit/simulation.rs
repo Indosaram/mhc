@@ -146,7 +146,7 @@ fn simulate(operation: &Parsed, virtual_fs: &mut Virtual) -> Result<Planned, VEr
                 content: String::new(),
             };
             if !target.is_missing() {
-                if *overwrite && matches!(target, Entry::File { .. }) {
+                if *overwrite && matches!(target, Entry::File { .. } | Entry::FileDigest { .. }) {
                     virtual_fs.insert(path.clone(), empty);
                     return Ok(Planned::Create {
                         change_index,

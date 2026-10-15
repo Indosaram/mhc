@@ -251,6 +251,13 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     })?;
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume, initial_model_provenance:None, previous_session_file:None }), &context).await?;
     pending_started.recv_timeout(Duration::from_secs(10))?;
+    // The run's ring-1 journal subscribers drain on their own threads and durably commit a coalesced
+    // StreamOverflow marker; that checkpoint write reaches DagStatusUi::schedule_sync. Await the
+    // scheduler's own drain barrier so no late commit arms a debounce between dispose and rebind.
+    let idle_scheduler = dag.scheduler(&pending.snapshot.run_id, context.session_manager.session_id())?;
+    let (drained, subscribers_idle) = mpsc::channel();
+    std::thread::spawn(move || { idle_scheduler.when_idle(); let _ = drained.send(()); });
+    subscribers_idle.recv_timeout(Duration::from_secs(10))?;
     // The start's store checkpoint armed the 250ms debounce; this SessionStart's sync_now armed the
     // 1000ms live refresh. Both live is the pinned debounce+refresh behavior, not a single timer.
     let mut kinds=status_timers.kinds(); kinds.sort();
