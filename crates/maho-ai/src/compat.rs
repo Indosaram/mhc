@@ -170,11 +170,17 @@ pub fn stream_simple(model: &Model, context: &Context, options: Option<SimpleStr
 }
 
 pub async fn complete(model: &Model, context: &Context, options: Option<StreamOptions>) -> Result<AssistantMessage, StreamError> {
-    stream(model, context, options).result().await
+    let stream = stream(model, context, options);
+    // Pop events so their partial-message clones are freed instead of queued until drop.
+    while let Ok(Some(_)) = stream.next().await {}
+    stream.result().await
 }
 
 pub async fn complete_simple(model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> Result<AssistantMessage, StreamError> {
-    stream_simple(model, context, options).result().await
+    let stream = stream_simple(model, context, options);
+    // Pop events so their partial-message clones are freed instead of queued until drop.
+    while let Ok(Some(_)) = stream.next().await {}
+    stream.result().await
 }
 
 #[cfg(test)]

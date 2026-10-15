@@ -8289,32 +8289,40 @@ impl AgentSession {
 
     /// Session statistics, aggregated over every session entry (including compacted-away history).
     pub fn get_session_stats(&self) -> SessionStats {
-        // Entries are append-only, so (session id, entry count, leaf id) pins the aggregate below.
-        let key: SessionStatsCacheKey = self.with_session_manager(|manager| {
-            (manager.session_id().to_owned(), manager.get_entry_count(), manager.leaf_id().map(str::to_owned))
-        });
-        let previous = self.state().session_stats_cache.clone();
-        if let Some((cached_key, stats, _)) = &previous
-            && *cached_key == key
-        {
-            return SessionStats { session_file: self.session_file(), context_usage: self.get_context_usage(), ..stats.clone() };
+        enum FoldInput {
+            Cached(SessionStats),
+            Appended(Vec<Value>, SessionStats, crate::usage_totals::UsageTotals),
+            All(Vec<Value>),
         }
-        // Entries are append-only within a session: fold only the ones appended since the cached
-        // aggregate, and rescan everything when the session changed or the tail is unavailable.
-        let incremental = previous.and_then(|(cached_key, stats, totals)| {
-            if cached_key.0 != key.0 || cached_key.1 > key.1 {
-                return None;
-            }
-            let entries = self.with_session_manager(|manager| manager.entries_after(cached_key.1))?;
-            let mut counts = SessionStatsCounts::from_stats(&stats);
-            let mut totals = totals;
-            counts.fold(&entries, &mut totals);
-            Some((counts, totals))
+        let previous = self.state().session_stats_cache.clone();
+        // Entries are append-only, so (session id, entry count, leaf id) pins the aggregate below.
+        // The key and the entries to fold are read under one lock so an append cannot land between
+        // them and be folded twice. Within a session only the entries appended since the cached
+        // aggregate are folded; everything is rescanned when the session changed or the tail is gone.
+        let (key, input): (SessionStatsCacheKey, FoldInput) = self.with_session_manager(|manager| {
+            let key = (manager.session_id().to_owned(), manager.get_entry_count(), manager.leaf_id().map(str::to_owned));
+            let input = match previous {
+                Some((cached_key, stats, _)) if cached_key == key => FoldInput::Cached(stats),
+                Some((cached_key, stats, totals)) if cached_key.0 == key.0 && cached_key.1 <= key.1 => {
+                    match manager.entries_after(cached_key.1) {
+                        Some(entries) => FoldInput::Appended(entries, stats, totals),
+                        None => FoldInput::All(manager.entries()),
+                    }
+                }
+                _ => FoldInput::All(manager.entries()),
+            };
+            (key, input)
         });
-        let (counts, totals) = match incremental {
-            Some(folded) => folded,
-            None => {
-                let entries = self.with_session_manager(|manager| manager.entries());
+        let (counts, totals) = match input {
+            FoldInput::Cached(stats) => {
+                return SessionStats { session_file: self.session_file(), context_usage: self.get_context_usage(), ..stats };
+            }
+            FoldInput::Appended(entries, stats, mut totals) => {
+                let mut counts = SessionStatsCounts::from_stats(&stats);
+                counts.fold(&entries, &mut totals);
+                (counts, totals)
+            }
+            FoldInput::All(entries) => {
                 let mut counts = SessionStatsCounts::default();
                 let mut totals = crate::usage_totals::create_usage_totals();
                 counts.fold(&entries, &mut totals);

@@ -21,7 +21,7 @@ use team_core::types::Message;
 
 use crate::team::member_extension::qa_inject_hold::QaAfterInjectHold;
 use crate::team::member_extension::session_scan::{
-    SessionJsonlSignature, is_missing_path, session_jsonl_signature,
+    SessionAckScan, SessionJsonlSignature, is_missing_path, session_jsonl_signature,
 };
 use crate::team::messaging::message::build_peer_message_envelope;
 
@@ -102,6 +102,8 @@ pub struct MemberSelfPoller {
     pending: Mutex<Vec<(String, PendingDelivery)>>,
     /// Session JSONL signature of the last ack scan that missed, per pending message id.
     ack_misses: Mutex<HashMap<String, SessionJsonlSignature>>,
+    /// Offset-based envelope index the repeated ack check reads incrementally.
+    ack_scan: Mutex<SessionAckScan>,
     stopped: AtomicBool,
 }
 
@@ -110,6 +112,7 @@ pub fn create_member_self_poller(deps: MemberSelfPollerDeps) -> MemberSelfPoller
         deps,
         pending: Mutex::new(Vec::new()),
         ack_misses: Mutex::new(HashMap::new()),
+        ack_scan: Mutex::new(SessionAckScan::default()),
         stopped: AtomicBool::new(false),
     }
 }
@@ -252,6 +255,8 @@ impl MemberSelfPoller {
             session_jsonl_signature(&self.deps.session_dir).ok()
         };
         let mut misses = self.ack_misses.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut scan = self.ack_scan.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut scanned = false;
         let mut kept: Vec<(String, PendingDelivery)> = Vec::new();
         let mut iter = snapshot.into_iter();
         while let Some((id, delivery)) = iter.next() {
@@ -261,16 +266,16 @@ impl MemberSelfPoller {
                 kept.push((id, delivery));
                 continue;
             }
-            let contained =
-                match session_jsonl_contains_message(&self.deps.session_dir, &delivery.message.message_id) {
-                    Ok(contained) => contained,
-                    Err(error) => {
-                        kept.push((id, delivery));
-                        kept.extend(iter);
-                        self.restore_pending(kept);
-                        return Err(error.into());
-                    }
-                };
+            if !scanned {
+                if let Err(error) = scan.refresh(&self.deps.session_dir) {
+                    kept.push((id, delivery));
+                    kept.extend(iter);
+                    self.restore_pending(kept);
+                    return Err(error.into());
+                }
+                scanned = true;
+            }
+            let contained = scan.contains(&delivery.message.message_id);
             if !contained {
                 if let Some(signature) = signature.as_ref() {
                     misses.insert(id.clone(), signature.clone());

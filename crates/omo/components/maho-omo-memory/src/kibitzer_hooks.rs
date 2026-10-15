@@ -58,6 +58,105 @@ pub fn tool_branch_tail(session_manager: &dyn maho_ext_api::SessionManager) -> (
     (len, tail.into_iter().map(|entry| entry.data).collect())
 }
 
+/// One retained entry's contribution to the [`tool_branch_tail`] stop condition.
+#[derive(Clone, Copy)]
+struct TailMark {
+    assistant: bool,
+    users: usize,
+    turns: usize,
+}
+
+fn tail_mark(entry: &Value) -> TailMark {
+    let one = std::slice::from_ref(entry);
+    TailMark { assistant: newest_assistant_text(one).is_some(), users: user_texts(one).len(), turns: judge_transcript(one).len() }
+}
+
+/// Start of the suffix [`tool_branch_tail`] keeps, scanning `marks` newest-first. The kept start
+/// only moves forward as entries are appended (every condition is a monotone count), so scanning the
+/// previously kept tail plus the appended entries yields the full-branch result.
+fn tail_start(marks: &[TailMark]) -> usize {
+    let len = marks.len();
+    let (mut assistant, mut users, mut turns, mut done) = (false, 0usize, 0usize, false);
+    let mut start = len;
+    while start > 0 && (len - start < RECALL_PATH_ENTRY_WINDOW || !done) {
+        start -= 1;
+        if !done {
+            let mark = marks[start];
+            assistant = assistant || mark.assistant;
+            users += mark.users;
+            turns += mark.turns;
+            done = assistant && users >= RECALL_TEXT_WINDOW && turns >= RECALL_TEXT_WINDOW;
+        }
+    }
+    start
+}
+
+fn entry_id(entry: &Value) -> Option<&str> {
+    entry.get("id").and_then(Value::as_str)
+}
+
+struct CachedBranchTail {
+    leaf_id: String,
+    len: usize,
+    tail: Arc<Vec<Value>>,
+    marks: Vec<TailMark>,
+}
+
+/// Per-session [`tool_branch_tail`] results, extended incrementally: a hook walks only the entries
+/// appended since the cached leaf and re-trims the retained tail, instead of re-walking (and
+/// re-materializing) the branch back to the 6th-newest user prompt on every tool event. Any other
+/// branch change (leaf moved off the cached chain, trimmed history) falls back to the full scan.
+#[derive(Default)]
+pub struct ToolBranchTailCache {
+    sessions: std::sync::Mutex<std::collections::BTreeMap<String, CachedBranchTail>>,
+}
+
+impl ToolBranchTailCache {
+    /// The same `(len, tail)` [`tool_branch_tail`] returns for the current branch.
+    pub fn tail(&self, session_id: &str, session_manager: &dyn maho_ext_api::SessionManager) -> (usize, Arc<Vec<Value>>) {
+        let cached = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        let next = cached.and_then(|cached| Self::extend(cached, session_manager)).unwrap_or_else(|| Self::full(session_manager));
+        let result = (next.len, Arc::clone(&next.tail));
+        if !next.leaf_id.is_empty() {
+            self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.to_owned(), next);
+        }
+        result
+    }
+
+    pub fn forget(&self, session_id: &str) {
+        self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+    }
+
+    fn full(session_manager: &dyn maho_ext_api::SessionManager) -> CachedBranchTail {
+        let (len, tail) = tool_branch_tail(session_manager);
+        let marks = tail.iter().map(tail_mark).collect();
+        let leaf_id = tail.last().and_then(entry_id).unwrap_or_default().to_owned();
+        CachedBranchTail { leaf_id, len, tail: Arc::new(tail), marks }
+    }
+
+    fn extend(mut cached: CachedBranchTail, session_manager: &dyn maho_ext_api::SessionManager) -> Option<CachedBranchTail> {
+        let (len, walked) = session_manager.get_branch_tail(0, &mut |entry| entry_id(entry) == Some(cached.leaf_id.as_str()));
+        let mut walked = walked.into_iter();
+        if entry_id(&walked.next()?.data) != Some(cached.leaf_id.as_str()) || len != cached.len + walked.len() {
+            return None;
+        }
+        if len == cached.len {
+            return Some(cached);
+        }
+        let tail = Arc::make_mut(&mut cached.tail);
+        for entry in walked {
+            cached.marks.push(tail_mark(&entry.data));
+            tail.push(entry.data);
+        }
+        let start = tail_start(&cached.marks);
+        tail.drain(..start);
+        cached.marks.drain(..start);
+        cached.leaf_id = tail.last().and_then(entry_id)?.to_owned();
+        cached.len = len;
+        Some(cached)
+    }
+}
+
 /// The synchronous capture surface the composition implements.
 ///
 /// `entries` is the REAL branch snapshot (`context.session_manager.get_branch()`'s `data`), captured
@@ -81,6 +180,7 @@ pub trait KibitzerHookSink: Send + Sync {
 }
 
 pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<dyn KibitzerHookSink>, gate_resolver: KibitzerGateResolver) {
+    let tails = Arc::new(ToolBranchTailCache::default());
     for kind in [
         maho_ext_api::EventKind::BeforeAgentStart,
         maho_ext_api::EventKind::ToolCall,
@@ -92,6 +192,7 @@ pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<d
     ] {
         let sink = sink.clone();
         let gate_resolver = gate_resolver.clone();
+        let tails = Arc::clone(&tails);
         api.on(kind, Arc::new(move |event, context| {
             let sink = sink.clone();
             let session_id = context.session_manager.session_id();
@@ -105,12 +206,15 @@ pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<d
             };
             // The tool hooks fire per tool call: capture only the branch TAIL every consumer reads
             // (see `tool_branch_tail`) plus the TRUE branch length as the cursor.
-            let (branch_len, tail): (usize, Vec<Value>) = if (kind == maho_ext_api::EventKind::ToolCall || kind == maho_ext_api::EventKind::ToolResult)
+            let (branch_len, tail): (usize, Arc<Vec<Value>>) = if (kind == maho_ext_api::EventKind::ToolCall || kind == maho_ext_api::EventKind::ToolResult)
                 && sink.wants_branch(kind, session_id)
             {
-                tool_branch_tail(context.session_manager.as_ref())
+                tails.tail(session_id, context.session_manager.as_ref())
             } else {
-                (entries.len(), Vec::new())
+                if kind == maho_ext_api::EventKind::SessionShutdown {
+                    tails.forget(session_id);
+                }
+                (entries.len(), Arc::default())
             };
             // The `before_agent_start` event's OWN prompt, captured from the event variant (not the
             // branch) so it is never inferred from a stale transcript.
@@ -146,5 +250,52 @@ pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<d
                 Ok(maho_ext_api::EventResult::None)
             })
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    struct Branch(Mutex<Vec<Value>>);
+    impl maho_ext_api::ToolSessionManager for Branch {
+        fn session_id(&self) -> &str { "session" }
+        fn session_file(&self) -> Option<&std::path::Path> { None }
+    }
+    impl maho_ext_api::SessionManager for Branch {
+        fn get_entries(&self) -> Vec<maho_ext_api::SessionEntry> { self.get_branch() }
+        fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
+            self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().map(|data| maho_ext_api::SessionEntry {
+                id: data["id"].as_str().unwrap_or_default().to_owned(), parent_id: None, timestamp: String::new(), kind: "message".into(), data: data.clone(),
+            }).collect()
+        }
+        fn get_leaf_id(&self) -> Option<String> { None }
+        fn get_session_name(&self) -> Option<String> { None }
+    }
+
+    fn entry(index: usize) -> Value {
+        let (role, text) = match index % 7 { 0 => ("user", "prompt"), 1 | 4 => ("assistant", "reply"), 2 => ("toolResult", "out"), 5 => ("assistant", " "), _ => ("toolResult", "") };
+        json!({"id": format!("e{index}"), "type": "message", "message": {"role": role, "content": text}})
+    }
+
+    #[test]
+    fn cached_tail_matches_full_branch_scan_while_the_branch_grows() {
+        let branch = Branch(Mutex::new(Vec::new()));
+        let cache = ToolBranchTailCache::default();
+        let mut next = 0;
+        for step in 0..120 {
+            for _ in 0..(step % 9) {
+                branch.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(entry(next));
+                next += 1;
+            }
+            let (len, tail) = cache.tail("session", &branch);
+            assert_eq!((len, tail.as_ref().clone()), tool_branch_tail(&branch), "step {step}");
+        }
+        // A branch that no longer extends the cached leaf falls back to the full scan.
+        branch.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).truncate(10);
+        let (len, tail) = cache.tail("session", &branch);
+        assert_eq!((len, tail.as_ref().clone()), tool_branch_tail(&branch));
     }
 }

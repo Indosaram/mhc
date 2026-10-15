@@ -17,7 +17,9 @@ pub async fn with_thread_history_turns<R>(id: &str,threads: &ThreadRegistry,arch
     if let Some(info) = threads.list_session_infos().await.into_iter().find(|info|info.id == id) {
         // senpi `turnsForEntry`: the process-lifetime TurnLog wins over the session-entry rebuild.
         {let log = log.lock().await;let logged = log.turns(id);if !logged.is_empty() {return Ok(read(logged));}}
-        return Ok(read(&turns_from_session_entries(&maho_core::session_manager::load_entries_from_file(&info.path),&info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis,true))));
+        // The session-file read, JSON parse and turn rebuild are synchronous; keep them off the async worker.
+        let turns = tokio::task::spawn_blocking(move || turns_from_session_entries(&maho_core::session_manager::load_entries_from_file(&info.path),&info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis,true))).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+        return Ok(read(&turns));
     }
     if archive.list_archived_threads().await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?.iter().any(|thread|thread["id"] == id) {return Ok(read(log.lock().await.turns(id)));}
     Err(JsonRpcError::new(-32600,format!("thread not found: {id}")))
@@ -31,7 +33,10 @@ pub async fn register_history_handlers(core: &Arc<RwLock<ServerCore>>,threads: A
                 let params = &context.request["params"];
                 if method == "thread/searchOccurrences" {
                     let (id,_,_,_) = super::search_occurrences::parse_occurrence_params(params)?;
-                    return with_thread_history_turns(id,&threads,&archive,&log,|turns|super::search_occurrences::occurrences_response(params,turns)).await?;
+                    // Snapshot the turns, then scan them after the `TurnLog` lock is released so the
+                    // O(history) search never stalls streaming `item/completed` writers.
+                    let turns = thread_history_turns(id,&threads,&archive,&log).await?;
+                    return super::search_occurrences::occurrences_response(params,&turns);
                 }
                 let id = params["threadId"].as_str().filter(|id|!id.is_empty()).ok_or_else(||JsonRpcError::new(-32600,"thread history requires a non-empty threadId"))?;
                 let cursor = nullable_string(params,"cursor","thread history received an invalid cursor")?;
@@ -43,7 +48,9 @@ pub async fn register_history_handlers(core: &Arc<RwLock<ServerCore>>,threads: A
                 // Paginate on keys only, then build wire values for the selected page alone, reading
                 // the logged turns under the lock instead of cloning the thread's whole log.
                 let options = HistoryPaginationOptions {kind:if is_turns {HistoryKind::Turn} else {HistoryKind::Item},thread_id:id.into(),turn_id,limit,sort_direction:direction,cursor};
-                with_thread_history_turns(id,&threads,&archive,&log,|turns: &[LoggedTurn]| -> Result<Value,JsonRpcError> {
+                // `turns/list` only slices one page under the lock; `items/list` keys every item of every
+                // turn, so it works on a snapshot taken outside the lock instead.
+                let page = |turns: &[LoggedTurn]| -> Result<Value,JsonRpcError> {
                 let mut values = Vec::new();
                 for (turn_index,turn) in turns.iter().enumerate() {
                     if is_turns {values.push(HistoryValue {key:turn.turn_id.clone(),value:(turn_index,0)});} else if options.turn_id.as_ref().is_none_or(|id|id == &turn.turn_id) {
@@ -60,7 +67,8 @@ pub async fn register_history_handlers(core: &Arc<RwLock<ServerCore>>,threads: A
                     if is_turns {logged_turn_with_view(turn,view)} else {json!({"turnId":turn.turn_id,"item":wire_item_to_thread_item(&Value::Object(turn.items[item_index].clone()))})}
                 }).collect::<Vec<_>>();
                 Ok(json!({"data":data,"nextCursor":page.next_cursor,"backwardsCursor":page.backwards_cursor}))
-                }).await?
+                };
+                if is_turns {with_thread_history_turns(id,&threads,&archive,&log,page).await?} else {page(&thread_history_turns(id,&threads,&archive,&log).await?)}
             })
         })});
     }

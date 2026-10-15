@@ -34,7 +34,10 @@ pub async fn run_print_session(
     let _subscription=session.subscribe(std::sync::Arc::new(move|event|{
         // Text mode never reads the wire record, so skip serializing it.
         if !json_mode{let _=sender.send((fallback_diagnostic(event),Ok(serde_json::Value::Null)));return;}
-        let mut record=crate::session_binding::session_event_record(event);
+        let mut record=match event{
+            maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::MessageUpdate{message,assistant_message_event})=>stripped_message_update(message,assistant_message_event).unwrap_or_else(||crate::session_binding::session_event_record(event)),
+            _=>crate::session_binding::session_event_record(event),
+        };
         // senpi publishes `message_update` with `resolvedToolName` (core/tool-call-display-name.ts).
         if let(Ok(record),maho_ext_api::AgentSessionEvent::Agent(update@maho_ext_api::AgentEvent::MessageUpdate{..}))=(&mut record,event)
             &&let Some(name)=event_session().and_then(|session|session.message_update_resolved_tool_name(update)){record["resolvedToolName"]=name.into();}
@@ -99,6 +102,28 @@ pub async fn run_print_session(
     };
     output.flush().await?;diagnostics.flush().await?;Ok(exit_code)
 }
+/// The `message_update` record `to_json_event` reads, without the cumulative `message` and
+/// `partial` snapshots it discards (`partial` stays a trailing null so key order is unchanged).
+/// `None` when the full record is needed: a non-assistant message, `toolcall_start` (reads
+/// `partial`), or the terminal `done`/`error` events.
+fn stripped_message_update(message:&maho_ext_api::AgentMessage,event:&maho_ai::types::AssistantMessageEvent)->Option<Result<serde_json::Value,serde_json::Error>>{
+    use maho_ai::types::AssistantMessageEvent as A;
+    use serde_json::json;
+    let assistant=message.as_assistant()?;
+    let event=match event{
+        A::Start{..}=>json!({"type":"start","partial":null}),
+        A::TextStart{content_index,..}=>json!({"type":"text_start","contentIndex":content_index,"partial":null}),
+        A::TextDelta{content_index,delta,..}=>json!({"type":"text_delta","contentIndex":content_index,"delta":delta,"partial":null}),
+        A::TextEnd{content_index,content,..}=>json!({"type":"text_end","contentIndex":content_index,"content":content,"partial":null}),
+        A::ThinkingStart{content_index,..}=>json!({"type":"thinking_start","contentIndex":content_index,"partial":null}),
+        A::ThinkingDelta{content_index,delta,..}=>json!({"type":"thinking_delta","contentIndex":content_index,"delta":delta,"partial":null}),
+        A::ThinkingEnd{content_index,content,..}=>json!({"type":"thinking_end","contentIndex":content_index,"content":content,"partial":null}),
+        A::ToolcallDelta{content_index,delta,..}=>json!({"type":"toolcall_delta","contentIndex":content_index,"delta":delta,"partial":null}),
+        A::ToolcallEnd{content_index,tool_call,..}=>match serde_json::to_value(tool_call){Ok(tool_call)=>json!({"type":"toolcall_end","contentIndex":content_index,"toolCall":tool_call,"partial":null}),Err(error)=>return Some(Err(error))},
+        A::ToolcallStart{..}|A::Done{..}|A::Error{..}=>return None,
+    };
+    Some(serde_json::to_value(assistant.usage).map(|usage|json!({"type":"message_update","message":{"role":"assistant","usage":usage},"assistantMessageEvent":event})))
+}
 pub fn fallback_diagnostic(event:&maho_ext_api::AgentSessionEvent)->Option<String>{use maho_ext_api::AgentSessionEvent;match event{
     AgentSessionEvent::RetryFallbackApplied{from,to,reason,..}=>Some(format!("Model fallback: {from} -> {to} ({reason})\n")),
     AgentSessionEvent::RetryFallbackExhausted{chain_key,last_error}=>Some(format!("Model fallback exhausted: {chain_key} ({last_error})\n")),
@@ -148,5 +173,20 @@ mod tests {
     #[test] fn provider_native_uses_summary_and_body() { let message=message(json!([{"type":"providerNative","subtype":"image_generation_call","raw":{"result":"YWJj"}}]),"stop",None);let output=format_print_result(Some(&message)).unwrap();assert!(output.stdout.ends_with("\n3 bytes\n"));assert!(!output.stdout.contains("YWJj")); }
     #[test] fn failed_turn_strips_internal_marker_and_exits_one() { let message=message(json!([]),"error",Some("senpi:no-turn-retry:failed"));assert_eq!(format_print_result(Some(&message)).unwrap(),PrintOutput { stdout:String::new(),stderr:"failed\n".into(),exit_code:1 }); }
     #[test] fn missing_error_uses_terminal_status() { let message=message(json!([]),"aborted",None);assert_eq!(format_print_result(Some(&message)).unwrap().stderr,"Request aborted\n"); }
+    #[test] fn stripped_message_update_matches_full_record_json_event() {
+        let partial=message(json!([{"type":"text","text":"ab"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"x":1}}]),"stop",None);
+        let agent_message=maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(partial.clone())));
+        let tool_call:maho_ai::types::ToolCall=serde_json::from_value(json!({"id":"c1","name":"bash","arguments":{"x":1}})).unwrap();
+        use maho_ai::types::AssistantMessageEvent as A;
+        let events=vec![A::Start{partial:partial.clone()},A::TextStart{content_index:0,partial:partial.clone()},A::TextDelta{content_index:0,delta:"b".into(),partial:partial.clone()},A::TextEnd{content_index:0,content:"ab".into(),partial:partial.clone()},A::ThinkingStart{content_index:0,partial:partial.clone()},A::ThinkingDelta{content_index:0,delta:"t".into(),partial:partial.clone()},A::ThinkingEnd{content_index:0,content:"t".into(),partial:partial.clone()},A::ToolcallDelta{content_index:1,delta:"{".into(),partial:partial.clone()},A::ToolcallEnd{content_index:1,tool_call,partial:partial.clone()}];
+        for assistant_message_event in events {
+            let event=maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::MessageUpdate{message:agent_message.clone(),assistant_message_event:assistant_message_event.clone()});
+            let full=crate::session_binding::session_event_record(&event).unwrap();
+            let stripped=stripped_message_update(&agent_message,&assistant_message_event).unwrap().unwrap();
+            let expected=crate::jsonl::serialize_json_line(&crate::json_event::to_json_event(&full).unwrap()).unwrap();
+            assert_eq!(crate::jsonl::serialize_json_line(&crate::json_event::to_json_event(&stripped).unwrap()).unwrap(),expected);
+        }
+        assert!(stripped_message_update(&agent_message,&A::ToolcallStart{content_index:1,partial}).is_none());
+    }
     #[test] fn absent_assistant_outputs_nothing() { assert_eq!(format_print_result(None).unwrap(),PrintOutput::default()); }
 }

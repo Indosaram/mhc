@@ -20,14 +20,28 @@ const TOMBSTONE_SUFFIX: &str = ".json.expunging";
 /// The post-commit observer every manager/lifecycle clone shares.
 type MutationListener = std::sync::Arc<dyn Fn() + Send + Sync>;
 
-/// A parsed record plus the exact file text it was parsed from. Reuse is keyed on content, not
-/// metadata: a same-length rewrite inside one mtime tick (or onto a reused inode) must never
-/// serve a stale record, so only the JSON parse is skipped, never the read.
+/// A parsed record plus the length and hash of the file text it was parsed from. Reuse is keyed
+/// on content, not metadata: a same-length rewrite inside one mtime tick (or onto a reused inode)
+/// must never serve a stale record, so only the JSON parse is skipped, never the read.
 #[derive(Clone)]
 struct CachedRecord {
-    text: String,
+    len: usize,
+    hash: u64,
     record: TaskRecord,
     warnings: Vec<String>,
+}
+
+impl CachedRecord {
+    fn matches(&self, text: &str) -> bool {
+        self.len == text.len() && self.hash == text_hash(text)
+    }
+}
+
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 type ListCache = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, CachedRecord>>>;
@@ -154,7 +168,7 @@ impl TaskRecordStore {
             };
             {
                 let cache = self.list_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(cached) = cache.get(&path).filter(|cached| cached.text == text) {
+                if let Some(cached) = cache.get(&path).filter(|cached| cached.matches(&text)) {
                     records.push(cached.record.clone());
                     diagnostics.extend(cached.warnings.iter().map(|message| {
                         TaskRecordDiagnostic::ParseWarning {
@@ -215,7 +229,7 @@ impl TaskRecordStore {
             };
             {
                 let cache = self.list_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(cached) = cache.get(&path).filter(|cached| cached.text == text) {
+                if let Some(cached) = cache.get(&path).filter(|cached| cached.matches(&text)) {
                     if pred(&cached.record) {
                         return Ok(Some(cached.record.clone()));
                     }
@@ -240,13 +254,16 @@ impl TaskRecordStore {
         warnings: &mut Vec<String>,
     ) -> Result<Option<TaskRecord>, StoreError> {
         let parsed = parse_record_text(path, &text, warnings);
+        let (len, hash) = (text.len(), text_hash(&text));
+        drop(text);
         let mut cache = self.list_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match &parsed {
             Ok(Some(record)) => {
                 cache.insert(
                     path.to_path_buf(),
                     CachedRecord {
-                        text,
+                        len,
+                        hash,
                         record: record.clone(),
                         warnings: warnings.clone(),
                     },

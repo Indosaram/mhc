@@ -343,7 +343,11 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
     }
 
     let rewritten_messages = rewritten_messages?;
-    let mut out = params.clone();
+    // Skip deep-copying the replaced `messages`; the insert keeps its key position.
+    let mut out: Map<String, Value> = params
+        .iter()
+        .map(|(key, value)| (key.clone(), if key == "messages" { Value::Null } else { value.clone() }))
+        .collect();
     out.insert("messages".to_owned(), Value::Array(rewritten_messages));
     Some(out)
 }
