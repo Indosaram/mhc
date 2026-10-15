@@ -12,8 +12,8 @@ impl Drop for CompletionDrop {
 #[tokio::test]
 async fn completion_ignoring_abort_is_dropped_before_session_shutdown_returns() {
     let root=tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":true,"js":false,"rb":false,"jl":false}}"#).unwrap();
+    std::fs::create_dir(root.path().join(".omo")).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":true,"js":false,"rb":false,"jl":false}}"#).unwrap();
     let host=Arc::new(Host::default());
     let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
@@ -74,8 +74,8 @@ struct Registry;
 
 #[tokio::test]
 async fn registered_callable_enforces_configured_detached_capacity() {
-    let root=tempfile::tempdir().unwrap();std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false},"maxDetachedCells":1,"cellTimeoutSeconds":1,"foregroundWindowSeconds":3}"#).unwrap();
+    let root=tempfile::tempdir().unwrap();std::fs::create_dir(root.path().join(".omo")).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false},"maxDetachedCells":1,"cellTimeoutSeconds":1,"foregroundWindowSeconds":3}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
@@ -97,8 +97,8 @@ async fn registered_callable_enforces_configured_detached_capacity() {
 #[tokio::test]
 async fn registered_callable_schema_uses_resolved_language_settings() {
     let root=tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":true,"js":false,"rb":false,"jl":false},"maxDetachedCells":3}"#).unwrap();
+    std::fs::create_dir(root.path().join(".omo")).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":true,"js":false,"rb":false,"jl":false},"maxDetachedCells":3}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
@@ -113,8 +113,8 @@ async fn registered_callable_schema_uses_resolved_language_settings() {
 #[tokio::test]
 async fn concurrent_completion_keeps_each_invocations_context() {
     let root=tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false}}"#).unwrap();
+    std::fs::create_dir(root.path().join(".omo")).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false}}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     let (entered,mut entries)=tokio::sync::mpsc::unbounded_channel();
@@ -168,8 +168,8 @@ impl ExtensionActions for Host {
 #[tokio::test]
 async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eval() {
     let root=tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":true,"js":true,"rb":true,"jl":true}}"#).unwrap();
+    std::fs::create_dir(root.path().join(".omo")).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":true,"js":true,"rb":true,"jl":true}}"#).unwrap();
     let host=Arc::new(Host::default());
     let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
@@ -228,8 +228,8 @@ impl ExtensionSessionActions for Host {
 #[tokio::test]
 async fn native_session_registration_runs_real_worker_and_shutdown_rejects_stale_runs() {
     let root=tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false}}"#).unwrap();
+    std::fs::create_dir(root.path().join(".omo")).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false}}"#).unwrap();
     let host=Arc::new(Host::default());
     let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);

@@ -21,8 +21,8 @@ async fn real_print_entry_trims_piped_stdin() {
 #[tokio::test]
 async fn real_print_entry_rejects_unknown_extension_flags_and_warns_on_unmatched_scope() {
     let dir = tempfile::tempdir().expect("print-entry fixture operation");
-    std::fs::create_dir_all(dir.path().join(".maho")).expect("print-entry fixture operation");
-    std::fs::write(dir.path().join(".maho/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    std::fs::create_dir_all(dir.path().join(".omo")).expect("print-entry fixture operation");
+    std::fs::write(dir.path().join(".omo/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
     let agent = dir.path().join("agent");
     std::fs::create_dir(&agent).expect("print-entry fixture operation");
     std::fs::write(agent.join("models.json"), serde_json::json!({"providers":{"offline":{
@@ -30,7 +30,7 @@ async fn real_print_entry_rejects_unknown_extension_flags_and_warns_on_unmatched
         "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
     }}}).to_string()).expect("print-entry fixture operation");
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
+        .current_dir(dir.path()).env("HOME", dir.path()).env("OMO_CODING_AGENT_DIR", &agent)
         .env_remove("__PI_INTERNAL_SPAWN")
         .args(["-p", "--offline", "--no-session", "--no-tools", "--no-extensions", "--model", "offline/offline", "--models", "nomatch-fixture*", "--definitely-unknown-flag=1", "hello"])
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
@@ -49,8 +49,8 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("print-entry fixture operation");
     let address = listener.local_addr().expect("print-entry fixture operation");
     let dir = tempfile::tempdir().expect("print-entry fixture operation");
-    std::fs::create_dir_all(dir.path().join(".maho")).expect("print-entry fixture operation");
-    std::fs::write(dir.path().join(".maho/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
+    std::fs::create_dir_all(dir.path().join(".omo")).expect("print-entry fixture operation");
+    std::fs::write(dir.path().join(".omo/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
     let agent = dir.path().join("agent");
     std::fs::create_dir(&agent).expect("print-entry fixture operation");
     // Onboarding state lives under the agent home (`getOmoNativeStateDir` -> `<agentDir>/omo-senpi/omo-native`);
@@ -68,7 +68,7 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
         "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
     }}}).to_string()).expect("print-entry fixture operation");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
+        .current_dir(dir.path()).env("HOME", dir.path()).env("OMO_CODING_AGENT_DIR", &agent)
         .env_remove("__PI_INTERNAL_SPAWN")
         .args(["-p", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--prompt-template", "acceptance.md", "--model", "offline/offline", "/acceptance fixture"])
         .args(["--system-prompt", "system.md", "--append-system-prompt", "append.md", "--append-system-prompt", "fixture literal append"])

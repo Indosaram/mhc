@@ -1,6 +1,6 @@
 //! Port of the user-config path layer of senpi `packages/coding-agent/src/config.ts`.
 //!
-//! The engine's own identity is maho (`maho` / `.maho` / `mhc`); an injected brand profile
+//! The engine's own identity is maho (`maho` / `.omo` / `mhc`); an injected brand profile
 //! overrides it, and the legacy `SENPI_`/`PI_` prefixes stay readable.
 
 use std::collections::HashMap;
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn resolves_the_default_agent_dir_under_the_config_dir() {
-        assert_eq!(resolve_agent_dir("/work/project", "/home/u", None), "/home/u/.maho/agent");
+        assert_eq!(resolve_agent_dir("/work/project", "/home/u", None), "/home/u/.omo/agent");
     }
 
     #[test]
@@ -198,7 +198,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
         let project = tmp.path().join("proj");
-        std::fs::create_dir_all(project.join(".maho/agent")).expect("mkdir");
+        std::fs::create_dir_all(project.join(".omo/agent")).expect("mkdir");
         std::fs::create_dir_all(project.join("nested/deep")).expect("mkdir");
         std::fs::create_dir_all(&home).expect("mkdir");
         let resolved = resolve_agent_dir(
@@ -206,11 +206,11 @@ mod tests {
             &home.to_string_lossy(),
             None,
         );
-        assert_eq!(resolved, project.join(".maho/agent").to_string_lossy());
+        assert_eq!(resolved, project.join(".omo/agent").to_string_lossy());
     }
 
     #[test]
     fn agent_dir_label_follows_the_layout() {
-        assert_eq!(agent_dir_label(), "~/.maho/agent");
+        assert_eq!(agent_dir_label(), "~/.omo/agent");
     }
 }

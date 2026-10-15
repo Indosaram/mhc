@@ -93,7 +93,7 @@ fn test_context(session_id: &str) -> ExtensionContext {
         mode: ExtensionMode::Tui,
         has_ui: true,
         cwd: std::path::PathBuf::from("/workspace"),
-        agent_dir: std::path::PathBuf::from("/workspace/.maho"),
+        agent_dir: std::path::PathBuf::from("/workspace/.omo"),
         session_manager: Arc::new(TestSession(session_id.to_string())),
         model_registry: Arc::new(TestModels),
         model: None,

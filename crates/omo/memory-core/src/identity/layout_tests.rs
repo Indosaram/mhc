@@ -45,7 +45,7 @@ fn test_runtime_subdirnames_when_enumerated_then_every_declared_subdir_lives_und
 
 #[test]
 fn test_default_memory_root_when_no_override_then_it_is_home_dot_omo_memory() {
-    let expected = home_directory().join(".maho").join("memory");
+    let expected = home_directory().join(".omo").join("memory");
     assert_eq!(default_memory_root(), expected);
 }
 

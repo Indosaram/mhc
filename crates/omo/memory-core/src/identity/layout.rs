@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::support::paths::resolve_from;
 
-pub const MEMORY_ROOT_ENV_VAR: &str = "MAHO_MEMORY_HOME";
+pub const MEMORY_ROOT_ENV_VAR: &str = "OMO_MEMORY_HOME";
 pub const AGENTS_DIRNAME: &str = "agents";
 pub const REPO_DIRNAME: &str = "repo";
 pub const RUNTIME_DIRNAME: &str = "runtime";
@@ -52,7 +52,7 @@ pub struct MemoryIdentityPaths {
 
 /// `~/.omo/memory` (Windows: `%USERPROFILE%\.omo\memory`).
 pub fn default_memory_root() -> PathBuf {
-    home_directory().join(".maho").join("memory")
+    home_directory().join(".omo").join("memory")
 }
 
 /// `OMO_MEMORY_HOME` when set and non-blank, resolved against `cwd`; otherwise

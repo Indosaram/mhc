@@ -199,7 +199,7 @@ impl MemoryRuntime {
         {
             host.env.insert(
                 memory_core::identity::layout::MEMORY_ROOT_ENV_VAR.to_owned(),
-                Path::new(home).join(".maho/memory").to_string_lossy().into_owned(),
+                Path::new(home).join(".omo/memory").to_string_lossy().into_owned(),
             );
         }
         let initial = (host.load_config)()?;

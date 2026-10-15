@@ -124,8 +124,8 @@ impl ExtensionSessionActions for Host {
 #[tokio::test]
 async fn real_eval_completion_handle_survives_cells_but_not_session_switch() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"), r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false}}"#).unwrap();
+    std::fs::create_dir(root.path().join(".omo")).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"), r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false}}"#).unwrap();
 
     let host = Arc::new(Host::default());
     let runtime = ExtensionRuntime::default();

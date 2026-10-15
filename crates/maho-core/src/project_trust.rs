@@ -178,7 +178,7 @@ mod tests {
         let prompt = format_project_trust_prompt("/work");
         assert!(prompt.contains("/work"));
         assert!(prompt.contains("maho"));
-        assert!(prompt.contains(".maho"));
+        assert!(prompt.contains(".omo"));
     }
 
     #[tokio::test]
@@ -214,8 +214,8 @@ mod tests {
     #[tokio::test]
     async fn the_extension_result_is_honored_and_remembered() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(tmp.path().join(".maho")).expect("mkdir");
-        std::fs::write(tmp.path().join(".maho/settings.json"), "{}").expect("write");
+        std::fs::create_dir_all(tmp.path().join(".omo")).expect("mkdir");
+        std::fs::write(tmp.path().join(".omo/settings.json"), "{}").expect("write");
         let cwd = tmp.path().to_string_lossy().into_owned();
         let trust_store = store();
         let emit = |_cwd: &str| Ok(Some(ProjectTrustEventResult { trusted: TrustDecision::Yes, remember: Some(true) }));
@@ -235,8 +235,8 @@ mod tests {
     #[tokio::test]
     async fn an_untrusted_default_is_returned_for_a_ui_less_session() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(tmp.path().join(".maho")).expect("mkdir");
-        std::fs::write(tmp.path().join(".maho/settings.json"), "{}").expect("write");
+        std::fs::create_dir_all(tmp.path().join(".omo")).expect("mkdir");
+        std::fs::write(tmp.path().join(".omo/settings.json"), "{}").expect("write");
         let cwd = tmp.path().to_string_lossy().into_owned();
         let trust_store = store();
         assert!(!resolve_project_trusted(ResolveProjectTrustedOptions {

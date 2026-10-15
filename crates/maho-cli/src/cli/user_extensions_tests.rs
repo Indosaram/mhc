@@ -10,7 +10,7 @@ fn resource(path: &str, enabled: bool) -> ResolvedResource {
             source: "config".into(),
             scope: SourceScope::User,
             origin: SourceOrigin::TopLevel,
-            base_dir: Some("/home/user/.maho/agent/extensions".into()),
+            base_dir: Some("/home/user/.omo/agent/extensions".into()),
         },
     }
 }
@@ -27,7 +27,7 @@ fn registered_native_identifier_produces_real_factory_with_source_provenance() {
     assert_eq!(result.factories[0].source_info.source, "config");
     assert_eq!(result.factories[0].source_info.scope, maho_ext_api::SourceScope::User);
     assert_eq!(result.factories[0].source_info.origin, maho_ext_api::SourceOrigin::TopLevel);
-    assert_eq!(result.factories[0].source_info.base_dir.as_deref(), Some("/home/user/.maho/agent/extensions"));
+    assert_eq!(result.factories[0].source_info.base_dir.as_deref(), Some("/home/user/.omo/agent/extensions"));
 }
 
 #[test]

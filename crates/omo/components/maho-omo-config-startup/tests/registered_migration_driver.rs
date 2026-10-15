@@ -16,7 +16,7 @@ fn home_env(home: &Path) -> BTreeMap<String, String> {
 }
 
 fn migrated_document(home: &Path) -> serde_json::Value {
-    let text = std::fs::read_to_string(home.join(".maho/omo.jsonc")).expect("migrated document");
+    let text = std::fs::read_to_string(home.join(".omo/omo.jsonc")).expect("migrated document");
     let parsed = omo_config_core::internal::jsonc::parse_jsonc_safe(&text);
     assert!(parsed.errors.is_empty(), "migrated document must parse: {:?}", parsed.errors);
     parsed.data.expect("migrated document is JSONC")
@@ -30,10 +30,10 @@ fn case1_fresh_legacy_migration_writes_the_unified_document() -> Result<(), Box<
     let project = home.join("project");
     std::fs::create_dir_all(&project)?;
     std::fs::create_dir_all(home.join(".config/opencode"))?;
-    std::fs::create_dir_all(home.join(".maho"))?;
+    std::fs::create_dir_all(home.join(".omo"))?;
     std::fs::write(home.join(".config/opencode/oh-my-openagent.jsonc"),
         r#"{"agents":{"finder":{"model":"provider/finder"}}}"#)?;
-    std::fs::write(home.join(".maho/config.jsonc"), r#"{"codegraph":{"daemon":false}}"#)?;
+    std::fs::write(home.join(".omo/config.jsonc"), r#"{"codegraph":{"daemon":false}}"#)?;
     let env = home_env(&home);
     let result = run_senpi_startup_migration(&project.to_string_lossy(), &env, &home.to_string_lossy());
     assert!(result.error.is_none(), "{:?}", result.error);
@@ -55,19 +55,19 @@ fn case2_second_run_reports_nothing_and_leaves_the_document_byte_identical() -> 
     let home = root.path().join("home");
     let project = home.join("project");
     std::fs::create_dir_all(&project)?;
-    std::fs::create_dir_all(home.join(".maho"))?;
-    std::fs::write(home.join(".maho/config.jsonc"), r#"{"codegraph":{"daemon":false}}"#)?;
+    std::fs::create_dir_all(home.join(".omo"))?;
+    std::fs::write(home.join(".omo/config.jsonc"), r#"{"codegraph":{"daemon":false}}"#)?;
     let env = home_env(&home);
     let cwd = project.to_string_lossy().into_owned();
     let home_path = home.to_string_lossy().into_owned();
     let first = run_senpi_startup_migration(&cwd, &env, &home_path);
     assert!(first.error.is_none(), "{:?}", first.error);
-    let after_first = std::fs::read_to_string(home.join(".maho/omo.jsonc"))?;
+    let after_first = std::fs::read_to_string(home.join(".omo/omo.jsonc"))?;
     let second = run_senpi_startup_migration(&cwd, &env, &home_path);
     assert!(second.error.is_none(), "{:?}", second.error);
     assert!(second.migrated_from.is_empty());
     assert!(second.results.iter().all(|run| run.status != MigrationStatus::Migrated));
-    let after_second = std::fs::read_to_string(home.join(".maho/omo.jsonc"))?;
+    let after_second = std::fs::read_to_string(home.join(".omo/omo.jsonc"))?;
     assert_eq!(after_first, after_second, "second run must not rewrite the document");
     Ok(())
 }
@@ -79,15 +79,15 @@ fn case3_malformed_legacy_input_reports_and_writes_no_target() -> Result<(), Box
     let home = root.path().join("home");
     let project = home.join("project");
     std::fs::create_dir_all(&project)?;
-    std::fs::create_dir_all(home.join(".maho"))?;
-    std::fs::write(home.join(".maho/config.jsonc"), "{\"task\":")?;
+    std::fs::create_dir_all(home.join(".omo"))?;
+    std::fs::write(home.join(".omo/config.jsonc"), "{\"task\":")?;
     let env = home_env(&home);
     let result = run_senpi_startup_migration(&project.to_string_lossy(), &env, &home.to_string_lossy());
     assert!(
         result.error.is_some() || result.results.iter().any(|run| !run.diagnostics.is_empty()),
         "a malformed legacy source must be reported"
     );
-    assert!(!home.join(".maho/omo.jsonc").exists(), "no target is written for a malformed source");
+    assert!(!home.join(".omo/omo.jsonc").exists(), "no target is written for a malformed source");
     Ok(())
 }
 
@@ -98,8 +98,8 @@ fn case4_migrated_document_reloads_without_codegraph() -> Result<(), Box<dyn std
     let home = root.path().join("home");
     let project = home.join("project");
     std::fs::create_dir_all(&project)?;
-    std::fs::create_dir_all(home.join(".maho"))?;
-    std::fs::write(home.join(".maho/config.jsonc"), r#"{"codegraph":{"daemon":false}}"#)?;
+    std::fs::create_dir_all(home.join(".omo"))?;
+    std::fs::write(home.join(".omo/config.jsonc"), r#"{"codegraph":{"daemon":false}}"#)?;
     let env = home_env(&home);
     let cwd = project.to_string_lossy().into_owned();
     let first = run_senpi_startup_migration(&cwd, &env, &home.to_string_lossy());

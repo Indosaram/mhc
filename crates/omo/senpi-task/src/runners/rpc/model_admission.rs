@@ -102,7 +102,7 @@ fn profile_key(descriptor: &RpcSpawnDescriptor) -> String {
         descriptor.command,
         descriptor.args,
         descriptor.cwd,
-        env("MAHO_CODING_AGENT_DIR"),
+        env("OMO_CODING_AGENT_DIR"),
         env("SENPI_CODING_AGENT_DIR"),
         env("PI_CODING_AGENT_DIR"),
         env("HOME"),

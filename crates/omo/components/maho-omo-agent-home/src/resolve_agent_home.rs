@@ -24,7 +24,7 @@ pub fn resolve_agent_home(
             return resolved;
         }
     }
-    let branded = home_dir.join(".maho");
+    let branded = home_dir.join(".omo");
     let canonical = branded.join("agent");
     if exists(&canonical.join(AGENT_HOME_SENTINEL)) { return canonical; }
     if exists(&branded.join(AGENT_HOME_SENTINEL)) { return branded; }
@@ -50,8 +50,8 @@ mod tests {
         for key in &AGENT_DIR_ENV_NAMES[1..] { assert_eq!(resolve(&[(key,"/explicit/legacy")], |_| false), Path::new("/explicit/legacy")); }
     }
     #[test] fn blank_value_ignored() { assert_eq!(resolve(&[("OMO_CODING_AGENT_DIR","   ")], |_| false), Path::new("/home/tester/.senpi/agent")); }
-    #[test] fn flat_branded_home_detected() { assert_eq!(resolve(&[], |p| p == Path::new("/home/tester/.maho/settings.json")), Path::new("/home/tester/.maho")); }
+    #[test] fn flat_branded_home_detected() { assert_eq!(resolve(&[], |p| p == Path::new("/home/tester/.omo/settings.json")), Path::new("/home/tester/.omo")); }
     #[test] fn legacy_directory_default() { assert_eq!(resolve(&[], |_| false), Path::new("/home/tester/.senpi/agent")); }
-    #[test] fn canonical_wins_over_flat() { assert_eq!(resolve(&[], |p| p == Path::new("/home/tester/.maho/settings.json") || p == Path::new("/home/tester/.maho/agent/settings.json")), Path::new("/home/tester/.maho/agent")); }
+    #[test] fn canonical_wins_over_flat() { assert_eq!(resolve(&[], |p| p == Path::new("/home/tester/.omo/settings.json") || p == Path::new("/home/tester/.omo/agent/settings.json")), Path::new("/home/tester/.omo/agent")); }
     #[test] fn relative_override_normalized() { assert_eq!(resolve(&[("OMO_CODING_AGENT_DIR"," ../chosen/./agent ")], |_| false), Path::new("/chosen/agent")); }
 }

@@ -718,7 +718,7 @@ mod tests {
     /// Runs an async flow with the agent dir overridden, without mutating the process env
     /// (the crate-wide unsafe_code = "forbid" lint forbids set_var).
     fn with_agent_dir<R>(dir: &str, f: impl FnOnce() -> R) -> R {
-        with_env_overrides(&[("MAHO_CODING_AGENT_DIR", Some(dir))], f)
+        with_env_overrides(&[("OMO_CODING_AGENT_DIR", Some(dir))], f)
     }
 
     #[test]

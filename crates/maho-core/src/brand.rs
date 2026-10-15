@@ -44,7 +44,7 @@ pub struct BrandProfile {
     pub command: Option<String>,
     /// Version shown in the header, terminal titles and `--version`.
     pub display_version: Option<String>,
-    /// Config directory name, e.g. `.maho`.
+    /// Config directory name, e.g. `.omo`.
     pub config_dir: String,
     /// When true the agent state lives directly under the config directory, with no `agent` segment.
     pub flat_layout: bool,
@@ -59,16 +59,16 @@ pub struct BrandProfile {
     pub changelog: Option<BrandChangelog>,
 }
 
-/// The engine's own identity, used when no brand profile is injected: `maho` / `.maho` / `mhc`
+/// The engine's own identity, used when no brand profile is injected: `maho` / `.omo` / `mhc`
 /// (plan IS-9, D-M7).
 pub fn standalone_brand_profile() -> BrandProfile {
     BrandProfile {
         name: "maho".to_owned(),
         command: Some("mhc".to_owned()),
         display_version: None,
-        config_dir: ".maho".to_owned(),
+        config_dir: ".omo".to_owned(),
         flat_layout: false,
-        env_prefix: "MAHO".to_owned(),
+        env_prefix: "OMO".to_owned(),
         user_agent: "maho".to_owned(),
         originator: None,
         update: None,
@@ -310,7 +310,7 @@ mod tests {
     fn standalone_profile_is_maho() {
         let profile = standalone_brand_profile();
         assert_eq!(profile.name, "maho");
-        assert_eq!(profile.config_dir, ".maho");
+        assert_eq!(profile.config_dir, ".omo");
         assert_eq!(profile.command.as_deref(), Some("mhc"));
     }
 

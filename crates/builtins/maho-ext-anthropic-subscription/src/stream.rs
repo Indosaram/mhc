@@ -77,7 +77,7 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
                     mapper.output.diagnostics.get_or_insert_with(Vec::new).push(maho_ai::utils::diagnostics::create_assistant_message_diagnostic("claude_sdk_oauth_deprecation",&maho_ai::utils::diagnostics::Thrown::Value(json!(guidance)),None));
                 }
             }
-            let mut configuration = crate::options::build_query_configuration(crate::options::QueryOptionsInput { model: &model_json, context: &context_json, stream_options: &options_json, settings: &deps.settings, lane, cwd: &deps.cwd, agent_dir: &deps.agent_dir, config_directory: ".maho", tools: Some(&resolved.sdk_tools), executable: deps.executable.to_str() })?;
+            let mut configuration = crate::options::build_query_configuration(crate::options::QueryOptionsInput { model: &model_json, context: &context_json, stream_options: &options_json, settings: &deps.settings, lane, cwd: &deps.cwd, agent_dir: &deps.agent_dir, config_directory: ".omo", tools: Some(&resolved.sdk_tools), executable: deps.executable.to_str() })?;
             if options.as_ref().is_none_or(|options| options.tool_choice != Some(maho_ai::types::ToolChoice::None)) && !resolved.custom_tools.is_empty() { configuration["customTools"] = json!(resolved.custom_tools); }
             let resident = options.as_ref().filter(|options| options.stream.request.stream_kind == Some(maho_ai::types::StreamKind::Main) && deps.settings.values.get("resumeMode").and_then(serde_json::Value::as_str) != Some("off")).and_then(|options| options.stream.session_id.as_deref());
             if resident.is_none() && options.as_ref().is_some_and(|options| options.stream.request.stream_kind == Some(maho_ai::types::StreamKind::Main)) {

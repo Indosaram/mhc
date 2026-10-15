@@ -233,12 +233,12 @@ fn preset_append_composes_agent_skills_and_project_rule_blocks() {
     let skill_prompt="The following skills provide specialized instructions for specific tasks.\n<available_skills>\n<skill>deploy</skill>\n</available_skills>";
     let rule="<project_rules>\n## Project Instructions\nShip carefully.\n</project_rules>";
     let prompt=format!("{skill_prompt}\n{REGION_START}\n{rule}\n{REGION_END}");
-    let extracted_agents=agents(directory.path(),directory.path(),".maho").expect("agent block");
-    let extracted_skills=skills(Some(&prompt),&directory.path().join("skills"),&directory.path().join(".maho/skills")).expect("skills block");
+    let extracted_agents=agents(directory.path(),directory.path(),".omo").expect("agent block");
+    let extracted_skills=skills(Some(&prompt),&directory.path().join("skills"),&directory.path().join(".omo/skills")).expect("skills block");
     let extracted_rules=project_rules(Some(&prompt)).expect("project rule");
     let settings=maho_ext_anthropic_subscription::settings::load(&json!({"anthropicSubscriptionProvider":{"systemPromptMode":"preset-append"}}),&serde_json::Value::Null,&Default::default());
     let model=json!({"id":"claude-sonnet-4-6"});let context=json!({"systemPrompt":prompt,"tools":[]});
-    let options=build_query_configuration(QueryOptionsInput {model:&model,context:&context,stream_options:&json!({}),settings:&settings,lane:maho_ext_anthropic_subscription::auth_lane::TokenInjection::Ambient,cwd:directory.path(),agent_dir:directory.path(),config_directory:".maho",tools:None,executable:None}).expect("query configuration");
+    let options=build_query_configuration(QueryOptionsInput {model:&model,context:&context,stream_options:&json!({}),settings:&settings,lane:maho_ext_anthropic_subscription::auth_lane::TokenInjection::Ambient,cwd:directory.path(),agent_dir:directory.path(),config_directory:".omo",tools:None,executable:None}).expect("query configuration");
     let append=options["systemPrompt"]["append"].as_str().expect("preset append");
     for block in [extracted_agents,extracted_skills,extracted_rules.to_owned()] {assert!(append.contains(&block));}
 }

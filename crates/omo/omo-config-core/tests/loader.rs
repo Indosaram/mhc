@@ -117,7 +117,7 @@ fn resolve_home_dir_preserves_an_absolute_posix_home() {
 #[test]
 fn resolve_user_omo_config_directory_is_dot_omo_under_home() {
     let env = env_of(&[("HOME", "/home/alice")]);
-    assert_eq!(resolve_user_omo_config_directory(&env), "/home/alice/.maho");
+    assert_eq!(resolve_user_omo_config_directory(&env), "/home/alice/.omo");
 }
 
 #[test]
@@ -127,13 +127,13 @@ fn resolve_user_omo_config_directory_ignores_xdg_and_appdata() {
         ("XDG_CONFIG_HOME", "/home/alice/xdg"),
         ("APPDATA", "/home/alice/AppData/Roaming"),
     ]);
-    assert_eq!(resolve_user_omo_config_directory(&env), "/home/alice/.maho");
+    assert_eq!(resolve_user_omo_config_directory(&env), "/home/alice/.omo");
 }
 
 #[test]
 fn resolve_user_omo_config_directory_falls_back_to_userprofile() {
     let env = env_of(&[("USERPROFILE", "/home/alice")]);
-    assert_eq!(resolve_user_omo_config_directory(&env), "/home/alice/.maho");
+    assert_eq!(resolve_user_omo_config_directory(&env), "/home/alice/.omo");
 }
 
 #[test]
@@ -141,14 +141,14 @@ fn resolve_user_omo_config_path_is_dot_omo_omo_jsonc() {
     let env = env_of(&[("HOME", "/home/alice")]);
     assert_eq!(
         resolve_user_omo_config_path(&env),
-        "/home/alice/.maho/omo.jsonc"
+        "/home/alice/.omo/omo.jsonc"
     );
 }
 
 #[test]
 fn resolve_omo_config_paths_selects_the_user_jsonc_candidate() {
     let file_system = FakeReadFileSystem::default()
-        .with_file("/home/alice/.maho/omo.jsonc")
+        .with_file("/home/alice/.omo/omo.jsonc")
         .with_file("/home/alice/work/.omo/omo.jsonc");
     let candidates = resolve_omo_config_paths(&ResolveOmoConfigPathsOptions {
         cwd: "/home/alice/work".to_string(),
@@ -156,7 +156,7 @@ fn resolve_omo_config_paths_selects_the_user_jsonc_candidate() {
         file_system: Some(&file_system),
         platform: Some("linux".to_string()),
     });
-    assert_eq!(candidates[0].path, "/home/alice/.maho/omo.jsonc");
+    assert_eq!(candidates[0].path, "/home/alice/.omo/omo.jsonc");
     assert_eq!(candidates[0].scope, "user");
     assert_eq!(candidates[1].path, "/home/alice/work/.omo/omo.jsonc");
     assert_eq!(candidates[1].scope, "project");
@@ -165,27 +165,27 @@ fn resolve_omo_config_paths_selects_the_user_jsonc_candidate() {
 #[test]
 fn resolve_omo_config_paths_prefers_the_user_jsonc_over_json() {
     let file_system = FakeReadFileSystem::default()
-        .with_file("/home/alice/.maho/omo.jsonc")
-        .with_file("/home/alice/.maho/omo.json");
+        .with_file("/home/alice/.omo/omo.jsonc")
+        .with_file("/home/alice/.omo/omo.json");
     let candidates = resolve_omo_config_paths(&ResolveOmoConfigPathsOptions {
         cwd: "/home/alice/work".to_string(),
         env: Some(env_of(&[("HOME", "/home/alice")])),
         file_system: Some(&file_system),
         platform: Some("linux".to_string()),
     });
-    assert_eq!(candidates[0].path, "/home/alice/.maho/omo.jsonc");
+    assert_eq!(candidates[0].path, "/home/alice/.omo/omo.jsonc");
 }
 
 #[test]
 fn resolve_omo_config_paths_falls_back_to_the_user_json() {
-    let file_system = FakeReadFileSystem::default().with_file("/home/alice/.maho/omo.json");
+    let file_system = FakeReadFileSystem::default().with_file("/home/alice/.omo/omo.json");
     let candidates = resolve_omo_config_paths(&ResolveOmoConfigPathsOptions {
         cwd: "/home/alice/work".to_string(),
         env: Some(env_of(&[("HOME", "/home/alice")])),
         file_system: Some(&file_system),
         platform: Some("linux".to_string()),
     });
-    assert_eq!(candidates[0].path, "/home/alice/.maho/omo.json");
+    assert_eq!(candidates[0].path, "/home/alice/.omo/omo.json");
 }
 
 #[test]
@@ -202,13 +202,13 @@ fn resolve_omo_config_paths_never_selects_the_legacy_config_tree() {
             .iter()
             .any(|candidate| candidate.path == "/home/alice/.config/omo/omo.jsonc")
     );
-    assert_eq!(candidates[0].path, "/home/alice/.maho/omo.jsonc");
+    assert_eq!(candidates[0].path, "/home/alice/.omo/omo.jsonc");
 }
 
 #[test]
 fn resolve_omo_config_paths_keeps_the_user_candidate_first() {
     let file_system = FakeReadFileSystem::default()
-        .with_file("/home/alice/.maho/omo.jsonc")
+        .with_file("/home/alice/.omo/omo.jsonc")
         .with_file("/home/alice/work/project/.omo/omo.jsonc");
     let candidates = resolve_omo_config_paths(&ResolveOmoConfigPathsOptions {
         cwd: "/home/alice/work/project".to_string(),
@@ -222,7 +222,7 @@ fn resolve_omo_config_paths_keeps_the_user_candidate_first() {
             .map(|candidate| (candidate.path.as_str(), candidate.scope))
             .collect::<Vec<_>>(),
         vec![
-            ("/home/alice/.maho/omo.jsonc", "user"),
+            ("/home/alice/.omo/omo.jsonc", "user"),
             ("/home/alice/work/project/.omo/omo.jsonc", "project"),
         ]
     );
@@ -500,7 +500,7 @@ fn load_walks_user_and_project_configs_with_the_nearest_project_winning() {
     std::fs::create_dir_all(&cwd).expect("cwd");
 
     write_file(
-        &format!("{home}/.maho/omo.jsonc"),
+        &format!("{home}/.omo/omo.jsonc"),
         r#"{
             "categories": { "quick": { "model": "user-model", "tools": { "read": true } } },
             "agents": { "reviewer": { "model": "user-agent", "tools": { "bash": false } } },
@@ -585,7 +585,7 @@ fn load_merges_partial_team_layers() {
     std::fs::create_dir_all(&cwd).expect("cwd");
 
     write_file(
-        &format!("{home}/.maho/omo.jsonc"),
+        &format!("{home}/.omo/omo.jsonc"),
         r#"{"teams":{"alpha":{"members":[{"name":"one","kind":"category","category":"quick","prompt":"go"}]}}}"#,
     );
     write_file(
@@ -695,7 +695,7 @@ fn load_survives_malformed_and_unreadable_configs_with_typed_diagnostics() {
     std::fs::create_dir_all(&cwd).expect("cwd");
     let unreadable_path = format!("{project}/.omo/omo.jsonc");
     write_file(
-        &format!("{home}/.maho/omo.jsonc"),
+        &format!("{home}/.omo/omo.jsonc"),
         r#"{"task":{"default_concurrency":"five"}}"#,
     );
     write_file(&unreadable_path, r#"{"task":{"default_concurrency":3}}"#);
@@ -705,7 +705,7 @@ fn load_survives_malformed_and_unreadable_configs_with_typed_diagnostics() {
         ..FakeReadFileSystem::default()
     };
     file_system.files.insert(
-        format!("{home}/.maho/omo.jsonc"),
+        format!("{home}/.omo/omo.jsonc"),
         r#"{"task":{"default_concurrency":"five"}}"#.to_string(),
     );
     file_system.files.insert(
@@ -746,7 +746,7 @@ fn load_reads_the_user_json_and_prefers_jsonc_when_both_exist() {
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(&cwd).expect("cwd");
-    let json_path = format!("{home}/.maho/omo.json");
+    let json_path = format!("{home}/.omo/omo.json");
     write_file(&json_path, r#"{"task":{"default_concurrency":9}}"#);
 
     let json_only = load_omo_config(&LoadOmoConfigOptions {
@@ -766,9 +766,9 @@ fn load_reads_the_user_json_and_prefers_jsonc_when_both_exist() {
     let second_home = format!("{second_root_path}/home");
     let second_cwd = format!("{second_home}/project");
     std::fs::create_dir_all(&second_cwd).expect("cwd");
-    let jsonc_path = format!("{second_home}/.maho/omo.jsonc");
+    let jsonc_path = format!("{second_home}/.omo/omo.jsonc");
     write_file(
-        &format!("{second_home}/.maho/omo.json"),
+        &format!("{second_home}/.omo/omo.json"),
         r#"{"task":{"default_concurrency":8}}"#,
     );
     write_file(&jsonc_path, r#"{"task":{"default_concurrency":4}}"#);
@@ -793,7 +793,7 @@ fn load_tolerates_a_schema_key_without_diagnostics() {
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(&cwd).expect("cwd");
-    let user_path = format!("{home}/.maho/omo.jsonc");
+    let user_path = format!("{home}/.omo/omo.jsonc");
     write_file(
         &user_path,
         &format!(r#"{{"$schema":"{schema_url}","task":{{"default_concurrency":3}}}}"#),
@@ -821,7 +821,7 @@ fn load_reads_ancestor_project_configs_when_cwd_is_outside_home() {
     std::fs::create_dir_all(&outside_project).expect("cwd");
     std::fs::create_dir_all(&home).expect("home");
     write_file(
-        &format!("{home}/.maho/omo.jsonc"),
+        &format!("{home}/.omo/omo.jsonc"),
         r#"{"task":{"default_concurrency":2}}"#,
     );
     write_file(
@@ -858,7 +858,7 @@ fn load_resolution_contributes_every_layer_in_precedence_order() {
     let cwd = format!("{project}/child");
     std::fs::create_dir_all(&cwd).expect("cwd");
     write_file(
-        &format!("{home}/.maho/omo.jsonc"),
+        &format!("{home}/.omo/omo.jsonc"),
         r#"{
             "task": { "default_concurrency": 1, "max_depth": 3 },
             "[native]": { "task": { "default_concurrency": 2 } },
@@ -896,7 +896,7 @@ fn load_keeps_raw_layer_provenance_for_user_and_project() {
     let cwd = format!("{project}/child");
     std::fs::create_dir_all(&cwd).expect("cwd");
     write_file(
-        &format!("{home}/.maho/omo.jsonc"),
+        &format!("{home}/.omo/omo.jsonc"),
         r#"{"task":{"default_concurrency":1},"profiles":{"opus":{"task":{"default_concurrency":3}}}}"#,
     );
     write_file(
@@ -944,7 +944,7 @@ fn load_codex_view_does_not_let_defaults_overwrite_base_telemetry() {
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(&cwd).expect("cwd");
     write_file(
-        &format!("{home}/.maho/omo.jsonc"),
+        &format!("{home}/.omo/omo.jsonc"),
         r#"{"telemetry":{"enabled":false},"[codex]":{"telemetry":{}}}"#,
     );
 
@@ -968,7 +968,7 @@ fn load_reports_an_unknown_activated_profile_and_skips_its_overlay() {
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(&cwd).expect("cwd");
     write_file(
-        &format!("{home}/.maho/omo.jsonc"),
+        &format!("{home}/.omo/omo.jsonc"),
         r#"{"task":{"default_concurrency":1},"[native]":{"task":{"default_concurrency":2}},"profiles":{"opus":{"task":{"default_concurrency":3}}}}"#,
     );
 
@@ -992,9 +992,9 @@ fn telemetry_fixture(content: &str) -> (tempfile::TempDir, String, String) {
     let root_path = root.path().to_string_lossy().to_string();
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
-    std::fs::create_dir_all(format!("{home}/.maho")).expect("omo dir");
+    std::fs::create_dir_all(format!("{home}/.omo")).expect("omo dir");
     std::fs::create_dir_all(&cwd).expect("cwd");
-    write_file(&format!("{home}/.maho/omo.json"), content);
+    write_file(&format!("{home}/.omo/omo.json"), content);
     (root, home, cwd)
 }
 
@@ -1171,9 +1171,9 @@ EVAL-FIRST: `eval` is your default execution surface. Before acting, ask "how do
     let root_path = root.path().to_string_lossy().to_string();
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
-    std::fs::create_dir_all(format!("{home}/.maho")).expect("omo dir");
+    std::fs::create_dir_all(format!("{home}/.omo")).expect("omo dir");
     std::fs::create_dir_all(&cwd).expect("cwd");
-    write_file(&format!("{home}/.maho/omo.jsonc"), &user_config.to_string());
+    write_file(&format!("{home}/.omo/omo.jsonc"), &user_config.to_string());
 
     let result = load_omo_config(&LoadOmoConfigOptions {
         cwd: Some(cwd),
@@ -1310,10 +1310,10 @@ fn diagnostic_lines_render_a_dropped_invalid_leaf() {
     let root = tempfile::tempdir().expect("tempdir");
     let home = format!("{}/home", root.path().to_string_lossy());
     let cwd = format!("{home}/project");
-    std::fs::create_dir_all(format!("{home}/.maho")).expect("config dir");
+    std::fs::create_dir_all(format!("{home}/.omo")).expect("config dir");
     std::fs::create_dir_all(&cwd).expect("cwd");
     write_file(
-        &format!("{home}/.maho/omo.jsonc"),
+        &format!("{home}/.omo/omo.jsonc"),
         r#"{ "task": { "max_depth": -1, "default_concurrency": 3 } }"#,
     );
     let result = load_omo_config(&LoadOmoConfigOptions {
@@ -1326,7 +1326,7 @@ fn diagnostic_lines_render_a_dropped_invalid_leaf() {
     assert_eq!(
         lines,
         vec![
-            "config: ~/.maho/omo.jsonc: task.max_depth ignored (invalid value)".to_string()
+            "config: ~/.omo/omo.jsonc: task.max_depth ignored (invalid value)".to_string()
         ]
     );
 }
@@ -1516,13 +1516,13 @@ fn prune_fixture() -> (tempfile::TempDir, String, String) {
     let root_path = root.path().to_string_lossy().to_string();
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project/child");
-    std::fs::create_dir_all(format!("{home}/.maho")).expect("config dir");
+    std::fs::create_dir_all(format!("{home}/.omo")).expect("config dir");
     std::fs::create_dir_all(&cwd).expect("cwd");
     (root, home, cwd)
 }
 
 fn write_user_config(home: &str, content: &str) -> String {
-    let path = format!("{home}/.maho/omo.json");
+    let path = format!("{home}/.omo/omo.json");
     write_file(&path, content);
     path
 }

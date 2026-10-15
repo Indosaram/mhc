@@ -118,7 +118,7 @@ mhc --tools read,grep,find,ls -p "Review src/"   # read-only mode
 mhc --help                                       # all options
 ```
 
-Configuration lives in `~/.maho/agent` (override with `MAHO_CODING_AGENT_DIR`). Already using OmO?
+Configuration lives in `~/.omo/agent` (override with `MAHO_CODING_AGENT_DIR`). Already using OmO?
 
 ```bash
 mhc import-omo        # import settings, models, keybindings, auth and sessions from ~/.omo/agent
