@@ -143,6 +143,7 @@ impl SessionManager for ContextSessionManager {
     fn get_session_dir(&self) -> Option<std::path::PathBuf> { self.active(); self.session.get_session_dir() }
     fn get_entries(&self) -> Vec<SessionEntry> { self.active(); self.session.get_entries() }
     fn get_branch(&self) -> Vec<SessionEntry> { self.active(); self.session.get_branch() }
+    fn get_branch_tail(&self, min_entries: usize, satisfied: &mut dyn FnMut(&JsonValue) -> bool) -> (usize, Vec<SessionEntry>) { self.active(); self.session.get_branch_tail(min_entries, satisfied) }
     fn get_leaf_id(&self) -> Option<String> { self.active(); self.session.get_leaf_id() }
     fn get_session_name(&self) -> Option<String> { self.active(); self.session.get_session_name() }
     fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> { Some(self) }

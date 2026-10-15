@@ -23,27 +23,33 @@ pub struct CellState {
 
 // `state.output` holds the finished output only; while running, `details` reads the collector's
 // aggregate directly instead of copying it into `state.output` on every frame.
-pub struct CellResultBuilder { pub state: CellState, output: EvalOutputCollector, finished: bool }
+pub struct CellResultBuilder { pub state: CellState, output: EvalOutputCollector, finished: bool, coalesce_updates: bool, update_pending: bool }
 
 impl CellResultBuilder {
     pub fn new(mut state: CellState, options: EvalOutputOptions) -> Self {
         if state.status != "queued" { state.status = "running".into(); }
-        let builder = Self {state,output:EvalOutputCollector::new(options),finished:false};
+        let mut builder = Self {state,output:EvalOutputCollector::new(options),finished:false,coalesce_updates:false,update_pending:false};
         builder.emit_update(false);
         builder
     }
 
+    /// Frame-driven updates (output, phase, status) only mark an update pending; the run loop
+    /// publishes it through [`Self::flush_update`] once a burst of kernel frames drains.
+    pub fn coalesce_updates(&mut self) {self.coalesce_updates=true;}
+    pub fn request_update(&mut self) {if self.coalesce_updates {self.update_pending=true;} else {self.emit_update(false);}}
+    pub fn flush_update(&mut self) {if self.update_pending {self.emit_update(false);}}
+
     pub async fn push(&mut self, text: &str) -> Result<(), String> {
         self.output.push(text).await?;
-        self.emit_update(false);
+        self.request_update();
         Ok(())
     }
     pub async fn display(&mut self, mime_type: &str, data_base64: &str) -> Result<(), String> {
         self.output.display(mime_type,data_base64).await?;
-        self.emit_update(false);
+        self.request_update();
         Ok(())
     }
-    pub fn set_phase(&mut self, title: String) {self.state.phase=Some(title);self.emit_update(false);}
+    pub fn set_phase(&mut self, title: String) {self.state.phase=Some(title);self.request_update();}
     pub async fn flush_output(&mut self) -> Result<(), String> {self.output.flush().await}
 
     pub async fn finalize(&mut self, result: &Value) -> Result<AgentToolResult, String> {
@@ -87,7 +93,8 @@ impl CellResultBuilder {
         result
     }
 
-    pub fn emit_update(&self, is_error: bool) {
+    pub fn emit_update(&mut self, is_error: bool) {
+        self.update_pending=false;
         if self.state.active && let Some(update)=&self.state.on_update {
             let mut result=AgentToolResult::text(self.live_update_text());
             result.details=self.details(None,is_error);
@@ -132,5 +139,32 @@ impl CellResultBuilder {
         let output=format!("{}{}",&body[start..],if trailing {"\n"} else {""});
         let language=serde_json::to_value(state.input.language).expect("language value");
         format!("1/1 cells {}\n[1] {} {} {}{}",state.status,language.as_str().expect("language string"),state.input.summary,state.status,if output.is_empty() {String::new()} else {format!("\n{output}")})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::{image_resize::*, types::{EvalLanguage, EvalToolInput}};
+    struct Sdk;
+    impl EvalImageSdk for Sdk {
+        fn resize_image<'a>(&'a self, _:Vec<u8>, _: &'a str, _:Option<usize>) -> ImageFuture<'a, Option<ResizedImage>> {Box::pin(async {Err("unexpected image resize".into())})}
+        fn convert_to_png<'a>(&'a self, _: &'a str, _: &'a str) -> ImageFuture<'a, Option<EvalImageContent>> {Box::pin(async {Err("unexpected conversion".into())})}
+    }
+    #[tokio::test]
+    async fn coalesced_frames_publish_on_flush_and_finish_always_emits() {
+        let updates=Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink=updates.clone();
+        let state=CellState {input:EvalToolInput {language:EvalLanguage::Py,code:"print(1)".into(),summary:"burst".into(),action:None,timeout:None,on_timeout:None,reset:None},runtime:None,started_at:0.0,run_started_at:Some(0.0),queued_behind:None,on_update:Some(Arc::new(move |result:AgentToolResult|sink.lock().unwrap().push(result.details["cells"][0]["output"].as_str().unwrap_or("").to_owned()))),tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into()};
+        let mut builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:None,head_bytes:20480,max_columns:768,provider:None,api:None,image_sdk:Arc::new(Sdk)});
+        builder.coalesce_updates();
+        builder.push("a\n").await.unwrap();builder.push("b\n").await.unwrap();builder.set_phase("p".into());
+        assert_eq!(updates.lock().unwrap().len(),1);
+        builder.flush_update();builder.flush_update();
+        assert_eq!(updates.lock().unwrap().as_slice(),["","a\nb\n"]);
+        builder.push("c\n").await.unwrap();
+        builder.finalize(&serde_json::json!({"type":"result","ok":true,"durationMs":1})).await.unwrap();
+        assert_eq!(updates.lock().unwrap().last().map(String::as_str),Some("a\nb\nc"));
+        assert_eq!(updates.lock().unwrap().len(),3);
     }
 }

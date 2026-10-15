@@ -106,7 +106,7 @@ pub async fn run_print_session(
 /// `partial` snapshots it discards (`partial` stays a trailing null so key order is unchanged).
 /// `None` when the full record is needed: a non-assistant message, `toolcall_start` (reads
 /// `partial`), or the terminal `done`/`error` events.
-fn stripped_message_update(message:&maho_ext_api::AgentMessage,event:&maho_ai::types::AssistantMessageEvent)->Option<Result<serde_json::Value,serde_json::Error>>{
+pub(crate) fn stripped_message_update(message:&maho_ext_api::AgentMessage,event:&maho_ai::types::AssistantMessageEvent)->Option<Result<serde_json::Value,serde_json::Error>>{
     use maho_ai::types::AssistantMessageEvent as A;
     use serde_json::json;
     let assistant=message.as_assistant()?;

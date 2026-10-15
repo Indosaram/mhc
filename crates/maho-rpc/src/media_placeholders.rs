@@ -43,10 +43,14 @@ fn walk(value: &Value) -> Cow<'_,Value> {
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Cow::Borrowed(value),
     }
 }
+/// Whether `omit_inline_media` may rewrite `record`; every other record is returned as-is.
+pub fn carries_inline_media(record: &Value) -> bool {
+    let kind = record.get("type").and_then(Value::as_str);
+    matches!(kind,Some("tool_execution_end"|"message_start"|"message_end"|"turn_end"|"agent_end"|"entry_appended")) || (kind == Some("response") && matches!(record.get("command").and_then(Value::as_str),Some("get_messages"|"get_entries"|"get_tree"|"get_state"|"open_session")))
+}
 pub fn omit_inline_media(record: &Value) -> Cow<'_,Value> {
     let kind = record.get("type").and_then(Value::as_str);
-    let carries = matches!(kind,Some("tool_execution_end"|"message_start"|"message_end"|"turn_end"|"agent_end"|"entry_appended")) || (kind == Some("response") && matches!(record.get("command").and_then(Value::as_str),Some("get_messages"|"get_entries"|"get_tree"|"get_state"|"open_session")));
-    if !carries { return Cow::Borrowed(record); }
+    if !carries_inline_media(record) { return Cow::Borrowed(record); }
     if kind == Some("tool_execution_end")
         && let Some(content) = record.get("result").and_then(|r| r.get("content")).and_then(|c| omit_content_images(c,record.get("toolCallId").and_then(Value::as_str).unwrap_or(""))) {
             let mut scrubbed = record.clone();

@@ -71,9 +71,9 @@ impl SessionEventFanout{
         let terminal=matches!(wire["type"].as_str(),Some("session_closed"|"session_parked"));
         if terminal{self.snapshots.forget(session);}else if !targeted{
             let tagged=if rendered{let mut tagged=wire.clone();tagged[RENDERED_COMPONENT_RECORD]=true.into();std::borrow::Cow::Owned(tagged)}else{std::borrow::Cow::Borrowed(&wire)};
-            // `omit_inline_media` never rewrites a `message_update`, so its placeholder replay is
-            // `line` itself; skip keeping a second full copy of every delta.
-            let source=(wire["type"]!="message_update").then(||wire.clone());
+            // `omit_inline_media` returns any other record as-is, so its placeholder replay is
+            // `line` itself; keep a source copy only for a record the snapshot list will retain.
+            let source=(crate::media_placeholders::carries_inline_media(&wire)&&self.snapshots.retains(session,&wire)).then(||wire.clone());
             self.snapshots.remember(session,&tagged,line.clone(),None,source);
         }
         let mut failed=Vec::new();
@@ -136,6 +136,18 @@ fn demote_snapshot(record:&Value)->Value{
 }
 #[derive(Default)]pub struct SessionSnapshots{snapshots:BTreeMap<String,Vec<SnapshotRecord>>,questions:BTreeMap<String,serde_json::Map<String,Value>>}
 impl SessionSnapshots{
+    /// Whether [`Self::remember`] keeps `value` in the session's replay list (questions keep their
+    /// own frame and `message_end` clears the list).
+    fn retains(&self,session_id:&str,value:&Value)->bool{
+        match value["type"].as_str(){
+            Some("message_start")=>true,
+            Some("message_update") if value["assistantMessageEvent"]["type"]=="text_start"=>true,
+            Some("extension_ui_request") if value["method"]=="question"&&value["id"].is_string()=>false,
+            Some("question_resolved"|"question_updated") if value["id"].is_string()=>false,
+            Some("message_end")=>false,
+            _=>self.snapshots.contains_key(session_id),
+        }
+    }
     pub fn remember(&mut self,session_id:&str,value:&Value,line:String,placeholder_line:Option<String>,source:Option<Value>){
         let kind=value["type"].as_str();let id=value["id"].as_str();
         if kind==Some("extension_ui_request")&&value["method"]=="question"&&let Some(id)=id{self.questions.entry(session_id.into()).or_default().insert(id.into(),value.clone());return;}
@@ -159,6 +171,18 @@ impl SessionSnapshots{
 }
 #[cfg(test)]mod tests{
     use super::*;use serde_json::json;
+    #[test]fn source_is_kept_only_for_retained_media_records(){
+        let mut fanout=SessionEventFanout::default();
+        fanout.deliver("s",None,false,&json!({"type":"agent_end","messages":[]})).unwrap();
+        assert!(!fanout.snapshots.snapshots.contains_key("s"));
+        fanout.deliver("s",None,false,&json!({"type":"message_start","message":{}})).unwrap();
+        fanout.deliver("s",None,false,&json!({"type":"tool_execution_update","partialResult":{}})).unwrap();
+        fanout.deliver("s",None,false,&json!({"type":"turn_end","message":{}})).unwrap();
+        let sources=fanout.snapshots.snapshots["s"].iter().map(|record|record.source.is_some()).collect::<Vec<_>>();
+        assert_eq!(sources,vec![true,false,true]);
+        let full=fanout.snapshots.replay("s",false,false,0.).unwrap();
+        assert_eq!(fanout.snapshots.replay("s",false,true,0.).unwrap(),full);
+    }
     #[test]fn demoted_snapshot_matches_clone_then_null_bytes(){let record=json!({"type":"message_update","message":{"content":"abc"},"assistantMessageEvent":{"type":"text_delta","partial":{"content":"abc"},"contentIndex":0,"delta":"c"},"sessionId":"s"});let mut expected=record.clone();expected["message"]=Value::Null;expected["assistantMessageEvent"]["partial"]=Value::Null;assert_eq!(serde_json::to_string(&demote_snapshot(&record)).unwrap(),serde_json::to_string(&expected).unwrap());let mut without=record.clone();without["assistantMessageEvent"].as_object_mut().unwrap().remove("partial");let mut expected=without.clone();expected["message"]=Value::Null;expected["assistantMessageEvent"]["partial"]=Value::Null;assert_eq!(serde_json::to_string(&demote_snapshot(&without)).unwrap(),serde_json::to_string(&expected).unwrap());}
     #[test]fn pending_questions_replay_in_registration_order_after_update(){let mut snapshots=SessionSnapshots::default();for id in ["z","a"]{snapshots.remember("s",&json!({"type":"extension_ui_request","method":"question","id":id}),String::new(),None,None);}snapshots.remember("s",&json!({"type":"extension_ui_request","method":"question","id":"z","deadlineAtMs":100}),String::new(),None,None);let frames=snapshots.replay("s",false,false,0.).unwrap().into_iter().map(|line|serde_json::from_str::<Value>(&line).unwrap()["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();assert_eq!(frames,vec!["z","a"]);}
     #[test]fn targets_keep_connection_order_and_lifecycle_broadcast(){let mut targets=ConnectionTargets::default();assert_eq!(targets.targets("s",None,false,false,None),vec![None]);targets.register("z");targets.register("a");assert!(targets.attach("z","s"));assert!(!targets.attach("z","s"));assert_eq!(targets.targets("s",None,false,false,None),vec![Some("z".into())]);assert!(targets.targets("s",None,false,true,None).is_empty());assert!(targets.set_capabilities("z",&["rendered_components".into()]));assert_eq!(targets.targets("s",None,false,true,None),vec![Some("z".into())]);assert_eq!(targets.targets("s",None,false,false,Some("agent_idle")),vec![Some("z".into()),Some("a".into())]);assert_eq!(targets.targets("s",Some("unknown"),true,false,None),vec![Some("unknown".into())]);}

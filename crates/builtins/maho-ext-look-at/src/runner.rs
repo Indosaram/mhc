@@ -31,7 +31,12 @@ pub async fn run_look_at(args:&NormalizedLookAtArgs,ctx:&maho_ext_api::Extension
     if let Some(reason)=signal.as_ref().and_then(|signal|signal.reason()){controller.abort(Some(reason));}
     let context=maho_ai::types::Context{system_prompt:Some(crate::prompts::LOOK_AT_SYSTEM_PROMPT.into()),messages:vec![maho_ai::types::Message::User(build_user_message(&args.args.goal,&inputs,std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?.as_millis() as i64))],tools:None};
     let mut options=maho_ai::types::SimpleStreamOptions{reasoning:resolved.thinking_level,..Default::default()};options.stream.max_tokens=Some(4096);options.stream.request.signal=Some(request_signal.clone());
-    let response=async {stream(ctx,&resolved.model,&context,options)?.result().await.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))};
+    let response=async {
+        let stream=stream(ctx,&resolved.model,&context,options)?;
+        // Pop events so their partial-message clones are freed instead of queued until drop.
+        while let Ok(Some(_))=stream.next().await {}
+        stream.result().await.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))
+    };
     let response=await_response(response,&controller).await;
     let response=response.map_err(|error|if request_signal.aborted(){maho_ext_api::ExtensionFailure::new("look_at analysis was aborted.")}else{error})?;
     run_result(&resolved.model.provider,&resolved.model.id,&inputs,&response,request_signal.aborted()).map_err(|error|maho_ext_api::ExtensionFailure::new(if request_signal.aborted(){"look_at analysis was aborted.".into()}else{error}))
