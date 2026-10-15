@@ -17,7 +17,7 @@ fn build_codegraph_env_defaults_to_daemon_on() {
     expected_map.insert(
         CODEGRAPH_INSTALL_DIR_ENV.to_string(),
         home_dir
-            .join(".maho")
+            .join(".omo")
             .join("codegraph")
             .to_string_lossy()
             .into_owned(),
@@ -42,7 +42,7 @@ fn build_codegraph_env_omits_daemon_when_enabled() {
     expected_map.insert(
         CODEGRAPH_INSTALL_DIR_ENV.to_string(),
         home_dir
-            .join(".maho")
+            .join(".omo")
             .join("codegraph")
             .to_string_lossy()
             .into_owned(),

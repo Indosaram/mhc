@@ -54,7 +54,7 @@ fn marker_path(install_dir: &Path, version: &str) -> PathBuf {
 fn default_install_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from(""))
-        .join(".maho")
+        .join(".omo")
         .join("codegraph")
 }
 

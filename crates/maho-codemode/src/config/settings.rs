@@ -82,8 +82,8 @@ pub struct LoadedCodemodeSettings {
 }
 
 pub async fn load_codemode_settings(cwd: &Path, home_dir: &Path) -> Result<LoadedCodemodeSettings, std::io::Error> {
-    // The native user configuration home is .maho; project artifacts remain .omo.
-    let candidates = [cwd.join(".maho/codemode.json"), home_dir.join(".maho/agent/codemode.json")];
+    // The native user configuration home is .omo; project artifacts remain .omo.
+    let candidates = [cwd.join(".omo/codemode.json"), home_dir.join(".omo/agent/codemode.json")];
     for candidate in candidates {
         if tokio::fs::metadata(&candidate).await.is_err() { continue; }
         let raw = tokio::fs::read_to_string(&candidate).await?;

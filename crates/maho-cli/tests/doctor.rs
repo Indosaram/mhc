@@ -28,26 +28,26 @@ fn native_package_manifest_distinguishes_intact_tampered_and_missing_siblings() 
 fn invalid_config_is_reported_without_values() {
     let root = tempfile::tempdir().expect("tempdir");
     let home = root.path().to_string_lossy().into_owned();
-    std::fs::create_dir_all(root.path().join(".maho")).expect("mkdir");
-    let config_path = root.path().join(".maho/omo.jsonc");
+    std::fs::create_dir_all(root.path().join(".omo")).expect("mkdir");
+    let config_path = root.path().join(".omo/omo.jsonc");
     let config = r#"{"task":{"host_engine_policy":"sometimes"}}"#;
     std::fs::write(&config_path, config).expect("write");
     let env = BTreeMap::from([(String::from("HOME"), home.clone())]);
-    let lines = doctor_lines(root.path(), &env, &format!("{home}/.maho/agent"));
+    let lines = doctor_lines(root.path(), &env, &format!("{home}/.omo/agent"));
     assert!(lines.iter().any(|line| line.starts_with("WARN config:") && line.contains("task.host_engine_policy")));
     assert!(lines.iter().all(|line| !line.contains("sometimes")));
     assert_eq!(std::fs::read_to_string(config_path).expect("config unchanged"), config);
-    assert!(!root.path().join(".maho/agent/auth.json").exists());
+    assert!(!root.path().join(".omo/agent/auth.json").exists());
 }
 
 #[test]
 fn malformed_config_is_reported_as_not_loaded() {
     let root = tempfile::tempdir().expect("tempdir");
     let home = root.path().to_string_lossy().into_owned();
-    std::fs::create_dir_all(root.path().join(".maho")).expect("mkdir");
-    std::fs::write(root.path().join(".maho/omo.jsonc"), r#"{"task":{"#).expect("write");
+    std::fs::create_dir_all(root.path().join(".omo")).expect("mkdir");
+    std::fs::write(root.path().join(".omo/omo.jsonc"), r#"{"task":{"#).expect("write");
     let env = BTreeMap::from([(String::from("HOME"), home.clone())]);
-    let lines = doctor_lines(root.path(), &env, &format!("{home}/.maho/agent"));
+    let lines = doctor_lines(root.path(), &env, &format!("{home}/.omo/agent"));
     assert!(lines.iter().any(|line| line.contains("not loaded (JSONC parse error)")));
 }
 
@@ -55,10 +55,10 @@ fn malformed_config_is_reported_as_not_loaded() {
 fn untrusted_project_resources_fail() {
     let root = tempfile::tempdir().expect("tempdir");
     let home = root.path().to_string_lossy().into_owned();
-    std::fs::create_dir_all(root.path().join(".maho")).expect("mkdir");
-    std::fs::write(root.path().join(".maho/settings.json"), "{}").expect("write");
+    std::fs::create_dir_all(root.path().join(".omo")).expect("mkdir");
+    std::fs::write(root.path().join(".omo/settings.json"), "{}").expect("write");
     let env = BTreeMap::from([(String::from("HOME"), home.clone())]);
-    let lines = doctor_lines(root.path(), &env, &format!("{home}/.maho/agent"));
+    let lines = doctor_lines(root.path(), &env, &format!("{home}/.omo/agent"));
     assert!(lines.iter().any(|line| line == "WARN project resources: trust decision is not recorded"));
 }
 
@@ -66,13 +66,13 @@ fn untrusted_project_resources_fail() {
 fn missing_trust_store_does_not_create_agent_directory() {
     let root = tempfile::tempdir().expect("tempdir");
     let home = root.path().to_string_lossy().into_owned();
-    std::fs::create_dir_all(root.path().join(".maho")).expect("mkdir");
-    std::fs::write(root.path().join(".maho/settings.json"), "{}").expect("write");
+    std::fs::create_dir_all(root.path().join(".omo")).expect("mkdir");
+    std::fs::write(root.path().join(".omo/settings.json"), "{}").expect("write");
     let env = BTreeMap::from([(String::from("HOME"), home.clone())]);
-    let agent_dir = format!("{home}/.maho/agent");
+    let agent_dir = format!("{home}/.omo/agent");
     let lines = doctor_lines(root.path(), &env, &agent_dir);
     assert!(lines.iter().any(|line| line == "WARN project resources: trust decision is not recorded"));
-    assert!(!root.path().join(".maho/agent").exists());
+    assert!(!root.path().join(".omo/agent").exists());
 }
 
 #[test]
@@ -80,8 +80,8 @@ fn category_report_is_warning_when_no_models_are_available() {
     let root = tempfile::tempdir().expect("tempdir");
     let home = root.path().to_string_lossy().into_owned();
     let env = BTreeMap::from([(String::from("HOME"), home.clone())]);
-    let lines = doctor_lines(root.path(), &env, &format!("{home}/.maho/agent"));
+    let lines = doctor_lines(root.path(), &env, &format!("{home}/.omo/agent"));
     assert!(lines.iter().any(|line| line.starts_with("WARN task categories:")));
-    assert!(!root.path().join(".maho/agent").exists());
+    assert!(!root.path().join(".omo/agent").exists());
 }
 

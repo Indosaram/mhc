@@ -157,7 +157,7 @@ async fn qa_facts(executable:&Path)->Result<(),String>{
     use memory_core::journal::entries::{TranscriptEntry,TextTranscriptEntry};
     let evidence_root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/linux-facts-sandbox-qa");std::fs::create_dir_all(&evidence_root).map_err(|error|format!("prepare isolated QA root {}: {error}",evidence_root.display()))?;
     let root=tempfile::Builder::new().prefix("native-facts-").tempdir_in(&evidence_root).map_err(|error|format!("create isolated native facts run root under {}: {error}",evidence_root.display()))?;
-    let home=root.path().join("home");let agent=home.join(".maho/agent");std::fs::create_dir_all(&agent).map_err(|error|error.to_string())?;
+    let home=root.path().join("home");let agent=home.join(".omo/agent");std::fs::create_dir_all(&agent).map_err(|error|error.to_string())?;
     let endpoint=tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error|format!("bind faux provider loopback: {error}"))?;let address=endpoint.local_addr().map_err(|error|format!("read faux provider address: {error}"))?;
     std::fs::write(agent.join("models.json"),serde_json::json!({"providers":{"offline":{"api":"openai-completions","baseUrl":format!("http://{address}/v1"),"apiKey":"offline-fixture","models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]}}}).to_string()).map_err(|error|error.to_string())?;
     std::fs::write(agent.join("settings.jsonc"),"{ // global source fixture\n}\n").map_err(|error|error.to_string())?;

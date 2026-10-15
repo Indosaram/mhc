@@ -132,7 +132,7 @@ Examples:
   mhc --exclude-tools ask_question
 
   # Export a session file to HTML
-  mhc --export ~/.maho/agent/sessions/--path--/session.jsonl
+  mhc --export ~/.omo/agent/sessions/--path--/session.jsonl
   mhc --export session.jsonl output.html
 
   # Start Codex app-server protocol scaffolding
@@ -186,8 +186,8 @@ Environment Variables:
   AWS_SECRET_ACCESS_KEY            - AWS secret key for Amazon Bedrock
   AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)
   AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)
-  MAHO_CODING_AGENT_DIR             - Config directory (default: ~/.maho/agent)
-  MAHO_CODING_AGENT_SESSION_DIR     - Session storage directory (overridden by --session-dir)
+  OMO_CODING_AGENT_DIR             - Config directory (default: ~/.omo/agent)
+  OMO_CODING_AGENT_SESSION_DIR     - Session storage directory (overridden by --session-dir)
   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
   PI_RULES_DISABLED                - Disable built-in rules when set to 1/true/yes/on

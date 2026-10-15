@@ -214,11 +214,11 @@ impl GitExec for FixtureGitExec {
     }
 }
 
-/// Writes the ONE user-layer config file the loader reads: `<HOME>/.maho/omo.jsonc`. Recall settings live
+/// Writes the ONE user-layer config file the loader reads: `<HOME>/.omo/omo.jsonc`. Recall settings live
 /// under `memory.recall` (the `memory` block is what the consumer resolves, and the recall resolver reads
 /// `recall` from it); a top-level `recall` is not read.
 fn write_user_config(home: &Path) -> PathBuf {
-    let directory = home.join(".maho");
+    let directory = home.join(".omo");
     std::fs::create_dir_all(&directory).expect("user config directory");
     let path = directory.join("omo.jsonc");
     std::fs::write(
@@ -282,8 +282,8 @@ fn seed_corpus(paths: &MemoryIdentityPaths) {
 fn child_env(home: &Path, agent: &Path, memory_root: &Path) -> Vec<(String, String)> {
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     env.insert("HOME".to_owned(), home.to_string_lossy().into_owned());
-    env.insert("MAHO_CODING_AGENT_DIR".to_owned(), agent.to_string_lossy().into_owned());
-    env.insert("MAHO_MEMORY_HOME".to_owned(), memory_root.to_string_lossy().into_owned());
+    env.insert("OMO_CODING_AGENT_DIR".to_owned(), agent.to_string_lossy().into_owned());
+    env.insert("OMO_MEMORY_HOME".to_owned(), memory_root.to_string_lossy().into_owned());
     env.insert("PATH".to_owned(), std::env::var("PATH").unwrap_or_default());
     env.into_iter().collect()
 }

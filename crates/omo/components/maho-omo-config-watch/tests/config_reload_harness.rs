@@ -29,7 +29,7 @@ fn fixture() -> Result<Fixture, std::io::Error> {
     let home = root.path().join("home");
     let project = home.join("project");
     std::fs::create_dir_all(&project)?;
-    std::fs::create_dir_all(home.join(".maho"))?;
+    std::fs::create_dir_all(home.join(".omo"))?;
     std::fs::create_dir_all(project.join(".omo"))?;
     let env = BTreeMap::from([("HOME".into(), home.to_string_lossy().into_owned())]);
     Ok(Fixture { _root: root, home, project, env })

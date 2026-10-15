@@ -191,7 +191,7 @@ fn custom_active_profile_default_tauri_and_walked_project_roots_are_deduplicated
             "/home/alice/.config/opencode/profiles/quiet/oh-my-opencode.json",
             "/home/alice/.config/ai.opencode.desktop/oh-my-openagent.json",
             "/work/repo/.opencode/oh-my-openagent.jsonc",
-            "/home/alice/.maho/config.jsonc",
+            "/home/alice/.omo/config.jsonc",
         ],
         &[(
             "/home/alice/.config/opencode/profiles",
@@ -264,7 +264,7 @@ fn custom_active_profile_default_tauri_and_walked_project_roots_are_deduplicated
         config_jsonc,
         vec![(
             LegacyConfigSourceKind::ConfigJsonc,
-            "/home/alice/.maho/config.jsonc"
+            "/home/alice/.omo/config.jsonc"
         )]
     );
 }

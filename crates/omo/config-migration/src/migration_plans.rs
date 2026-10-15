@@ -115,7 +115,7 @@ fn descriptors(
     let path_operations = host_path_operations(options);
     let user_backup_root = path_operations.join(&[
         &home_dir,
-        ".maho",
+        ".omo",
         &format!("migration-backup-{timestamp}-opencode-config"),
     ]);
     Ok(sources
@@ -345,7 +345,7 @@ pub fn create_legacy_config_migration_plans(
         return Ok(Vec::new());
     };
     let path_operations = host_path_operations(discovery);
-    let user_target_path = path_operations.join(&[discovery.home_dir, ".maho", "omo.jsonc"]);
+    let user_target_path = path_operations.join(&[discovery.home_dir, ".omo", "omo.jsonc"]);
 
     let mut user_sources = Vec::new();
     let mut project_sources: Vec<(String, Vec<DiscoveredLegacyConfigSource>)> = Vec::new();
@@ -409,7 +409,7 @@ pub fn create_legacy_config_migration_plans(
     };
     let user_omo_directory = discovery
         .path_operations
-        .join(&[discovery.home_dir, ".maho"]);
+        .join(&[discovery.home_dir, ".omo"]);
     add_reasoning_target(existing_omo_config_path(&user_omo_directory, discovery)?)?;
     for project_root in project_directories(discovery)? {
         let directory = discovery.path_operations.join(&[&project_root, ".omo"]);

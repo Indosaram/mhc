@@ -103,7 +103,7 @@ async fn custom_extension_permission_parser_integration_tool_call() {
         mode: ExtensionMode::Print,
         has_ui: false,
         cwd: project_dir.path().to_path_buf(),
-        agent_dir: project_dir.path().join(".maho"),
+        agent_dir: project_dir.path().join(".omo"),
         session_manager: Arc::new(TestSession("s1".into())),
         model_registry: Arc::new(TestModels),
         model: None,

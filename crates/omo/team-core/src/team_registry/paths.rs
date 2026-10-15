@@ -122,7 +122,7 @@ fn expand_home_directory(directory: &str) -> PathBuf {
 pub fn resolve_base_dir(config: &TeamModeConfig) -> PathBuf {
     match &config.base_dir {
         Some(base_dir) => expand_home_directory(base_dir),
-        None => home_dir().join(".maho"),
+        None => home_dir().join(".omo"),
     }
 }
 

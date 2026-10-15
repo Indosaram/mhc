@@ -57,7 +57,7 @@ fn config_jsonc_with_both_omo_and_senpi_emits_native_and_reports_the_overlap() {
     // given
     let config = source(
         LegacyConfigSourceKind::ConfigJsonc,
-        "/home/alice/.maho/config.jsonc",
+        "/home/alice/.omo/config.jsonc",
     );
     let sources = vec![loaded(
         &config,
@@ -87,7 +87,7 @@ fn config_jsonc_with_both_omo_and_senpi_emits_native_and_reports_the_overlap() {
             "[codex]": { "disabled_hooks": ["startup-toast"] },
             "[native]": { "agents": { "oracle": { "model": "current" } } },
             "legacy_migrations": {
-                "/home/alice/.maho/config.jsonc": ["legacy-file-marker", "legacy-top-level-marker"],
+                "/home/alice/.omo/config.jsonc": ["legacy-file-marker", "legacy-top-level-marker"],
             },
         })
     );
@@ -112,7 +112,7 @@ fn root_profile_config_jsonc_and_project_sources_produce_golden_documents_that_p
         format!("{home_dir}/.config/opencode/oh-my-openagent.jsonc"),
         format!("{home_dir}/.config/opencode/profiles/focused/oh-my-openagent.jsonc"),
         format!("{home_dir}/.config/opencode/profiles/kimi/oh-my-opencode.json"),
-        format!("{home_dir}/.maho/config.jsonc"),
+        format!("{home_dir}/.omo/config.jsonc"),
         format!("{project_dir}/.opencode/oh-my-openagent.jsonc"),
     ];
     for path in &files {

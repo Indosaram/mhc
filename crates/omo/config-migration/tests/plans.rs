@@ -116,7 +116,7 @@ fn executor_with_a_false_predicate_creates_no_directories_or_files() {
     let root = fixture_root.path();
     let home_dir = root.join("home");
     let source_path = root.join("legacy").join("config.jsonc");
-    let target_path = home_dir.join(".maho").join("omo.jsonc");
+    let target_path = home_dir.join(".omo").join("omo.jsonc");
     let backup_path = root.join("backup").join("config.jsonc");
     write(&source_path, "{}");
     write(&target_path, r#"{"_migrations":["already-migrated"]}"#);
@@ -159,7 +159,7 @@ fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_
     let root_path = home.join(".config/opencode/oh-my-openagent.jsonc");
     let sidecar_path = PathBuf::from(format!("{}.migrations.json", text(&root_path)));
     let profile_path = home.join(".config/opencode/profiles/kimi/oh-my-openagent.jsonc");
-    let config_jsonc_path = home.join(".maho/config.jsonc");
+    let config_jsonc_path = home.join(".omo/config.jsonc");
     let config_sidecar_path =
         PathBuf::from(format!("{}.migrations.json", text(&config_jsonc_path)));
     let project_path = project.join(".opencode/oh-my-opencode.json");
@@ -220,7 +220,7 @@ fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_
     assert_eq!(config_result.status, MigrationStatus::Migrated);
     assert_eq!(opencode_result.status, MigrationStatus::Migrated);
     assert_eq!(project_result.status, MigrationStatus::Migrated);
-    let user_document = parse_jsonc(&home.join(".maho/omo.jsonc"));
+    let user_document = parse_jsonc(&home.join(".omo/omo.jsonc"));
     assert_eq!(
         user_document["_migrations"],
         json!([CONFIG_JSONC_MIGRATION_ID, OPENCODE_CONFIG_MIGRATION_ID])
@@ -238,7 +238,7 @@ fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_
         json!(["legacy-config-jsonc"])
     );
     let user_backup =
-        format!("{canonical_home}/.maho/migration-backup-{timestamp}-opencode-config");
+        format!("{canonical_home}/.omo/migration-backup-{timestamp}-opencode-config");
     assert_eq!(
         backup_paths(opencode_user_plan),
         vec![
@@ -250,8 +250,8 @@ fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_
     assert_eq!(
         backup_paths(config_jsonc_plan),
         vec![
-            format!("{user_backup}/.maho/config.jsonc"),
-            format!("{user_backup}/.maho/config.jsonc.migrations.json"),
+            format!("{user_backup}/.omo/config.jsonc"),
+            format!("{user_backup}/.omo/config.jsonc.migrations.json"),
         ]
     );
     let project_backup =
@@ -273,7 +273,7 @@ fn overlapping_omo_and_senpi_blocks_report_the_conflict_in_preview_and_migration
     let fixture_root = tempfile::tempdir().expect("tempdir");
     let home = fixture_root.path().join("home");
     write(
-        &home.join(".maho/config.jsonc"),
+        &home.join(".omo/config.jsonc"),
         r#"{"[omo]":{"agents":{"oracle":{"model":"legacy"}}},"[senpi]":{"agents":{"oracle":{"model":"current"}}}}"#,
     );
     let home_dir = text(&home);
@@ -351,7 +351,7 @@ fn existing_user_omo_config_runs_dry_run_backup_journal_and_marker_through_the_e
     // given
     let fixture_root = tempfile::tempdir().expect("tempdir");
     let home = fixture_root.path().join("home");
-    let target_path = home.join(".maho/omo.jsonc");
+    let target_path = home.join(".omo/omo.jsonc");
     let input = fixture(FIXTURE_INPUT);
     write(
         &target_path,
@@ -363,7 +363,7 @@ fn existing_user_omo_config_runs_dry_run_backup_journal_and_marker_through_the_e
         .iter()
         .find(|candidate| candidate.id == REASONING_UNIFICATION_MIGRATION_ID)
         .expect("reasoning plan");
-    let journal_path = home.join(".maho/.migration-journal.json");
+    let journal_path = home.join(".omo/.migration-journal.json");
     let journal_diagnostics: RefCell<Option<Value>> = RefCell::new(None);
 
     // when
@@ -410,7 +410,7 @@ fn existing_user_omo_config_runs_dry_run_backup_journal_and_marker_through_the_e
             .is_some_and(|entries| entries.contains(&json!(REASONING_CONFLICT))),
         "{journal_diagnostics}"
     );
-    let has_backup = fs::read_dir(home.join(".maho"))
+    let has_backup = fs::read_dir(home.join(".omo"))
         .expect("read .omo")
         .any(|entry| {
             entry
@@ -471,7 +471,7 @@ fn since_pin_ids() -> [&'static str; 3] {
 fn since_pin_plans_are_registered_for_an_existing_omo_target() {
     let fixture_root = tempfile::tempdir().expect("tempdir");
     let home = fixture_root.path().join("home");
-    let target = home.join(".maho/omo.jsonc");
+    let target = home.join(".omo/omo.jsonc");
     write(
         &target,
         r#"{"categories":{"deep":{"model":"legacy/model"}},"[senpi]":{"model_profile":"kimi"},"default_model":"openai-codex/gpt-6-astra"}"#,
@@ -493,7 +493,7 @@ fn since_pin_plans_are_registered_for_an_existing_omo_target() {
 fn since_pin_plans_skip_a_clean_target_without_writing() {
     let fixture_root = tempfile::tempdir().expect("tempdir");
     let home = fixture_root.path().join("home");
-    let target = home.join(".maho/omo.jsonc");
+    let target = home.join(".omo/omo.jsonc");
     let clean = json!({
         "categories": { "quick": { "model": "a/b" } },
         "default_model": "anthropic-subscription/",
@@ -515,7 +515,7 @@ fn since_pin_plans_skip_a_clean_target_without_writing() {
 fn harness_native_rename_plan_rewrites_an_existing_target_through_the_engine() {
     let fixture_root = tempfile::tempdir().expect("tempdir");
     let home = fixture_root.path().join("home");
-    let target = home.join(".maho/omo.jsonc");
+    let target = home.join(".omo/omo.jsonc");
     write(&target, r#"{"[senpi]":{"model_profile":"kimi"}}"#);
     let home_dir = text(&home);
     let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
@@ -537,7 +537,7 @@ fn harness_native_rename_plan_rewrites_an_existing_target_through_the_engine() {
 fn category_deep_split_plan_rewrites_an_existing_target_through_the_engine() {
     let fixture_root = tempfile::tempdir().expect("tempdir");
     let home = fixture_root.path().join("home");
-    let target = home.join(".maho/omo.jsonc");
+    let target = home.join(".omo/omo.jsonc");
     write(
         &target,
         r#"{"categories":{"deep":{"model":"legacy/model"}}}"#,

@@ -34,7 +34,7 @@ pub fn sanitize_base(value: &str) -> String {
 }
 
 pub fn codegraph_data_root(home_dir: &Path) -> PathBuf {
-    home_dir.join(".maho").join("codegraph")
+    home_dir.join(".omo").join("codegraph")
 }
 
 pub fn canonicalize_codegraph_path(path: &Path) -> PathBuf {

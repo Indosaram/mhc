@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub const OMO_LSP_DAEMON_DIR: &str = "MAHO_LSP_DAEMON_DIR";
+pub const OMO_LSP_DAEMON_DIR: &str = "OMO_LSP_DAEMON_DIR";
 pub const OMO_LSP_DAEMON_CLI: &str = "OMO_LSP_DAEMON_CLI";
 pub const OMO_LSP_DAEMON_VERSION: &str = "OMO_LSP_DAEMON_VERSION";
 

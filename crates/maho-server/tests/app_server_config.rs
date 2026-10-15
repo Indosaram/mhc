@@ -7,9 +7,9 @@ async fn config_read_maps_settings_and_project_origins_with_nullable_layers() {
     let agent = root.path().join("agent");
     let project = root.path().join("project");
     std::fs::create_dir_all(&agent).unwrap();
-    std::fs::create_dir_all(project.join(".maho")).unwrap();
+    std::fs::create_dir_all(project.join(".omo")).unwrap();
     std::fs::write(agent.join("settings.json"), r#"{"defaultModel":"global","defaultProvider":"faux"}"#).unwrap();
-    std::fs::write(project.join(".maho/settings.json"), r#"{"defaultModel":"local","defaultThinkingLevel":"high"}"#).unwrap();
+    std::fs::write(project.join(".omo/settings.json"), r#"{"defaultModel":"local","defaultThinkingLevel":"high"}"#).unwrap();
     let mut registry = MethodRegistry::default();
     register_config_methods(&mut registry, agent.to_string_lossy().into_owned(), project.to_string_lossy().into_owned());
     let connection = RegistryConnection { initialized:true, ..Default::default() };

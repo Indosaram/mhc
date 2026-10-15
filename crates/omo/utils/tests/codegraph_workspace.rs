@@ -59,7 +59,7 @@ fn prepare_workspace_creates_global_project_store_and_symlink() {
     assert!(
         link_target.to_string_lossy().contains(
             &home_path
-                .join(".maho")
+                .join(".omo")
                 .join("codegraph")
                 .join("projects")
                 .to_string_lossy()
@@ -274,7 +274,7 @@ fn ensure_codegraph_gitignored_non_git() {
 #[test]
 fn prune_store_least_recently_used() {
     let home = tempdir().unwrap();
-    let projects = home.path().join(".maho").join("codegraph").join("projects");
+    let projects = home.path().join(".omo").join("codegraph").join("projects");
     let old_proj = projects.join("old");
     let new_proj = projects.join("new");
     fs::create_dir_all(&old_proj).unwrap();

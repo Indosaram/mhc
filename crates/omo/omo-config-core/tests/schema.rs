@@ -1194,9 +1194,9 @@ fn load_user_config(
     config: &str,
     harness: Option<&str>,
 ) -> omo_config_core::LoadOmoConfigResult {
-    std::fs::create_dir_all(home.join(".maho")).expect("config dir");
+    std::fs::create_dir_all(home.join(".omo")).expect("config dir");
     std::fs::create_dir_all(home.join("project")).expect("project dir");
-    std::fs::write(home.join(".maho/omo.jsonc"), config).expect("write config");
+    std::fs::write(home.join(".omo/omo.jsonc"), config).expect("write config");
     let home_dir = home.to_string_lossy().into_owned();
     omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions {
         cwd: Some(home.join("project").to_string_lossy().into_owned()),

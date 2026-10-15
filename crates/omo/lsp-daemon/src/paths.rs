@@ -235,7 +235,7 @@ pub fn daemon_base_dir(
     }
     Ok(platform
         .flavor
-        .join(&[&platform.home_dir, ".maho", "lsp-daemon"]))
+        .join(&[&platform.home_dir, ".omo", "lsp-daemon"]))
 }
 
 pub fn daemon_paths_with(

@@ -26,9 +26,9 @@ async fn real_conflict_diagnostic_reaches_ui_once() -> Result<(), Box<dyn std::e
     let project = home.join("project");
     std::fs::create_dir_all(&project)?;
     std::fs::create_dir_all(home.join(".config/opencode"))?;
-    std::fs::create_dir_all(home.join(".maho"))?;
+    std::fs::create_dir_all(home.join(".omo"))?;
     std::fs::write(home.join(".config/opencode/oh-my-openagent.jsonc"), r#"{"agents":{"finder":{"model":"provider/legacy"}}}"#)?;
-    std::fs::write(home.join(".maho/omo.jsonc"), r#"{"[opencode]":{"agents":{"finder":{"model":"provider/kept"}}}}"#)?;
+    std::fs::write(home.join(".omo/omo.jsonc"), r#"{"[opencode]":{"agents":{"finder":{"model":"provider/kept"}}}}"#)?;
     let env = BTreeMap::from([("HOME".into(), home.to_string_lossy().into_owned())]);
     let migration_env = env.clone();
     let migration_home = home.to_string_lossy().into_owned();

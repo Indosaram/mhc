@@ -419,7 +419,7 @@ fn resolve_command_returns_path_tier_when_missing() {
 fn resolve_command_managed_runtime_stale_ignored() {
     let home = tempdir().unwrap();
     let home_path = home.path();
-    let install_dir = home_path.join(".maho").join("codegraph");
+    let install_dir = home_path.join(".omo").join("codegraph");
     let bin_name = if cfg!(windows) {
         "codegraph.cmd"
     } else {
@@ -470,7 +470,7 @@ fn resolve_command_managed_runtime_stale_ignored() {
 fn resolve_command_managed_runtime_pinned_accepted() {
     let home = tempdir().unwrap();
     let home_path = home.path();
-    let install_dir = home_path.join(".maho").join("codegraph");
+    let install_dir = home_path.join(".omo").join("codegraph");
     let bin_name = if cfg!(windows) {
         "codegraph.cmd"
     } else {
@@ -521,7 +521,7 @@ fn resolve_command_managed_runtime_pinned_accepted() {
 fn resolve_command_managed_runtime_external_rejected() {
     let home = tempdir().unwrap();
     let home_path = home.path();
-    let install_dir = home_path.join(".maho").join("codegraph");
+    let install_dir = home_path.join(".omo").join("codegraph");
     let bin_name = if cfg!(windows) {
         "codegraph.cmd"
     } else {
@@ -670,7 +670,7 @@ fn guidance_built_points_to_omo_global_store() {
     let normalized = guidance.replace(r"\\", "/").replace('\\', "/");
     assert!(normalized.contains("CodeGraph is not initialized for \"/Users/me/project\""));
     assert!(normalized.contains("/Users/me/project/.codegraph\""));
-    assert!(normalized.contains("\"/Users/me/.maho/codegraph/projects/project-"));
+    assert!(normalized.contains("\"/Users/me/.omo/codegraph/projects/project-"));
     assert!(normalized.contains("run `codegraph init` from \"/Users/me/project\""));
     assert!(!normalized.contains("Run 'codegraph init' in that project first."));
 }

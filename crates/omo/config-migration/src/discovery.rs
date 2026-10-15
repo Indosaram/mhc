@@ -125,7 +125,7 @@ fn discover_config_jsonc_sources(
 ) -> Result<Vec<DiscoveredLegacyConfigSource>, DiscoveryFsError> {
     let config_path = options
         .path_operations
-        .join(&[options.home_dir, ".maho", "config.jsonc"]);
+        .join(&[options.home_dir, ".omo", "config.jsonc"]);
     let file_system = discovery_file_system(options);
     let source = |kind, path| DiscoveredLegacyConfigSource {
         base_root: None,

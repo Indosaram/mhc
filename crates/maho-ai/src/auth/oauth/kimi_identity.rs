@@ -1,7 +1,7 @@
 //! Port of senpi packages/ai/src/auth/oauth/kimi-identity.ts.
 //!
 //! The agent dir and its env override carry the maho brand (D-M7): `MAHO_CODING_AGENT_DIR` and
-//! `~/.maho/agent`, matching `utils/cursor_context_limit.rs`.
+//! `~/.omo/agent`, matching `utils/cursor_context_limit.rs`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -48,12 +48,12 @@ fn sanitize_header_value(value: &str, fallback: &str) -> String {
 }
 
 fn agent_dir() -> String {
-    let configured = env_value("MAHO_CODING_AGENT_DIR").or_else(|| env_value("CODING_AGENT_DIR"));
+    let configured = env_value("OMO_CODING_AGENT_DIR").or_else(|| env_value("CODING_AGENT_DIR"));
     if let Some(configured) = configured {
         return configured.trim_end_matches('/').to_string();
     }
     let home = env_value("HOME").unwrap_or_else(|| ".".to_string());
-    format!("{}/.maho/agent", home.trim_end_matches('/'))
+    format!("{}/.omo/agent", home.trim_end_matches('/'))
 }
 
 fn platform() -> String {
