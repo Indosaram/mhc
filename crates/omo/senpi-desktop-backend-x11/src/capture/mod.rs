@@ -149,6 +149,11 @@ impl<S: XServer> X11Capture<S> {
         let clipped = clip_to_root(rect, screen.width, screen.height)
             .ok_or_else(|| DesktopError::capture_failed(format!("window {id} has no visible root area")))?;
         let visible = self.capture_rect(clipped)?;
+        if clipped == rect && visible.dimensions() == (window.width, window.height) {
+            // Fully on-root: the padded frame would be the capture itself.
+            let frame = FrameGeometry::for_window(&window, visible.width(), visible.height());
+            return Ok((visible, frame));
+        }
         let mut image = RgbaImage::new(window.width, window.height);
         imageops::replace(
             &mut image,

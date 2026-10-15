@@ -75,6 +75,8 @@ impl FuzzyFileSearchService {
         // Rank on the blocking pool, without holding the shared state lock.
         let (rank, query) = (self.rank.clone(), query.to_owned());
         match tokio::task::spawn_blocking(move || rank(&query, &entries)).await {
+            // A newer same-token search or a dispose may have landed during the rank; drop the stale result.
+            Ok(_) if cancelled.load(Ordering::Acquire) || self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disposed => Vec::new(),
             Ok(files) => files,
             Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
             Err(_) => Vec::new(),

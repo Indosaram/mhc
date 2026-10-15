@@ -386,11 +386,26 @@ impl DagFileStore {
     }
 
     pub fn append_event(&self, event: &DagRunEvent) -> Result<(), DagStoreError> {
+        self.append_event_with(event, |path| self.event_log_tail_seq(path, &event.run_id))
+            .map(|_| ())
+    }
+
+    /// Journal append: the caller has already validated the whole log under the run lock, so the
+    /// seq guard only needs the last complete line. Returns the log length after the append.
+    pub(crate) fn append_validated_event(&self, event: &DagRunEvent) -> Result<u64, DagStoreError> {
+        self.append_event_with(event, |path| self.event_log_last_seq(path, &event.run_id))
+    }
+
+    fn append_event_with(
+        &self,
+        event: &DagRunEvent,
+        tail_seq: impl FnOnce(&Path) -> Result<serde_json::Number, DagStoreError>,
+    ) -> Result<u64, DagStoreError> {
         assert_safe_segment(&event.run_id, "run id")?;
         let path = self.paths.event(&event.run_id);
         let value = serde_json::to_value(event)?;
         assert_supported_schema(&value, &path, Some(&event.run_id), self.clock())?;
-        let tail = self.event_log_tail_seq(&path, &event.run_id)?;
+        let tail = tail_seq(&path)?;
         let expected = tail.as_u64().and_then(|seq| seq.checked_add(1));
         if event.seq > MAX_SAFE_INTEGER || expected != Some(event.seq) {
             let expected_text = expected.map_or_else(
@@ -410,11 +425,12 @@ impl DagFileStore {
         if self.fsync_writes {
             self.fs.fsync(&file)?;
         }
+        let len = file.metadata()?.len();
         #[cfg(test)]
         if let Some(hook) = guard(&self.append_hook).clone() {
             hook(event)?;
         }
-        Ok(())
+        Ok(len)
     }
 
     pub fn read_events(
@@ -723,6 +739,51 @@ impl DagFileStore {
             Ok(())
         })?;
         Ok(tail)
+    }
+
+    /// Seq of the last complete line, read backwards from the end so large leading lines (the DAG
+    /// definition) are not re-parsed. Falls back to the full scan when the log does not end in a
+    /// newline, preserving its fragment handling.
+    fn event_log_last_seq(&self, path: &Path, run_id: &str) -> Result<serde_json::Number, DagStoreError> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(serde_json::Number::from(0u64));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let len = file.metadata()?.len();
+        if len == 0 {
+            return Ok(serde_json::Number::from(0u64));
+        }
+        // Bytes of [start, len) read so far, front-extended chunk by chunk.
+        let mut tail: Vec<u8> = Vec::new();
+        let mut start = len;
+        loop {
+            let chunk = start.min(READ_BUFFER_BYTES as u64);
+            start -= chunk;
+            let mut buffer = vec![0u8; usize::try_from(chunk).unwrap_or(READ_BUFFER_BYTES)];
+            file.seek(SeekFrom::Start(start))?;
+            file.read_exact(&mut buffer)?;
+            buffer.extend_from_slice(&tail);
+            tail = buffer;
+            if tail.last() != Some(&b'\n') {
+                return self.event_log_tail_seq(path, run_id);
+            }
+            let body = &tail[..tail.len() - 1];
+            if let Some(newline) = body.iter().rposition(|byte| *byte == b'\n') {
+                return self.parse_tail_line(&body[newline + 1..], path, run_id);
+            }
+            if start == 0 {
+                return self.parse_tail_line(body, path, run_id);
+            }
+        }
+    }
+
+    fn parse_tail_line(&self, line: &[u8], path: &Path, run_id: &str) -> Result<serde_json::Number, DagStoreError> {
+        let value = parse_json(&String::from_utf8_lossy(line), path, None, &system_now)?;
+        Ok(parse_event_envelope(&value, path, run_id, self.clock())?)
     }
 
     fn inspect_existing_event_logs(&self) -> Result<(), DagStoreError> {

@@ -1,11 +1,13 @@
 pub const DEFAULT_FOREGROUND_WINDOW_SECONDS:f64=60.0;
 pub const SLEEP_WAIT_WINDOW_SECONDS:f64=5.0;
 
+static FLOAT_PREFIX:std::sync::LazyLock<regex::Regex>=std::sync::LazyLock::new(|| {
+    #[expect(clippy::expect_used,reason="constant float-prefix pattern is validated by foreground-window tests")]
+    regex::Regex::new(r"^[\s]*([+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)").expect("valid float-prefix pattern")
+});
+
 pub fn resolve_foreground_window_seconds(value:Option<&str>)->f64 {
-    let parsed=value.and_then(|value| {
-        let regex=regex::Regex::new(r"^[\s]*([+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)").ok()?;
-        regex.captures(value)?.get(1)?.as_str().parse::<f64>().ok()
-    });
+    let parsed=value.and_then(|value| FLOAT_PREFIX.captures(value)?.get(1)?.as_str().parse::<f64>().ok());
     parsed.filter(|value|value.is_finite() && *value>0.0).unwrap_or(DEFAULT_FOREGROUND_WINDOW_SECONDS)
 }
 

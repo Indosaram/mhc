@@ -13,8 +13,8 @@ use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Map, Value};
 
-use crate::api::anthropic_tool_pairs::sanitize_anthropic_tool_pairs;
-use crate::api::anthropic_tool_references::demote_unavailable_tool_references;
+use crate::api::anthropic_tool_pairs::sanitize_anthropic_tool_pairs_if_changed;
+use crate::api::anthropic_tool_references::demote_unavailable_tool_references_if_changed;
 use crate::api::cloudflare::resolve_cloudflare_base_url;
 use crate::api::constrained_sampling::{get_json_schema_tool_parameters, resolve_json_schema_strict_sampling};
 use crate::api::github_copilot_headers::{build_copilot_dynamic_headers, has_copilot_vision_input};
@@ -1993,18 +1993,23 @@ async fn build_prepared_request(
     options: &StreamOptions,
     unsigned_thinking_replay: &str,
 ) -> Result<PreparedRequest, AnthropicStreamError> {
-    let mut params = build_params(model, context, is_oauth_token, options, unsigned_thinking_replay)
-        .map_err(AnthropicStreamError::Message)?;
-    if let Some(next) = options.request.apply_payload_hook(&Value::Object(params.clone()), model, None)
-        .await.map_err(AnthropicStreamError::Message)?
-        && let Some(next) = next.as_object()
-    {
-        params = next.clone();
-    }
+    let payload = Value::Object(
+        build_params(model, context, is_oauth_token, options, unsigned_thinking_replay)
+            .map_err(AnthropicStreamError::Message)?,
+    );
+    let hooked = options.request.apply_payload_hook(&payload, model, None).await.map_err(AnthropicStreamError::Message)?;
+    let mut params = match (hooked, payload) {
+        (Some(Value::Object(next)), _) | (_, Value::Object(next)) => next,
+        _ => Map::new(),
+    };
     sanitize_adaptive_thinking_payload(model, &mut params, options);
     sanitize_unsupported_native_tools(model, &mut params);
-    params = demote_unavailable_tool_references(&params);
-    params = sanitize_anthropic_tool_pairs(&params);
+    if let Some(next) = demote_unavailable_tool_references_if_changed(&params) {
+        params = next;
+    }
+    if let Some(next) = sanitize_anthropic_tool_pairs_if_changed(&params) {
+        params = next;
+    }
     let headers = extract_payload_request_metadata(&mut params);
     Ok(PreparedRequest {
         sent_model: params.get("model").and_then(Value::as_str).unwrap_or_default().to_owned(),
@@ -2873,7 +2878,7 @@ pub fn build_anthropic_warm_prompt_cache_params(
     non_streaming.remove("output_config");
     non_streaming.remove("tool_choice");
     non_streaming.insert("max_tokens".into(), Value::from(0));
-    sanitize_anthropic_tool_pairs(&non_streaming)
+    sanitize_anthropic_tool_pairs_if_changed(&non_streaming).unwrap_or(non_streaming)
 }
 
 // __PART5__

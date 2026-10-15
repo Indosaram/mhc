@@ -37,7 +37,10 @@ pub fn occurrences_response(params: &Value,turns: &[LoggedTurn]) -> Result<Value
             let item = Value::Object(item.clone());
             let Some(item_id) = item["id"].as_str().filter(|id|!id.is_empty()) else {continue};
             let text = if item["type"] == "agentMessage" {markdown_to_search_text(item["text"].as_str().unwrap_or_default())} else if let Some(text) = item["content"].as_str() {text.into()} else {item["content"].as_array().into_iter().flatten().filter(|input|input["type"] == "text").filter_map(|input|input["text"].as_str()).collect()};
-            let lower = text.to_lowercase();let mut offset = 0;let mut occurrence_index = 0;
+            let lower = text.to_lowercase();
+            // No match yields no occurrences; skip building the per-char spans.
+            if !lower.contains(&needle) {continue;}
+            let mut offset = 0;let mut occurrence_index = 0;
             let mut spans = Vec::new();let mut lower_offset = 0;let mut original_offset = 0;
             for character in text.chars() {let folded = character.to_lowercase().collect::<String>();spans.push((lower_offset,lower_offset+folded.len(),original_offset,original_offset+character.len_utf8()));lower_offset += folded.len();original_offset += character.len_utf8();}
             while let Some(found) = lower[offset..].find(&needle) {

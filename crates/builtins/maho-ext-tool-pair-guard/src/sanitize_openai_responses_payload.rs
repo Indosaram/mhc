@@ -1,5 +1,6 @@
 //! Port of sanitize-openai-responses-payload.ts.
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 const SYNTHETIC_OUTPUT: &str = "Tool output unavailable (interrupted before result)";
@@ -38,23 +39,23 @@ pub fn sanitize_openai_responses_payload_if_changed(payload: &Value) -> Option<V
         let id = call_id(item);
         match item.get("type").and_then(Value::as_str) {
             Some("function_call_output") => {
-                if id.is_some_and(|id| function_outputs.contains(id) && emitted_functions.insert(id)) { sanitized.push(item.clone()); }
+                if id.is_some_and(|id| function_outputs.contains(id) && emitted_functions.insert(id)) { sanitized.push(Cow::Borrowed(item)); }
                 else { changed = true; }
             }
             Some("custom_tool_call_output") => {
-                if id.is_some_and(|id| custom_outputs.contains(id) && emitted_custom.insert(id)) { sanitized.push(item.clone()); }
+                if id.is_some_and(|id| custom_outputs.contains(id) && emitted_custom.insert(id)) { sanitized.push(Cow::Borrowed(item)); }
                 else { changed = true; }
             }
             kind => {
-                sanitized.push(item.clone());
+                sanitized.push(Cow::Borrowed(item));
                 if let Some(id) = id {
                     if matches!(kind, Some("function_call" | "local_shell_call")) && !function_outputs.contains(id) {
-                        sanitized.push(json!({"type":"function_call_output", "call_id":id, "output":SYNTHETIC_OUTPUT}));
+                        sanitized.push(Cow::Owned(json!({"type":"function_call_output", "call_id":id, "output":SYNTHETIC_OUTPUT})));
                         changed = true;
                     } else if kind == Some("custom_tool_call") && !custom_outputs.contains(id) {
                         let mut output = json!({"type":"custom_tool_call_output", "call_id":id, "output":SYNTHETIC_OUTPUT});
                         if let Some(name) = item.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()) { output["name"] = json!(name); }
-                        sanitized.push(output);
+                        sanitized.push(Cow::Owned(output));
                         changed = true;
                     }
                 }
@@ -63,6 +64,6 @@ pub fn sanitize_openai_responses_payload_if_changed(payload: &Value) -> Option<V
     }
     if !changed { return None; }
     let mut result = payload.clone();
-    result["input"] = Value::Array(sanitized);
+    result["input"] = Value::Array(sanitized.into_iter().map(Cow::into_owned).collect());
     Some(result)
 }

@@ -1439,6 +1439,19 @@ impl SessionManager {
         None
     }
 
+    /// `latest_branch_entry_id_by_type`, falling back to the materialized `current_branch()` when
+    /// the leaf is not indexed (a trimmed mirror), so the result always equals
+    /// `current_branch().iter().rev().find(..)`.
+    pub fn latest_current_branch_entry_id(&self, kind: &str, role: Option<&str>) -> Option<String> {
+        let leaf = self.leaf_id.as_deref()?;
+        if self.entry_order(leaf).is_none() {
+            return self.current_branch().into_iter().rev()
+                .find(|entry| entry["type"] == kind && role.is_none_or(|role| entry["message"]["role"] == role))
+                .and_then(|entry| entry["id"].as_str().map(str::to_owned));
+        }
+        self.latest_branch_entry_id_by_type(kind, role)
+    }
+
     pub fn label(&self, id: &str) -> Option<&str> {
         self.labels_by_id.get(id).map(String::as_str)
     }

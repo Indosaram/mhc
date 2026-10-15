@@ -1,7 +1,7 @@
 //! Recall BM25 ranking with CJK bigram tokenization (pin `recall/bm25.ts`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::Arc;
 
 use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_normalization::UnicodeNormalization;
@@ -152,7 +152,7 @@ pub fn recall_terms(text: &str) -> Vec<String> {
 }
 
 #[derive(Default)]
-struct RecallBm25Index {
+pub(crate) struct RecallBm25Index {
     term_frequencies: Vec<BTreeMap<String, u64>>,
     lengths: Vec<usize>,
     document_frequency: BTreeMap<String, u64>,
@@ -184,43 +184,16 @@ fn build_index(documents: &[RecallDocument]) -> RecallBm25Index {
     index
 }
 
-type RecallBm25IndexCache =
-    Mutex<Option<Vec<(usize, usize, u64, std::sync::Arc<RecallBm25Index>)>>>;
-
-/// Content fingerprint of the indexed fields, so a freed corpus whose slice address and length are
-/// reused by a different revision never resolves to its stale index. Far cheaper than `build_index`.
-fn documents_fingerprint(documents: &[RecallDocument]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for document in documents {
-        document.description.hash(&mut hasher);
-        document.body.hash(&mut hasher);
+/// One index per cached corpus (the pin keys its `WeakMap` by array); other slices build per call.
+fn index_for(documents: &[RecallDocument]) -> Arc<RecallBm25Index> {
+    match super::corpus_derived::derived_for(documents) {
+        Some(derived) => Arc::clone(
+            derived
+                .bm25
+                .get_or_init(|| Arc::new(build_index(documents))),
+        ),
+        None => Arc::new(build_index(documents)),
     }
-    hasher.finish()
-}
-
-/// One index per corpus, keyed by the documents slice pointer (the pin keys its `WeakMap` by array).
-fn index_for(documents: &[RecallDocument]) -> std::sync::Arc<RecallBm25Index> {
-    static CACHE: RecallBm25IndexCache = Mutex::new(None);
-    let key = (
-        documents.as_ptr() as usize,
-        documents.len(),
-        documents_fingerprint(documents),
-    );
-    let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let entries = guard.get_or_insert_with(Vec::new);
-    if let Some((_, _, _, index)) = entries
-        .iter()
-        .find(|(ptr, len, fingerprint, _)| (*ptr, *len, *fingerprint) == key)
-    {
-        return std::sync::Arc::clone(index);
-    }
-    let index = std::sync::Arc::new(build_index(documents));
-    entries.push((key.0, key.1, key.2, std::sync::Arc::clone(&index)));
-    if entries.len() > 8 {
-        entries.remove(0);
-    }
-    index
 }
 
 /// Terms a caller adds to a search, by their distance from the query's own words.

@@ -31,8 +31,7 @@ pub async fn register_history_handlers(core: &Arc<RwLock<ServerCore>>,threads: A
                 let params = &context.request["params"];
                 if method == "thread/searchOccurrences" {
                     let (id,_,_,_) = super::search_occurrences::parse_occurrence_params(params)?;
-                    let turns = thread_history_turns(id,&threads,&archive,&log).await?;
-                    return super::search_occurrences::occurrences_response(params,&turns);
+                    return with_thread_history_turns(id,&threads,&archive,&log,|turns|super::search_occurrences::occurrences_response(params,turns)).await?;
                 }
                 let id = params["threadId"].as_str().filter(|id|!id.is_empty()).ok_or_else(||JsonRpcError::new(-32600,"thread history requires a non-empty threadId"))?;
                 let cursor = nullable_string(params,"cursor","thread history received an invalid cursor")?;

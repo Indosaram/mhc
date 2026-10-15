@@ -57,8 +57,8 @@ pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<Session
                     ExtensionEvent::MessageEnd { message } => {
                         let streamed = provider_final.lock().expect("provider final").remove(&session);
                         if let Some(streamed) = streamed { boundary.lock().expect("boundary").capture_provider_final(&session, &serde_json::to_value(&streamed).expect("message")); }
-                        let message = serde_json::to_value(message).expect("message");
-                        if message["role"] == "assistant" {
+                        if message.as_assistant().is_some() {
+                            let message = serde_json::to_value(message).expect("message");
                             if crate::session_commit_boundary::is_terminal_failure(&message) { boundary.lock().expect("boundary").forget(&session); }
                             else if let Some(model) = registry.entries.get(&session).map(|entry| entry.model_id.clone()).or_else(|| registry.bindings.get(&session).map(|binding| binding.model_id))
                                 && boundary.lock().expect("boundary").commit(&session, &message, &model) == crate::session_commit_boundary::AssistantCommitOutcome::Rewritten {

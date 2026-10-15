@@ -156,7 +156,11 @@ impl Extension for HerdrExtension{
                         let drain=state.lock().expect("reporter lock").client.as_ref().expect("bound client").drain();drain.await;
                         if event.reason==SessionReason::Quit{let work=enqueue(&mut state.lock().expect("reporter lock"),HerdrMethod::ReleaseAgent,json!({"agent":"pi"}).as_object().expect("object").clone());if let Some(work)=work{let _result=work.await;}}
                     }else{
-                        {let mut guard=state.lock().expect("reporter lock");guard.state.turn_active=kind==EventKind::AgentStart||!ctx.is_idle();if kind==EventKind::AgentSettled{guard.state.child_count=count_running_child_tasks(&ctx.cwd,ctx.session_manager.session_id());}}
+                        let count=if kind==EventKind::AgentSettled{
+                            let cwd=ctx.cwd.clone();let session=ctx.session_manager.session_id().to_owned();
+                            tokio::task::spawn_blocking(move||count_running_child_tasks(&cwd,&session)).await.ok()
+                        }else{None};
+                        {let mut guard=state.lock().expect("reporter lock");guard.state.turn_active=kind==EventKind::AgentStart||!ctx.is_idle();if let Some(count)=count{guard.state.child_count=count;}}
                         publish(state).await;
                     }
                     Ok(EventResult::None)

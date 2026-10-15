@@ -147,8 +147,8 @@ impl Extension for HooksExtension {
         let stop_pending=Arc::clone(&pending);let stop_sender=Arc::clone(&sender);
         api.on(EventKind::AgentEnd,Arc::new(move |event,ctx| {let pending=Arc::clone(&stop_pending);let sender=Arc::clone(&stop_sender);Box::pin(async move {
             let ExtensionEvent::AgentEnd {messages,..}=event else {return Ok(EventResult::None);};
-            let messages=messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>().map_err(|error|ExtensionFailure::new(error.to_string()))?;
-            let transcript=ctx.session_manager.session_file().map(|path|path.to_string_lossy().into_owned());let input=crate::stop_adapter::build_stop_hook_input(&messages,&ctx.cwd.to_string_lossy(),ctx.session_manager.session_id(),transcript.as_deref());
+            let stop_reason=messages.iter().rev().find_map(|message|message.as_assistant()).map(|assistant|assistant.stop_reason.as_str());
+            let transcript=ctx.session_manager.session_file().map(|path|path.to_string_lossy().into_owned());let input=crate::stop_adapter::build_stop_hook_input(stop_reason,&ctx.cwd.to_string_lossy(),ctx.session_manager.session_id(),transcript.as_deref());
             let result=dispatch(ctx,input).await?;let leaf=ctx.session_manager.get_leaf_id();let turn_key=pending.lock().map_err(|_|ExtensionFailure::new("hooks pending state poisoned"))?.stop_tracker.turn_key(leaf.as_deref(),ctx.session_manager.session_id());
             crate::stop_adapter::apply_stop_hook_result(&sender,ctx,&result,&turn_key).await?;Ok(EventResult::None)
         })}));

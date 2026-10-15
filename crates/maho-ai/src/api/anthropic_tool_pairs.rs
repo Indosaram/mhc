@@ -1,5 +1,6 @@
 //! Port of senpi packages/ai/src/api/anthropic-tool-pairs.ts.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use serde_json::{Map, Value};
@@ -25,7 +26,7 @@ fn is_tool_result_block(block: &Value) -> bool {
     block.get("type").and_then(Value::as_str) == Some("tool_result")
 }
 
-fn message_with_array_content(value: &Value, role: &str) -> Option<Vec<Value>> {
+fn message_with_array_content<'a>(value: &'a Value, role: &str) -> Option<&'a Vec<Value>> {
     if value.get("role").and_then(Value::as_str) != Some(role) {
         return None;
     }
@@ -33,7 +34,7 @@ fn message_with_array_content(value: &Value, role: &str) -> Option<Vec<Value>> {
     if !content.iter().all(is_content_block_param) {
         return None;
     }
-    Some(content.clone())
+    Some(content)
 }
 
 fn is_user_message_with_string_content(value: &Value) -> Option<&str> {
@@ -55,27 +56,35 @@ fn with_content(message: &Value, content: Vec<Value>) -> Value {
     Value::Object(message)
 }
 
+fn owned_blocks(blocks: Vec<Cow<'_, Value>>) -> Vec<Value> {
+    blocks.into_iter().map(Cow::into_owned).collect()
+}
+
+fn message_blocks(message: &Value) -> &[Value] {
+    message.get("content").and_then(Value::as_array).map_or(&[], Vec::as_slice)
+}
+
 struct AssistantToolUseDedupe {
-    message: Value,
-    changed: bool,
+    /// `None` when the message is unchanged.
+    message: Option<Value>,
     expected_ids: Vec<String>,
     remap_queues: BTreeMap<String, Vec<String>>,
 }
 
 fn dedupe_assistant_tool_uses(message: &Value, used_ids: &mut HashSet<String>) -> AssistantToolUseDedupe {
-    let blocks = message.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
-    let mut content: Vec<Value> = Vec::new();
+    let blocks = message_blocks(message);
+    let mut content: Vec<Cow<'_, Value>> = Vec::new();
     let mut expected_ids: Vec<String> = Vec::new();
     let mut remap_queues: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut changed = false;
 
-    for block in &blocks {
+    for block in blocks {
         let Some(id) = tool_use_id(block) else {
-            content.push(block.clone());
+            content.push(Cow::Borrowed(block));
             continue;
         };
         if id.is_empty() {
-            content.push(block.clone());
+            content.push(Cow::Borrowed(block));
             continue;
         }
         let mut final_id = id.to_owned();
@@ -91,16 +100,14 @@ fn dedupe_assistant_tool_uses(message: &Value, used_ids: &mut HashSet<String>) -
         expected_ids.push(final_id.clone());
         remap_queues.entry(id.to_owned()).or_default().push(final_id.clone());
         if final_id == id {
-            content.push(block.clone());
+            content.push(Cow::Borrowed(block));
         } else {
-            content.push(clone_with(block, "id", Value::String(final_id)));
+            content.push(Cow::Owned(clone_with(block, "id", Value::String(final_id))));
         }
     }
 
-    if !changed {
-        return AssistantToolUseDedupe { message: message.clone(), changed: false, expected_ids, remap_queues };
-    }
-    AssistantToolUseDedupe { message: with_content(message, content), changed: true, expected_ids, remap_queues }
+    let message = changed.then(|| with_content(message, owned_blocks(content)));
+    AssistantToolUseDedupe { message, expected_ids, remap_queues }
 }
 
 fn synthetic_tool_result(tool_use_id: &str) -> Value {
@@ -114,24 +121,25 @@ fn synthetic_tool_result(tool_use_id: &str) -> Value {
 
 // The TS `sameBlocks` compares by reference identity; every block here is an untouched element of
 // `message.content` or a rewritten copy, so element-wise equality decides the same way.
-fn same_blocks(left: &[Value], right: &[Value]) -> bool {
-    left.len() == right.len() && left.iter().zip(right).all(|(block, other)| block == other)
+fn same_blocks(left: &[Cow<'_, Value>], right: &[Value]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(block, other)| **block == *other)
 }
 
+/// Returns the repaired message, or `None` when it is unchanged.
 fn repair_following_user_message(
     message: &Value,
     expected_ids: &[String],
     remap_queues: &mut BTreeMap<String, Vec<String>>,
-) -> (Value, bool) {
+) -> Option<Value> {
     let expected: HashSet<&String> = expected_ids.iter().collect();
     let mut found: HashSet<String> = HashSet::new();
-    let mut results: Vec<Value> = Vec::new();
-    let mut ordinary: Vec<Value> = Vec::new();
+    let mut results: Vec<Cow<'_, Value>> = Vec::new();
+    let mut ordinary: Vec<Cow<'_, Value>> = Vec::new();
 
-    let blocks = message.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
-    for block in &blocks {
+    let blocks = message_blocks(message);
+    for block in blocks {
         if !is_tool_result_block(block) {
-            ordinary.push(block.clone());
+            ordinary.push(Cow::Borrowed(block));
             continue;
         }
         let raw_id = block.get("tool_use_id").cloned().unwrap_or(Value::Null);
@@ -148,37 +156,39 @@ fn repair_following_user_message(
         }
         found.insert(id.to_owned());
         if Some(id) == raw_id.as_str() {
-            results.push(block.clone());
+            results.push(Cow::Borrowed(block));
         } else {
-            results.push(clone_with(block, "tool_use_id", Value::String(id.to_owned())));
+            results.push(Cow::Owned(clone_with(block, "tool_use_id", Value::String(id.to_owned()))));
         }
     }
 
     for id in expected_ids {
         if !found.contains(id) {
-            results.push(synthetic_tool_result(id));
+            results.push(Cow::Owned(synthetic_tool_result(id)));
         }
     }
 
     let mut content = results;
     content.extend(ordinary);
-    if same_blocks(&content, &blocks) {
-        (message.clone(), false)
-    } else {
-        (with_content(message, content), true)
-    }
+    if same_blocks(&content, blocks) { None } else { Some(with_content(message, owned_blocks(content))) }
 }
 
-fn remove_orphan_results(message: &Value) -> (Option<Value>, bool) {
-    let blocks = message.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
+/// Returns `None` when the message is unchanged, `Some(None)` when it must be dropped.
+fn remove_orphan_results(message: &Value) -> Option<Option<Value>> {
+    let blocks = message_blocks(message);
+    if !blocks.iter().any(is_tool_result_block) {
+        return None;
+    }
     let content: Vec<Value> = blocks.iter().filter(|block| !is_tool_result_block(block)).cloned().collect();
-    if content.len() == blocks.len() {
-        return (Some(message.clone()), false);
-    }
     if content.is_empty() {
-        return (None, true);
+        return Some(None);
     }
-    (Some(with_content(message, content)), true)
+    Some(Some(with_content(message, content)))
+}
+
+/// Starts the rewritten message list on the first change, seeded with the unchanged prefix.
+fn changed_messages<'a>(sanitized: &'a mut Option<Vec<Value>>, messages: &[Value], upto: usize) -> &'a mut Vec<Value> {
+    sanitized.get_or_insert_with(|| messages[..upto].to_vec())
 }
 
 /// Repairs Anthropic client tool_use/tool_result adjacency and duplicate tool_use ids without
@@ -192,18 +202,24 @@ pub fn sanitize_anthropic_tool_pairs(payload: &Map<String, Value>) -> Map<String
 pub fn sanitize_anthropic_tool_pairs_if_changed(payload: &Map<String, Value>) -> Option<Map<String, Value>> {
     let messages = has_messages_array(payload)?;
 
-    let mut changed = false;
     let mut used_tool_use_ids: HashSet<String> = HashSet::new();
-    let mut sanitized: Vec<Value> = Vec::new();
+    // Stays `None` until the first change; unchanged messages are never copied before then.
+    let mut sanitized: Option<Vec<Value>> = None;
 
     let mut index = 0;
     while index < messages.len() {
         let message = &messages[index];
         if message_with_array_content(message, "assistant").is_some() {
-            let AssistantToolUseDedupe { message: deduped, changed: deduped_changed, expected_ids, mut remap_queues } =
+            let AssistantToolUseDedupe { message: deduped, expected_ids, mut remap_queues } =
                 dedupe_assistant_tool_uses(message, &mut used_tool_use_ids);
-            sanitized.push(deduped);
-            changed |= deduped_changed;
+            match deduped {
+                Some(deduped) => changed_messages(&mut sanitized, messages, index).push(deduped),
+                None => {
+                    if let Some(out) = sanitized.as_mut() {
+                        out.push(message.clone());
+                    }
+                }
+            }
             if expected_ids.is_empty() {
                 index += 1;
                 continue;
@@ -213,48 +229,61 @@ pub fn sanitize_anthropic_tool_pairs_if_changed(payload: &Map<String, Value>) ->
             if let Some(next) = next
                 && message_with_array_content(next, "user").is_some()
             {
-                let (repaired, repaired_changed) = repair_following_user_message(next, &expected_ids, &mut remap_queues);
-                sanitized.push(repaired);
-                changed |= repaired_changed;
+                match repair_following_user_message(next, &expected_ids, &mut remap_queues) {
+                    Some(repaired) => changed_messages(&mut sanitized, messages, index + 1).push(repaired),
+                    None => {
+                        if let Some(out) = sanitized.as_mut() {
+                            out.push(next.clone());
+                        }
+                    }
+                }
                 index += 2;
                 continue;
             }
 
-            if let Some(text) = next.and_then(is_user_message_with_string_content) {
+            if let Some(next) = next
+                && let Some(text) = is_user_message_with_string_content(next)
+            {
                 let mut content: Vec<Value> = expected_ids.iter().map(|id| synthetic_tool_result(id)).collect();
                 content.push(serde_json::json!({ "type": "text", "text": text }));
-                sanitized.push(with_content(next.expect("next message"), content));
-                changed = true;
+                changed_messages(&mut sanitized, messages, index + 1).push(with_content(next, content));
                 index += 2;
                 continue;
             }
 
-            sanitized.push(serde_json::json!({
+            changed_messages(&mut sanitized, messages, index + 1).push(serde_json::json!({
                 "role": "user",
                 "content": expected_ids.iter().map(|id| synthetic_tool_result(id)).collect::<Vec<_>>(),
             }));
-            changed = true;
             index += 1;
             continue;
         }
 
         if message_with_array_content(message, "user").is_some() {
-            let (repaired, repaired_changed) = remove_orphan_results(message);
-            if let Some(repaired) = repaired {
-                sanitized.push(repaired);
+            match remove_orphan_results(message) {
+                Some(repaired) => {
+                    let out = changed_messages(&mut sanitized, messages, index);
+                    if let Some(repaired) = repaired {
+                        out.push(repaired);
+                    }
+                }
+                None => {
+                    if let Some(out) = sanitized.as_mut() {
+                        out.push(message.clone());
+                    }
+                }
             }
-            changed |= repaired_changed;
             index += 1;
             continue;
         }
 
-        sanitized.push(message.clone());
+        if let Some(out) = sanitized.as_mut() {
+            out.push(message.clone());
+        }
         index += 1;
     }
 
-    if !changed {
-        return None;
-    }
+    let sanitized = sanitized?;
     let mut out = payload.clone();
     out.insert("messages".to_owned(), Value::Array(sanitized));
     Some(out)
