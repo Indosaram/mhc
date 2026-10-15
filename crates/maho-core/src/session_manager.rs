@@ -1328,6 +1328,16 @@ impl SessionManager {
         self.file_entries.iter().find(|entry| entry_type(entry) == "session").map(|header| self.resident_store.materialize(header))
     }
 
+    /// The entries appended after the first `skip` of the full history, materialized from the
+    /// resident tail. `None` when `skip` exceeds the history or the tail no longer holds every
+    /// entry after it (a compaction trim dropped some), so callers fall back to `entries()`.
+    pub fn entries_after(&self, skip: usize) -> Option<Vec<Value>> {
+        let count = self.full_entry_count.checked_sub(skip)?;
+        let resident: Vec<&Value> = self.file_entries.iter().filter(|entry| entry_type(entry) != "session").collect();
+        let start = resident.len().checked_sub(count)?;
+        Some(resident[start..].iter().map(|entry| self.materialize_entry(entry)).collect())
+    }
+
     pub fn entries(&self) -> Vec<Value> {
         if self.mirror_trimmed && self.session_file.is_some() {
             return self

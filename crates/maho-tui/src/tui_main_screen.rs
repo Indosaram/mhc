@@ -1,6 +1,8 @@
 //! Port of senpi `packages/tui/src/tui-main-screen.ts`.
 
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::image_stub::is_image_line;
@@ -36,7 +38,9 @@ pub struct TuiMainScreen {
     clicks: MouseClickSynthesizer,
     mouse_press: Option<MousePress>,
     layout_revision: u64,
-    committed_mouse_lines: Vec<String>,
+    /// Fingerprint of the last committed `previous_lines` (see [`lines_fingerprint`]); only used
+    /// to detect line changes for `layout_revision`, so a full copy is not kept.
+    committed_mouse_lines: (usize, u64),
     committed_mouse_components: Vec<Rc<RefCell<dyn Component>>>,
     mouse_capture_token: Option<u64>,
 }
@@ -59,7 +63,7 @@ impl TuiMainScreen {
             clicks: MouseClickSynthesizer::new(),
             mouse_press: None,
             layout_revision: 0,
-            committed_mouse_lines: Vec::new(),
+            committed_mouse_lines: lines_fingerprint(&[]),
             committed_mouse_components: Vec::new(),
             mouse_capture_token: None,
         }
@@ -141,11 +145,9 @@ impl TuiMainScreen {
         }
 
         let lines_changed = {
-            let state = self.base.state.borrow();
-            let lines_changed = state.previous_lines != self.committed_mouse_lines;
-            if lines_changed {
-                self.committed_mouse_lines = state.previous_lines.clone();
-            }
+            let fingerprint = lines_fingerprint(&self.base.state.borrow().previous_lines);
+            let lines_changed = fingerprint != self.committed_mouse_lines;
+            self.committed_mouse_lines = fingerprint;
             lines_changed
         };
         let components_changed = components.len() != self.committed_mouse_components.len()
@@ -338,7 +340,30 @@ impl Default for TuiMainScreen {
     }
 }
 
+/// Allocation-free `(len, hash)` fingerprint of a committed frame's lines; `Hash` for a slice of
+/// strings covers the length and per-line boundaries, so line splits are distinguished.
+fn lines_fingerprint(lines: &[String]) -> (usize, u64) {
+    let mut hasher = DefaultHasher::new();
+    lines.hash(&mut hasher);
+    (lines.len(), hasher.finish())
+}
+
 /// Pointer identity for [`MouseClickSynthesizer`]'s target-equality checks.
 fn component_key(component: &Rc<RefCell<dyn Component>>) -> usize {
     Rc::as_ptr(component) as *const () as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lines_fingerprint;
+
+    #[test]
+    fn lines_fingerprint_tracks_line_content_and_boundaries() {
+        let a = vec!["ab".to_string(), "c".to_string()];
+        assert_eq!(lines_fingerprint(&a), lines_fingerprint(&a.clone()));
+        assert_ne!(lines_fingerprint(&a), lines_fingerprint(&["a".to_string(), "bc".to_string()]));
+        assert_ne!(lines_fingerprint(&a), lines_fingerprint(&["ab".to_string(), "d".to_string()]));
+        assert_ne!(lines_fingerprint(&a), lines_fingerprint(&["abc".to_string()]));
+        assert_ne!(lines_fingerprint(&[]), lines_fingerprint(&[String::new()]));
+    }
 }

@@ -46,9 +46,13 @@ fn normalized(value: &str) -> String {
  WHITESPACE.as_ref().map_or_else(|| value.to_lowercase(), |pattern| pattern.replace_all(&value.to_lowercase(), "-").into_owned())
 }
 /// Model-matching patterns are fixed literals; compile each once instead of on every resolution.
-fn compiled(pattern: &str) -> Option<regex::Regex> {
- static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Option<regex::Regex>>>> = std::sync::LazyLock::new(Default::default);
- CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(pattern.to_owned()).or_insert_with(|| regex::Regex::new(pattern).ok()).clone()
+/// Hands out `Arc` clones: cloning a `Regex` itself would rebuild its search-cache pool on every call.
+fn compiled(pattern: &str) -> Option<std::sync::Arc<regex::Regex>> {
+ type Cache = std::collections::HashMap<String, Option<std::sync::Arc<regex::Regex>>>;
+ static CACHE: std::sync::LazyLock<std::sync::Mutex<Cache>> = std::sync::LazyLock::new(Default::default);
+ let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+ if let Some(cached) = cache.get(pattern) { return cached.clone(); }
+ cache.entry(pattern.to_owned()).or_insert_with(|| regex::Regex::new(pattern).ok().map(std::sync::Arc::new)).clone()
 }
 fn signal(value: &str, patterns: &[&str]) -> bool { let value = normalized(value); patterns.iter().any(|pattern| compiled(pattern).is_some_and(|pattern| pattern.is_match(&value))) }
 fn model_signal(model: ModelMetadata<'_>, patterns: &[&str]) -> bool { signal(model.id, patterns) || model.name.is_some_and(|name| signal(name, patterns)) }

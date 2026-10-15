@@ -41,6 +41,10 @@ fn resolve_modified(activity_time: Option<i64>, header: &Value, mtime: DateTime<
 /// Builds one picker row from a session file's exact summary, or None when the file is not a
 /// session.
 pub fn build_session_info(file_path: &str) -> Option<SessionInfo> {
+    build_session_info_with_text(file_path, true)
+}
+
+fn build_session_info_with_text(file_path: &str, include_text: bool) -> Option<SessionInfo> {
     let cached = read_cached_session_summary(file_path)?;
     let header = &cached.summary.header;
     let created = header
@@ -63,15 +67,19 @@ pub fn build_session_info(file_path: &str) -> Option<SessionInfo> {
         } else {
             cached.summary.first_user_message.clone()
         },
-        all_messages_text: cached.summary.all_messages_text.clone(),
+        all_messages_text: if include_text { cached.summary.all_messages_text.clone() } else { String::new() },
     })
 }
 
 /// Builds picker rows for an explicit file list, dropping files that are not sessions.
-pub fn list_session_infos(files: &[String], mut on_loaded: impl FnMut()) -> Vec<SessionInfo> {
+pub fn list_session_infos(files: &[String], on_loaded: impl FnMut()) -> Vec<SessionInfo> {
+    list_session_infos_with_text(files, true, on_loaded)
+}
+
+fn list_session_infos_with_text(files: &[String], include_text: bool, mut on_loaded: impl FnMut()) -> Vec<SessionInfo> {
     let mut sessions = Vec::new();
     for file in files {
-        let info = build_session_info(file);
+        let info = build_session_info_with_text(file, include_text);
         on_loaded();
         if let Some(info) = info {
             sessions.push(info);
@@ -87,6 +95,24 @@ pub fn list_sessions_from_dir(
     progress_offset: usize,
     progress_total: Option<usize>,
 ) -> Vec<SessionInfo> {
+    let files = sorted_session_files(dir);
+    let total = progress_total.unwrap_or(files.len());
+    let mut loaded = 0usize;
+    list_session_infos(&files, || {
+        loaded += 1;
+        if let Some(progress) = on_progress.as_deref_mut() {
+            progress(progress_offset + loaded, total);
+        }
+    })
+}
+
+/// Same rows as [`list_sessions_from_dir`] with `all_messages_text` left empty, for callers that
+/// never search transcript text and should not copy it out of the summary cache.
+pub fn list_sessions_from_dir_without_text(dir: &str) -> Vec<SessionInfo> {
+    list_session_infos_with_text(&sorted_session_files(dir), false, || {})
+}
+
+fn sorted_session_files(dir: &str) -> Vec<String> {
     if !Path::new(dir).exists() {
         return Vec::new();
     }
@@ -98,14 +124,7 @@ pub fn list_sessions_from_dir(
         .map(|path: PathBuf| path.to_string_lossy().into_owned())
         .collect();
     files.sort();
-    let total = progress_total.unwrap_or(files.len());
-    let mut loaded = 0usize;
-    list_session_infos(&files, || {
-        loaded += 1;
-        if let Some(progress) = on_progress.as_deref_mut() {
-            progress(progress_offset + loaded, total);
-        }
-    })
+    files
 }
 
 #[cfg(test)]
@@ -155,6 +174,19 @@ mod tests {
         let sessions = list_sessions_from_dir(&tmp.path().to_string_lossy(), None, 0, None);
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "s1");
+    }
+
+    #[test]
+    fn the_text_free_listing_matches_except_for_the_transcript_text() {
+        crate::session_summary_cache::clear_session_summary_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write(tmp.path(), "a.jsonl", &session_content());
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let full = list_sessions_from_dir(&dir, None, 0, None);
+        let lean = list_sessions_from_dir_without_text(&dir);
+        assert_eq!(full[0].all_messages_text, "hi");
+        assert_eq!(lean[0].all_messages_text, "");
+        assert_eq!(SessionInfo { all_messages_text: String::new(), ..full[0].clone() }, lean[0]);
     }
 
     #[test]

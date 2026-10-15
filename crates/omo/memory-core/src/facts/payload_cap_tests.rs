@@ -360,3 +360,29 @@ fn test_oversized_envelope_blocks_all_shipments() {
     assert_eq!(selection.selected.is_empty(), true);
     assert_eq!(selection.envelope_oversized, true);
 }
+
+#[test]
+fn test_incremental_total_matches_full_measurement() {
+    // given
+    let envelope = test_envelope();
+    let entries = [
+        sample_entry("alpha", "m1", 1, Some("café ☕"), None),
+        sample_entry("alpha", "m2", 2, None, None),
+        sample_entry("beta", "m1", 1, Some("x\n\"quoted\""), None),
+        sample_entry("gamma", "m7", 3, None, None),
+    ];
+    let envelope_bytes = measure_facts_payload_bytes(&envelope.to_payload(Vec::new()));
+
+    for count in 0..=entries.len() {
+        // when
+        let mut total = envelope_bytes;
+        for (index, entry) in entries[..count].iter().enumerate() {
+            let single = measure_facts_payload_bytes(&envelope.to_payload(vec![entry.clone()]));
+            total = next_selected_bytes(total, envelope_bytes, single, index == 0);
+        }
+
+        // then
+        let full = measure_facts_payload_bytes(&envelope.to_payload(entries[..count].to_vec()));
+        assert_eq!(total, full, "count {count}");
+    }
+}

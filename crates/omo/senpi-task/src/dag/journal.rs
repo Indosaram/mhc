@@ -298,6 +298,9 @@ pub struct DagJournal<C: DagJournalCheckpoint> {
     /// `(event log length, seq)` right after this journal's last append. While the log still has
     /// that length under the run lock, no foreign append happened, so replay can be skipped.
     appended_tail: Mutex<Option<(u64, u64)>>,
+    /// Committed appends; `when_idle` repeats its drain pass until a pass sees none, because an
+    /// overflow committed by one subscriber's drain re-enqueues into subscribers already waited on.
+    appends: std::sync::atomic::AtomicU64,
     subscribers: Arc<Mutex<Vec<Arc<Subscriber>>>>,
 }
 
@@ -331,6 +334,7 @@ pub fn create_dag_journal<C: DagJournalCheckpoint + DeserializeOwned + Serialize
         ring_size,
         checkpoint: Mutex::new(recovered),
         appended_tail: Mutex::new(None),
+        appends: std::sync::atomic::AtomicU64::new(0),
         subscribers: Arc::new(Mutex::new(Vec::new())),
     }))
 }
@@ -416,6 +420,9 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
                 subscriber.enqueue(event.clone());
             }
         }
+        // Counted after the fan-out: a `when_idle` pass that misses this count already waits on
+        // the subscribers it was enqueued into.
+        self.appends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         publish_commit(&self.store, &self.run_id, &event);
         Ok(Some(event))
     }
@@ -537,13 +544,19 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
     /// Blocks until every current subscriber has drained its queue (including any coalesced
     /// overflow). Faithful counterpart of `Promise.all([...subscribers].map(drainPromise))`.
     pub fn when_idle(&self) {
-        let subscribers: Vec<Arc<Subscriber>> = self
-            .subscribers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        for subscriber in &subscribers {
-            subscriber.wait_idle();
+        loop {
+            let appends = self.appends.load(std::sync::atomic::Ordering::SeqCst);
+            let subscribers: Vec<Arc<Subscriber>> = self
+                .subscribers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            for subscriber in &subscribers {
+                subscriber.wait_idle();
+            }
+            if self.appends.load(std::sync::atomic::Ordering::SeqCst) == appends {
+                break;
+            }
         }
         let delivery = commit_delivery();
         loop {

@@ -242,7 +242,7 @@ impl ThreadRegistry {
         // Session discovery reads and parses files synchronously; keep it off the async workers.
         let listed = tokio::task::spawn_blocking(move || {
             let mut sessions = Vec::new();
-            for directory in directories {sessions.extend(maho_core::session_discovery::list_sessions_from_dir(&directory,None,0,None));}
+            for directory in directories {sessions.extend(maho_core::session_discovery::list_sessions_from_dir_without_text(&directory));}
             sessions
         }).await;
         let mut sessions = match listed {Ok(sessions)=>sessions,Err(error)=>{eprintln!("app-server session listing: {error}");Vec::new()}};

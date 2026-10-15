@@ -1,6 +1,6 @@
 use maho_ai::types::Message;
 use serde_json::Value;
-use crate::{context_reduction::{ReduceContextOptions, reduce_context_messages, should_apply_context_reduction}, emergency_prune::{EmergencyPruneLatch, hard_limit_emergency_prune}, openai_remote::{OpenAiRemoteReplayBoundary, mark_openai_remote_replay_boundary}, orchestration::{admit_context_tool_results, inject_token_budget_reminder}, overflow_retry::estimate_total_tokens, repair_tool_pairs::repair_orphaned_tool_results};
+use crate::{context_reduction::{ReduceContextOptions, reduce_context_messages, should_apply_context_reduction}, emergency_prune::{EmergencyPruneLatch, engaged_emergency_prune}, openai_remote::{OpenAiRemoteReplayBoundary, mark_openai_remote_replay_boundary}, orchestration::{admit_owned_context_tool_results, inject_token_budget_reminder}, overflow_retry::estimate_total_tokens, repair_tool_pairs::repair_orphaned_tool_results};
 
 pub struct CompactionContextInput<'a> {
     pub messages: &'a [Value],
@@ -50,16 +50,22 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
     if input.lane_owns_compaction {
         return Ok(CompactionContextOutput { messages: repair_orphaned_tool_results(&typed_messages(input.messages)?, input.now), emergency_prune_tokens: None, replay_boundary: None });
     }
-    let admitted = admit_context_tool_results(input.messages, input.context_window, input.tool_admission_enabled);
+    let admitted = admit_owned_context_tool_results(input.messages.to_vec(), input.context_window, input.tool_admission_enabled);
     let source = if input.breaker_fallback || should_apply_context_reduction(input.usage_tokens, input.context_window as f64, None, input.provider_native_path) {
         reduce_context_messages(&typed_messages(&admitted)?, &ReduceContextOptions::builtin()).messages.into_iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?
     } else { admitted };
     let source_entry_ids = realign_entry_ids(input.messages, input.entry_ids, &source);
-    let emergency = hard_limit_emergency_prune(&source, input.prompt_context_window, Some(input.emergency_prune_latch));
-    let emergency_prune_tokens = (emergency.needs_aggressive_compaction || emergency.messages != source)
-        .then(|| (estimate_total_tokens(&source), estimate_total_tokens(&emergency.messages)));
-    let entry_ids = realign_entry_ids(&source, &source_entry_ids, &emergency.messages);
-    let (marked, replay_boundary) = mark_openai_remote_replay_boundary(&emergency.messages, &entry_ids, input.model, input.branch_entries);
+    // A released latch leaves `source` as-is: no token report and the same entry stamps.
+    let (pruned, entry_ids, emergency_prune_tokens) = match engaged_emergency_prune(&source, input.prompt_context_window, Some(input.emergency_prune_latch)) {
+        None => (source, source_entry_ids, None),
+        Some(emergency) => {
+            let tokens = (emergency.needs_aggressive_compaction || emergency.messages != source)
+                .then(|| (estimate_total_tokens(&source), estimate_total_tokens(&emergency.messages)));
+            let entry_ids = realign_entry_ids(&source, &source_entry_ids, &emergency.messages);
+            (emergency.messages, entry_ids, tokens)
+        }
+    };
+    let (marked, replay_boundary) = mark_openai_remote_replay_boundary(pruned, &entry_ids, input.model, input.branch_entries);
     let reminded = if input.reminder.is_some_and(|reminder| !reminder.is_empty()) { inject_token_budget_reminder(&marked, input.reminder) } else { marked };
     Ok(CompactionContextOutput { messages: repair_orphaned_tool_results(&typed_messages(&reminded)?, input.now), emergency_prune_tokens, replay_boundary })
 }

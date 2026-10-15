@@ -552,24 +552,24 @@ impl ExtensionRunner {
         self.extensions.iter().any(|e| e.handlers.get(&kind).is_some_and(|handlers| !handlers.is_empty()) || self.runtime.has_live_handlers(&e.identity.path, kind))
     }
     fn handlers(&self, kind: EventKind) -> Vec<(String, ExtensionHandler)> {
-        self.extensions.iter().flat_map(|e| {
+        let mut out = Vec::new();
+        for e in self.extensions.iter() {
             // Load-registered handlers stay authoritative; a late runtime registration (e.g. the
             // OMO task component at SessionStart) adds to them instead of hiding them. Dedup by
             // handler identity: `ExtensionApi::on` re-publishes the full registered list, which can
             // already include the load-registered handlers, so a plain extend would double-dispatch.
-            let mut seen = std::collections::BTreeSet::new();
-            let mut handlers = Vec::new();
-            for handler in e.handlers.get(&kind).cloned().unwrap_or_default() {
-                seen.insert(Arc::as_ptr(&handler) as *const () as usize);
-                handlers.push(handler);
+            // Extensions with no handler for `kind` are skipped without allocating.
+            let loaded = e.handlers.get(&kind).map_or(&[][..], Vec::as_slice);
+            let live = self.runtime.live_handlers(&e.identity.path, kind).unwrap_or_default();
+            if loaded.is_empty() && live.is_empty() { continue; }
+            let start = out.len();
+            for handler in loaded { out.push((e.identity.path.clone(), handler.clone())); }
+            for handler in live {
+                let ptr = Arc::as_ptr(&handler) as *const ();
+                if !out[start..].iter().any(|(_, seen): &(String, ExtensionHandler)| Arc::as_ptr(seen) as *const () == ptr) { out.push((e.identity.path.clone(), handler)); }
             }
-            if let Some(live) = self.runtime.live_handlers(&e.identity.path, kind) {
-                for handler in live {
-                    if seen.insert(Arc::as_ptr(&handler) as *const () as usize) { handlers.push(handler); }
-                }
-            }
-            handlers.into_iter().map(|handler| { let path = e.identity.path.clone(); (path.clone(), with_provider_exclude_path(path, handler)) }).collect::<Vec<_>>()
-        }).collect()
+        }
+        out.into_iter().map(|(path, handler)| (path.clone(), with_provider_exclude_path(path, handler))).collect()
     }
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
         let mut tools: Vec<RegisteredTool> = Vec::new();
@@ -597,24 +597,25 @@ impl ExtensionRunner {
         self.get_all_registered_tools().into_iter().find(|tool| tool.definition.name == name).map(|tool| tool.definition)
     }
     pub fn get_tool_renderers<TState: 'static, TArgs: 'static>(&self, name: &str) -> Option<Arc<ToolRenderers<TState, TArgs>>> {
-        let mut selected: Option<&LoadedExtension> = None;
-        for extension in self.extensions.iter() {
-            if self.runtime.live_tools(&extension.identity.path).unwrap_or_else(|| extension.tools.clone()).iter().any(|tool| tool.definition.name == name)
-                && selected.is_none_or(|current| current.source_info.source == "builtin" && extension.source_info.source != "builtin") { selected = Some(extension); }
-        }
-        let selected = selected?;
+        let selected = self.tool_renderer_owner(name)?;
         self.runtime.live_tool_renderer(&selected.identity.path, name).unwrap_or_else(|| selected.tool_renderers.get(name).cloned())?.downcast::<ToolRenderers<TState, TArgs>>().ok()
     }
     /// The object-safe erased renderer set for a tool name, over the same canonical per-name
     /// selection as [`Self::get_tool_renderers`].
     pub fn get_erased_tool_renderers(&self, name: &str) -> Option<Arc<dyn ErasedToolRenderers>> {
+        let selected = self.tool_renderer_owner(name)?;
+        self.runtime.live_erased_tool_renderer(&selected.identity.path, name).unwrap_or_else(|| selected.erased_tool_renderers.get(name).cloned())
+    }
+    /// The canonical renderer owner for a tool name: the first extension whose live (else loaded)
+    /// tool list has the name, replaced by a later non-builtin owner when the current one is builtin.
+    /// Membership is tested without cloning any tool list.
+    fn tool_renderer_owner(&self, name: &str) -> Option<&LoadedExtension> {
         let mut selected: Option<&LoadedExtension> = None;
         for extension in self.extensions.iter() {
-            if self.runtime.live_tools(&extension.identity.path).unwrap_or_else(|| extension.tools.clone()).iter().any(|tool| tool.definition.name == name)
-                && selected.is_none_or(|current| current.source_info.source == "builtin" && extension.source_info.source != "builtin") { selected = Some(extension); }
+            let has_tool = self.runtime.live_tools_contain(&extension.identity.path, name).unwrap_or_else(|| extension.tools.iter().any(|tool| tool.definition.name == name));
+            if has_tool && selected.is_none_or(|current| current.source_info.source == "builtin" && extension.source_info.source != "builtin") { selected = Some(extension); }
         }
-        let selected = selected?;
-        self.runtime.live_erased_tool_renderer(&selected.identity.path, name).unwrap_or_else(|| selected.erased_tool_renderers.get(name).cloned())
+        selected
     }
     pub fn native_tool_renderers_snapshot<TState: 'static, TArgs: 'static>(&self) -> BTreeMap<String, Arc<ToolRenderers<TState, TArgs>>> {
         self.get_all_registered_tools().into_iter().filter_map(|tool| {

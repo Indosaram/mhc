@@ -42,7 +42,10 @@ pub fn resolve_idle_warm_action(decision: &IdleCompactionDecision<'_>, armed_at_
     }
 }
 pub fn admit_context_tool_results(messages: &[Value], window: u64, enabled: bool) -> Vec<Value> {
-    let mut output = messages.to_vec();
+    admit_owned_context_tool_results(messages.to_vec(), window, enabled)
+}
+/// [`admit_context_tool_results`] over an owned history, so the disabled path returns it uncopied.
+pub(crate) fn admit_owned_context_tool_results(mut output: Vec<Value>, window: u64, enabled: bool) -> Vec<Value> {
     if !enabled { return output; }
     for message in &mut output {
         if message.get("role").and_then(Value::as_str) != Some("toolResult") { continue; }
