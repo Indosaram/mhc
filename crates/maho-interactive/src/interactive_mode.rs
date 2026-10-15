@@ -5323,14 +5323,18 @@ impl InteractiveMode {
                             // A tool call before the block now streaming is complete and its card already
                             // holds its arguments; only the streaming call needs its arguments re-applied.
                             if streaming_index.is_some_and(|current| index < current) && self.pending_tools.contains_key(&call.id) { continue; }
-                            let args = serde_json::Value::Object(call.arguments.clone());
-                            let component = self.tool_component(&call.name, &call.id, args.clone());
-                            if final_message { self.tool_args_reveal.finish(&call.id); self.tool_partial_json.remove(&call.id); component.borrow_mut().update_args(args); }
+                            // Clone the (growing) arguments only on the branches that apply them.
+                            let args = || serde_json::Value::Object(call.arguments.clone());
+                            let component = match self.pending_tools.get(&call.id).cloned() {
+                                Some(component) => component,
+                                None => self.tool_component(&call.name, &call.id, args()),
+                            };
+                            if final_message { self.tool_args_reveal.finish(&call.id); self.tool_partial_json.remove(&call.id); component.borrow_mut().update_args(args()); }
                             else if let Some(partial) = self.tool_partial_json.get(&call.id) {
                                 let (handled, value) = self.tool_args_reveal.update(&call.id, Rc::as_ptr(&component) as usize, partial, self.clock.elapsed().as_secs_f64() * 1000.0);
                                 if let Some(value) = value { component.borrow_mut().update_args(value); }
-                                else if !handled { component.borrow_mut().update_args(args); }
-                            } else { component.borrow_mut().update_args(args); }
+                                else if !handled { component.borrow_mut().update_args(args()); }
+                            } else { component.borrow_mut().update_args(args()); }
                             if matches!(event, AgentEvent::MessageEnd { .. }) { component.borrow_mut().set_args_complete(); }
                         }
                     }

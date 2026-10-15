@@ -211,7 +211,7 @@ fn result_text(result: &Value) -> String {
     match result { Value::String(text) => text.clone(), Value::Null => String::new(), other => serde_json::to_string(other).unwrap_or_default() }
 }
 
-fn newest_assistant_text(entries: &[Value]) -> Option<String> {
+pub(crate) fn newest_assistant_text(entries: &[Value]) -> Option<String> {
     for entry in entries.iter().rev() {
         if entry.get("type").and_then(Value::as_str) != Some("message") { continue; }
         let message = entry.get("message")?;

@@ -20,7 +20,7 @@ use crate::kibitzer_delivery::{
     KibitzerPendingFor, KibitzerSteerMessage, KibitzerToolResultGate,
 };
 use crate::kibitzer_events::KibitzerEventCaps;
-use crate::kibitzer_hooks::{KibitzerHookSink, KibitzerToolResultEvent, default_gate_resolver, register_kibitzer_hooks};
+use crate::kibitzer_hooks::{BranchTail, KibitzerHookSink, KibitzerToolResultEvent, default_gate_resolver, register_kibitzer_hooks};
 use crate::kibitzer_session_resources::KibitzerSessionResources;
 use crate::kibitzer_sidecar::{KibitzerOfferInput, KibitzerSidecar, KibitzerSidecarOptions, KibitzerWakeSpawn};
 use crate::kibitzer_sidecar_admission::KibitzerBlockingExecutor;
@@ -30,7 +30,7 @@ use crate::recall_consumer::{CollectedRecallCandidates, CollectRecallCandidatesI
 use crate::recall_drain::{DrainPendingFor, DrainQueued, EnvLookup, RecallDrainOptions, create_recall_drain};
 use crate::recall_planner_tools::{ToolArgWindow, tool_arg_texts};
 use crate::recall_session_read::{RecallSessionSnapshot, snapshot_session};
-use crate::recall_transcript_mentions::{BranchMentionIndex, MentionDocument, TranscriptMentionIndex, TranscriptMentionInput, create_transcript_mention_index};
+use crate::recall_transcript_mentions::{BranchMentionIndex, TranscriptMentionIndex, TranscriptMentionInput, create_transcript_mention_index};
 use crate::worker::completion_renderers::ResolveEntryTheme;
 
 const CHILD_SENTINELS: [&str; 2] = ["SENPI_MEMORY_REFLECTION", "SENPI_MEMORY_FACTS"];
@@ -162,11 +162,10 @@ impl MemoryRecallWiring {
         if corpus.documents.is_empty() {
             return None;
         }
-        let documents: Vec<MentionDocument> = corpus.documents.iter().map(|document| MentionDocument { path: document.path.clone() }).collect();
         let exclude_paths = self.mentions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).excluded_paths(TranscriptMentionInput {
             session_id: &snapshot.id,
             entries: snapshot.entries,
-            documents: &documents,
+            documents: &corpus.documents,
         });
         let ledger = (self.options.ledger_for)(&context);
         collect_recall_candidates(CollectRecallCandidatesInput {
@@ -294,13 +293,13 @@ impl KibitzerHookSink for MemoryRecallWiring {
         }));
     }
 
-    fn on_tool_call(&self, session_id: &str, tool_call_id: &str, tool_name: &str, input: &Value, entries: &[Value]) {
+    fn on_tool_call(&self, session_id: &str, tool_call_id: &str, tool_name: &str, input: &Value, branch: &BranchTail<'_>) {
         // Capture into the EXISTING sidecar only, and capture the branch BEFORE the tool event that
         // follows it; a tool hook after shutdown must never resurrect a terminal sidecar.
         let sidecar = self.existing_sidecar(session_id);
         if let Some(sidecar) = &sidecar {
-            let cursor = entries.len();
-            let _ = sidecar.on_branch(entries, cursor);
+            let cursor = branch.len;
+            let _ = sidecar.on_branch(branch.entries, cursor);
             let _ = sidecar.on_tool_call(tool_name, input, cursor);
         }
         // The exact tool_call_id keys the in-flight set so simultaneous same-name calls never collapse.
@@ -309,7 +308,7 @@ impl KibitzerHookSink for MemoryRecallWiring {
         self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(session_id, texts);
         let Some(sidecar) = sidecar else { return; };
         let extra = self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).texts(session_id);
-        let Some(candidates) = self.collect_candidates(session_id, entries, &extra) else { return; };
+        let Some(candidates) = self.collect_candidates(session_id, branch.entries, &extra) else { return; };
         let offer = KibitzerOfferInput {
             candidates: candidates.candidates,
             surfaced: candidates.surfaced,
@@ -324,12 +323,12 @@ impl KibitzerHookSink for MemoryRecallWiring {
         }));
     }
 
-    fn on_tool_result(&self, session_id: &str, event: &KibitzerToolResultEvent<'_>, entries: &[Value], gate: &KibitzerToolResultGate) {
+    fn on_tool_result(&self, session_id: &str, event: &KibitzerToolResultEvent<'_>, branch: &BranchTail<'_>, gate: &KibitzerToolResultGate) {
         // Capture the result head into the EXISTING sidecar only, before delivery may steer a held
         // nudge. The branch is captured first, then the result content and its error flag.
         if let Some(sidecar) = self.existing_sidecar(session_id) {
-            let cursor = entries.len();
-            let _ = sidecar.on_branch(entries, cursor);
+            let cursor = branch.len;
+            let _ = sidecar.on_branch(branch.entries, cursor);
             // The real content is serialized through the shared serde contract (`ToolContent` is
             // `Serialize`); an impossible failure is reported, never replaced by a fabricated Null.
             match serde_json::to_value(event.content) {

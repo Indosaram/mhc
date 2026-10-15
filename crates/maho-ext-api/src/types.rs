@@ -516,6 +516,21 @@ pub trait SessionManager: ToolSessionManager {
     fn get_session_dir(&self) -> Option<PathBuf> { None }
     fn get_entries(&self) -> Vec<SessionEntry>;
     fn get_branch(&self) -> Vec<SessionEntry>;
+    /// The newest suffix of `get_branch()` plus the TRUE branch length. The suffix holds at least
+    /// `min_entries` entries (or the whole branch) and extends further back until `satisfied`,
+    /// called on each entry's `data` newest-first, has returned `true` once. Implementations may
+    /// walk from the leaf instead of materializing the whole branch.
+    fn get_branch_tail(&self, min_entries: usize, satisfied: &mut dyn FnMut(&JsonValue) -> bool) -> (usize, Vec<SessionEntry>) {
+        let mut branch = self.get_branch();
+        let len = branch.len();
+        let mut start = len;
+        let mut done = false;
+        while start > 0 && (len - start < min_entries || !done) {
+            start -= 1;
+            if !done { done = satisfied(&branch[start].data); }
+        }
+        (len, branch.split_off(start))
+    }
     fn get_leaf_id(&self) -> Option<String>;
     fn get_session_name(&self) -> Option<String>;
     fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> { None }

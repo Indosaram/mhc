@@ -8,6 +8,7 @@
 //! result stays exact either way.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -26,18 +27,35 @@ pub struct MentionDocument {
     pub path: String,
 }
 
+/// A corpus document's path, borrowed so a trigger never copies the corpus to project it.
+pub trait MentionPath {
+    fn mention_path(&self) -> &str;
+}
+
+impl MentionPath for MentionDocument {
+    fn mention_path(&self) -> &str {
+        &self.path
+    }
+}
+
+impl MentionPath for memory_core::recall::RecallDocument {
+    fn mention_path(&self) -> &str {
+        &self.path
+    }
+}
+
 /// One collection trigger's window and corpus.
 #[derive(Clone, Debug)]
-pub struct TranscriptMentionInput<'a> {
+pub struct TranscriptMentionInput<'a, D = MentionDocument> {
     pub session_id: &'a str,
     /// The full branch; the window is applied here so "newest entry" is unambiguous.
     pub entries: &'a [Value],
-    pub documents: &'a [MentionDocument],
+    pub documents: &'a [D],
 }
 
 /// Corpus paths mentioned anywhere in the last [`RECALL_PATH_ENTRY_WINDOW`] branch entries.
 pub trait TranscriptMentionIndex {
-    fn excluded_paths(&mut self, input: TranscriptMentionInput<'_>) -> BTreeSet<String>;
+    fn excluded_paths<D: MentionPath>(&mut self, input: TranscriptMentionInput<'_, D>) -> BTreeSet<String>;
 }
 
 #[derive(Clone, Debug)]
@@ -115,12 +133,12 @@ fn mentions(json: &str, matcher: &str) -> bool {
     false
 }
 
-fn build_matcher_set(documents: &[MentionDocument]) -> MatcherSet {
-    let paths: Vec<String> = documents.iter().map(|document| document.path.clone()).collect();
+fn build_matcher_set<D: MentionPath>(documents: &[D]) -> MatcherSet {
+    let paths: Vec<String> = documents.iter().map(|document| document.mention_path().to_string()).collect();
     let matchers: Vec<String> = paths.iter().map(|path| json_inner(path)).collect();
-    let per_entry_safe = documents
+    let per_entry_safe = paths
         .iter()
-        .all(|document| !ARRAY_SEAMS.iter().any(|seam| document.path.contains(seam)));
+        .all(|path| !ARRAY_SEAMS.iter().any(|seam| path.contains(seam)));
     MatcherSet { documents: paths, matchers, per_entry_safe }
 }
 
@@ -161,7 +179,7 @@ struct SessionMentions {
 /// Incremental per-entry mention cache; insertion order is the LRU order.
 #[derive(Default)]
 pub struct BranchMentionIndex {
-    matcher_set: Option<MatcherSet>,
+    matcher_set: Option<Arc<MatcherSet>>,
     sessions: Vec<(String, SessionMentions)>,
 }
 
@@ -170,27 +188,27 @@ impl BranchMentionIndex {
         Self::default()
     }
 
-    fn matchers_for(&mut self, documents: &[MentionDocument]) -> MatcherSet {
-        let paths: Vec<String> = documents.iter().map(|document| document.path.clone()).collect();
+    fn matchers_for<D: MentionPath>(&mut self, documents: &[D]) -> Arc<MatcherSet> {
         if let Some(set) = &self.matcher_set
-            && set.documents == paths
+            && set.documents.len() == documents.len()
+            && set.documents.iter().zip(documents).all(|(cached, document)| cached == document.mention_path())
         {
-            return set.clone();
+            return Arc::clone(set);
         }
-        let set = build_matcher_set(documents);
-        self.matcher_set = Some(set.clone());
+        let set = Arc::new(build_matcher_set(documents));
+        self.matcher_set = Some(Arc::clone(&set));
         set
     }
 
     /// Moves the session to the back of the LRU and drops its cache when the corpus moved.
-    fn session_for(&mut self, session_id: &str, documents: Vec<String>) -> &mut SessionMentions {
+    fn session_for(&mut self, session_id: &str, documents: &[String]) -> &mut SessionMentions {
         let mut session = match self.sessions.iter().position(|(id, _)| id == session_id) {
             Some(position) => self.sessions.remove(position).1,
             None => SessionMentions::default(),
         };
-        if session.documents.as_ref() != Some(&documents) {
+        if session.documents.as_deref() != Some(documents) {
             session.by_entry_id.clear();
-            session.documents = Some(documents);
+            session.documents = Some(documents.to_vec());
         }
         self.sessions.push((session_id.to_string(), session));
         while self.sessions.len() > MAX_TRACKED_SESSIONS {
@@ -205,7 +223,7 @@ impl BranchMentionIndex {
 }
 
 impl TranscriptMentionIndex for BranchMentionIndex {
-    fn excluded_paths(&mut self, input: TranscriptMentionInput<'_>) -> BTreeSet<String> {
+    fn excluded_paths<D: MentionPath>(&mut self, input: TranscriptMentionInput<'_, D>) -> BTreeSet<String> {
         let set = self.matchers_for(input.documents);
         let start = input.entries.len().saturating_sub(RECALL_PATH_ENTRY_WINDOW);
         let window = &input.entries[start..];
@@ -214,7 +232,7 @@ impl TranscriptMentionIndex for BranchMentionIndex {
             return mentions_in(&json, &set);
         }
 
-        let session = self.session_for(input.session_id, set.documents.clone());
+        let session = self.session_for(input.session_id, &set.documents);
         let mut excluded = BTreeSet::new();
         let mut live = BTreeSet::new();
         for (index, entry) in window.iter().enumerate() {

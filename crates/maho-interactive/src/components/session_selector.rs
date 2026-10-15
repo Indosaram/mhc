@@ -269,7 +269,7 @@ impl Component for SessionSelectorHeader {
 /// A session tree node for hierarchical display.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionTreeNode {
-    pub session: SessionInfo,
+    pub session: Rc<SessionInfo>,
     pub children: Vec<SessionTreeNode>,
     pub latest_activity: i64,
 }
@@ -277,7 +277,7 @@ pub struct SessionTreeNode {
 /// Flattened node for display with tree structure info.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlatSessionNode {
-    pub session: SessionInfo,
+    pub session: Rc<SessionInfo>,
     pub depth: usize,
     pub is_last: bool,
     /// For each ancestor level, whether there are more siblings after it.
@@ -286,19 +286,20 @@ pub struct FlatSessionNode {
 
 /// Build a tree from sessions based on parentSessionPath; roots sorted by modified desc.
 pub fn build_session_tree(sessions: &[SessionInfo]) -> Vec<SessionTreeNode> {
-    let sessions: Vec<&SessionInfo> = sessions.iter().collect();
+    let sessions: Vec<Rc<SessionInfo>> = sessions.iter().cloned().map(Rc::new).collect();
+    let sessions: Vec<&Rc<SessionInfo>> = sessions.iter().collect();
     build_session_tree_with(&sessions, &canonicalize_path)
 }
 
 /// [`build_session_tree`] over borrowed sessions, resolving canonical paths through `canonical`.
-fn build_session_tree_with(sessions: &[&SessionInfo], canonical: &dyn Fn(&str) -> String) -> Vec<SessionTreeNode> {
+fn build_session_tree_with(sessions: &[&Rc<SessionInfo>], canonical: &dyn Fn(&str) -> String) -> Vec<SessionTreeNode> {
     // First session wins for a duplicated canonical path, as senpi's linear lookup does.
     let mut index_by_key: HashMap<String, usize> = HashMap::with_capacity(sessions.len());
     let mut nodes: Vec<Option<SessionTreeNode>> = Vec::with_capacity(sessions.len());
     for (index, session) in sessions.iter().enumerate() {
         index_by_key.entry(canonical(session.path.as_str())).or_insert(index);
         nodes.push(Some(SessionTreeNode {
-            session: (*session).clone(),
+            session: Rc::clone(session),
             children: Vec::new(),
             latest_activity: session.modified_ms,
         }));
@@ -385,7 +386,7 @@ fn flatten_session_tree_owned(roots: Vec<SessionTreeNode>) -> Vec<FlatSessionNod
     result
 }
 
-fn canonical_session_paths(sessions: &[SessionInfo]) -> HashMap<String, String> {
+fn canonical_session_paths(sessions: &[Rc<SessionInfo>]) -> HashMap<String, String> {
     let mut canonical = HashMap::new();
     let paths = sessions
         .iter()
@@ -413,7 +414,8 @@ pub fn build_tree_prefix(node: &FlatSessionNode) -> String {
 /// Custom session list component with multi-line items and search.
 pub struct SessionList {
     theme: Theme,
-    all_sessions: Vec<SessionInfo>,
+    /// Shared so filtering on each keystroke clones a pointer, not the session text.
+    all_sessions: Vec<Rc<SessionInfo>>,
     /// Canonical path of each session in `all_sessions`, resolved once per session set.
     canonical_paths: HashMap<String, String>,
     /// Search text of each session in `all_sessions`, built on the first non-empty query.
@@ -455,6 +457,7 @@ impl SessionList {
         current_session_file_path: Option<&str>,
         home: Option<String>,
     ) -> Self {
+        let sessions: Vec<Rc<SessionInfo>> = sessions.into_iter().map(Rc::new).collect();
         let mut list = Self {
             theme: theme.clone(),
             canonical_paths: canonical_session_paths(&sessions),
@@ -523,6 +526,7 @@ impl SessionList {
     }
 
     pub fn set_sessions(&mut self, sessions: Vec<SessionInfo>, show_cwd: bool) {
+        let sessions: Vec<Rc<SessionInfo>> = sessions.into_iter().map(Rc::new).collect();
         self.canonical_paths = canonical_session_paths(&sessions);
         self.search_texts = None;
         self.all_sessions = sessions;
@@ -536,7 +540,7 @@ impl SessionList {
         let named_only = self.name_filter != NameFilter::All;
 
         if self.sort_mode == SortMode::Threaded && trimmed.is_empty() {
-            let name_filtered: Vec<&SessionInfo> = self
+            let name_filtered: Vec<&Rc<SessionInfo>> = self
                 .all_sessions
                 .iter()
                 .filter(|session| !named_only || has_session_name(session))
@@ -548,10 +552,10 @@ impl SessionList {
             self.filtered_sessions = flatten_session_tree_owned(roots);
         } else {
             if !trimmed.is_empty() && self.search_texts.is_none() {
-                self.search_texts = Some(self.all_sessions.iter().map(get_session_search_text).collect());
+                self.search_texts = Some(self.all_sessions.iter().map(|session| get_session_search_text(session)).collect());
             }
             let search_texts = self.search_texts.as_deref();
-            let candidates: Vec<(&SessionInfo, &str)> = self
+            let candidates: Vec<(&Rc<SessionInfo>, &str)> = self
                 .all_sessions
                 .iter()
                 .enumerate()
@@ -564,7 +568,7 @@ impl SessionList {
             self.filtered_sessions = filtered
                 .into_iter()
                 .map(|session| FlatSessionNode {
-                    session: session.clone(),
+                    session: Rc::clone(session),
                     depth: 0,
                     is_last: true,
                     ancestor_continues: Vec::new(),

@@ -1452,6 +1452,46 @@ impl SessionManager {
         self.latest_branch_entry_id_by_type(kind, role)
     }
 
+    /// The newest suffix of `current_branch()` plus the TRUE branch length, without materializing
+    /// the whole branch: walks resident entries by reference from the leaf via `parentId`,
+    /// materializing only the suffix. The suffix holds at least `min_entries` entries (or the whole
+    /// branch) and extends further back until `satisfied` (called on each materialized entry,
+    /// newest-first) has returned `true` once. Falls back to the materialized branch when the leaf
+    /// is not indexed, so the result always equals the matching suffix of `current_branch()`.
+    pub fn current_branch_tail(&self, min_entries: usize, satisfied: &mut dyn FnMut(&Value) -> bool) -> (usize, Vec<Value>) {
+        let Some(leaf) = self.leaf_id.as_deref() else { return (0, Vec::new()) };
+        let Some(order) = self.entry_order(leaf) else {
+            let mut branch = self.current_branch();
+            let len = branch.len();
+            let mut start = len;
+            let mut done = false;
+            while start > 0 && (len - start < min_entries || !done) {
+                start -= 1;
+                if !done { done = satisfied(&branch[start]); }
+            }
+            return (len, branch.split_off(start));
+        };
+        let mut tail = Vec::new();
+        let mut len = 0;
+        let mut done = false;
+        let mut current = self.file_entries.get(order);
+        while let Some(entry) = current {
+            len += 1;
+            if tail.len() < min_entries || !done {
+                let materialized = self.materialize_entry(entry);
+                if !done { done = satisfied(&materialized); }
+                tail.push(materialized);
+            }
+            current = entry
+                .get("parentId")
+                .and_then(Value::as_str)
+                .and_then(|parent| self.by_id.get(parent))
+                .and_then(|order| self.file_entries.get(*order));
+        }
+        tail.reverse();
+        (len, tail)
+    }
+
     pub fn label(&self, id: &str) -> Option<&str> {
         self.labels_by_id.get(id).map(String::as_str)
     }
@@ -1811,6 +1851,25 @@ mod tests {
         assert_eq!(entries.len(), 5);
         let reserialized: String = entries.iter().map(|entry| format!("{}\n", serialize_entry(entry))).collect();
         assert_eq!(reserialized, content);
+    }
+
+    #[test]
+    fn current_branch_tail_is_a_suffix_of_the_materialized_branch_with_its_true_length() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        assert_eq!(manager.current_branch_tail(3, &mut |_: &Value| true), (0, Vec::new()));
+        manager.append_message(json!({ "role": "assistant", "content": "old", "timestamp": 1 }));
+        for n in 0..6 {
+            manager.append_message(json!({ "role": "user", "content": format!("u{n}"), "timestamp": n + 2 }));
+        }
+        let full = manager.current_branch();
+        assert_eq!(full.len(), 7);
+        let (len, tail) = manager.current_branch_tail(2, &mut |_: &Value| true);
+        assert_eq!((len, tail.as_slice()), (7, &full[5..]));
+        // The tail extends past `min_entries` until the predicate (here: an assistant) is met.
+        let (len, tail) = manager.current_branch_tail(2, &mut |entry: &Value| entry["message"]["role"] == "assistant");
+        assert_eq!((len, tail.as_slice()), (7, full.as_slice()));
+        let (len, tail) = manager.current_branch_tail(50, &mut |_: &Value| false);
+        assert_eq!((len, tail), (7, full));
     }
 
     #[test]

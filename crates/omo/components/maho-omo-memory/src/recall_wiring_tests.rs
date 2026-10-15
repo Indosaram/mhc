@@ -52,7 +52,7 @@ fn matching_tool_call_offers_without_a_prompt_candidate() {
     let _sidecar = wiring.sidecar_for(SESSION, &context);
     wiring.on_before_agent_start(SESSION, "unrelated chatter with no corpus token", &[]);
     assert_eq!(spawn.queued(), 0);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &[]);
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[] });
     assert_eq!(spawn.queued(), 1);
 }
 
@@ -62,7 +62,7 @@ fn matching_tool_call_after_shutdown_does_not_schedule_an_offer() {
     let _sidecar = wiring.sidecar_for(SESSION, &context);
     wiring.on_session_shutdown(SESSION);
     assert_eq!(spawn.queued(), 1);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &[]);
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[] });
     assert_eq!(spawn.queued(), 1);
 }
 
@@ -349,7 +349,7 @@ fn given_a_shut_down_session_when_a_tool_hook_fires_then_no_sidecar_is_resurrect
     harness.wiring.on_session_shutdown(SESSION);
     harness.spawn.drain();
 
-    harness.wiring.on_tool_call(SESSION, "call-1", "read", &serde_json::json!({ "file_path": "x.md" }), &[]);
+    harness.wiring.on_tool_call(SESSION, "call-1", "read", &serde_json::json!({ "file_path": "x.md" }), &BranchTail { len: 0, entries: &[] });
 
     assert!(sidecar_removed(&harness), "a late tool hook never re-creates a terminal sidecar");
     assert_eq!(sidecar.event_size(), captured_before, "the disposed sidecar captured nothing");
@@ -490,9 +490,9 @@ fn given_a_branch_snapshot_when_the_prompt_hook_runs_then_the_assistant_event_pr
 fn given_a_tool_call_and_result_when_the_tool_hooks_run_then_the_real_args_and_content_reach_the_seed_prompt() {
     let (wiring, context, child, _root) = capture_harness(None);
     let sidecar = wiring.sidecar_for(SESSION, &context);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER" }), &[]);
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER" }), &BranchTail { len: 0, entries: &[] });
     let gate = crate::kibitzer_delivery::KibitzerToolResultGate { has_pending_messages: false, is_idle: true };
-    wiring.on_tool_result(SESSION, &KibitzerToolResultEvent { tool_call_id: "call-1", tool_name: "grep", input: &serde_json::json!({}), content: &[maho_ext_api::ToolContent::text("RESULT-BODY-MARKER")], is_error: true }, &[], &gate);
+    wiring.on_tool_result(SESSION, &KibitzerToolResultEvent { tool_call_id: "call-1", tool_name: "grep", input: &serde_json::json!({}), content: &[maho_ext_api::ToolContent::text("RESULT-BODY-MARKER")], is_error: true }, &BranchTail { len: 0, entries: &[] }, &gate);
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
     assert!(prompt.contains("kind=\"tool_call\"") && prompt.contains("tool=\"grep\""), "the tool_call event: {prompt}");
@@ -508,7 +508,7 @@ fn given_a_small_tool_args_cap_when_the_tool_hook_runs_then_the_wiring_forwards_
     let caps = KibitzerEventCaps { tool_args: 20, result_head: 20, assistant: 1500, prompt: 4000 };
     let (wiring, context, child, _root) = capture_harness(Some(caps));
     let sidecar = wiring.sidecar_for(SESSION, &context);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER-LONG" }), &[]);
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER-LONG" }), &BranchTail { len: 0, entries: &[] });
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
     assert!(!prompt.contains("TOOL-ARG-MARKER-LONG"), "the tool_args cap must truncate the stored body: {prompt}");

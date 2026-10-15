@@ -410,7 +410,15 @@ fn diff_lines<'a>(old: &'a str, new: &'a str) -> Vec<(ChangeTag, Vec<&'a str>)> 
         .collect()
 }
 pub fn generate_diff_string(old: &str, new: &str, context: usize) -> DiffResult {
+    diff_string_from_parts(&diff_lines(old, new), old, new, context)
+}
+/// Diff string and unified patch for one edit, sharing a single line diff.
+pub fn generate_diff_and_patch(path: &str, old: &str, new: &str, context: usize) -> (DiffResult, String) {
     let parts = diff_lines(old, new);
+    let diff = diff_string_from_parts(&parts, old, new, context);
+    (diff, unified_patch_from_parts(path, parts, context))
+}
+fn diff_string_from_parts(parts: &[(ChangeTag, Vec<&str>)], old: &str, new: &str, context: usize) -> DiffResult {
     let width = old
         .split('\n')
         .count()
@@ -462,7 +470,9 @@ pub fn generate_diff_string(old: &str, new: &str, context: usize) -> DiffResult 
     }
 }
 pub fn generate_unified_patch(path: &str, old: &str, new: &str, context: usize) -> String {
-    let mut parts = diff_lines(old, new);
+    unified_patch_from_parts(path, diff_lines(old, new), context)
+}
+fn unified_patch_from_parts(path: &str, mut parts: Vec<(ChangeTag, Vec<&str>)>, context: usize) -> String {
     parts.push((ChangeTag::Equal, Vec::new()));
     let quoted = quote_filename(path);
     let mut output = format!("--- {quoted}\n+++ {quoted}\n");
@@ -559,4 +569,26 @@ fn quote_filename(path: &str) -> String {
     }
     output.push('"');
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_diff_matches_separate_generators_byte_for_byte() {
+        let cases = [
+            ("one\ntwo\nthree\n", "one\nTWO\nthree\n"),
+            ("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n", "a\nB\nc\nd\ne\nf\ng\nh\ni\nj\nK\nl\nm"),
+            ("same\n", "same\n"),
+            ("", "new\n"),
+        ];
+        for (old, new) in cases {
+            let (diff, patch) = generate_diff_and_patch("dir/file name.txt", old, new, 4);
+            let expected = generate_diff_string(old, new, 4);
+            assert_eq!(diff.diff, expected.diff);
+            assert_eq!(diff.first_changed_line, expected.first_changed_line);
+            assert_eq!(patch, generate_unified_patch("dir/file name.txt", old, new, 4));
+        }
+    }
 }
