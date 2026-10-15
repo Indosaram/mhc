@@ -122,3 +122,17 @@ fn given_non_existent_pid_when_start_identity_queried_then_returns_none() {
     // #then
     assert_eq!(identity, None);
 }
+
+#[test]
+fn given_current_process_when_start_identity_queried_twice_then_cached_value_matches_fresh_probe() {
+    // #given
+    let current_pid = std::process::id();
+
+    // #when
+    let first = get_process_start_identity(current_pid);
+    let second = get_process_start_identity(current_pid);
+
+    // #then
+    assert_eq!(first, second);
+    assert_eq!(first, probe_process_start_identity(current_pid));
+}

@@ -82,7 +82,26 @@ fn read_bsd_start_identity(pid: u32) -> Option<String> {
 }
 
 /// Resolves an OS-level start timestamp token for distinguishing recycled PIDs.
+///
+/// The current process's own identity never changes, so it is probed once and cached (keyed by
+/// pid, so a forked child with a new pid probes afresh). A failed probe is not cached.
 pub fn get_process_start_identity(pid: u32) -> Option<String> {
+    static OWN: std::sync::OnceLock<(u32, String)> = std::sync::OnceLock::new();
+    if pid != std::process::id() {
+        return probe_process_start_identity(pid);
+    }
+    if let Some((cached_pid, identity)) = OWN.get() {
+        if *cached_pid == pid {
+            return Some(identity.clone());
+        }
+        return probe_process_start_identity(pid);
+    }
+    let identity = probe_process_start_identity(pid)?;
+    let _ = OWN.set((pid, identity.clone()));
+    Some(identity)
+}
+
+fn probe_process_start_identity(pid: u32) -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         read_linux_start_identity(pid)

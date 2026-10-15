@@ -81,6 +81,9 @@ pub struct MemoryRecallWiring {
     corpus_cache: Mutex<RecallCorpusCache>,
     mentions: Mutex<BranchMentionIndex>,
     tool_args: Mutex<ToolArgWindow>,
+    /// Per session: the identity and the recall settings resolved at its latest
+    /// `before_agent_start`, read by the tool hooks so a config edit takes effect next turn.
+    recall_settings: Mutex<BTreeMap<String, (String, Value)>>,
 }
 
 impl MemoryRecallWiring {
@@ -100,6 +103,7 @@ impl MemoryRecallWiring {
             corpus_cache: Mutex::new(RecallCorpusCache::new(RecallCorpusCacheOptions::default())),
             mentions: Mutex::new(create_transcript_mention_index()),
             tool_args: Mutex::new(ToolArgWindow::new()),
+            recall_settings: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -126,7 +130,7 @@ impl MemoryRecallWiring {
 
     /// Fail-open recall settings: a resolver `Err` becomes `Null` (defaults); recall is disabled
     /// only by an explicit `enabled: false`. Resolved to a concrete `Value` ONCE.
-    fn recall_settings(&self, identity: &str) -> Value {
+    fn resolve_recall_settings(&self, identity: &str) -> Value {
         let settings = match (self.options.resolve_settings)() {
             Ok(value) => value,
             Err(error) => {
@@ -137,17 +141,42 @@ impl MemoryRecallWiring {
         crate::reflection_settings::resolve_agent_recall_settings(Some(&settings), identity).unwrap_or(Value::Null)
     }
 
+    /// The session's recall settings: resolved fresh (and cached for the turn) when `fresh`, else
+    /// the value cached at this turn's `before_agent_start`, resolving fresh only when none is cached
+    /// for this identity.
+    fn recall_settings(&self, session_id: &str, identity: &str, fresh: bool) -> Value {
+        if !fresh
+            && let Some((cached_identity, settings)) = self.recall_settings.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id)
+            && cached_identity == identity
+        {
+            return settings.clone();
+        }
+        let settings = self.resolve_recall_settings(identity);
+        self.recall_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_id.to_owned(), (identity.to_owned(), settings.clone()));
+        settings
+    }
+
     fn child_sentinel(&self) -> bool {
         CHILD_SENTINELS.iter().any(|name| (self.options.env)(name).as_deref() == Some("1"))
     }
 
     /// `collectCandidatesFromSnapshot`: the ctx-free collection over a captured snapshot.
     pub fn collect_candidates_from_snapshot(&self, snapshot: &RecallSessionSnapshot<'_>, extra_texts: &[String]) -> Option<CollectedRecallCandidates> {
+        self.collect(snapshot, snapshot.entries, extra_texts, true)
+    }
+
+    /// The collection behind both hook kinds. `mention_entries` is the branch whose last
+    /// `RECALL_PATH_ENTRY_WINDOW` entries feed the mention exclusion; `snapshot.entries` feeds the
+    /// planner texts and judge transcript. `fresh_settings` re-resolves the recall settings.
+    fn collect(&self, snapshot: &RecallSessionSnapshot<'_>, mention_entries: &[Value], extra_texts: &[String], fresh_settings: bool) -> Option<CollectedRecallCandidates> {
         if self.child_sentinel() {
             return None;
         }
         let context = (self.options.resolve_context)(&snapshot.id)?;
-        let recall_settings = self.recall_settings(&context.identity);
+        let recall_settings = self.recall_settings(&snapshot.id, &context.identity, fresh_settings);
         if recall_settings.get("enabled").and_then(Value::as_bool) == Some(false) {
             return None;
         }
@@ -164,7 +193,7 @@ impl MemoryRecallWiring {
         }
         let exclude_paths = self.mentions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).excluded_paths(TranscriptMentionInput {
             session_id: &snapshot.id,
-            entries: snapshot.entries,
+            entries: mention_entries,
             documents: &corpus.documents,
         });
         let ledger = (self.options.ledger_for)(&context);
@@ -299,7 +328,7 @@ impl KibitzerHookSink for MemoryRecallWiring {
         let sidecar = self.existing_sidecar(session_id);
         if let Some(sidecar) = &sidecar {
             let cursor = branch.len;
-            let _ = sidecar.on_branch(branch.entries, cursor);
+            let _ = sidecar.on_branch(branch.summary, cursor);
             let _ = sidecar.on_tool_call(tool_name, input, cursor);
         }
         // The exact tool_call_id keys the in-flight set so simultaneous same-name calls never collapse.
@@ -308,7 +337,8 @@ impl KibitzerHookSink for MemoryRecallWiring {
         self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(session_id, texts);
         let Some(sidecar) = sidecar else { return; };
         let extra = self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).texts(session_id);
-        let Some(candidates) = self.collect_candidates(session_id, branch.entries, &extra) else { return; };
+        let Some(snapshot) = snapshot_session(session_id, branch.summary) else { return; };
+        let Some(candidates) = self.collect(&snapshot, branch.entries, &extra, false) else { return; };
         let offer = KibitzerOfferInput {
             candidates: candidates.candidates,
             surfaced: candidates.surfaced,
@@ -328,7 +358,7 @@ impl KibitzerHookSink for MemoryRecallWiring {
         // nudge. The branch is captured first, then the result content and its error flag.
         if let Some(sidecar) = self.existing_sidecar(session_id) {
             let cursor = branch.len;
-            let _ = sidecar.on_branch(branch.entries, cursor);
+            let _ = sidecar.on_branch(branch.summary, cursor);
             // The real content is serialized through the shared serde contract (`ToolContent` is
             // `Serialize`); an impossible failure is reported, never replaced by a fabricated Null.
             match serde_json::to_value(event.content) {
@@ -360,6 +390,7 @@ impl KibitzerHookSink for MemoryRecallWiring {
         // `argWindow.clear(sessionId)`: drop the session's tool-argument window synchronously, before
         // the async cleanup, matching upstream's order.
         self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear(session_id);
+        self.recall_settings.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
         let Some(sidecar) = sidecar else {
             // No resident sidecar: retract delivery immediately (upstream's unconditional tail).
             self.delivery.on_session_shutdown(session_id);
