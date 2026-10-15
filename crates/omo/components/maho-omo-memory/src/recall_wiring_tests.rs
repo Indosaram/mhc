@@ -52,7 +52,7 @@ fn matching_tool_call_offers_without_a_prompt_candidate() {
     let _sidecar = wiring.sidecar_for(SESSION, &context);
     wiring.on_before_agent_start(SESSION, "unrelated chatter with no corpus token", &[]);
     assert_eq!(spawn.queued(), 0);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[] });
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[], summary: &[] });
     assert_eq!(spawn.queued(), 1);
 }
 
@@ -62,8 +62,38 @@ fn matching_tool_call_after_shutdown_does_not_schedule_an_offer() {
     let _sidecar = wiring.sidecar_for(SESSION, &context);
     wiring.on_session_shutdown(SESSION);
     assert_eq!(spawn.queued(), 1);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[] });
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[], summary: &[] });
     assert_eq!(spawn.queued(), 1);
+}
+
+#[test]
+fn tool_hooks_reuse_the_turn_recall_settings_and_a_config_edit_applies_next_turn() {
+    let (mut wiring, context, spawn, _root) = tool_call_offer_harness();
+    let disabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let resolves = Arc::new(AtomicUsize::new(0));
+    {
+        let (disabled, resolves) = (Arc::clone(&disabled), Arc::clone(&resolves));
+        Arc::get_mut(&mut wiring).expect("fixture wiring is unshared").options.resolve_settings = Arc::new(move || {
+            resolves.fetch_add(1, Ordering::SeqCst);
+            Ok(serde_json::json!({ "recall": { "enabled": !disabled.load(Ordering::SeqCst) } }))
+        });
+    }
+    let call = |wiring: &MemoryRecallWiring| wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &BranchTail { len: 0, entries: &[], summary: &[] });
+    let _sidecar = wiring.sidecar_for(SESSION, &context);
+    // A tool hook with no turn-cached value resolves fresh.
+    call(&wiring);
+    assert_eq!((resolves.load(Ordering::SeqCst), spawn.queued()), (1, 1));
+    wiring.on_before_agent_start(SESSION, "unrelated chatter with no corpus token", &[]);
+    assert_eq!(resolves.load(Ordering::SeqCst), 2);
+    // A mid-turn config edit does not reach this turn's tool hooks, which never re-resolve.
+    disabled.store(true, Ordering::SeqCst);
+    call(&wiring);
+    call(&wiring);
+    assert_eq!((resolves.load(Ordering::SeqCst), spawn.queued()), (2, 3));
+    // The next turn resolves the edit; its tool hooks then see recall disabled.
+    wiring.on_before_agent_start(SESSION, "unrelated chatter with no corpus token", &[]);
+    call(&wiring);
+    assert_eq!((resolves.load(Ordering::SeqCst), spawn.queued()), (3, 3));
 }
 
 /// One poll with a no-op waker; the caller decides whether Pending is expected.
@@ -349,7 +379,7 @@ fn given_a_shut_down_session_when_a_tool_hook_fires_then_no_sidecar_is_resurrect
     harness.wiring.on_session_shutdown(SESSION);
     harness.spawn.drain();
 
-    harness.wiring.on_tool_call(SESSION, "call-1", "read", &serde_json::json!({ "file_path": "x.md" }), &BranchTail { len: 0, entries: &[] });
+    harness.wiring.on_tool_call(SESSION, "call-1", "read", &serde_json::json!({ "file_path": "x.md" }), &BranchTail { len: 0, entries: &[], summary: &[] });
 
     assert!(sidecar_removed(&harness), "a late tool hook never re-creates a terminal sidecar");
     assert_eq!(sidecar.event_size(), captured_before, "the disposed sidecar captured nothing");
@@ -490,9 +520,9 @@ fn given_a_branch_snapshot_when_the_prompt_hook_runs_then_the_assistant_event_pr
 fn given_a_tool_call_and_result_when_the_tool_hooks_run_then_the_real_args_and_content_reach_the_seed_prompt() {
     let (wiring, context, child, _root) = capture_harness(None);
     let sidecar = wiring.sidecar_for(SESSION, &context);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER" }), &BranchTail { len: 0, entries: &[] });
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER" }), &BranchTail { len: 0, entries: &[], summary: &[] });
     let gate = crate::kibitzer_delivery::KibitzerToolResultGate { has_pending_messages: false, is_idle: true };
-    wiring.on_tool_result(SESSION, &KibitzerToolResultEvent { tool_call_id: "call-1", tool_name: "grep", input: &serde_json::json!({}), content: &[maho_ext_api::ToolContent::text("RESULT-BODY-MARKER")], is_error: true }, &BranchTail { len: 0, entries: &[] }, &gate);
+    wiring.on_tool_result(SESSION, &KibitzerToolResultEvent { tool_call_id: "call-1", tool_name: "grep", input: &serde_json::json!({}), content: &[maho_ext_api::ToolContent::text("RESULT-BODY-MARKER")], is_error: true }, &BranchTail { len: 0, entries: &[], summary: &[] }, &gate);
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
     assert!(prompt.contains("kind=\"tool_call\"") && prompt.contains("tool=\"grep\""), "the tool_call event: {prompt}");
@@ -508,7 +538,7 @@ fn given_a_small_tool_args_cap_when_the_tool_hook_runs_then_the_wiring_forwards_
     let caps = KibitzerEventCaps { tool_args: 20, result_head: 20, assistant: 1500, prompt: 4000 };
     let (wiring, context, child, _root) = capture_harness(Some(caps));
     let sidecar = wiring.sidecar_for(SESSION, &context);
-    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER-LONG" }), &BranchTail { len: 0, entries: &[] });
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER-LONG" }), &BranchTail { len: 0, entries: &[], summary: &[] });
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
     assert!(!prompt.contains("TOOL-ARG-MARKER-LONG"), "the tool_args cap must truncate the stored body: {prompt}");

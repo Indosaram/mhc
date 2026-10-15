@@ -16,8 +16,10 @@ pub async fn with_thread_history_turns<R>(id: &str,threads: &ThreadRegistry,arch
 async fn history_turns<R>(id: &str,threads: &ThreadRegistry,archive: &ThreadArchiveState,log: &Mutex<TurnLog>,read: impl FnOnce(Cow<'_,[LoggedTurn]>) -> R) -> Result<R,JsonRpcError> {
     if let Ok(entry) = threads.get_loaded_thread(id).await {
         {let log = log.lock().await;let logged = log.turns(id);if !logged.is_empty() {return Ok(read(Cow::Borrowed(logged)));}}
-        let entry = entry.lock().await;
-        return Ok(read(Cow::Owned(entry.session.with_session_manager(|manager|turns_from_session_entries(&manager.entries(),&entry.created_at)))));
+        // Release the entry guard before the synchronous history read/rebuild so streamed events are not stalled.
+        let (session,created_at) = {let entry = entry.lock().await;(entry.session.clone(),entry.created_at.clone())};
+        let turns = tokio::task::spawn_blocking(move || session.with_session_manager(|manager|turns_from_session_entries(&manager.entries(),&created_at))).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+        return Ok(read(Cow::Owned(turns)));
     }
     if let Some(info) = threads.list_session_infos().await.into_iter().find(|info|info.id == id) {
         // senpi `turnsForEntry`: the process-lifetime TurnLog wins over the session-entry rebuild.

@@ -90,37 +90,7 @@ pub fn get_pid_liveness(pid: u32) -> ProcessLiveness {
 
 /// Read an OS-specific start identity for process reuse detection.
 pub fn get_process_start_identity(pid: u32) -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let command_end = stat.rfind(')')?;
-        let after_command = stat.get(command_end + 2..)?;
-        let fields: Vec<&str> = after_command.split_whitespace().collect();
-        let start_ticks = fields.get(19)?;
-        Some(format!("linux-proc-start-ticks:{start_ticks}"))
-    }
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-    {
-        let output = std::process::Command::new("/bin/ps")
-            .args(["-o", "lstart=", "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let trimmed = stdout.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        let normalized = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-        Some(format!("ps-lstart:{normalized}"))
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-    {
-        let _ = pid;
-        None
-    }
+    crate::locks::process_identity::get_process_start_identity(pid)
 }
 
 struct OwnerPayload {

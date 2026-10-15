@@ -30,140 +30,151 @@ pub struct KibitzerToolResultEvent<'a> {
     pub is_error: bool,
 }
 
-/// The newest suffix of the branch snapshot a tool hook captured, plus the TRUE branch length
-/// (the events cursor). `entries` is a suffix of `get_branch()`'s `data`, long enough that every
-/// tool-hook consumer reads the same result it would from the full branch.
+/// What a tool hook captured from the branch: the TRUE branch length (the events cursor), the
+/// newest [`RECALL_PATH_ENTRY_WINDOW`] raw entries (`entries`, the mention-exclusion window) and the
+/// decisive `summary` entries in branch order. `summary` holds every entry `newest_assistant_text`,
+/// `user_texts` and `judge_transcript` can return on the full branch, so each yields exactly its
+/// full-branch result over `summary`.
 pub struct BranchTail<'a> {
     pub len: usize,
     pub entries: &'a [Value],
+    pub summary: &'a [Value],
 }
 
-/// The branch tail the tool hooks capture: at least the mention window
-/// ([`RECALL_PATH_ENTRY_WINDOW`]), extended back until the newest assistant text
-/// (`newest_assistant_text`), [`RECALL_TEXT_WINDOW`] planner user texts (`user_texts`) and
-/// [`RECALL_TEXT_WINDOW`] judge turns (`judge_transcript`) are all inside it, so each consumer's
-/// newest-first scan stops within the tail exactly where it would stop on the full branch.
-pub fn tool_branch_tail(session_manager: &dyn maho_ext_api::SessionManager) -> (usize, Vec<Value>) {
-    let mut assistant = false;
-    let mut users = 0usize;
-    let mut turns = 0usize;
-    let mut satisfied = |entry: &Value| {
-        let one = std::slice::from_ref(entry);
-        assistant = assistant || newest_assistant_text(one).is_some();
-        users += user_texts(one).len();
-        turns += judge_transcript(one).len();
-        assistant && users >= RECALL_TEXT_WINDOW && turns >= RECALL_TEXT_WINDOW
-    };
-    let (len, tail) = session_manager.get_branch_tail(RECALL_PATH_ENTRY_WINDOW, &mut satisfied);
-    (len, tail.into_iter().map(|entry| entry.data).collect())
+/// The entry `newest_assistant_text`'s newest-first scan stops at: a non-blank assistant message,
+/// or a `message` entry without a `message` field (the scan returns `None` there).
+fn decides_assistant(entry: &Value) -> bool {
+    entry.get("type").and_then(Value::as_str) == Some("message")
+        && (entry.get("message").is_none() || newest_assistant_text(std::slice::from_ref(entry)).is_some())
 }
 
-/// One retained entry's contribution to the [`tool_branch_tail`] stop condition.
-#[derive(Clone, Copy)]
-struct TailMark {
-    assistant: bool,
-    users: usize,
-    turns: usize,
+fn push_window(window: &mut Vec<(usize, Value)>, index: usize, entry: &Value) {
+    window.push((index, entry.clone()));
+    if window.len() > RECALL_TEXT_WINDOW {
+        window.remove(0);
+    }
 }
 
-fn tail_mark(entry: &Value) -> TailMark {
-    let one = std::slice::from_ref(entry);
-    TailMark { assistant: newest_assistant_text(one).is_some(), users: user_texts(one).len(), turns: judge_transcript(one).len() }
+/// The decisive entries of a branch, keyed by branch position: the newest [`RECALL_TEXT_WINDOW`]
+/// planner user texts, the newest [`RECALL_TEXT_WINDOW`] judge turns and the newest
+/// assistant-deciding entry. Updated from appended entries only.
+#[derive(Clone, Default)]
+struct BranchSummary {
+    users: Vec<(usize, Value)>,
+    turns: Vec<(usize, Value)>,
+    assistant: Option<(usize, Value)>,
 }
 
-/// Start of the suffix [`tool_branch_tail`] keeps, scanning `marks` newest-first. The kept start
-/// only moves forward as entries are appended (every condition is a monotone count), so scanning the
-/// previously kept tail plus the appended entries yields the full-branch result.
-fn tail_start(marks: &[TailMark]) -> usize {
-    let len = marks.len();
-    let (mut assistant, mut users, mut turns, mut done) = (false, 0usize, 0usize, false);
-    let mut start = len;
-    while start > 0 && (len - start < RECALL_PATH_ENTRY_WINDOW || !done) {
-        start -= 1;
-        if !done {
-            let mark = marks[start];
-            assistant = assistant || mark.assistant;
-            users += mark.users;
-            turns += mark.turns;
-            done = assistant && users >= RECALL_TEXT_WINDOW && turns >= RECALL_TEXT_WINDOW;
+impl BranchSummary {
+    /// Folds `entries` (branch positions from `base`) in, oldest first.
+    fn extend(&mut self, base: usize, entries: &[Value]) {
+        for (offset, entry) in entries.iter().enumerate() {
+            let one = std::slice::from_ref(entry);
+            let index = base + offset;
+            if !user_texts(one).is_empty() {
+                push_window(&mut self.users, index, entry);
+            }
+            if !judge_transcript(one).is_empty() {
+                push_window(&mut self.turns, index, entry);
+            }
+            if decides_assistant(entry) {
+                self.assistant = Some((index, entry.clone()));
+            }
         }
     }
-    start
+
+    /// The decisive entries in branch order once the branch's newest entry (`newest`, at branch
+    /// position `index`) is folded in. That entry is never kept in the cache: it may still change.
+    fn view(&self, index: usize, newest: Option<&Value>) -> Vec<Value> {
+        let mut summary = self.clone();
+        summary.extend(index, newest.map(std::slice::from_ref).unwrap_or_default());
+        summary.entries()
+    }
+
+    /// The union of the decisive entries, in branch order.
+    fn entries(&self) -> Vec<Value> {
+        let mut kept: Vec<&(usize, Value)> = self.users.iter().chain(&self.turns).chain(&self.assistant).collect();
+        kept.sort_by_key(|(index, _)| *index);
+        kept.dedup_by_key(|(index, _)| *index);
+        kept.into_iter().map(|(_, entry)| entry.clone()).collect()
+    }
 }
 
 fn entry_id(entry: &Value) -> Option<&str> {
     entry.get("id").and_then(Value::as_str)
 }
 
-/// The cached shape of a session's [`tool_branch_tail`]: the leaf and branch length it was taken
-/// at plus one [`TailMark`] per kept entry. No entry payloads are retained; the hook re-reads the
-/// kept suffix (`marks.len()` entries) on demand, so the cache stays small for long sessions.
-struct CachedBranchTail {
-    leaf_id: String,
-    len: usize,
-    marks: Vec<TailMark>,
+/// One tool hook's capture: see [`BranchTail`].
+pub struct ToolBranchView {
+    pub len: usize,
+    pub window: Vec<Value>,
+    pub summary: Vec<Value>,
 }
 
-/// Per-session [`tool_branch_tail`] bookkeeping, extended incrementally: a hook walks only the
-/// entries appended since the cached leaf to find where the kept tail starts, instead of
-/// re-scanning the branch back to the 6th-newest user prompt on every tool event. Any other branch
-/// change (leaf moved off the cached chain, trimmed history) falls back to the full scan.
+/// A session's cached [`BranchSummary`] of every branch entry before the leaf, plus the leaf and
+/// branch length it was taken at. The leaf is re-read and re-folded by the next hook.
+struct CachedBranch {
+    leaf_id: String,
+    len: usize,
+    summary: BranchSummary,
+}
+
+/// Per-session tool-hook branch bookkeeping, extended incrementally: a hook re-reads only the
+/// newest [`RECALL_PATH_ENTRY_WINDOW`] entries (further back only to reach the cached leaf) and folds
+/// the entries appended since that leaf into the summary. Any other branch change (leaf moved off
+/// the cached chain, trimmed history) falls back to a scan back to the decisive entries.
 #[derive(Default)]
 pub struct ToolBranchTailCache {
-    sessions: std::sync::Mutex<std::collections::BTreeMap<String, CachedBranchTail>>,
+    sessions: std::sync::Mutex<std::collections::BTreeMap<String, CachedBranch>>,
 }
 
 impl ToolBranchTailCache {
-    /// The same `(len, tail)` [`tool_branch_tail`] returns for the current branch.
-    pub fn tail(&self, session_id: &str, session_manager: &dyn maho_ext_api::SessionManager) -> (usize, Arc<Vec<Value>>) {
+    pub fn tail(&self, session_id: &str, session_manager: &dyn maho_ext_api::SessionManager) -> ToolBranchView {
         let cached = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
-        let (next, tail) = cached.and_then(|cached| Self::extend(cached, session_manager)).unwrap_or_else(|| Self::full(session_manager));
-        let result = (next.len, Arc::new(tail));
+        let (next, window) = cached.and_then(|cached| Self::extend(cached, session_manager)).unwrap_or_else(|| Self::full(session_manager));
+        let view = ToolBranchView { len: next.len, summary: next.summary.view(next.len.saturating_sub(1), window.last()), window };
         if !next.leaf_id.is_empty() {
             self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.to_owned(), next);
         }
-        result
+        view
     }
 
     pub fn forget(&self, session_id: &str) {
         self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
     }
 
-    fn full(session_manager: &dyn maho_ext_api::SessionManager) -> (CachedBranchTail, Vec<Value>) {
-        let (len, tail) = tool_branch_tail(session_manager);
-        let marks = tail.iter().map(tail_mark).collect();
-        let leaf_id = tail.last().and_then(entry_id).unwrap_or_default().to_owned();
-        (CachedBranchTail { leaf_id, len, marks }, tail)
+    fn full(session_manager: &dyn maho_ext_api::SessionManager) -> (CachedBranch, Vec<Value>) {
+        let (mut users, mut turns, mut assistant) = (0usize, 0usize, false);
+        let mut satisfied = |entry: &Value| {
+            let one = std::slice::from_ref(entry);
+            assistant = assistant || decides_assistant(entry);
+            users += user_texts(one).len();
+            turns += judge_transcript(one).len();
+            assistant && users >= RECALL_TEXT_WINDOW && turns >= RECALL_TEXT_WINDOW
+        };
+        let (len, tail) = session_manager.get_branch_tail(RECALL_PATH_ENTRY_WINDOW, &mut satisfied);
+        let mut window: Vec<Value> = tail.into_iter().map(|entry| entry.data).collect();
+        let mut summary = BranchSummary::default();
+        summary.extend(len - window.len(), &window[..window.len().saturating_sub(1)]);
+        let leaf_id = window.last().and_then(entry_id).unwrap_or_default().to_owned();
+        window.drain(..window.len().saturating_sub(RECALL_PATH_ENTRY_WINDOW));
+        (CachedBranch { leaf_id, len, summary }, window)
     }
 
-    fn extend(mut cached: CachedBranchTail, session_manager: &dyn maho_ext_api::SessionManager) -> Option<(CachedBranchTail, Vec<Value>)> {
-        let (len, walked) = session_manager.get_branch_tail(0, &mut |entry| entry_id(entry) == Some(cached.leaf_id.as_str()));
-        let mut walked = walked.into_iter();
-        if entry_id(&walked.next()?.data) != Some(cached.leaf_id.as_str()) || len != cached.len + walked.len() {
+    fn extend(mut cached: CachedBranch, session_manager: &dyn maho_ext_api::SessionManager) -> Option<(CachedBranch, Vec<Value>)> {
+        let leaf = std::mem::take(&mut cached.leaf_id);
+        let (len, tail) = session_manager.get_branch_tail(RECALL_PATH_ENTRY_WINDOW, &mut |entry| entry_id(entry) == Some(leaf.as_str()));
+        let mut window: Vec<Value> = tail.into_iter().map(|entry| entry.data).collect();
+        let at = window.iter().rposition(|entry| entry_id(entry) == Some(leaf.as_str()))?;
+        if len != cached.len + (window.len() - at - 1) {
             return None;
         }
-        let appended: Vec<Value> = walked.map(|entry| entry.data).collect();
-        cached.marks.extend(appended.iter().map(tail_mark));
-        let start = tail_start(&cached.marks);
-        cached.marks.drain(..start);
-        let kept = cached.marks.len();
-        let tail = if kept <= appended.len() {
-            let mut appended = appended;
-            appended.drain(..appended.len() - kept);
-            appended
-        } else {
-            // The kept tail reaches back past the appended entries: re-read exactly that suffix.
-            let (reread_len, reread) = session_manager.get_branch_tail(kept, &mut |_| true);
-            let reread: Vec<Value> = reread.into_iter().map(|entry| entry.data).collect();
-            let leaf = appended.last().and_then(entry_id).unwrap_or(cached.leaf_id.as_str());
-            if reread_len != len || reread.len() != kept || reread.last().and_then(entry_id) != Some(leaf) {
-                return None;
-            }
-            reread
-        };
-        cached.leaf_id = tail.last().and_then(entry_id)?.to_owned();
+        // Fold the re-read previous leaf and the appended entries, all but the new leaf.
+        cached.summary.extend(cached.len - 1, &window[at..window.len() - 1]);
+        cached.leaf_id = window.last().and_then(entry_id)?.to_owned();
         cached.len = len;
-        Some((cached, tail))
+        window.drain(..window.len().saturating_sub(RECALL_PATH_ENTRY_WINDOW));
+        Some((cached, window))
     }
 }
 
@@ -172,7 +183,7 @@ impl ToolBranchTailCache {
 /// `entries` is the REAL branch snapshot (`context.session_manager.get_branch()`'s `data`), captured
 /// while the ctx is still alive. The consumer derives the events cursor from its LENGTH (the branch
 /// length), never from a synthetic monotonic counter. The tool hooks receive a [`BranchTail`]: the
-/// newest suffix of that snapshot plus its true length. `prompt` is the `before_agent_start` event's
+/// newest mention window and the decisive summary entries of that snapshot plus its true length. `prompt` is the `before_agent_start` event's
 /// OWN prompt, passed so it is never inferred from a stale transcript.
 pub trait KibitzerHookSink: Send + Sync {
     fn on_before_agent_start(&self, session_id: &str, prompt: &str, entries: &[Value]);
@@ -214,9 +225,9 @@ pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<d
             } else {
                 Vec::new()
             };
-            // The tool hooks fire per tool call: capture only the branch TAIL every consumer reads
-            // (see `tool_branch_tail`) plus the TRUE branch length as the cursor.
-            let (branch_len, tail): (usize, Arc<Vec<Value>>) = if (kind == maho_ext_api::EventKind::ToolCall || kind == maho_ext_api::EventKind::ToolResult)
+            // The tool hooks fire per tool call: capture only the mention window and decisive summary
+            // every consumer reads (see `BranchTail`) plus the TRUE branch length as the cursor.
+            let view = if (kind == maho_ext_api::EventKind::ToolCall || kind == maho_ext_api::EventKind::ToolResult)
                 && sink.wants_branch(kind, session_id)
             {
                 tails.tail(session_id, context.session_manager.as_ref())
@@ -224,7 +235,7 @@ pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<d
                 if kind == maho_ext_api::EventKind::SessionShutdown {
                     tails.forget(session_id);
                 }
-                (entries.len(), Arc::default())
+                ToolBranchView { len: entries.len(), window: Vec::new(), summary: Vec::new() }
             };
             // The `before_agent_start` event's OWN prompt, captured from the event variant (not the
             // branch) so it is never inferred from a stale transcript.
@@ -243,12 +254,12 @@ pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<d
                     maho_ext_api::EventKind::BeforeAgentStart => sink.on_before_agent_start(session_id, prompt.as_deref().unwrap_or(""), &entries),
                     maho_ext_api::EventKind::ToolCall => {
                         if let Some((tool_call_id, tool_name, input, _, _)) = captured {
-                            sink.on_tool_call(session_id, &tool_call_id, &tool_name, &input, &BranchTail { len: branch_len, entries: &tail });
+                            sink.on_tool_call(session_id, &tool_call_id, &tool_name, &input, &BranchTail { len: view.len, entries: &view.window, summary: &view.summary });
                         }
                     }
                     maho_ext_api::EventKind::ToolResult => {
                         if let (Some((tool_call_id, tool_name, input, content, is_error)), Some(gate)) = (captured, gate) {
-                            sink.on_tool_result(session_id, &KibitzerToolResultEvent { tool_call_id: &tool_call_id, tool_name: &tool_name, input: &input, content: &content, is_error }, &BranchTail { len: branch_len, entries: &tail }, &gate);
+                            sink.on_tool_result(session_id, &KibitzerToolResultEvent { tool_call_id: &tool_call_id, tool_name: &tool_name, input: &input, content: &content, is_error }, &BranchTail { len: view.len, entries: &view.window, summary: &view.summary }, &gate);
                         }
                     }
                     maho_ext_api::EventKind::TurnEnd => sink.on_turn_end(session_id),
@@ -269,17 +280,35 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex;
 
-    struct Branch(Mutex<Vec<Value>>);
+    /// A branch whose `get_branch_tail` records how many entries each call materialized.
+    struct Branch(Mutex<Vec<Value>>, Mutex<Vec<usize>>);
+    impl Branch {
+        fn new() -> Self { Self(Mutex::new(Vec::new()), Mutex::new(Vec::new())) }
+        fn push(&self, value: Value) { self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(value); }
+        fn data(&self) -> Vec<Value> { self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() }
+        fn take_reads(&self) -> Vec<usize> { std::mem::take(&mut *self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner)) }
+    }
+    fn session_entry(data: &Value) -> maho_ext_api::SessionEntry {
+        maho_ext_api::SessionEntry { id: data["id"].as_str().unwrap_or_default().to_owned(), parent_id: None, timestamp: String::new(), kind: "message".into(), data: data.clone() }
+    }
     impl maho_ext_api::ToolSessionManager for Branch {
         fn session_id(&self) -> &str { "session" }
         fn session_file(&self) -> Option<&std::path::Path> { None }
     }
     impl maho_ext_api::SessionManager for Branch {
         fn get_entries(&self) -> Vec<maho_ext_api::SessionEntry> { self.get_branch() }
-        fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
-            self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().map(|data| maho_ext_api::SessionEntry {
-                id: data["id"].as_str().unwrap_or_default().to_owned(), parent_id: None, timestamp: String::new(), kind: "message".into(), data: data.clone(),
-            }).collect()
+        fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> { self.data().iter().map(session_entry).collect() }
+        /// The host's lazy shape: walk newest-first and materialize only the returned suffix.
+        fn get_branch_tail(&self, min_entries: usize, satisfied: &mut dyn FnMut(&Value) -> bool) -> (usize, Vec<maho_ext_api::SessionEntry>) {
+            let data = self.data();
+            let len = data.len();
+            let (mut start, mut done) = (len, false);
+            while start > 0 && (len - start < min_entries || !done) {
+                start -= 1;
+                if !done { done = satisfied(&data[start]); }
+            }
+            self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(len - start);
+            (len, data[start..].iter().map(session_entry).collect())
         }
         fn get_leaf_id(&self) -> Option<String> { None }
         fn get_session_name(&self) -> Option<String> { None }
@@ -287,33 +316,74 @@ mod tests {
 
     fn entry(index: usize) -> Value {
         let (role, text) = match index % 7 { 0 => ("user", "prompt"), 1 | 4 => ("assistant", "reply"), 2 => ("toolResult", "out"), 5 => ("assistant", " "), _ => ("toolResult", "") };
-        json!({"id": format!("e{index}"), "type": "message", "message": {"role": role, "content": text}})
+        json!({"id": format!("e{index}"), "type": "message", "message": {"role": role, "content": format!("{text}{index}")}})
+    }
+
+    /// Every consumer input equals the full-branch scan's.
+    fn assert_matches_full_branch(view: &ToolBranchView, branch: &Branch, step: usize) {
+        let full = branch.data();
+        assert_eq!(view.len, full.len(), "step {step}");
+        assert_eq!(view.window, full[full.len().saturating_sub(RECALL_PATH_ENTRY_WINDOW)..].to_vec(), "step {step}");
+        assert_eq!(user_texts(&view.summary), user_texts(&full), "step {step}");
+        assert_eq!(judge_transcript(&view.summary), judge_transcript(&full), "step {step}");
+        assert_eq!(newest_assistant_text(&view.summary), newest_assistant_text(&full), "step {step}");
+        assert!(view.summary.len() <= 2 * RECALL_TEXT_WINDOW + 1, "step {step}");
     }
 
     #[test]
     fn cached_tail_matches_full_branch_scan_while_the_branch_grows() {
-        let branch = Branch(Mutex::new(Vec::new()));
+        let branch = Branch::new();
         let cache = ToolBranchTailCache::default();
         let mut next = 0;
         for step in 0..120 {
             for _ in 0..(step % 9) {
-                branch.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(entry(next));
+                branch.push(entry(next));
                 next += 1;
             }
-            let (len, tail) = cache.tail("session", &branch);
-            assert_eq!((len, tail.as_ref().clone()), tool_branch_tail(&branch), "step {step}");
-            // The cache retains only per-entry marks for the kept tail, never the payloads.
-            let sessions = cache.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(cached) = sessions.get("session") {
-                assert_eq!((cached.len, cached.marks.len(), Some(cached.leaf_id.as_str())), (len, tail.len(), tail.last().and_then(entry_id)), "step {step}");
-            }
+            assert_matches_full_branch(&cache.tail("session", &branch), &branch, step);
         }
-        // Re-reading the same branch with nothing appended still yields the identical tail.
-        let (len, tail) = cache.tail("session", &branch);
-        assert_eq!((len, tail.as_ref().clone()), tool_branch_tail(&branch));
+        // Re-reading the same branch with nothing appended still yields the identical inputs.
+        assert_matches_full_branch(&cache.tail("session", &branch), &branch, 120);
+        // A leaf whose content changed after a hook read it is re-read, never served stale.
+        branch.push(json!({"id": "live", "type": "message", "message": {"role": "user", "content": "partial"}}));
+        assert_matches_full_branch(&cache.tail("session", &branch), &branch, 120);
+        if let Some(leaf) = branch.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).last_mut() {
+            leaf["message"]["content"] = json!(" ");
+        }
+        assert_matches_full_branch(&cache.tail("session", &branch), &branch, 120);
         // A branch that no longer extends the cached leaf falls back to the full scan.
         branch.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).truncate(10);
-        let (len, tail) = cache.tail("session", &branch);
-        assert_eq!((len, tail.as_ref().clone()), tool_branch_tail(&branch));
+        assert_matches_full_branch(&cache.tail("session", &branch), &branch, 121);
+    }
+
+    #[test]
+    fn long_branch_with_few_prompts_reads_only_the_window_per_hook() {
+        let branch = Branch::new();
+        let cache = ToolBranchTailCache::default();
+        branch.push(json!({"id": "u0", "type": "message", "message": {"role": "user", "content": "first prompt"}}));
+        branch.push(json!({"id": "a0", "type": "message", "message": {"role": "assistant", "content": "plan"}}));
+        let mut next = 0;
+        for step in 0..400 {
+            let appended = 1 + step % 3;
+            for _ in 0..appended {
+                let value = match next % 50 {
+                    17 => json!({"id": format!("t{next}"), "type": "message", "message": {"role": "assistant", "content": format!("note {next}")}}),
+                    29 => json!({"id": format!("t{next}"), "type": "message"}),
+                    41 if next < 200 => json!({"id": format!("t{next}"), "type": "message", "message": {"role": "user", "content": format!("follow-up {next}")}}),
+                    _ if next % 2 == 0 => json!({"id": format!("t{next}"), "type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall", "name": "read"}]}}),
+                    _ => json!({"id": format!("t{next}"), "type": "message", "message": {"role": "toolResult", "content": format!("out {next}")}}),
+                };
+                branch.push(value);
+                next += 1;
+            }
+            branch.take_reads();
+            let view = cache.tail("session", &branch);
+            assert_matches_full_branch(&view, &branch, step);
+            // After the first hook, each hook materializes only the mention window (or the appended run).
+            if step > 0 {
+                assert_eq!(branch.take_reads(), vec![RECALL_PATH_ENTRY_WINDOW.min(view.len).max(appended + 1)], "step {step}");
+            }
+        }
+        assert!(user_texts(&branch.data()).len() < RECALL_TEXT_WINDOW);
     }
 }
