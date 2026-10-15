@@ -35,7 +35,8 @@ const TERMINAL_PROGRESS_ACTIVE_SEQUENCE: &str = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE: &str = "\x1b]9;4;0\x07";
 const NATIVE_SHIFT_ENTER_SEQUENCE: &str = "\x1b[13;2u";
 const DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS: u32 = 7;
-const DEAD_TERMINAL_ERROR_CODES: [&str; 3] = ["EIO", "EPIPE", "ENOTCONN"];
+const DEAD_TERMINAL_ERROR_CODES: [&str; 4] = ["EIO", "EPIPE", "ENOTCONN", "ENXIO"];
+const TERMINAL_HANGUP_CODE: &str = "EHUP";
 /// Bun's macOS tty shim can report synchronous ioctl EIO as raw positive errno 5.
 const EIO_ERRNO: i32 = 5;
 /// Stable across darwin and linux; ENOTCONN is excluded because its number differs.
@@ -311,6 +312,16 @@ impl TerminalError {
     }
 
     #[must_use]
+    /// The controlling terminal is gone: stdin reached end-of-file (the PTY master closed).
+    pub fn hangup() -> Self {
+        Self::new("stdin reached end-of-file: the terminal hung up").with_code(TERMINAL_HANGUP_CODE)
+    }
+
+    /// Whether this error reports a hung-up terminal (see [`TerminalError::hangup`]).
+    pub fn is_hangup(&self) -> bool {
+        self.code.as_deref() == Some(TERMINAL_HANGUP_CODE)
+    }
+
     pub fn with_errno(mut self, errno: i32) -> Self {
         self.errno = Some(errno);
         self
@@ -336,6 +347,8 @@ impl From<std::io::Error> for TerminalError {
                 Errno::IO => Some("EIO"),
                 Errno::PIPE => Some("EPIPE"),
                 Errno::NOTCONN => Some("ENOTCONN"),
+                // `/dev/tty` with no controlling terminal left (the session's tty hung up).
+                Errno::NXIO => Some("ENXIO"),
                 Errno::BADF => Some("EBADF"),
                 Errno::INVAL => Some("EINVAL"),
                 _ => None,
@@ -473,7 +486,10 @@ impl TerminalIo for ProcessIo {
             }
             let mut buf = vec![0u8; 4096];
             match rustix::io::read(stdin, &mut buf) {
-                Ok(0) => Ok(None),
+                // poll reported stdin readable and the read returned nothing: end-of-file. A
+                // terminal never ends on its own, so its PTY master closed; every later poll
+                // returns at once, so reporting it as no input would spin the caller's loop.
+                Ok(0) => Err(TerminalError::hangup()),
                 Ok(n) => {
                     buf.truncate(n);
                     Ok(Some(buf))

@@ -294,6 +294,9 @@ struct AvailabilityState {
     error_seq: u64,
     provider_seq: HashMap<String, u64>,
     error: Option<String>,
+    /// Bumped whenever `snapshot` changes, so readers can recompute derived values (the footer's
+    /// provider count) on change instead of on every frame.
+    revision: u64,
 }
 
 #[derive(Clone)]
@@ -442,6 +445,7 @@ impl ModelRuntime {
         let snapshot = &mut guard.snapshot;
         snapshot.available = all.iter().filter(|model| snapshot.configured_providers.contains(&model.provider)).cloned().collect();
         snapshot.all = all;
+        guard.revision += 1;
     }
     async fn run_availability_refresh(&self, seq: u64, error_seq: u64, signal: AbortSignal) -> Result<(), String> {
         let providers = self.models.get_providers();
@@ -464,6 +468,7 @@ impl ModelRuntime {
             stored_providers: credentials.into_iter().map(|entry| entry.provider_id).collect(), auth,
         };
         guard.initialized = true;
+        guard.revision += 1;
         if error_seq == guard.error_seq { guard.error = None; }
         Ok(())
     }
@@ -512,6 +517,7 @@ impl ModelRuntime {
                 .map(|model| ((model.provider.clone(), model.id.clone()), model.clone())).collect();
             snapshot.available = all.iter().filter_map(|model| available_by_id.get(&(model.provider.clone(), model.id.clone())).cloned()).collect();
             snapshot.all = all;
+            state.revision += 1;
             if error_seq == state.error_seq { state.error = None; }
             Ok::<(), String>(())
         }.await;
@@ -555,6 +561,8 @@ impl ModelRuntime {
     /// True only when the most recent availability refresh completed without error.
     pub fn has_fresh_availability_snapshot(&self) -> bool { let guard = self.availability_state(); guard.initialized && guard.error.is_none() }
     pub fn has_availability_snapshot(&self) -> bool { self.availability_state().initialized }
+    /// Changes whenever the availability snapshot changes (refresh, provider (un)registration).
+    pub fn availability_revision(&self) -> u64 { self.availability.read().unwrap_or_else(|p| p.into_inner()).revision }
     pub fn has_configured_auth(&self, provider_id: &str) -> bool { self.availability_state().snapshot.configured_providers.contains(provider_id) }
     pub fn get_provider_auth_status(&self,id:&str) -> AuthStatus {
         // senpi `getProviderAuthStatus`: a non-persistent runtime API key wins, so the
@@ -799,6 +807,7 @@ impl ModelRuntime {
                 auth_type: if config.oauth.is_some() && config.api_key.is_none() { AuthType::OAuth } else { AuthType::ApiKey },
             });
             snapshot.available = snapshot.all.iter().filter(|model| snapshot.configured_providers.contains(&model.provider)).cloned().collect();
+            guard.revision += 1;
         }
         Ok(())
     }

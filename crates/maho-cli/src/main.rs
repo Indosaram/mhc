@@ -1,6 +1,9 @@
 fn main() {
     if let Err(error) = run() {
-        eprintln!("{error}");
+        // `eprintln!` panics when stderr is gone (a hung-up terminal), turning exit 1 into a 101
+        // panic; report best-effort instead.
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{error}");
         std::process::exit(1);
     }
 }
