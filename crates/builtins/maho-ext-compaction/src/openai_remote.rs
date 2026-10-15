@@ -229,18 +229,17 @@ pub struct OpenAiRemoteReplayBoundary { pub compaction_entry_id: String, pub exp
 /// `SESSION_CONTEXT_ENTRY_ID`). The markers carry entry identity, not payload values. senpi seals
 /// them by converting to Responses input items; the native Responses converter cannot carry
 /// provenance per item, so the sealed baseline is the `convert_to_llm` projection, which does.
-pub fn mark_openai_remote_replay_boundary(messages: &[Value], entry_ids: &[Option<String>], model: Option<&Model>, branch_entries: &[Value]) -> (Vec<Value>, Option<OpenAiRemoteReplayBoundary>) {
-    let unmarked = || (messages.to_vec(), None);
-    let Some(model) = model.filter(|model| is_openai_remote_compaction_model(Some(*model))) else { return unmarked(); };
-    let Some(remote) = latest_remote_compaction(branch_entries) else { return unmarked(); };
+pub fn mark_openai_remote_replay_boundary(messages: Vec<Value>, entry_ids: &[Option<String>], model: Option<&Model>, branch_entries: &[Value]) -> (Vec<Value>, Option<OpenAiRemoteReplayBoundary>) {
+    let Some(model) = model.filter(|model| is_openai_remote_compaction_model(Some(*model))) else { return (messages, None); };
+    let Some(remote) = latest_remote_compaction(branch_entries) else { return (messages, None); };
     let identity = OpenAiRemoteCompactionIdentity { provider: remote.details.provider.clone(), api: remote.details.api.clone() };
-    if remote.details.origin.is_none() || !matches_openai_remote_compaction_identity(model, &identity) { return unmarked(); }
+    if remote.details.origin.is_none() || !matches_openai_remote_compaction_identity(model, &identity) { return (messages, None); }
     let checkpoint_ids: Vec<String> = checkpoint_context_entries(branch_entries, &remote).iter()
         .filter(|entry| !session_entry_to_context_messages(entry).is_empty())
         .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_owned)).collect();
     if checkpoint_ids.is_empty() || messages.len() < checkpoint_ids.len()
         || !checkpoint_ids.iter().enumerate().all(|(index, id)| entry_ids.get(index).and_then(Option::as_deref) == Some(id.as_str())) {
-        return unmarked();
+        return (messages, None);
     }
     let mark = |expected_ordinals: &[usize], integrity: &std::collections::BTreeMap<usize, String>| -> Vec<Value> {
         messages.iter().enumerate().map(|(index, message)| {
@@ -262,7 +261,7 @@ pub fn mark_openai_remote_replay_boundary(messages: &[Value], entry_ids: &[Optio
         if let Some(fingerprint) = context_provenance_fingerprint(&item) { integrity.insert(ordinal, fingerprint); }
         expected_ordinals.push(ordinal);
     }
-    if expected_ordinals.is_empty() { return unmarked(); }
+    if expected_ordinals.is_empty() { return (messages, None); }
     let marked = mark(&expected_ordinals, &integrity);
     (marked, Some(OpenAiRemoteReplayBoundary { compaction_entry_id: remote.entry_id, expected_ordinals }))
 }
@@ -293,7 +292,7 @@ mod replay_boundary_tests {
     fn marks_checkpoint_owned_prefix_with_entry_identity() {
         let branch = branch();
         let (messages, entry_ids) = context(&branch);
-        let (marked, boundary) = mark_openai_remote_replay_boundary(&messages, &entry_ids, Some(&model()), &branch);
+        let (marked, boundary) = mark_openai_remote_replay_boundary(messages, &entry_ids, Some(&model()), &branch);
         assert_eq!(boundary, Some(OpenAiRemoteReplayBoundary { compaction_entry_id: "c".into(), expected_ordinals: vec![0, 1] }));
         assert_eq!(marked[0][CONTEXT_PROVENANCE_FIELD]["ordinal"], 0);
         assert_eq!(marked[1][CONTEXT_PROVENANCE_FIELD]["expectedOrdinals"], json!([0, 1]));
@@ -306,6 +305,6 @@ mod replay_boundary_tests {
         let branch = branch();
         let (messages, mut entry_ids) = context(&branch);
         entry_ids[1] = None;
-        assert_eq!(mark_openai_remote_replay_boundary(&messages, &entry_ids, Some(&model()), &branch), (messages, None));
+        assert_eq!(mark_openai_remote_replay_boundary(messages.clone(), &entry_ids, Some(&model()), &branch), (messages, None));
     }
 }

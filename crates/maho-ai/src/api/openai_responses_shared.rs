@@ -807,12 +807,28 @@ fn parse_sse_event(raw: &str) -> Result<Option<ResponsesEvent>, ResponsesStreamE
     Ok(Some(ResponsesEvent { value }))
 }
 
-fn find_sse_boundary(buffer: &str) -> Option<(usize, usize)> {
+/// Longest alternative in the SSE boundary pattern (`\r\n\r\n`).
+const MAX_SSE_BOUNDARY_LEN: usize = 4;
+
+/// Finds the first SSE boundary at or after `from`; returns the absolute index and length.
+/// The pattern has no anchors or lookaround, so a match starting at `from` or later is the
+/// same as a full-buffer search when no match starts before `from`.
+fn find_sse_boundary(buffer: &str, from: usize) -> Option<(usize, usize)> {
     static BOUNDARY_RE: std::sync::LazyLock<Option<fancy_regex::Regex>> = std::sync::LazyLock::new(|| {
         fancy_regex::Regex::new("\r\n\r\n|\r\n\r|\r\n\n|\r\r\n|\n\r\n|\r\r|\n\r|\n\n").ok()
     });
-    let found = BOUNDARY_RE.as_ref()?.find(buffer).ok()??;
-    Some((found.start(), found.end() - found.start()))
+    let found = BOUNDARY_RE.as_ref()?.find(&buffer[from..]).ok()??;
+    Some((from + found.start(), found.end() - found.start()))
+}
+
+/// Where to resume the boundary search after a miss over the whole of `buffer`: no match can
+/// start earlier than `MAX_SSE_BOUNDARY_LEN` bytes before the end, aligned down to a char boundary.
+fn sse_boundary_resume_offset(buffer: &str) -> usize {
+    let mut offset = buffer.len().saturating_sub(MAX_SSE_BOUNDARY_LEN);
+    while !buffer.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
 }
 
 struct StreamState {
@@ -870,14 +886,17 @@ pub async fn process_responses_stream(
 
     let mut buffer = String::new();
     let mut body = body;
+    let mut search_from = 0;
     while let Some(chunk) = read_chunk(&mut body, &state).await? {
         buffer.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some((index, length)) = find_sse_boundary(&buffer) {
+        while let Some((index, length)) = find_sse_boundary(&buffer, search_from) {
             let raw: String = buffer[..index].to_owned();
-            buffer = buffer[index + length..].to_owned();
+            buffer.drain(..index + length);
+            search_from = 0;
             let Some(event) = parse_sse_event(&raw)? else { continue };
             handle_event(event, output, stream, model, options, &mut state)?;
         }
+        search_from = sse_boundary_resume_offset(&buffer);
     }
     finish(&state, output)
 }
@@ -1607,5 +1626,56 @@ pub fn get_done_reason(stop_reason: StopReason) -> DoneReason {
         StopReason::Length => DoneReason::Length,
         StopReason::ToolUse => DoneReason::ToolUse,
         _ => DoneReason::Stop,
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{find_sse_boundary, sse_boundary_resume_offset};
+
+    /// The resumed search must split frames exactly like the previous full rescan from
+    /// offset 0 after every chunk, for every chunking (boundaries split across chunks,
+    /// multibyte text near the resume offset).
+    #[test]
+    fn incremental_boundary_search_matches_full_rescan() {
+        let input = "data: {\"a\":\"\u{e9}\u{1f600}\"}\r\n\r\ndata: 1\n\ndata: 2\r\rdata: \u{1f600}\n\r\ndata: 3\r\n\n";
+        for chunk_len in 1..=input.len() {
+            let mut chunks = Vec::new();
+            let mut start = 0;
+            while start < input.len() {
+                let mut end = (start + chunk_len).min(input.len());
+                while !input.is_char_boundary(end) {
+                    end += 1;
+                }
+                chunks.push(&input[start..end]);
+                start = end;
+            }
+
+            let mut expected = Vec::new();
+            let mut full = String::new();
+            for chunk in &chunks {
+                full.push_str(chunk);
+                while let Some((index, length)) = find_sse_boundary(&full, 0) {
+                    expected.push(full[..index].to_owned());
+                    full = full[index + length..].to_owned();
+                }
+            }
+
+            let mut frames = Vec::new();
+            let mut buffer = String::new();
+            let mut search_from = 0;
+            for chunk in &chunks {
+                buffer.push_str(chunk);
+                while let Some((index, length)) = find_sse_boundary(&buffer, search_from) {
+                    frames.push(buffer[..index].to_owned());
+                    buffer.drain(..index + length);
+                    search_from = 0;
+                }
+                search_from = sse_boundary_resume_offset(&buffer);
+            }
+            assert_eq!(frames, expected, "chunk_len {chunk_len}");
+            assert_eq!(buffer, full, "chunk_len {chunk_len}");
+        }
     }
 }

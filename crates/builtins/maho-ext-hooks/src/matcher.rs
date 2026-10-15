@@ -12,10 +12,13 @@ pub struct HookMatcherResult<'a> {
 }
 
 /// Compiles a hook matcher once per distinct pattern; the error text is cached so diagnostics stay identical.
-pub(crate) fn compiled_matcher(pattern:&str)->Result<fancy_regex::Regex,String> {
-    static CACHE:std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String,Result<fancy_regex::Regex,String>>>>=std::sync::LazyLock::new(Default::default);
+/// Hands out `Arc` clones: cloning a `Regex` itself would rebuild its search-cache pool on every call.
+pub(crate) fn compiled_matcher(pattern:&str)->Result<std::sync::Arc<fancy_regex::Regex>,String> {
+    type Cache=std::collections::HashMap<String,Result<std::sync::Arc<fancy_regex::Regex>,String>>;
+    static CACHE:std::sync::LazyLock<std::sync::Mutex<Cache>>=std::sync::LazyLock::new(Default::default);
     let mut cache=CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache.entry(pattern.to_owned()).or_insert_with(||fancy_regex::Regex::new(pattern).map_err(|error|error.to_string())).clone()
+    if let Some(cached)=cache.get(pattern) {return cached.clone();}
+    cache.entry(pattern.to_owned()).or_insert_with(||fancy_regex::Regex::new(pattern).map(std::sync::Arc::new).map_err(|error|error.to_string())).clone()
 }
 
 pub fn matching_hook_handlers<'a>(input: HookMatcherInput<'_>, handlers: &'a [ExecutableHookHandler]) -> HookMatcherResult<'a> {

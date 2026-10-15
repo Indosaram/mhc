@@ -597,7 +597,7 @@ tokio::task_local!{static CURRENT_CONNECTION:Option<String>;}
 /// rule. With no registered connection the record takes the shared stdio lane.
 fn route_session_record(fanout:&std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>,writer:&crate::session_event_writer::SessionWriterActor,session_id:&str,owner:Option<&str>,record:serde_json::Value){
     let targeted=matches!(record["type"].as_str(),Some("response"|"bash_execution_update"))||(record["type"]=="extension_ui_request"&&matches!(record["method"].as_str(),Some("select"|"confirm"|"input"|"editor")));
-    let delivered=fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).deliver(session_id,owner,targeted,&record);
+    let delivered=fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).deliver_owned(session_id,owner,targeted,record);
     match delivered{
         Ok(stdio)=>for record in stdio{if let Err(error)=writer.enqueue(session_id,record){eprintln!("senpi rpc session {session_id} output failed: {error}");}},
         Err(error)=>eprintln!("senpi rpc session {session_id} output failed: {error}"),

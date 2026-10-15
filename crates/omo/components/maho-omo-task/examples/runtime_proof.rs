@@ -134,7 +134,13 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     api.runtime.bind(actions);
     let channels = Arc::new(Mutex::new(Vec::<Value>::new()));
     let sink = channels.clone();
-    let subscription = api.events.on("wake_source_state", Arc::new(move |event| sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone())));
+    // The resumption emitter publishes on its own worker thread; the launch assertion awaits it.
+    let (channel_live, live_channel) = mpsc::channel();
+    let channel_live = Mutex::new(channel_live);
+    let subscription = api.events.on("wake_source_state", Arc::new(move |event| {
+        sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone());
+        if event["activeCount"] == 1 { let _ = channel_live.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send(()); }
+    }));
     let component = TaskComponent::register(&mut api, engine, Default::default(), senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:path.clone(), task_state_dir:None }, team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4, max_parallel_members:2, max_wall_clock_minutes:10 }, load_runtime_state:None }, false)?.ok_or("component disabled")?;
     let cleanup = Cleanup(component.clone());
     let mut context = support::context(); context.cwd = path;
@@ -145,7 +151,7 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     assert!(child_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
     let result = (task.definition.execute)(ToolCall { id:"native-launch", params:json!({"prompt":"produce native result","subagent_type":"explore","model":"faux/native","run_in_background":true}), signal:Default::default(), on_update:None, context:Some(&context) }).await?;
     println!("REGISTERED TASK {}", serde_json::to_string(&result.details)?);
-    assert!(channels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event| event["activeCount"] == 1));
+    live_channel.recv_timeout(Duration::from_secs(10))?;
     let child = child_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().ok_or("child not launched")?;
     child.finish();
     let message = delivered.recv_timeout(Duration::from_secs(10))?;
@@ -281,9 +287,18 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     rpc_timers.fire_delay(150);
     let dag_channels = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured_channels = dag_channels.clone();
+    // The live wake channel is published from the delivered dag.run.started event and reads the run
+    // list at delivery time; hold node one's start until it is observed so the run is still live.
+    let (live_channel, observed_live) = mpsc::channel();
+    let live_channel = Mutex::new(live_channel);
     let wake_subscription = api.events.on("wake_source_state", Arc::new(move |event| {
-        if event["source"] == "omo-dag" { captured_channels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone()); }
+        if event["source"] == "omo-dag" {
+            captured_channels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone());
+            if event["activeCount"].as_u64().is_some_and(|count| count > 0) { let _ = live_channel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send(()); }
+        }
     }));
+    let (release_native, native_gate) = mpsc::channel();
+    *runner.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(native_gate);
     let (terminal, settled) = mpsc::channel();
     let (activity, observed_activity) = mpsc::channel();
     let ledger = Arc::new(Mutex::new(Vec::<(String,u64)>::new()));
@@ -297,6 +312,8 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     }));
     let tool = &api.registered.tools.iter().find(|tool| tool.definition.name == maho_omo_task::dag_tool::WORKFLOW_TOOL_NAME).ok_or("workflow tool missing")?.definition;
     let result = tokio::time::timeout(Duration::from_secs(10), (tool.execute)(ToolCall { id:"native-dag", params:json!({"action":"start","definition":{"key":"native-proof","name":"native","nodes":[{"id":"one","prompt":"one","subagent_type":"explore","model":"faux/native"},{"id":"two","prompt":"two","subagent_type":"explore","model":"faux/native","dependsOn":["one"]}]}}), signal:Default::default(), on_update:None, context:Some(&context) })).await??;
+    observed_live.recv_timeout(Duration::from_secs(10))?;
+    release_native.send(())?;
     let run = result.details.as_ref().and_then(|details| details["run_id"].as_str()).ok_or("dag run missing")?;
     let scheduler = dag.scheduler(run, "s")?;
     let terminal = settled.recv_timeout(Duration::from_secs(10))?;

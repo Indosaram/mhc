@@ -562,12 +562,74 @@ struct AgentSessionState {
     resume_slice: Option<ResumeSliceState>,
     disposed: bool,
     /// Memoized entry aggregate of `get_session_stats`, keyed on (session id, entry count, leaf id).
-    session_stats_cache: Option<(SessionStatsCacheKey, SessionStats)>,
+    session_stats_cache: Option<(SessionStatsCacheKey, SessionStats, crate::usage_totals::UsageTotals)>,
     /// Memoized `get_context_usage`, keyed on every input that can change its result.
     context_usage_cache: Option<(ContextUsageCacheKey, Option<ContextUsage>)>,
 }
 
 type SessionStatsCacheKey = (String, usize, Option<String>);
+
+/// Per-entry counters of `get_session_stats`, folded over entries in append order.
+#[derive(Clone, Copy, Debug, Default)]
+struct SessionStatsCounts {
+    user_messages: usize,
+    assistant_messages: usize,
+    tool_results: usize,
+    total_messages: usize,
+    tool_calls: usize,
+}
+
+impl SessionStatsCounts {
+    fn from_stats(stats: &SessionStats) -> Self {
+        Self {
+            user_messages: stats.user_messages,
+            assistant_messages: stats.assistant_messages,
+            tool_results: stats.tool_results,
+            total_messages: stats.total_messages,
+            tool_calls: stats.tool_calls,
+        }
+    }
+
+    fn fold(&mut self, entries: &[Value], totals: &mut crate::usage_totals::UsageTotals) {
+        for entry in entries {
+            let kind = entry.get("type").and_then(Value::as_str).unwrap_or_default();
+            if (kind == "branch_summary" || kind == "compaction")
+                && let Some(usage) = entry.get("usage").and_then(|usage| serde_json::from_value(usage.clone()).ok())
+            {
+                crate::usage_totals::add_usage_to_totals(totals, &usage);
+            }
+            if kind != "message" {
+                continue;
+            }
+            self.total_messages += 1;
+            let Some(message) = entry.get("message") else {
+                continue;
+            };
+            match message.get("role").and_then(Value::as_str) {
+                Some("user") => self.user_messages += 1,
+                Some("toolResult") => {
+                    self.tool_results += 1;
+                    if let Some(usage) = message.get("usage").and_then(|usage| serde_json::from_value(usage.clone()).ok()) {
+                        crate::usage_totals::add_usage_to_totals(totals, &usage);
+                    }
+                }
+                Some("assistant") => {
+                    self.assistant_messages += 1;
+                    if let Some(content) = message.get("content").and_then(Value::as_array) {
+                        self.tool_calls += content
+                            .iter()
+                            .filter(|block| block.get("type").and_then(Value::as_str) == Some("toolCall"))
+                            .count();
+                    }
+                    if let Some(usage) = message.get("usage").and_then(|usage| serde_json::from_value(usage.clone()).ok()) {
+                        crate::usage_totals::add_usage_to_totals(totals, &usage);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
 
 #[derive(PartialEq)]
 struct ContextUsageCacheKey {
@@ -8231,55 +8293,35 @@ impl AgentSession {
         let key: SessionStatsCacheKey = self.with_session_manager(|manager| {
             (manager.session_id().to_owned(), manager.get_entry_count(), manager.leaf_id().map(str::to_owned))
         });
-        let cached = self.state().session_stats_cache.as_ref()
-            .and_then(|(cached_key, stats)| (*cached_key == key).then(|| stats.clone()));
-        if let Some(stats) = cached {
-            return SessionStats { session_file: self.session_file(), context_usage: self.get_context_usage(), ..stats };
+        let previous = self.state().session_stats_cache.clone();
+        if let Some((cached_key, stats, _)) = &previous
+            && *cached_key == key
+        {
+            return SessionStats { session_file: self.session_file(), context_usage: self.get_context_usage(), ..stats.clone() };
         }
-        let entries = self.with_session_manager(|manager| manager.entries());
-        let mut user_messages = 0;
-        let mut assistant_messages = 0;
-        let mut tool_results = 0;
-        let mut total_messages = 0;
-        let mut tool_calls = 0;
-        let mut totals = crate::usage_totals::create_usage_totals();
-        for entry in &entries {
-            let kind = entry.get("type").and_then(Value::as_str).unwrap_or_default();
-            if (kind == "branch_summary" || kind == "compaction")
-                && let Some(usage) = entry.get("usage").and_then(|usage| serde_json::from_value(usage.clone()).ok())
-            {
-                crate::usage_totals::add_usage_to_totals(&mut totals, &usage);
+        // Entries are append-only within a session: fold only the ones appended since the cached
+        // aggregate, and rescan everything when the session changed or the tail is unavailable.
+        let incremental = previous.and_then(|(cached_key, stats, totals)| {
+            if cached_key.0 != key.0 || cached_key.1 > key.1 {
+                return None;
             }
-            if kind != "message" {
-                continue;
+            let entries = self.with_session_manager(|manager| manager.entries_after(cached_key.1))?;
+            let mut counts = SessionStatsCounts::from_stats(&stats);
+            let mut totals = totals;
+            counts.fold(&entries, &mut totals);
+            Some((counts, totals))
+        });
+        let (counts, totals) = match incremental {
+            Some(folded) => folded,
+            None => {
+                let entries = self.with_session_manager(|manager| manager.entries());
+                let mut counts = SessionStatsCounts::default();
+                let mut totals = crate::usage_totals::create_usage_totals();
+                counts.fold(&entries, &mut totals);
+                (counts, totals)
             }
-            total_messages += 1;
-            let Some(message) = entry.get("message") else {
-                continue;
-            };
-            match message.get("role").and_then(Value::as_str) {
-                Some("user") => user_messages += 1,
-                Some("toolResult") => {
-                    tool_results += 1;
-                    if let Some(usage) = message.get("usage").and_then(|usage| serde_json::from_value(usage.clone()).ok()) {
-                        crate::usage_totals::add_usage_to_totals(&mut totals, &usage);
-                    }
-                }
-                Some("assistant") => {
-                    assistant_messages += 1;
-                    if let Some(content) = message.get("content").and_then(Value::as_array) {
-                        tool_calls += content
-                            .iter()
-                            .filter(|block| block.get("type").and_then(Value::as_str) == Some("toolCall"))
-                            .count();
-                    }
-                    if let Some(usage) = message.get("usage").and_then(|usage| serde_json::from_value(usage.clone()).ok()) {
-                        crate::usage_totals::add_usage_to_totals(&mut totals, &usage);
-                    }
-                }
-                _ => {}
-            }
-        }
+        };
+        let SessionStatsCounts { user_messages, assistant_messages, tool_results, total_messages, tool_calls } = counts;
         let stats = SessionStats {
             session_file: self.session_file(),
             session_id: self.session_id(),
@@ -8298,7 +8340,7 @@ impl AgentSession {
             cost: totals.cost,
             context_usage: self.get_context_usage(),
         };
-        self.state().session_stats_cache = Some((key, stats.clone()));
+        self.state().session_stats_cache = Some((key, stats.clone(), totals));
         stats
     }
 
@@ -10997,6 +11039,68 @@ mod tests {
         assert_eq!(stats.tokens.output, 5);
         assert_eq!(stats.tokens.total, 15);
         assert_eq!(stats.cost, 0.5);
+    }
+
+    #[test]
+    fn session_stats_incremental_fold_matches_full_scan() {
+        let session = test_session();
+        let full_scan = |session: &AgentSession| {
+            session.state().session_stats_cache = None;
+            session.get_session_stats()
+        };
+        let assistant = |id: &str, input: u64, tool_call: bool| {
+            let mut content = vec![serde_json::json!({ "type": "text", "text": "ok" })];
+            if tool_call {
+                content.push(serde_json::json!({ "type": "toolCall", "id": format!("c-{id}"), "name": "read", "arguments": {} }));
+            }
+            serde_json::json!({
+                "id": id, "type": "message", "timestamp": "2026-01-01T00:00:01.000Z",
+                "message": { "role": "assistant", "content": content, "api": "faux",
+                    "provider": "faux", "model": "faux-1", "stopReason": "stop", "timestamp": 1,
+                    "usage": { "input": input, "output": 5, "cacheRead": 2, "cacheWrite": 1, "totalTokens": input + 8,
+                        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0.25 } } }
+            })
+        };
+        let user = |id: &str| serde_json::json!({
+            "id": id, "type": "message", "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": { "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 0 }
+        });
+        let tool_result = |id: &str| serde_json::json!({
+            "id": id, "type": "message", "timestamp": "2026-01-01T00:00:02.000Z",
+            "message": { "role": "toolResult", "toolCallId": "c", "toolName": "read",
+                "content": [{ "type": "text", "text": "r" }], "isError": false, "timestamp": 2 }
+        });
+        let steps: Vec<Vec<Value>> = vec![
+            vec![user("u1")],
+            vec![assistant("a1", 10, true), tool_result("t1")],
+            vec![assistant("a2", 7, false)],
+            vec![serde_json::json!({ "id": "s1", "type": "session_info", "timestamp": "2026-01-01T00:00:03.000Z", "name": "x" })],
+            vec![user("u2"), assistant("a3", 3, true), tool_result("t2"), user("u3")],
+        ];
+        let mut previous = session.get_session_stats();
+        for step in steps {
+            for entry in step {
+                session.append_session_entry(entry);
+            }
+            previous = session.get_session_stats();
+            assert_eq!(previous, full_scan(&session));
+        }
+        assert_eq!(previous.total_messages, 8);
+        assert_eq!(previous.tool_calls, 2);
+        assert_eq!(previous.tool_results, 2);
+        assert_eq!(previous.tokens.input, 20);
+
+        // A session switch must rescan rather than fold onto the previous session's totals.
+        session.with_session_manager_mut(|manager| manager.new_session(None));
+        session.append_session_entry(user("n1"));
+        let switched = session.get_session_stats();
+        assert_eq!(switched, full_scan(&session));
+        assert_eq!(switched.total_messages, 1);
+        assert_eq!(switched.tokens.input, 0);
+        session.append_session_entry(assistant("n2", 4, false));
+        let appended = session.get_session_stats();
+        assert_eq!(appended, full_scan(&session));
+        assert_eq!(appended.tokens.input, 4);
     }
 
     #[test]

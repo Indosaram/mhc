@@ -70,14 +70,14 @@ impl BindingRecords{
     pub fn deliver_event(&mut self,session_id:&str,event:&maho_ext_api::AgentSessionEvent,fanout:&mut crate::session_event_fanout::SessionEventFanout,writer:&crate::session_event_writer::SessionWriterActor)->Result<(),String>{
         let record=session_event_record(event).map_err(|error|error.to_string())?;
         self.tools.observe(&record);
-        for record in fanout.deliver(session_id,None,false,&record)?{writer.enqueue(session_id,record)?;}
+        for record in fanout.deliver_owned(session_id,None,false,record)?{writer.enqueue(session_id,record)?;}
         Ok(())
     }
     pub fn deliver_records(&mut self,session_id:&str,chunk:&str,fanout:&mut crate::session_event_fanout::SessionEventFanout,writer:&crate::session_event_writer::SessionWriterActor)->Result<(),String>{
         for line in chunk.split('\n').filter(|line|!line.is_empty()){
             let record:serde_json::Value=serde_json::from_str(line).map_err(|error|error.to_string())?;
             self.tools.observe(&record);
-            for record in fanout.deliver(session_id,None,false,&record)?{writer.enqueue(session_id,record)?;}
+            for record in fanout.deliver_owned(session_id,None,false,record)?{writer.enqueue(session_id,record)?;}
         }
         Ok(())
     }

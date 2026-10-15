@@ -25,13 +25,17 @@ pub fn prune_tool_results(messages: &[Value], window: u64, budget_ratio: f64) ->
 }
 pub fn truncate_context_messages(messages: &[Value]) -> Vec<Value> { transform_results(messages, truncate_oversized_tool_results) }
 pub fn hard_limit_emergency_prune(messages: &[Value], window: u64, latch: Option<&mut EmergencyPruneLatch>) -> EmergencyPruneResult {
+    engaged_emergency_prune(messages, window, latch).unwrap_or_else(|| EmergencyPruneResult { messages: messages.to_vec(), needs_aggressive_compaction: false })
+}
+/// [`hard_limit_emergency_prune`] that returns `None` instead of a copy when the latch stays released.
+pub(crate) fn engaged_emergency_prune(messages: &[Value], window: u64, latch: Option<&mut EmergencyPruneLatch>) -> Option<EmergencyPruneResult> {
     let target = (window as f64 * 0.95).floor() as u64;
     let release = (window as f64 * 0.85).floor() as u64;
     let total = estimate_total_tokens(messages);
     let engaged = total > if latch.as_ref().is_some_and(|l| l.engaged) { release } else { target };
     if let Some(latch) = latch { latch.engaged = engaged; }
-    if !engaged { return EmergencyPruneResult { messages: messages.to_vec(), needs_aggressive_compaction: false }; }
+    if !engaged { return None; }
     let pruned = truncate_context_messages(&prune_tool_results(messages, window, 0.6));
-    if estimate_total_tokens(&pruned) <= target { return EmergencyPruneResult { messages: pruned, needs_aggressive_compaction: false }; }
-    EmergencyPruneResult { messages: prune_old_messages_to_budget(&pruned, target), needs_aggressive_compaction: true }
+    if estimate_total_tokens(&pruned) <= target { return Some(EmergencyPruneResult { messages: pruned, needs_aggressive_compaction: false }); }
+    Some(EmergencyPruneResult { messages: prune_old_messages_to_budget(&pruned, target), needs_aggressive_compaction: true })
 }

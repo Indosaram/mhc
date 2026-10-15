@@ -115,18 +115,26 @@ pub fn select_capped_facts_batch(input: &CappedFactsBatchInput) -> CappedFactsBa
 
     let mut oversized = Vec::new();
     let mut selected: Vec<&FactsQueueEntry> = Vec::new();
+    let mut selected_bytes = envelope_bytes;
 
     for bucket in ordered_buckets {
         for candidate in bucket {
-            if measure_entries_bytes(&input.envelope, &[candidate]) > max_bytes {
+            let single_bytes = measure_entries_bytes(&input.envelope, &[candidate]);
+            if single_bytes > max_bytes {
                 oversized.push(candidate.clone());
                 break;
             }
-            selected.push(candidate);
-            if measure_entries_bytes(&input.envelope, &selected) > max_bytes {
-                selected.pop();
+            let next_bytes = next_selected_bytes(
+                selected_bytes,
+                envelope_bytes,
+                single_bytes,
+                selected.is_empty(),
+            );
+            if next_bytes > max_bytes {
                 break;
             }
+            selected.push(candidate);
+            selected_bytes = next_bytes;
         }
     }
 
@@ -185,6 +193,24 @@ fn measure_entries_bytes(envelope: &FactsPayloadEnvelope, entries: &[&FactsQueue
         Ok(()) => counter.0 + 1,
         // Mirrors `serialize_facts_payload`, which renders a failure as an empty string plus newline.
         Err(_) => 1,
+    }
+}
+
+/// Payload size after appending one entry, given its single-entry payload size.
+///
+/// Pretty-printed array elements render identically at any position: the first entry replaces
+/// `[]` with `[\n    <entry>\n  ]`, and each later entry adds `,\n    <entry>`, two bytes fewer.
+fn next_selected_bytes(
+    selected_bytes: usize,
+    envelope_bytes: usize,
+    single_bytes: usize,
+    is_first: bool,
+) -> usize {
+    let delta = single_bytes.saturating_sub(envelope_bytes);
+    if is_first {
+        selected_bytes + delta
+    } else {
+        (selected_bytes + delta).saturating_sub(2)
     }
 }
 

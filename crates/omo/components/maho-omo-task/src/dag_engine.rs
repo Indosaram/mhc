@@ -63,6 +63,9 @@ pub struct TaskDagEngine {
     active_session: Mutex<Option<String>>,
     wake: Mutex<Option<crate::dag_wake::DagWake>>,
     delivered: Mutex<BTreeMap<DagRunId, u64>>,
+    /// Event-log (byte length, mtime) at the last successful durable publish per run: a log that
+    /// has not changed since holds no undelivered event, so `on_checkpoint` skips re-reading it.
+    published_log_len: Mutex<BTreeMap<DagRunId, (u64, Option<std::time::SystemTime>)>>,
     run_listeners: Mutex<BTreeMap<DagRunId, Vec<DurableDagListener>>>,
     terminal_wake_seq: Mutex<BTreeMap<DagRunId, u64>>,
     paused_wake_seq: Mutex<BTreeMap<DagRunId, u64>>,
@@ -235,7 +238,7 @@ let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::
             scheduling, runtime: engine.runtime.clone(), schedulers, stopped_admissions, recovery_task_subscriptions,
             lease_watch, lease_watches: Mutex::new(BTreeMap::new()),
             rpc: Mutex::new(None), surfaces: Mutex::new(None), active_session: Mutex::new(None), wake: Mutex::new(None),
-            delivered: Mutex::new(BTreeMap::new()), run_listeners: Mutex::new(BTreeMap::new()),
+            delivered: Mutex::new(BTreeMap::new()), published_log_len: Mutex::new(BTreeMap::new()), run_listeners: Mutex::new(BTreeMap::new()),
             terminal_wake_seq: Mutex::new(BTreeMap::new()), paused_wake_seq: Mutex::new(BTreeMap::new()),
             durable_listener_enabled: std::sync::atomic::AtomicBool::new(true), stop_observing: Mutex::new(None),
             this: Mutex::new(Weak::new()),
@@ -440,7 +443,16 @@ let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::
     fn publish_scheduler_event(self: &Arc<Self>, event: &DagRunEvent) {
         let listeners = lock(&self.run_listeners).clone();
         let on_event = self.durable_listener();
-        crate::dag_runtime::publish_scheduler_event(event, &mut lock(&self.delivered), &listeners, &on_event);
+        let mut delivered = lock(&self.delivered);
+        // A lagging ring subscriber coalesces dropped events into a StreamOverflow it appends and
+        // delivers first, with a seq past the events still queued behind it. Delivering that seq
+        // alone would mark the earlier events (e.g. dag.run.started/completed) delivered and drop
+        // them, so a gap first replays the durable log in seq order.
+        if event.seq > delivered.get(&event.run_id).copied().unwrap_or(0) + 1
+            && let Err(error) = crate::dag_runtime::publish_durable_events(&self.store, &event.run_id, &mut delivered, &listeners, &on_event) {
+            maho_ext_api::diagnostic(&format!("DAG durable event catch-up failed: {error}"));
+        }
+        crate::dag_runtime::publish_scheduler_event(event, &mut delivered, &listeners, &on_event);
     }
 
     /// TS store wrapper `writeCheckpoint` + `mutationListener`.
@@ -452,11 +464,16 @@ let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::
         };
         for run in runs {
             if lock(&self.schedulers).contains_key(&run) { continue; }
+            // Measured BEFORE the read: an append racing the publish leaves a smaller recorded
+            // length, so the next checkpoint re-reads instead of missing it.
+            let log_len = std::fs::metadata(self.store.paths.event(&run)).ok().map(|metadata| (metadata.len(), metadata.modified().ok()));
+            if log_len.is_some() && lock(&self.published_log_len).get(&run).copied() == log_len { continue; }
             let listeners = lock(&self.run_listeners).clone();
             let on_event = self.durable_listener();
             let mut delivered = lock(&self.delivered).clone();
-            if let Err(error) = crate::dag_runtime::publish_durable_events(&self.store, &run, &mut delivered, &listeners, &on_event) {
-                maho_ext_api::diagnostic(&format!("DAG durable event publish failed: {error}"));
+            match crate::dag_runtime::publish_durable_events(&self.store, &run, &mut delivered, &listeners, &on_event) {
+                Ok(()) => if let Some(len) = log_len { lock(&self.published_log_len).insert(run.clone(), len); },
+                Err(error) => maho_ext_api::diagnostic(&format!("DAG durable event publish failed: {error}")),
             }
             lock(&self.delivered).extend(delivered);
         }

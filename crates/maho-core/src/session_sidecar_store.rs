@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use indexmap::IndexMap;
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,9 +64,22 @@ pub fn sidecar_file_path(reference: &SidecarStoreRef) -> String {
     Path::new(&reference.base_dir).join(format!("{}.json", encoded_session_id(&reference.session_id))).to_string_lossy().into_owned()
 }
 
-fn snapshots() -> &'static Mutex<HashMap<String, Value>> {
-    static SNAPSHOTS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
-    SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
+/// Most recent sidecar states kept for [`SidecarStore::snapshot`]. Only tests read them, so the map
+/// is bounded rather than growing with every session file a long-lived process touches.
+const SNAPSHOT_LIMIT: usize = 256;
+
+fn snapshots() -> &'static Mutex<IndexMap<String, Value>> {
+    static SNAPSHOTS: OnceLock<Mutex<IndexMap<String, Value>>> = OnceLock::new();
+    SNAPSHOTS.get_or_init(|| Mutex::new(IndexMap::new()))
+}
+
+fn record_snapshot(file_path: &str, state: &Value) {
+    let mut snapshots = snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    snapshots.shift_remove(file_path);
+    snapshots.insert(file_path.to_owned(), state.clone());
+    while snapshots.len() > SNAPSHOT_LIMIT {
+        snapshots.shift_remove_index(0);
+    }
 }
 
 fn tails() -> &'static Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>> {
@@ -106,7 +120,7 @@ impl SidecarStore {
             Err(error) => return Err(SidecarError::Io(error.to_string())),
         };
         let state = parse_payload(&raw, &self.options, &self.reference)?;
-        snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(self.file_path.clone(), state.clone());
+        record_snapshot(&self.file_path, &state);
         Ok(Some(state))
     }
 
@@ -116,7 +130,7 @@ impl SidecarStore {
         }
         let contents = format!("{}\n", serde_json::to_string_pretty(state).unwrap_or_default());
         write_atomic(&self.file_path, &contents, &self.options.temp_prefix).await?;
-        snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(self.file_path.clone(), state.clone());
+        record_snapshot(&self.file_path, state);
         Ok(())
     }
 
@@ -139,7 +153,7 @@ impl SidecarStore {
     }
 
     pub fn clear(&self) {
-        snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.file_path);
+        snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner).shift_remove(&self.file_path);
     }
 }
 
@@ -284,5 +298,20 @@ mod tests {
         store.write(&json!({ "version": 2, "sessionId": "session/one" })).await.expect("write");
         store.clear();
         assert!(store.snapshot().is_none());
+    }
+
+    #[test]
+    fn the_snapshot_map_is_bounded_and_keeps_the_most_recent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().to_string_lossy().into_owned();
+        let first = format!("{base}/first.json");
+        record_snapshot(&first, &json!(0));
+        for index in 0..SNAPSHOT_LIMIT {
+            record_snapshot(&format!("{base}/{index}.json"), &json!(index));
+        }
+        let snapshots = snapshots().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(snapshots.len() <= SNAPSHOT_LIMIT);
+        assert!(!snapshots.contains_key(&first));
+        assert_eq!(snapshots.get(&format!("{base}/{}.json", SNAPSHOT_LIMIT - 1)), Some(&json!(SNAPSHOT_LIMIT - 1)));
     }
 }

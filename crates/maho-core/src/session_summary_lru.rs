@@ -1,7 +1,8 @@
 //! Port of senpi packages/coding-agent/src/core/session-summary-lru.ts.
 
-use std::collections::HashMap;
 use std::sync::Arc;
+
+use indexmap::IndexMap;
 
 use crate::session_summary::SessionSummary;
 
@@ -31,18 +32,18 @@ struct RetainedEntry {
 }
 
 /// Least-recently-used store of session summaries bounded by BOTH entry count and retained
-/// transcript bytes. Insertion order is tracked explicitly so a hit promotes an entry.
+/// transcript bytes. The map's insertion order is the recency order, so a hit promotes an entry by
+/// moving it to the end.
 #[derive(Debug)]
 pub struct SessionSummaryLru {
-    entries: HashMap<String, RetainedEntry>,
-    order: Vec<String>,
+    entries: IndexMap<String, RetainedEntry>,
     budget: SummaryCacheBudget,
     retained_text_bytes: usize,
 }
 
 impl SessionSummaryLru {
     pub fn new(budget: SummaryCacheBudget) -> Self {
-        Self { entries: HashMap::new(), order: Vec::new(), budget, retained_text_bytes: 0 }
+        Self { entries: IndexMap::new(), budget, retained_text_bytes: 0 }
     }
 
     pub fn size(&self) -> usize {
@@ -54,17 +55,15 @@ impl SessionSummaryLru {
     }
 
     pub fn get(&mut self, key: &str) -> Option<SummaryEntry> {
-        let retained = self.entries.get(key)?;
-        let entry = retained.entry.clone();
-        self.order.retain(|existing| existing != key);
-        self.order.push(key.to_owned());
-        Some(entry)
+        let index = self.entries.get_index_of(key)?;
+        let last = self.entries.len() - 1;
+        self.entries.move_index(index, last);
+        self.entries.get_index(last).map(|(_, retained)| retained.entry.clone())
     }
 
     pub fn drop_key(&mut self, key: &str) {
-        if let Some(retained) = self.entries.remove(key) {
+        if let Some(retained) = self.entries.shift_remove(key) {
             self.retained_text_bytes = self.retained_text_bytes.saturating_sub(retained.text_bytes);
-            self.order.retain(|existing| existing != key);
         }
     }
 
@@ -77,21 +76,19 @@ impl SessionSummaryLru {
             return;
         }
         self.entries.insert(key.to_owned(), RetainedEntry { entry, text_bytes });
-        self.order.push(key.to_owned());
         self.retained_text_bytes += text_bytes;
         self.evict_until_within_budget();
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.order.clear();
         self.retained_text_bytes = 0;
     }
 
     fn evict_until_within_budget(&mut self) {
         while self.entries.len() > self.budget.max_entries || self.retained_text_bytes > self.budget.max_text_bytes {
-            let Some(oldest) = self.order.first().cloned() else { break };
-            self.drop_key(&oldest);
+            let Some((_, oldest)) = self.entries.shift_remove_index(0) else { break };
+            self.retained_text_bytes = self.retained_text_bytes.saturating_sub(oldest.text_bytes);
         }
     }
 }
@@ -149,6 +146,22 @@ mod tests {
         lru.retain("big", entry("way too long"));
         assert!(lru.get("big").is_none());
         assert_eq!(lru.size(), 0);
+    }
+
+    #[test]
+    fn a_hit_promotes_and_re_retaining_moves_to_the_end() {
+        let mut lru = SessionSummaryLru::new(SummaryCacheBudget { max_entries: 3, max_text_bytes: 1024 });
+        lru.retain("a", entry("a"));
+        lru.retain("b", entry("b"));
+        lru.retain("c", entry("c"));
+        lru.get("a");
+        lru.retain("b", entry("bb"));
+        lru.retain("d", entry("d"));
+        assert!(lru.get("c").is_none());
+        assert_eq!(lru.text_bytes(), 4);
+        lru.retain("e", entry("e"));
+        assert!(lru.get("a").is_none());
+        assert_eq!(lru.get("b").expect("b").summary.all_messages_text, "bb");
     }
 
     #[test]

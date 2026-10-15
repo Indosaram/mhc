@@ -59,28 +59,33 @@ impl SessionEventFanout{
         if let Some(actor)=self.actors.get(id){for line in lines{actor.enqueue(crate::socket_event_fanout::QueueEntry{line,key:None,demoted_line:None,on_written:None}).map_err(|error|error.to_string())?;}}
         Ok(())
     }
-    pub fn deliver(&mut self,session:&str,target:Option<&str>,targeted:bool,value:&Value)->Result<Vec<Value>,String>{
+    pub fn deliver(&mut self,session:&str,target:Option<&str>,targeted:bool,value:&Value)->Result<Vec<Value>,String>{self.deliver_owned(session,target,targeted,value.clone())}
+    /// [`Self::deliver`] for a record the caller owns: the wire record is edited in place instead
+    /// of deep-copying the cumulative `message_update` snapshot on every delta.
+    pub fn deliver_owned(&mut self,session:&str,target:Option<&str>,targeted:bool,mut wire:Value)->Result<Vec<Value>,String>{
         let failed=self.actors.iter().filter(|(_,actor)|actor.failure().is_some()).map(|(id,_)|id.clone()).collect::<Vec<_>>();
         for id in failed{self.unregister(&id);}
-        let rendered=value[RENDERED_COMPONENT_RECORD]==true;
-        let mut wire=value.clone();
+        let rendered=wire[RENDERED_COMPONENT_RECORD]==true;
         if let Some(object)=wire.as_object_mut(){object.remove(RENDERED_COMPONENT_RECORD);object.insert("sessionId".into(),session.into());}
         let line=crate::jsonl::serialize_json_line(&wire).map_err(|error|error.to_string())?;
-        let terminal=matches!(value["type"].as_str(),Some("session_closed"|"session_parked"));
+        let terminal=matches!(wire["type"].as_str(),Some("session_closed"|"session_parked"));
         if terminal{self.snapshots.forget(session);}else if !targeted{
             let tagged=if rendered{let mut tagged=wire.clone();tagged[RENDERED_COMPONENT_RECORD]=true.into();std::borrow::Cow::Owned(tagged)}else{std::borrow::Cow::Borrowed(&wire)};
             // `omit_inline_media` never rewrites a `message_update`, so its placeholder replay is
             // `line` itself; skip keeping a second full copy of every delta.
-            let source=(value["type"]!="message_update").then(||wire.clone());
+            let source=(wire["type"]!="message_update").then(||wire.clone());
             self.snapshots.remember(session,&tagged,line.clone(),None,source);
         }
         let mut failed=Vec::new();
         let mut stdio=Vec::new();
-        let kind=if matches!(value["type"].as_str(),Some("session_closed"|"session_parked")){
+        let kind=if terminal{
             if self.worker_sessions.contains(session){None}else{Some("session_closed")}
-        }else{value["type"].as_str()};
-        for id in self.targets.targets(session,target,targeted,rendered,kind){
-            let Some(id)=id else{stdio.push(wire.clone());continue;};
+        }else{wire["type"].as_str()};
+        let targets=self.targets.targets(session,target,targeted,rendered,kind);
+        let last=targets.len();
+        for(index,id)in targets.into_iter().enumerate(){
+            // The last target takes the record itself; earlier stdio targets get a copy.
+            let Some(id)=id else{stdio.push(if index+1==last{std::mem::take(&mut wire)}else{wire.clone()});continue;};
             let Some(actor)=self.actors.get(&id)else{continue;};
             let placeholders=self.targets.capabilities(&id).unwrap_or_default().iter().any(|capability|capability==crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY);
             let selected=if placeholders{crate::media_placeholders::omit_inline_media(&wire)}else{std::borrow::Cow::Borrowed(&wire)};

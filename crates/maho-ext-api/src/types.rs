@@ -1816,6 +1816,11 @@ impl ExtensionRuntime {
     pub fn live_tools(&self, path: &str) -> Option<Vec<RegisteredTool>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tools.get(path).cloned()
     }
+    /// Whether the live tool list for `path` has a tool named `name`, checked under the lock without
+    /// cloning the list; `None` when no live list is published for `path` (same as `live_tools`).
+    pub fn live_tools_contain(&self, path: &str, name: &str) -> Option<bool> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tools.get(path).map(|tools| tools.iter().any(|tool| tool.definition.name == name))
+    }
     pub fn live_tool_definition(&self, name: &str) -> Option<ToolDefinition> {
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for tools in state.live_tools.values() {

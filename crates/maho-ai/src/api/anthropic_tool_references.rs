@@ -1,5 +1,6 @@
 //! Port of senpi packages/ai/src/api/anthropic-tool-references.ts.
 
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use indexmap::{IndexMap, IndexSet};
@@ -233,24 +234,24 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
             }
         }
 
-        let mut next_content: Vec<Value> = Vec::new();
+        let mut next_content: Vec<Cow<'_, Value>> = Vec::new();
         for block in content {
             if is_assistant && block.get("type").and_then(Value::as_str) == Some("tool_use") {
                 let key = key_of(block.get("id").unwrap_or(&Value::Null));
                 if let Some(name) = demoted_call_names.get(&key) {
                     message_changed = true;
                     let first_occurrence = seen_demoted_call_names.insert(name.clone());
-                    next_content.push(json!({
+                    next_content.push(Cow::Owned(json!({
                         "type": "text",
                         "text": demoted_tool_call_text(name, &available_tool_names, first_occurrence),
-                    }));
+                    })));
                     continue;
                 }
                 if let Some(name) = renamed_call_names.get(&key) {
                     message_changed = true;
                     let mut renamed = block.as_object().cloned().unwrap_or_default();
                     renamed.insert("name".to_owned(), Value::String(name.clone()));
-                    next_content.push(Value::Object(renamed));
+                    next_content.push(Cow::Owned(Value::Object(renamed)));
                     continue;
                 }
             }
@@ -266,10 +267,10 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
                 let key = key_of(block.get("tool_use_id").unwrap_or(&Value::Null));
                 if let Some(omitted) = dropped_search_names.get(&key) {
                     message_changed = true;
-                    next_content.push(json!({
+                    next_content.push(Cow::Owned(json!({
                         "type": "text",
                         "text": format!("Tool reference unavailable: {}", dedupe_preserving_order(omitted).join(", ")),
-                    }));
+                    })));
                     continue;
                 }
                 let references = block
@@ -287,7 +288,7 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
                         .unwrap_or_else(Map::new);
                     next_content_map.insert("tool_references".to_owned(), Value::Array(rewritten.kept));
                     next_block.insert("content".to_owned(), Value::Object(next_content_map));
-                    next_content.push(Value::Object(next_block));
+                    next_content.push(Cow::Owned(Value::Object(next_block)));
                     continue;
                 }
             }
@@ -296,7 +297,7 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
                 if let Some(name) = demoted_call_names.get(&key) {
                     message_changed = true;
                     let text = demoted_tool_result_text(name, &tool_result_text(block.get("content").unwrap_or(&Value::Null)));
-                    next_content.push(json!({ "type": "text", "text": text }));
+                    next_content.push(Cow::Owned(json!({ "type": "text", "text": text })));
                     continue;
                 }
                 if let Some(items) = block.get("content").and_then(Value::as_array)
@@ -316,11 +317,11 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
                     };
                     let mut next_block = block.as_object().cloned().unwrap_or_default();
                     next_block.insert("content".to_owned(), next);
-                    next_content.push(Value::Object(next_block));
+                    next_content.push(Cow::Owned(Value::Object(next_block)));
                     continue;
                 }
             }
-            next_content.push(block.clone());
+            next_content.push(Cow::Borrowed(block));
         }
 
         if next_content.is_empty() {
@@ -329,7 +330,10 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
         }
         if message_changed {
             let mut next_message = message.as_object().cloned().unwrap_or_default();
-            next_message.insert("content".to_owned(), Value::Array(next_content));
+            next_message.insert(
+                "content".to_owned(),
+                Value::Array(next_content.into_iter().map(Cow::into_owned).collect()),
+            );
             rewritten_messages.get_or_insert_with(|| messages[..index].to_vec()).push(Value::Object(next_message));
             continue;
         }
