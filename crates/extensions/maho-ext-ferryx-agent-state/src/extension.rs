@@ -124,12 +124,12 @@ impl Extension for FerryxAgentState {
                 Box::pin(async { Ok(EventResult::None) })
             }));
         }
-        for channel in ["ask-user:asked", "herdr:blocked"] {
+        for channel in ["ask-user:asked", "herdr:blocked", "wake_source_state"] {
             let state = Arc::clone(&state);
             let delivery = Arc::clone(&delivery);
             let subscription = api.events.on(channel, Arc::new(move |data| {
                 let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let changed = if channel == "ask-user:asked" { state.asked(data) } else { state.blocked(data) };
+                let changed = match channel { "ask-user:asked" => state.asked(data), "herdr:blocked" => state.blocked(data), _ => state.wake_source(data) };
                 if changed { delivery.send(&mut state, false, provider_session_from_env()); }
             }));
             subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(subscription);
