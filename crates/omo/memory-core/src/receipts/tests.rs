@@ -169,6 +169,21 @@ fn given_a_long_or_secret_bearing_detail_when_appended_then_it_is_cut_to_400_cha
 }
 
 #[test]
+fn append_once_ignores_unparseable_lines_with_a_matching_identity() {
+    let root = tempfile::tempdir().unwrap();
+    // Same identity fields, but not a valid v1 receipt (read_memory_receipts skips both lines).
+    let stale = [
+        serde_json::json!({"v":2,"at":"x","event":"committed","kind":"facts","batchId":"b"}),
+        serde_json::json!({"v":1,"event":"committed","kind":"facts","batchId":"b"}),
+    ];
+    std::fs::write(receipts_path(root.path()), stale.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
+    let input = MemoryReceiptInput::Facts { kind:"facts".into(), batch_id:"b".into(), trigger:"settle".into(), event:"committed".into(), sha:None, reason:None, detail:None };
+    assert!(append_memory_receipt_once(root.path(), &input).unwrap());
+    assert!(!append_memory_receipt_once(root.path(), &input).unwrap());
+    assert_eq!(read_memory_receipts(root.path(), &ReadMemoryReceiptsOptions::default()).unwrap().receipts.len(), 1);
+}
+
+#[test]
 fn loose_receipt_metadata_is_accepted_and_preserved_without_defaults() {
     let root = tempfile::tempdir().unwrap();
     let raw = serde_json::json!({"v":1,"at":"","event":"","kind":"facts","batchId":"loose","host":false,"pid":4294967297_u64,"extra":{"retained":true}});
