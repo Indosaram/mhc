@@ -6,31 +6,35 @@ pub enum SleepWaitRule {R1,R2,R3,R4}
 #[derive(Clone,Debug,PartialEq)]
 pub struct SleepWaitClassification {pub rule:SleepWaitRule,pub seconds:f64}
 
+fn compile(pattern:&str)->fancy_regex::Regex {
+    #[expect(clippy::expect_used,reason="constant sleep-wait patterns are validated by classifier tests")]
+    fancy_regex::Regex::new(pattern).expect("valid sleep-wait pattern")
+}
+static POWER:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(|| compile(r"\b(?:pmset|systemsetup|caffeinate|displaysleep|disksleep)\b"));
+static WRAPPER:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(|| compile(r"(?i)^(?:env\s+(?:[\w.]+=[^\s]*\s+)*)?(?:/(?:usr/)?bin/)?(?:ba|z|da|k)?sh\s+-[a-z]*c\s+"));
+static SLEEP:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(|| compile(r"(?<![\w.\-/])(?:/(?:usr/)?bin/)?sleep\s+(\d+(?:\.\d+)?)"));
+static LOOPING:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(|| compile(r"\b(?:while|until|for)\b[\s\S]*?(?<![\w.\-/])(?:/(?:usr/)?bin/)?sleep\s+\d"));
+static RULE_R1:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(|| compile(r"^sleep\s+\d+(?:\.\d+)?$"));
+static RULE_R2:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(|| compile(r"^\(?\s*(?:/(?:usr/)?bin/)?sleep\s+\d+(?:\.\d+)?\s*(?:[;&|]|$)"));
+static RULE_R4:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(|| compile(r"[;&|]\s*(?:/(?:usr/)?bin/)?sleep\s+\d+(?:\.\d+)?\s*\)?\s*$"));
+
 pub fn classify_sleep_wait(command:&str)->Result<Option<SleepWaitClassification>,Box<fancy_regex::Error>> {
-    let power=fancy_regex::Regex::new(r"\b(?:pmset|systemsetup|caffeinate|displaysleep|disksleep)\b")?;
-    if power.is_match(command)? {return Ok(None);}
-    let wrapper=fancy_regex::Regex::new(r"(?i)^(?:env\s+(?:[\w.]+=[^\s]*\s+)*)?(?:/(?:usr/)?bin/)?(?:ba|z|da|k)?sh\s+-[a-z]*c\s+")?;
+    if POWER.is_match(command)? {return Ok(None);}
     let mut current=command.trim();
     for _ in 0..3 {
-        let Some(found)=wrapper.find(current)? else {break;};
+        let Some(found)=WRAPPER.find(current)? else {break;};
         current=current[found.end()..].trim();
         if current.len()>1 && (current.starts_with('\'') && current.ends_with('\'') || current.starts_with('"') && current.ends_with('"')) {current=current[1..current.len()-1].trim();}
     }
-    let sleep=fancy_regex::Regex::new(r"(?<![\w.\-/])(?:/(?:usr/)?bin/)?sleep\s+(\d+(?:\.\d+)?)")?;
     let mut longest:Option<f64>=None;
-    for captures in sleep.captures_iter(current) {
+    for captures in SLEEP.captures_iter(current) {
         let captures=captures?;
         if let Some(seconds)=captures.get(1).and_then(|m|m.as_str().parse::<f64>().ok()).filter(|v|v.is_finite()) {longest=Some(longest.map_or(seconds,|v|v.max(seconds)));}
     }
     let Some(seconds)=longest else {return Ok(None);};
-    let looping=fancy_regex::Regex::new(r"\b(?:while|until|for)\b[\s\S]*?(?<![\w.\-/])(?:/(?:usr/)?bin/)?sleep\s+\d")?;
-    if looping.is_match(current)? {return Ok((seconds>=SLEEP_WAIT_LOOP_THRESHOLD_SECONDS).then_some(SleepWaitClassification {rule:SleepWaitRule::R3,seconds}));}
+    if LOOPING.is_match(current)? {return Ok((seconds>=SLEEP_WAIT_LOOP_THRESHOLD_SECONDS).then_some(SleepWaitClassification {rule:SleepWaitRule::R3,seconds}));}
     if seconds<SLEEP_WAIT_THRESHOLD_SECONDS {return Ok(None);}
-    for (rule,pattern) in [
-        (SleepWaitRule::R1,r"^sleep\s+\d+(?:\.\d+)?$"),
-        (SleepWaitRule::R2,r"^\(?\s*(?:/(?:usr/)?bin/)?sleep\s+\d+(?:\.\d+)?\s*(?:[;&|]|$)"),
-        (SleepWaitRule::R4,r"[;&|]\s*(?:/(?:usr/)?bin/)?sleep\s+\d+(?:\.\d+)?\s*\)?\s*$"),
-    ] {if fancy_regex::Regex::new(pattern)?.is_match(current)? {return Ok(Some(SleepWaitClassification {rule,seconds}));}}
+    for (rule,pattern) in [(SleepWaitRule::R1,&RULE_R1),(SleepWaitRule::R2,&RULE_R2),(SleepWaitRule::R4,&RULE_R4)] {if pattern.is_match(current)? {return Ok(Some(SleepWaitClassification {rule,seconds}));}}
     Ok(None)
 }
 

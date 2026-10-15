@@ -160,11 +160,15 @@ fn rewrite_tool_reference_items(items: &[Value], available: &AvailableToolNames)
 }
 
 pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<String, Value> {
-    let Some(messages) = params.get("messages").and_then(Value::as_array).cloned() else {
-        return params.clone();
-    };
+    demote_unavailable_tool_references_if_changed(params).unwrap_or_else(|| params.clone())
+}
+
+/// Same rewrite as [`demote_unavailable_tool_references`], but `None` when nothing changes so
+/// callers can skip copying the payload.
+pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>) -> Option<Map<String, Value>> {
+    let messages = params.get("messages").and_then(Value::as_array)?;
     if messages.is_empty() {
-        return params.clone();
+        return None;
     }
 
     let available = collect_available_tool_names(params.get("tools"));
@@ -172,7 +176,7 @@ pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<St
 
     let mut demoted_call_names: IndexMap<String, String> = IndexMap::new();
     let mut renamed_call_names: IndexMap<String, String> = IndexMap::new();
-    for message in &messages {
+    for message in messages {
         if message.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
@@ -198,14 +202,16 @@ pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<St
         }
     }
 
-    let mut changed = false;
     let available_tool_names: Vec<String> = available.defined.iter().cloned().collect();
     let mut seen_demoted_call_names: IndexSet<String> = IndexSet::new();
-    let mut rewritten_messages: Vec<Value> = Vec::new();
+    // Stays `None` until the first change; unchanged messages are never copied before then.
+    let mut rewritten_messages: Option<Vec<Value>> = None;
 
-    for message in &messages {
-        let Some(content) = message.get("content").and_then(Value::as_array).cloned() else {
-            rewritten_messages.push(message.clone());
+    for (index, message) in messages.iter().enumerate() {
+        let Some(content) = message.get("content").and_then(Value::as_array) else {
+            if let Some(out) = rewritten_messages.as_mut() {
+                out.push(message.clone());
+            }
             continue;
         };
         let is_assistant = message.get("role").and_then(Value::as_str) == Some("assistant");
@@ -214,7 +220,7 @@ pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<St
         let mut dropped_search_use_ids: IndexSet<String> = IndexSet::new();
         let mut dropped_search_names: IndexMap<String, Vec<String>> = IndexMap::new();
         if is_assistant {
-            for block in &content {
+            for block in content {
                 if !is_native_tool_search_result_block(block) {
                     continue;
                 }
@@ -228,7 +234,7 @@ pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<St
         }
 
         let mut next_content: Vec<Value> = Vec::new();
-        for block in &content {
+        for block in content {
             if is_assistant && block.get("type").and_then(Value::as_str) == Some("tool_use") {
                 let key = key_of(block.get("id").unwrap_or(&Value::Null));
                 if let Some(name) = demoted_call_names.get(&key) {
@@ -270,9 +276,8 @@ pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<St
                     .get("content")
                     .and_then(|content| content.get("tool_references"))
                     .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                if let Some(rewritten) = rewrite_tool_reference_items(&references, &available) {
+                    .map_or(&[][..], Vec::as_slice);
+                if let Some(rewritten) = rewrite_tool_reference_items(references, &available) {
                     message_changed = true;
                     let mut next_block = block.as_object().cloned().unwrap_or_default();
                     let mut next_content_map = next_block
@@ -294,8 +299,8 @@ pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<St
                     next_content.push(json!({ "type": "text", "text": text }));
                     continue;
                 }
-                if let Some(items) = block.get("content").and_then(Value::as_array).cloned()
-                    && let Some(rewritten) = rewrite_tool_reference_items(&items, &available)
+                if let Some(items) = block.get("content").and_then(Value::as_array)
+                    && let Some(rewritten) = rewrite_tool_reference_items(items, &available)
                 {
                     message_changed = true;
                     let next = if rewritten.kept.is_empty() {
@@ -319,23 +324,22 @@ pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<St
         }
 
         if next_content.is_empty() {
-            changed = true;
+            rewritten_messages.get_or_insert_with(|| messages[..index].to_vec());
             continue;
         }
         if message_changed {
-            changed = true;
             let mut next_message = message.as_object().cloned().unwrap_or_default();
             next_message.insert("content".to_owned(), Value::Array(next_content));
-            rewritten_messages.push(Value::Object(next_message));
+            rewritten_messages.get_or_insert_with(|| messages[..index].to_vec()).push(Value::Object(next_message));
             continue;
         }
-        rewritten_messages.push(message.clone());
+        if let Some(out) = rewritten_messages.as_mut() {
+            out.push(message.clone());
+        }
     }
 
-    if !changed {
-        return params.clone();
-    }
+    let rewritten_messages = rewritten_messages?;
     let mut out = params.clone();
     out.insert("messages".to_owned(), Value::Array(rewritten_messages));
-    out
+    Some(out)
 }

@@ -23,7 +23,14 @@ impl SearchWindowRecord for SearchCandidate {
     fn searchable_text(&self) -> &str {&self.record.searchable_text}
 }
 fn search_window_keeps(record: &impl SearchWindowRecord,params: &ParsedSearchParams,archived: &BTreeSet<String>) -> bool {
-    params.source_kinds.iter().any(|kind|kind == "appServer") && archived.contains(record.thread()["id"].as_str().unwrap_or_default()) == params.archived && super::js_semantics::to_locale_lowercase(record.searchable_text()).contains(&params.search_term)
+    params.source_kinds.iter().any(|kind|kind == "appServer") && archived.contains(record.thread()["id"].as_str().unwrap_or_default()) == params.archived && lowercase_contains(record.searchable_text(),&params.search_term)
+}
+/// `to_locale_lowercase(text).contains(term)` for an already-lowercased `term`, without
+/// allocating the lowercase copy when `text` is ASCII.
+fn lowercase_contains(text: &str,term: &str) -> bool {
+    if term.is_empty() {return true;}
+    if text.is_ascii() {return text.as_bytes().windows(term.len()).any(|window|window.eq_ignore_ascii_case(term.as_bytes()));}
+    super::js_semantics::to_locale_lowercase(text).contains(term)
 }
 pub fn search_window<R: SearchWindowRecord>(records: &mut Vec<R>,params: &ParsedSearchParams,archived: &BTreeSet<String>) -> Result<Value,JsonRpcError> {
     records.retain(|record|search_window_keeps(record,params,archived));

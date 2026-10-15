@@ -15,15 +15,23 @@ pub fn normalize_turn_text(text: &str) -> String {
     let folded = expression(&DIGITS, r"[0-9][0-9.,:/-]*").replace_all(&folded, "#");
     folded.split(whitespace).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
 }
-fn word_trigrams(normalized: &str) -> BTreeSet<String> {
+/// Words of an already-normalized turn, in order; trigrams are windows of three of these.
+pub fn turn_words(normalized: &str) -> impl Iterator<Item = &str> {
     static WORD: OnceLock<Regex> = OnceLock::new();
-    let words: Vec<_> = expression(&WORD, r"[\p{L}\p{N}#]+").find_iter(normalized).map(|m| m.as_str()).collect();
+    expression(&WORD, r"[\p{L}\p{N}#]+").find_iter(normalized).map(|m| m.as_str())
+}
+fn word_trigrams(normalized: &str) -> BTreeSet<String> {
+    let words: Vec<_> = turn_words(normalized).collect();
     words.windows(3).map(|words| words.join(" ")).collect()
+}
+/// Jaccard index from set sizes and their intersection size.
+pub fn jaccard_counts(a_len: usize, b_len: usize, intersection: usize) -> f64 {
+    if a_len == 0 || b_len == 0 { return 0.0; }
+    intersection as f64 / (a_len + b_len - intersection) as f64
 }
 fn jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
     if a.is_empty() || b.is_empty() { return 0.0; }
-    let intersection = a.intersection(b).count();
-    intersection as f64 / (a.len() + b.len() - intersection) as f64
+    jaccard_counts(a.len(), b.len(), a.intersection(b).count())
 }
 pub fn trigram_jaccard(a: &str, b: &str) -> f64 { jaccard(&word_trigrams(a), &word_trigrams(b)) }
 pub fn is_near_duplicate_of_previous_turn(candidate: &str, previous: &str) -> bool { trigram_jaccard(candidate, previous) >= REPETITIVE_TURNS_SIMILARITY_THRESHOLD }

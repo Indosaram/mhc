@@ -73,14 +73,18 @@ impl maho_ext_api::Extension for CompactionExtension {
                 let degradation=std::sync::Arc::clone(&degradation);let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let live_api=std::sync::Arc::clone(&live_api);let lane=std::sync::Arc::clone(&lane);
                 Box::pin(async move {
                     let maho_ext_api::ExtensionEvent::MessageEnd {message}=event else {return Ok(maho_ext_api::EventResult::None);};
-                    let raw=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                    if extension_wiring::is_aborted_assistant_message(&raw) {
+                    if message.as_assistant().is_some_and(|assistant|assistant.stop_reason==maho_ai::types::StopReason::Aborted) {
                         generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
                         if let Some(job)=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {job.controller.abort(None);}
                     }
-                    if lane_policy::live_disables_senpi_compaction(&lane,context) || !extension_wiring::is_monitorable_message(&raw) {return Ok(maho_ext_api::EventResult::None);}
+                    if lane_policy::live_disables_senpi_compaction(&lane,context) {return Ok(maho_ext_api::EventResult::None);}
+                    let mut degradation=degradation.lock().await;
+                    // handle_message_end is a no-op outside the post-compaction window; skip serializing the message.
+                    if degradation.post_compaction_turns_remaining==0 {return Ok(maho_ext_api::EventResult::None);}
+                    let raw=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    if !extension_wiring::is_monitorable_message(&raw) {return Ok(maho_ext_api::EventResult::None);}
                     let content:Vec<_>=raw["content"].as_array().into_iter().flatten().map(|part|degradation_monitor::MonitoredMessageContentPart {kind:part["type"].as_str().unwrap_or_default(),text:part["text"].as_str()}).collect();
-                    degradation_monitor::handle_message_end(&mut *degradation.lock().await,degradation_monitor::MonitoredMessageEvent {role:raw["role"].as_str().unwrap_or_default(),content:&content},|instructions|async {
+                    degradation_monitor::handle_message_end(&mut degradation,degradation_monitor::MonitoredMessageEvent {role:raw["role"].as_str().unwrap_or_default(),content:&content},|instructions|async {
                         let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
                         match extension_wiring::apply_live_blocking_compaction(&live_api,context,next,instructions.into()).await {
                             Ok(result)=>degradation_monitor::RecoveryResult {applied:result==speculative::SpeculativeCompactionResult::Applied,reason:if result==speculative::SpeculativeCompactionResult::Failed {"failed"} else {"rejected"}.into()},

@@ -295,6 +295,9 @@ pub struct DagJournal<C: DagJournalCheckpoint> {
     skip_duplicate: Mutex<Option<DuplicatePredicate<C>>>,
     ring_size: usize,
     checkpoint: Mutex<C>,
+    /// `(event log length, seq)` right after this journal's last append. While the log still has
+    /// that length under the run lock, no foreign append happened, so replay can be skipped.
+    appended_tail: Mutex<Option<(u64, u64)>>,
     subscribers: Arc<Mutex<Vec<Arc<Subscriber>>>>,
 }
 
@@ -317,7 +320,7 @@ pub fn create_dag_journal<C: DagJournalCheckpoint + DeserializeOwned + Serialize
     let apply_event = options.apply_event;
     let initial_checkpoint = options.initial_checkpoint;
     let recovered = store.with_run_lock(&run_id, || {
-        recover_checkpoint(&store, &run_id, &initial_checkpoint, &apply_event)
+        recover_checkpoint(&store, &run_id, &initial_checkpoint, &apply_event, None)
     })??;
     Ok(Arc::new(DagJournal {
         store,
@@ -327,6 +330,7 @@ pub fn create_dag_journal<C: DagJournalCheckpoint + DeserializeOwned + Serialize
         skip_duplicate: Mutex::new(None),
         ring_size,
         checkpoint: Mutex::new(recovered),
+        appended_tail: Mutex::new(None),
         subscribers: Arc::new(Mutex::new(Vec::new())),
     }))
 }
@@ -336,10 +340,15 @@ fn recover_checkpoint<C: DagJournalCheckpoint + DeserializeOwned + Serialize>(
     run_id: &DagRunId,
     initial_checkpoint: &C,
     apply_event: &DagJournalApplyEvent<C>,
+    known_tail_seq: Option<u64>,
 ) -> Result<C, DagStoreError> {
     let mut checkpoint = store
         .read_checkpoint::<C>(run_id)?
         .unwrap_or_else(|| initial_checkpoint.clone());
+    if known_tail_seq == Some(checkpoint.checkpoint_seq()) {
+        // The checkpoint already covers the log tail: nothing to replay.
+        return Ok(checkpoint);
+    }
     let mut since_seq = checkpoint.checkpoint_seq();
     let mut replayed = false;
     loop {
@@ -381,7 +390,7 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
 
     pub fn refresh(&self) -> Result<C, DagStoreError> {
         let checkpoint = self.store.with_run_lock(&self.run_id, || {
-            recover_checkpoint(&self.store, &self.run_id, &self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner).clone(), &self.apply_event)
+            recover_checkpoint(&self.store, &self.run_id, &self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner).clone(), &self.apply_event, None)
         })??;
         *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = checkpoint.clone();
         Ok(checkpoint)
@@ -411,12 +420,20 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
         Ok(Some(event))
     }
 
+    /// Seq of this journal's last append when the event log is still exactly as it left it.
+    fn unchanged_tail_seq(&self) -> Option<u64> {
+        let (len, seq) = (*self.appended_tail.lock().unwrap_or_else(PoisonError::into_inner))?;
+        let current = std::fs::metadata(self.store.paths.event(&self.run_id)).ok()?.len();
+        (current == len).then_some(seq)
+    }
+
     fn append_locked(&self, payload: DagRunEventPayload) -> Result<Option<DagRunEvent>, DagStoreError> {
         let recovered = recover_checkpoint(
             &self.store,
             &self.run_id,
             &self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner).clone(),
             &self.apply_event,
+            self.unchanged_tail_seq(),
         )?;
         if self.skip_duplicate.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_some_and(|predicate| predicate(&recovered, &payload)) {
             *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = recovered;
@@ -439,7 +456,8 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
             DagRunEventPayload::NodeTransitioned { to, .. } if to.as_str() == "completed"
         )
         .then(|| (self.apply_event)(&recovered, &event));
-        self.store.append_event(&event)?;
+        let log_len = self.store.append_validated_event(&event)?;
+        *self.appended_tail.lock().unwrap_or_else(PoisonError::into_inner) = Some((log_len, seq));
         let applied = prepared.unwrap_or_else(|| (self.apply_event)(&recovered, &event));
         let next = applied.with_checkpoint_seq(seq);
         self.store.write_checkpoint(&self.run_id, &next)?;

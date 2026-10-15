@@ -2537,7 +2537,7 @@ impl AgentSession {
             let messages = crate::messages::filter_context_excluded_messages(messages);
             let estimate = crate::compaction::estimate_context_tokens(&messages);
             let compacted = self.with_session_manager(|manager|
-                crate::session_manager::get_latest_compaction_entry(&manager.current_branch()).is_some());
+                manager.latest_current_branch_entry_id("compaction", None).is_some());
             let tokens = if compacted { messages.iter().map(crate::compaction::estimate_tokens).sum() } else { estimate.tokens };
             Ok(tokens > model.context_window.saturating_sub(reserve))
         };
@@ -3246,9 +3246,7 @@ impl AgentSession {
     }
 
     fn consume_post_compaction_usage_exemption(&self) -> bool {
-        let latest_entry = self.with_session_manager(|manager| manager.current_branch().iter().rev()
-            .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
-            .and_then(|entry| entry["id"].as_str()).map(str::to_owned));
+        let latest_entry = self.latest_current_branch_entry_id("message", Some("assistant"));
         let mut state = self.state();
         latest_entry.is_some_and(|id| {
             if state.post_compaction_usage_exempt_entries.contains(&id) { return true; }
@@ -3299,15 +3297,15 @@ impl AgentSession {
         if self.state().messages_awaiting_persistence.iter()
             .any(|(_, pending)| pending.as_assistant() == Some(assistant)) { return false; }
         self.with_session_manager(|manager| {
-            let Some(compaction) = crate::session_manager::get_latest_compaction_entry(&manager.current_branch()) else {
+            let Some(compaction_id) = manager.latest_current_branch_entry_id("compaction", None) else {
                 return false;
             };
-            let compaction_order = compaction.get("id").and_then(Value::as_str).and_then(|id| manager.entry_order(id));
+            let compaction_order = manager.entry_order(&compaction_id);
             if let (Some((_, order)), Some(compaction_order)) = (manager.message_entry_position(&value), compaction_order) {
                 return order <= compaction_order;
             }
             // Reloaded/reconstructed messages have no append position: keep the timestamp heuristic.
-            compaction.get("timestamp").and_then(Value::as_str)
+            manager.entry(&compaction_id).as_ref().and_then(|compaction| compaction.get("timestamp")).and_then(Value::as_str)
                 .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
                 .is_some_and(|timestamp| assistant.timestamp <= timestamp.timestamp_millis())
         })
@@ -6863,15 +6861,7 @@ impl AgentSession {
     /// `message.role`): the same result as `current_branch().iter().rev().find(..)`, but resident
     /// entries are walked by reference without materializing any of them.
     fn latest_current_branch_entry_id(&self, kind: &str, role: Option<&str>) -> Option<String> {
-        self.with_session_manager(|manager| {
-            let leaf = manager.leaf_id()?;
-            if manager.entry_order(leaf).is_none() {
-                return manager.current_branch().into_iter().rev()
-                    .find(|entry| entry["type"] == kind && role.is_none_or(|role| entry["message"]["role"] == role))
-                    .and_then(|entry| entry["id"].as_str().map(str::to_owned));
-            }
-            manager.latest_branch_entry_id_by_type(kind, role)
-        })
+        self.with_session_manager(|manager| manager.latest_current_branch_entry_id(kind, role))
     }
 
     async fn revalidate_continuation_admission(&self, proactive: bool) -> Result<(), String> {

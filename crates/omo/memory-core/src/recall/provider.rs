@@ -178,6 +178,10 @@ impl RecallCorpusCache {
             None => RecallCorpus::default(),
             Some(revision) => self.load_revision(repo, revision)?,
         });
+        if let Some(previous) = &self.entry {
+            super::corpus_derived::unregister(&previous.corpus);
+        }
+        super::corpus_derived::register(&corpus);
         self.entry = Some(RecallCorpusCacheEntry {
             revision,
             corpus: Arc::clone(&corpus),
@@ -187,7 +191,9 @@ impl RecallCorpusCache {
     }
 
     pub fn clear(&mut self) {
-        self.entry = None;
+        if let Some(previous) = self.entry.take() {
+            super::corpus_derived::unregister(&previous.corpus);
+        }
         self.probe = None;
         self.blobs = None;
     }
@@ -200,6 +206,14 @@ impl RecallCorpusCache {
         let (corpus, loaded) = load_corpus_at_revision(repo, revision, &previous)?;
         self.blobs = Some((repo.dir.clone(), loaded));
         Ok(corpus)
+    }
+}
+
+impl Drop for RecallCorpusCache {
+    fn drop(&mut self) {
+        if let Some(entry) = &self.entry {
+            super::corpus_derived::unregister(&entry.corpus);
+        }
     }
 }
 

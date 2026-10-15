@@ -391,6 +391,25 @@ fn given_a_foreign_instance_commit_when_refresh_is_called_then_the_snapshot_catc
 }
 
 #[test]
+fn given_interleaved_appends_from_two_journals_then_each_replays_foreign_events_and_seq_stays_contiguous() {
+    let store = temp_store();
+    let options = || DagJournalOptions {
+        store: Arc::clone(&store), run_id: run_id(), initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event), subscriber_ring: None, now: None,
+    };
+    let first = create_dag_journal(options()).expect("first journal");
+    let second = create_dag_journal(options()).expect("second journal");
+    assert_eq!(first.append(run_started(1)).expect("append 1").seq, 1);
+    assert_eq!(first.append(run_started(2)).expect("append 2").seq, 2);
+    assert_eq!(second.append(run_started(3)).expect("append 3").seq, 3);
+    assert_eq!(first.append(run_started(4)).expect("append 4").seq, 4);
+    assert_eq!(first.snapshot().generations, vec![1, 2, 3, 4]);
+    assert_eq!(first.snapshot().checkpoint_seq, 4);
+    let page = store.read_events(&run_id(), 0, &DagEventReadOptions { limit: 10, ..Default::default() }).expect("read");
+    assert_eq!(page.events.iter().map(|event| event.seq).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+}
+
+#[test]
 fn given_a_duplicate_predicate_match_when_appended_then_nothing_is_journaled_or_notified() {
     let store = temp_store();
     let journal = create_dag_journal(DagJournalOptions {

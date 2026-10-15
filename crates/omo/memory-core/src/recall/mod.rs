@@ -2,6 +2,7 @@
 
 pub mod assets;
 pub mod bm25;
+mod corpus_derived;
 pub mod english_stem;
 pub mod gate;
 pub mod haystack;

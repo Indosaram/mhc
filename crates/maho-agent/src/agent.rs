@@ -979,8 +979,13 @@ impl Agent {
         };
         let listeners: Vec<AgentListener> =
             lock(&self.inner.listeners).entries.iter().map(|(_, listener)| listener.clone()).collect();
-        for listener in listeners {
-            listener(event.clone(), signal.clone()).await;
+        let last = listeners.len().saturating_sub(1);
+        let mut owned = Some(event);
+        for (index, listener) in listeners.iter().enumerate() {
+            let next = if index == last { owned.take() } else { owned.clone() };
+            if let Some(next) = next {
+                listener(next, signal.clone()).await;
+            }
         }
     }
 

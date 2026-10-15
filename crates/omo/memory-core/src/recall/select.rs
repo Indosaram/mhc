@@ -6,9 +6,11 @@
 use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use unicode_normalization::UnicodeNormalization;
 
+use super::corpus_derived::CorpusDerived;
 use super::bm25::{
     RankedRecallPosition, RecallQueryExpansions, is_han_character, rank_recall_positions_bm25,
     recall_expansion_weights, recall_terms, tokenize_recall_text,
@@ -79,8 +81,12 @@ pub fn select_recall_candidates(
     if max_items == 0 || parsed_queries.is_empty() {
         return Vec::new();
     }
-    // Normalized once per selection and shared by the strategy, substring and phrase-leader paths.
-    let haystacks: OnceCell<Vec<String>> = OnceCell::new();
+    // Normalized once per cached corpus (else once per selection) and shared by the strategy,
+    // substring and phrase-leader paths.
+    let haystacks = Haystacks {
+        derived: super::corpus_derived::derived_for(documents),
+        local: OnceCell::new(),
+    };
     let strategy = options.strategy.unwrap_or_else(|| {
         choose_recall_strategy_with(documents.len(), queries, || {
             haystack_cjk_share(haystacks_of(&haystacks, documents))
@@ -139,8 +145,17 @@ pub fn select_recall_candidates(
         .collect()
 }
 
-fn haystacks_of<'a>(cell: &'a OnceCell<Vec<String>>, documents: &[RecallDocument]) -> &'a [String] {
-    cell.get_or_init(|| documents.iter().map(normalized_haystack).collect())
+struct Haystacks {
+    derived: Option<Arc<CorpusDerived>>,
+    local: OnceCell<Vec<String>>,
+}
+
+fn haystacks_of<'a>(haystacks: &'a Haystacks, documents: &[RecallDocument]) -> &'a [String] {
+    let build = || documents.iter().map(normalized_haystack).collect();
+    match &haystacks.derived {
+        Some(derived) => derived.haystacks.get_or_init(build),
+        None => haystacks.local.get_or_init(build),
+    }
 }
 
 fn path_of<'a>(documents: &'a [RecallDocument], candidate: &RankedCandidate) -> &'a str {
@@ -181,7 +196,7 @@ fn adds_terms(queries: &[String], expansions: Option<&RecallQueryExpansions>) ->
 /// Every candidate of the search as written, best first; callers apply the cap.
 fn rank_by_strategy(
     documents: &[RecallDocument],
-    haystacks: &OnceCell<Vec<String>>,
+    haystacks: &Haystacks,
     queries: &[String],
     parsed_queries: &[ParsedQuery],
     options: &SelectRecallOptions,
@@ -207,7 +222,7 @@ fn rank_by_strategy(
 /// A widened search: notes holding every query word first, then the widened bm25 order.
 fn widen_candidates(
     documents: &[RecallDocument],
-    haystacks: &OnceCell<Vec<String>>,
+    haystacks: &Haystacks,
     queries: &[String],
     parsed_queries: &[ParsedQuery],
     options: &SelectRecallOptions,
@@ -257,7 +272,7 @@ fn is_excluded(path: &str, options: &SelectRecallOptions) -> bool {
 /// Every substring match after exclusions, best first; callers apply the cap.
 fn rank_substring_candidates(
     documents: &[RecallDocument],
-    haystacks: &OnceCell<Vec<String>>,
+    haystacks: &Haystacks,
     parsed_queries: &[ParsedQuery],
     options: &SelectRecallOptions,
 ) -> Vec<RankedCandidate> {
@@ -468,7 +483,7 @@ fn is_non_cjk_multi_word(parsed: &ParsedQuery) -> bool {
 /// The note today's substring ranker puts first among non-CJK multi-word query matches.
 fn phrase_leader_path(
     documents: &[RecallDocument],
-    haystacks: &OnceCell<Vec<String>>,
+    haystacks: &Haystacks,
     parsed_queries: &[ParsedQuery],
     options: &SelectRecallOptions,
 ) -> Option<String> {

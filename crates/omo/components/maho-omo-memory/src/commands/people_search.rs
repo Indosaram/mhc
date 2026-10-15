@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use memory_core::search::{
-    SearchOptions, SenpiSessionProvider, SenpiSessionProviderOptions, search_transcripts,
-    searchable_text,
+    SearchOptions, SenpiSessionProvider, SenpiSessionProviderOptions, TranscriptConversation,
+    TranscriptProvider, search_transcripts, searchable_text,
 };
 
 use crate::palace::people::PalacePeopleNode;
@@ -15,6 +15,16 @@ use super::types::{CommandContext, MemoryCommandDeps};
 
 const MAX_HITS: usize = 10;
 const SNIPPET_CHARS: usize = 240;
+
+/// The sessions listed once and replayed for every needle, so each needle skips re-reading the
+/// session files.
+struct Preloaded(Vec<TranscriptConversation>);
+
+impl TranscriptProvider for Preloaded {
+    fn list_conversations(&self) -> Vec<TranscriptConversation> {
+        self.0.clone()
+    }
+}
 
 pub fn collect_person_search_hits(
     deps: &MemoryCommandDeps,
@@ -40,11 +50,12 @@ pub fn collect_person_search_hits(
         hidden_marker_file: None,
         is_hidden: None,
     });
+    let preloaded = Preloaded(provider.list_conversations());
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut hits: Vec<String> = Vec::new();
     for needle in &needles {
         let query = format!("\"{needle}\"");
-        for result in search_transcripts(&provider, &query, &SearchOptions::default()) {
+        for result in search_transcripts(&preloaded, &query, &SearchOptions::default()) {
             if hits.len() >= MAX_HITS {
                 return hits;
             }

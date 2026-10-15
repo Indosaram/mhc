@@ -603,7 +603,7 @@ async fn stream_assistant_response(
                         let (started_at, ended_at) = (timing.started_at, timing.ended_at);
                         let mut updated = partial.clone();
                         set_thinking_block_timing(&mut updated, *content_index, started_at, ended_at);
-                        emit_message_update(emit, context, updated, &event).await;
+                        emit_message_update(emit, context, updated, event).await;
                     }
                 }
                 AssistantMessageEvent::ThinkingDelta { content_index, partial, .. } => {
@@ -612,7 +612,7 @@ async fn stream_assistant_response(
                         if let Some(timing) = thinking_timing.get(content_index) {
                             set_thinking_block_timing(&mut updated, *content_index, timing.started_at, timing.ended_at);
                         }
-                        emit_message_update(emit, context, updated, &event).await;
+                        emit_message_update(emit, context, updated, event).await;
                     }
                 }
                 AssistantMessageEvent::ThinkingEnd { content_index, partial, .. } => {
@@ -623,7 +623,7 @@ async fn stream_assistant_response(
                             let (started_at, ended_at) = (timing.started_at, timing.ended_at);
                             set_thinking_block_timing(&mut updated, *content_index, started_at, ended_at);
                         }
-                        emit_message_update(emit, context, updated, &event).await;
+                        emit_message_update(emit, context, updated, event).await;
                     }
                 }
                 AssistantMessageEvent::TextStart { partial, .. }
@@ -633,7 +633,7 @@ async fn stream_assistant_response(
                 | AssistantMessageEvent::ToolcallDelta { partial, .. }
                 | AssistantMessageEvent::ToolcallEnd { partial, .. } => {
                     if added_partial {
-                        emit_message_update(emit, context, partial.clone(), &event).await;
+                        emit_message_update(emit, context, partial.clone(), event).await;
                     }
                 }
                 AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
@@ -768,7 +768,7 @@ async fn emit_message_update(
     emit: &AgentEventSink,
     context: &mut AgentContext,
     updated: AssistantMessage,
-    event: &AssistantMessageEvent,
+    event: AssistantMessageEvent,
 ) {
     let message = AgentMessage::Llm(Message::Assistant(Box::new(updated)));
     if let Some(last) = context.messages.last_mut() {
@@ -778,7 +778,7 @@ async fn emit_message_update(
         emit,
         AgentEvent::MessageUpdate {
             message,
-            assistant_message_event: event.clone(),
+            assistant_message_event: event,
         },
     )
     .await;

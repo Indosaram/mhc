@@ -30,12 +30,13 @@ pub struct CompactionSummaryMessageComponent {
     theme: Theme,
     markdown_theme: MarkdownTheme,
     expand_key: String,
+    markdown: Option<Rc<RefCell<MarkdownComponent>>>,
 }
 impl CompactionSummaryMessageComponent {
     pub fn new(message: Value, theme: Theme, markdown_theme: MarkdownTheme, expand_key: String) -> Self {
-        Self { message, theme, markdown_theme, expand_key, expanded: false }
+        Self { message, theme, markdown_theme, expand_key, expanded: false, markdown: None }
     }
-    pub fn set_expanded(&mut self, expanded: bool) { self.expanded = expanded; }
+    pub fn set_expanded(&mut self, expanded: bool) { self.expanded = expanded; self.markdown = None; }
 }
 impl Component for CompactionSummaryMessageComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
@@ -47,11 +48,15 @@ impl Component for CompactionSummaryMessageComponent {
         let tokens = format_count(self.message["tokensBefore"].as_u64().unwrap_or_default());
         let details = format_compaction_details(&self.message["details"]);
         if self.expanded {
-            let theme = self.theme.clone();
-            let style = DefaultTextStyle { color: Some(Arc::new(move |text| theme.fg(ThemeColor::CustomMessageText, text))), ..Default::default() };
-            let detail_line = details.map_or_else(|| "\n\n".to_owned(), |details| format!("\n{details}\n\n"));
-            let body = format!("**Compacted from {tokens} tokens**{detail_line}{}", sanitize_compaction_summary(self.message["summary"].as_str().unwrap_or_default()));
-            content.add_child(Rc::new(RefCell::new(MarkdownComponent(Markdown::new(&body, 0, 0, self.markdown_theme.clone(), Some(style), MarkdownOptions::default())))));
+            // Kept across frames: a rebuilt Markdown gets a fresh style id and misses the render cache.
+            let markdown = self.markdown.get_or_insert_with(|| {
+                let theme = self.theme.clone();
+                let style = DefaultTextStyle { color: Some(Arc::new(move |text| theme.fg(ThemeColor::CustomMessageText, text))), ..Default::default() };
+                let detail_line = details.map_or_else(|| "\n\n".to_owned(), |details| format!("\n{details}\n\n"));
+                let body = format!("**Compacted from {tokens} tokens**{detail_line}{}", sanitize_compaction_summary(self.message["summary"].as_str().unwrap_or_default()));
+                Rc::new(RefCell::new(MarkdownComponent(Markdown::new(&body, 0, 0, self.markdown_theme.clone(), Some(style), MarkdownOptions::default()))))
+            });
+            content.add_child(markdown.clone());
         } else {
             let prefix = details.map_or_else(String::new, |details| format!("{details}; "));
             let text = self.theme.fg(ThemeColor::CustomMessageText, &format!("{prefix}compacted from {tokens} tokens (")) + &self.theme.fg(ThemeColor::Dim, &self.expand_key) + &self.theme.fg(ThemeColor::CustomMessageText, " to expand)");
@@ -59,4 +64,5 @@ impl Component for CompactionSummaryMessageComponent {
         }
         content.render(width)
     }
+    fn invalidate(&mut self) { self.markdown = None; }
 }
