@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::MemoryIdentityPaths;
+use crate::journal::cursor::is_canonical_entry;
 use crate::journal::entries::TranscriptEntry;
 use crate::support::sha256::sha256_hex;
 
@@ -269,7 +270,7 @@ pub fn parse_queue_entry(raw: &str) -> Option<FactsQueueEntry> {
         if !is_transcript_entry_json(item) {
             return None;
         }
-        let entry: TranscriptEntry = serde_json::from_value(item.clone()).ok()?;
+        let entry = <TranscriptEntry as Deserialize>::deserialize(item).ok()?;
         entries.push(entry);
     }
 
@@ -295,10 +296,7 @@ pub fn canonical_position(entries: &[TranscriptEntry], message_id: Option<&str>)
         return -1;
     };
     for (index, entry) in entries.iter().enumerate().rev() {
-        if is_canonical_entry(entry)
-            && let Some(src_id) = entry_source_message_id(entry)
-            && src_id == target_id
-        {
+        if is_canonical_entry(entry) && entry.source_message_id() == target_id {
             return index as i64;
         }
     }
@@ -331,26 +329,6 @@ fn is_transcript_entry_json(val: &serde_json::Value) -> bool {
     }
     matches!(kind, "user" | "assistant" | "reasoning" | "error")
         && obj.get("text").and_then(|v| v.as_str()).is_some()
-}
-
-fn is_canonical_entry(entry: &TranscriptEntry) -> bool {
-    let Ok(val) = serde_json::to_value(entry) else {
-        return false;
-    };
-    let kind = val.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-    let msg_id = val
-        .get("source_message_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let text = val.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    (kind == "user" || kind == "assistant") && !msg_id.is_empty() && !text.trim().is_empty()
-}
-
-fn entry_source_message_id(entry: &TranscriptEntry) -> Option<String> {
-    let val = serde_json::to_value(entry).ok()?;
-    val.get("source_message_id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
 }
 
 #[cfg(test)]

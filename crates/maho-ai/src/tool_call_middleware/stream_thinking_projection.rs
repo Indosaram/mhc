@@ -6,7 +6,13 @@ use crate::types::{AssistantMessage, AssistantMessageEvent, ContentBlock, Thinki
 use crate::utils::event_stream::AssistantMessageEventStream;
 
 fn clone_thinking(block: &ThinkingContent, thinking: String) -> ThinkingContent {
-    ThinkingContent { thinking, ..block.clone() }
+    ThinkingContent {
+        thinking,
+        started_at: block.started_at,
+        ended_at: block.ended_at,
+        thinking_signature: block.thinking_signature.clone(),
+        redacted: block.redacted,
+    }
 }
 
 /// Replays canonical thinking events without exposing their content to text parsers.
@@ -38,15 +44,13 @@ impl StreamThinkingProjection {
 
     pub fn delta(&mut self, message: &mut AssistantMessage, inner_index: usize, delta: &str, source: &AssistantMessage) {
         let Some(&outer_index) = self.outer_index_by_inner_index.get(&inner_index) else { return };
-        let Some(ContentBlock::Thinking(current)) = message.content.get(outer_index) else { return };
-        let source_block = source.content.get(inner_index);
-        let updated = match source_block {
+        let Some(ContentBlock::Thinking(current)) = message.content.get_mut(outer_index) else { return };
+        match source.content.get(inner_index) {
             Some(ContentBlock::Thinking(thinking)) if self.preserve_source_metadata => {
-                clone_thinking(thinking, thinking.thinking.clone())
+                *current = clone_thinking(thinking, thinking.thinking.clone());
             }
-            _ => clone_thinking(current, format!("{}{delta}", current.thinking)),
-        };
-        message.content[outer_index] = ContentBlock::Thinking(updated);
+            _ => current.thinking.push_str(delta),
+        }
         self.stream.push(AssistantMessageEvent::ThinkingDelta {
             content_index: outer_index,
             delta: delta.to_string(),

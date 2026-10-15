@@ -1,15 +1,19 @@
+use std::sync::LazyLock;
+
 use serde_json::Value;
 pub const FABLE_FIVE_MODEL_ID: &str = "claude-fable-5";
+
+static REFUSAL_PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
+    match regex::Regex::new(r"(?i)This request triggered restrictions on [\s\S]+? and was blocked under Anthropic's Usage Policy\b") {
+        Ok(pattern) => pattern,
+        Err(error) => panic!("invalid static refusal pattern: {error}"),
+    }
+});
 
 pub fn is_refusal_like_message(message: &Value) -> bool {
     if message["role"] != "assistant" || !matches!(message["stopReason"].as_str(), Some("error" | "toolUse")) { return false; }
     if matches!(message["stopDetails"]["type"].as_str(), Some("refusal" | "sensitive")) { return true; }
-    message["errorMessage"].as_str().is_some_and(|text| {
-        match regex::Regex::new(r"(?i)This request triggered restrictions on [\s\S]+? and was blocked under Anthropic's Usage Policy\b") {
-            Ok(pattern) => pattern.is_match(text),
-            Err(error) => panic!("invalid static refusal pattern: {error}"),
-        }
-    })
+    message["errorMessage"].as_str().is_some_and(|text| REFUSAL_PATTERN.is_match(text))
 }
 pub fn is_fable_five_model(model: &Value) -> bool { model["id"] == FABLE_FIVE_MODEL_ID }
 pub fn is_model_select_event(payload: &Value) -> bool {

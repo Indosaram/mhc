@@ -16,7 +16,6 @@ use crate::utils::abort_signals::combine_abort_signals;
 use crate::utils::diagnostics::now_ms;
 use crate::utils::lazy::error_stream;
 use indexmap::IndexMap;
-use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -400,6 +399,14 @@ pub trait Provider: Send + Sync {
         None
     }
     fn get_models(&self) -> Vec<Model>;
+    /// `get_models().find(id)` without materializing the whole catalog when the provider can avoid it.
+    fn get_model(&self, id: &str) -> Option<Model> {
+        self.get_models().into_iter().find(|model| model.id == id)
+    }
+    /// `get_models().some(api)` without materializing the whole catalog when the provider can avoid it.
+    fn has_api(&self, api: &str) -> bool {
+        self.get_models().iter().any(|model| model.api == api)
+    }
     fn supports_refresh(&self) -> bool {
         false
     }
@@ -520,6 +527,27 @@ impl Provider for CreatedProvider {
             }
         }
         merged
+    }
+
+    fn get_model(&self, id: &str) -> Option<Model> {
+        let dynamic = self.dynamic_models.read().unwrap_or_else(|p| p.into_inner());
+        // Later dynamic entries overwrite earlier ones in `get_models`, so the last dynamic match wins.
+        if let Some(model) = dynamic.iter().rev().find(|model| model.id == id) {
+            return Some(model.clone());
+        }
+        self.input.models.iter().find(|model| model.id == id).cloned()
+    }
+
+    fn has_api(&self, api: &str) -> bool {
+        let dynamic = self.dynamic_models.read().unwrap_or_else(|p| p.into_inner());
+        // Mirrors `get_models`: a dynamic entry survives unless a later dynamic entry shares its id; a static
+        // entry survives unless it is the first static entry with an id some dynamic entry overrides.
+        dynamic.iter().enumerate().any(|(i, model)| model.api == api && !dynamic[i + 1..].iter().any(|e| e.id == model.id))
+            || self.input.models.iter().enumerate().any(|(i, model)| {
+                model.api == api
+                    && (!dynamic.iter().any(|entry| entry.id == model.id)
+                        || self.input.models[..i].iter().any(|prior| prior.id == model.id))
+            })
     }
 
     fn supports_refresh(&self) -> bool {
@@ -735,7 +763,7 @@ impl Models {
     }
 
     pub fn get_model(&self, provider: &str, id: &str) -> Option<Model> {
-        self.get_models(Some(provider)).into_iter().find(|model| model.id == id)
+        self.get_provider(provider).and_then(|p| p.get_model(id))
     }
 
     fn supersede_provider_refresh(&self, provider_id: &str) -> u64 {
@@ -1244,9 +1272,14 @@ pub fn supports_xhigh(model: &Model) -> bool {
 /// Family match at a token boundary: `gpt-*` families do not match after a `-` (so `gpt-5.5` does
 /// not match `chatgpt-5.5`), and the family must end at a non-alphanumeric character.
 fn matches_model_family(model_id: &str, family: &str) -> bool {
-    let leading = if family.starts_with("gpt-") { "(?:^|[/.:_])" } else { "(?:^|[/.:_-])" };
-    let pattern = format!("{leading}{}(?:$|[^a-z0-9])", regex::escape(&family.to_lowercase()));
-    Regex::new(&pattern).is_ok_and(|re| re.is_match(&model_id.to_lowercase()))
+    let allow_dash = !family.starts_with("gpt-");
+    let family = family.to_lowercase();
+    let id = model_id.to_lowercase();
+    id.char_indices().any(|(start, _)| {
+        id[start..].starts_with(family.as_str())
+            && id[..start].chars().next_back().is_none_or(|c| matches!(c, '/' | '.' | ':' | '_') || (allow_dash && c == '-'))
+            && id[start + family.len()..].chars().next().is_none_or(|c| !c.is_ascii_lowercase() && !c.is_ascii_digit())
+    })
 }
 
 const OPENAI_MAX_APIS: &[&str] = &["openai-responses", "azure-openai-responses", "openai-codex-responses", "openai-completions"];

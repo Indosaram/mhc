@@ -85,8 +85,7 @@ pub(crate) fn plan_screenshot(
     budget: &Budget,
 ) -> CoreResult<ScreenshotResult> {
     let (source_width, source_height) = source.dimensions();
-    // The source outlives the resize: artifact-only saves it at full size.
-    let capped = apply_capture_caps(source.clone(), geometry, &budget.caps)?;
+    let capped = apply_capture_caps(&source, geometry, &budget.caps)?;
     let (width, height) = capped.dimensions();
     let max_bytes = budget.caps.max_bytes;
     let fits = |bytes: &[u8]| u64::try_from(bytes.len()).is_ok_and(|len| len <= max_bytes);

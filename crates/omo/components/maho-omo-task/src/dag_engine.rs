@@ -399,9 +399,9 @@ let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::
         let owner = Arc::downgrade(self);
         let surface = senpi_task::dag::handle::create_dag_wait_surface(senpi_task::dag::handle::DagWaitSurfaceOptions {
             store: self.store.clone(),
-            subscribe: Arc::new(move |run_id: &DagRunId, wake: Arc<dyn Fn() + Send + Sync>| -> senpi_task::dag::journal::DagJournalUnsubscribe {
+            subscribe: Arc::new(move |run_id: &DagRunId, wake: senpi_task::dag::journal::DagJournalListener| -> senpi_task::dag::journal::DagJournalUnsubscribe {
                 let Some(dag) = owner.upgrade() else { return Box::new(|| {}); };
-                dag.subscribe(run_id, Arc::new(move |_| wake()))
+                dag.subscribe(run_id, wake)
             }),
             cancel: None,
             read_output: None,

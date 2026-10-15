@@ -113,7 +113,7 @@ fn given_a_linear_three_node_definition_when_the_real_engine_runs_then_every_eve
     let subscribe_scheduler = Arc::clone(&scheduler);
     let subscribe: DagSubscribe = Arc::new(move |subscribed_run_id: &DagRunId, listener| {
         if subscribed_run_id == &subscribe_run_id {
-            subscribe_scheduler.subscribe(Arc::new(move |_event| listener()))
+            subscribe_scheduler.subscribe(listener)
         } else {
             Box::new(|| {})
         }

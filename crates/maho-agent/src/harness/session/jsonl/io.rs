@@ -61,25 +61,33 @@ fn require_safe_integer(value: Option<&Value>, field: &str, minimum: i64) -> Res
 }
 
 pub fn parse_committed_write(value: &Value) -> Result<CommittedWrite, SessionError> {
+    parse_committed_write_owned(value.clone())
+}
+
+/// Owned variant so replay can hand each parsed `Value` to `from_value` without cloning it.
+fn parse_committed_write_owned(value: Value) -> Result<CommittedWrite, SessionError> {
     if !value.is_object() {
         return Err(invalid_write());
     }
     require_safe_integer(value.get("seq"), "write seq", 1)?;
-    match value.get("kind").and_then(Value::as_str) {
+    // Owned discriminators so the arms can move `value` into `from_value`.
+    let kind = value.get("kind").and_then(Value::as_str).map(str::to_owned);
+    let op = value.get("op").and_then(Value::as_str).map(str::to_owned);
+    match kind.as_deref() {
         Some("entry") => {
             require_safe_integer(value.get("timestamp"), "entry timestamp", 0)?;
-            serde_json::from_value::<CommittedEntryWrite>(value.clone())
+            serde_json::from_value::<CommittedEntryWrite>(value)
                 .map(CommittedWrite::Entry)
                 .map_err(|_| invalid_write())
         }
-        Some("usage") => serde_json::from_value::<CommittedUsageWrite>(value.clone())
+        Some("usage") => serde_json::from_value::<CommittedUsageWrite>(value)
             .map(CommittedWrite::Usage)
             .map_err(|_| invalid_write()),
-        Some("value") => match value.get("op").and_then(Value::as_str) {
-            Some("set") => serde_json::from_value::<CommittedValueSetWrite>(value.clone())
+        Some("value") => match op.as_deref() {
+            Some("set") => serde_json::from_value::<CommittedValueSetWrite>(value)
                 .map(|write| CommittedWrite::Value(CommittedValueWrite::Set(write)))
                 .map_err(|_| invalid_write()),
-            Some("delete") => serde_json::from_value::<CommittedValueDeleteWrite>(value.clone())
+            Some("delete") => serde_json::from_value::<CommittedValueDeleteWrite>(value)
                 .map(|write| CommittedWrite::Value(CommittedValueWrite::Delete(write)))
                 .map_err(|_| invalid_write()),
             other => Err(SessionError::new(
@@ -87,11 +95,11 @@ pub fn parse_committed_write(value: &Value) -> Result<CommittedWrite, SessionErr
                 format!("Invalid JSONL value operation: {}", other.unwrap_or("undefined")),
             )),
         },
-        Some("list") => match value.get("op").and_then(Value::as_str) {
-            Some("append") => serde_json::from_value::<CommittedListAppendWrite>(value.clone())
+        Some("list") => match op.as_deref() {
+            Some("append") => serde_json::from_value::<CommittedListAppendWrite>(value)
                 .map(|write| CommittedWrite::List(CommittedListWrite::Append(write)))
                 .map_err(|_| invalid_write()),
-            Some("delete") => serde_json::from_value::<CommittedListDeleteWrite>(value.clone())
+            Some("delete") => serde_json::from_value::<CommittedListDeleteWrite>(value)
                 .map(|write| CommittedWrite::List(CommittedListWrite::Delete(write)))
                 .map_err(|_| invalid_write()),
             other => Err(SessionError::new(
@@ -117,7 +125,7 @@ pub fn parse_jsonl_transaction(line: &str) -> Result<Vec<CommittedWrite>, Sessio
         Value::Array(values) => values,
         other => vec![other],
     };
-    values.iter().map(parse_committed_write).collect()
+    values.into_iter().map(parse_committed_write_owned).collect()
 }
 
 pub fn serialize_jsonl_transaction(writes: &[CommittedWrite]) -> String {

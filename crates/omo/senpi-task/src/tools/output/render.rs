@@ -28,11 +28,11 @@ pub fn render_transcript(entries: &[TranscriptEntry], options: &RenderOptions) -
         };
     }
 
-    let lines: Vec<String> = entries.iter().map(render_entry).collect();
-    let (tail, cut) = match options.mode {
-        TranscriptMode::Tail => take_tail(lines, options.tail_lines),
-        TranscriptMode::Full => (lines, false),
+    let (kept, cut) = match options.mode {
+        TranscriptMode::Tail => take_tail(entries, options.tail_lines),
+        TranscriptMode::Full => (entries, false),
     };
+    let tail: Vec<String> = kept.iter().map(render_entry).collect();
     let joined = tail.join("\n");
     let (text, elided) = cap_text(&joined);
     RenderedTranscript {
@@ -52,13 +52,13 @@ fn render_entry(entry: &TranscriptEntry) -> String {
     }
 }
 
-fn take_tail(lines: Vec<String>, tail_lines: usize) -> (Vec<String>, bool) {
-    if tail_lines == 0 || lines.len() <= tail_lines {
-        let cut = lines.len() > tail_lines;
-        return (lines, cut);
+// Entries map 1:1 to rendered lines, so the tail is cut before rendering.
+fn take_tail(entries: &[TranscriptEntry], tail_lines: usize) -> (&[TranscriptEntry], bool) {
+    if tail_lines == 0 || entries.len() <= tail_lines {
+        let cut = entries.len() > tail_lines;
+        return (entries, cut);
     }
-    let start = lines.len() - tail_lines;
-    (lines[start..].to_vec(), true)
+    (&entries[entries.len() - tail_lines..], true)
 }
 
 fn marker(elided: usize) -> String {

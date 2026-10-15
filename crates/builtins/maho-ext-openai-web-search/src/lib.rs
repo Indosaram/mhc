@@ -34,6 +34,23 @@ fn sanitize(tools: &[Value], strip_function: bool) -> Vec<Value> {
         !unsupported && !function
     }).cloned().collect()
 }
+fn needs_strip(payload: &Value) -> bool {
+    payload.is_object()
+        && (payload.get("tools").and_then(Value::as_array).is_some_and(|tools| tools.iter().any(native))
+            || payload.get("include").and_then(Value::as_array).is_some_and(|include| include.iter().any(|value| value.as_str() == Some(SOURCES)))
+            || payload.get("tool_choice").is_some_and(native))
+}
+/// `None` when `add_openai_web_search_to_payload` would return the payload unchanged, so callers can skip copying it.
+pub fn add_openai_web_search_to_payload_if_changed(model: Option<&Model>, payload: &Value, enabled: bool) -> Option<Value> {
+    if !responses(model) { return needs_strip(payload).then(|| strip(payload)); }
+    if !payload.is_object() { return None; }
+    let supports = supports_native_openai_web_search(model);
+    if !(supports && enabled) && (supports || !needs_strip(payload)) {
+        let active = payload.get("tools").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        if sanitize(active, false) == active { return None; }
+    }
+    Some(add_openai_web_search_to_payload(model, payload, enabled))
+}
 pub fn add_openai_web_search_to_payload(model: Option<&Model>, payload: &Value, enabled: bool) -> Value {
     if !responses(model) { return strip(payload); }
     if !payload.is_object() { return payload.clone(); }
@@ -57,7 +74,7 @@ impl Extension for OpenAiWebSearch {
     fn register(&self, api: &mut ExtensionApi) {
         api.on(EventKind::BeforeProviderRequest, Arc::new(|event, ctx| Box::pin(async move {
             let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else { return Ok(EventResult::None) };
-            Ok(EventResult::ProviderPayload(add_openai_web_search_to_payload(ctx.model.as_ref(), payload, enabled())))
+            Ok(add_openai_web_search_to_payload_if_changed(ctx.model.as_ref(), payload, enabled()).map_or(EventResult::None, EventResult::ProviderPayload))
         })));
         for kind in [EventKind::SessionStart, EventKind::ModelSelect, EventKind::SessionShutdown] {
             api.on(kind, Arc::new(|_event, ctx| Box::pin(async move {

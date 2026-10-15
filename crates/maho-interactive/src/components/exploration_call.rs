@@ -40,23 +40,29 @@ fn is_semantic_read(args: &Value, cwd: &str) -> bool {
 }
 
 pub fn exploration_call(component: &ToolExecutionComponent) -> Option<ExplorationCall> {
-    let (state, tool_name, presentation) = component.presentation_snapshot();
+    if let Some(cached) = &*component.exploration_cache.borrow() {
+        return cached.clone();
+    }
+    let call = compute_exploration_call(component);
+    component.exploration_cache.replace(Some(call.clone()));
+    call
+}
+
+fn compute_exploration_call(component: &ToolExecutionComponent) -> Option<ExplorationCall> {
+    let (tool_name, presentation, args, pending, failed, cwd) = component.exploration_view();
     if presentation != ToolExecutionPresentation::Classic {
         return None;
     }
-    if !matches!(tool_name.as_str(), "read" | "grep" | "find" | "ls") {
+    if !matches!(tool_name, "read" | "grep" | "find" | "ls") {
         return None;
     }
     if !component.uses_built_in_renderers() {
         return None;
     }
-    let (_, _, cwd) = component.identity();
-    let pending = state.is_partial;
-    let failed = state.is_error;
-    let path = string_arg(&state.args, &["file_path", "path"]);
-    match tool_name.as_str() {
+    let path = string_arg(args, &["file_path", "path"]);
+    match tool_name {
         "read" => {
-            if is_semantic_read(&state.args, &cwd) {
+            if is_semantic_read(args, cwd) {
                 return None;
             }
             let label = path
@@ -67,11 +73,11 @@ pub fn exploration_call(component: &ToolExecutionComponent) -> Option<Exploratio
             Some(ExplorationCall { action: ExplorationAction::Read, label, pending, failed })
         }
         "grep" => {
-            let pattern = string_arg(&state.args, &["pattern"]).unwrap_or_default();
+            let pattern = string_arg(args, &["pattern"]).unwrap_or_default();
             let dir = path.map_or_else(String::new, |path| {
                 maho_core::paths::format_path_relative_to_cwd_or_absolute(
-                    &resolve_to_cwd(&path, Path::new(&cwd)).to_string_lossy(),
-                    &cwd,
+                    &resolve_to_cwd(&path, Path::new(cwd)).to_string_lossy(),
+                    cwd,
                 )
             });
             let label = if dir.is_empty() { pattern } else { format!("{pattern} in {dir}") };

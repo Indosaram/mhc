@@ -51,6 +51,8 @@ pub struct GitLogOptions {
     pub paths: Option<Vec<String>>,
     pub limit: Option<usize>,
     pub include_paths: bool,
+    /// Fixed-string `--grep` filter on the commit message.
+    pub grep: Option<String>,
 }
 
 /// One `git ls-tree -l` entry with its blob byte size.

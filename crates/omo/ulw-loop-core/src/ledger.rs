@@ -6,9 +6,22 @@ use std::path::Path;
 
 use crate::domain_types::UlwLoopLedgerEntry;
 use crate::paths::{ulw_loop_dir, UlwLoopScope};
-use crate::plan_log::{read_optional, read_records, reconcile_plan};
+use crate::plan_log::{read_optional, read_records, reconcile_plan, PlanCommitRecord};
 
 pub fn read_ledger_at(dir: impl AsRef<Path>) -> Vec<UlwLoopLedgerEntry> {
+    let records = read_records(&dir);
+    let reset = reconcile_plan(&dir)
+        .and_then(|p| p.ledger_reset_revision)
+        .unwrap_or(0);
+    read_ledger_from_records(dir, records, reset)
+}
+
+/// `read_ledger_at` over already-read revision records and an already-reconciled reset revision.
+pub(crate) fn read_ledger_from_records(
+    dir: impl AsRef<Path>,
+    records: Vec<PlanCommitRecord>,
+    reset: u64,
+) -> Vec<UlwLoopLedgerEntry> {
     let mut entries = BTreeMap::<String, UlwLoopLedgerEntry>::new();
     let path = dir.as_ref().join("ledger.jsonl");
     let content = read_optional(path).unwrap_or_default();
@@ -31,7 +44,7 @@ pub fn read_ledger_at(dir: impl AsRef<Path>) -> Vec<UlwLoopLedgerEntry> {
         }
     }
 
-    for record in read_records(&dir) {
+    for record in records {
         for (seq, mut entry) in record.ledger.into_iter().enumerate() {
             let id = entry.id.unwrap_or_else(|| format!("{}-{}", record.revision, seq));
             entry.revision = Some(record.revision);
@@ -39,10 +52,6 @@ pub fn read_ledger_at(dir: impl AsRef<Path>) -> Vec<UlwLoopLedgerEntry> {
             entries.insert(id, entry);
         }
     }
-
-    let reset = reconcile_plan(&dir)
-        .and_then(|p| p.ledger_reset_revision)
-        .unwrap_or(0);
 
     let sequence = |entry: &UlwLoopLedgerEntry| -> u64 {
         entry

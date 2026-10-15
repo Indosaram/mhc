@@ -68,9 +68,11 @@ impl SessionEventFanout{
         let line=crate::jsonl::serialize_json_line(&wire).map_err(|error|error.to_string())?;
         let terminal=matches!(value["type"].as_str(),Some("session_closed"|"session_parked"));
         if terminal{self.snapshots.forget(session);}else if !targeted{
-            let mut tagged=wire.clone();
-            if rendered{tagged[RENDERED_COMPONENT_RECORD]=true.into();}
-            self.snapshots.remember(session,&tagged,line.clone(),None,Some(wire.clone()));
+            let tagged=if rendered{let mut tagged=wire.clone();tagged[RENDERED_COMPONENT_RECORD]=true.into();std::borrow::Cow::Owned(tagged)}else{std::borrow::Cow::Borrowed(&wire)};
+            // `omit_inline_media` never rewrites a `message_update`, so its placeholder replay is
+            // `line` itself; skip keeping a second full copy of every delta.
+            let source=(value["type"]!="message_update").then(||wire.clone());
+            self.snapshots.remember(session,&tagged,line.clone(),None,source);
         }
         let mut failed=Vec::new();
         let mut stdio=Vec::new();
@@ -81,12 +83,11 @@ impl SessionEventFanout{
             let Some(id)=id else{stdio.push(wire.clone());continue;};
             let Some(actor)=self.actors.get(&id)else{continue;};
             let placeholders=self.targets.capabilities(&id).unwrap_or_default().iter().any(|capability|capability==crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY);
-            let selected=if placeholders{crate::media_placeholders::omit_inline_media(&wire).into_owned()}else{wire.clone()};
-            let line=if placeholders{crate::jsonl::serialize_json_line(&selected).map_err(|error|error.to_string())?}else{line.clone()};
+            let selected=if placeholders{crate::media_placeholders::omit_inline_media(&wire)}else{std::borrow::Cow::Borrowed(&wire)};
+            let line=if placeholders{crate::jsonl::serialize_json_line(&*selected).map_err(|error|error.to_string())?}else{line.clone()};
             let keyed=selected["type"]=="message_update"&&!selected["message"].is_null()&&matches!(selected["assistantMessageEvent"]["type"].as_str(),Some("text_delta"|"thinking_delta"|"toolcall_delta"))&&selected["assistantMessageEvent"]["contentIndex"].is_number()&&selected["assistantMessageEvent"]["delta"].is_string();
             let demoted_line=if keyed{
-                let mut demoted=selected;demoted["message"]=Value::Null;demoted["assistantMessageEvent"]["partial"]=Value::Null;
-                Some(crate::jsonl::serialize_json_line(&demoted).map_err(|error|error.to_string())?)
+                Some(crate::jsonl::serialize_json_line(&demote_snapshot(&selected)).map_err(|error|error.to_string())?)
             }else{None};
             if actor.enqueue(crate::socket_event_fanout::QueueEntry{line,key:keyed.then(||"message".into()),demoted_line,on_written:None}).is_err(){failed.push(id);}
         }
@@ -113,6 +114,20 @@ impl ConnectionTargets{
     }
 }
 struct SnapshotRecord{line:String,placeholder_line:Option<String>,source:Option<Value>,rendered:bool}
+/// `record` with `message` and `assistantMessageEvent.partial` nulled, built by copying the small
+/// entries instead of deep-cloning the cumulative snapshots first. Key order matches assigning
+/// both fields on a clone: existing keys keep their slot, a missing `partial` is appended.
+fn demote_snapshot(record:&Value)->Value{
+    let Some(object)=record.as_object()else{return record.clone();};
+    let demote_event=|event:&Value|match event.as_object(){
+        Some(event)=>{let mut event=event.iter().map(|(key,value)|(key.clone(),if key=="partial"{Value::Null}else{value.clone()})).collect::<serde_json::Map<_,_>>();event.entry("partial").or_insert(Value::Null);Value::Object(event)},
+        None=>{let mut event=event.clone();event["partial"]=Value::Null;event},
+    };
+    let mut demoted=object.iter().map(|(key,value)|(key.clone(),match key.as_str(){"message"=>Value::Null,"assistantMessageEvent"=>demote_event(value),_=>value.clone()})).collect::<serde_json::Map<_,_>>();
+    demoted.entry("message").or_insert(Value::Null);
+    if !demoted.contains_key("assistantMessageEvent"){demoted.insert("assistantMessageEvent".into(),demote_event(&Value::Null));}
+    Value::Object(demoted)
+}
 #[derive(Default)]pub struct SessionSnapshots{snapshots:BTreeMap<String,Vec<SnapshotRecord>>,questions:BTreeMap<String,serde_json::Map<String,Value>>}
 impl SessionSnapshots{
     pub fn remember(&mut self,session_id:&str,value:&Value,line:String,placeholder_line:Option<String>,source:Option<Value>){
@@ -138,6 +153,7 @@ impl SessionSnapshots{
 }
 #[cfg(test)]mod tests{
     use super::*;use serde_json::json;
+    #[test]fn demoted_snapshot_matches_clone_then_null_bytes(){let record=json!({"type":"message_update","message":{"content":"abc"},"assistantMessageEvent":{"type":"text_delta","partial":{"content":"abc"},"contentIndex":0,"delta":"c"},"sessionId":"s"});let mut expected=record.clone();expected["message"]=Value::Null;expected["assistantMessageEvent"]["partial"]=Value::Null;assert_eq!(serde_json::to_string(&demote_snapshot(&record)).unwrap(),serde_json::to_string(&expected).unwrap());let mut without=record.clone();without["assistantMessageEvent"].as_object_mut().unwrap().remove("partial");let mut expected=without.clone();expected["message"]=Value::Null;expected["assistantMessageEvent"]["partial"]=Value::Null;assert_eq!(serde_json::to_string(&demote_snapshot(&without)).unwrap(),serde_json::to_string(&expected).unwrap());}
     #[test]fn pending_questions_replay_in_registration_order_after_update(){let mut snapshots=SessionSnapshots::default();for id in ["z","a"]{snapshots.remember("s",&json!({"type":"extension_ui_request","method":"question","id":id}),String::new(),None,None);}snapshots.remember("s",&json!({"type":"extension_ui_request","method":"question","id":"z","deadlineAtMs":100}),String::new(),None,None);let frames=snapshots.replay("s",false,false,0.).unwrap().into_iter().map(|line|serde_json::from_str::<Value>(&line).unwrap()["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();assert_eq!(frames,vec!["z","a"]);}
     #[test]fn targets_keep_connection_order_and_lifecycle_broadcast(){let mut targets=ConnectionTargets::default();assert_eq!(targets.targets("s",None,false,false,None),vec![None]);targets.register("z");targets.register("a");assert!(targets.attach("z","s"));assert!(!targets.attach("z","s"));assert_eq!(targets.targets("s",None,false,false,None),vec![Some("z".into())]);assert!(targets.targets("s",None,false,true,None).is_empty());assert!(targets.set_capabilities("z",&["rendered_components".into()]));assert_eq!(targets.targets("s",None,false,true,None),vec![Some("z".into())]);assert_eq!(targets.targets("s",None,false,false,Some("agent_idle")),vec![Some("z".into()),Some("a".into())]);assert_eq!(targets.targets("s",Some("unknown"),true,false,None),vec![Some("unknown".into())]);}
     #[test]fn message_end_discards_replay_and_rendered_requires_capability(){let mut snapshots=SessionSnapshots::default();let value=json!({"type":"message_start","__senpiRenderedComponent":true});snapshots.remember("s",&value,"start\n".into(),None,None);assert!(snapshots.replay("s",false,false,0.).unwrap().is_empty());assert_eq!(snapshots.replay("s",true,false,0.).unwrap(),vec!["start\n"]);snapshots.remember("s",&json!({"type":"message_end"}),"end\n".into(),None,None);assert!(snapshots.replay("s",true,false,0.).unwrap().is_empty());}

@@ -496,11 +496,12 @@ impl MorphXmlStreamParser {
 
     fn emit_arguments_snapshot(&mut self, events: &mut Vec<StreamParserEvent>, arguments_record: &Map<String, Value>) {
         let Some(tool_state) = &mut self.current_tool_state else { return };
-        if !is_structurally_compatible_with_schema(&Value::Object(arguments_record.clone()), tool_state.schema.as_ref()) {
+        let arguments_value = Value::Object(arguments_record.clone());
+        if !is_structurally_compatible_with_schema(&arguments_value, tool_state.schema.as_ref()) {
             return;
         }
 
-        let arguments_snapshot = Value::Object(arguments_record.clone()).to_string();
+        let arguments_snapshot = arguments_value.to_string();
         if Some(&arguments_snapshot) == tool_state.last_arguments_snapshot.as_ref() || arguments_snapshot == "{}" {
             return;
         }
@@ -523,21 +524,21 @@ impl MorphXmlStreamParser {
                 let closing_tag_match = find_close_tag(&self.buffer, &tool_name, 0);
 
                 let Some(closing_tag_match) = closing_tag_match else {
-                    let schema = self.current_tool_state.as_ref().expect("checked above").schema.clone();
-                    if let Some(partial_arguments) = parse_morph_xml_partial_arguments_safely(&self.buffer, schema.as_ref()) {
+                    let schema = self.current_tool_state.as_ref().expect("checked above").schema.as_ref();
+                    if let Some(partial_arguments) = parse_morph_xml_partial_arguments_safely(&self.buffer, schema) {
                         self.emit_arguments_snapshot(&mut events, &partial_arguments);
                     }
                     break;
                 };
 
                 let tool_body = self.buffer[..closing_tag_match.start].to_string();
-                let schema = self.current_tool_state.as_ref().expect("checked above").schema.clone();
-                if let Some(partial_arguments) = parse_morph_xml_partial_arguments_safely(&tool_body, schema.as_ref()) {
+                let schema = self.current_tool_state.as_ref().expect("checked above").schema.as_ref();
+                if let Some(partial_arguments) = parse_morph_xml_partial_arguments_safely(&tool_body, schema) {
                     self.emit_arguments_snapshot(&mut events, &partial_arguments);
                 }
 
-                let tool = self.current_tool_state.as_ref().expect("checked above").tool.clone();
-                let parsed_arguments = parse_and_validate_morph_xml_arguments(tool.as_ref(), &tool_body, schema.as_ref());
+                let tool_state = self.current_tool_state.as_ref().expect("checked above");
+                let parsed_arguments = parse_and_validate_morph_xml_arguments(tool_state.tool.as_ref(), &tool_body, tool_state.schema.as_ref());
                 let original_call_text = format!("<{tool_name}>{tool_body}{}", &self.buffer[closing_tag_match.start..closing_tag_match.end]);
                 self.buffer = self.buffer[closing_tag_match.end..].to_string();
 
@@ -759,7 +760,6 @@ fn parse_morph_xml_arguments(tool_body: &str, schema: Option<&JsonSchema>) -> Ma
 
 fn parse_morph_xml_partial_arguments(tool_body: &str, schema: Option<&JsonSchema>) -> Option<Map<String, Value>> {
     let mut partial_arguments = Map::new();
-    let normalized_schema = schema.cloned();
     let mut position = 0usize;
 
     while position < tool_body.len() {
@@ -769,7 +769,7 @@ fn parse_morph_xml_partial_arguments(tool_body: &str, schema: Option<&JsonSchema
         }
 
         let Some(opening_tag) = parse_opening_tag(tool_body, next_tag_index) else { break };
-        let property_schema = get_property_schema(normalized_schema.as_ref(), &opening_tag.name);
+        let property_schema = get_property_schema(schema, &opening_tag.name);
         let closing_tag = format!("</{}>", opening_tag.name);
         let closing_tag_index = tool_body[opening_tag.end_index..].find(&closing_tag).map(|i| i + opening_tag.end_index);
 
@@ -943,11 +943,10 @@ fn convert_children_to_object(children: &[XmlNode], schema: Option<&JsonSchema>)
 }
 
 fn convert_xml_node_value(node: &XmlNode, schema: Option<&JsonSchema>) -> Value {
-    let normalized_schema = schema.cloned();
-    let schema_types = get_schema_types(normalized_schema.as_ref());
+    let schema_types = get_schema_types(schema);
 
     if node.children.is_empty() {
-        return coerce_xml_value(&node.text_segments.join(""), normalized_schema.as_ref());
+        return coerce_xml_value(&node.text_segments.join(""), schema);
     }
 
     if schema_types.iter().any(|t| t == "string") {
@@ -962,16 +961,16 @@ fn convert_xml_node_value(node: &XmlNode, schema: Option<&JsonSchema>) -> Value 
         return Value::String(text);
     }
 
-    if should_treat_as_array(node, normalized_schema.as_ref()) {
+    if should_treat_as_array(node, schema) {
         if node.children.iter().any(|child| child.name != "item") {
             return Value::String(String::new());
         }
-        let item_schema = get_array_item_schema(normalized_schema.as_ref());
+        let item_schema = get_array_item_schema(schema);
         let item_nodes: Vec<&XmlNode> = node.children.iter().filter(|child| child.name == "item").collect();
         return Value::Array(item_nodes.into_iter().map(|child| convert_xml_node_value(child, item_schema.as_ref())).collect());
     }
 
-    Value::Object(convert_children_to_object(&node.children, normalized_schema.as_ref()))
+    Value::Object(convert_children_to_object(&node.children, schema))
 }
 
 fn should_treat_as_array(node: &XmlNode, schema: Option<&JsonSchema>) -> bool {

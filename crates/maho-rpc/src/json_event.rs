@@ -14,10 +14,16 @@ pub fn to_json_event(event: &Value) -> Result<Cow<'_, Value>, JsonEventError> {
     if event.get("type").and_then(Value::as_str) != Some("message_update") { return Ok(Cow::Borrowed(event)); }
     let message = &event["message"];
     if message["role"].as_str() != Some("assistant") { return Err(JsonEventError::NotAssistant); }
-    let mut delta = event["assistantMessageEvent"].clone();
+    let source = &event["assistantMessageEvent"];
+    // Copy every entry except the cumulative `partial` snapshot (kept as a cheap null so the
+    // following `remove` reorders keys exactly as before).
+    let mut delta = match source.as_object() {
+        Some(object) => Value::Object(object.iter().map(|(key,value)| (key.clone(),if key == "partial" { Value::Null } else { value.clone() })).collect()),
+        None => source.clone(),
+    };
     if delta["type"].as_str() == Some("toolcall_start") {
         let index = delta["contentIndex"].as_u64().and_then(|n| usize::try_from(n).ok());
-        let tool = index.and_then(|i| delta["partial"]["content"].get(i));
+        let tool = index.and_then(|i| source["partial"]["content"].get(i));
         let Some(tool) = tool.filter(|tool| tool["type"].as_str() == Some("toolCall")) else { return Err(JsonEventError::NotToolCall(delta["contentIndex"].clone())); };
         let id = tool.get("id").cloned();
         let name = tool.get("name").cloned();

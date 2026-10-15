@@ -23,7 +23,7 @@ use crate::dag::node_retry::{DagRunReentry, retry_dag_nodes};
 use crate::dag::node_send::{DagNodeSendResult, send_to_dag_node};
 use crate::dag::results::{
     DagNodeResultArtifact, DagNodeResultPersistInput, DagNodeResultPersistOutcome,
-    DagNodeResultReadInput, persist_dag_node_result, read_dag_node_result,
+    DagNodeResultReadInput, persist_dag_node_result, read_dag_node_run_stats,
 };
 use crate::dag::store::DagFileStore;
 use crate::dag::types::{
@@ -403,9 +403,13 @@ fn reduce_node_transitioned(
     let mut diagnostics = record.diagnostics.clone();
     let mut result_artifact: Option<DagNodeResultArtifact> = None;
     let mut run_stats: Option<TaskRunStats> = None;
+    let mut result_preview: Option<(String, u64)> = None;
     match persisted {
         Some(DagNodeResultPersistOutcome::Persisted { artifact }) => {
             run_stats = task_run_stats_of(&terminal_result);
+            // The artifact was just written from `final_response`; preview it without re-reading.
+            let output = terminal_result.as_ref().and_then(|record| record.final_response.as_deref()).unwrap_or_default();
+            result_preview = Some((output_preview(output), artifact.bytes));
             result_artifact = Some(artifact);
         }
         Some(DagNodeResultPersistOutcome::Failed { diagnostic }) => {
@@ -426,6 +430,7 @@ fn reduce_node_transitioned(
         }
         None => {
             if let Some(replayed) = replayed {
+                result_preview = Some((output_preview(&replayed.output), replayed.artifact.bytes));
                 result_artifact = Some(replayed.artifact);
                 run_stats = replayed.run_stats;
             }
@@ -441,10 +446,9 @@ fn reduce_node_transitioned(
             let mut transitioned = transitioned_node(node, to, &event.at, pending_errors.get(node_id));
             if result_artifact.is_some() {
                 transitioned.run_stats = run_stats.clone().or(transitioned.run_stats);
-                let output_path = store.map(|store| store.paths.result(&record.run_id, node_id));
-                if let Some(path) = output_path && let Ok(contents) = fs::read_to_string(&path) {
-                    transitioned.output = Some(contents.chars().take(crate::dag::types::DAG_NODE_OUTPUT_PREVIEW_CHARS).collect());
-                    transitioned.output_bytes = Some(fs::metadata(path).map_or(contents.len() as u64, |meta| meta.len()));
+                if let Some((preview, bytes)) = &result_preview {
+                    transitioned.output = Some(preview.clone());
+                    transitioned.output_bytes = Some(*bytes);
                 }
             }
             transitioned
@@ -464,6 +468,10 @@ fn task_run_stats_of(terminal_result: &Option<TaskRecord>) -> Option<TaskRunStat
         .and_then(|record| record.run_stats.clone())
 }
 
+fn output_preview(output: &str) -> String {
+    output.chars().take(crate::dag::types::DAG_NODE_OUTPUT_PREVIEW_CHARS).collect()
+}
+
 fn other_diagnostic_fallback(_diagnostic: crate::dag::store::DagStoreDiagnostic) -> DagDiagnostic {
     DagDiagnostic::RunFlag {
         message: "dag store diagnostic of an unexpected kind".to_string(),
@@ -474,6 +482,7 @@ fn other_diagnostic_fallback(_diagnostic: crate::dag::store::DagStoreDiagnostic)
 struct ReplayedResult {
     artifact: DagNodeResultArtifact,
     run_stats: Option<TaskRunStats>,
+    output: String,
 }
 
 fn replay_dag_node_result(
@@ -481,13 +490,13 @@ fn replay_dag_node_result(
     run_id: &DagRunId,
     node_id: &DagNodeId,
 ) -> Option<ReplayedResult> {
-    let result = read_dag_node_result(DagNodeResultReadInput {
+    let output_path = store.paths.result(run_id, node_id);
+    let output = fs::read_to_string(&output_path).ok()?;
+    let run_stats = read_dag_node_run_stats(DagNodeResultReadInput {
         store,
         run_id,
         node_id,
-    })?;
-    let output_path = store.paths.result(run_id, node_id);
-    let output = fs::read_to_string(&output_path).ok()?;
+    });
     let stats_path = stats_sidecar_path(&output_path);
     let stats = read_optional_artifact(store, &stats_path);
     Some(ReplayedResult {
@@ -495,7 +504,8 @@ fn replay_dag_node_result(
             stats,
             ..artifact_ref(&store.state_dir, &output_path, output.as_bytes())
         },
-        run_stats: result.run_stats,
+        run_stats,
+        output,
     })
 }
 
@@ -844,18 +854,39 @@ fn has_cascadable_dependent(record: &DagRunRecordV1) -> bool {
     })
 }
 
+struct ArmedResidency {
+    change: crate::manager::residency_signal::ResidencyChange,
+    generation: u64,
+    #[cfg(test)]
+    fake_change: Option<std::sync::mpsc::Receiver<()>>,
+}
+
 /// Arms the session-wide residency release BEFORE the admission probe (the wake is edge
 /// triggered): a release observed by the waiter thread lands on the settlement channel.
-fn arm_residency_release(context: &DagSchedulerContext, parent_session_id: &str) -> (crate::manager::residency_signal::ResidencyChange, u64) {
+fn arm_residency_release(context: &DagSchedulerContext, parent_session_id: &str) -> ArmedResidency {
     let generation = context.residency_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    let residency_changed = context.task_manager.residency_changed(parent_session_id);
-    let wake_tx = context.state.settlement_tx.clone();
+    let change = context.task_manager.residency_changed(parent_session_id);
     #[cfg(test)]
     let fake_change = {
         let port = context.task_port.lock().unwrap_or_else(PoisonError::into_inner).clone();
         port.map(|port| { let (tx, rx) = channel(); port.residency_changed(parent_session_id, tx); rx })
     };
-    let change = residency_changed.clone();
+    ArmedResidency {
+        change,
+        generation,
+        #[cfg(test)]
+        fake_change,
+    }
+}
+
+/// Starts the waiter thread only once a cap denial actually parks admission; the change was
+/// captured before the probe, so a release that already fired still wakes immediately.
+fn spawn_residency_wake(context: &DagSchedulerContext, armed: &mut ArmedResidency) {
+    let wake_tx = context.state.settlement_tx.clone();
+    let generation = armed.generation;
+    #[cfg(test)]
+    let fake_change = armed.fake_change.take();
+    let change = armed.change.clone();
     let _ = std::thread::Builder::new().name("dag-residency-wake".into()).spawn(move || {
         #[cfg(test)]
         if let Some(receiver) = fake_change { let _ = receiver.recv(); } else { change.wait(); }
@@ -863,7 +894,6 @@ fn arm_residency_release(context: &DagSchedulerContext, parent_session_id: &str)
         change.wait();
         let _ = wake_tx.send(SchedulerWake::ResidencyReleased(generation));
     });
-    (residency_changed, generation)
 }
 
 // One admission pass over the frontier: the ordered residency-denied queue first (oldest denial
@@ -882,7 +912,7 @@ fn admit_frontier(context: &DagSchedulerContext, emitted: &mut std::collections:
         if denied.is_empty() && runnable.is_empty() { return Ok(true); }
         for node_id in &runnable { transition(context, node_id, DagNodeState::Scheduled, DagNodeTransitionReason::Scheduled); }
         emit_wave_admissions(context, &runnable, emitted)?;
-        let residency_released = arm_residency_release(context, &snapshot.parent_session_id);
+        let mut residency_released = arm_residency_release(context, &snapshot.parent_session_id);
         *context.state.admission_in_progress.lock().unwrap_or_else(PoisonError::into_inner) = true;
         let mut next_denied = Vec::new();
         let mut lease_denied = false;
@@ -935,7 +965,8 @@ fn admit_frontier(context: &DagSchedulerContext, emitted: &mut std::collections:
         // A contended or displaced admission lease is a bounded wait inside acquisition itself, so
         // the next probe is already paced; only a cap denial has to wait for a slot to free.
         if lease_denied { continue; }
-        if !settle_one(context, Some((&residency_released.0, residency_released.1)))? { return Ok(false); }
+        spawn_residency_wake(context, &mut residency_released);
+        if !settle_one(context, Some((&residency_released.change, residency_released.generation)))? { return Ok(false); }
     }
 }
 

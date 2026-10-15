@@ -1,6 +1,7 @@
 //! The in-process runner (`runners/in-process.ts`).
 
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -214,7 +215,7 @@ fn is_session_header(entry: &Value) -> bool {
 
 /// The first parseable line must be a session header; unparseable lines are skipped.
 fn assert_usable_session_file(session_path: &Path) -> Result<(), RunnerError> {
-    let content = fs::read_to_string(session_path).map_err(|error| {
+    let unreadable = |error: std::io::Error| {
         RunnerError::caused_by(
             RunnerFailureKind::SessionUnavailable,
             format!(
@@ -225,12 +226,22 @@ fn assert_usable_session_file(session_path: &Path) -> Result<(), RunnerError> {
                 message: error.to_string(),
             },
         )
-    })?;
-    let first_entry = content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .find_map(|line| serde_json::from_str::<Value>(line).ok());
+    };
+    // Stream lines: only the first parseable entry matters, so a long transcript is not
+    // read into memory whole.
+    let reader = BufReader::new(fs::File::open(session_path).map_err(unreadable)?);
+    let mut first_entry = None;
+    for line in reader.lines() {
+        let line = line.map_err(unreadable)?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<Value>(line) {
+            first_entry = Some(entry);
+            break;
+        }
+    }
     match first_entry {
         Some(entry) if is_session_header(&entry) => Ok(()),
         _ => Err(RunnerError::new(

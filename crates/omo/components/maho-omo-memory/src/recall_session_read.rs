@@ -32,19 +32,19 @@ pub struct RecallTranscriptTurn {
 
 /// The ctx-derived half of a settle, captured while the context is still alive.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RecallSessionSnapshot {
+pub struct RecallSessionSnapshot<'a> {
     pub id: String,
-    pub entries: Vec<Value>,
+    pub entries: &'a [Value],
 }
 
 /// Builds a snapshot from the values the native session context exposes.
-pub fn snapshot_session(id: &str, entries: &[Value]) -> Option<RecallSessionSnapshot> {
+pub fn snapshot_session<'a>(id: &str, entries: &'a [Value]) -> Option<RecallSessionSnapshot<'a>> {
     if id.is_empty() {
         return None;
     }
     Some(RecallSessionSnapshot {
         id: id.to_string(),
-        entries: entries.to_vec(),
+        entries,
     })
 }
 

@@ -9,18 +9,21 @@ pub struct BlockUnitCounter {
 }
 impl BlockUnitCounter {
     pub fn count(&mut self, index: usize, text: &str) -> usize {
-        if let Some((old, count, tail)) = self.entries.get(&index) {
+        if let Some((old, count, tail)) = self.entries.get_mut(&index) {
             if old == text {
                 return *count;
             }
-            if *count > 0 && text.len() > old.len() && text.starts_with(old) {
-                let mut n = count - 1;
+            if *count > 0 && text.len() > old.len() && text.starts_with(old.as_str()) {
+                let mut n = *count - 1;
                 let mut last = *tail;
                 for (i, _) in text[*tail..].grapheme_indices(true) {
                     n += 1;
-                    last = tail + i;
+                    last = *tail + i;
                 }
-                self.entries.insert(index, (text.into(), n, last));
+                // Extend the cached copy in place instead of re-copying the whole block.
+                old.push_str(&text[old.len()..]);
+                *count = n;
+                *tail = last;
                 return n;
             }
         }
@@ -37,11 +40,27 @@ impl BlockUnitCounter {
         if units == 0 || text.is_empty() {
             return String::new();
         }
-        if let Some((old, n, end, _)) = self.slices.get(&index)
-            && old == text
-            && *n == units
-        {
-            return text[..*end].into();
+        if let Some((old, n, end, last)) = self.slices.get_mut(&index) {
+            if old == text && *n == units {
+                return text[..*end].into();
+            }
+            // The text only grew and more units are wanted: resume from the last counted
+            // grapheme (it may have extended) instead of rescanning from the start.
+            if *n > 0 && units >= *n && text.len() >= old.len() && text.starts_with(old.as_str()) {
+                let mut count = *n - 1;
+                let mut new_end = *last;
+                let mut new_last = *last;
+                for (i, g) in text[*last..].grapheme_indices(true).take(units - count) {
+                    count += 1;
+                    new_last = *last + i;
+                    new_end = new_last + g.len();
+                }
+                old.push_str(&text[old.len()..]);
+                *n = count;
+                *end = new_end;
+                *last = new_last;
+                return text[..new_end].into();
+            }
         }
         let mut count = 0;
         let mut end = 0;
@@ -92,21 +111,48 @@ pub fn build_display_message(
     hide: bool,
     counter: &mut BlockUnitCounter,
 ) -> Value {
-    let mut display = target.clone();
+    let Some(fields) = target.as_object() else {
+        return target.clone();
+    };
+    // Copy the target field by field so a partially revealed block's full text is never cloned
+    // only to be overwritten by its slice.
+    let mut display = serde_json::Map::with_capacity(fields.len());
     let mut remaining = revealed;
-    if let Some(blocks) = display.get_mut("content").and_then(Value::as_array_mut) {
-        for (i, block) in blocks.iter_mut().enumerate() {
-            if let Some(key) = field(block, hide)
-                && let Some(text) = block.get(key).and_then(Value::as_str)
+    for (name, value) in fields {
+        let Some(blocks) = value.as_array().filter(|_| name == "content") else {
+            display.insert(name.clone(), value.clone());
+            continue;
+        };
+        let mut shown = Vec::with_capacity(blocks.len());
+        for (i, block) in blocks.iter().enumerate() {
+            let sliced = match field(block, hide)
+                .and_then(|key| block.get(key).and_then(Value::as_str).map(|text| (key, text)))
             {
-                let units = counter.count(i, text);
-                if remaining < units {
-                    let sliced = counter.slice(i, text, remaining);
-                    block[key] = Value::String(sliced);
+                Some((key, text)) => {
+                    let units = counter.count(i, text);
+                    let sliced = (remaining < units).then(|| (key, counter.slice(i, text, remaining)));
+                    remaining = remaining.saturating_sub(units);
+                    sliced
                 }
-                remaining = remaining.saturating_sub(units);
+                None => None,
+            };
+            match (sliced, block.as_object()) {
+                (Some((key, sliced)), Some(block_fields)) => {
+                    let mut copy = serde_json::Map::with_capacity(block_fields.len());
+                    let mut sliced = Some(sliced);
+                    for (block_key, block_value) in block_fields {
+                        let value = match sliced.take_if(|_| block_key == key) {
+                            Some(text) => Value::String(text),
+                            None => block_value.clone(),
+                        };
+                        copy.insert(block_key.clone(), value);
+                    }
+                    shown.push(Value::Object(copy));
+                }
+                _ => shown.push(block.clone()),
             }
         }
+        display.insert(name.clone(), Value::Array(shown));
     }
-    display
+    Value::Object(display)
 }

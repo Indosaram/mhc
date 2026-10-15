@@ -25,6 +25,33 @@ pub const MAX_TIMEOUT_MS: u64 = 300_000;
 
 const KILL_GRACE: Duration = Duration::from_millis(1_000);
 const WAIT_SLICE: Duration = Duration::from_millis(10);
+/// Upper bound on one main-loop park while waiting for `sg` output; the abort signal is polled at
+/// this cadence, the deadline is honoured exactly.
+const OUTPUT_WAIT_SLICE: Duration = Duration::from_millis(100);
+
+/// Counts serialized bytes without buffering them.
+struct ByteCounter(usize);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `JSON.stringify(record).length` in bytes. Serializing a `Map<String, Value>` into an infallible
+/// writer cannot fail, so the error arm is unreachable.
+fn serialized_len(record: &Map<String, Value>) -> usize {
+    let mut counter = ByteCounter(0);
+    match serde_json::to_writer(&mut counter, record) {
+        Ok(()) => counter.0,
+        Err(error) => unreachable!("serializing a JSON map cannot fail: {error}"),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SgRunnerErrorCode {
@@ -125,6 +152,7 @@ enum Event {
 
 struct State {
     records: Vec<Map<String, Value>>,
+    record_sizes: Vec<usize>,
     serialized_records_bytes: usize,
     pending: Vec<u8>,
     malformed: bool,
@@ -168,7 +196,7 @@ impl State {
                 return true;
             }
         };
-        let serialized_bytes = Value::Object(record.clone()).to_string().len();
+        let serialized_bytes = serialized_len(&record);
         let separator = usize::from(!self.records.is_empty());
         let next_aggregate = self.serialized_records_bytes + serialized_bytes + separator;
         if next_aggregate > MAX_MCP_PAYLOAD_BYTES {
@@ -177,15 +205,13 @@ impl State {
             return false;
         }
         self.records.push(record);
+        self.record_sizes.push(serialized_bytes);
         self.serialized_records_bytes = next_aggregate;
         if self.records.len() > self.max_matches {
             self.records.truncate(self.max_matches);
-            self.serialized_records_bytes = self
-                .records
-                .iter()
-                .map(|record| Value::Object(record.clone()).to_string().len())
-                .sum::<usize>()
-                + self.records.len().saturating_sub(1);
+            self.record_sizes.truncate(self.max_matches);
+            self.serialized_records_bytes =
+                self.record_sizes.iter().sum::<usize>() + self.records.len().saturating_sub(1);
             self.truncation_reason = Some(SgTruncationReason::MatchLimit);
             self.stop(StopReason::Limit);
             return false;
@@ -221,6 +247,7 @@ fn capture_stderr(mut stream: impl Read) -> StderrCapture {
         has_sg_error_diagnostic: false,
     };
     let mut line_prefix = String::new();
+    let mut prefix_len = 0usize;
     let mut buffer = [0u8; 8192];
     loop {
         let read = match stream.read(&mut buffer) {
@@ -232,8 +259,10 @@ fn capture_stderr(mut stream: impl Read) -> StderrCapture {
             for byte in chunk {
                 if *byte == b'\n' || *byte == b'\r' {
                     line_prefix.clear();
-                } else if line_prefix.chars().count() < 80 {
+                    prefix_len = 0;
+                } else if prefix_len < 80 {
                     line_prefix.push(char::from(*byte));
+                    prefix_len += 1;
                     if is_sg_error_prefix(&line_prefix) {
                         capture.has_sg_error_diagnostic = true;
                     }
@@ -419,6 +448,7 @@ pub fn spawn_sg_runner(input: SgRunnerInput<'_>) -> Result<SgRunnerResult, SgRun
 
     let mut state = State {
         records: Vec::new(),
+        record_sizes: Vec::new(),
         serialized_records_bytes: 2,
         pending: Vec::new(),
         malformed: false,
@@ -440,7 +470,10 @@ pub fn spawn_sg_runner(input: SgRunnerInput<'_>) -> Result<SgRunnerResult, SgRun
             state.stop(StopReason::Timeout);
             break;
         }
-        match receiver.recv_timeout(WAIT_SLICE) {
+        let wait = timeout
+            .saturating_sub(started_at.elapsed())
+            .min(OUTPUT_WAIT_SLICE);
+        match receiver.recv_timeout(wait) {
             Ok(Event::Stdout(chunk)) => state.push_stdout(&chunk),
             Ok(Event::StdoutClosed) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}

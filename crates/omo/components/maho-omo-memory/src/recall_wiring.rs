@@ -142,7 +142,7 @@ impl MemoryRecallWiring {
     }
 
     /// `collectCandidatesFromSnapshot`: the ctx-free collection over a captured snapshot.
-    pub fn collect_candidates_from_snapshot(&self, snapshot: &RecallSessionSnapshot, extra_texts: &[String]) -> Option<CollectedRecallCandidates> {
+    pub fn collect_candidates_from_snapshot(&self, snapshot: &RecallSessionSnapshot<'_>, extra_texts: &[String]) -> Option<CollectedRecallCandidates> {
         if self.child_sentinel() {
             return None;
         }
@@ -165,7 +165,7 @@ impl MemoryRecallWiring {
         let documents: Vec<MentionDocument> = corpus.documents.iter().map(|document| MentionDocument { path: document.path.clone() }).collect();
         let exclude_paths = self.mentions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).excluded_paths(TranscriptMentionInput {
             session_id: &snapshot.id,
-            entries: &snapshot.entries,
+            entries: snapshot.entries,
             documents: &documents,
         });
         let ledger = (self.options.ledger_for)(&context);
@@ -257,6 +257,15 @@ impl KibitzerWakeDeliver for WiringWakeDeliver {
 }
 
 impl KibitzerHookSink for MemoryRecallWiring {
+    /// `before_agent_start` always reads the branch; the tool hooks read it only for an EXISTING
+    /// sidecar.
+    fn wants_branch(&self, kind: maho_ext_api::EventKind, session_id: &str) -> bool {
+        match kind {
+            maho_ext_api::EventKind::ToolCall | maho_ext_api::EventKind::ToolResult => self.existing_sidecar(session_id).is_some(),
+            _ => true,
+        }
+    }
+
     fn on_before_agent_start(&self, session_id: &str, prompt: &str, entries: &[Value]) {
         self.delivery.mark_running(session_id);
         let Some(context) = (self.options.resolve_context)(session_id) else { return; };

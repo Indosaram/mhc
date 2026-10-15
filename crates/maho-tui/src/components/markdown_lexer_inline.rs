@@ -370,7 +370,7 @@ impl Lexer {
                 }
 
             let cut_src = clip_to_inline_extension(&src);
-            if let Some(token) = self.tokenizer_inline_text(&cut_src) {
+            if let Some(token) = self.tokenizer_inline_text(cut_src) {
                 let raw = token.raw().to_string();
                 src = drop_utf16(&src, utf16_len(&raw)).to_string();
                 if !raw.ends_with('_') {
@@ -874,18 +874,18 @@ fn is_label_end_inside_token(src: &str, label: &str, label_start: usize) -> bool
     false
 }
 
-fn clip_to_inline_extension(src: &str) -> String {
+fn clip_to_inline_extension(src: &str) -> &str {
     let Some(captures) = R_INLINE_LATEX_START.exec(src) else {
-        return src.to_string();
+        return src;
     };
     let start = captures.start();
     if start == 0 {
-        return src.to_string();
+        return src;
     }
     let temp_src = drop_utf16(src, 1);
     let Some(captures) = R_INLINE_LATEX_START.exec(temp_src) else {
-        return src.to_string();
+        return src;
     };
     let start_index = captures.start();
-    slice_utf16(src, 0, start_index + 1).to_string()
+    slice_utf16(src, 0, start_index + 1)
 }

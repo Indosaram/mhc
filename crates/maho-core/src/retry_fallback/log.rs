@@ -1,11 +1,12 @@
 use regex::Regex;
 use serde_json::{Map,Value};
-use std::{fs::{self,OpenOptions},io::Write,path::{Path,PathBuf}};
+use std::{fs::{self,OpenOptions},io::Write,path::{Path,PathBuf},sync::LazyLock};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt,PermissionsExt};
 
+static REDACTION_PATTERN:LazyLock<Result<Regex,regex::Error>>=LazyLock::new(||Regex::new(r#"(?i)((?:authorization\s*[:=]\s*(?:bearer|basic)\s+)|(?:bearer\s+)|(?:[?&](?:api[_-]?key|token|secret|password|auth(?:orization)?)=))[^\s&,"'}\]]+"#));
 fn safe_text(value:&str)->Result<String,regex::Error> {
-    let pattern=Regex::new(r#"(?i)((?:authorization\s*[:=]\s*(?:bearer|basic)\s+)|(?:bearer\s+)|(?:[?&](?:api[_-]?key|token|secret|password|auth(?:orization)?)=))[^\s&,"'}\]]+"#)?;
+    let pattern=REDACTION_PATTERN.as_ref().map_err(Clone::clone)?;
     let redacted=pattern.replace_all(value,"${1}[redacted]");
     if redacted.encode_utf16().count()<=200 {Ok(redacted.into_owned())} else {Ok(format!("{}...",redacted.chars().take(197).collect::<String>()))}
 }

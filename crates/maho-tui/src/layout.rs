@@ -78,13 +78,13 @@ pub struct LayoutBox {
     pub rect: LayoutRect,
     pub clip: LayoutRect,
     pub children: Vec<LayoutBox>,
-    pub lines: Option<Vec<String>>,
+    pub lines: Option<Rc<Vec<String>>>,
     /// Set instead of `lines` for a component that declares virtual content
     /// ([`Component::virtual_line_count`]); rows are fetched while painting.
     pub virtual_lines: Option<VirtualLines>,
     pub line_offset: usize,
     pub scroll_view: Option<Rc<RefCell<ScrollView>>>,
-    pub scroll_content_lines: Option<Vec<String>>,
+    pub scroll_content_lines: Option<Rc<Vec<String>>>,
     pub layer: i64,
 }
 
@@ -251,7 +251,7 @@ fn layout_component(
             rect,
             clip: intersect(clip, rect),
             children: Vec::new(),
-            lines: Some((*lines).clone()),
+            lines: Some(Rc::clone(&lines)),
             virtual_lines: None,
             line_offset,
             scroll_view: None,
@@ -298,7 +298,7 @@ fn layout_component(
                 // component has none materialized (the image registry is todo 9's).
                 None
             } else {
-                Some((*render_cached(context, &scroll_node.component, content_width)).clone())
+                Some(render_cached(context, &scroll_node.component, content_width))
             };
             let mut boxed = LayoutBox {
                 component: Rc::clone(component),
@@ -513,7 +513,7 @@ pub fn get_scrollbar_geometry(boxed: &LayoutBox, include_hidden_auto: bool) -> O
         .children
         .first()
         .map(|c| c.rect.height)
-        .or_else(|| boxed.scroll_content_lines.as_ref().map(Vec::len))
+        .or_else(|| boxed.scroll_content_lines.as_ref().map(|lines| lines.len()))
         .unwrap_or(0);
     let track_height = boxed.rect.height;
     let view = scroll_view.borrow();

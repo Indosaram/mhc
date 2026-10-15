@@ -691,9 +691,11 @@ impl Editor {
     }
 
     fn notify_change(&mut self) {
-        let text = self.get_text();
-        if let Some(callback) = self.on_change.as_mut() {
-            callback(&text);
+        if self.on_change.is_some() {
+            let text = self.get_text();
+            if let Some(callback) = self.on_change.as_mut() {
+                callback(&text);
+            }
         }
     }
 
@@ -968,10 +970,9 @@ impl Editor {
                             .state
                             .lines
                             .get(layout_line.logical_line)
-                            .cloned()
-                            .unwrap_or_default();
+                            .map_or("", String::as_str);
                         let ranges: Vec<MentionRange> = match &self.autocomplete_provider {
-                            Some(provider) => provider.borrow().get_mention_ranges(&logical_line),
+                            Some(provider) => provider.borrow().get_mention_ranges(logical_line),
                             None => Vec::new(),
                         };
                         mention_ranges_by_line.insert(layout_line.logical_line, ranges.clone());

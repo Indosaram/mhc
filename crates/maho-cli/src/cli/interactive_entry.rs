@@ -159,8 +159,10 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         for text in &parsed.messages { mode.enqueue_submission(text, None); }
         let clock = std::time::Instant::now();
         let mut installed_native_renderers = Vec::new();
+        let mut applied_renderer_generation: Option<u64> = None;
         // senpi `applyTerminalTitle` / `setProgress`: written only when the value changes.
         let mut applied_title: Option<String> = None;
+        let mut last_size = (terminal.columns(), terminal.rows());
         while !mode.shutdown_requested {
             #[cfg(unix)]
             {
@@ -189,14 +191,20 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             }
             mode.drain_events();
             while let Ok(request) = widget_requests.try_recv() { mode.handle_ui_request(request); }
-            let native = session.native_tool_renderers_snapshot::<(), serde_json::Value>().await;
-            let patch = session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>().await;
-            let inventory: Vec<_> = native.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))
-                .chain(patch.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))).collect();
-            if inventory != installed_native_renderers {
-                mode.install_native_tool_renderer_snapshot(native);
-                for (name, renderers) in patch { mode.install_native_tool_renderers(name, renderers); }
-                installed_native_renderers = inventory;
+            // Re-derive the renderer snapshot only when the live tool/renderer inventory changed;
+            // the generation is read first so a concurrent change forces one more recompute.
+            let renderer_generation = session.native_tool_renderers_generation();
+            if applied_renderer_generation != Some(renderer_generation) {
+                let native = session.native_tool_renderers_snapshot::<(), serde_json::Value>().await;
+                let patch = session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>().await;
+                let inventory: Vec<_> = native.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))
+                    .chain(patch.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))).collect();
+                if inventory != installed_native_renderers {
+                    mode.install_native_tool_renderer_snapshot(native);
+                    for (name, renderers) in patch { mode.install_native_tool_renderers(name, renderers); }
+                    installed_native_renderers = inventory;
+                }
+                applied_renderer_generation = Some(renderer_generation);
             }
             host.rows.set(usize::from(terminal.rows()));
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
@@ -293,13 +301,21 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             if progress != *progress_active { terminal.set_progress(progress); *progress_active = progress; }
             let title = mode.terminal_window_title();
             if applied_title.as_deref() != Some(title.as_str()) { terminal.set_title(&title); applied_title = Some(title); }
+            // Only frames whose content changed are requested; an idle loop skips the layout pass.
+            let mut content_changed = false;
             if fullscreen {
                 let (document, dock) = mode.render_split(usize::from(terminal.columns()));
-                *document_lines.borrow_mut() = document;
-                *dock_lines.borrow_mut() = dock;
+                if *document_lines.borrow() != document { *document_lines.borrow_mut() = document; content_changed = true; }
+                if *dock_lines.borrow() != dock { *dock_lines.borrow_mut() = dock; content_changed = true; }
             } else {
-                rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
+                let lines = mode.render(usize::from(terminal.columns()));
+                let mut rendered = rendered.borrow_mut();
+                if rendered.0 != lines { rendered.0 = lines; content_changed = true; }
             }
+            let size = (terminal.columns(), terminal.rows());
+            let resized = size != last_size;
+            last_size = size;
+            let host_requested = host.render.replace(false);
             // senpi `applySmoothStreamingRenderFps` + `requestRender(false, "input")`: the frame
             // cap follows the smooth-streaming FPS, and keystroke frames skip the throttle.
             screen.poll_timers(now);
@@ -307,7 +323,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             // `/settings` persists fullscreenCopyOnSelect; senpi pushes it with setCopyOnSelect.
             screen.set_copy_on_select(session.with_settings_manager(|settings| settings.get_bool("fullscreenCopyOnSelect")).unwrap_or(true));
             screen.base_mut().set_max_render_fps(mode.smooth_streaming_render_fps());
-            if had_input { screen.base_mut().request_render_from(false, "input", now); } else { screen.base_mut().request_render(false, now); }
+            if had_input { screen.base_mut().request_render_from(false, "input", now); } else if content_changed || resized || host_requested { screen.base_mut().request_render(false, now); }
             if screen.base_mut().take_due_render(now) {
                 screen.do_render(&mut terminal);
                 host.full_redraws.set(screen.base_mut().full_redraws());

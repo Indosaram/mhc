@@ -8,6 +8,8 @@ pub trait ChildReaperSyscalls {
     fn is_waitable(&mut self,pid:i32) -> bool;
     fn reap_exited(&mut self,pid:i32) -> bool;
     fn describe(&mut self,pid:i32) -> String;
+    /// Whether any child at all is waitable right now; `true` forces a full scan.
+    fn any_waitable(&mut self) -> bool { true }
 }
 /// Kernel-backed syscalls: a `/proc` ppid scan on linux, libproc on darwin (senpi `loadChildReaperSyscalls`).
 pub struct KernelChildReaperSyscalls;
@@ -30,6 +32,10 @@ impl ChildReaperSyscalls for KernelChildReaperSyscalls {
     #[cfg(target_os="macos")]
     fn list_direct_children(&mut self) -> Vec<i32> {
         libproc::processes::pids_by_type(libproc::processes::ProcFilter::ByParentProcess{ppid:std::process::id()}).map(|pids|pids.into_iter().filter_map(|pid|i32::try_from(pid).ok()).filter(|pid|*pid>0).take(4096).collect()).unwrap_or_default()
+    }
+    #[cfg(unix)]
+    fn any_waitable(&mut self) -> bool {
+        matches!(waitid(WaitId::All,WaitIdOptions::EXITED|WaitIdOptions::NOHANG|WaitIdOptions::NOWAIT),Ok(Some(_)))
     }
     #[cfg(unix)]
     fn is_waitable(&mut self,pid:i32) -> bool {

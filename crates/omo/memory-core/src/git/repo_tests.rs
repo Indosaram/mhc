@@ -279,6 +279,7 @@ fn test_shows_and_logs_history_with_trailers_and_paths() {
             paths: None,
             limit: Some(1),
             include_paths: true,
+            grep: None,
         }))
         .expect("log");
 

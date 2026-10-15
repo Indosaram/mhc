@@ -954,9 +954,10 @@ enum MistralEvent {
 }
 
 fn find_mistral_event_boundary(buffer: &str) -> Option<(usize, usize)> {
-    let pattern = "\r\n\r\n|\r\n\r|\r\n\n|\r\r\n|\n\r\n|\r\r|\n\r|\n\n";
-    let regex = fancy_regex::Regex::new(pattern).ok()?;
-    let found = regex.find(buffer).ok()??;
+    static BOUNDARY_RE: std::sync::LazyLock<Option<fancy_regex::Regex>> = std::sync::LazyLock::new(|| {
+        fancy_regex::Regex::new("\r\n\r\n|\r\n\r|\r\n\n|\r\r\n|\n\r\n|\r\r|\n\r|\n\n").ok()
+    });
+    let found = BOUNDARY_RE.as_ref()?.find(buffer).ok()??;
     Some((found.start(), found.end() - found.start()))
 }
 

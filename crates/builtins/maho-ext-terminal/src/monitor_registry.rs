@@ -171,8 +171,9 @@ impl MonitorRegistry {
                     changed=state.changed()=>{if changed.is_err() {return;}state.borrow_and_update();timer.reset();continue;}
                     changed=parked.changed()=>{if changed.is_err() {return;}let resumed=!*parked.borrow_and_update();if resumed {timer.reset_immediately();}else {timer.reset();}continue;}
                 };
-                let mut summary=None;
-                let (events,settled)={let mut file=checker.lock().expect("file monitor");let events=if timed_out {summary=Some((if persistent {"watcher expired"} else {"watcher timed_out"}).to_owned());file.stop(summary.as_deref().unwrap_or("watcher timed_out")).into_iter().collect()} else {match file.check() {Ok(events)=>events,Err(error)=>{summary=Some(format!("watcher error: {error}"));file.stop(summary.as_deref().unwrap_or("watcher error")).into_iter().collect()}}};(events,file.settled)};
+                // The poll does blocking lstat/open/digest work, so it runs off the async workers.
+                let blocking=checker.clone();
+                let Ok((events,settled,summary))=tokio::task::spawn_blocking(move || {let mut summary=None;let mut file=blocking.lock().expect("file monitor");let events:Vec<MonitorEvent>=if timed_out {summary=Some((if persistent {"watcher expired"} else {"watcher timed_out"}).to_owned());file.stop(summary.as_deref().unwrap_or("watcher timed_out")).into_iter().collect()} else {match file.check() {Ok(events)=>events,Err(error)=>{summary=Some(format!("watcher error: {error}"));file.stop(summary.as_deref().unwrap_or("watcher error")).into_iter().collect()}}};(events,file.settled,summary)}).await else {return;};
                 if settled {let snapshot=snapshots.lock().expect("file snapshots").shift_remove(&runtime_id);if let Some(snapshot)=snapshot {emit_ended(&ended,&snapshot,file_settle_reason(summary.as_deref().unwrap_or("")),None,now_ms());}}
                 publish_snapshot(&records,&snapshots,&transitions);
                 for event in events {emit(event);}
@@ -257,7 +258,7 @@ impl MonitorRegistry {
                     return;
                 }
                 tokio::select! {
-                    chunk=output.recv()=>{let Some(chunk)=chunk else {return;};let events=records.lock().expect("monitor records").get_mut(&id).map(|record|record.consume(&chunk,now_ms())).unwrap_or_default();publish_snapshot(&records,&files,&transitions);for event in events {emit(event);}},
+                    chunk=output.recv()=>{let Some(chunk)=chunk else {return;};let events=records.lock().expect("monitor records").get_mut(&id).map(|record|record.consume(&chunk,now_ms())).unwrap_or_default();if !events.is_empty() {publish_snapshot(&records,&files,&transitions);}for event in events {emit(event);}},
                     changed=exit.changed()=>{if changed.is_err() {return;}}
                 }
             }

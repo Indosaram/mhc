@@ -52,7 +52,8 @@ impl RecoveryTextProjection {
     pub fn feed(&mut self, projection: &mut StreamMessageProjection, native_projection: &mut RecoveryNativeProjection, text: &str) -> bool {
         for character in text.chars() {
             let options = self.active_invoke.then_some(RecoveryCodeMaskFeedOptions { active_invoke: true });
-            let segments = self.mask.feed(&character.to_string(), options);
+            let mut utf8 = [0u8; 4];
+            let segments = self.mask.feed(character.encode_utf8(&mut utf8), options);
             for segment in segments {
                 self.process_segment(projection, native_projection, segment);
             }

@@ -13,7 +13,7 @@ pub async fn register_list_handlers(core: &Arc<RwLock<ServerCore>>,threads: Arc<
                 let cursor = params["cursor"].as_str();
                 let limit = params["limit"].as_f64().filter(|limit|limit.is_finite());
                 if method == "thread/loaded/list" {
-                    let ids = threads.list_loaded().await.into_iter().map(|thread|thread["id"].clone()).collect::<Vec<_>>();
+                    let ids = threads.loaded_ids().await;
                     let offset = decode_cursor(cursor);
                     let end = limit.map_or(ids.len(),|limit|{let end = (offset as f64 + limit).trunc();if end < 0.0 {(ids.len() as f64 + end).max(0.0) as usize} else {end as usize}}).min(ids.len());
                     let data = if end >= offset {ids.iter().skip(offset).take(end-offset).cloned().collect::<Vec<_>>()} else {Vec::new()};

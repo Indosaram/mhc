@@ -182,6 +182,7 @@ fn find_search_corpus_matches(corpus: &SearchCorpus, normalized_query: &str) -> 
 }
 
 pub struct AltScreenSearchResult {
+    /// The fresh matches when `changed`; empty otherwise (the caller keeps its previous matches).
     pub matches: Vec<AltScreenSearchMatch>,
     pub changed: bool,
 }
@@ -214,12 +215,13 @@ impl AltScreenSearchIndex {
         let normalized_query = normalize_query(query);
         let changed = source_changed || Some(&normalized_query) != self.normalized_query.as_ref();
         let Some(corpus) = self.corpus.as_ref() else {
-            return AltScreenSearchResult { matches: self.matches.clone(), changed };
+            return AltScreenSearchResult { matches: Vec::new(), changed };
         };
-        if changed {
-            self.matches = find_search_corpus_matches(corpus, &normalized_query);
-            self.normalized_query = Some(normalized_query);
+        if !changed {
+            return AltScreenSearchResult { matches: Vec::new(), changed };
         }
+        self.matches = find_search_corpus_matches(corpus, &normalized_query);
+        self.normalized_query = Some(normalized_query);
         AltScreenSearchResult { matches: self.matches.clone(), changed }
     }
 }

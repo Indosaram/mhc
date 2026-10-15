@@ -185,16 +185,19 @@ pub fn create_rpc_model_admission(options: RpcModelAdmissionOptions) -> RpcModel
                         trailing_chars(result.stderr.trim(), 1_000),
                     ))
                 };
-                catalogs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(
-                        key.clone(),
-                        CachedCatalog {
-                            catalog: catalog.clone(),
-                            cached_at: now(),
-                        },
-                    );
+                let cached_at = now();
+                let mut cache = catalogs.lock().unwrap_or_else(PoisonError::into_inner);
+                // Expired entries are already ignored by lookups; evict them so distinct
+                // profiles (per-task cwd) do not accumulate for the runner's lifetime.
+                cache.retain(|_, cached| cached_at - cached.cached_at < MODEL_CATALOG_CACHE_TTL_MS);
+                cache.insert(
+                    key.clone(),
+                    CachedCatalog {
+                        catalog: catalog.clone(),
+                        cached_at,
+                    },
+                );
+                drop(cache);
                 catalog
             }
         };

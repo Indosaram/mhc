@@ -133,6 +133,42 @@ fn test_counter_is_recomputed_when_stale_derived_counter_on_disk_written() {
 }
 
 #[test]
+fn test_row_scan_keeps_full_row_validation_and_escaped_ids_when_state_is_recounted() {
+    // given
+    let temp_dir = tempfile::tempdir().unwrap();
+    let journal = create_journal(temp_dir.path());
+    let escaped = TranscriptEntry::Text(crate::journal::entries::TextTranscriptEntry::new(
+        "assistant",
+        "done",
+        "2026-08-09T12:00:00.000Z",
+        "line-\"quoted\"",
+        "assistant-1",
+    ));
+    journal.append(std::slice::from_ref(&escaped)).unwrap();
+
+    // when
+    let again = journal.append(std::slice::from_ref(&escaped)).unwrap();
+    let state = journal.get_state().unwrap();
+    std::fs::write(
+        &journal.transcript_path,
+        "{\"kind\":\"assistant\",\"captured_at\":\"t\",\"source_line_id\":\"a\",\"source_message_id\":\"m\"}\n",
+    )
+    .unwrap();
+
+    // then
+    assert_eq!(again, AppendResult { appended: 0, skipped: 1 });
+    assert_eq!(state.total_completed_steps, 1);
+    assert!(matches!(
+        journal.get_state(),
+        Err(JournalError::InvalidTranscriptJournalRow)
+    ));
+    assert!(matches!(
+        journal.append(&[]),
+        Err(JournalError::InvalidTranscriptJournalRow)
+    ));
+}
+
+#[test]
 fn test_settles_and_leaves_no_lock_behind_when_flush_runs_on_journal_with_rows() {
     // given
     let temp_dir = tempfile::tempdir().unwrap();

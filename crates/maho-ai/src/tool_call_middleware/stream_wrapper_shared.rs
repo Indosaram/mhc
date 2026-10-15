@@ -9,7 +9,9 @@ use crate::utils::diagnostics::AssistantMessageDiagnostic;
 use crate::utils::event_stream::AssistantMessageEventStream;
 use crate::utils::json_parse::parse_streaming_json;
 
-use super::stream_message_metadata::{clone_assistant_message_metadata, sync_assistant_message_metadata};
+use super::stream_message_metadata::{
+    clone_assistant_message_metadata, clone_message_with_content, sync_assistant_message_metadata,
+};
 use super::stream_thinking_projection::StreamThinkingProjection;
 use super::types::StreamParserEvent;
 
@@ -72,9 +74,11 @@ impl StreamMessageProjection {
         }
     }
 
-    pub fn sync(&mut self, source: AssistantMessage) {
-        self.source = source;
-        sync_assistant_message_metadata(&mut self.message, &self.source, &self.projected_diagnostics, self.preserve_source_metadata);
+    pub fn sync(&mut self, source: &AssistantMessage) {
+        // Only metadata is read back from `self.source` (by `append_diagnostic`), so keep it
+        // without the content blocks instead of deep-cloning the partial on every delta.
+        self.source = clone_message_with_content(source, Vec::new());
+        sync_assistant_message_metadata(&mut self.message, source, &self.projected_diagnostics, self.preserve_source_metadata);
     }
 
     pub fn append_diagnostic(&mut self, diagnostic: AssistantMessageDiagnostic) {

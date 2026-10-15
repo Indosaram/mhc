@@ -50,7 +50,7 @@ fn capture_repo_delta_patch(repo_dir: &Path, baseline: &RepoBaseline) -> Result<
     let mut committed_patch = String::new();
     if !current.head_commit.is_empty() && current.head_commit != baseline.head_commit {
         let base = if baseline.head_commit.is_empty() {
-            write_synthetic_tree(repo_dir, "", &[])?
+            write_synthetic_tree(repo_dir, "", &[] as &[&str])?
         } else {
             baseline.head_commit.clone()
         };
@@ -60,19 +60,19 @@ fn capture_repo_delta_patch(repo_dir: &Path, baseline: &RepoBaseline) -> Result<
         &baseline.repo_root,
         &baseline.head_commit,
         &[
-            baseline.staged.clone(),
-            baseline.unstaged.clone(),
-            baseline.untracked_patch.clone(),
+            baseline.staged.as_str(),
+            baseline.unstaged.as_str(),
+            baseline.untracked_patch.as_str(),
         ],
     )?;
     let current_tree = write_synthetic_tree(
         &baseline.repo_root,
         &baseline.head_commit,
         &[
-            committed_patch,
-            current.staged.clone(),
-            current.unstaged.clone(),
-            current.untracked_patch.clone(),
+            committed_patch.as_str(),
+            current.staged.as_str(),
+            current.unstaged.as_str(),
+            current.untracked_patch.as_str(),
         ],
     )?;
     diff_trees(&baseline.repo_root, &baseline_tree, &current_tree)

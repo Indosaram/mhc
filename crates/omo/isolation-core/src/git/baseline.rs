@@ -131,7 +131,8 @@ fn capture_stream(
     }));
     let output = run_baseline_read(args, &options, capture)?;
     *remaining = remaining.saturating_sub(output.stdout.len() as u64);
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8(output.stdout)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned()))
 }
 
 pub fn discover_nested_repos(repo_root: &Path) -> Result<Vec<String>> {

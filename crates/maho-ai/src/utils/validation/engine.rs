@@ -5,8 +5,10 @@
 //! "no pop on failure" behavior of `ErrorSchemaPushStack`) follow the TypeBox build.
 //! `Check` is the error walk's boolean: an error is only ever recorded on a failing path.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex};
 
+use fancy_regex::Regex;
 use serde_json::{Map, Value};
 
 use super::formats::{js_regex, test_format};
@@ -156,8 +158,23 @@ fn type_names(schema: &Map<String, Value>) -> Option<Vec<&str>> {
     }
 }
 
+/// Compiled schema `pattern`/`patternProperties` sources, keyed by source; bounded by the distinct
+/// schema patterns in use (model-supplied `format: "regex"` values are never cached).
+static PATTERN_CACHE: LazyLock<Mutex<HashMap<String, Option<Arc<Regex>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
 fn regex_test(pattern: &str, text: &str) -> bool {
-    js_regex(pattern, false).is_some_and(|re| re.is_match(text).unwrap_or(false))
+    let compiled = {
+        let mut cache = PATTERN_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match cache.get(pattern) {
+            Some(entry) => entry.clone(),
+            None => {
+                let entry = js_regex(pattern, false).map(Arc::new);
+                cache.insert(pattern.to_owned(), entry.clone());
+                entry
+            }
+        }
+    };
+    compiled.is_some_and(|re| re.is_match(text).unwrap_or(false))
 }
 
 fn is_schema(value: &Value) -> bool {

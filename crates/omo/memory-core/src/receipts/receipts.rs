@@ -200,11 +200,18 @@ pub fn append_memory_receipt_once(
     under_receipts_lock(runtime_dir, || {
         let identity = receipt_identity_from_input(input);
         let text = read_text(runtime_dir)?;
-        let parsed = parse_receipts(&text);
-        if parsed
-            .receipts
-            .iter()
-            .any(|r| receipt_identity_from_receipt(r) == identity)
+        // Only a line holding the receipt's own id (as written, JSON-escaped) can share its identity, so
+        // every other line is skipped before it is parsed; nothing parsed is retained.
+        let id = match input {
+            MemoryReceiptInput::Facts { batch_id, .. } => batch_id,
+            MemoryReceiptInput::Run { run_id, .. } => run_id,
+        };
+        let needle = serde_json::to_string(id).map_err(|e| e.to_string())?;
+        if text
+            .split('\n')
+            .filter(|line| !line.is_empty() && line.contains(needle.as_str()))
+            .filter_map(parse_receipt)
+            .any(|r| receipt_identity_from_receipt(&r) == identity)
         {
             return Ok(false);
         }

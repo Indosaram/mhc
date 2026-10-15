@@ -11,7 +11,7 @@ maho-ai = { path = "../../maho-ai" }
 maho-tools = { path = "../../maho-tools" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["fs", "macros", "rt"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt"] }
 base64 = "=0.22.1"
 
 [dev-dependencies]

@@ -41,8 +41,20 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
     let started_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error|error.to_string())?.as_secs_f64()*1000.0;
     let activity=format!("running {}",String::from_utf16_lossy(&command.encode_utf16().take(80).collect::<Vec<_>>()));
     let emit=||->Result<(),String> {
-        let output=manager.lock().map_err(|_|"terminal manager state poisoned")?.get(&id).ok_or("terminal session missing")?.full_output().map_err(|error|error.to_string())?;
-        let body=format_terminal_tool_output(&output).body;let units=body.encode_utf16().collect::<Vec<_>>();let text=String::from_utf16_lossy(&units[units.len().saturating_sub(2000)..]);
+        // Format only a line-aligned raw tail (doubling until it yields 2000 units or covers the whole
+        // buffer): the last 2000 body units equal those of formatting the full retained output.
+        let mut window=64*1024usize;
+        let body=loop {
+            let (raw,whole)=manager.lock().map_err(|_|"terminal manager state poisoned")?.get(&id).ok_or("terminal session missing")?.tail_output(window).map_err(|error|error.to_string())?;
+            let body=format_terminal_tool_output(&raw).body;
+            if whole||body.encode_utf16().count()>=2000 {break body;}
+            window=window.saturating_mul(2);
+        };
+        // Last 2000 UTF-16 units without materializing the whole body as UTF-16; a split surrogate pair
+        // decodes to U+FFFD exactly as the lossy slice did.
+        let (mut start,mut taken,mut split)=(body.len(),0usize,false);
+        for (index,character) in body.char_indices().rev() {let units=character.len_utf16();if taken+units>2000 {split=taken<2000;break;}taken+=units;start=index;}
+        let text=if split {format!("\u{fffd}{}",&body[start..])} else {body[start..].to_owned()};
         if let Some(update)=&call.on_update {update(maho_tools::definition::ToolResult {content:vec![maho_tools::definition::ToolContent::text(text)],details:Some(json!({"progress":{"activity":activity,"startedAt":started_at}}))}).map_err(|error|error.to_string())?;}Ok(())
     };
     if let Some(update)=&call.on_update {update(maho_tools::definition::ToolResult {content:vec![],details:None}).map_err(|error|error.to_string())?;}

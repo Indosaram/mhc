@@ -9,8 +9,13 @@ fn call_id(item: &Value) -> Option<&str> {
 }
 
 pub fn sanitize_openai_responses_payload(payload: &Value) -> Value {
-    let Some(input) = payload.get("input").and_then(Value::as_array) else { return payload.clone() };
-    if payload.get("previous_response_id").and_then(Value::as_str).is_some_and(|id| !id.is_empty()) { return payload.clone(); }
+    sanitize_openai_responses_payload_if_changed(payload).unwrap_or_else(|| payload.clone())
+}
+
+/// `None` when the payload needs no change, so callers can skip copying it.
+pub fn sanitize_openai_responses_payload_if_changed(payload: &Value) -> Option<Value> {
+    let input = payload.get("input").and_then(Value::as_array)?;
+    if payload.get("previous_response_id").and_then(Value::as_str).is_some_and(|id| !id.is_empty()) { return None; }
     let mut seen_functions = BTreeSet::new();
     let mut seen_custom = BTreeSet::new();
     let mut function_outputs = BTreeSet::new();
@@ -56,8 +61,8 @@ pub fn sanitize_openai_responses_payload(payload: &Value) -> Value {
             }
         }
     }
-    if !changed { return payload.clone(); }
+    if !changed { return None; }
     let mut result = payload.clone();
     result["input"] = Value::Array(sanitized);
-    result
+    Some(result)
 }

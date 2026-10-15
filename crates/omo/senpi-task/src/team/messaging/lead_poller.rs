@@ -54,6 +54,9 @@ impl LeadPoller for TeamLeadPoller {
         if self.stopped.load(Ordering::SeqCst) {
             return Ok(());
         }
+        if self.lock_pending().is_empty() && !self.inbox_has_work() {
+            return Ok(());
+        }
         let mut outcome: Result<(), LeadPollError> = Ok(());
         with_inbox_consumer_lease(
             &self.deps.team_run_id,
@@ -237,6 +240,14 @@ impl TeamLeadPoller {
         let team_run_id = &self.deps.team_run_id;
         let config = &self.deps.config;
         for entry in entries {
+            // Reserved files are named from their message id, so pending ones skip the re-read.
+            if let Some(id) = entry
+                .strip_prefix(RESERVED_PREFIX)
+                .and_then(|rest| rest.strip_suffix(RESERVED_SUFFIX))
+                && self.lock_pending().contains_key(id)
+            {
+                continue;
+            }
             let message = read_reserved_message(&dir.join(&entry))?;
             if self.lock_pending().contains_key(&message.message_id) {
                 continue;
@@ -272,6 +283,30 @@ impl TeamLeadPoller {
             }
         }
         Ok(())
+    }
+
+    /// Lease-free pre-check: false only when the inbox provably holds no unread `*.json` and no
+    /// reservation to recover. Any read error falls through to the leased path.
+    fn inbox_has_work(&self) -> bool {
+        let Ok(dir) = self.inbox_dir() else {
+            return true;
+        };
+        let read = match std::fs::read_dir(&dir) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+            Err(_) => return true,
+        };
+        for entry in read {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.ends_with(RESERVED_SUFFIX) && (!name.starts_with('.') || name.starts_with(RESERVED_PREFIX)) {
+                return true;
+            }
+        }
+        false
     }
 
     fn inbox_dir(&self) -> team_core::Result<PathBuf> {

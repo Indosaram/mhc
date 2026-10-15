@@ -131,12 +131,12 @@ impl RecoveryCodeMask {
             return;
         }
         self.flush_plain_indent(segments, true, false);
-        emit(segments, &character.to_string(), true, false);
+        emit(segments, character.encode_utf8(&mut [0u8; 4]), true, false);
         self.update_line_position(character);
     }
 
     fn process_inline_character(&mut self, segments: &mut Vec<RecoveryCodeMaskSegment>, character: char) {
-        emit(segments, &character.to_string(), false, false);
+        emit(segments, character.encode_utf8(&mut [0u8; 4]), false, false);
         if is_line_break(character) {
             self.state = MaskState::Plain;
         }
@@ -147,11 +147,11 @@ impl RecoveryCodeMask {
         let MaskState::Fenced { closing_line, .. } = &self.state else { return };
         let closing_line = *closing_line;
         if self.at_line_start && character == ' ' && self.leading_spaces < 3 {
-            emit(segments, &character.to_string(), false, false);
+            emit(segments, character.encode_utf8(&mut [0u8; 4]), false, false);
             self.leading_spaces += 1;
             return;
         }
-        emit(segments, &character.to_string(), false, false);
+        emit(segments, character.encode_utf8(&mut [0u8; 4]), false, false);
         if closing_line && is_line_break(character) {
             self.state = MaskState::Plain;
         }

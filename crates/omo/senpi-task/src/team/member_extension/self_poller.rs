@@ -1,5 +1,6 @@
 //! Port of `team/member-extension/self-poller.ts`.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,11 +16,13 @@ use team_core::team_mailbox::{
     is_message_consumed, list_unread_messages, release_delivery_reservation,
     reserve_message_for_delivery, with_inbox_consumer_lease,
 };
-use team_core::team_registry::get_inbox_dir;
+use team_core::team_registry::{get_inbox_dir, resolve_base_dir};
 use team_core::types::Message;
 
 use crate::team::member_extension::qa_inject_hold::QaAfterInjectHold;
-use crate::team::member_extension::session_scan::is_missing_path;
+use crate::team::member_extension::session_scan::{
+    SessionJsonlSignature, is_missing_path, session_jsonl_signature,
+};
 use crate::team::messaging::message::build_peer_message_envelope;
 
 pub use crate::team::member_extension::session_scan::session_jsonl_contains_message;
@@ -97,6 +100,8 @@ pub struct PendingDelivery {
 pub struct MemberSelfPoller {
     deps: MemberSelfPollerDeps,
     pending: Mutex<Vec<(String, PendingDelivery)>>,
+    /// Session JSONL signature of the last ack scan that missed, per pending message id.
+    ack_misses: Mutex<HashMap<String, SessionJsonlSignature>>,
     stopped: AtomicBool,
 }
 
@@ -104,6 +109,7 @@ pub fn create_member_self_poller(deps: MemberSelfPollerDeps) -> MemberSelfPoller
     MemberSelfPoller {
         deps,
         pending: Mutex::new(Vec::new()),
+        ack_misses: Mutex::new(HashMap::new()),
         stopped: AtomicBool::new(false),
     }
 }
@@ -111,6 +117,9 @@ pub fn create_member_self_poller(deps: MemberSelfPollerDeps) -> MemberSelfPoller
 impl MemberSelfPoller {
     pub fn poll_once(&self, filter: Option<&MemberPollFilter>) -> Result<(), SelfPollerError> {
         if self.is_stopped() {
+            return Ok(());
+        }
+        if self.pending_lock().is_empty() && !self.inbox_has_unread() {
             return Ok(());
         }
         let from = filter.and_then(|filter| filter.from.clone());
@@ -134,6 +143,9 @@ impl MemberSelfPoller {
         if self.is_stopped() {
             return Ok(());
         }
+        if self.pending_lock().is_empty() {
+            return Ok(());
+        }
         self.with_lease(|| self.check_pending_under_lease())
     }
 
@@ -151,6 +163,34 @@ impl MemberSelfPoller {
     /// Message ids currently injected but not yet acked through the session JSONL.
     pub fn pending_message_ids(&self) -> Vec<String> {
         self.pending_lock().iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    /// Lease-free pre-check: false only when the inbox provably holds no unread `*.json`.
+    /// Any read error falls through to the leased path so errors surface as before.
+    fn inbox_has_unread(&self) -> bool {
+        let Ok(dir) = get_inbox_dir(
+            &resolve_base_dir(&self.deps.config),
+            &self.deps.team_run_id,
+            &self.deps.member_name,
+        ) else {
+            return true;
+        };
+        let read_dir = match fs::read_dir(&dir) {
+            Ok(read_dir) => read_dir,
+            Err(error) if is_missing_path(&error) => return false,
+            Err(_) => return true,
+        };
+        for entry in read_dir {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.ends_with(".json") && !name.starts_with('.') {
+                return true;
+            }
+        }
+        false
     }
 
     fn is_stopped(&self) -> bool {
@@ -192,9 +232,23 @@ impl MemberSelfPoller {
 
     fn check_pending_under_lease(&self) -> Result<(), SelfPollerError> {
         let snapshot = std::mem::take(&mut *self.pending_lock());
+        // Transcripts are append-only: an unchanged signature cannot hold an envelope a
+        // previous scan missed. Signature errors fall back to scanning.
+        let signature = if snapshot.is_empty() {
+            None
+        } else {
+            session_jsonl_signature(&self.deps.session_dir).ok()
+        };
+        let mut misses = self.ack_misses.lock().unwrap_or_else(PoisonError::into_inner);
         let mut kept: Vec<(String, PendingDelivery)> = Vec::new();
         let mut iter = snapshot.into_iter();
         while let Some((id, delivery)) = iter.next() {
+            if let Some(signature) = signature.as_ref()
+                && misses.get(&id) == Some(signature)
+            {
+                kept.push((id, delivery));
+                continue;
+            }
             let contained =
                 match session_jsonl_contains_message(&self.deps.session_dir, &delivery.message.message_id) {
                     Ok(contained) => contained,
@@ -206,9 +260,13 @@ impl MemberSelfPoller {
                     }
                 };
             if !contained {
+                if let Some(signature) = signature.as_ref() {
+                    misses.insert(id.clone(), signature.clone());
+                }
                 kept.push((id, delivery));
                 continue;
             }
+            misses.remove(&id);
             if let Err(error) = commit_delivery_reservation(&delivery.reservation) {
                 kept.push((id, delivery));
                 kept.extend(iter);
@@ -256,6 +314,10 @@ impl MemberSelfPoller {
 
         let envelope = build_peer_message_envelope(&message);
         let message_id = message.message_id.clone();
+        self.ack_misses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&message_id);
         {
             let mut pending = self.pending_lock();
             let delivery = PendingDelivery {

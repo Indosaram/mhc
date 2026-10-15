@@ -265,21 +265,24 @@ impl JsonRpcConnection {
             if buffer.len() < body_end {
                 return;
             }
-            let body = String::from_utf8_lossy(&buffer[body_start..body_end]).into_owned();
+            let parsed = {
+                let body = String::from_utf8_lossy(&buffer[body_start..body_end]);
+                serde_json::from_str::<Value>(&body)
+            };
             buffer.drain(..body_end);
-            self.dispatch_body(&body);
+            self.dispatch_body(parsed);
         }
     }
 
-    fn dispatch_body(&self, body: &str) {
-        let parsed: Value = match serde_json::from_str(body) {
+    fn dispatch_body(&self, parsed: serde_json::Result<Value>) {
+        let parsed: Value = match parsed {
             Ok(parsed) => parsed,
             Err(error) => {
                 self.spawn_write_error(Value::Null, PARSE_ERROR, error.to_string());
                 return;
             }
         };
-        let Value::Object(message) = parsed else {
+        let Value::Object(mut message) = parsed else {
             self.spawn_write_error(
                 Value::Null,
                 INVALID_REQUEST,
@@ -290,7 +293,7 @@ impl JsonRpcConnection {
         if message.contains_key("id")
             && (message.contains_key("result") || message.contains_key("error"))
         {
-            self.handle_response(&message);
+            self.handle_response(message);
             return;
         }
         let Some(method) = message
@@ -303,19 +306,19 @@ impl JsonRpcConnection {
             return;
         };
         if message.contains_key("id") {
-            self.handle_request(&message, &method);
+            self.handle_request(message, &method);
             return;
         }
         let handler = self.state().notification_handlers.get(&method).cloned();
         if let Some(handler) = handler
-            && let Err(error) = handler(message.get("params").cloned().unwrap_or(Value::Null))
+            && let Err(error) = handler(message.remove("params").unwrap_or(Value::Null))
         {
             self.emit_error(&error);
         }
     }
 
-    fn handle_response(&self, message: &Map<String, Value>) {
-        let Some(id) = message_id(message) else {
+    fn handle_response(&self, mut message: Map<String, Value>) {
+        let Some(id) = message_id(&message) else {
             return;
         };
         let Some(sender) = self.state().pending.remove(&id_key(&id)) else {
@@ -323,13 +326,13 @@ impl JsonRpcConnection {
         };
         let outcome = match message.get("error") {
             Some(error) => Err(json_rpc_error_to_error(error)),
-            None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
+            None => Ok(message.remove("result").unwrap_or(Value::Null)),
         };
         let _ = sender.send(outcome);
     }
 
-    fn handle_request(&self, message: &Map<String, Value>, method: &str) {
-        let Some(id) = message_id(message) else {
+    fn handle_request(&self, mut message: Map<String, Value>, method: &str) {
+        let Some(id) = message_id(&message) else {
             self.spawn_write_error(
                 Value::Null,
                 INVALID_REQUEST,
@@ -341,7 +344,7 @@ impl JsonRpcConnection {
             self.spawn_write_error(id, METHOD_NOT_FOUND, format!("Method not found: {method}"));
             return;
         };
-        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let params = message.remove("params").unwrap_or(Value::Null);
         let connection = self.clone();
         tokio::spawn(async move {
             let written = match handler(params).await {
@@ -380,10 +383,13 @@ impl JsonRpcConnection {
 
     async fn write_message(&self, message: &Value) -> Result<(), LspError> {
         let body = message.to_string();
-        let payload = format!("Content-Length: {}\r\n\r\n{body}", body.len());
+        let header = format!("Content-Length: {}\r\n\r\n", body.len());
         let mut writer = self.shared.writer.lock().await;
-        let written = match writer.write_all(payload.as_bytes()).await {
-            Ok(()) => writer.flush().await,
+        let written = match writer.write_all(header.as_bytes()).await {
+            Ok(()) => match writer.write_all(body.as_bytes()).await {
+                Ok(()) => writer.flush().await,
+                Err(error) => Err(error),
+            },
             Err(error) => Err(error),
         };
         written.map_err(|error| match error.kind() {

@@ -3,6 +3,8 @@
 use super::types::WorkspaceSnapshotEntry;
 use crate::request_context::resolve;
 use percent_encoding::percent_decode_str;
+use sha2::Digest;
+use sha2::Sha256;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -125,6 +127,15 @@ pub fn uri_to_canonical_workspace_path(uri: &str, workspace_root: &str) -> Works
         followed_symbolic_link: Path::new(&requested_path).exists() && is_symlink(&requested_path),
         requested_path,
     })
+}
+
+/// Length plus sha256 of a snapshotted file, used where the content itself is not needed.
+pub fn file_digest(content: &str) -> String {
+    format!(
+        "{}:{}",
+        content.len(),
+        hex::encode(Sha256::digest(content.as_bytes()))
+    )
 }
 
 /// TS `snapshotPath`.

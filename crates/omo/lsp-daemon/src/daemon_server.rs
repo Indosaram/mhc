@@ -233,28 +233,33 @@ async fn assert_self_probe(
 
 async fn accept_loop(listener: Listener, inner: Arc<Inner>, state: DaemonRouteState) {
     static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
+    const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
     loop {
         let stream = match listener.accept().await {
             Ok(stream) => stream,
             Err(error) => {
                 log_server_error(&error.to_string());
+                // Persistent errors (EMFILE/ENFILE) fail immediately; back off instead of spinning.
+                tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                 continue;
             }
         };
         let id = NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed);
         inner.connections.fetch_add(1, Ordering::SeqCst);
         inner.touch();
+        // Hold the map lock across spawn so a fast-finishing connection's guard cannot
+        // remove its entry before it is inserted.
+        let mut connection_tasks = inner
+            .connection_tasks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let task = tokio::spawn(serve_connection(
             stream,
             Arc::clone(&inner),
             state.clone(),
             id,
         ));
-        inner
-            .connection_tasks
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, task.abort_handle());
+        connection_tasks.insert(id, task.abort_handle());
     }
 }
 

@@ -403,13 +403,24 @@ fn default_schedule() -> CompletionRetrySchedule {
     Arc::new(|task: ScheduledTask, delay_ms: u64| -> ScheduledCancel {
         let cancelled = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancelled);
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(delay_ms));
-            if !flag.load(Ordering::SeqCst) {
-                task();
+        let timer = std::thread::spawn(move || {
+            // park_timeout may wake early (unpark or spuriously): keep waiting until the deadline
+            // or a cancellation, so a cancelled retry releases its thread immediately.
+            let deadline = std::time::Instant::now() + Duration::from_millis(delay_ms);
+            while !flag.load(Ordering::SeqCst) {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    task();
+                    return;
+                }
+                std::thread::park_timeout(deadline - now);
             }
         });
-        Box::new(move || cancelled.store(true, Ordering::SeqCst))
+        let thread = timer.thread().clone();
+        Box::new(move || {
+            cancelled.store(true, Ordering::SeqCst);
+            thread.unpark();
+        })
     })
 }
 

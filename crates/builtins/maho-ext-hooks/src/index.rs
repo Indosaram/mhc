@@ -18,9 +18,12 @@ fn source_options(ctx:&ExtensionContext)->Result<HookConfigLoaderOptions,Extensi
     let paths=|paths:&[std::path::PathBuf]|paths.iter().map(|path|text(path)).collect();
     Ok(HookConfigLoaderOptions {cwd:text(&sources.cwd),agent_dir:text(&sources.agent_dir),global_settings_hooks:sources.global_settings_hooks,project_settings_hooks:sources.project_settings_hooks,global_hooks_path:Some(text(&sources.global_hooks_path)),project_hooks_path:Some(text(&sources.project_hooks_path)),global_hook_source_paths:paths(&sources.global_hook_source_paths),project_hook_source_paths:paths(&sources.project_hook_source_paths),pre_session_hook_source_paths:paths(&sources.pre_session_hook_source_paths),runtime_hook_source_paths:paths(&sources.runtime_hook_source_paths)})
 }
-pub fn refresh_state(ctx:&ExtensionContext)->Result<HookRuntimeState,ExtensionFailure> {
+pub fn refresh_state(ctx:&ExtensionContext)->Result<HookRuntimeState,ExtensionFailure> {load_state(ctx,false)}
+/// Trust state is only consulted for matched handlers, so dispatch skips reading it when no hook is configured.
+fn load_state(ctx:&ExtensionContext,skip_trust_without_handlers:bool)->Result<HookRuntimeState,ExtensionFailure> {
     let options=source_options(ctx)?;
     let parsed=load_hook_config_files(&options);let storage=FileHookStateStorage::new(std::path::Path::new(&options.agent_dir),std::path::Path::new(&options.cwd));
+    if skip_trust_without_handlers&&parsed.executable_handlers.is_empty() {return Ok(HookRuntimeState {parsed,trust:empty_hook_trust_state(),storage});}
     let mut trust=storage.read(HookTrustStorageScope::Global).map_err(|error|ExtensionFailure::new(error.to_string()))?;
     let project=if ctx.is_project_trusted() {storage.read(HookTrustStorageScope::Project).map_err(|error|ExtensionFailure::new(error.to_string()))?} else {empty_hook_trust_state()};trust.hooks.extend(project.hooks);
     Ok(HookRuntimeState {parsed,trust,storage})
@@ -35,7 +38,7 @@ async fn refresh_notification_state(ctx:&ExtensionContext)->Result<HookRuntimeSt
     Ok(HookRuntimeState {parsed,trust,storage})
 }
 async fn dispatch(ctx:&ExtensionContext,input:serde_json::Value)->Result<HookDispatchResult,ExtensionFailure> {
-    let mut state=if input.get("event").and_then(serde_json::Value::as_str)==Some("Notification") {refresh_notification_state(ctx).await?}else {refresh_state(ctx)?};let cwd=ctx.cwd.clone();let signal=ctx.signal.clone();let wire=input.clone();
+    let mut state=if input.get("event").and_then(serde_json::Value::as_str)==Some("Notification") {refresh_notification_state(ctx).await?}else {load_state(ctx,true)?};let cwd=ctx.cwd.clone();let signal=ctx.signal.clone();let wire=input.clone();
     let mut lifecycle_diagnostics=if input.get("event").and_then(serde_json::Value::as_str)==Some("Notification") {state.parsed.diagnostics.clone()}else {Vec::new()};
     if matches!(input.get("event").and_then(serde_json::Value::as_str),Some("SessionStart"|"PreCompact"|"PostCompact"|"Notification")) {
         let platform=if cfg!(windows) {"win32"} else {"linux"};let mut selected=Vec::new();let mut trust=empty_hook_trust_state();
@@ -49,7 +52,7 @@ async fn dispatch(ctx:&ExtensionContext,input:serde_json::Value)->Result<HookDis
             let mut matched=handler.event==crate::types::SupportedHookEvent::Notification||matcher.is_empty()||matcher=="*";
             if !matched {
                 matched=matcher.split(['|',',']).map(str::trim).filter(|part|!part.is_empty()).any(|part|subjects.contains(&part));
-                match fancy_regex::Regex::new(matcher) {Ok(regex)=>matched|=subjects.iter().any(|subject|regex.is_match(subject).unwrap_or(false)),Err(error)=>lifecycle_diagnostics.push(crate::types::HookDiagnostic {source:handler.source.clone(),event:Some(handler.event.as_str().to_owned()),code:"invalid_matcher".to_owned(),message:format!("Hook matcher is not a valid JavaScript regular expression: {error}"),path:format!("hooks.{}[{}].matcher",handler.event.as_str(),handler.group_index),severity:crate::types::Severity::Warning})}
+                match crate::matcher::compiled_matcher(matcher) {Ok(regex)=>matched|=subjects.iter().any(|subject|regex.is_match(subject).unwrap_or(false)),Err(error)=>lifecycle_diagnostics.push(crate::types::HookDiagnostic {source:handler.source.clone(),event:Some(handler.event.as_str().to_owned()),code:"invalid_matcher".to_owned(),message:format!("Hook matcher is not a valid JavaScript regular expression: {error}"),path:format!("hooks.{}[{}].matcher",handler.event.as_str(),handler.group_index),severity:crate::types::Severity::Warning})}
             }
             if !matched||!crate::trust::is_command_hook_trusted(&handler,&state.trust,platform).map_err(|error|ExtensionFailure::new(error.to_string()))? {continue;}
             let mut handler=handler;handler.matcher=None;

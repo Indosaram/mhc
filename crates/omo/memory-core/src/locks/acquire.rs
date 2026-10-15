@@ -292,12 +292,17 @@ pub fn acquire_lock(
     }
 
 
+    let mut first_attempt = true;
     loop {
         if options.cancellation.map(|f| f()).unwrap_or(false) {
             return Err(AcquireLockError::Aborted);
         }
 
-        if publish_exclusive(lock_path, record)? {
+        // On retries, an existing lock file means the hard-link publish would fail anyway; skip
+        // the candidate create + fsync + link + unlink round trip and inspect the owner directly.
+        let skip_publish = !first_attempt && lock_path.exists();
+        first_attempt = false;
+        if !skip_publish && publish_exclusive(lock_path, record)? {
             return Ok(());
         }
 

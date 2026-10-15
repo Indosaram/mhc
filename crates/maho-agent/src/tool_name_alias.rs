@@ -58,10 +58,15 @@ pub fn resolve_call_tool(
     if tool_call.incomplete == Some(true) {
         return Box::pin(async { None });
     }
-    let tools = current_context.tools.clone().unwrap_or_default();
-    if let Some(exact) = tools.iter().find(|candidate| candidate.name() == tool_call.name).cloned() {
+    if let Some(exact) = current_context
+        .tools
+        .as_ref()
+        .and_then(|tools| tools.iter().find(|candidate| candidate.name() == tool_call.name))
+        .cloned()
+    {
         return Box::pin(async move { Some(exact) });
     }
+    let tools = current_context.tools.clone().unwrap_or_default();
     let resolver = config.resolve_unknown_tool_call.clone();
     let requested = tool_call.name.clone();
     let context = current_context.clone();

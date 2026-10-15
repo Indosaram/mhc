@@ -5,9 +5,8 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Execution options passed to Git commands.
 #[derive(Debug, Clone, Default)]
@@ -218,13 +217,6 @@ fn spawn_and_capture(
 
     let mut child = cmd.spawn()?;
 
-    if let Some(stdin_bytes) = &options.stdin
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        let _ = stdin.write_all(stdin_bytes);
-        let _ = stdin.flush();
-    }
-
     let mut stdout_handle = child.stdout.take();
     let mut stderr_handle = child.stderr.take();
 
@@ -247,49 +239,47 @@ fn spawn_and_capture(
         let _ = err_tx.send(bytes);
     });
 
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let timeout_ms = options.timeout_ms;
-
-    let (watchdog_tx, watchdog_rx) = mpsc::channel();
-    let timed_out_clone = Arc::clone(&timed_out);
-
-    let watchdog = if timeout_ms > 0 {
-        Some(std::thread::spawn(move || {
-            if watchdog_rx
-                .recv_timeout(Duration::from_millis(timeout_ms))
-                .is_err()
-            {
-                timed_out_clone.store(true, Ordering::SeqCst);
-            }
-        }))
-    } else {
-        None
+    // Write stdin from its own thread after the readers are running so a child that fills its
+    // stdout pipe before draining stdin (e.g. `cat-file --batch`) cannot deadlock us.
+    let stdin_thread = match (options.stdin.clone(), child.stdin.take()) {
+        (Some(stdin_bytes), Some(mut stdin)) => Some(std::thread::spawn(move || {
+            let _ = stdin.write_all(&stdin_bytes);
+            let _ = stdin.flush();
+        })),
+        _ => None,
     };
 
-    let status = loop {
-        match child.try_wait()? {
-            Some(status) => break status,
-            None => {
-                if timed_out.load(Ordering::SeqCst) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        format!("git {} timed out after {timeout_ms}ms", argv.join(" ")),
-                    ));
+    let timeout_ms = options.timeout_ms;
+    let status = if timeout_ms == 0 {
+        child.wait()?
+    } else {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut backoff = Duration::from_micros(200);
+        loop {
+            match child.try_wait()? {
+                Some(status) => break status,
+                None => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        if let Some(handle) = stdin_thread {
+                            let _ = handle.join();
+                        }
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("git {} timed out after {timeout_ms}ms", argv.join(" ")),
+                        ));
+                    }
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(Duration::from_millis(5));
                 }
-                std::thread::sleep(Duration::from_millis(5));
             }
         }
     };
 
-    if let Some(w_tx) = Some(watchdog_tx) {
-        let _ = w_tx.send(());
+    if let Some(handle) = stdin_thread {
+        let _ = handle.join();
     }
-    if let Some(w) = watchdog {
-        let _ = w.join();
-    }
-
     let _ = out_thread.join();
     let _ = err_thread.join();
 

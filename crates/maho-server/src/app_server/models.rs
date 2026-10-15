@@ -24,7 +24,9 @@ pub fn register_model_list_method(registry: &mut MethodRegistry, models: Arc<dyn
             for (key, valid) in [("cursor",params["cursor"].is_string()),("includeHidden",params["includeHidden"].is_boolean()),("limit",params["limit"].as_f64().is_some_and(|value| value >= 0.0 && value <= f64::from(u32::MAX) && value.fract() == 0.0))] {
                 if params.get(key).is_some_and(|value| !value.is_null()) && !valid { return Err(JsonRpcError::new(-32600,format!("model/list received an invalid {key}"))); }
             }
-            let wire = models().iter().map(native_wire_model).collect::<Result<Vec<_>,_>>()?;
+            // The runtime's model loader reads models.json/auth.json synchronously.
+            let models = tokio::task::spawn_blocking(move || models()).await.map_err(|error| JsonRpcError::new(-32603,error.to_string()))?;
+            let wire = models.iter().map(native_wire_model).collect::<Result<Vec<_>,_>>()?;
             build_model_list_response(&wire,&params)
         })
     }) });

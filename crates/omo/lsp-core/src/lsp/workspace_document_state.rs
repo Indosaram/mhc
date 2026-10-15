@@ -9,6 +9,8 @@ use crate::lsp::workspace_edit::WorkspaceMutationDelta;
 use crate::request_context::resolve;
 use serde_json::Value;
 use serde_json::json;
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -52,7 +54,8 @@ pub struct PullDiagnosticsReport {
 struct OpenDocumentState {
     path: String,
     uri: String,
-    text: String,
+    /// Digest of the last synchronized text; the full text is not retained.
+    text_digest: TextDigest,
     version: i64,
     generation: u64,
     publish_generation: u64,
@@ -168,6 +171,12 @@ fn read_text(path: &str) -> Result<String, LspError> {
     std::fs::read_to_string(path).map_err(LspError::from)
 }
 
+type TextDigest = (usize, sha2::digest::Output<Sha256>);
+
+fn text_digest(text: &str) -> TextDigest {
+    (text.len(), Sha256::digest(text.as_bytes()))
+}
+
 impl WorkspaceDocumentState {
     pub fn new(
         send_notification: SendNotificationFn,
@@ -209,19 +218,43 @@ impl WorkspaceDocumentState {
     pub async fn open_file(&self, file_path: &str) -> Result<(), LspError> {
         let path = canonical_path(file_path);
         let gate = self.open_gate(&path);
-        let _guard = gate.lock().await;
-        let text = read_text(&path)?;
+        let result = {
+            let _guard = gate.lock().await;
+            self.open_file_locked(&path).await
+        };
+        drop(gate);
+        self.release_open_gate(&path);
+        result
+    }
+
+    /// Drops the per-path gate once no other caller holds or awaits it.
+    fn release_open_gate(&self, path: &str) {
+        let mut gates = self
+            .open_gates
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if gates
+            .get(path)
+            .is_some_and(|gate| Arc::strong_count(gate) == 1)
+        {
+            gates.remove(path);
+        }
+    }
+
+    async fn open_file_locked(&self, path: &str) -> Result<(), LspError> {
+        let text = read_text(path)?;
+        let digest = text_digest(&text);
         let changed = {
             let documents = self.lock();
-            match documents.by_path.get(&path) {
+            match documents.by_path.get(path) {
                 None => None,
-                Some(existing) if existing.text == text => return Ok(()),
+                Some(existing) if existing.text_digest == digest => return Ok(()),
                 Some(_) => Some(()),
             }
         };
         match changed {
-            None => self.open_document(&path, text).await,
-            Some(()) => self.change_document(&path, text).await,
+            None => self.open_document(path, text).await,
+            Some(()) => self.change_document(path, text).await,
         }
     }
 
@@ -530,7 +563,7 @@ impl WorkspaceDocumentState {
             let state = OpenDocumentState {
                 path: path.to_string(),
                 uri: uri.clone(),
-                text: text.clone(),
+                text_digest: text_digest(&text),
                 version: 1,
                 generation: 1,
                 publish_generation: 0,
@@ -555,7 +588,7 @@ impl WorkspaceDocumentState {
             let Some(state) = documents.by_path.get_mut(path) else {
                 return Ok(());
             };
-            state.text = text.clone();
+            state.text_digest = text_digest(&text);
             state.version += 1;
             state.generation += 1;
             state.notify_waiters();

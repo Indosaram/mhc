@@ -1,6 +1,6 @@
 use crate::types::HistoryEntry;
 use serde_json::Value;
-use std::{fs,io,path::{Path,PathBuf}};
+use std::{collections::HashMap,fs,io,path::{Path,PathBuf}};
 
 fn directory(path:&Path)->io::Result<Vec<PathBuf>>{
     match fs::read_dir(path){Ok(entries)=>entries.map(|entry|entry.map(|entry|entry.path())).collect(),Err(error) if error.kind()==io::ErrorKind::NotFound=>Ok(Vec::new()),Err(error)=>Err(error)}
@@ -24,6 +24,8 @@ pub fn index_sessions(root:&Path)->io::Result<Vec<HistoryEntry>>{
         let id=if valid_header{header.get("id").and_then(Value::as_str)}else{None}.map(str::to_owned).unwrap_or_else(||path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
         let cwd=if valid_header{header.get("cwd").and_then(Value::as_str).unwrap_or("")}else{""};
         for line in lines.iter().skip(1).rev(){
+            // Only user messages are indexed; any such line contains the JSON string "user".
+            if !line.contains("\"user\""){continue;}
             let Ok(parsed)=serde_json::from_str::<Value>(line)else{continue};
             if parsed.get("type").and_then(Value::as_str)!=Some("message"){continue;}
             let message=&parsed["message"];if message.get("role").and_then(Value::as_str)!=Some("user"){continue;}
@@ -36,6 +38,7 @@ pub fn index_sessions(root:&Path)->io::Result<Vec<HistoryEntry>>{
         }
         if entries.len()>=10_000{break;}
     }
-    let mut unique:Vec<HistoryEntry>=Vec::new();for entry in entries{if let Some(existing)=unique.iter_mut().find(|existing|existing.text==entry.text){if entry.timestamp>existing.timestamp{*existing=entry;}}else{unique.push(entry);}}
+    let mut unique:Vec<HistoryEntry>=Vec::new();let mut positions:HashMap<String,usize>=HashMap::new();
+    for entry in entries{if let Some(&index)=positions.get(&entry.text){if entry.timestamp>unique[index].timestamp{unique[index]=entry;}}else{positions.insert(entry.text.clone(),unique.len());unique.push(entry);}}
     unique.sort_by_key(|entry|std::cmp::Reverse(entry.timestamp));Ok(unique)
 }

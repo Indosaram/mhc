@@ -60,7 +60,7 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
         .then(|| (estimate_total_tokens(&source), estimate_total_tokens(&emergency.messages)));
     let entry_ids = realign_entry_ids(&source, &source_entry_ids, &emergency.messages);
     let (marked, replay_boundary) = mark_openai_remote_replay_boundary(&emergency.messages, &entry_ids, input.model, input.branch_entries);
-    let reminded = inject_token_budget_reminder(&marked, input.reminder);
+    let reminded = if input.reminder.is_some_and(|reminder| !reminder.is_empty()) { inject_token_budget_reminder(&marked, input.reminder) } else { marked };
     Ok(CompactionContextOutput { messages: repair_orphaned_tool_results(&typed_messages(&reminded)?, input.now), emergency_prune_tokens, replay_boundary })
 }
 

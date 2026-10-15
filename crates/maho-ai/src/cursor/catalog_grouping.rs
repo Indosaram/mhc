@@ -2,6 +2,7 @@
 // ported by todo 13
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 
 use crate::cursor::model_capabilities::{
     get_cursor_variant_alias, parse_cursor_variant_id, CursorVariantAlias, CursorVariantParse,
@@ -50,9 +51,16 @@ const ALL_LEVELS: [ModelThinkingLevel; 7] = [
 ];
 const FALLBACK_WINDOW: f64 = 200_000.0;
 
-fn static_targets() -> BTreeSet<String> {
+static STATIC_TARGETS: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
     crate::cursor::model_capabilities::all_cursor_variant_aliases().into_iter().map(|alias| alias.target_id).collect()
-}
+});
+
+static NO_ZDR_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s*\(NO ZDR\)\s*").expect("regex"));
+static LEVEL_WORD_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\s+(Minimal|Low|Medium|High|Extra High|XHigh|Max|None)\b").expect("regex"));
+static FAST_WORD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+Fast\b").expect("regex"));
+static THINKING_WORD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+Thinking\b").expect("regex"));
+static WHITESPACE_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+").expect("regex"));
 
 struct GroupMember {
     raw: CursorCatalogRawEntry,
@@ -67,7 +75,6 @@ fn is_claude(base_id: &str) -> bool {
 }
 
 fn clean_name(members: &[GroupMember], base_id: &str, thinking_mode: Option<bool>) -> String {
-    let level_words = regex::Regex::new(r"(Minimal|Low|Medium|High|Extra High|XHigh|Max|None)").expect("regex");
     let representative = members
         .iter()
         .find(|m| m.level.as_deref() == Some("high"))
@@ -75,15 +82,14 @@ fn clean_name(members: &[GroupMember], base_id: &str, thinking_mode: Option<bool
         .or_else(|| members.iter().find(|m| m.level.as_deref() == Some("low")))
         .unwrap_or(&members[0]);
     let mut name = representative.raw.name.clone();
-    name = regex::Regex::new(r"\s*\(NO ZDR\)\s*").expect("regex").replace_all(&name, " \u{1}").trim().to_owned();
-    let word_re = regex::Regex::new(&format!(r"\s+{}\b", level_words.as_str())).expect("regex");
-    name = word_re.replace_all(&name, "").into_owned();
-    name = regex::Regex::new(r"\s+Fast\b").expect("regex").replace_all(&name, "").into_owned();
+    name = NO_ZDR_RE.replace_all(&name, " \u{1}").trim().to_owned();
+    name = LEVEL_WORD_RE.replace_all(&name, "").into_owned();
+    name = FAST_WORD_RE.replace_all(&name, "").into_owned();
     if thinking_mode != Some(true) {
-        name = regex::Regex::new(r"\s+Thinking\b").expect("regex").replace_all(&name, "").into_owned();
+        name = THINKING_WORD_RE.replace_all(&name, "").into_owned();
     }
     name = name.replace('\u{1}', "(NO ZDR)");
-    name = regex::Regex::new(r"\s+").expect("regex").replace_all(&name, " ").trim().to_owned();
+    name = WHITESPACE_RE.replace_all(&name, " ").trim().to_owned();
     if name.is_empty() {
         name = base_id.to_owned();
     }
@@ -180,7 +186,7 @@ pub fn derive_cursor_variant_aliases(ids: &[String]) -> BTreeMap<String, CursorV
         levels: BTreeSet<ModelThinkingLevel>,
         members: Vec<(String, ModelThinkingLevel, String)>,
     }
-    let static_targets = static_targets();
+    let static_targets = &*STATIC_TARGETS;
     let mut families: BTreeMap<String, Family> = BTreeMap::new();
     let raw_ids: BTreeSet<&String> = ids.iter().collect();
     for id in ids {

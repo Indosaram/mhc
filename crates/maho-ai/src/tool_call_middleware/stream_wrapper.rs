@@ -30,12 +30,12 @@ pub fn wrap_stream_with_tool_call_middleware(
                     }
                     AssistantMessageEvent::TextStart { content_index, partial } => {
                         let Some(projection) = &mut projection else { continue };
-                        projection.sync(partial.clone());
+                        projection.sync(&partial);
                         projection.start_text(content_index, partial.content.get(content_index));
                     }
                     AssistantMessageEvent::TextDelta { content_index: _, delta, partial } => {
                         let Some(projection) = &mut projection else { continue };
-                        projection.sync(partial);
+                        projection.sync(&partial);
                         if !delta.is_empty() {
                             parser_has_pending_input = true;
                         }
@@ -44,7 +44,7 @@ pub fn wrap_stream_with_tool_call_middleware(
                     }
                     AssistantMessageEvent::TextEnd { content_index: _, content: _, partial } => {
                         let Some(projection) = &mut projection else { continue };
-                        projection.sync(partial);
+                        projection.sync(&partial);
                         if parser_has_pending_input {
                             let result = projection.project_parser_events(&parser.finish());
                             saw_tool_call = saw_tool_call || result.saw_tool_call;
@@ -54,17 +54,17 @@ pub fn wrap_stream_with_tool_call_middleware(
                     }
                     AssistantMessageEvent::ThinkingStart { content_index, partial } => {
                         let Some(projection) = &mut projection else { continue };
-                        projection.sync(partial.clone());
+                        projection.sync(&partial);
                         projection.start_thinking(content_index, &partial);
                     }
                     AssistantMessageEvent::ThinkingDelta { content_index, delta, partial } => {
                         let Some(projection) = &mut projection else { continue };
-                        projection.sync(partial.clone());
+                        projection.sync(&partial);
                         projection.project_thinking_delta(content_index, &delta, &partial);
                     }
                     AssistantMessageEvent::ThinkingEnd { content_index, content, partial } => {
                         let Some(projection) = &mut projection else { continue };
-                        projection.sync(partial.clone());
+                        projection.sync(&partial);
                         projection.finish_thinking(content_index, &content, &partial);
                     }
                     AssistantMessageEvent::Done { reason, message } => {
@@ -94,7 +94,7 @@ pub fn wrap_stream_with_tool_call_middleware(
                             outer_for_task.end(Some(error));
                             return;
                         };
-                        current_projection.sync(error.clone());
+                        current_projection.sync(&error);
                         if parser_has_pending_input {
                             let result = current_projection.project_parser_events(&parser.finish());
                             saw_tool_call = saw_tool_call || result.saw_tool_call;

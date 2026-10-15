@@ -33,12 +33,12 @@ use super::kibitzer_child::{CliKibitzerChildSpawner, KibitzerChildResourcesFacto
 pub struct CliSidecarTimers {
     executor: tokio::runtime::Handle,
     next: AtomicU64,
-    tasks: Mutex<BTreeMap<u64, tokio::task::JoinHandle<()>>>,
+    tasks: Arc<Mutex<BTreeMap<u64, tokio::task::JoinHandle<()>>>>,
 }
 
 impl CliSidecarTimers {
     pub fn new(executor: tokio::runtime::Handle) -> Arc<Self> {
-        Arc::new(Self { executor, next: AtomicU64::new(1), tasks: Mutex::new(BTreeMap::new()) })
+        Arc::new(Self { executor, next: AtomicU64::new(1), tasks: Arc::new(Mutex::new(BTreeMap::new())) })
     }
 }
 
@@ -46,11 +46,16 @@ impl KibitzerSidecarTimers for CliSidecarTimers {
     fn set(&self, callback: Box<dyn FnOnce() + Send>, ms: i64) -> u64 {
         let id = self.next.fetch_add(1, Ordering::SeqCst);
         let delay = std::time::Duration::from_millis(ms.max(0).unsigned_abs());
+        // The lock is held across spawn+insert, so a timer that fires at once still finds (and
+        // removes) its own entry; a fired timer never leaves its finished handle behind.
+        let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
+        let registry = self.tasks.clone();
         let handle = self.executor.spawn(async move {
             tokio::time::sleep(delay).await;
+            registry.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
             callback();
         });
-        self.tasks.lock().unwrap_or_else(PoisonError::into_inner).insert(id, handle);
+        tasks.insert(id, handle);
         id
     }
 

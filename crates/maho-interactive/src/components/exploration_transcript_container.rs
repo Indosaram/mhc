@@ -96,13 +96,38 @@ impl ExplorationTranscriptContainer {
         self.display.warm_next_chunk();
     }
 
-    fn group_for(&mut self, card: &Rc<RefCell<ToolExecutionComponent>>) -> Rc<RefCell<ExplorationGroup>> {
-        if let Some((_, group)) = self.groups.iter().find(|(existing, _)| Rc::ptr_eq(existing, card)) {
+    fn group_for(
+        groups: &mut Vec<GroupEntry>,
+        theme: &Theme,
+        card: &Rc<RefCell<ToolExecutionComponent>>,
+    ) -> Rc<RefCell<ExplorationGroup>> {
+        if let Some((_, group)) = groups.iter().find(|(existing, _)| Rc::ptr_eq(existing, card)) {
             return Rc::clone(group);
         }
-        let group = Rc::new(RefCell::new(ExplorationGroup::new(self.theme.clone())));
-        self.groups.push((Rc::clone(card), Rc::clone(&group)));
+        let group = Rc::new(RefCell::new(ExplorationGroup::new(theme.clone())));
+        groups.push((Rc::clone(card), Rc::clone(&group)));
         group
+    }
+}
+
+type GroupCalls = Vec<(Rc<RefCell<ToolExecutionComponent>>, ExplorationCall)>;
+
+/// Hand the accumulated members to the open group. senpi calls `setMembers` after every added
+/// call or rule; only the last call is observable, so it runs once when the group closes.
+fn flush_group(
+    group: &mut Option<Rc<RefCell<ExplorationGroup>>>,
+    members: &mut Vec<Rc<RefCell<dyn Component>>>,
+    calls: &mut GroupCalls,
+    rules: &mut Vec<String>,
+    members_at_set: usize,
+) {
+    if let Some(group) = group.take() {
+        members.truncate(members_at_set);
+        group.borrow_mut().set_members(
+            std::mem::take(members),
+            std::mem::take(calls),
+            std::mem::take(rules),
+        );
     }
 }
 
@@ -111,28 +136,24 @@ impl Component for ExplorationTranscriptContainer {
         let mut projected: Vec<Rc<RefCell<dyn Component>>> = Vec::new();
         let mut group: Option<Rc<RefCell<ExplorationGroup>>> = None;
         let mut members: Vec<Rc<RefCell<dyn Component>>> = Vec::new();
-        let mut calls: Vec<(Rc<RefCell<ToolExecutionComponent>>, ExplorationCall)> = Vec::new();
+        let mut calls: GroupCalls = Vec::new();
         let mut rules: Vec<String> = Vec::new();
+        // Member count at the group's last senpi `setMembers`; exploration-detail assistants
+        // appended after it are not part of the group's members.
+        let mut members_at_set = 0;
 
-        let children: Vec<TranscriptChild> = self.children.clone();
-        for child in &children {
-            let component = child.component();
+        for child in &self.children {
             if let TranscriptChild::Tool(card) = child {
                 let call = exploration_call(&card.borrow());
                 if let Some(call) = call {
                     if group.is_none() {
-                        let existing = self.group_for(card);
+                        let existing = Self::group_for(&mut self.groups, &self.theme, card);
                         group = Some(Rc::clone(&existing));
-                        projected.push(Rc::clone(&existing) as Rc<RefCell<dyn Component>>);
-                        members = Vec::new();
-                        calls = Vec::new();
-                        rules = Vec::new();
+                        projected.push(existing as Rc<RefCell<dyn Component>>);
                     }
-                    members.push(Rc::clone(&component));
+                    members.push(child.component());
                     calls.push((Rc::clone(card), call));
-                    if let Some(group) = &group {
-                        group.borrow_mut().set_members(members.clone(), calls.clone(), rules.clone());
-                    }
+                    members_at_set = members.len();
                     continue;
                 }
             }
@@ -140,23 +161,22 @@ impl Component for ExplorationTranscriptContainer {
                 && let TranscriptChild::Assistant(assistant) = child
                 && assistant.borrow().is_exploration_detail()
             {
-                members.push(Rc::clone(&component));
+                members.push(child.component());
                 continue;
             }
             if group.is_some()
                 && let TranscriptChild::Entry(entry) = child
                 && let Some(projected_rules) = project_rules_of_call(&entry.borrow(), &calls)
             {
-                members.push(Rc::clone(&component));
+                members.push(child.component());
                 rules.extend(projected_rules);
-                if let Some(group) = &group {
-                    group.borrow_mut().set_members(members.clone(), calls.clone(), rules.clone());
-                }
+                members_at_set = members.len();
                 continue;
             }
-            group = None;
-            projected.push(component);
+            flush_group(&mut group, &mut members, &mut calls, &mut rules, members_at_set);
+            projected.push(child.component());
         }
+        flush_group(&mut group, &mut members, &mut calls, &mut rules, members_at_set);
 
         *self.display.children_mut() = projected;
         self.display.render(width)

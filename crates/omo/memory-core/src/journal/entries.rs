@@ -336,7 +336,7 @@ pub fn project_transcript_entries(
 
 /// Parse a raw JSON value into a validated [`TranscriptEntry`].
 pub fn parse_transcript_entry(
-    value: &serde_json::Value,
+    value: serde_json::Value,
 ) -> Result<TranscriptEntry, crate::journal::store::JournalError> {
     let obj = value
         .as_object()
@@ -361,14 +361,14 @@ pub fn parse_transcript_entry(
     let _ = (captured_at, source_line_id, source_message_id);
 
     if kind == "tool_call" {
-        let entry: ToolCallTranscriptEntry = serde_json::from_value(value.clone())
+        let entry: ToolCallTranscriptEntry = serde_json::from_value(value)
             .map_err(|_| crate::journal::store::JournalError::InvalidTranscriptJournalRow)?;
         Ok(TranscriptEntry::ToolCall(entry))
     } else if matches!(kind, "user" | "assistant" | "reasoning" | "error") {
         if obj.get("text").and_then(|v| v.as_str()).is_none() {
             return Err(crate::journal::store::JournalError::InvalidTranscriptJournalRow);
         }
-        let entry: TextTranscriptEntry = serde_json::from_value(value.clone())
+        let entry: TextTranscriptEntry = serde_json::from_value(value)
             .map_err(|_| crate::journal::store::JournalError::InvalidTranscriptJournalRow)?;
         Ok(TranscriptEntry::Text(entry))
     } else {

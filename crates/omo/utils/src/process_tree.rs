@@ -319,6 +319,14 @@ pub(crate) fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(unix)]
 fn is_zombie(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            && let Some((_, rest)) = stat.rsplit_once(')')
+        {
+            return rest.trim_start().starts_with('Z');
+        }
+    }
     Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
         .output()

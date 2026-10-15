@@ -19,12 +19,14 @@ use std::time::Instant;
 use tempfile::Builder;
 use tempfile::TempDir;
 
-/// How long the run loop waits between child-status checks.
+/// Bounds of the run loop's backoff between child-status checks.
 ///
 /// The reference implementation parks on the child's `close` event and kills the child from a
 /// `setTimeout`; `std::process::Child` has no wait-with-timeout and this crate forbids `unsafe`, so
-/// the port observes the same two outcomes (exit, or timeout kill) by polling `try_wait`.
-const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// the port observes the same two outcomes (exit, or timeout kill) by polling `try_wait`, backing
+/// off exponentially so a long-running command does not wake the loop hundreds of times a second.
+const STATUS_POLL_INITIAL: Duration = Duration::from_millis(1);
+const STATUS_POLL_MAX: Duration = Duration::from_millis(50);
 
 /// Temp-file prefix, matching the reference `mkdtempSync(join(tmpdir(), ...))`.
 const OUTPUT_DIRECTORY_PREFIX: &str = "omo-git-bash-run-";
@@ -93,7 +95,8 @@ impl OutputCapture {
 
 fn read_lossy(path: &Path) -> io::Result<String> {
     let bytes = std::fs::read(path)?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned()))
 }
 
 /// Runs `bash -lc <command>` capturing stdout/stderr to temp files under the system temp dir.
@@ -139,17 +142,20 @@ pub fn run_git_bash_command_in_dir(
     let mut child = command.spawn()?;
     let deadline = Instant::now() + Duration::from_millis(input.timeout_ms);
     let mut timed_out = false;
+    let mut poll_interval = STATUS_POLL_INITIAL;
     let status: ExitStatus = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= deadline {
             timed_out = true;
             // Best effort: a kill failure means the child already exited, which `wait` reports.
             let _kill = child.kill();
             break child.wait()?;
         }
-        thread::sleep(STATUS_POLL_INTERVAL);
+        thread::sleep(poll_interval.min(deadline - now));
+        poll_interval = (poll_interval * 2).min(STATUS_POLL_MAX);
     };
     let (stdout, stderr) = capture.read()?;
     Ok(GitBashRunResult {

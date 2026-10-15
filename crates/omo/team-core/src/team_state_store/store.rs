@@ -210,6 +210,59 @@ pub fn transition_runtime_state(
     )
 }
 
+/// Parsed `listActiveTeams` rows keyed by `state.json` path and validated by (mtime, len), so the
+/// lead poller's 1s `list_active_teams` tick re-parses only runs whose state file changed. Runs
+/// about to be pruned (deleted/failed/deleting) are never cached.
+type ActiveTeamCache =
+    std::collections::HashMap<PathBuf, (std::time::SystemTime, u64, ActiveTeamSummary)>;
+
+static ACTIVE_TEAM_CACHE: std::sync::LazyLock<std::sync::Mutex<ActiveTeamCache>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(ActiveTeamCache::new()));
+
+fn load_active_team_summary(
+    base_dir: &Path,
+    team_run_id: &str,
+    config: &TeamModeConfig,
+) -> Result<ActiveTeamSummary> {
+    let state_path = get_state_path(base_dir, team_run_id)?;
+    let key = fs::metadata(&state_path)
+        .and_then(|metadata| Ok((metadata.modified()?, metadata.len())))
+        .ok();
+    let mut cache = ACTIVE_TEAM_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let (Some((modified, len)), Some((cached_modified, cached_len, summary))) =
+        (key, cache.get(&state_path))
+        && *cached_modified == modified
+        && *cached_len == len
+    {
+        return Ok(summary.clone());
+    }
+    cache.remove(&state_path);
+    drop(cache);
+    let runtime_state = load_runtime_state(team_run_id, config)?;
+    let summary = ActiveTeamSummary {
+        team_run_id: runtime_state.team_run_id,
+        team_name: runtime_state.team_name,
+        status: runtime_state.status,
+        lead_session_id: runtime_state.lead_session_id,
+        member_count: runtime_state.members.len(),
+        scope: runtime_state.spec_source,
+    };
+    if let Some((modified, len)) = key
+        && !matches!(
+            summary.status,
+            RuntimeStatus::Deleted | RuntimeStatus::Failed | RuntimeStatus::Deleting
+        )
+    {
+        ACTIVE_TEAM_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(state_path, (modified, len, summary.clone()));
+    }
+    Ok(summary)
+}
+
 /// `listActiveTeams`: prunes deleted/failed/stale-deleting runs, sorted by name then run id.
 pub fn list_active_teams(config: &TeamModeConfig) -> Result<Vec<ActiveTeamSummary>> {
     let base_dir = resolve_base_dir(config);
@@ -227,32 +280,25 @@ pub fn list_active_teams(config: &TeamModeConfig) -> Result<Vec<ActiveTeamSummar
         }
         let team_run_id = entry.file_name().to_string_lossy().into_owned();
         let outcome = (|| -> Result<Option<ActiveTeamSummary>> {
-            let runtime_state = load_runtime_state(&team_run_id, config)?;
+            let summary = load_active_team_summary(&base_dir, &team_run_id, config)?;
             if matches!(
-                runtime_state.status,
+                summary.status,
                 RuntimeStatus::Deleted | RuntimeStatus::Failed
             ) {
                 remove_runtime_directory_best_effort(
                     &base_dir,
                     &team_run_id,
-                    runtime_state.status.as_str(),
+                    summary.status.as_str(),
                 );
                 return Ok(None);
             }
-            if runtime_state.status == RuntimeStatus::Deleting
+            if summary.status == RuntimeStatus::Deleting
                 && is_deleting_runtime_stale(&base_dir, &team_run_id, now)?
             {
                 remove_runtime_directory_best_effort(&base_dir, &team_run_id, "stale_deleting");
                 return Ok(None);
             }
-            Ok(Some(ActiveTeamSummary {
-                team_run_id: runtime_state.team_run_id,
-                team_name: runtime_state.team_name,
-                status: runtime_state.status,
-                lead_session_id: runtime_state.lead_session_id,
-                member_count: runtime_state.members.len(),
-                scope: runtime_state.spec_source,
-            }))
+            Ok(Some(summary))
         })();
         match outcome {
             Ok(Some(summary)) => active_teams.push(summary),

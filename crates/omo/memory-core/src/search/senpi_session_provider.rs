@@ -255,13 +255,16 @@ fn to_document(
     })
 }
 
-fn read_session_file(file_path: &Path) -> (Option<SenpiSessionHeader>, Vec<serde_json::Value>) {
+/// Reads one session file, converting each message line to a document as it is parsed so no parsed
+/// line is retained. Documents carry an empty `conversation_id`; the caller fills it once the whole
+/// file has been read, since a header line later in the file still names the conversation.
+fn read_session_file(file_path: &Path) -> (Option<SenpiSessionHeader>, Vec<SearchDocument>) {
     let Ok(raw) = fs::read_to_string(file_path) else {
         return (None, Vec::new());
     };
 
     let mut header = None;
-    let mut lines = Vec::new();
+    let mut documents = Vec::new();
 
     for line in raw.lines() {
         if line.trim().is_empty() {
@@ -278,12 +281,14 @@ fn read_session_file(file_path: &Path) -> (Option<SenpiSessionHeader>, Vec<serde
             continue;
         }
 
-        if parsed.is_object() {
-            lines.push(parsed);
+        if let Some(obj) = parsed.as_object()
+            && let Some(document) = to_document(obj, "")
+        {
+            documents.push(document);
         }
     }
 
-    (header, lines)
+    (header, documents)
 }
 
 fn list_session_files(sessions_dir: &Path) -> Vec<(PathBuf, String)> {
@@ -343,7 +348,7 @@ impl TranscriptProvider for SenpiSessionProvider {
         let mut conversations = Vec::new();
 
         for (file_path, directory_name) in list_session_files(&self.options.sessions_dir) {
-            let (header, lines) = read_session_file(&file_path);
+            let (header, documents) = read_session_file(&file_path);
             let id = match &header {
                 Some(h) => h.id.clone(),
                 None => {
@@ -355,14 +360,9 @@ impl TranscriptProvider for SenpiSessionProvider {
             let mut seen = HashSet::new();
             let mut messages = Vec::new();
 
-            for entry in &lines {
-                let Some(obj) = entry.as_object() else {
-                    continue;
-                };
-                let Some(document) = to_document(obj, &id) else {
-                    continue;
-                };
+            for mut document in documents {
                 if seen.insert(document.id.clone()) {
+                    document.conversation_id.clone_from(&id);
                     messages.push(document);
                 }
             }

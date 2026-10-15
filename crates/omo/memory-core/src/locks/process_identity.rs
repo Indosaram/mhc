@@ -8,8 +8,11 @@
 //! pre-existing behavior and the fork-free port is a recorded platform blocker, not a silent
 //! degradation. Linux's `/proc` read is already in process and needs no FFI.
 
+#[cfg(not(target_os = "linux"))]
 use std::path::Path;
+#[cfg(not(target_os = "linux"))]
 use std::process::{Command, Output, Stdio};
+#[cfg(not(target_os = "linux"))]
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -23,6 +26,7 @@ pub enum ProcessLiveness {
     Unknown,
 }
 
+#[cfg(not(target_os = "linux"))]
 fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Option<Output> {
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -140,7 +144,17 @@ pub fn get_pid_liveness(pid: u32) -> ProcessLiveness {
         return ProcessLiveness::Unknown;
     }
 
-    #[cfg(unix)]
+    // Linux: `/proc/<pid>` exists for live and zombie pids alike, matching `kill -0` (which also
+    // reports Alive on EPERM), without forking a child per probe.
+    #[cfg(target_os = "linux")]
+    {
+        if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            ProcessLiveness::Alive
+        } else {
+            ProcessLiveness::Dead
+        }
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         let prog = if Path::new("/bin/kill").exists() {
             "/bin/kill"

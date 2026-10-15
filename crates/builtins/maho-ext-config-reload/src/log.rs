@@ -39,14 +39,16 @@ impl LogEvent<'_> {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct ConfigReloadLogStatus { pub written: bool, pub disabled: bool }
+// Compiled once; loggers are rebuilt on every deferred-reload recheck.
+static SENSITIVE_PATH: std::sync::LazyLock<Result<regex::Regex, regex::Error>> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)(^|[/\\])(?:auth\.json|credentials?(?:\.[^/\\]+)?)$"));
+static SENSITIVE_TEXT: std::sync::LazyLock<Result<regex::Regex, regex::Error>> = std::sync::LazyLock::new(|| regex::Regex::new(r#"(?i)((?:authorization\s*[:=]\s*(?:bearer|basic)\s+)|(?:bearer\s+)|(?:[?&](?:api[_-]?key|token|secret|password|auth(?:orization)?)=))[^\s&,"'}\]]+"#));
 pub struct ConfigReloadLogger {
     path: PathBuf, max_bytes: u64, disabled: bool, sensitive_path: regex::Regex, sensitive_text: regex::Regex,
 }
 impl ConfigReloadLogger {
     pub fn new(agent_dir: &Path, max_bytes: Option<u64>) -> Result<Self, regex::Error> {
         Ok(Self { path: agent_dir.join("logs/config-reload.log"), max_bytes: max_bytes.filter(|value| *value > 0).unwrap_or(5 * 1024 * 1024), disabled: false,
-            sensitive_path: regex::Regex::new(r"(?i)(^|[/\\])(?:auth\.json|credentials?(?:\.[^/\\]+)?)$")?,
-            sensitive_text: regex::Regex::new(r#"(?i)((?:authorization\s*[:=]\s*(?:bearer|basic)\s+)|(?:bearer\s+)|(?:[?&](?:api[_-]?key|token|secret|password|auth(?:orization)?)=))[^\s&,"'}\]]+"#)? })
+            sensitive_path: SENSITIVE_PATH.clone()?, sensitive_text: SENSITIVE_TEXT.clone()? })
     }
     fn safe_text(&self, text: &str) -> String {
         let redacted = self.sensitive_text.replace_all(text, "${1}[redacted]");

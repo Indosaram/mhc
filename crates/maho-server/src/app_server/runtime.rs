@@ -248,7 +248,7 @@ impl AppServerRuntime {
                 let ui_agent_dir = ui_agent_dir.clone();
                 Box::pin(async move {
                     let params = &context.request["params"];
-                    if method == "thread/loaded/list" { return Ok(json!({"data":threads.list_loaded().await.iter().map(|thread|thread["id"].clone()).collect::<Vec<_>>(),"nextCursor":null})); }
+                    if method == "thread/loaded/list" { return Ok(json!({"data":threads.loaded_ids().await,"nextCursor":null})); }
                     if method == "thread/unsubscribe" {
                         let id = required_string(params,"threadId")?;
                         let Ok(entry) = threads.get_loaded_thread(id).await else {return Ok(json!({"status":"notLoaded"}));};
@@ -400,7 +400,7 @@ impl AppServerRuntime {
         super::goal_handlers::register_thread_goal_handlers(&core,threads.clone()).await;
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));
-        super::handlers::register_storage_lifecycle_handlers(&core,threads.clone(),archive.clone(),mcp_inventory.clone(),version.clone()).await;
+        super::handlers::register_storage_lifecycle_handlers(&core,threads.clone(),archive.clone(),mcp_inventory.clone(),turn_log.clone(),version.clone()).await;
         super::handlers::register_compaction_handler(&core,threads.clone(),turn_log.clone()).await;
         super::metadata_handlers::register_metadata_handlers(&core,threads.clone(),turn_log.clone(),archive.clone(),version.clone()).await;
         super::list_handlers::register_list_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
@@ -423,10 +423,10 @@ impl AppServerRuntime {
     pub async fn dispose(&self) {
         if let Some(unsubscribe) = self.provider_account_unsubscribe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {unsubscribe();}
         self.lifecycle.dispose();
-        for thread in self.threads.list_loaded().await {if let Some(id) = thread["id"].as_str() {
-            self.approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(id);
-            self.user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(id);
-        }}
+        for id in self.threads.loaded_ids().await {
+            self.approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(&id);
+            self.user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(&id);
+        }
         self.fuzzy_search.dispose();self.threads.dispose().await;
         let mut inventory = self.mcp_inventory.lock().await;
         for id in inventory.thread_ids() {inventory.remove_thread(&id);}

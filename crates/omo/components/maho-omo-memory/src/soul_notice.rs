@@ -42,7 +42,7 @@ pub fn soul_commit_notice(api:&maho_ext_api::ExtensionApi,resolve:crate::tools::
 }
 fn read_soul_commit(context:&crate::context::MemoryIdentityContext,sha:&str)->Result<Option<SoulUpdatedRecord>,memory_core::git::errors::GitError>{
     let repo=memory_core::git::GitMemoryRepo::open(&context.identity_paths.repo,&context.identity)?;
-    let commit=repo.log(Some(&memory_core::git::GitLogOptions{range:Some(sha.into()),paths:None,limit:Some(1),include_paths:true}))?.into_iter().next();
+    let commit=repo.log(Some(&memory_core::git::GitLogOptions{range:Some(sha.into()),paths:None,limit:Some(1),include_paths:true,grep:None}))?.into_iter().next();
     Ok(commit.map(|commit|SoulUpdatedRecord{sha:commit.sha,subject:commit.subject,affected_paths:commit.paths.unwrap_or_default()}))
 }
 pub trait SoulNoticeApi{fn register_entry_renderer(&mut self,entry_type:&str);fn append_entry(&mut self,entry_type:&str,record:&SoulUpdatedRecord);}

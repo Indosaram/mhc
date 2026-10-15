@@ -55,9 +55,9 @@ impl Signing {
         let Some((id, secret)) = parse_api_key(api_key) else { return Ok(BTreeMap::new()); };
         let state = self.states.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(api_key.into()).or_default().clone();
         let mut state = state.lock().await;
-        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+        let client = || reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().map_err(|error| ExtensionFailure::new(error.to_string()));
         if !state.checked.is_some_and(|checked| (self.now)() - checked < 3_600_000.0) {
-            let mut request = client.get(&self.gate).header("x-api-key", api_key).timeout(Duration::from_secs(15));
+            let mut request = client()?.get(&self.gate).header("x-api-key", api_key).timeout(Duration::from_secs(15));
             for (key, value) in headers {
                 if key != "X-ZCode-Agent" && key != "Authorization" && !key.starts_with("x-") && !key.starts_with("X-Client") && let Some(value) = value.as_ref().filter(|value| !value.is_empty()) { request = request.header(key, value); }
             }
@@ -71,7 +71,7 @@ impl Signing {
             let ts = (self.now)().floor().to_string();
             let nonce = random_nonce();
             let signature = handshake_signature(id, secret, &ts, &nonce)?;
-            let response = client.post(&self.handshake).header("Authorization", api_key).json(&json!({"apiKey":api_key,"nonce":nonce,"sig":signature,"ts":ts})).timeout(Duration::from_secs(10)).send().await.map_err(|error| ExtensionFailure::new(error.to_string()))?;
+            let response = client()?.post(&self.handshake).header("Authorization", api_key).json(&json!({"apiKey":api_key,"nonce":nonce,"sig":signature,"ts":ts})).timeout(Duration::from_secs(10)).send().await.map_err(|error| ExtensionFailure::new(error.to_string()))?;
             if response.status().as_u16() != 200 { return Err(ExtensionFailure::new(format!("glm-zcode: signing handshake HTTP status {}", response.status().as_u16()))); }
             let payload: Value = response.json().await.map_err(|error| ExtensionFailure::new(error.to_string()))?;
             if !payload.is_object() { return Err(ExtensionFailure::new("glm-zcode: signing handshake response was not an object")); }

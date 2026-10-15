@@ -41,6 +41,30 @@ fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -
     }
 }
 
+/// Field-by-field copy of every metadata field, so the source `content` is never deep-cloned only
+/// to be replaced.
+pub fn clone_message_with_content(source: &AssistantMessage, content: Vec<ContentBlock>) -> AssistantMessage {
+    AssistantMessage {
+        content,
+        api: source.api.clone(),
+        provider: source.provider.clone(),
+        model: source.model.clone(),
+        response_model: source.response_model.clone(),
+        response_id: source.response_id.clone(),
+        provider_thinking_level: source.provider_thinking_level.clone(),
+        diagnostics: source.diagnostics.clone(),
+        usage: clone_usage(&source.usage),
+        stop_reason: source.stop_reason,
+        stop_details: source.stop_details.clone(),
+        deferred: source.deferred.clone(),
+        error_message: source.error_message.clone(),
+        abort_source: source.abort_source,
+        raw_stop_reason: source.raw_stop_reason.clone(),
+        end_turn: source.end_turn,
+        timestamp: source.timestamp,
+    }
+}
+
 pub fn clone_assistant_message_metadata(
     source: &AssistantMessage,
     content: Vec<ContentBlock>,
@@ -50,10 +74,8 @@ pub fn clone_assistant_message_metadata(
     if !preserve_all {
         return clone_legacy_message(source, content);
     }
-    let mut message = source.clone();
-    message.content = content;
-    message.usage = clone_usage(&source.usage);
-    let mut diagnostics = source.diagnostics.clone().unwrap_or_default();
+    let mut message = clone_message_with_content(source, content);
+    let mut diagnostics = message.diagnostics.take().unwrap_or_default();
     diagnostics.extend(projected_diagnostics.iter().cloned());
     message.diagnostics = if diagnostics.is_empty() { None } else { Some(diagnostics) };
     message

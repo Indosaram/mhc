@@ -47,8 +47,9 @@ pub async fn run_failover(options:FailoverOptions<'_>,boundary:&mut impl Failove
 pub fn retry_after_ms(error:&Value)->Option<f64> {
     if let Some(explicit)=error["retryAfterMs"].as_f64().filter(|v|v.is_finite()&&*v>0.0) {return Some(explicit.ceil());}
     let text=error.as_str().or_else(||error["message"].as_str()).map(str::to_owned).unwrap_or_else(||error.to_string());
-    for (pattern,multiplier) in [(r"(?i)\bretry[-_ ]?after[-_ ]?ms\s*[:=]\s*(\d+(?:\.\d+)?)",1.0),(r"(?i)\bretry[-_ ]?after\s*[:=]\s*(\d+(?:\.\d+)?)",1000.0)] {
-        if let Some(value)=regex::Regex::new(pattern).ok().and_then(|regex|regex.captures(&text).and_then(|capture|capture[1].parse::<f64>().ok())) {return Some((value*multiplier).ceil());}
+    static PATTERNS:std::sync::LazyLock<[(Option<regex::Regex>,f64);2]>=std::sync::LazyLock::new(||[(regex::Regex::new(r"(?i)\bretry[-_ ]?after[-_ ]?ms\s*[:=]\s*(\d+(?:\.\d+)?)").ok(),1.0),(regex::Regex::new(r"(?i)\bretry[-_ ]?after\s*[:=]\s*(\d+(?:\.\d+)?)").ok(),1000.0)]);
+    for (regex,multiplier) in PATTERNS.iter() {
+        if let Some(value)=regex.as_ref().and_then(|regex|regex.captures(&text).and_then(|capture|capture[1].parse::<f64>().ok())) {return Some((value*multiplier).ceil());}
     }None
 }
 fn kind_name(kind:SdkErrorKind)->&'static str {match kind {SdkErrorKind::RateLimit=>"rate_limit",SdkErrorKind::Overloaded=>"overloaded",SdkErrorKind::AuthError=>"auth_error",SdkErrorKind::Billing=>"billing",SdkErrorKind::OrgNotAllowed=>"org_not_allowed",SdkErrorKind::Entitlement=>"entitlement",SdkErrorKind::Other=>"other"}}

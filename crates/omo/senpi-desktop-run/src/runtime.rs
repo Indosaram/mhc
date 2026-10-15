@@ -85,6 +85,24 @@ pub async fn run_computer_code(
         return Err(ComputerRunError::aborted().into());
     }
 
+    // Started before the audit listener and helper tasks so a failed start
+    // leaves nothing registered behind.
+    let (kernel, owned_kernel) = match host.kernel {
+        Some(k) => (k, false),
+        None => {
+            let cwd = std::path::PathBuf::from(&snapshot.cwd);
+            let k = JavaScriptKernel::start(
+                &cwd,
+                &format!("desktop-run-{run_id}"),
+                1,
+                None,
+            )
+            .await
+            .map_err(|e| ComputerRunError::new(ComputerRunErrorReason::Window, e.to_string()))?;
+            (Arc::new(k), true)
+        }
+    };
+
     let audit = Arc::new(std::sync::Mutex::new(Vec::<AuditRecord>::new()));
     let audit_sink = audit.clone();
     let session_id_str = snapshot.session_id.clone();
@@ -127,7 +145,7 @@ pub async fn run_computer_code(
         let svc = service.clone();
         let mut b_rx = cancel_rx_factory.subscribe();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        tokio::spawn(async move {
+        let watcher = tokio::spawn(async move {
             let _ = b_rx.recv().await;
             let _ = tx.send(());
         });
@@ -136,28 +154,14 @@ pub async fn run_computer_code(
                 timeout: None,
                 cancel_rx: Some(Arc::new(Mutex::new(rx))),
             };
-            svc.call(method, params, opts).await
+            let result = svc.call(method, params, opts).await;
+            watcher.abort();
+            result
         })
     });
 
     let scope = RunScope::new(context.clone(), engine_call);
     let _desktop = DesktopFacade::new(scope.clone());
-
-    let (kernel, owned_kernel) = match host.kernel {
-        Some(k) => (k, false),
-        None => {
-            let cwd = std::path::PathBuf::from(&snapshot.cwd);
-            let k = JavaScriptKernel::start(
-                &cwd,
-                &format!("desktop-run-{run_id}"),
-                1,
-                None,
-            )
-            .await
-            .map_err(|e| ComputerRunError::new(ComputerRunErrorReason::Window, e.to_string()))?;
-            (Arc::new(k), true)
-        }
-    };
 
     let desktop_scope = scope.clone();
     let execute_tool_fn = host.execute_tool.clone();
@@ -179,6 +183,7 @@ pub async fn run_computer_code(
                         Ok(c) => c,
                         Err(_) => break,
                     };
+                    while in_flight_tasks.try_join_next().is_some() {}
 
                     let call_id = call.get("callId").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let tool_name = call.get("toolName").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -248,15 +253,15 @@ pub async fn run_computer_code(
                                 Ok(value) => {
                                     use crate::engine_results::*;
                                     let shape = match static_method {
-                                        "capabilities" => expect_result::<senpi_desktop_protocol::DesktopCapabilities>(static_method, value.clone()).map(|_| ()),
-                                        "displays" => expect_result::<Vec<DesktopDisplay>>(static_method, value.clone()).map(|_| ()),
-                                        "windows" => expect_result::<Vec<DesktopWindow>>(static_method, value.clone()).map(|_| ()),
-                                        "capture" => expect_result::<CaptureResult>(static_method, value.clone()).map(|_| ()),
-                                        "clipboard.read" | "ax.snapshot" => expect_result::<TextResult>(static_method, value.clone()).map(|_| ()),
-                                        "ax.node" => expect_ax_node(static_method, value.clone()).map(|_| ()),
-                                        "ax.elementAt" | "ax.focused" | "ax.parent" => expect_optional_ax_node(static_method, value.clone()).map(|_| ()),
-                                        "ax.query" | "ax.children" => expect_ax_nodes(static_method, value.clone()).map(|_| ()),
-                                        "ax.attributes" => expect_result::<Vec<(String, String)>>(static_method, value.clone()).map(|_| ()),
+                                        "capabilities" => check_result::<senpi_desktop_protocol::DesktopCapabilities>(static_method, &value),
+                                        "displays" => check_result::<Vec<DesktopDisplay>>(static_method, &value),
+                                        "windows" => check_result::<Vec<DesktopWindow>>(static_method, &value),
+                                        "capture" => check_capture(static_method, &value),
+                                        "clipboard.read" | "ax.snapshot" => check_result::<TextResult>(static_method, &value),
+                                        "ax.node" => check_ax_node(static_method, &value),
+                                        "ax.elementAt" | "ax.focused" | "ax.parent" => if value.is_null() { Ok(()) } else { check_ax_node(static_method, &value) },
+                                        "ax.query" | "ax.children" => check_ax_nodes(static_method, &value),
+                                        "ax.attributes" => check_result::<Vec<(String, String)>>(static_method, &value),
                                         _ => Ok(()),
                                     };
                                     shape.map(|()| value)
@@ -265,12 +270,13 @@ pub async fn run_computer_code(
                             };
                             match res {
                                 Ok(val) => {
-                                    let _ = k_reply.deliver_tool_reply(json!({
+                                    let mut reply = json!({
                                         "type": "tool-reply",
                                         "callId": call_id,
-                                        "ok": true,
-                                        "value": val
-                                    }));
+                                        "ok": true
+                                    });
+                                    reply["value"] = val;
+                                    let _ = k_reply.deliver_tool_reply(reply);
                                 }
                                 Err(err) => {
                                     captured_err.lock().await.insert(call_id.clone(),err.clone());
@@ -309,12 +315,13 @@ pub async fn run_computer_code(
                             let res = execute_tool(tool_name, args, host_signal).await;
                             match res {
                                 Ok(val) => {
-                                    let _ = k_reply.deliver_tool_reply(json!({
+                                    let mut reply = json!({
                                         "type": "tool-reply",
                                         "callId": call_id,
-                                        "ok": true,
-                                        "value": val
-                                    }));
+                                        "ok": true
+                                    });
+                                    reply["value"] = val;
+                                    let _ = k_reply.deliver_tool_reply(reply);
                                 }
                                 Err(err) => {
                                     let _ = k_reply.deliver_tool_reply(json!({

@@ -196,7 +196,7 @@ fn extract_ansi_code(chars: &[char], pos: usize) -> Option<usize> {
 }
 
 fn char_width(ch: char) -> usize {
-    renderer_visible_width(ch.encode_utf8(&mut [0; 4]))
+    if ch == '\t' { 3 } else { unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) }
 }
 
 fn active_osc8_close(prefix: &str) -> &'static str {

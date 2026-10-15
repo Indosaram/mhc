@@ -5,6 +5,11 @@ fn canonical_path(path: &std::path::Path) -> std::path::PathBuf {
         path.to_path_buf()
     }
 }
+/// Mirror of the private `telemetry::matches_tool_name`, used to skip non-computer tool starts early.
+fn matches_tool_name(tool_name: &str, expected: &str) -> bool {
+    let normalized = tool_name.trim().to_lowercase().replace('-', "_");
+    normalized == expected || normalized.ends_with(&format!("_{expected}")) || normalized.ends_with(&format!(":{expected}"))
+}
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -525,12 +530,19 @@ impl ComputerUseComponent {
         api.on(EventKind::ToolExecutionStart, Arc::new(move |event, ctx| {
             let telemetry = Arc::clone(&telemetry_exec_start);
             let state = Arc::clone(&state_exec_start);
-            let session_id = ctx.session_manager.session_id().to_string();
-            let (tool_call_id, tool_name, args) = match event {
-                ExtensionEvent::ToolExecutionStart { tool_call_id, tool_name, args } => (tool_call_id.clone(), tool_name.clone(), args.clone()),
-                _ => (String::new(), String::new(), serde_json::Value::Null),
+            // Only computer tools can open a permission request; skip cloning other tools' args.
+            let captured = match event {
+                ExtensionEvent::ToolExecutionStart { tool_call_id, tool_name, args }
+                    if matches_tool_name(tool_name, COMPUTER_TOOL_NAME) || matches_tool_name(tool_name, COMPUTER_ACTIONS_TOOL_NAME) =>
+                {
+                    Some((ctx.session_manager.session_id().to_string(), tool_call_id.clone(), tool_name.clone(), args.clone()))
+                }
+                _ => None,
             };
             Box::pin(async move {
+                let Some((session_id, tool_call_id, tool_name, args)) = captured else {
+                    return Ok(EventResult::None);
+                };
                 let payload = serde_json::json!({
                     "type": "tool_execution_start",
                     "toolCallId": tool_call_id,
@@ -552,13 +564,19 @@ impl ComputerUseComponent {
             let telemetry = Arc::clone(&telemetry_exec_end);
             let state_ctx = Arc::clone(&state_exec_end);
             let state_backend = Arc::clone(&state_backend_exec_end);
-            let session_id = state_ctx.lock().ok().and_then(|g| g.clone()).unwrap_or_else(|| ctx.session_manager.session_id().to_string());
-            let backend_str = state_backend.lock().ok().map(|g| g.clone()).unwrap_or_else(|| "unavailable".to_string());
-            let (tool_call_id, tool_name, result, is_error) = match event {
-                ExtensionEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => (tool_call_id.clone(), tool_name.clone(), result.clone(), *is_error),
-                _ => (String::new(), String::new(), serde_json::Value::Null, false),
+            // Nothing awaits a permission verdict: skip cloning the result and building the payload.
+            let captured = match event {
+                ExtensionEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } if telemetry.has_pending() => {
+                    let session_id = state_ctx.lock().ok().and_then(|g| g.clone()).unwrap_or_else(|| ctx.session_manager.session_id().to_string());
+                    let backend_str = state_backend.lock().ok().map(|g| g.clone()).unwrap_or_else(|| "unavailable".to_string());
+                    Some((session_id, backend_str, tool_call_id.clone(), tool_name.clone(), result.clone(), *is_error))
+                }
+                _ => None,
             };
             Box::pin(async move {
+                let Some((session_id, backend_str, tool_call_id, tool_name, result, is_error)) = captured else {
+                    return Ok(EventResult::None);
+                };
                 let payload = serde_json::json!({
                     "type": "tool_execution_end",
                     "toolCallId": tool_call_id,
@@ -578,13 +596,19 @@ impl ComputerUseComponent {
             let telemetry = Arc::clone(&telemetry_msg_end);
             let state_ctx = Arc::clone(&state_msg_end);
             let state_backend = Arc::clone(&state_backend_msg_end);
-            let session_id = state_ctx.lock().ok().and_then(|g| g.clone()).unwrap_or_else(|| ctx.session_manager.session_id().to_string());
-            let backend_str = state_backend.lock().ok().map(|g| g.clone()).unwrap_or_else(|| "unavailable".to_string());
-            let msg_val = match event {
-                ExtensionEvent::MessageEnd { message } => serde_json::to_value(message).unwrap_or_default(),
-                _ => serde_json::Value::Null,
+            // Only a toolResult message can settle a pending permission; skip serialising the rest.
+            let captured = match event {
+                ExtensionEvent::MessageEnd { message } if message.role() == "toolResult" && telemetry.has_pending() => {
+                    let session_id = state_ctx.lock().ok().and_then(|g| g.clone()).unwrap_or_else(|| ctx.session_manager.session_id().to_string());
+                    let backend_str = state_backend.lock().ok().map(|g| g.clone()).unwrap_or_else(|| "unavailable".to_string());
+                    Some((session_id, backend_str, serde_json::to_value(message).unwrap_or_default()))
+                }
+                _ => None,
             };
             Box::pin(async move {
+                let Some((session_id, backend_str, msg_val)) = captured else {
+                    return Ok(EventResult::None);
+                };
                 let payload = serde_json::json!({
                     "type": "message_end",
                     "message": msg_val,

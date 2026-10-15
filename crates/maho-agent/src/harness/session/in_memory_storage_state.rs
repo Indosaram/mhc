@@ -54,7 +54,8 @@ impl MemoryForkPlan {
 /// Complete materialized session state for MemoryStorage and JsonlStorage.
 pub struct InMemoryStorageState {
     entries: HashMap<String, Entry>,
-    entries_by_seq: Vec<Entry>,
+    /// Entry ids in commit order; payloads live once in `entries`.
+    entries_by_seq: Vec<String>,
     scalar_values: HashMap<String, StoredValue>,
     list_values: HashMap<String, StoredListSnapshot>,
     usage: HashMap<String, UsageRow>,
@@ -109,11 +110,11 @@ impl InMemoryStorageState {
             match write {
                 CommittedWrite::Entry(entry) => {
                     let materialized = materialize(entry);
-                    self.entries.insert(materialized.id.clone(), materialized.clone());
-                    self.entries_by_seq.push(materialized.clone());
                     if materialized.entry_type() == super::types::EntryType::Message {
                         self.stats.message_count += 1;
                     }
+                    self.entries_by_seq.push(materialized.id.clone());
+                    self.entries.insert(materialized.id.clone(), materialized);
                 }
                 CommittedWrite::Usage(row) => {
                     let row = usage_row(row);
@@ -149,12 +150,12 @@ impl InMemoryStorageState {
 
         let mut destination = InMemoryStorageState::new();
         let mut message_count = 0;
-        for entry in &self.entries_by_seq {
+        for entry in self.entries_by_seq.iter().filter_map(|id| self.entries.get(id)) {
             if !is_entry_copied(&entry.id) {
                 continue;
             }
             destination.entries.insert(entry.id.clone(), entry.clone());
-            destination.entries_by_seq.push(entry.clone());
+            destination.entries_by_seq.push(entry.id.clone());
             if entry.entry_type() == super::types::EntryType::Message {
                 message_count += 1;
             }
@@ -311,29 +312,25 @@ impl InMemoryStorageState {
     pub fn read_list(&self, address: &ValueList, options: Option<ListReadOptions>) -> Result<Vec<ListElement>, SessionError> {
         let resolved = resolve_list_read_options(options)
             .map_err(|error| SessionError::new(SessionErrorKind::Invariant, error.message))?;
-        let elements = self
+        let elements: &[ListElement] = self
             .list_values
             .get(&physical_key(&address.namespace, &address.key))
-            .map(|stored| stored.elements.clone())
+            .map(|stored| stored.elements.as_slice())
             .unwrap_or_default();
-        let filtered: Vec<ListElement> = elements
-            .into_iter()
-            .filter(|element| match resolved.cursor {
-                None => true,
-                Some(ListCursor { seq }) => {
-                    if resolved.order == ListOrder::Asc {
-                        element.seq > seq
-                    } else {
-                        element.seq < seq
-                    }
-                }
-            })
-            .collect();
-        let mut ordered = filtered;
-        if resolved.order == ListOrder::Desc {
-            ordered.reverse();
-        }
-        ordered.truncate(resolved.limit);
+        // Elements are appended in ascending `seq` order; slice by cursor and clone only the page.
+        let ordered: Vec<ListElement> = if resolved.order == ListOrder::Asc {
+            let from = match resolved.cursor {
+                None => 0,
+                Some(ListCursor { seq }) => elements.partition_point(|element| element.seq <= seq),
+            };
+            elements[from..].iter().take(resolved.limit).cloned().collect()
+        } else {
+            let to = match resolved.cursor {
+                None => elements.len(),
+                Some(ListCursor { seq }) => elements.partition_point(|element| element.seq < seq),
+            };
+            elements[..to].iter().rev().take(resolved.limit).cloned().collect()
+        };
         Ok(ordered)
     }
 
@@ -345,15 +342,15 @@ impl InMemoryStorageState {
             )));
         };
 
-        let mut path: Vec<Entry> = Vec::new();
-        let mut entry = Some(start.clone());
-        while let Some(current) = entry {
-            path.push(current.clone());
-            let Some(parent_id) = current.parent_id.clone() else {
+        let mut path: Vec<&Entry> = Vec::new();
+        let mut current = start;
+        loop {
+            path.push(current);
+            let Some(parent_id) = current.parent_id.as_ref() else {
                 break;
             };
-            match self.entries.get(&parent_id) {
-                Some(parent) => entry = Some(parent.clone()),
+            match self.entries.get(parent_id) {
+                Some(parent) => current = parent,
                 None => return Err(session_invariant_error("Corrupt branch: missing parent")),
             }
         }
@@ -361,9 +358,9 @@ impl InMemoryStorageState {
             path.reverse();
         }
 
-        let mut stopped: Vec<Entry> = Vec::new();
+        let mut stopped: Vec<&Entry> = Vec::new();
         for candidate in path {
-            let stop = Some(candidate.id.clone()) == query.stop_at_id
+            let stop = query.stop_at_id.as_deref() == Some(candidate.id.as_str())
                 || query.stop_at_type.map(|stop| stop == candidate.entry_type()) == Some(true);
             stopped.push(candidate);
             if stop {
@@ -371,7 +368,7 @@ impl InMemoryStorageState {
             }
         }
         let oldest_first = query.order == Some(super::types::BranchOrder::OldestFirst);
-        let filtered: Vec<Entry> = stopped
+        let filtered = stopped
             .into_iter()
             .filter(|candidate| query.entry_type.is_none() || query.entry_type == Some(candidate.entry_type()))
             .filter(|candidate| {
@@ -387,11 +384,10 @@ impl InMemoryStorageState {
                     }
                 }
             })
+            .take(query.limit.unwrap_or(usize::MAX))
+            .cloned()
             .collect();
-        Ok(match query.limit {
-            None => filtered,
-            Some(limit) => filtered.into_iter().take(limit).collect(),
-        })
+        Ok(filtered)
     }
 
     pub fn scan_branch_structure(&self, query: &StorageBranchScan) -> Result<Vec<EntryStructure>, SessionError> {
@@ -423,7 +419,10 @@ impl InMemoryStorageState {
             0
         };
         while index >= 0 && (index as usize) < self.entries_by_seq.len() && entries.len() < limit {
-            let entry = &self.entries_by_seq[index as usize];
+            let Some(entry) = self.entries.get(&self.entries_by_seq[index as usize]) else {
+                index += if descending { -1 } else { 1 };
+                continue;
+            };
             let matches = (query.entry_type.is_none() || query.entry_type == Some(entry.entry_type()))
                 && (query.custom_type.is_none() || query.custom_type.as_deref() == entry.custom_type())
                 && query.from_seq.map(|from| entry.seq >= from).unwrap_or(true)

@@ -404,9 +404,10 @@ impl HookRegistry {
         Ok(HookResult::BeforeTool { args: if args == event.args { None } else { Some(args) }, block })
     }
 
-    async fn transform_context(&self, event: HookInvocation, context: &Context) -> Result<HookResult, HookRunError> {
-        let mut messages = event.messages.clone();
-        let mut system_prompt = event.system_prompt.clone();
+    async fn transform_context(&self, mut event: HookInvocation, context: &Context) -> Result<HookResult, HookRunError> {
+        // Take the history out so the per-registration `event.clone()` does not copy it.
+        let mut messages = std::mem::take(&mut event.messages);
+        let mut system_prompt = std::mem::take(&mut event.system_prompt);
         for registration in self.registrations_for(HookName::TransformContext) {
             let mut current = event.clone();
             current.messages = messages.clone();

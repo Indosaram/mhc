@@ -1,6 +1,6 @@
 use std::{sync::{Arc,Mutex},time::{SystemTime,UNIX_EPOCH}};
 use maho_ext_api::{AbortSource,AgentMessage,CustomMessage,EventKind,EventResult,Extension,ExtensionApi,ExtensionContext,ExtensionEvent,ExtensionFailure,FlagType,FlagValue,SendMessageOptions,ToolContent};
-use crate::{builtin_rules::builtin_ttsr_rules,commands::{register_ttsr_commands,TtsrPublicState},coordinator::{claim_abort,mark_user_cancelled},manager::TtsrManager,message_update::get_ttsr_stream_delta,prompts::REPETITIVE_TURNS_RULE_CONTENT,remediation::{build_nudge_message,TtsrNudgeMessage},repetitive_turns_lane::{RepetitiveTurnsLane,read_persisted_assistant_texts},stream_remediation::{build_stream_remediation,StreamRemediationInput,StreamReplacement},types::*,watch::StreamWatcher};
+use crate::{builtin_rules::builtin_ttsr_rules,commands::{register_ttsr_commands,TtsrPublicState},coordinator::{claim_abort,mark_user_cancelled},manager::TtsrManager,message_update::get_ttsr_stream_delta_from_value,prompts::REPETITIVE_TURNS_RULE_CONTENT,remediation::{build_nudge_message,TtsrNudgeMessage},repetitive_turns_lane::{RepetitiveTurnsLane,read_persisted_assistant_texts},stream_remediation::{build_stream_remediation,StreamRemediationInput,StreamReplacement},types::*,watch::StreamWatcher};
 use crate::detectors::repetitive_turns::REPETITIVE_TURNS_RULE_NAME;
 #[derive(Default)]
 struct State { watcher:Option<StreamWatcher>,generation_state:GenerationDetectionState,generation:u64,pending_remediation:Option<StreamRemediationInput>,pending_rule:Option<TtsrRule>,pending_nudge:Option<TtsrNudgeMessage>,settling_user_abort:bool,disabled:bool,repetitive_turns:RepetitiveTurnsLane }
@@ -46,8 +46,7 @@ fn handle(state:&mut State,api:&ExtensionApi,event:&ExtensionEvent,ctx:&Extensio
         ExtensionEvent::TurnEnd { .. }=>{ if let Some(watcher)=&mut state.watcher { watcher.manager.increment_message_count(); } },
         ExtensionEvent::MessageUpdate { assistant_message_event,.. }=>{
             state.initialize(api,ctx); if state.disabled { return Ok(EventResult::None); }
-            let event:maho_ai::types::AssistantMessageEvent=serde_json::from_value(assistant_message_event.clone()).map_err(|error|ExtensionFailure::new(error.to_string()))?;
-            let Some(delta)=get_ttsr_stream_delta(&event) else { return Ok(EventResult::None); };
+            let Some(delta)=get_ttsr_stream_delta_from_value(assistant_message_event) else { return Ok(EventResult::None); };
             let Some(watcher)=&mut state.watcher else { return Ok(EventResult::None); };
             let outcome=watcher.handle_delta(delta.source,&delta.stream_key,delta.delta,state.generation,delta.tool_name);
             if let Some(resolution)=outcome.resolution && claim_abort(&mut state.generation_state,&resolution,now()) { state.pending_remediation=Some(StreamRemediationInput { resolution,stream_kind:delta.source }); ctx.abort(Some(AbortSource::System))?; return Ok(EventResult::None); }

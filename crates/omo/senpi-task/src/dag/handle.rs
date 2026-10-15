@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
-use crate::dag::journal::{DagJournalUnsubscribe, subscribe_dag_journal};
+use crate::dag::journal::{DagJournalListener, DagJournalUnsubscribe, subscribe_dag_journal};
 use crate::dag::manager::DagRunRecordV1;
 use crate::dag::store::{DagEventReadOptions, DagFileStore, DagStoreError};
 use crate::dag::types::{
@@ -125,7 +125,7 @@ impl DagRunHandle {
 }
 
 pub type DagSubscribe =
-    Arc<dyn Fn(&DagRunId, Arc<dyn Fn() + Send + Sync>) -> DagJournalUnsubscribe + Send + Sync>;
+    Arc<dyn Fn(&DagRunId, DagJournalListener) -> DagJournalUnsubscribe + Send + Sync>;
 pub type DagCancel = Arc<dyn Fn(&DagRunId, Option<&str>) + Send + Sync>;
 pub type DagReadOutput = Arc<dyn Fn(&DagRunId, &DagNodeId) -> Option<String> + Send + Sync>;
 
@@ -274,16 +274,20 @@ impl Inner {
                 inner.settle(&run_id, result);
             }
         };
-        let listener: Arc<dyn Fn() + Send + Sync> = Arc::new(on_journal_event.clone());
-        let commit_unsubscribe = subscribe_dag_journal(
-            &self_arc.store,
-            run_id,
-            Arc::new({
-                let on_journal_event = on_journal_event.clone();
-                move |_event| on_journal_event()
-            }),
-        );
-        let live_unsubscribe = (self_arc.subscribe)(run_id, Arc::clone(&listener));
+        // A terminal status only enters the record through a terminal run event, so both the
+        // commit and the live listener skip the checkpoint read for every other event.
+        let listener: DagJournalListener = Arc::new(move |event: &crate::dag::types::DagRunEvent| {
+            if matches!(
+                event.payload,
+                DagRunEventPayload::RunCompleted { .. }
+                    | DagRunEventPayload::RunFailed { .. }
+                    | DagRunEventPayload::RunCancelled { .. }
+            ) {
+                on_journal_event();
+            }
+        });
+        let commit_unsubscribe = subscribe_dag_journal(&self_arc.store, run_id, Arc::clone(&listener));
+        let live_unsubscribe = (self_arc.subscribe)(run_id, listener);
         {
             let mut state = slot.0.lock().unwrap_or_else(PoisonError::into_inner);
             if state.resolved.is_none() {

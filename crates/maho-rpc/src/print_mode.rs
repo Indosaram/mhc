@@ -32,6 +32,8 @@ pub async fn run_print_session(
     let(sender,mut events)=tokio::sync::mpsc::unbounded_channel();
     let event_session=session.weak_accessor();
     let _subscription=session.subscribe(std::sync::Arc::new(move|event|{
+        // Text mode never reads the wire record, so skip serializing it.
+        if !json_mode{let _=sender.send((fallback_diagnostic(event),Ok(serde_json::Value::Null)));return;}
         let mut record=crate::session_binding::session_event_record(event);
         // senpi publishes `message_update` with `resolvedToolName` (core/tool-call-display-name.ts).
         if let(Ok(record),maho_ext_api::AgentSessionEvent::Agent(update@maho_ext_api::AgentEvent::MessageUpdate{..}))=(&mut record,event)

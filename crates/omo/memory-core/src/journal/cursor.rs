@@ -70,7 +70,14 @@ pub fn derive_state(
     state: &ReflectionTranscriptState,
     entries: &[TranscriptEntry],
 ) -> ReflectionTranscriptState {
-    let total_completed_steps = count_completed_steps(entries);
+    derive_state_with_total(state, count_completed_steps(entries))
+}
+
+/// [`derive_state`] for an already-counted number of completed steps.
+pub(crate) fn derive_state_with_total(
+    state: &ReflectionTranscriptState,
+    total_completed_steps: usize,
+) -> ReflectionTranscriptState {
     let reflected_completed_steps = state.reflected_completed_steps.min(total_completed_steps);
     let steps_since_last_successful_reflection =
         total_completed_steps.saturating_sub(reflected_completed_steps);

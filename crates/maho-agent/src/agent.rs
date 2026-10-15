@@ -345,6 +345,35 @@ impl Agent {
         lock(&self.inner.state).clone()
     }
 
+    /// `state.messages.length` without cloning the transcript.
+    pub fn message_count(&self) -> usize {
+        lock(&self.inner.state).messages().len()
+    }
+
+    /// `state.messages.length > 0` without cloning the transcript.
+    pub fn has_messages(&self) -> bool {
+        !lock(&self.inner.state).messages().is_empty()
+    }
+
+    /// `state.isStreaming || state.pendingToolCalls.size > 0`, read under one lock.
+    pub fn is_streaming_or_has_pending_tool_calls(&self) -> bool {
+        let state = lock(&self.inner.state);
+        state.is_streaming || !state.pending_tool_calls.is_empty()
+    }
+
+    /// `state.tools.map(t => t.name)` without cloning the transcript or tool schemas.
+    pub fn tool_names(&self) -> Vec<String> {
+        lock(&self.inner.state).tools().iter().map(|tool| tool.name().to_owned()).collect()
+    }
+
+    /// Active tool names plus the named active tool, both from one consistent snapshot.
+    pub fn tool_names_and_find(&self, name: &str) -> (Vec<String>, Option<AgentTool>) {
+        let state = lock(&self.inner.state);
+        let names = state.tools().iter().map(|tool| tool.name().to_owned()).collect();
+        let tool = state.tools().iter().find(|candidate| candidate.name() == name).cloned();
+        (names, tool)
+    }
+
     /// `state.model` alone, without cloning the transcript and tool list.
     pub fn model(&self) -> Model {
         lock(&self.inner.state).model.clone()
@@ -922,9 +951,7 @@ impl Agent {
             AgentEvent::MessageEnd { message } => {
                 let mut state = lock(&self.inner.state);
                 state.streaming_message = None;
-                let mut messages = state.messages().to_vec();
-                messages.push(message.clone());
-                state.set_messages(messages);
+                state.push_message(message.clone());
             }
             AgentEvent::ToolExecutionStart { tool_call_id, .. } => {
                 lock(&self.inner.state).pending_tool_calls.insert(tool_call_id.clone());

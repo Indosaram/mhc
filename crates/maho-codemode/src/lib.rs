@@ -184,9 +184,12 @@ fn host_line(js_runtime:&tool::types::EvalRuntimeInfo) -> String {
     let platform=match std::env::consts::OS {"macos"=>"darwin","windows"=>"win32",other=>other};
     let arch=match std::env::consts::ARCH {"x86_64"=>"x64","aarch64"=>"arm64","x86"=>"ia32",other=>other};
     let cores=std::thread::available_parallelism().map_or(1,std::num::NonZeroUsize::get);
-    [Some(format!("{platform} {arch}")),cpu_model(),Some(format!("{cores} cores")),Some(format!("{} {}",js_runtime.name,js_runtime.version))]
+    [Some(format!("{platform} {arch}")),CPU_MODEL.get_or_init(cpu_model).clone(),Some(format!("{cores} cores")),Some(format!("{} {}",js_runtime.name,js_runtime.version))]
         .into_iter().flatten().filter(|part|!part.trim().is_empty()).collect::<Vec<_>>().join(" \u{00b7} ")
 }
+
+/// The CPU model never changes within a process; read it once instead of on every `TurnStart`.
+static CPU_MODEL:std::sync::OnceLock<Option<String>>=std::sync::OnceLock::new();
 
 fn cpu_model() -> Option<String> {
     if cfg!(target_os="macos") {

@@ -68,8 +68,9 @@ pub fn create_edit_tool_definition(cwd: PathBuf, options: EditToolOptions) -> To
             call.signal.check()?;
             let final_content = format!("{bom}{}", restore_line_endings(&applied.new_content, ending));
             ops.write_file(&path, &final_content).await?; call.signal.check()?;
-            let diff = generate_diff_string(&applied.base_content, &applied.new_content, 4);
-            let patch = generate_unified_patch(&input.path, &applied.base_content, &applied.new_content, 4);
+            let rows = diff_lines(&applied.base_content, &applied.new_content);
+            let diff = generate_diff_string_from_rows(&rows, &applied.base_content, &applied.new_content, 4);
+            let patch = crate::unified_diff::create_unified_patch_from_rows(&input.path, &input.path, &rows, 4);
             Ok(ToolResult { content: vec![ToolContent::text(format!("Successfully replaced {} block(s) in {}.", input.edits.len(), input.path))],
                 details: Some(json!({"diff":diff.diff,"patch":patch,"firstChangedLine":diff.first_changed_line})) })
         })

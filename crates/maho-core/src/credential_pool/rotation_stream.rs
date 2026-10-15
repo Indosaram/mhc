@@ -315,10 +315,6 @@ struct RotationHost {
     target: maho_ai::types::AssistantMessageEventStream,
 }
 
-fn event_value(event: &maho_ai::types::AssistantMessageEvent) -> Value {
-    serde_json::to_value(event).unwrap_or(Value::Null)
-}
-
 impl crate::credential_pool::failover::FailoverHost for RotationHost {
     type Event = maho_ai::types::AssistantMessageEvent;
     type Attempt = maho_ai::types::AssistantMessageEventStream;
@@ -350,11 +346,18 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
     }
 
     fn is_committed_output(&self, event: &Self::Event) -> bool {
-        is_committed_rotation_output(&event_value(event))
+        use maho_ai::types::AssistantMessageEvent;
+        matches!(
+            event,
+            AssistantMessageEvent::TextDelta { .. }
+                | AssistantMessageEvent::ThinkingDelta { .. }
+                | AssistantMessageEvent::ToolcallDelta { .. }
+                | AssistantMessageEvent::ToolcallEnd { .. }
+        )
     }
 
     fn is_stream_start(&self, event: &Self::Event) -> bool {
-        is_rotation_stream_start(&event_value(event))
+        matches!(event, maho_ai::types::AssistantMessageEvent::Start { .. })
     }
 
     /// senpi `rotationErrorFromEvent`: `new Error(errorMessage)`.

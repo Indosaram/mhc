@@ -9,15 +9,15 @@ use crate::session_resident_store::ResidentStringStore;
 
 /// Materializes resident strings for every entry, repairing an entry whose resident data is gone
 /// by re-materializing it from the persisted history.
-pub fn materialize_session_entries(
-    entries: &[Value],
+pub fn materialize_session_entries<'a>(
+    entries: impl IntoIterator<Item = &'a Value>,
     resident_store: &ResidentStringStore,
     load_history_entries: impl Fn() -> Vec<Value>,
     on_materialized: impl Fn(&Value),
 ) -> Vec<Value> {
     let missing_entry_ids: RefCell<BTreeSet<String>> = RefCell::new(BTreeSet::new());
     let materialized: Vec<Value> = entries
-        .iter()
+        .into_iter()
         .map(|entry| {
             let entry_id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
             resident_store.materialize_with(entry, Some(&|_missing| {

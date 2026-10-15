@@ -75,6 +75,8 @@ fn tails() -> &'static Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>> {
 
 fn tail_for(key: &str) -> Arc<tokio::sync::Mutex<()>> {
     let mut tails = tails().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Drop tails no operation holds any more so the map does not grow with every key ever seen.
+    tails.retain(|_, tail| Arc::strong_count(tail) > 1);
     Arc::clone(tails.entry(key.to_owned()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))))
 }
 

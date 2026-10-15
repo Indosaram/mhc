@@ -101,7 +101,7 @@ fn get_builtin_provider_for_model(model: &Model) -> Result<Option<Arc<dyn Provid
     }
     Ok(COMPAT_MODELS
         .get_provider(&model.provider)
-        .filter(|provider| provider.get_models().iter().any(|candidate| candidate.api == model.api)))
+        .filter(|provider| provider.has_api(&model.api)))
 }
 
 fn resolve_api_provider(api: &str) -> Result<ApiProviderInternal, ApiRegistryError> {

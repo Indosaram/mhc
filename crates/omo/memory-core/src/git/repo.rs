@@ -1,6 +1,6 @@
 //! High-level Git repository facade orchestrating transactions, locks, and history.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -159,7 +159,12 @@ impl GitMemoryRepo {
 
         assert_no_unrelated_changes(&self.dir, &normalized, || self.status(&[] as &[&str]))?;
         self.stage(&normalized)?;
-        self.commit_prepared(paths, reason, author)
+        // The hook installer and the full-tree unrelated-change assertion already ran above; only
+        // the pathspec change check remains before committing.
+        if !self.has_path_changes(&normalized)? {
+            return Err(GitError::NoEffectiveChanges { paths: normalized });
+        }
+        self.commit_staged(reason, author)
     }
 
     pub fn commit_prepared(
@@ -298,10 +303,11 @@ impl GitMemoryRepo {
     /// Object ids git reports missing are absent from the returned map. Blob content is decoded as
     /// UTF-8, which is lossless for the memory repository's UTF-8 markdown contract.
     pub fn read_blobs(&self, oids: &[String]) -> Result<BTreeMap<String, String>, GitError> {
-        let mut unique: Vec<String> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut unique: Vec<&str> = Vec::new();
         for oid in oids {
-            if !unique.iter().any(|seen| seen == oid) {
-                unique.push(oid.clone());
+            if seen.insert(oid.as_str()) {
+                unique.push(oid.as_str());
             }
         }
         if unique.is_empty() {
@@ -337,6 +343,10 @@ impl GitMemoryRepo {
             argv.push("-n".to_string());
             argv.push(limit.to_string());
         }
+        if let Some(grep) = options.and_then(|o| o.grep.as_deref()) {
+            argv.push("--fixed-strings".to_string());
+            argv.push(format!("--grep={grep}"));
+        }
         if let Some(range) = options.and_then(|o| o.range.as_deref()) {
             argv.push(range.to_string());
         }
@@ -351,17 +361,48 @@ impl GitMemoryRepo {
         let mut records = parse_log_output(&res.stdout);
 
         let include_paths = options.is_some_and(|o| o.include_paths);
-        if include_paths {
-            for commit in &mut records {
-                let diff_res = self.git(&[
-                    "diff-tree".to_string(),
-                    "--no-commit-id".to_string(),
-                    "--name-only".to_string(),
-                    "-z".to_string(),
-                    "-r".to_string(),
-                    commit.sha.clone(),
-                ])?;
-                commit.paths = Some(parse_nul_paths(&diff_res.stdout));
+        if include_paths && !records.is_empty() {
+            // One batched `diff-tree --stdin` instead of a process per commit. Output is
+            // `<sha>\0<path>\0...` per commit with changes, in input order; commits with no
+            // reported paths (root, merge, empty) emit nothing, matching the per-commit call.
+            let diff_argv = vec![
+                "diff-tree".to_string(),
+                "--stdin".to_string(),
+                "--name-only".to_string(),
+                "-z".to_string(),
+                "-r".to_string(),
+            ];
+            let mut stdin = String::new();
+            for commit in &records {
+                stdin.push_str(&commit.sha);
+                stdin.push('\n');
+            }
+            let diff_res = self.git_with_stdin(&diff_argv, stdin.as_bytes())?;
+            if diff_res.code != 0 {
+                return Err(command_error(&diff_argv, &diff_res));
+            }
+            let index_by_sha: BTreeMap<&str, usize> = records
+                .iter()
+                .enumerate()
+                .map(|(index, commit)| (commit.sha.as_str(), index))
+                .collect();
+            let mut paths: Vec<Vec<String>> = vec![Vec::new(); records.len()];
+            let mut next_index = 0usize;
+            let mut current: Option<usize> = None;
+            for token in diff_res.stdout.split('\0') {
+                if let Some(&index) = index_by_sha.get(token)
+                    && index >= next_index
+                {
+                    next_index = index + 1;
+                    current = Some(index);
+                    continue;
+                }
+                if let Some(index) = current {
+                    paths[index].extend(parse_nul_paths(token));
+                }
+            }
+            for (commit, commit_paths) in records.iter_mut().zip(paths) {
+                commit.paths = Some(commit_paths);
             }
         }
 

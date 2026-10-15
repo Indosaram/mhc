@@ -1640,6 +1640,14 @@ struct RuntimeState {
     eval_handle_host: Option<SharedEvalHandleHost>,
 }
 pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
+/// Process-wide generation of the live tool / tool-renderer inventory. Bumped after every
+/// mutation of `live_tools`, `live_tool_renderers` or `live_erased_tool_renderers` (and by hosts
+/// that swap a runner), so a reader that observed an unchanged value can skip re-deriving the
+/// renderer snapshot. Read it BEFORE taking a snapshot: a bump racing the snapshot then forces
+/// one extra recompute instead of a missed change.
+static TOOL_RENDERER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub fn tool_renderer_generation() -> u64 { TOOL_RENDERER_GENERATION.load(std::sync::atomic::Ordering::Acquire) }
+pub fn bump_tool_renderer_generation() { TOOL_RENDERER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel); }
 pub type LiveEntryRenderers = BTreeMap<String, (EntryRenderer, Option<EntryRendererOptions>)>;
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
@@ -1664,6 +1672,7 @@ impl ExtensionRuntime {
                 state.live_erased_tool_renderers.extend(pending.erased_tool_renderers);
                 if let Some(host) = pending.eval_handle_host { state.eval_handle_host = Some(host); }
             }
+            bump_tool_renderer_generation();
             for change in pending.providers { match change {
                 ProviderRegistrationChange::Register(registration, path) => self.register_provider(registration, &path)?,
                 ProviderRegistrationChange::Unregister(name, path) => self.unregister_provider(&name, &path)?,
@@ -1690,6 +1699,8 @@ impl ExtensionRuntime {
         let next_id = state.next_classifier_id;
         *state = checkpoint.0;
         state.next_classifier_id = next_id;
+        drop(state);
+        bump_tool_renderer_generation();
     }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions = Some(actions); }
     pub fn session_actions(&self) -> Result<Arc<dyn ExtensionSessionActions>, ExtensionFailure> {
@@ -1736,6 +1747,8 @@ impl ExtensionRuntime {
         state.live_mcp_servers.clear();
         state.live_message_renderers.clear(); state.live_entry_renderers.clear();
         state.live_filesystem_policies.clear();
+        drop(state);
+        bump_tool_renderer_generation();
     }
     pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -1764,6 +1777,9 @@ impl ExtensionRuntime {
         Ok(())
     }
     pub fn take_provider_errors(&self) -> Vec<ExtensionError> { std::mem::take(&mut self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider_errors) }
+    pub fn has_live_handlers(&self, path: &str, kind: EventKind) -> bool {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_handlers.get(&(path.into(), kind)).is_some_and(|handlers| !handlers.is_empty())
+    }
     pub fn live_handlers(&self, path: &str, kind: EventKind) -> Option<Vec<ExtensionHandler>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_handlers.get(&(path.into(), kind)).cloned()
     }
@@ -2078,6 +2094,8 @@ impl ExtensionApi {
             state.live_tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
             state.live_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.tool_renderers.clone());
             state.live_erased_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.erased_tool_renderers.clone());
+            drop(state);
+            bump_tool_renderer_generation();
         }
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {

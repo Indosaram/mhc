@@ -5,6 +5,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::types::StoreError;
 
+const LOCK_RETRY_MIN: Duration = Duration::from_millis(1);
 const LOCK_RETRY: Duration = Duration::from_millis(10);
 const LOCK_WAIT_TIMEOUT: Duration = Duration::from_millis(1_000);
 // Any lock older than this was left by a crashed holder. File age is the staleness authority
@@ -31,6 +32,7 @@ fn lock_path_for(record_path: &Path) -> PathBuf {
 
 fn acquire_lock(lock_path: &Path) -> Result<(), StoreError> {
     let started = Instant::now();
+    let mut retry = LOCK_RETRY_MIN;
     loop {
         match OpenOptions::new()
             .write(true)
@@ -50,7 +52,8 @@ fn acquire_lock(lock_path: &Path) -> Result<(), StoreError> {
                 if started.elapsed() >= LOCK_WAIT_TIMEOUT {
                     return Err(StoreError::LockTimeout(lock_path.to_path_buf()));
                 }
-                std::thread::sleep(LOCK_RETRY);
+                std::thread::sleep(retry);
+                retry = (retry * 2).min(LOCK_RETRY);
             }
             Err(error) => return Err(error.into()),
         }

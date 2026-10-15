@@ -55,7 +55,7 @@ pub fn query(
     let mut result = Vec::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        stack.extend(node.children.iter().rev().cloned());
+        stack.extend(node.children.into_iter().rev());
         if contains(Some(&node.props.role), role.as_ref())
             && contains(label(&node.props), title.as_ref())
             && contains(node.props.value.as_deref(), value.as_ref())

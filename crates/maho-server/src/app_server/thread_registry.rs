@@ -76,6 +76,9 @@ pub struct ThreadEntry {
     pub emit_gate: Arc<Mutex<()>>,
     /// Synchronous mirror of `active_turn` for senpi `getTurnId` (`activeTurn?.turnId`).
     active_turn_ids: ActiveTurnIds,
+    /// `(session id, first user message)`: entries are append-only, so once a session has a first
+    /// user message it never changes; keyed by session id in case the session is switched.
+    preview: std::sync::Mutex<Option<(String, String)>>,
 }
 /// Thread id -> active turn id, readable from the synchronous extension UI context.
 pub type ActiveTurnIds = Arc<std::sync::Mutex<BTreeMap<String, String>>>;
@@ -91,8 +94,18 @@ impl ThreadEntry {
         drop(active);
         self.active_turn = turn_id;
     }
+    /// The session's first user message (`getUserMessagesForForking()[0]`), cached once present
+    /// so listing threads does not copy every session entry.
+    pub fn preview(&self) -> Option<String> {
+        let session_id = self.session.session_id();
+        let mut cached = self.preview.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((id, text)) = cached.as_ref() && *id == session_id { return Some(text.clone()); }
+        let text = self.session.get_user_messages_for_forking().into_iter().next().map(|(_, text)| text)?;
+        *cached = Some((session_id, text.clone()));
+        Some(text)
+    }
     pub fn wire(&self) -> Value {
-        json!({"id":self.id,"sessionId":self.session.session_id(),"sessionPath":self.session.session_file(),"cwd":self.cwd,"createdAt":self.created_at,"updatedAt":self.updated_at,"status":{"type":if self.active_turn.is_some() {"active"} else {"idle"}},"preview":self.session.get_user_messages_for_forking().first().map(|(_,text)|text),"name":self.session.session_name()})
+        json!({"id":self.id,"sessionId":self.session.session_id(),"sessionPath":self.session.session_file(),"cwd":self.cwd,"createdAt":self.created_at,"updatedAt":self.updated_at,"status":{"type":if self.active_turn.is_some() {"active"} else {"idle"}},"preview":self.preview(),"name":self.session.session_name()})
     }
 }
 
@@ -156,7 +169,7 @@ impl ThreadRegistry {
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let (created_at, updated_at) = timestamps.unwrap_or_else(|| (now.clone(), now));
         let bound = session.clone();
-        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: initial, created_at, updated_at, tasks: Arc::new(Mutex::new(())), pending_turn: None, projection: None, observer: None, observer_events: None, emit_gate: Arc::new(Mutex::new(())), active_turn_ids: self.active_turn_ids.clone() }));
+        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: initial, created_at, updated_at, tasks: Arc::new(Mutex::new(())), pending_turn: None, projection: None, observer: None, observer_events: None, emit_gate: Arc::new(Mutex::new(())), active_turn_ids: self.active_turn_ids.clone(), preview: std::sync::Mutex::new(None) }));
         entries.insert(id.clone(), entry.clone());
         drop(entries);
         if let Some((_, binder)) = self.binding.get() { binder(id, bound, ui).await; }
@@ -174,7 +187,12 @@ impl ThreadRegistry {
         let source = self.resume_thread(thread_id).await?;
         let (source_cwd, source_file) = {let source = source.lock().await;(source.cwd.clone(),source.session.session_file())};
         let cwd = maho_core::paths::resolve_path(cwd.as_deref().unwrap_or(&source_cwd),server_cwd,&Default::default());
-        let manager = fork_session_manager(source_file.as_deref(),&cwd,self.session_dir.as_deref())?;
+        let manager = {
+            let (source_file, session_dir) = (source_file.clone(), self.session_dir.clone());
+            let cwd = cwd.clone();
+            // Forking reads and rewrites the whole source session synchronously.
+            tokio::task::spawn_blocking(move || fork_session_manager(source_file.as_deref(),&cwd,session_dir.as_deref())).await.map_err(|error| error.to_string())??
+        };
         let ui = self.session_ui(manager.session_id());
         let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), extension_ui: ui.clone(), ..Default::default() }).await?;
         self.deleted.lock().await.remove(&session.session_id());
@@ -187,7 +205,11 @@ impl ThreadRegistry {
         if let Ok(entry) = self.get_loaded_thread(id).await { return Ok(entry); }
         if self.deleted.lock().await.contains(id) { return Err(format!("Thread not found: {id}")); }
         let info = self.list_session_infos().await.into_iter().find(|info| info.id == id).ok_or_else(|| format!("Thread not found: {id}"))?;
-        let manager = SessionManager::open(&info.path, self.session_dir.as_deref(), Some(&info.cwd), None)?;
+        let manager = {
+            let (path, session_dir, cwd) = (info.path.clone(), self.session_dir.clone(), info.cwd.clone());
+            // Opening loads the whole session file synchronously.
+            tokio::task::spawn_blocking(move || SessionManager::open(&path, session_dir.as_deref(), Some(&cwd), None)).await.map_err(|error| error.to_string())??
+        };
         let ui = self.session_ui(manager.session_id());
         let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(info.cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), extension_ui: ui.clone(), ..Default::default() }).await?;
         let timestamps = (info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis, true), info.modified.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
@@ -199,6 +221,17 @@ impl ThreadRegistry {
         for entry in entries { wires.push(entry.lock().await.wire()); }
         wires
     }
+    /// Loaded thread ids in `list_loaded` order, without building each thread's wire.
+    pub async fn loaded_ids(&self) -> Vec<String> {
+        self.entries.lock().await.keys().cloned().collect()
+    }
+    /// Loaded `(id, cwd)` pairs in `list_loaded` order.
+    pub async fn loaded_cwds(&self) -> Vec<(String, String)> {
+        let entries = self.entries.lock().await.values().cloned().collect::<Vec<_>>();
+        let mut loaded = Vec::new();
+        for entry in entries { let entry = entry.lock().await; loaded.push((entry.id.clone(), entry.cwd.clone())); }
+        loaded
+    }
     pub async fn list_session_infos(&self) -> Vec<maho_core::session_discovery::SessionInfo> {
         let directories = if let Some(directory) = &self.session_dir {vec![directory.clone()]} else {
             let root = std::path::Path::new(&self.agent_dir).join("sessions");
@@ -206,8 +239,13 @@ impl ThreadRegistry {
             if let Ok(mut entries) = tokio::fs::read_dir(root).await {while let Ok(Some(entry)) = entries.next_entry().await {if entry.file_type().await.is_ok_and(|kind|kind.is_dir() || kind.is_symlink()) {directories.push(entry.path().display().to_string());}}}
             directories
         };
-        let mut sessions = Vec::new();
-        for directory in directories {sessions.extend(maho_core::session_discovery::list_sessions_from_dir(&directory,None,0,None));}
+        // Session discovery reads and parses files synchronously; keep it off the async workers.
+        let listed = tokio::task::spawn_blocking(move || {
+            let mut sessions = Vec::new();
+            for directory in directories {sessions.extend(maho_core::session_discovery::list_sessions_from_dir(&directory,None,0,None));}
+            sessions
+        }).await;
+        let mut sessions = match listed {Ok(sessions)=>sessions,Err(error)=>{eprintln!("app-server session listing: {error}");Vec::new()}};
         sessions.sort_by_key(|info|std::cmp::Reverse(info.modified));
         sessions
     }
@@ -215,7 +253,9 @@ impl ThreadRegistry {
         let offset = super::registry_listing::decode_cursor(cursor);
         let deleted = self.deleted.lock().await.clone();
         let mut threads = BTreeMap::new();
-        for info in self.list_session_infos().await {if !deleted.contains(&info.id) {threads.insert(info.id.clone(),super::registry_listing::build_disk_thread(&info));}}
+        let infos = self.list_session_infos().await;
+        let disk = tokio::task::spawn_blocking(move || infos.iter().filter(|info|!deleted.contains(&info.id)).map(|info|(info.id.clone(),super::registry_listing::build_disk_thread(info))).collect::<Vec<_>>()).await;
+        match disk {Ok(disk)=>threads.extend(disk),Err(error)=>eprintln!("app-server session listing: {error}")}
         for entry in self.list_loaded().await {if let Some(id) = entry["id"].as_str() {threads.insert(id.to_owned(),entry);}}
         let mut threads = threads.into_values().collect::<Vec<_>>();
         threads.sort_by(super::registry_listing::compare_threads);

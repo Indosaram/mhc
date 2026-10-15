@@ -118,7 +118,7 @@ pub struct RecallCorpusCacheOptions {
 
 struct RecallCorpusCacheEntry {
     revision: Option<String>,
-    corpus: RecallCorpus,
+    corpus: Arc<RecallCorpus>,
 }
 
 /// Caches the corpus keyed by HEAD sha; a moved HEAD invalidates the entry. A moved HEAD re-reads
@@ -150,7 +150,10 @@ impl RecallCorpusCache {
     }
 
     /// Loads the corpus at HEAD, reusing the cached entry while the HEAD fingerprint holds.
-    pub fn load(&mut self, repo: &GitMemoryRepo) -> Result<RecallCorpus, GitError> {
+    ///
+    /// The shared corpus keeps one stable documents slice per revision, so the BM25 index cache keyed
+    /// by that slice is reused across calls.
+    pub fn load(&mut self, repo: &GitMemoryRepo) -> Result<Arc<RecallCorpus>, GitError> {
         let signature = head_signature(&repo.dir);
         if let Some(entry) = &self.entry
             && let Some(signature) = &signature
@@ -159,7 +162,7 @@ impl RecallCorpusCache {
                 .as_ref()
                 .is_some_and(|(dir, probe)| dir == &repo.dir && probe == signature)
         {
-            return Ok(entry.corpus.clone());
+            return Ok(Arc::clone(&entry.corpus));
         }
 
         let revision = (self.resolve_head)(repo)?;
@@ -168,16 +171,16 @@ impl RecallCorpusCache {
             && entry.revision == revision
         {
             self.probe = probe;
-            return Ok(entry.corpus.clone());
+            return Ok(Arc::clone(&entry.corpus));
         }
 
-        let corpus = match &revision {
+        let corpus = Arc::new(match &revision {
             None => RecallCorpus::default(),
             Some(revision) => self.load_revision(repo, revision)?,
-        };
+        });
         self.entry = Some(RecallCorpusCacheEntry {
             revision,
-            corpus: corpus.clone(),
+            corpus: Arc::clone(&corpus),
         });
         self.probe = probe;
         Ok(corpus)

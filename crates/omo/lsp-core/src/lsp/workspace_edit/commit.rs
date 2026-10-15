@@ -1,5 +1,6 @@
 //! Port of TS `workspace-edit-commit.ts` and `workspace-edit.ts`.
 
+use super::path::file_digest;
 use super::path::snapshot_path;
 use super::plan::plan_workspace_edit;
 use super::types::ApplyResult;
@@ -42,6 +43,7 @@ fn default_remove(path: &str, recursive: bool) -> Result<(), String> {
 fn snapshots_equal(expected: &Entry, actual: &Entry) -> bool {
     match (expected, actual) {
         (Entry::File { content: left }, Entry::File { content: right }) => left == right,
+        (Entry::FileDigest { digest }, Entry::File { content }) => *digest == file_digest(content),
         (
             Entry::Directory {
                 children: Some(left),

@@ -36,13 +36,6 @@ use crate::watchdog::create_parent_watchdog;
 /// Default idle timeout: ten minutes, matching the reference implementation.
 pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 10 * 60_000;
 
-/// How long the dispatch loop waits for input before re-checking the stop conditions.
-///
-/// The reference implementation parks on its event loop and therefore reacts to the parent
-/// watchdog instantly; a blocking reader cannot, so the port polls in short slices and settles as
-/// soon as a stop condition is observed.
-const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(25);
-
 /// Reader buffer size for a single `read` call.
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 
@@ -154,8 +147,9 @@ where
     } = config;
     let idle_timeout_ms = idle_timeout_ms.unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
     let log: Arc<dyn McpLifecycleLog + Send + Sync> = log.unwrap_or_else(|| Arc::new(NoopLog));
-    let stop = Stop::new();
-    let (receiver, reader) = spawn_reader(input);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let stop = Stop::new(sender.clone());
+    let reader = spawn_reader(input, sender);
 
     log.log("stdio_started", Some(&started_fields(idle_timeout_ms)));
 
@@ -207,17 +201,22 @@ struct SharedState {
 }
 
 /// First stop condition wins; later ones are ignored.
+///
+/// Closing also wakes the dispatch loop through the input channel, so the loop can park without
+/// polling and still react to the watchdog immediately.
 #[derive(Clone)]
 struct Stop {
     closed: Arc<std::sync::atomic::AtomicBool>,
     outcome: Arc<std::sync::Mutex<Option<ServerOutcome>>>,
+    wake: Sender<InputEvent>,
 }
 
 impl Stop {
-    fn new() -> Self {
+    fn new(wake: Sender<InputEvent>) -> Self {
         Self {
             closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             outcome: Arc::new(std::sync::Mutex::new(None)),
+            wake,
         }
     }
 
@@ -231,6 +230,7 @@ impl Stop {
         }
         drop(recorded);
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.wake.send(InputEvent::Stopped);
     }
 
     fn outcome(&self) -> Option<ServerOutcome> {
@@ -246,6 +246,8 @@ enum InputEvent {
     Messages(Vec<StdioJsonRpcMessage>),
     End,
     ReadError(std::io::Error),
+    /// A stop condition fired; the dispatch loop re-checks the recorded outcome.
+    Stopped,
 }
 
 /// Reads `input` on a worker thread so the dispatch loop can observe stop conditions while the
@@ -255,9 +257,9 @@ enum InputEvent {
 /// would deadlock the caller); it is joined when it already finished.
 fn spawn_reader<R: Read + Send + 'static>(
     mut input: R,
-) -> (Receiver<InputEvent>, std::thread::JoinHandle<()>) {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
+    sender: Sender<InputEvent>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
         let mut decoder = StdioJsonRpcDecoder::new();
         let mut buffer = vec![0u8; READ_CHUNK_BYTES];
         loop {
@@ -286,8 +288,7 @@ fn spawn_reader<R: Read + Send + 'static>(
                 }
             }
         }
-    });
-    (receiver, handle)
+    })
 }
 
 /// Sends one event; `false` means the dispatch loop has already returned.
@@ -334,10 +335,17 @@ where
                     }
                     break Ok(ServerOutcome::IdleTimeout);
                 }
-                IdleWait::Disabled => STOP_CHECK_INTERVAL,
-                IdleWait::Pending(remaining) => remaining.min(STOP_CHECK_INTERVAL),
+                IdleWait::Disabled => None,
+                IdleWait::Pending(remaining) => Some(remaining),
             };
-            match self.receiver.recv_timeout(wait) {
+            let event = match wait {
+                Some(wait) => self.receiver.recv_timeout(wait),
+                None => self
+                    .receiver
+                    .recv()
+                    .map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            match event {
                 Ok(InputEvent::Messages(messages)) => {
                     last_activity = Instant::now();
                     let mut keep_serving = true;
@@ -361,7 +369,7 @@ where
                     Some(outcome) if is_swallowable_read_error(&error) => break Ok(outcome),
                     _ => break Err(ServerError::Io(error)),
                 },
-                Err(RecvTimeoutError::Timeout) => continue,
+                Ok(InputEvent::Stopped) | Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
                     break Ok(shared.stop.outcome().unwrap_or(ServerOutcome::InputClosed));
                 }

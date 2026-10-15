@@ -240,6 +240,43 @@ fn given_inject_without_ack_when_ack_checks_repeat_then_reservation_is_held_and_
 }
 
 #[test]
+fn given_ack_miss_on_existing_transcript_when_envelope_is_appended_then_next_ack_check_commits() {
+    // given
+    let harness = create_harness();
+    let value = message("44444444-4444-4444-8444-444444444444");
+    seed(&harness, &value);
+    let transcript = harness.session_dir.join("20260712_session.jsonl");
+    fs::write(&transcript, "{\"type\":\"session\"}\n").unwrap();
+    let self_poller = poller(&harness);
+    self_poller.poll_once(None).unwrap();
+    self_poller.check_pending_acks().unwrap();
+    assert_eq!(self_poller.pending_message_ids(), vec![value.message_id.clone()]);
+
+    // when
+    let entry = json!({
+        "type": "message",
+        "message": {
+            "role": "user",
+            "content": [{ "type": "text", "text": build_peer_message_envelope(&value) }],
+        },
+    });
+    let mut appended = fs::read_to_string(&transcript).unwrap();
+    appended.push_str(&format!("{}\n", serde_json::to_string(&entry).unwrap()));
+    fs::write(&transcript, appended).unwrap();
+    self_poller.check_pending_acks().unwrap();
+
+    // then
+    assert!(self_poller.pending_message_ids().is_empty());
+    assert!(
+        harness
+            .inbox_dir
+            .join("processed")
+            .join(format!("{}.json", value.message_id))
+            .exists()
+    );
+}
+
+#[test]
 fn given_crash_after_envelope_persistence_when_new_poller_recovers_then_commits_without_reinjecting() {
     // given
     let harness = create_harness();

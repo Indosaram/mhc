@@ -30,5 +30,5 @@ pub fn build_user_message(client_id: Option<&str>, content: &[Value]) -> Value {
     json!({"type":"userMessage","id":client_id.map(str::to_owned).unwrap_or_else(create_turn_id),"clientId":client_id,"content":content})
 }
 pub fn read_logged_items(log: &mut TurnLog, thread_id: &str, turn_id: &str) -> Vec<Value> {
-    log.read_turns(thread_id).into_iter().find(|turn| turn.turn_id == turn_id).map(|turn| turn.items.into_iter().map(Value::Object).collect()).unwrap_or_default()
+    log.turn_items(thread_id, turn_id).map(|items| items.iter().cloned().map(Value::Object).collect()).unwrap_or_default()
 }

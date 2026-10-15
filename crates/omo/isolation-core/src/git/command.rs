@@ -141,13 +141,23 @@ fn collect(
 }
 
 pub fn run_git(args: &[String], options: &GitOptions) -> Result<GitOutput> {
+    run_git_with_input(args, options, options.input.as_deref().map(Arc::<[u8]>::from))
+}
+
+/// [`run_git`] with stdin bytes shared by reference count instead of copied per call;
+/// `options.input` is ignored.
+pub(crate) fn run_git_with_input(
+    args: &[String],
+    options: &GitOptions,
+    input: Option<Arc<[u8]>>,
+) -> Result<GitOutput> {
     let mut command = Command::new("git");
     command.args(args);
     command.current_dir(&options.cwd);
     for (key, value) in &options.env {
         command.env(key, value);
     }
-    command.stdin(if options.input.is_some() {
+    command.stdin(if input.is_some() {
         Stdio::piped()
     } else {
         Stdio::null()
@@ -170,7 +180,7 @@ pub fn run_git(args: &[String], options: &GitOptions) -> Result<GitOutput> {
     if let Some(on_spawn) = &options.on_spawn {
         on_spawn(pid);
     }
-    if let Some(input) = options.input.clone() && let Some(mut stdin) = child.stdin.take() {
+    if let Some(input) = input && let Some(mut stdin) = child.stdin.take() {
             std::thread::spawn(move || {
                 if stdin.write_all(&input).is_err() {
                     kill_tree(pid);
@@ -250,9 +260,10 @@ pub fn run_git(args: &[String], options: &GitOptions) -> Result<GitOutput> {
     if failed {
         kill_tree(pid);
     }
-    let stdout = lock(&stdout_sink).clone();
-    let stderr_bytes = lock(&stderr_sink).clone();
-    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+    let stdout = std::mem::take(&mut *lock(&stdout_sink));
+    let stderr_bytes = std::mem::take(&mut *lock(&stderr_sink));
+    let stderr = String::from_utf8(stderr_bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
     if let Some(error) = lock(&limit_error).take() {
         return Err(error);
     }

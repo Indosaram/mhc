@@ -25,6 +25,27 @@ const INITIAL_PUSH_TIMEOUT_MS: u64 = 10_000;
 const PUSH_TIMEOUT_MS: u64 = 60_000;
 const QUERY_TIMEOUT_MS: u64 = 10_000;
 const STATUS_LOG_LINES: usize = 20;
+const STATUS_LOG_TAIL_BYTES: u64 = 64 * 1024;
+
+/// Returns the complete lines in the last `STATUS_LOG_TAIL_BYTES` of a log larger than that window,
+/// or `None` when the caller should read the whole file (small file, read error, too few lines).
+fn read_tail_window(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len <= STATUS_LOG_TAIL_BYTES {
+        return None;
+    }
+    file.seek(SeekFrom::Start(len - STATUS_LOG_TAIL_BYTES))
+        .ok()?;
+    let mut bytes = Vec::with_capacity(STATUS_LOG_TAIL_BYTES as usize);
+    file.read_to_end(&mut bytes).ok()?;
+    // Drop the partial first line so a split line (or split UTF-8 sequence) is never reported.
+    let first_newline = bytes.iter().position(|&b| b == b'\n')?;
+    let tail = String::from_utf8(bytes.split_off(first_newline + 1)).ok()?;
+    let complete_lines = tail.lines().filter(|l| !l.trim().is_empty()).count();
+    (complete_lines >= STATUS_LOG_LINES).then_some(tail)
+}
 
 /// Error type for synchronization operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,8 +296,14 @@ impl<'a> MirrorSync<'a> {
 
     fn read_log_tail(&self) -> Vec<String> {
         let path = mirror_log_path(&self.repo.dir);
-        let Ok(raw) = fs::read_to_string(path) else {
-            return Vec::new();
+        // The post-commit hook appends forever; read only the trailing window, falling back to the
+        // whole file when the window holds fewer than STATUS_LOG_LINES complete lines.
+        let raw = match read_tail_window(&path) {
+            Some(raw) => raw,
+            None => match fs::read_to_string(&path) {
+                Ok(raw) => raw,
+                Err(_) => return Vec::new(),
+            },
         };
 
         let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();

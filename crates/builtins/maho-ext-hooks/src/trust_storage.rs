@@ -22,7 +22,9 @@ impl FileHookStateStorage {
     }
     pub fn read(&self,scope:HookTrustStorageScope)->std::io::Result<HookTrustState> {
         let path=self.path(scope);let text=read_snapshot(path)?;
-        if let Some(snapshot)=parse_hook_trust_state_json(text.as_deref()) {return Ok(snapshot);}
+        // A missing snapshot is a stable "no state" result (snapshots are published by atomic rename).
+        let Some(text)=text else {return Ok(empty_hook_trust_state());};
+        if let Some(snapshot)=parse_hook_trust_state_json(Some(text.as_str())) {return Ok(snapshot);}
         let lease=match DirectoryLease::acquire(path) {
             Ok(lease)=>lease,
             Err(error) if matches!(error.kind(),std::io::ErrorKind::AlreadyExists|std::io::ErrorKind::PermissionDenied)||error.raw_os_error()==Some(30)=>return Ok(empty_hook_trust_state()),

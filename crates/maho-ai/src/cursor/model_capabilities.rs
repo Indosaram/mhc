@@ -449,6 +449,15 @@ static ALIASES: LazyLock<BTreeMap<String, CursorVariantAlias>> = LazyLock::new(|
 
 const LEVEL_TOKENS: &[&str] = &["minimal", "low", "medium", "high", "extra-high", "xhigh", "max", "none"];
 
+static THINKING_LEVEL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(&format!(r"-thinking-({})$", LEVEL_TOKENS.join("|"))).expect("valid regex")
+});
+static LEVEL_THINKING_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(&format!(r"-({})-thinking$", LEVEL_TOKENS.join("|"))).expect("valid regex")
+});
+static LEVEL_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(&format!(r"-({})$", LEVEL_TOKENS.join("|"))).expect("valid regex"));
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CursorVariantParse {
     pub base_id: String,
@@ -466,15 +475,7 @@ pub fn parse_cursor_variant_id(original_id: &str) -> CursorVariantParse {
         fast = true;
         rest = stripped.to_owned();
     }
-    let alternation = LEVEL_TOKENS.join("|");
-
-    for thinking_first in [true, false] {
-        let pattern = if thinking_first {
-            format!(r"-thinking-({alternation})$")
-        } else {
-            format!(r"-({alternation})-thinking$")
-        };
-        let re = regex::Regex::new(&pattern).expect("valid regex");
+    for re in [&*THINKING_LEVEL_RE, &*LEVEL_THINKING_RE] {
         if let Some(captures) = re.captures(&rest) {
             let level = captures.get(1).map(|m| m.as_str().to_owned());
             let match_start = captures.get(0).expect("full match").start();
@@ -499,8 +500,7 @@ pub fn parse_cursor_variant_id(original_id: &str) -> CursorVariantParse {
         };
     }
 
-    let level_re = regex::Regex::new(&format!(r"-({alternation})$")).expect("valid regex");
-    let (base_id, level, thinking) = if let Some(captures) = level_re.captures(&rest) {
+    let (base_id, level, thinking) = if let Some(captures) = LEVEL_RE.captures(&rest) {
         let level = captures.get(1).map(|m| m.as_str().to_owned());
         let match_start = captures.get(0).expect("full match").start();
         (rest[..match_start].to_owned(), level, Some(false))

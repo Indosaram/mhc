@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::domain_types::{UlwLoopLedgerEntry, UlwLoopPlan};
-use crate::ledger::read_ledger_at;
+use crate::ledger::read_ledger_from_records;
 use crate::paths::{ulw_loop_dir, ulw_loop_state_lock_path, UlwLoopScope};
 use crate::plan_log::{assert_projection_complete, read_optional, read_records, reconcile_plan, PlanCommitRecord};
 use crate::runtime::UlwLoopError;
@@ -101,10 +101,12 @@ fn view_contents(dir: &Path) -> Result<Vec<(String, String)>, UlwLoopError> {
         Some(p) => p,
         None => return Ok(Vec::new()),
     };
-    if read_records(dir).is_empty() {
+    let records = read_records(dir);
+    if records.is_empty() {
         return Ok(Vec::new());
     }
-    let ledger = read_ledger_at(dir);
+    let reset = plan.ledger_reset_revision.unwrap_or(0);
+    let ledger = read_ledger_from_records(dir, records, reset);
     assert_projection_complete(&plan, &ledger)?;
 
     let goals_content = format!(

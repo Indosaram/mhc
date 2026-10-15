@@ -561,7 +561,36 @@ struct AgentSessionState {
     resume_compaction_requirement: Option<(serde_json::Value, String)>,
     resume_slice: Option<ResumeSliceState>,
     disposed: bool,
+    /// Memoized entry aggregate of `get_session_stats`, keyed on (session id, entry count, leaf id).
+    session_stats_cache: Option<(SessionStatsCacheKey, SessionStats)>,
+    /// Memoized `get_context_usage`, keyed on every input that can change its result.
+    context_usage_cache: Option<(ContextUsageCacheKey, Option<ContextUsage>)>,
 }
+
+type SessionStatsCacheKey = (String, usize, Option<String>);
+
+#[derive(PartialEq)]
+struct ContextUsageCacheKey {
+    session_id: String,
+    message_revision: u64,
+    entry_count: usize,
+    leaf_id: Option<String>,
+    awaiting_persistence: usize,
+    provider: String,
+    model_id: String,
+    context_window: u64,
+}
+
+static RATE_LIMIT_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)rate.?limit|(?:^429\s+\{|(?:\bHTTP/1\.[01]\s+|\bHTTP\s+|\bstatus(?:\s+code)?\s+|\berror\s+|\bcode\s+)429\b)|too many requests|resource.?exhausted")
+        .expect("pinned rate limit pattern")
+});
+
+static MODEL_FAMILY_PATTERNS: std::sync::LazyLock<Vec<(&'static str, regex::Regex)>> = std::sync::LazyLock::new(|| {
+    ["claude", "gpt-5", "o1", "o3", "o4", "gemini", "deepseek"].into_iter().map(|marker| {
+        (marker, regex::Regex::new(&format!("(?:^|[/.:_-]){}(?:$|[^a-z0-9])", regex::escape(marker))).expect("escaped family marker"))
+    }).collect()
+});
 
 #[derive(Clone, Debug)]
 pub struct ResumeSliceState {
@@ -1749,6 +1778,8 @@ impl AgentSession {
             last_persisted_assistant: None,
             post_compaction_assistant_generation: None,
             post_compaction_usage_exempt_entries: BTreeSet::new(),
+            session_stats_cache: None,
+            context_usage_cache: None,
             overflow_recovery_attempted: false,
             compaction_skipped_too_small: false,
             messages_awaiting_persistence: Vec::new(),
@@ -1975,8 +2006,10 @@ impl AgentSession {
                 AgentEvent::MessageStart { message } => {
                     if message.as_assistant().is_some() { state.assistant_generation += 1; }
                 }
+                // The agent appended this message to its transcript; not every role bumps the revision.
+                AgentEvent::MessageEnd { .. } => state.context_usage_cache = None,
                 AgentEvent::TurnStart |
-                AgentEvent::MessageUpdate { .. } | AgentEvent::MessageEnd { .. } |
+                AgentEvent::MessageUpdate { .. } |
                 AgentEvent::ToolExecutionStart { .. } | AgentEvent::ToolExecutionUpdate { .. } |
                 AgentEvent::ToolExecutionEnd { .. } => {}
             }
@@ -2020,37 +2053,12 @@ impl AgentSession {
                 .is_some_and(|message| message.stop_reason == StopReason::Aborted);
             Some(self.state().abort_provenance.begin_agent_end(messages.clone(), will_retry, aborted))
         } else { None };
-        let extension_event = match &event {
-            AgentEvent::AgentStart => maho_ext_api::ExtensionEvent::AgentStart,
-            AgentEvent::AgentEnd { messages } => maho_ext_api::ExtensionEvent::AgentEnd {
-                messages: messages.clone(), aborted: end_boundary.as_ref().map(|boundary| boundary.aborted),
-                will_retry: Some(will_retry), abort_source: end_boundary.as_ref().and_then(|boundary| boundary.abort_source),
-            },
-            AgentEvent::TurnStart => maho_ext_api::ExtensionEvent::TurnStart {
-                turn_index: self.state().turn_index, timestamp: maho_ai::utils::diagnostics::now_ms() as u64,
-            },
-            AgentEvent::TurnEnd { message, tool_results } => maho_ext_api::ExtensionEvent::TurnEnd {
-                turn_index: self.state().turn_index, message: message.clone(), tool_results: tool_results.clone(),
-            },
-            AgentEvent::MessageStart { message } => maho_ext_api::ExtensionEvent::MessageStart { message: message.clone() },
-            AgentEvent::MessageUpdate { message, assistant_message_event } => maho_ext_api::ExtensionEvent::MessageUpdate {
-                message: message.clone(),
-                assistant_message_event: serde_json::to_value(assistant_message_event).unwrap_or(Value::Null),
-            },
-            AgentEvent::MessageEnd { message } => maho_ext_api::ExtensionEvent::MessageEnd { message: message.clone() },
-            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => maho_ext_api::ExtensionEvent::ToolExecutionStart {
-                tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), args: args.clone(),
-            },
-            AgentEvent::ToolExecutionUpdate { tool_call_id, tool_name, args, partial_result } => maho_ext_api::ExtensionEvent::ToolExecutionUpdate {
-                tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), args: args.clone(), partial_result: partial_result.clone(),
-            },
-            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => maho_ext_api::ExtensionEvent::ToolExecutionEnd {
-                tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), result: result.clone(), is_error: *is_error,
-            },
-        };
         if let AgentEvent::MessageEnd { message } = &mut event {
             let replacement = {
-                let runner = self.extension_runner.lock().await.clone();
+                // `emit_message_end` only runs handlers or reports a stale runtime; skip the clone otherwise.
+                let runner = self.extension_runner.lock().await.as_ref()
+                    .filter(|runner| runner.has_handlers(maho_ext_api::EventKind::MessageEnd) || runner.runtime.assert_active().is_err())
+                    .cloned();
                 match runner {
                     Some(mut runner) => runner.emit_message_end(message.clone()).await,
                     None => Ok(None),
@@ -2066,6 +2074,7 @@ impl AgentSession {
                     if let Some(original) = messages.iter_mut().rev().find(|original| *original == message) {
                         *original = replacement.clone();
                         self.agent.set_messages(messages);
+                        self.state().context_usage_cache = None;
                     }
                     *message = replacement;
                 }
@@ -2073,7 +2082,7 @@ impl AgentSession {
                 Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }),
             }
         } else {
-            self.dispatch_extension_event(extension_event).await;
+            self.dispatch_agent_extension_event(&event, end_boundary.as_ref(), will_retry).await;
         }
         if let Some(boundary) = &end_boundary {
             self.state().abort_provenance.end_agent_end(boundary);
@@ -2095,8 +2104,12 @@ impl AgentSession {
                 messages: boundary.messages.clone(), aborted,
                 will_retry: boundary.will_retry, abort_source,
             });
-        } else {
+        } else if matches!(event, AgentEvent::MessageEnd { .. }) {
             self.emit(AgentSessionEvent::Agent(event.clone()));
+        } else {
+            // Only MessageEnd is read below, so every other event is handed off by move.
+            self.emit(AgentSessionEvent::Agent(event));
+            return;
         }
         if end_boundary.is_some() { self.emit_late_user_abort().await; }
         if let AgentEvent::MessageEnd { message } = &event {
@@ -2150,13 +2163,75 @@ impl AgentSession {
         }
     }
 
-    async fn dispatch_extension_event(&self, event: maho_ext_api::ExtensionEvent) {
-        let runner = self.extension_runner.lock().await.clone();
-        let result = match runner {
-            Some(mut runner) => runner.emit(event).await.map(|_| ()),
-            None => Ok(()),
+    /// Forwards a non-`MessageEnd` agent event to extensions. The extension event is built only
+    /// when `emit` would do something, and lives in this helper rather than the caller's future.
+    async fn dispatch_agent_extension_event(
+        &self,
+        event: &maho_agent::types::AgentEvent,
+        end_boundary: Option<&crate::agent_abort_provenance::AgentEndEvent>,
+        will_retry: bool,
+    ) {
+        use maho_agent::types::AgentEvent;
+        use maho_ext_api::{EventKind, ExtensionEvent};
+        let kind = match event {
+            AgentEvent::AgentStart => EventKind::AgentStart,
+            AgentEvent::AgentEnd { .. } => EventKind::AgentEnd,
+            AgentEvent::TurnStart => EventKind::TurnStart,
+            AgentEvent::TurnEnd { .. } => EventKind::TurnEnd,
+            AgentEvent::MessageStart { .. } => EventKind::MessageStart,
+            AgentEvent::MessageUpdate { .. } => EventKind::MessageUpdate,
+            AgentEvent::MessageEnd { .. } => EventKind::MessageEnd,
+            AgentEvent::ToolExecutionStart { .. } => EventKind::ToolExecutionStart,
+            AgentEvent::ToolExecutionUpdate { .. } => EventKind::ToolExecutionUpdate,
+            AgentEvent::ToolExecutionEnd { .. } => EventKind::ToolExecutionEnd,
         };
-        if let Err(error) = result {
+        let Some(mut runner) = self.extension_runner_for(kind).await else { return; };
+        let extension_event = match event {
+            AgentEvent::AgentStart => ExtensionEvent::AgentStart,
+            AgentEvent::AgentEnd { messages } => ExtensionEvent::AgentEnd {
+                messages: messages.clone(), aborted: end_boundary.map(|boundary| boundary.aborted),
+                will_retry: Some(will_retry), abort_source: end_boundary.and_then(|boundary| boundary.abort_source),
+            },
+            AgentEvent::TurnStart => ExtensionEvent::TurnStart {
+                turn_index: self.state().turn_index, timestamp: maho_ai::utils::diagnostics::now_ms() as u64,
+            },
+            AgentEvent::TurnEnd { message, tool_results } => ExtensionEvent::TurnEnd {
+                turn_index: self.state().turn_index, message: message.clone(), tool_results: tool_results.clone(),
+            },
+            AgentEvent::MessageStart { message } => ExtensionEvent::MessageStart { message: message.clone() },
+            AgentEvent::MessageUpdate { message, assistant_message_event } => ExtensionEvent::MessageUpdate {
+                message: message.clone(),
+                assistant_message_event: extension_assistant_message_event(assistant_message_event),
+            },
+            AgentEvent::MessageEnd { message } => ExtensionEvent::MessageEnd { message: message.clone() },
+            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => ExtensionEvent::ToolExecutionStart {
+                tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), args: args.clone(),
+            },
+            AgentEvent::ToolExecutionUpdate { tool_call_id, tool_name, args, partial_result } => ExtensionEvent::ToolExecutionUpdate {
+                tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), args: args.clone(), partial_result: partial_result.clone(),
+            },
+            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => ExtensionEvent::ToolExecutionEnd {
+                tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), result: result.clone(), is_error: *is_error,
+            },
+        };
+        // Boxed so the runner's `emit` state machine is not inlined into every caller's future.
+        if let Err(error) = Box::pin(runner.emit(extension_event)).await {
+            self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() });
+        }
+    }
+
+    /// A clone of the bound runner, only when `emit` would do something for `kind`: run a
+    /// handler, or report a stale runtime.
+    async fn extension_runner_for(&self, kind: maho_ext_api::EventKind) -> Option<ExtensionRunner> {
+        self.extension_runner.lock().await.as_ref()
+            .filter(|runner| runner.has_handlers(kind) || runner.runtime.assert_active().is_err())
+            .cloned()
+    }
+
+    async fn dispatch_extension_event(&self, event: maho_ext_api::ExtensionEvent) {
+        let Some(mut runner) = self.extension_runner_for(event.kind()).await else { return; };
+        // Boxed so the runner's `emit` state machine is not inlined into every caller's future.
+        if let Err(error) = Box::pin(runner.emit(event)).await {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() });
         }
     }
@@ -2200,7 +2275,7 @@ impl AgentSession {
         // persisted as literal text.
         if crate::manual_continue::is_manual_continue_submission(
             text,
-            !self.agent.state().messages().is_empty(),
+            self.agent.has_messages(),
             options.images.as_ref().is_some_and(|images| !images.is_empty()),
         ) {
             self.send_custom_message_content(
@@ -2875,6 +2950,7 @@ impl AgentSession {
                 messages.extend(diagnostic_messages);
             }
             self.agent.set_messages(messages);
+            self.state().context_usage_cache = None;
             accepted_entry = Some((entry, from_extension));
             Ok(result)
         }.await;
@@ -3383,8 +3459,6 @@ impl AgentSession {
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
         let mut overflow_compacted = false;
-        let rate_limit_pattern = regex::Regex::new(r"(?i)rate.?limit|(?:^429\s+\{|(?:\bHTTP/1\.[01]\s+|\bHTTP\s+|\bstatus(?:\s+code)?\s+|\berror\s+|\bcode\s+)429\b)|too many requests|resource.?exhausted")
-            .expect("pinned rate limit pattern");
         let mut deferred_by_retry = false;
         loop {
             self.agent.wait_for_idle().await;
@@ -3592,7 +3666,7 @@ impl AgentSession {
                 return Ok(());
             }
             let rate_limited = !same_model_remint && !quota_exhausted && !maho_ai::utils::retry::is_provider_timeout_error(&message)
-                && rate_limit_pattern.is_match(&error);
+                && RATE_LIMIT_PATTERN.is_match(&error);
             let tier_routed = rate_limited && profile.fallback.rate_limited ==
                 maho_ai::utils::retry_profile::types::FallbackRateLimited::Tiered;
             let hint_settings = crate::retry_fallback::settings::resolve_hint_policy_settings(Some(&settings));
@@ -3866,8 +3940,9 @@ impl AgentSession {
         let prompt_tokens = maho_ai::utils::estimate::estimate_context_tokens(&context).tokens;
         context.tools = Some(self.agent.state().tools().iter().map(|tool| tool.tool.clone()).collect());
         let tools = maho_ai::utils::estimate::estimate_context_tokens(&context).tokens.saturating_sub(prompt_tokens);
-        let family = |marker: &str| regex::Regex::new(&format!("(?:^|[/.:_-]){}(?:$|[^a-z0-9])", regex::escape(marker)))
-            .expect("escaped family marker").is_match(&model.id.to_lowercase());
+        let model_id = model.id.to_lowercase();
+        let family = |marker: &str| MODEL_FAMILY_PATTERNS.iter()
+            .any(|(candidate, pattern)| *candidate == marker && pattern.is_match(&model_id));
         let (margin, profile) = if model.provider == "anthropic" || family("claude") { (16_384, "anthropic") }
             else if model.provider == "openai" || ["gpt-5", "o1", "o3", "o4"].iter().any(|marker| family(marker)) { (16_384, "openai-reasoning") }
             else if model.provider == "google" || family("gemini") { (12_288, "google") }
@@ -4419,9 +4494,12 @@ impl AgentSession {
         }
         let destination = destination.to_string_lossy().into_owned();
         if !stored {
-            let mut input = std::fs::File::open(source).map_err(|error| error.to_string())?;
-            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|error| error.to_string())?;
-            std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+            let (source, target) = (source.to_path_buf(), destination.clone());
+            tokio::task::spawn_blocking(move || -> std::io::Result<u64> {
+                let mut input = std::fs::File::open(source)?;
+                let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&target)?;
+                std::io::copy(&mut input, &mut output)
+            }).await.map_err(|error| error.to_string())?.map_err(|error| error.to_string())?;
         }
         self.switch_session_with_cwd_coded(&destination, cwd_override).await
     }
@@ -4782,6 +4860,10 @@ impl AgentSession {
         }
     }
 
+    /// Cheap change token for [`Self::native_tool_renderers_snapshot`]: unchanged means every
+    /// snapshot taken since this value was read is still current. Read it before snapshotting.
+    pub fn native_tool_renderers_generation(&self) -> u64 { maho_ext_api::tool_renderer_generation() }
+
     pub async fn native_tool_renderers_snapshot<TState: 'static, TArgs: 'static>(&self) -> BTreeMap<String, Arc<maho_ext_api::ToolRenderers<TState, TArgs>>> {
         self.extension_runner.lock().await.as_ref().map(|runner| runner.native_tool_renderers_snapshot()).unwrap_or_default()
     }
@@ -4875,6 +4957,7 @@ impl AgentSession {
 
     pub fn flush_pending_bash_messages(&self) {
         let pending = std::mem::take(&mut self.state().pending_bash_messages);
+        if pending.is_empty() { return; }
         let mut messages = self.messages();
         for message in pending {
             match serde_json::to_value(&message) {
@@ -5523,6 +5606,11 @@ impl AgentSession {
         self.runtime_messages()
     }
 
+    /// Transcript length; materialization never changes the count, so no copy is needed.
+    pub fn message_count(&self) -> usize {
+        self.agent.message_count()
+    }
+
     pub fn state_snapshot(&self) -> AgentState {
         self.runtime_messages();
         self.agent.state()
@@ -5533,8 +5621,9 @@ impl AgentSession {
     /// turns goes through here so a sentinel never reaches a consumer.
     fn runtime_messages(&self) -> Vec<AgentMessage> {
         if self.runtime_messages_tokenized.swap(false, Ordering::SeqCst) {
-            let messages = self.agent.state().messages().to_vec();
-            self.agent.set_messages(self.materialize_resident_messages(messages));
+            let messages = self.materialize_resident_messages(self.agent.state().messages().to_vec());
+            self.agent.set_messages(messages.clone());
+            return messages;
         }
         self.agent.state().messages().to_vec()
     }
@@ -5600,8 +5689,7 @@ impl AgentSession {
     }
 
     pub fn is_idle(&self) -> bool {
-        let state = self.agent.state();
-        !state.is_streaming && state.pending_tool_calls.is_empty() && !self.work_barrier.has_active_work()
+        !self.agent.is_streaming_or_has_pending_tool_calls() && !self.work_barrier.has_active_work()
             && !self.is_compacting() && !self.is_retrying()
     }
 
@@ -5710,7 +5798,7 @@ impl AgentSession {
     }
 
     pub fn get_active_tool_names(&self) -> Vec<String> {
-        self.agent.state().tools().iter().map(|tool| tool.name().to_owned()).collect()
+        self.agent.tool_names()
     }
 
     /// A runtime extension flag value (constructor input in TS).
@@ -5746,7 +5834,7 @@ impl AgentSession {
     /// Active tool names plus search-exposed lazy tools; senpi also appends the tool-search catalog,
     /// which has no Rust counterpart (the service is a TS extension), so it contributes nothing.
     fn callable_tool_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.agent.state().tools().iter().map(|tool| tool.name().to_owned()).collect();
+        let mut names: Vec<String> = self.agent.tool_names();
         for (name, entry) in &self.state().tool_definitions {
             let exposure = normalize_tool_exposure(&entry.definition, entry.source_info.clone());
             if exposure.exposure == ToolExposure::Search && exposure.allow_lazy_activation {
@@ -6031,8 +6119,7 @@ impl AgentSession {
         tool_call_id: Option<&str>,
         arguments_prepared: bool,
     ) -> Result<AgentToolResult, ExecuteToolError> {
-        let mut active_tools = self.get_active_tool_names();
-        let mut tool = self.agent.state().tools().iter().find(|candidate| candidate.name() == tool_name).cloned();
+        let (mut active_tools, mut tool) = self.agent.tool_names_and_find(tool_name);
         if tool.is_none() && self.is_eval_only_policy_armed() {
             let armed = self.state().eval_only_tool_names.clone().unwrap_or_default();
             if armed.contains(tool_name) {
@@ -6045,8 +6132,7 @@ impl AgentSession {
             && registered
             && self.activate_lazy_tool(tool_name)
         {
-            active_tools = self.get_active_tool_names();
-            tool = self.agent.state().tools().iter().find(|candidate| candidate.name() == tool_name).cloned();
+            (active_tools, tool) = self.agent.tool_names_and_find(tool_name);
         }
         let Some(tool) = tool else {
             let known = self.state().tool_definitions.contains_key(tool_name);
@@ -6641,6 +6727,7 @@ impl AgentSession {
         self.state().extension_runner_snapshot = Some(runner.clone());
         self.state().extension_bound_ui = None;
         *self.extension_runner.lock().await = Some(runner);
+        maho_ext_api::bump_tool_renderer_generation();
         self.apply_extension_bindings().await;
         if self.state().uses_default_stream_function {
             self.install_default_stream_function();
@@ -6772,11 +6859,24 @@ impl AgentSession {
         self.revalidate_continuation_admission(true).await
     }
 
+    /// Id of the entry nearest the leaf on the current branch with `type == kind` (and the given
+    /// `message.role`): the same result as `current_branch().iter().rev().find(..)`, but resident
+    /// entries are walked by reference without materializing any of them.
+    fn latest_current_branch_entry_id(&self, kind: &str, role: Option<&str>) -> Option<String> {
+        self.with_session_manager(|manager| {
+            let leaf = manager.leaf_id()?;
+            if manager.entry_order(leaf).is_none() {
+                return manager.current_branch().into_iter().rev()
+                    .find(|entry| entry["type"] == kind && role.is_none_or(|role| entry["message"]["role"] == role))
+                    .and_then(|entry| entry["id"].as_str().map(str::to_owned));
+            }
+            manager.latest_branch_entry_id_by_type(kind, role)
+        })
+    }
+
     async fn revalidate_continuation_admission(&self, proactive: bool) -> Result<(), String> {
         let model = self.model();
-        let latest_assistant_entry = self.with_session_manager(|manager| manager.current_branch().iter().rev()
-            .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
-            .and_then(|entry| entry["id"].as_str()).map(str::to_owned));
+        let latest_assistant_entry = self.latest_current_branch_entry_id("message", Some("assistant"));
         if latest_assistant_entry.is_some_and(|id| self.state().post_compaction_usage_exempt_entries.contains(&id)) {
             return Ok(());
         }
@@ -6981,9 +7081,7 @@ impl AgentSession {
         if turn.tool_results.is_empty() && !self.agent.has_queued_messages() {
             return Ok(false);
         }
-        let latest_compaction = || self.with_session_manager(|manager|
-            crate::session_manager::get_latest_compaction_entry(&manager.current_branch())
-                .and_then(|entry| entry.get("id").cloned()));
+        let latest_compaction = || self.latest_current_branch_entry_id("compaction", None);
         let before = latest_compaction();
         if self.revalidate_continuation_admission(false).await.is_err() {
             // senpi: the callback throws `RequiredCompactionError`; the run ends with an error
@@ -7467,6 +7565,7 @@ impl AgentSession {
         let agent_messages: Vec<AgentMessage> =
             messages.iter().filter_map(|message| serde_json::from_value(message.clone()).ok()).collect();
         self.agent.set_messages(agent_messages);
+        self.state().context_usage_cache = None;
         if let Some(entry_id) = entry_id {
             self.emit_entry_appended(&entry_id);
         }
@@ -8133,6 +8232,15 @@ impl AgentSession {
 
     /// Session statistics, aggregated over every session entry (including compacted-away history).
     pub fn get_session_stats(&self) -> SessionStats {
+        // Entries are append-only, so (session id, entry count, leaf id) pins the aggregate below.
+        let key: SessionStatsCacheKey = self.with_session_manager(|manager| {
+            (manager.session_id().to_owned(), manager.get_entry_count(), manager.leaf_id().map(str::to_owned))
+        });
+        let cached = self.state().session_stats_cache.as_ref()
+            .and_then(|(cached_key, stats)| (*cached_key == key).then(|| stats.clone()));
+        if let Some(stats) = cached {
+            return SessionStats { session_file: self.session_file(), context_usage: self.get_context_usage(), ..stats };
+        }
         let entries = self.with_session_manager(|manager| manager.entries());
         let mut user_messages = 0;
         let mut assistant_messages = 0;
@@ -8177,7 +8285,7 @@ impl AgentSession {
                 _ => {}
             }
         }
-        SessionStats {
+        let stats = SessionStats {
             session_file: self.session_file(),
             session_id: self.session_id(),
             user_messages,
@@ -8194,15 +8302,40 @@ impl AgentSession {
             },
             cost: totals.cost,
             context_usage: self.get_context_usage(),
-        }
+        };
+        self.state().session_stats_cache = Some((key, stats.clone()));
+        stats
     }
 
     /// Context usage for the live model, or `None` when the model has no context window.
     pub fn get_context_usage(&self) -> Option<ContextUsage> {
-        let context_window = self.model().context_window;
+        let model = self.model();
+        let context_window = model.context_window;
         if context_window == 0 {
             return None;
         }
+        let (session_id, entry_count, leaf_id) = self.with_session_manager(|manager| {
+            (manager.session_id().to_owned(), manager.get_entry_count(), manager.leaf_id().map(str::to_owned))
+        });
+        let key = {
+            let state = self.state();
+            ContextUsageCacheKey {
+                session_id, message_revision: state.message_revision, entry_count, leaf_id,
+                awaiting_persistence: state.messages_awaiting_persistence.len(),
+                provider: model.provider, model_id: model.id, context_window,
+            }
+        };
+        let cached = self.state().context_usage_cache.as_ref()
+            .and_then(|(cached_key, usage)| (*cached_key == key).then_some(*usage));
+        if let Some(usage) = cached {
+            return usage;
+        }
+        let usage = self.compute_context_usage(context_window);
+        self.state().context_usage_cache = Some((key, usage));
+        usage
+    }
+
+    fn compute_context_usage(&self, context_window: u64) -> Option<ContextUsage> {
         let messages: Vec<Value> = self
             .messages()
             .iter()
@@ -8594,6 +8727,30 @@ impl AgentSession {
 }
 
 /// `{ level, source: "explicit" }`.
+/// The `assistantMessageEvent` JSON handed to extension `message_update` handlers. Stream deltas
+/// omit the accumulated `partial` (re-serializing it per delta is quadratic over a message);
+/// `toolcall_delta` keeps only the target block's `type`/`name` at `partial.content[contentIndex]`
+/// (nulls before it), which is all ttsr reads to resolve the tool name. Other events serialize in full.
+fn extension_assistant_message_event(event: &maho_ai::types::AssistantMessageEvent) -> Value {
+    use maho_ai::types::{AssistantMessageEvent as Event, ContentBlock};
+    match event {
+        Event::TextDelta { content_index, delta, .. } => serde_json::json!({ "type": "text_delta", "contentIndex": content_index, "delta": delta }),
+        Event::ThinkingDelta { content_index, delta, .. } => serde_json::json!({ "type": "thinking_delta", "contentIndex": content_index, "delta": delta }),
+        Event::ToolcallDelta { content_index, delta, partial } => {
+            let content = match partial.content.get(*content_index) {
+                Some(ContentBlock::ToolCall(call)) => {
+                    let mut content = vec![Value::Null; *content_index];
+                    content.push(serde_json::json!({ "type": "toolCall", "name": call.name }));
+                    content
+                }
+                _ => Vec::new(),
+            };
+            serde_json::json!({ "type": "toolcall_delta", "contentIndex": content_index, "delta": delta, "partial": { "content": content } })
+        }
+        _ => serde_json::to_value(event).unwrap_or(Value::Null),
+    }
+}
+
 fn explicit_thinking_selection(level: ModelThinkingLevel) -> ThinkingSelection {
     ThinkingSelection { level, source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None }
 }
@@ -8756,6 +8913,27 @@ fn extension_thinking_level(level: ThinkingLevel) -> ModelThinkingLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_message_update_event_omits_partial_but_keeps_tool_block_name() {
+        use maho_ai::types::AssistantMessageEvent as Event;
+        let partial: maho_ai::types::AssistantMessage = serde_json::from_value(serde_json::json!({
+            "content": [{"type": "text", "text": "long text"}, {"type": "toolCall", "id": "call", "name": "edit", "arguments": {"path": "a"}}],
+            "api": "faux", "provider": "faux", "model": "faux",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+            "stopReason": "stop", "timestamp": 0,
+        })).expect("partial");
+        let text = extension_assistant_message_event(&Event::TextDelta { content_index: 0, delta: "d".into(), partial: partial.clone() });
+        assert_eq!(text, serde_json::json!({"type": "text_delta", "contentIndex": 0, "delta": "d"}));
+        let tool = extension_assistant_message_event(&Event::ToolcallDelta { content_index: 1, delta: "{}".into(), partial: partial.clone() });
+        assert_eq!(tool["partial"]["content"][1]["name"], "edit");
+        assert_eq!(tool["partial"]["content"][1]["type"], "toolCall");
+        assert!(tool["partial"]["content"][0].is_null());
+        let missing = extension_assistant_message_event(&Event::ToolcallDelta { content_index: 0, delta: "{}".into(), partial: partial.clone() });
+        assert_eq!(missing["partial"]["content"], serde_json::json!([]));
+        let start = extension_assistant_message_event(&Event::Start { partial: partial.clone() });
+        assert_eq!(start, serde_json::to_value(Event::Start { partial }).expect("start"));
+    }
 
     struct TestExtensionUi;
     impl maho_ext_api::ExtensionUi for TestExtensionUi {

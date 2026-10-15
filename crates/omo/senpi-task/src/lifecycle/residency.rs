@@ -20,10 +20,10 @@ pub fn admit_resident(
     context: &LifecycleContext,
     parent_session_id: &str,
 ) -> Result<AdmissionResult, LifecycleError> {
-    let residents = residents_for(context, parent_session_id)?;
     let ResidencyCap::Limited(max_children) = context.config.residency_max_children else {
         return Ok(AdmissionResult::Admitted);
     };
+    let residents = residents_for(context, parent_session_id)?;
     if residents.len() < max_children {
         return Ok(AdmissionResult::Admitted);
     }

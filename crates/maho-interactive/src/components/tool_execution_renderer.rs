@@ -23,6 +23,26 @@ pub struct ToolExecutionIdentity {
     pub cwd: String,
 }
 
+/// `renderShell` of each built-in tool definition, read once. A definition's shell does not depend
+/// on the cwd it is built for, so one table serves every card.
+fn built_in_render_shell(tool_name: &str) -> RenderShell {
+    static SHELLS: std::sync::OnceLock<std::collections::BTreeMap<String, RenderShell>> =
+        std::sync::OnceLock::new();
+    SHELLS
+        .get_or_init(|| {
+            maho_tools::index::create_all_tool_definitions(
+                std::path::Path::new("."),
+                maho_tools::index::ToolsOptions::default(),
+            )
+            .into_iter()
+            .filter_map(|(name, definition)| definition.render_shell.map(|shell| (name, shell)))
+            .collect()
+        })
+        .get(tool_name)
+        .copied()
+        .unwrap_or(RenderShell::Default)
+}
+
 pub struct ToolExecutionRenderer {
     identity: ToolExecutionIdentity,
     built_in: Option<Rc<RefCell<dyn ToolRenderers>>>,
@@ -51,13 +71,7 @@ impl ToolExecutionRenderer {
         on_invalidate: Rc<dyn Fn()>,
     ) -> Self {
         let built_in = create_all_tool_renderers().get(identity.tool_name.as_str()).cloned();
-        let built_in_shell = maho_tools::index::create_all_tool_definitions(
-            std::path::Path::new(&identity.cwd),
-            maho_tools::index::ToolsOptions::default(),
-        )
-        .get(&identity.tool_name)
-        .and_then(|definition| definition.render_shell)
-        .unwrap_or(RenderShell::Default);
+        let built_in_shell = built_in_render_shell(&identity.tool_name);
         Self {
             identity,
             built_in,

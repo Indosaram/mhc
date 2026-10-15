@@ -1,5 +1,7 @@
 //! Goal creation and candidate derivation from brief text.
 
+use std::sync::LazyLock;
+
 use regex::Regex;
 use serde_json::Value;
 
@@ -33,8 +35,15 @@ fn list_marker_pattern() -> String {
     format!(r"^{JS_WS}*(?:[-*+]{JS_WS}+|[0-9]+[.)]{JS_WS}+)")
 }
 
-fn list_marker() -> Regex {
-    Regex::new(&list_marker_pattern()).expect("valid list marker regex")
+static LIST_MARKER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&list_marker_pattern()).expect("valid list marker regex"));
+
+static PARAGRAPH_BREAK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(r"\n{JS_WS}*\n")).expect("valid paragraph regex")
+});
+
+fn list_marker() -> &'static Regex {
+    &LIST_MARKER
 }
 
 /// JS `string.length`: UTF-16 code units.
@@ -195,8 +204,7 @@ pub fn derive_goal_candidates(brief: &str) -> Vec<(String, String)> {
         .collect();
 
     let mut paragraphs = Vec::new();
-    let paragraph_break = Regex::new(&format!(r"\n{JS_WS}*\n")).expect("valid paragraph regex");
-    for p in paragraph_break.split(brief) {
+    for p in PARAGRAPH_BREAK.split(brief) {
         let cleaned = normalize_objective(p);
         if !cleaned.is_empty() && !cleaned.starts_with('#') {
             paragraphs.push(cleaned);

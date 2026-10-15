@@ -26,9 +26,10 @@ pub async fn get_interpreter_availability(settings: &crate::config::settings::Co
     availability
 }
 
+static VERSION_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)(?:Python|ruby|julia)[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+(?:version[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+)?v?([0-9]+(?:\.[0-9]+){1,3})").expect("constant interpreter version regex"));
+
 pub fn parse_version(output: &str) -> Option<String> {
-    let expression = regex::Regex::new(r"(?i)(?:Python|ruby|julia)[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+(?:version[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+)?v?([0-9]+(?:\.[0-9]+){1,3})").expect("constant interpreter version regex");
-    expression.captures(output.trim()).and_then(|captures| captures.get(1)).map(|capture| capture.as_str().into())
+    VERSION_PATTERN.captures(output.trim()).and_then(|captures| captures.get(1)).map(|capture| capture.as_str().into())
 }
 
 pub fn candidates_for(language: EvalLanguage, windows: bool) -> &'static [&'static str] {

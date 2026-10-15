@@ -109,11 +109,10 @@ pub fn register_skill_methods_with_loader(registry: &mut MethodRegistry, agent_d
 /// matches or it has not loaded skills yet, so the caller falls back to a fresh disk load.
 async fn loaded_thread_skills(threads: &Arc<ThreadRegistry>, cwd: &str, force_reload: bool) -> Option<LoadSkillsResult> {
     if force_reload { return None; }
-    for thread in threads.list_loaded().await {
-        let Some(id) = thread["id"].as_str() else { continue };
-        let thread_cwd = resolve_path(thread["cwd"].as_str().unwrap_or_default(), cwd, &PathInputOptions { trim: true, ..Default::default() });
+    for (id, thread_cwd) in threads.loaded_cwds().await {
+        let thread_cwd = resolve_path(&thread_cwd, cwd, &PathInputOptions { trim: true, ..Default::default() });
         if thread_cwd != cwd { continue; }
-        if let Ok(entry) = threads.get_loaded_thread(id).await {
+        if let Ok(entry) = threads.get_loaded_thread(&id).await {
             let entry = entry.lock().await;
             if let Some(loaded) = entry.session.loaded_skills() { return Some(loaded); }
         }

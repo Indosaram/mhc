@@ -48,7 +48,7 @@ pub struct TerminateRecoveryStreamOptions<'a> {
 
 pub fn terminate_recovery_stream_for_failure(stream: &AssistantMessageEventStream, projection: &mut StreamMessageProjection, options: TerminateRecoveryStreamOptions<'_>) {
     let details = failure_details(options.failure);
-    projection.sync(options.source.clone());
+    projection.sync(options.source);
     let mut message = projection.finalize(options.source, false);
     message.content.retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
     message.stop_reason = StopReason::Error;

@@ -184,19 +184,39 @@ fn build_index(documents: &[RecallDocument]) -> RecallBm25Index {
     index
 }
 
-type RecallBm25IndexCache = Mutex<Option<Vec<(usize, usize, std::sync::Arc<RecallBm25Index>)>>>;
+type RecallBm25IndexCache =
+    Mutex<Option<Vec<(usize, usize, u64, std::sync::Arc<RecallBm25Index>)>>>;
+
+/// Content fingerprint of the indexed fields, so a freed corpus whose slice address and length are
+/// reused by a different revision never resolves to its stale index. Far cheaper than `build_index`.
+fn documents_fingerprint(documents: &[RecallDocument]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for document in documents {
+        document.description.hash(&mut hasher);
+        document.body.hash(&mut hasher);
+    }
+    hasher.finish()
+}
 
 /// One index per corpus, keyed by the documents slice pointer (the pin keys its `WeakMap` by array).
 fn index_for(documents: &[RecallDocument]) -> std::sync::Arc<RecallBm25Index> {
     static CACHE: RecallBm25IndexCache = Mutex::new(None);
-    let key = (documents.as_ptr() as usize, documents.len());
+    let key = (
+        documents.as_ptr() as usize,
+        documents.len(),
+        documents_fingerprint(documents),
+    );
     let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let entries = guard.get_or_insert_with(Vec::new);
-    if let Some((_, _, index)) = entries.iter().find(|(ptr, len, _)| (*ptr, *len) == key) {
+    if let Some((_, _, _, index)) = entries
+        .iter()
+        .find(|(ptr, len, fingerprint, _)| (*ptr, *len, *fingerprint) == key)
+    {
         return std::sync::Arc::clone(index);
     }
     let index = std::sync::Arc::new(build_index(documents));
-    entries.push((key.0, key.1, std::sync::Arc::clone(&index)));
+    entries.push((key.0, key.1, key.2, std::sync::Arc::clone(&index)));
     if entries.len() > 8 {
         entries.remove(0);
     }
@@ -281,6 +301,30 @@ pub fn rank_recall_documents_bm25(
     queries: &[String],
     expansions: Option<&RecallQueryExpansions>,
 ) -> Vec<RankedRecallDocument> {
+    rank_recall_positions_bm25(documents, queries, expansions)
+        .into_iter()
+        .map(|entry| RankedRecallDocument {
+            document: documents[entry.position].clone(),
+            score: entry.score,
+            full_match: entry.full_match,
+        })
+        .collect()
+}
+
+/// One ranked document by its position in the ranked slice, so callers clone only what they keep.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RankedRecallPosition {
+    pub position: usize,
+    pub score: f64,
+    pub full_match: bool,
+}
+
+/// [`rank_recall_documents_bm25`] without cloning documents: the same order, by slice position.
+pub(crate) fn rank_recall_positions_bm25(
+    documents: &[RecallDocument],
+    queries: &[String],
+    expansions: Option<&RecallQueryExpansions>,
+) -> Vec<RankedRecallPosition> {
     let mut query_terms: Vec<String> = Vec::new();
     for term in queries.iter().flat_map(|query| recall_terms(query)) {
         if !query_terms.contains(&term) {
@@ -317,9 +361,9 @@ pub fn rank_recall_documents_bm25(
         query_units(queries)
     };
 
-    let mut ranked: Vec<RankedRecallDocument> = Vec::new();
-    let mut full_matches: Vec<RankedRecallDocument> = Vec::new();
-    for (position, document) in documents.iter().enumerate() {
+    let mut ranked: Vec<RankedRecallPosition> = Vec::new();
+    let mut full_matches: Vec<RankedRecallPosition> = Vec::new();
+    for position in 0..documents.len() {
         let Some(frequencies) = index.term_frequencies.get(position) else {
             continue;
         };
@@ -330,8 +374,8 @@ pub fn rank_recall_documents_bm25(
         }
         if !added.is_empty() {
             if units.iter().all(|unit| frequencies.contains_key(unit)) {
-                full_matches.push(RankedRecallDocument {
-                    document: document.clone(),
+                full_matches.push(RankedRecallPosition {
+                    position,
                     score,
                     full_match: true,
                 });
@@ -342,14 +386,25 @@ pub fn rank_recall_documents_bm25(
             }
         }
         if score > 0.0 {
-            ranked.push(RankedRecallDocument {
-                document: document.clone(),
+            ranked.push(RankedRecallPosition {
+                position,
                 score,
                 full_match: false,
             });
         }
     }
 
+    let by_score = |left: &RankedRecallPosition, right: &RankedRecallPosition| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                documents[left.position]
+                    .path
+                    .cmp(&documents[right.position].path)
+            })
+    };
     ranked.sort_by(by_score);
     if full_matches.is_empty() {
         return ranked;
@@ -361,14 +416,6 @@ pub fn rank_recall_documents_bm25(
     }
     full_matches.extend(ranked);
     full_matches
-}
-
-fn by_score(left: &RankedRecallDocument, right: &RankedRecallDocument) -> std::cmp::Ordering {
-    right
-        .score
-        .partial_cmp(&left.score)
-        .unwrap_or(std::cmp::Ordering::Equal)
-        .then_with(|| left.document.path.cmp(&right.document.path))
 }
 
 #[cfg(test)]

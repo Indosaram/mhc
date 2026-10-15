@@ -6,7 +6,7 @@
 //! [`utf16_len`]/[`slice_utf16`] convert the byte offsets Rust regexes report.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use super::markdown_helpers::{
     expand_tabs, indent_code_compensation, normalize_label, rtrim, split_cells,
@@ -43,7 +43,14 @@ pub fn slice_utf16(value: &str, from: usize, to: usize) -> &str {
 }
 
 pub(crate) fn drop_utf16(value: &str, count: usize) -> &str {
-    slice_utf16(value, count, utf16_len(value))
+    &value[byte_at_utf16(value, count)..]
+}
+
+/// Drops a consumed token's `raw` from the front of `src`; `raw` is a prefix of `src` by contract,
+/// with a UTF-16 count fallback for any token whose raw was rewritten.
+fn advance<'a>(src: &'a str, raw: &str) -> &'a str {
+    src.strip_prefix(raw)
+        .unwrap_or_else(|| drop_utf16(src, utf16_len(raw)))
 }
 
 pub fn find_inline_math_pub(src: &str, open: &str, close: &str) -> Option<(String, String)> {
@@ -136,8 +143,13 @@ static R_MULTIPLE_SPACE: LazyLock<Rule> = LazyLock::new(|| rule(rules::OTHER_MUL
 static R_ANY_PUNCTUATION: LazyLock<Rule> =
     LazyLock::new(|| Rule::new(rules::INLINE_ANYPUNCTUATION, "gu"));
 
-fn list_item_regex(bull: &str) -> Rule {
-    Rule::new(&format!(r"^( {{0,3}}{bull})((?:[\t ][^\n]*)?(?:\n|$))"), "")
+fn list_item_regex(bull: &str) -> Arc<Rule> {
+    static CACHE: LazyLock<Mutex<HashMap<String, Arc<Rule>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(cache.entry(bull.to_string()).or_insert_with(|| {
+        Arc::new(Rule::new(&format!(r"^( {{0,3}}{bull})((?:[\t ][^\n]*)?(?:\n|$))"), ""))
+    }))
 }
 
 /// marked's `cachedIndentRegex` builds each indentation-sensitive rule from `indent - 1` clamped to
@@ -146,7 +158,7 @@ fn cached_indent(indent: usize) -> usize {
     indent.saturating_sub(1).min(3)
 }
 
-fn next_bullet_regex(indent: usize) -> Rule {
+fn next_bullet_regex_build(indent: usize) -> Rule {
     Rule::new(
         &format!(
             r"^ {{0,{}}}(?:[*+-]|\d{{1,9}}[.)])((?:[ \t][^\n]*)?(?:\n|$))",
@@ -156,7 +168,12 @@ fn next_bullet_regex(indent: usize) -> Rule {
     )
 }
 
-fn hr_regex(indent: usize) -> Rule {
+fn next_bullet_regex(indent: usize) -> &'static Rule {
+    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| next_bullet_regex_build(i + 1)));
+    &RULES[cached_indent(indent)]
+}
+
+fn hr_regex_build(indent: usize) -> Rule {
     Rule::new(
         &format!(
             r"^ {{0,{}}}((?:-[\t ]*){{3,}}|(?:_[ \t]*){{3,}}|(?:\*[ \t]*){{3,}})(?:\n+|$)",
@@ -166,24 +183,44 @@ fn hr_regex(indent: usize) -> Rule {
     )
 }
 
-fn fences_begin_regex(indent: usize) -> Rule {
+fn hr_regex(indent: usize) -> &'static Rule {
+    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| hr_regex_build(i + 1)));
+    &RULES[cached_indent(indent)]
+}
+
+fn fences_begin_regex_build(indent: usize) -> Rule {
     Rule::new(
         &format!(r"^ {{0,{}}}(?:```|~~~)", cached_indent(indent)),
         "",
     )
 }
 
-fn heading_begin_regex(indent: usize) -> Rule {
+fn fences_begin_regex(indent: usize) -> &'static Rule {
+    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| fences_begin_regex_build(i + 1)));
+    &RULES[cached_indent(indent)]
+}
+
+fn heading_begin_regex_build(indent: usize) -> Rule {
     Rule::new(&format!(r"^ {{0,{}}}#", cached_indent(indent)), "")
 }
 
-fn blockquote_begin_regex(indent: usize) -> Rule {
+fn heading_begin_regex(indent: usize) -> &'static Rule {
+    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| heading_begin_regex_build(i + 1)));
+    &RULES[cached_indent(indent)]
+}
+
+fn blockquote_begin_regex_build(indent: usize) -> Rule {
     Rule::new(&format!(r"^ {{0,{}}}>", cached_indent(indent)), "")
+}
+
+fn blockquote_begin_regex(indent: usize) -> &'static Rule {
+    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| blockquote_begin_regex_build(i + 1)));
+    &RULES[cached_indent(indent)]
 }
 
 const TAG: &str = "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul";
 
-fn html_begin_regex(indent: usize) -> Rule {
+fn html_begin_regex_build(indent: usize) -> Rule {
     Rule::new(
         &format!(
             r"^ {{0,{}}}(?:</?(?:{TAG})(?: +|$|/?>)|<(?:script|pre|style|textarea|!--))",
@@ -191,6 +228,11 @@ fn html_begin_regex(indent: usize) -> Rule {
         ),
         "i",
     )
+}
+
+fn html_begin_regex(indent: usize) -> &'static Rule {
+    static RULES: LazyLock<[Rule; 4]> = LazyLock::new(|| std::array::from_fn(|i| html_begin_regex_build(i + 1)));
+    &RULES[cached_indent(indent)]
 }
 
 const MAX_LATEX_FORMULA_LENGTH: usize = 4096;
@@ -355,13 +397,16 @@ fn find_block_math(src: &str, open: &str, close: &str) -> Option<(String, String
 }
 
 pub(crate) fn repeated_malformed_openers(src: &str, opener: &str) -> Option<String> {
-    let chars: Vec<char> = src.chars().collect();
     let opener_len = opener.chars().count();
-    let mut end = opener_len;
-    while starts_with_chars(&chars, end, opener) {
-        end += opener_len;
+    let skip = src
+        .char_indices()
+        .nth(opener_len)
+        .map_or(src.len(), |(byte, _)| byte);
+    let mut end = skip;
+    while src[end..].starts_with(opener) {
+        end += opener.len();
     }
-    (end > opener_len).then(|| chars[..end].iter().collect())
+    (end > skip).then(|| src[..end].to_string())
 }
 
 pub(crate) fn latex_token(kind: &str, raw: &str, text: &str) -> Token {
@@ -459,7 +504,8 @@ impl Lexer {
             self.inline_slots[entry.slot] = out;
             index += 1;
         }
-        let slots = self.inline_slots.clone();
+        let slots = std::mem::take(&mut self.inline_slots);
+        self.inline_queue.clear();
         resolve_inline_tokens(&mut tokens, &slots);
         tokens
     }
@@ -481,27 +527,27 @@ impl Lexer {
     }
 
     fn block_tokens(&mut self, source: &str, tokens: &mut Vec<Token>, last_paragraph_clipped_in: bool) {
-        let mut src = source.to_string();
+        let mut src: &str = source;
         let mut last_paragraph_clipped = last_paragraph_clipped_in;
         let mut src_length = usize::MAX;
 
         while !src.is_empty() {
-            let length = utf16_len(&src);
+            let length = src.len();
             if length < src_length {
                 src_length = length;
             } else {
                 break;
             }
 
-            if let Some(token) = block_math_tokenizer(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = block_math_tokenizer(src) {
+                src = advance(src, token.raw());
                 tokens.push(token);
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_space(&src) {
+            if let Some(token) = self.tokenizer_space(src) {
                 let raw_len = utf16_len(token.raw());
-                src = drop_utf16(&src, raw_len).to_string();
+                src = advance(src, token.raw());
                 if raw_len == 1 && !tokens.is_empty() {
                     if let Some(last) = tokens.last_mut() {
                         let mut raw = last.raw().to_string();
@@ -514,8 +560,8 @@ impl Lexer {
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_code(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_code(src) {
+                src = advance(src, token.raw());
                 let text = match &token {
                     Token::Code { text, .. } => text.clone(),
                     _ => String::new(),
@@ -532,44 +578,44 @@ impl Lexer {
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_fences(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_fences(src) {
+                src = advance(src, token.raw());
                 tokens.push(token);
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_heading(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_heading(src) {
+                src = advance(src, token.raw());
                 tokens.push(token);
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_hr(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_hr(src) {
+                src = advance(src, token.raw());
                 tokens.push(token);
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_blockquote(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_blockquote(src) {
+                src = advance(src, token.raw());
                 tokens.push(token);
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_list(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_list(src) {
+                src = advance(src, token.raw());
                 tokens.push(token);
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_html(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_html(src) {
+                src = advance(src, token.raw());
                 tokens.push(token);
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_def(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_def(src) {
+                src = advance(src, token.raw());
                 if matches!(tokens.last(), Some(Token::Paragraph { .. } | Token::Text { .. })) {
                     let raw = token.raw().to_string();
                     if let Some(last) = tokens.last_mut() {
@@ -591,20 +637,20 @@ impl Lexer {
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_table(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_table(src) {
+                src = advance(src, token.raw());
                 tokens.push(token);
                 continue;
             }
 
-            if let Some(token) = self.tokenizer_lheading(&src) {
-                src = drop_utf16(&src, utf16_len(token.raw())).to_string();
+            if let Some(token) = self.tokenizer_lheading(src) {
+                src = advance(src, token.raw());
                 tokens.push(token);
                 continue;
             }
 
             if self.state.top
-                && let Some(token) = self.tokenizer_paragraph(&src) {
+                && let Some(token) = self.tokenizer_paragraph(src) {
                     let raw = token.raw().to_string();
                     let text = match &token {
                         Token::Paragraph { text, .. } => text.clone(),
@@ -623,11 +669,11 @@ impl Lexer {
                         tokens.push(token);
                     }
                     last_paragraph_clipped = false;
-                    src = drop_utf16(&src, utf16_len(&raw)).to_string();
+                    src = advance(src, &raw);
                     continue;
                 }
 
-            if let Some(token) = self.tokenizer_text(&src) {
+            if let Some(token) = self.tokenizer_text(src) {
                 let raw = token.raw().to_string();
                 let text = match &token {
                     Token::Text { text, .. } => text.clone(),
@@ -644,7 +690,7 @@ impl Lexer {
                 } else {
                     tokens.push(token);
                 }
-                src = drop_utf16(&src, utf16_len(&raw)).to_string();
+                src = advance(src, &raw);
                 continue;
             }
 
@@ -842,15 +888,15 @@ impl Lexer {
         let mut items: Vec<Token> = Vec::new();
         let mut loose = false;
         let mut ends_with_blank_line = false;
-        let mut src = src.to_string();
+        let mut src: &str = src;
 
         while !src.is_empty() {
             let mut end_early = false;
             let (mut raw, item_prefix, first_line) = {
-                let Some(item) = item_regex.exec(&src) else {
+                let Some(item) = item_regex.exec(src) else {
                     break;
                 };
-                if R_HR.matches(&src) {
+                if R_HR.matches(src) {
                     break;
                 }
                 (
@@ -859,7 +905,7 @@ impl Lexer {
                     item.group_or(2, "").split('\n').next().unwrap_or("").to_string(),
                 )
             };
-            src = drop_utf16(&src, utf16_len(&raw)).to_string();
+            src = advance(src, &raw);
 
             let mut line = expand_tabs(&first_line, utf16_len(&item_prefix));
             let mut next_line = src.split('\n').next().unwrap_or("").to_string();
@@ -878,7 +924,7 @@ impl Lexer {
             if blank_line && R_BLANK_LINE.matches(&next_line) {
                 raw.push_str(&next_line);
                 raw.push('\n');
-                src = drop_utf16(&src, utf16_len(&next_line) + 1).to_string();
+                src = drop_utf16(src, utf16_len(&next_line) + 1);
                 end_early = true;
             }
 
@@ -935,7 +981,7 @@ impl Lexer {
                     blank_line = next_line.trim().is_empty();
                     raw.push_str(&raw_line);
                     raw.push('\n');
-                    src = drop_utf16(&src, utf16_len(&raw_line) + 1).to_string();
+                    src = drop_utf16(src, utf16_len(&raw_line) + 1);
                     line = next_line_without_tabs.chars().skip(indent).collect();
                 }
             }

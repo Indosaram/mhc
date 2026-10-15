@@ -84,7 +84,7 @@ fn update_write_highlight_cache_incremental(
     let delta_raw = &file_content[cache.raw_content.len()..];
     let delta_display = normalize_display_text(delta_raw);
     let delta_normalized = replace_tabs(&delta_display);
-    cache.raw_content = file_content.to_owned();
+    cache.raw_content.push_str(delta_raw);
     if cache.normalized_lines.is_empty() {
         cache.normalized_lines.push(String::new());
         cache.highlighted_lines.push(String::new());
@@ -140,32 +140,31 @@ fn format_write_call(
         Some(content) if !content.is_empty() => {
             let lang = raw_path.as_deref().and_then(crate::theme::get_language_from_path);
             let normalized_content = replace_tabs(&normalize_display_text(content));
-            let mut lines: Vec<String> = normalized_content.split('\n').map(str::to_owned).collect();
-            trim_trailing_empty_lines(&mut lines);
-            let total_lines = lines.len();
-            let max_lines = if options.expanded { lines.len() } else { 10 };
-            let remaining = lines.len().saturating_sub(max_lines);
+            // Line count after trimming trailing empty lines, without materializing every line.
+            let total_lines = normalized_content
+                .split('\n')
+                .enumerate()
+                .filter(|(_, line)| !line.is_empty())
+                .last()
+                .map_or(0, |(index, _)| index + 1);
+            let max_lines = if options.expanded { total_lines } else { 10 };
+            let remaining = total_lines.saturating_sub(max_lines);
             if args_complete {
                 text += &format!(
                     "\n\n{}",
                     render_tool_diff(&generate_added_content_diff(&normalized_content, max_lines), raw_path.as_deref(), theme)
                 );
             } else {
-                let rendered_lines: Vec<String> = match lang {
-                    Some(_) => cache.map(|cache| cache.highlighted_lines.clone()).unwrap_or_else(|| {
-                        crate::theme::highlight_code(theme, &normalized_content, lang)
-                    }),
-                    None => lines.clone(),
+                let shown: Vec<String> = match (lang, cache) {
+                    (Some(_), Some(cache)) => cache.highlighted_lines.iter().take(max_lines).cloned().collect(),
+                    (Some(_), None) => crate::theme::highlight_code(theme, &normalized_content, lang).into_iter().take(max_lines).collect(),
+                    (None, _) => normalized_content
+                        .split('\n')
+                        .take(max_lines.min(total_lines))
+                        .map(|line| theme.fg(ThemeColor::ToolOutput, line))
+                        .collect(),
                 };
-                text += &format!(
-                    "\n\n{}",
-                    rendered_lines
-                        .iter()
-                        .take(max_lines)
-                        .map(|line| if lang.is_some() { line.clone() } else { theme.fg(ThemeColor::ToolOutput, line) })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                );
+                text += &format!("\n\n{}", shown.join("\n"));
             }
             if remaining > 0 {
                 text += &format!(

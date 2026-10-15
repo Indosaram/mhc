@@ -19,9 +19,13 @@ pub fn copy_context_provenance(source: &Value, mut target: Map<String, Value>) -
 
 /// JSON of the value without its provenance field, for equality that ignores provenance.
 pub fn context_provenance_fingerprint(value: &Value) -> Option<String> {
-    let mut clone = value.as_object()?.clone();
-    clone.shift_remove(CONTEXT_PROVENANCE_FIELD);
-    serde_json::to_string(&clone).ok()
+    struct WithoutProvenance<'a>(&'a Map<String, Value>);
+    impl serde::Serialize for WithoutProvenance<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_map(self.0.iter().filter(|(key, _)| key.as_str() != CONTEXT_PROVENANCE_FIELD))
+        }
+    }
+    serde_json::to_string(&WithoutProvenance(value.as_object()?)).ok()
 }
 
 #[cfg(test)]

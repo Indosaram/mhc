@@ -2,22 +2,29 @@
 use crate::theme::theme::{Theme, ThemeColor};
 use maho_tui::{components::text::Text, tui::Component};
 use serde_json::Value;
+use std::sync::LazyLock;
+static NON_NETWORK: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)auth|api.?key|permission|quota|credit|billing|rate.?limit|too many requests|429",
+    )
+    .ok()
+});
+static NETWORK: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)network error|service unavailable|connection (?:error|lost|reset)|fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|overloaded",
+    )
+    .ok()
+});
 pub fn is_network_provider_error(raw: Option<&str>, envelope_only: bool) -> bool {
     let Some(raw) = raw.filter(|s| !s.is_empty()) else {
         return false;
     };
-    if regex::Regex::new(
-        r"(?i)auth|api.?key|permission|quota|credit|billing|rate.?limit|too many requests|429",
-    )
-    .is_ok_and(|r| r.is_match(raw))
-    {
+    if NON_NETWORK.as_ref().is_some_and(|r| r.is_match(raw)) {
         return false;
     }
-    let network = regex::Regex::new(
-        r"(?i)network error|service unavailable|connection (?:error|lost|reset)|fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|overloaded",
-    );
+    let network = NETWORK.as_ref();
     if !envelope_only {
-        return network.is_ok_and(|r| r.is_match(raw));
+        return network.is_some_and(|r| r.is_match(raw));
     }
     let Ok(value) = serde_json::from_str::<Value>(raw) else {
         return false;
@@ -37,7 +44,7 @@ pub fn is_network_provider_error(raw: Option<&str>, envelope_only: bool) -> bool
         .get("error")
         .and_then(|v| v.get("message"))
         .and_then(Value::as_str)
-        .is_some_and(|m| network.is_ok_and(|r| r.is_match(m)))
+        .is_some_and(|m| network.is_some_and(|r| r.is_match(m)))
 }
 pub fn is_network_provider_message(message: &Value) -> bool {
     matches!(

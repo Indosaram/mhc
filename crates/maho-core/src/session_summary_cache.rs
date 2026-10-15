@@ -1,7 +1,7 @@
 //! Port of senpi packages/coding-agent/src/core/session-summary-cache.ts.
 
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{DateTime, Utc};
 
@@ -13,7 +13,7 @@ pub const SESSION_SUMMARY_CACHE_MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CachedSessionSummary {
-    pub summary: SessionSummary,
+    pub summary: Arc<SessionSummary>,
     pub mtime: DateTime<Utc>,
 }
 
@@ -68,8 +68,8 @@ pub fn read_cached_session_summary(file_path: &str) -> Option<CachedSessionSumma
         return Some(CachedSessionSummary { summary: cached.summary, mtime: cached.mtime });
     }
 
-    let summary = read_session_summary(file_path)?;
-    lock().retain(&key, SummaryEntry { stamp, summary: summary.clone(), mtime });
+    let summary = Arc::new(read_session_summary(file_path)?);
+    lock().retain(&key, SummaryEntry { stamp, summary: Arc::clone(&summary), mtime });
     Some(CachedSessionSummary { summary, mtime })
 }
 

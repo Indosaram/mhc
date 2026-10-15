@@ -178,11 +178,14 @@ impl RpcProtocolClient {
                 let mut reader = BufReader::new(stdout);
                 let mut raw = Vec::new();
                 while matches!(reader.read_until(b'\n', &mut raw), Ok(read) if read > 0) {
-                    let line = String::from_utf8_lossy(&raw).trim().to_string();
-                    raw.clear();
-                    if !line.is_empty() {
-                        handle_line(&shared, &child, &line, &on_malformed_line, auto_answer_ui);
+                    {
+                        let text = String::from_utf8_lossy(&raw);
+                        let line = text.trim();
+                        if !line.is_empty() {
+                            handle_line(&shared, &child, line, &on_malformed_line, auto_answer_ui);
+                        }
                     }
+                    raw.clear();
                 }
             }
             if let Some(pump) = stderr_pump {
@@ -317,7 +320,23 @@ fn pump_stderr(mut stderr: impl Read, shared: &ClientShared) {
         state
             .stderr
             .push_str(&String::from_utf8_lossy(&chunk[..read]));
-        state.stderr = tail_stderr(&state.stderr, STDERR_BUFFER_CAP);
+        // Same kept characters as `tail_stderr`, trimmed in place: a buffer within the cap in
+        // bytes is within it in chars, so only an overflowing buffer is counted and drained.
+        if state.stderr.len() > STDERR_BUFFER_CAP {
+            let skip = state
+                .stderr
+                .chars()
+                .count()
+                .saturating_sub(STDERR_BUFFER_CAP);
+            let offset = state
+                .stderr
+                .char_indices()
+                .nth(skip)
+                .map(|(offset, _)| offset);
+            if let Some(offset) = offset {
+                state.stderr.drain(..offset);
+            }
+        }
     }
 }
 

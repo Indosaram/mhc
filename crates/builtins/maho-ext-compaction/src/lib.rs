@@ -262,11 +262,13 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let breaker_fallback = !lane_owns_compaction && circuit_breaker::is_tripped(&state, chrono::Utc::now().timestamp_millis() as f64)
                         && tokens.is_some_and(|tokens|tokens >= window as f64 * policy::compute_effective_threshold(window as f64, state.last_yield));
                     let raw = messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                    let branch_entries = speculative::branch_values(context);
+                    let provider_native_path = openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref());
+                    // Only the provider-native replay boundary reads the branch; skip the full branch copy otherwise.
+                    let branch_entries = if provider_native_path { speculative::branch_values(context) } else { Vec::new() };
                     let output = context_pipeline::build_compaction_context(context_pipeline::CompactionContextInput {
                         messages: &raw, entry_ids, model: context.model.as_ref(), branch_entries: &branch_entries, context_window: window,
                         prompt_context_window: extension_wiring::get_prompt_context_window(window as f64, context.model.as_ref().map(|model|model.max_tokens as f64)) as u64,
-                        usage_tokens: tokens, provider_native_path: openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()),
+                        usage_tokens: tokens, provider_native_path,
                         tool_admission_enabled: settings.ideal.tool_admission_enabled != Some(false), breaker_fallback, lane_owns_compaction,
                         emergency_prune_latch: &mut latch.lock().unwrap_or_else(std::sync::PoisonError::into_inner), reminder: None,
                         now: chrono::Utc::now().timestamp_millis(),
@@ -275,7 +277,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let logger=logger.get_or_insert_with(||log::CompactionLogger::new(Some(&context.agent_dir),None,None));
                     if breaker_fallback {logger.debug("breaker_deterministic_fallback",serde_json::json!({"route":"context-event","tokens":tokens.unwrap_or(0.)}).as_object());}
                     if let Some((before,after))=output.emergency_prune_tokens {logger.debug("emergency_prune",serde_json::json!({"route":"context-event","tokensBefore":before,"tokens":after}).as_object());}
-                    let messages = output.messages.into_iter().map(|message|serde_json::to_value(message).and_then(serde_json::from_value)).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    let messages = output.messages.into_iter().map(maho_ext_api::AgentMessage::from).collect::<Vec<_>>();
                     Ok(maho_ext_api::EventResult::Context { messages: Some(messages) })
                 })();
                 Box::pin(async move { result })

@@ -24,6 +24,15 @@ struct EventEnvelope {
     payload: Value,
 }
 
+/// Same required shape as [`EventEnvelope`] without materializing the payload.
+#[derive(Deserialize)]
+struct EventEnvelopeShape {
+    #[serde(rename = "type")]
+    _event_type: String,
+    #[serde(rename = "payload")]
+    _payload: serde::de::IgnoredAny,
+}
+
 pub fn yield_digest(result: &WorkpoolYieldValue) -> String {
     let value = match result {
         WorkpoolYieldValue::Data { key, data } => serde_json::json!({"key": key, "data": data}),
@@ -38,6 +47,10 @@ pub fn read_yield_events(tasks: &TaskRecordStore, pool_id: &str, task_id: &str, 
     let mut events = Vec::new();
     for (index, line) in bytes.split('\n').enumerate() {
         if line.is_empty() { continue; }
+        // Most log lines are unrelated task events: validate their envelope without building a Value.
+        if !line.contains("workpool_yield") {
+            match serde_json::from_str::<EventEnvelopeShape>(line) { Ok(_) => continue, Err(_) if index == bytes.split('\n').count() - 1 => break, Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)) }
+        }
         let envelope: EventEnvelope = match serde_json::from_str(line) { Ok(raw) => raw, Err(_) if index == bytes.split('\n').count() - 1 => break, Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)) };
         if envelope.event_type != "workpool_yield" { continue; }
         let Ok(event) = serde_json::from_value::<WorkpoolYieldEvent>(envelope.payload) else { continue };

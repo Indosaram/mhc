@@ -1,27 +1,27 @@
 use std::collections::BTreeSet;
 use serde_json::Value;
-use crate::detectors::repetitive_turns::{create_repetitive_turns_state, is_near_duplicate_of_previous_turn, normalize_turn_text, record_turn_text, RepetitiveTurnsState, REPETITIVE_TURNS_MIN_NORMALIZED_CHARS, REPETITIVE_TURNS_RULE_NAME};
+use crate::detectors::repetitive_turns::{create_repetitive_turns_state, is_near_duplicate_of_previous_grams, normalize_turn_text, record_turn_text, turn_trigrams, RepetitiveTurnsState, REPETITIVE_TURNS_MIN_NORMALIZED_CHARS, REPETITIVE_TURNS_RULE_NAME};
 pub fn collect_assistant_text(content: &Value) -> Option<String> { let text=content.as_array()?.iter().filter(|block| block.get("type").and_then(Value::as_str)==Some("text")).filter_map(|block| block.get("text").and_then(Value::as_str)).collect::<String>(); (!text.is_empty()).then_some(text) }
 pub fn read_persisted_assistant_texts(entries: &[Value]) -> Vec<String> { let mut texts: Vec<_>=entries.iter().filter(|entry| entry.get("type").and_then(Value::as_str)==Some("message")).filter_map(|entry| entry.get("message")).filter(|message| message.get("role").and_then(Value::as_str)==Some("assistant")).filter_map(|message| message.get("content").and_then(collect_assistant_text)).collect(); if texts.len()>8 { texts.drain(..texts.len()-8); } texts }
-pub struct RepetitiveTurnsLane { state: RepetitiveTurnsState, armed: bool, recovering: bool, current_turn_text: String, last_completed_turn_text: Option<String>, enabled: bool }
-impl Default for RepetitiveTurnsLane { fn default() -> Self { Self { state: create_repetitive_turns_state(), armed:false, recovering:false, current_turn_text:String::new(), last_completed_turn_text:None, enabled:true } } }
+pub struct RepetitiveTurnsLane { state: RepetitiveTurnsState, armed: bool, recovering: bool, current_turn_text: String, last_completed_turn_grams: Option<BTreeSet<String>>, enabled: bool }
+impl Default for RepetitiveTurnsLane { fn default() -> Self { Self { state: create_repetitive_turns_state(), armed:false, recovering:false, current_turn_text:String::new(), last_completed_turn_grams:None, enabled:true } } }
 impl RepetitiveTurnsLane {
     pub fn configure(&mut self, disabled_rules: &BTreeSet<String>) { self.enabled = !disabled_rules.contains(REPETITIVE_TURNS_RULE_NAME); }
-    pub fn reset_session(&mut self) { self.state=create_repetitive_turns_state(); self.armed=false; self.recovering=false; self.current_turn_text.clear(); self.last_completed_turn_text=None; }
+    pub fn reset_session(&mut self) { self.state=create_repetitive_turns_state(); self.armed=false; self.recovering=false; self.current_turn_text.clear(); self.last_completed_turn_grams=None; }
     pub fn restore_from_history(&mut self, texts: &[String]) { for text in texts { self.record_completed_turn(text); } self.armed=false; }
     pub fn reset_turn(&mut self) { self.armed=false; self.current_turn_text.clear(); }
     pub fn disarm(&mut self) { self.armed=false; }
     pub const fn armed(&self) -> bool { self.armed }
     pub fn observe_text_delta(&mut self, delta: &str, can_arm: bool) -> bool {
-        if self.enabled && !self.armed && !self.recovering && can_arm && let Some(previous)=&self.last_completed_turn_text {
+        if self.enabled && !self.armed && !self.recovering && can_arm && let Some(previous)=&self.last_completed_turn_grams {
             let candidate=normalize_turn_text(&format!("{}{delta}",self.current_turn_text));
-            if candidate.encode_utf16().count()>=REPETITIVE_TURNS_MIN_NORMALIZED_CHARS && is_near_duplicate_of_previous_turn(&candidate,previous) { self.armed=true; }
+            if candidate.encode_utf16().count()>=REPETITIVE_TURNS_MIN_NORMALIZED_CHARS && is_near_duplicate_of_previous_grams(&candidate,previous) { self.armed=true; }
         }
         self.current_turn_text.push_str(delta); self.armed
     }
-    pub fn commit_armed_turn(&mut self, text: Option<&str>) { self.armed=false; self.recovering=true; if let Some(text)=text { self.last_completed_turn_text=Some(normalize_turn_text(text)); } }
+    pub fn commit_armed_turn(&mut self, text: Option<&str>) { self.armed=false; self.recovering=true; if let Some(text)=text { self.last_completed_turn_grams=Some(turn_trigrams(&normalize_turn_text(text))); } }
     pub fn record_completed_turn(&mut self, text: &str) {
-        self.last_completed_turn_text=Some(normalize_turn_text(text));
+        self.last_completed_turn_grams=Some(turn_trigrams(&normalize_turn_text(text)));
         if !self.enabled { return; }
         if record_turn_text(&mut self.state,text).is_none() { self.recovering=false; } else { self.armed=true; }
     }

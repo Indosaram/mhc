@@ -20,8 +20,23 @@ pub fn calculate_context_tokens(usage: &Usage) -> u64 {
     if usage.total_tokens != 0 { usage.total_tokens } else { usage.input + usage.output + usage.cache_read + usage.cache_write }
 }
 
+/// Counts the UTF-16 length of the (always valid UTF-8) bytes serde_json writes.
+struct Utf16Counter(usize);
+
+impl std::io::Write for Utf16Counter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.iter().map(|&b| usize::from(b & 0xC0 != 0x80) + usize::from(b >= 0xF0)).sum::<usize>();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn json_len(value: &impl Serialize) -> usize {
-    serde_json::to_string(value).map_or("[unserializable]".len(), |json| utf16_len(&json))
+    let mut counter = Utf16Counter(0);
+    serde_json::to_writer(&mut counter, value).map_or("[unserializable]".len(), |()| counter.0)
 }
 
 fn tokens_for_chars(chars: usize) -> u64 {

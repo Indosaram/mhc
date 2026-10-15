@@ -63,7 +63,7 @@ impl GoalRuntime {
     }
     pub async fn event(&self,event:&ExtensionEvent,context:&ExtensionContext)->Result<Option<Goal>,ExtensionFailure> {
         let mut state=self.state.lock().await; let reference=(self.reference)(context); let now=(self.now)(); let seconds=(now/1000.0).floor() as u64;
-        let mut goal=if matches!(event,ExtensionEvent::SessionStart(_)) { None } else { crate::store::read_goal(&reference).map_err(failure)? };
+        let mut goal=if goal_unused_by_event(event) { None } else { crate::store::read_goal(&reference).map_err(failure)? };
         match event {
             ExtensionEvent::SessionStart(_)=>{
                 state.accounting.clear(); state.input.reset(); state.subscriptions.clear();
@@ -179,6 +179,15 @@ impl GoalRuntime {
     }
 }
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
+/// Events whose runtime arm and continuation arm never read the stored goal (SessionStart re-reads after migration).
+fn goal_unused_by_event(event:&ExtensionEvent)->bool {
+    match event {
+        ExtensionEvent::SessionStart(_)|ExtensionEvent::MessageEnd { .. }|ExtensionEvent::AgentSettled=>true,
+        ExtensionEvent::MessageStart { message:maho_agent::types::AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message)) }=>message.custom_type!="manual-continue",
+        ExtensionEvent::MessageStart { .. }=>true,
+        _=>false,
+    }
+}
 #[cfg(test)] mod tests {
     use super::*;
     #[tokio::test] async fn typed_store_change_uses_actual_context_and_awaits_owner_delivery() {

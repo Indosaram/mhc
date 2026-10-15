@@ -9,12 +9,19 @@ use std::sync::Arc;
 pub struct ToolPairGuard;
 
 pub fn sanitize_payload(payload: &Value) -> Value {
-    let anthropic = match payload.as_object() {
-        Some(object) => Value::Object(maho_ai::api::anthropic_tool_pairs::sanitize_anthropic_tool_pairs(object)),
-        None => payload.clone(),
-    };
-    let responses = sanitize_openai_responses_payload::sanitize_openai_responses_payload(&anthropic);
-    sanitize_openai_chat_completions_payload::sanitize_openai_chat_completions_payload(&responses)
+    sanitize_payload_if_changed(payload).unwrap_or_else(|| payload.clone())
+}
+
+/// Chains the sanitizers on borrows; `None` when the result equals the input payload.
+pub fn sanitize_payload_if_changed(payload: &Value) -> Option<Value> {
+    let anthropic = payload
+        .as_object()
+        .and_then(maho_ai::api::anthropic_tool_pairs::sanitize_anthropic_tool_pairs_if_changed)
+        .map(Value::Object);
+    let base = anthropic.as_ref().unwrap_or(payload);
+    let responses = sanitize_openai_responses_payload::sanitize_openai_responses_payload_if_changed(base);
+    let chat = sanitize_openai_chat_completions_payload::sanitize_openai_chat_completions_payload_if_changed(responses.as_ref().unwrap_or(base));
+    chat.or(responses).or(anthropic).filter(|sanitized| sanitized != payload)
 }
 impl Extension for ToolPairGuard {
     fn register(&self, api: &mut ExtensionApi) {
@@ -22,8 +29,7 @@ impl Extension for ToolPairGuard {
             let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else {
                 return Ok(EventResult::None);
             };
-            let sanitized = sanitize_payload(payload);
-            Ok(if sanitized == *payload { EventResult::None } else { EventResult::ProviderPayload(sanitized) })
+            Ok(sanitize_payload_if_changed(payload).map_or(EventResult::None, EventResult::ProviderPayload))
         })));
     }
 }

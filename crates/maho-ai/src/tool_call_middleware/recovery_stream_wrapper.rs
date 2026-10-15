@@ -93,7 +93,7 @@ pub fn wrap_stream_with_invoke_recovery(
                     if $content_index >= $source.content.len() {
                         false
                     } else {
-                        current_projection.sync($source.clone());
+                        current_projection.sync($source);
                         current_native.reserve_visible_ids($source);
                         current_native.synchronize_lower($source, $content_index)
                     }
@@ -290,7 +290,7 @@ fn synchronize_terminal(
     }
     let current_projection = projection.as_mut().expect("projection just initialized");
     let current_native = native_projection.as_mut().expect("native_projection just initialized");
-    current_projection.sync(source.clone());
+    current_projection.sync(source);
     current_native.reserve_visible_ids(source);
     if let Some(mut current_text) = text_projection.take() {
         *saw_tool_call = current_text.finish(current_projection, current_native) || *saw_tool_call;

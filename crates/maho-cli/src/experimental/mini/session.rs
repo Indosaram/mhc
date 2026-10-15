@@ -5,9 +5,11 @@
 //! through this one peer, so the view never learns which host provides what. The fold is the
 //! harness's `reduce_lane_snapshot`: a replica must not have a second opinion.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use maho_agent::harness::runtime::reducer::{reduce_lane_snapshot, LaneSnapshotReduction};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::shared::protocol::{
@@ -43,6 +45,8 @@ struct Shared {
     peer: Arc<RpcPeer>,
     presentation_id: String,
     state: Mutex<Option<SessionSnapshot>>,
+    /// Bumped on every `publish`, so pollers re-read `state` only after it changed.
+    revision: AtomicU64,
     subscription_id: Mutex<Option<String>>,
     listeners: Mutex<Vec<Listener>>,
     auth_handlers: Mutex<Vec<AuthHandler>>,
@@ -51,6 +55,7 @@ struct Shared {
 
 impl Shared {
     fn publish(&self) {
+        self.revision.fetch_add(1, Ordering::SeqCst);
         let listeners = self.listeners.lock().unwrap_or_else(|error| error.into_inner()).clone();
         for listener in listeners {
             listener();
@@ -80,7 +85,7 @@ pub struct AttachedSession {
 }
 
 fn handle_lane_event(shared: &Arc<Shared>, payload: &Value) {
-    let Ok(event) = serde_json::from_value::<LaneEvent>(payload.clone()) else { return; };
+    let Ok(event) = LaneEvent::deserialize(payload) else { return; };
     let current = shared.subscription_id.lock().unwrap_or_else(|error| error.into_inner()).clone();
     if current.as_deref() != Some(event.subscription_id.as_str()) {
         return;
@@ -101,7 +106,7 @@ fn handle_lane_event(shared: &Arc<Shared>, payload: &Value) {
 }
 
 fn handle_models_event(shared: &Arc<Shared>, payload: &Value) {
-    let Ok(event) = serde_json::from_value::<ModelsEvent>(payload.clone()) else { return; };
+    let Ok(event) = ModelsEvent::deserialize(payload) else { return; };
     match &event {
         ModelsEvent::State { state } => {
             {
@@ -147,6 +152,7 @@ pub async fn connect(transport: &SocketTransport, session_id: Option<&str>, cwd:
         peer: peer.clone(),
         presentation_id: maho_ai::utils::uuid::uuidv7(None).unwrap_or_default(),
         state: Mutex::new(None),
+        revision: AtomicU64::new(0),
         subscription_id: Mutex::new(None),
         listeners: Mutex::new(Vec::new()),
         auth_handlers: Mutex::new(Vec::new()),
@@ -181,6 +187,11 @@ impl AttachedSession {
             .unwrap_or_else(|error| error.into_inner())
             .clone()
             .expect("attached session has a snapshot")
+    }
+
+    /// The publish counter; it changes whenever `state()` may have changed.
+    pub fn revision(&self) -> u64 {
+        self.shared.revision.load(Ordering::SeqCst)
     }
 
     pub fn subscribe(&self, listener: impl Fn() + Send + Sync + 'static) -> Subscription {

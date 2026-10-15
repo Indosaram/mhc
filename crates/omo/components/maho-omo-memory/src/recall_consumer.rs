@@ -35,7 +35,7 @@ pub struct CollectedRecallCandidates {
 pub struct CollectRecallCandidatesInput<'a> {
     /// Already-loaded corpus documents (the caller loads them through `RecallCorpusCache`).
     pub documents: &'a [RecallDocument],
-    pub snapshot: &'a RecallSessionSnapshot,
+    pub snapshot: &'a RecallSessionSnapshot<'a>,
     pub identity: &'a str,
     /// Resolved agent recall settings (`resolve_agent_recall_settings`).
     pub recall_settings: &'a Value,
@@ -59,7 +59,7 @@ pub fn collect_recall_candidates(
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
 
-    let texts = user_texts(&input.snapshot.entries);
+    let texts = user_texts(input.snapshot.entries);
     if texts.is_empty() && input.extra_texts.is_empty() {
         return Ok(None);
     }
@@ -94,7 +94,7 @@ pub fn collect_recall_candidates(
         candidates,
         surfaced,
         max_items,
-        transcript: judge_transcript(&input.snapshot.entries),
+        transcript: judge_transcript(input.snapshot.entries),
     }))
 }
 
@@ -185,7 +185,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let ledger = RecallLedger::new(dir.path());
         let documents = [document("notes/a.md", "deploy", "rollback the canary")];
-        let snapshot = crate::recall_session_read::snapshot_session("s1", &[user_message("canary")]).unwrap();
+        let entries = [user_message("canary")];
+        let snapshot = crate::recall_session_read::snapshot_session("s1", &entries).unwrap();
         let result = collect_recall_candidates(CollectRecallCandidatesInput {
             documents: &documents,
             snapshot: &snapshot,
@@ -207,8 +208,8 @@ mod tests {
             document("notes/a.md", "deploy", "rollback the canary before the release"),
             document("notes/b.md", "unrelated", "nothing to see here"),
         ];
-        let snapshot =
-            crate::recall_session_read::snapshot_session("s1", &[user_message("canary")]).unwrap();
+        let entries = [user_message("canary")];
+        let snapshot = crate::recall_session_read::snapshot_session("s1", &entries).unwrap();
         let collected = collect_recall_candidates(CollectRecallCandidatesInput {
             documents: &documents,
             snapshot: &snapshot,
@@ -262,8 +263,8 @@ mod tests {
             )
             .unwrap();
         let documents = [document("notes/a.md", "deploy", "rollback the canary")];
-        let snapshot =
-            crate::recall_session_read::snapshot_session("s1", &[user_message("canary")]).unwrap();
+        let entries = [user_message("canary")];
+        let snapshot = crate::recall_session_read::snapshot_session("s1", &entries).unwrap();
         let result = collect_recall_candidates(CollectRecallCandidatesInput {
             documents: &documents,
             snapshot: &snapshot,

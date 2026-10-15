@@ -5,7 +5,11 @@ use serde_json::{Value, json};
 pub enum ImageGenMode { Native, Client, Unavailable }
 pub const NATIVE_IMAGE_GEN_TOOL_TYPE: &str = "image_generation";
 pub fn apply_image_generation_tools(payload: &Value, mode: ImageGenMode) -> Value {
-    let Some(object) = payload.as_object() else { return payload.clone(); };
+    apply_image_generation_tools_if_changed(payload, mode).unwrap_or_else(|| payload.clone())
+}
+/// `None` when the payload is left untouched, so callers can skip copying it.
+pub fn apply_image_generation_tools_if_changed(payload: &Value, mode: ImageGenMode) -> Option<Value> {
+    let object = payload.as_object()?;
     let tools = object.get("tools").and_then(Value::as_array);
     let mut kept: Vec<Value> = tools.into_iter().flatten().filter(|tool| {
         let native = tool.get("type").and_then(Value::as_str).is_some_and(|kind| kind == NATIVE_IMAGE_GEN_TOOL_TYPE || kind.starts_with("image_generation_"));
@@ -13,9 +17,9 @@ pub fn apply_image_generation_tools(payload: &Value, mode: ImageGenMode) -> Valu
         !(native || mode != ImageGenMode::Client && client)
     }).cloned().collect();
     let removed = tools.map_or(0, Vec::len) != kept.len();
-    if mode != ImageGenMode::Native && !removed { return payload.clone(); }
+    if mode != ImageGenMode::Native && !removed { return None; }
     if mode == ImageGenMode::Native { kept.push(json!({"type":NATIVE_IMAGE_GEN_TOOL_TYPE,"model":DEFAULT_IMAGE_MODEL})); }
     let mut result = object.clone();
     result.insert("tools".into(), Value::Array(kept));
-    Value::Object(result)
+    Some(Value::Object(result))
 }

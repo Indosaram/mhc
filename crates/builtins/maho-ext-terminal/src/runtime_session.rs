@@ -23,7 +23,10 @@ pub enum RuntimeError {
 pub struct DeltaRead {pub text:String,pub dropped_chars:usize}
 
 #[derive(Default)]
-struct OutputState {buffer:Vec<u16>,pending_utf8:Vec<u8>,dropped_chars:usize,consumed:usize}
+struct OutputState {buffer:std::collections::VecDeque<u16>,pending_utf8:Vec<u8>,dropped_chars:usize,consumed:usize}
+
+/// `String::from_utf16_lossy` over the retained ring without making it contiguous.
+fn lossy_utf16(units:impl Iterator<Item=u16>)->String {char::decode_utf16(units).map(|unit|unit.unwrap_or(char::REPLACEMENT_CHARACTER)).collect()}
 
 pub struct OutputObserverGuard {observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,sender:tokio::sync::mpsc::UnboundedSender<String>}
 impl OutputObserverGuard {
@@ -55,8 +58,18 @@ impl OutputState {
     fn read_delta(&mut self)->DeltaRead {
         let start=self.consumed.max(self.dropped_chars);
         let dropped=self.dropped_chars.saturating_sub(self.consumed);
-        let text=String::from_utf16_lossy(&self.buffer[start-self.dropped_chars..]);
+        let text=lossy_utf16(self.buffer.range(start-self.dropped_chars..).copied());
         self.consumed=self.dropped_chars+self.buffer.len();DeltaRead {text,dropped_chars:dropped}
+    }
+
+    /// Retained output from the first line start within the last `units` units, plus whether it is the
+    /// whole buffer. The cut sits right after a `'\n'` so line-local sanitizing is unchanged; an OSC
+    /// sequence (the only escape that can span lines) open across the cut falls back to the whole buffer.
+    fn tail(&self,units:usize)->(String,bool) {
+        let buffer=&self.buffer;
+        let cut=buffer.len().checked_sub(units).and_then(|start|buffer.range(start..).position(|unit|*unit==u16::from(b'\n')).map(|offset|start+offset+1));
+        let cut=cut.filter(|&cut|buffer.range(..cut).rposition(|unit|*unit==0x07||*unit==0x1b).is_none_or(|index|buffer.get(index+1)!=Some(&u16::from(b']'))));
+        match cut {Some(cut)=>(lossy_utf16(buffer.range(cut..).copied()),false),None=>(lossy_utf16(buffer.iter().copied()),true)}
     }
 }
 
@@ -101,7 +114,8 @@ impl TerminalRuntimeSession {
                 let decoded=state.ingest(chunk);
                 if let Ok(mut screen)=projection.lock() {screen.process(decoded.as_bytes());}
                 if !decoded.is_empty() && let Ok(mut listeners)=listeners.lock() {
-                    listeners.retain(|listener|listener.send(decoded.clone()).is_ok());
+                    let mut decoded=decoded;let last=listeners.len();let mut index=0;
+                    listeners.retain(|listener| {index+=1;let text=if index==last {std::mem::take(&mut decoded)} else {decoded.clone()};listener.send(text).is_ok()});
                 }
             }
         };
@@ -129,13 +143,13 @@ impl TerminalRuntimeSession {
         let state=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;
         let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
         self.observers.lock().map_err(|_|RuntimeError::Poisoned)?.push(sender);
-        Ok((String::from_utf16_lossy(&state.buffer),receiver))
+        Ok((lossy_utf16(state.buffer.iter().copied()),receiver))
     }
     pub fn subscribe_output_guarded(&self)->Result<(String,tokio::sync::mpsc::UnboundedReceiver<String>,OutputObserverGuard),RuntimeError> {
         let state=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;
         let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
         self.observers.lock().map_err(|_|RuntimeError::Poisoned)?.push(sender.clone());
-        Ok((String::from_utf16_lossy(&state.buffer),receiver,OutputObserverGuard {observers:self.observers.clone(),sender}))
+        Ok((lossy_utf16(state.buffer.iter().copied()),receiver,OutputObserverGuard {observers:self.observers.clone(),sender}))
     }
     pub fn exited(&self)->Result<bool,RuntimeError> {Ok(self.exit.0.lock().map_err(|_|RuntimeError::Poisoned)?.is_some())}
     pub fn exit_result(&self)->Result<Option<PtyExit>,RuntimeError> {
@@ -149,7 +163,8 @@ impl TerminalRuntimeSession {
     }
     pub fn total_chars(&self)->Result<usize,RuntimeError> {let state=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;Ok(state.dropped_chars+state.buffer.len())}
     pub fn read_delta(&self)->Result<DeltaRead,RuntimeError> {Ok(self.output.lock().map_err(|_|RuntimeError::Poisoned)?.read_delta())}
-    pub fn full_output(&self)->Result<String,RuntimeError> {Ok(String::from_utf16_lossy(&self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer))}
+    pub fn tail_output(&self,units:usize)->Result<(String,bool),RuntimeError> {Ok(self.output.lock().map_err(|_|RuntimeError::Poisoned)?.tail(units))}
+    pub fn full_output(&self)->Result<String,RuntimeError> {Ok(lossy_utf16(self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer.iter().copied()))}
     pub fn write(&mut self,bytes:&[u8])->Result<(),RuntimeError> {match &mut self.session {TerminalSessionBackend::Native(session)=>session.write(bytes)?,TerminalSessionBackend::PipeFallback(session)=>session.write(bytes)?}Ok(())}
     pub fn snapshot(&self)->Result<TerminalScreenSnapshot,RuntimeError> {
         let mut parser=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
@@ -167,7 +182,7 @@ impl TerminalRuntimeSession {
         // instead of failing with "pty session is closed".
         // The pipe fallback rejects the resize with a note but the screen projection still resizes.
         let session_resize=if self.exited()? {Ok(())} else {match &self.session {TerminalSessionBackend::Native(session)=>session.resize(cols,rows),TerminalSessionBackend::PipeFallback(session)=>session.resize(cols,rows)}};
-        let retained=String::from_utf16_lossy(&self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer);
+        let retained=lossy_utf16(self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer.iter().copied());
         let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
         if retained.is_empty() {
             // Nothing retained to replay: resize the projection in place so its history survives an
@@ -264,6 +279,14 @@ mod tests {
         let runtime=TerminalRuntimeSession::start("printf ready",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'").timeout(Duration::from_secs(5)))?;
         assert_eq!(runtime.wait(Duration::from_secs(10))?.exit_code,Some(0));assert!(runtime.exited()?);
         assert_eq!(runtime.full_output()?,"ready\r\n");assert_eq!(runtime.read_delta()?.text,"ready\r\n");assert!(runtime.read_delta()?.text.is_empty());runtime.dispose()
+    }
+
+    #[test]
+    fn tail_cuts_at_line_start_unless_osc_spans_the_cut() {
+        let mut state=OutputState::default();state.ingest(b"aaaa\nbbbb\ncccc");
+        assert_eq!(state.tail(7),("cccc".to_owned(),false));assert_eq!(state.tail(100),("aaaa\nbbbb\ncccc".to_owned(),true));
+        let mut open=OutputState::default();open.ingest(b"x\n\x1b]0;t\ncccc\x07");
+        assert!(open.tail(6).1);
     }
 
     #[tokio::test]

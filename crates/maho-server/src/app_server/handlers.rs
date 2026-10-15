@@ -49,12 +49,12 @@ impl Drop for ThreadLifecycleController {
     fn drop(&mut self) {self.dispose();}
 }
 
-pub async fn register_storage_lifecycle_handlers(core: &Arc<RwLock<ServerCore>>,threads: Arc<ThreadRegistry>,archive: Arc<ThreadArchiveState>,inventory: Arc<tokio::sync::Mutex<super::mcp_wire_status::McpWireStatusRegistry>>,version: String) {
+pub async fn register_storage_lifecycle_handlers(core: &Arc<RwLock<ServerCore>>,threads: Arc<ThreadRegistry>,archive: Arc<ThreadArchiveState>,inventory: Arc<tokio::sync::Mutex<super::mcp_wire_status::McpWireStatusRegistry>>,log: Arc<tokio::sync::Mutex<super::turn_log::TurnLog>>,version: String) {
     let weak = Arc::downgrade(core);
     for method in ["thread/archive","thread/unarchive","thread/delete"] {
-        let threads = threads.clone();let archive = archive.clone();let version = version.clone();let weak = weak.clone();let inventory = inventory.clone();
+        let threads = threads.clone();let archive = archive.clone();let version = version.clone();let weak = weak.clone();let inventory = inventory.clone();let log = log.clone();
         core.write().await.registry.register(method.into(),MethodRegistration {requires_init:true,experimental:false,scope:MethodScope::Thread,handler:Arc::new(move |context| {
-            let threads = threads.clone();let archive = archive.clone();let version = version.clone();let weak = weak.clone();let inventory = inventory.clone();
+            let threads = threads.clone();let archive = archive.clone();let version = version.clone();let weak = weak.clone();let inventory = inventory.clone();let log = log.clone();
             Box::pin(async move {
                 let id = required_string(&context.request["params"]["threadId"],"threadId")?.to_owned();
                 let error = |error: super::archive_state::ArchiveStateError|JsonRpcError::new(-32603,error.to_string());
@@ -71,6 +71,8 @@ pub async fn register_storage_lifecycle_handlers(core: &Arc<RwLock<ServerCore>>,
                     "thread/delete"=>{
                         archive.clear_archived(&id).await.map_err(error)?;
                         threads.delete_thread(&id).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+                        // A deleted thread's history is unreachable, so its turn log is dropped too.
+                        log.lock().await.remove_thread(&id);
                         inventory.lock().await.remove_thread(&id);
                         if let Some(core) = weak.upgrade() {core.read().await.broadcast_notification(json!({"method":"thread/status/changed","params":{"threadId":id,"status":{"type":"notLoaded"}}}),chrono::Utc::now().timestamp_millis() as u64).await?;}
                         json!({})

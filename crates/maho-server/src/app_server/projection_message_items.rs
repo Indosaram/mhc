@@ -24,10 +24,11 @@ impl MessageItemProjector {
     fn item(&mut self, index: usize, reasoning: bool, replace: bool) -> &mut ActiveTextItem {
         let items = if reasoning { &mut self.reasoning_items } else { &mut self.text_items };
         let position = items.iter().position(|(key, _)| *key == index);
-        let item = ActiveTextItem { id: (self.notifier.item_id)(index), text: String::new(), completed: false };
+        let item_id = &self.notifier.item_id;
+        let new_item = || ActiveTextItem { id: item_id(index), text: String::new(), completed: false };
         let position = match position {
-            Some(position) => { if replace { items[position].1 = item; } position },
-            None => { items.push((index, item)); items.len() - 1 },
+            Some(position) => { if replace { items[position].1 = new_item(); } position },
+            None => { items.push((index, new_item())); items.len() - 1 },
         };
         &mut items[position].1
     }

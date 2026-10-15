@@ -408,9 +408,10 @@ impl StdinBuffer {
         self.buffer.push_str(&s);
 
         if self.paste_mode {
+            let previous_len = self.paste_buffer.len();
             self.paste_buffer.push_str(&self.buffer);
             self.buffer.clear();
-            self.finish_paste_if_complete(events);
+            self.finish_paste_if_complete(previous_len, events);
             return;
         }
 
@@ -426,7 +427,7 @@ impl StdinBuffer {
                 self.buffer[start_index + BRACKETED_PASTE_START.len()..].to_string();
             self.paste_mode = true;
             self.buffer.clear();
-            self.finish_paste_if_complete(events);
+            self.finish_paste_if_complete(0, events);
             return;
         }
 
@@ -458,8 +459,17 @@ impl StdinBuffer {
         }
     }
 
-    fn finish_paste_if_complete(&mut self, events: &mut Vec<StdinEvent>) {
-        let Some(end_index) = self.paste_buffer.find(BRACKETED_PASTE_END) else {
+    /// `searched_len` bytes of `paste_buffer` were already searched without finding the end
+    /// marker, so only the tail that could still hold a marker start is rescanned.
+    fn finish_paste_if_complete(&mut self, searched_len: usize, events: &mut Vec<StdinEvent>) {
+        let mut search_start = searched_len.saturating_sub(BRACKETED_PASTE_END.len() - 1);
+        while !self.paste_buffer.is_char_boundary(search_start) {
+            search_start -= 1;
+        }
+        let Some(end_index) = self.paste_buffer[search_start..]
+            .find(BRACKETED_PASTE_END)
+            .map(|index| search_start + index)
+        else {
             return;
         };
         let pasted = self.paste_buffer[..end_index].to_string();

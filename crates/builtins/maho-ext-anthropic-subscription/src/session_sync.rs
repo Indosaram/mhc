@@ -2,18 +2,30 @@ use std::collections::BTreeMap;
 use serde_json::{Value, Map, json};
 use sha2::{Digest, Sha256};
 
-fn stable(value: &Value) -> Value {
+/// Writes `value` with object keys sorted, byte-identical to `serde_json::to_vec` of the key-sorted
+/// tree, without cloning the tree first.
+fn write_stable(value: &Value, out: &mut Vec<u8>) {
     match value {
         Value::Object(object) => {
             let sorted: BTreeMap<_, _> = object.iter().collect();
-            Value::Object(sorted.into_iter().map(|(key, value)| (key.clone(), stable(value))).collect())
+            out.push(b'{');
+            for (index, (key, value)) in sorted.into_iter().enumerate() {
+                if index > 0 { out.push(b','); }
+                serde_json::to_writer(&mut *out, key).expect("JSON key"); out.push(b':'); write_stable(value, out);
+            }
+            out.push(b'}');
         },
-        Value::Array(array) => Value::Array(array.iter().map(stable).collect()),
-        _ => value.clone(),
+        Value::Array(array) => {
+            out.push(b'[');
+            for (index, value) in array.iter().enumerate() { if index > 0 { out.push(b','); } write_stable(value, out); }
+            out.push(b']');
+        },
+        _ => serde_json::to_writer(&mut *out, value).expect("JSON value"),
     }
 }
 pub fn session_sync_digest(value: &Value) -> String {
-    format!("{:x}", Sha256::digest(serde_json::to_vec(&stable(value)).expect("JSON value")))
+    let mut bytes = Vec::new(); write_stable(value, &mut bytes);
+    format!("{:x}", Sha256::digest(bytes))
 }
 pub fn is_transmitted_message(message: &Value) -> bool {
     match message["role"].as_str() {
@@ -47,11 +59,12 @@ pub fn build_delta_prompt_blocks(messages: &[Value], custom: &BTreeMap<String, S
     }
     blocks
 }
+static GENERATED_DATE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\nCurrent date: [0-9]{4}-[0-9]{2}-[0-9]{2}\nCurrent working directory: ").expect("date pattern"));
 pub struct ConfigFingerprint { pub system_prompt_hash: String, pub toolset_hash: String }
 pub fn config_fingerprint(options: &Value, context: &Value, auth_lane: &str, account_name: &str) -> ConfigFingerprint {
     let mut prompt = options.get("systemPrompt").cloned().unwrap_or(Value::Null);
     if let Some(text) = prompt.as_str() {
-        let generated = regex::Regex::new(r"\nCurrent date: [0-9]{4}-[0-9]{2}-[0-9]{2}\nCurrent working directory: ").expect("date pattern");
+        let generated = &*GENERATED_DATE;
         prompt = json!(generated.replacen(text, 1, "\nCurrent date: <session-date>\nCurrent working directory: ").as_ref());
     }
     let mut tools = Map::new();

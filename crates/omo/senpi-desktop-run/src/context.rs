@@ -151,7 +151,7 @@ impl RunOutput {
     }
 
     pub async fn finish(&self) -> Vec<ComputerDisplay> {
-        self.entries.lock().await.clone()
+        std::mem::take(&mut *self.entries.lock().await)
     }
 }
 

@@ -12,15 +12,16 @@ pub fn relative_time(timestamp:i64,now:i64)->String{
     if months<12{return format!("{months}mo ago");}format!("{}y ago",months/12)
 }
 pub struct HistorySearchOverlay{
-    input:Input,entries:Vec<HistoryEntry>,filtered:Vec<HistoryEntry>,list:SelectList,theme:Theme,
+    input:Input,entries:Rc<Vec<HistoryEntry>>,filtered:Rc<Vec<HistoryEntry>>,list:SelectList,theme:Theme,
     render_request:Rc<dyn Fn()>,done:Rc<dyn Fn(Option<HistoryEntry>)>,focused:bool,
 }
 impl HistorySearchOverlay{
     pub fn new(entries:Vec<HistoryEntry>,theme:Theme,render_request:Rc<dyn Fn()>,done:Rc<dyn Fn(Option<HistoryEntry>)>)->Self{
+        let entries=Rc::new(entries);
         let list=Self::build_list(&entries,&theme,Rc::clone(&done));
-        Self{input:Input::new(InputOptions::default()),filtered:entries.clone(),entries,list,theme,render_request,done,focused:false}
+        Self{input:Input::new(InputOptions::default()),filtered:Rc::clone(&entries),entries,list,theme,render_request,done,focused:false}
     }
-    fn build_list(entries:&[HistoryEntry],theme:&Theme,done:Rc<dyn Fn(Option<HistoryEntry>)>)->SelectList{
+    fn build_list(entries:&Rc<Vec<HistoryEntry>>,theme:&Theme,done:Rc<dyn Fn(Option<HistoryEntry>)>)->SelectList{
         let now=chrono::Utc::now().timestamp_millis();
         let items=entries.iter().take(250).enumerate().map(|(index,entry)|{
             let short:String=entry.session_id.chars().take(8).collect();let cwd=Path::new(&entry.cwd).file_name().unwrap_or_default().to_string_lossy();
@@ -33,7 +34,7 @@ impl HistorySearchOverlay{
             description:Rc::new(move|text|muted.fg(ThemeColor::Muted,text)),scroll_info:Rc::new(move|text|dim.fg(ThemeColor::Dim,text)),
             no_match:Rc::new(move|text|warning.fg(ThemeColor::Warning,&text.replace("commands","prompts"))),render_row:None,
         },SelectListLayoutOptions::default());
-        let selected=entries.to_vec();let on_select=Rc::clone(&done);
+        let selected=Rc::clone(entries);let on_select=Rc::clone(&done);
         list.on_select=Some(Box::new(move|item|on_select(item.value.parse::<usize>().ok().and_then(|index|selected.get(index)).cloned())));
         list.on_cancel=Some(Box::new(move||done(None)));list
     }
@@ -54,7 +55,7 @@ impl Component for HistorySearchOverlay{
     fn handle_input(&mut self,data:&str){
         let keys=get_keybindings();if ["tui.select.up","tui.select.down","tui.select.confirm","tui.select.cancel"].iter().any(|action|keys.matches(data,action)){self.list.handle_input(data);return;}
         let before=self.input.get_value().to_owned();self.input.handle_input(data);
-        if before!=self.input.get_value(){self.filtered=filter_history(&self.entries,self.input.get_value());self.list=Self::build_list(&self.filtered,&self.theme,Rc::clone(&self.done));(self.render_request)();}
+        if before!=self.input.get_value(){self.filtered=Rc::new(filter_history(&self.entries,self.input.get_value()));self.list=Self::build_list(&self.filtered,&self.theme,Rc::clone(&self.done));(self.render_request)();}
     }
     fn has_input_handler(&self)->bool{true}
     fn invalidate(&mut self){self.input.invalidate();self.list.invalidate();}
