@@ -3,9 +3,10 @@ use serde_json::{Value,json};
 #[derive(Clone,Debug,PartialEq)]
 pub struct SearchResultItem { pub title:String,pub url:String,pub snippet:Option<String>,pub source:Option<String>,pub score:Option<f64>,pub published_at:Option<String> }
 #[derive(Clone,Debug,PartialEq)]
-pub struct BuiltSearchRequest { pub url:String,pub method:&'static str,pub headers:BTreeMap<String,String>,pub body:Value }
+pub struct BuiltSearchRequest { pub url:String,pub method:&'static str,pub headers:BTreeMap<String,String>,pub body:Option<Value> }
 pub struct BuildContext<'a> { pub query:&'a str,pub max_results:f64,pub api_key:Option<&'a str>,pub base_url:Option<&'a str>,pub allowed_domains:Option<&'a [String]>,pub blocked_domains:Option<&'a [String]> }
 pub fn content_headers(extra:BTreeMap<String,String>)->BTreeMap<String,String> { let mut headers=BTreeMap::from([("Accept".into(),"application/json".into()),("Content-Type".into(),"application/json".into())]); headers.extend(extra); headers }
+pub fn with_auth_headers(config:Option<&BTreeMap<String,String>>,headers:&mut BTreeMap<String,String>) { if let Some(config)=config { for (name,value) in config { let existing=headers.keys().find(|key|key.eq_ignore_ascii_case(name)).cloned(); if let Some(existing)=existing { headers.remove(&existing); } headers.insert(name.clone(),value.clone()); } } }
 pub fn clamp(value:f64,min:f64,max:f64)->f64 { if value.is_nan() || min.is_nan() || max.is_nan() { f64::NAN } else { value.trunc().min(max).max(min) } }
 pub fn append_domain_filters(query:&str,allowed:Option<&[String]>,blocked:Option<&[String]>)->String { let mut parts=vec![query.to_owned()]; for domain in allowed.unwrap_or_default() { parts.push(format!("site:{domain}")); } for domain in blocked.unwrap_or_default() { parts.push(format!("-site:{domain}")); } parts.join(" ") }
 pub fn unique(values:&[String])->Vec<String> { let mut result=Vec::new(); for value in values { if !result.contains(value) { result.push(value.clone()); } } result }
@@ -40,5 +41,6 @@ mod tests {
     #[test] fn empty_request_allowlist_stays_empty() { assert_eq!(resolve_domain_filters(None,None,Some(&[]),None),(Some(vec![]),None)); }
     #[test] fn preserves_unique_order() { assert_eq!(unique(&["b".into(),"a".into(),"b".into()]),["b","a"]); }
     #[test] fn domain_query_filters() { assert_eq!(append_domain_filters("q",Some(&["a".into()]),Some(&["b".into()])),"q site:a -site:b"); }
+    #[test] fn configured_headers_merge_case_insensitively() { let config=BTreeMap::from([("X-Account".into(),"one".into())]); let mut request=BTreeMap::from([("x-account".into(),"catalog".into()),("Authorization".into(),"Bearer key".into())]); with_auth_headers(Some(&config),&mut request); assert_eq!(request.get("X-Account").map(String::as_str),Some("one")); assert_eq!(request.get("Authorization").map(String::as_str),Some("Bearer key")); assert_eq!(request.len(),2); }
     #[test] fn invalid_results_dropped() { assert!(result(Some(""),Some("url"),None,None,None).is_none()); assert!(result(Some("title"),None,None,None,None).is_none()); }
 }

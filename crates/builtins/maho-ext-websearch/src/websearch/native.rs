@@ -14,15 +14,16 @@ pub async fn config_with_native_routes(mut config:super::types::WebsearchConfig,
     let Some(registry)=registry else{return Ok(config)};
     let mut models=registry.get_available();if let Some(model)=model{models.insert(0,model.clone());}
     let available=models.iter().map(model_info).collect::<Vec<_>>();let active=model.map(model_info);
-    let auth=|info:NativeModelInfo|{let registry=registry.clone();let model=models.iter().find(|model|model_info(model)==info).cloned();async move {match model {Some(model)=>registry.get_api_key_and_headers(&model).await.ok().and_then(|auth|auth.auth.api_key),None=>None}}};
+    let auth=|info:NativeModelInfo|{let registry=registry.clone();let model=models.iter().find(|model|model_info(model)==info).cloned();async move {match model {Some(model)=>registry.get_api_key_and_headers(&model).await.ok().and_then(|auth|auth.auth.api_key.map(|api_key|NativeAuth{api_key,headers:Some(auth.auth.headers),base_url:auth.auth.base_url})),None=>None}}};
     let mut entries=build_native_entries(active.as_ref(),Some(&available),Some(&auth),signal).await?;
     if !entries.is_empty(){entries.extend(config.providers);config.providers=entries;}
     Ok(config)
 }
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct NativeProviderMapping { pub provider:SearchProvider,pub resource:&'static str,pub route_label:Option<String>,pub endpoint_path:Option<&'static str> }
+pub struct NativeAuth { pub api_key:String,pub headers:Option<std::collections::BTreeMap<String,String>>,pub base_url:Option<String> }
 pub async fn build_native_entry<F,Fut>(model:Option<&NativeModelInfo>,auth:Option<&F>,id:Option<&str>,signal:Option<&maho_tools::definition::AbortSignal>)->Result<Option<super::types::SearchProviderEntry>,maho_tools::definition::ToolError>
-where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<String>> {
+where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<NativeAuth>> {
     let (Some(model),Some(auth))=(model,auth) else {return Ok(None)};
     let Some(mapping)=native_mapping(model) else {return Ok(None)};
     let base_url=build_endpoint_url(&model.base_url,mapping.resource,mapping.endpoint_path);
@@ -30,14 +31,16 @@ where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<String>> 
     if let Some(signal)=signal {signal.check()?;}
     let future=auth(model.clone());
     let key=if let Some(signal)=signal {signal.check()?;tokio::select!{biased; ()=signal.cancelled()=>return Err(maho_tools::definition::ToolError::Aborted),key=future=>key}} else {future.await};
-    let Some(key)=key.filter(|key|!key.is_empty()) else {return Ok(None)};
+    let Some(auth)=key.filter(|auth|!auth.api_key.is_empty()) else {return Ok(None)};
+    let base_url=auth.base_url.as_deref().map(|url|build_endpoint_url(url,mapping.resource,mapping.endpoint_path)).unwrap_or(base_url);
+    if !is_allowed_provider_base_url(&base_url) {return Ok(None)}
     let mut config=super::types::SearchProviderConfig::new(mapping.provider);
     config.id=Some(id.map_or_else(||mapping.route_label.map_or_else(||"native".into(),|label|format!("{label}/native")),String::from));
-    config.api_key=Some(key);config.base_url=Some(base_url);config.model=Some(model.id.clone());
+    config.api_key=Some(auth.api_key);config.headers=auth.headers;config.base_url=Some(base_url);config.model=Some(model.id.clone());
     Ok(Some(super::types::SearchProviderEntry{config,priority:Some(-1.),weight:None}))
 }
 pub async fn build_native_entries<F,Fut>(model:Option<&NativeModelInfo>,available:Option<&[NativeModelInfo]>,auth:Option<&F>,signal:Option<&maho_tools::definition::AbortSignal>)->Result<Vec<super::types::SearchProviderEntry>,maho_tools::definition::ToolError>
-where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<String>> {
+where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<NativeAuth>> {
     if let Some(signal)=signal {signal.check()?;}
     if auth.is_none() {return Ok(vec![])}
     let mut entries=Vec::new();let mut seen=std::collections::BTreeSet::new();
@@ -56,6 +59,7 @@ where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<String>> 
     Ok(entries)
 }
 pub fn native_mapping(model:&NativeModelInfo)->Option<NativeProviderMapping> {
+    if model.provider=="github-copilot" && model.id.starts_with("claude-") { return Some(NativeProviderMapping{provider:SearchProvider::Anthropic,resource:"messages",route_label:Some("github-copilot".into()),endpoint_path:Some("/v1/messages")}); }
     let openai=["gpt-4o","gpt-4.1","gpt-5"].iter().any(|prefix|model.id.starts_with(prefix)) && !model.id.contains("codex");
     let mapped=|provider,resource,route_label,endpoint_path|Some(NativeProviderMapping{provider,resource,route_label,endpoint_path});
     if model.provider=="openai" && openai { return mapped(SearchProvider::Openai,"responses",None,None); }
@@ -94,7 +98,7 @@ mod tests {
         ($name:ident,$provider:literal,$id:literal,$base:literal,$expected:expr) => {
             #[tokio::test] async fn $name() {
                 let model=NativeModelInfo{provider:$provider.into(),id:$id.into(),base_url:$base.into(),api:None};
-                let auth=|_:NativeModelInfo|async {Some("fixture-key".into())};
+                let auth=|_:NativeModelInfo|async {Some(NativeAuth{api_key:"fixture-key".into(),headers:None,base_url:None})};
                 let entry=build_native_entry(Some(&model),Some(&auth),Some("native"),None).await.unwrap();
                 let expected:Option<(SearchProvider,&str)>=$expected;
                 match expected {
@@ -133,7 +137,7 @@ mod tests {
     fn aliases(provider:&str,prefix:&str,count:usize)->Vec<NativeModelInfo> {(0..count).map(|index|model(provider,&if index==0 && provider=="anthropic" {prefix.into()} else {format!("{prefix}-{index}")})).collect()}
     #[tokio::test] async fn upstream_fourteen_aliases_yield_two_stable_opaque_routes() {
         let models=aliases("anthropic","claude-opus-4",8).into_iter().chain(aliases("z-ai","glm-4.6",6)).collect::<Vec<_>>();
-        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some("fixture-key".into())}};
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some(NativeAuth{api_key:"fixture-key".into(),headers:None,base_url:None})}};
         let first=build_native_entries(None,Some(&models),Some(&auth),None).await.unwrap();
         let second=build_native_entries(None,Some(&models),Some(&auth),None).await.unwrap();
         assert_eq!(first.len(),2);assert_eq!(first,second);assert_ne!(first[0].config.id,first[1].config.id);
@@ -141,37 +145,37 @@ mod tests {
         assert_eq!(*calls.lock().unwrap(),["claude-opus-4","glm-4.6-0","claude-opus-4","glm-4.6-0"]);
     }
     #[tokio::test] async fn upstream_active_auth_failure_does_not_retry_alias() {
-        let active=model("openai","gpt-5.5");let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {None}};
+        let active=model("openai","gpt-5.5");let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {None::<NativeAuth>}};
         assert!(build_native_entries(Some(&active),Some(&[model("openai","gpt-4.1")]),Some(&auth),None).await.unwrap().is_empty());assert_eq!(*calls.lock().unwrap(),["gpt-5.5"]);
     }
     #[tokio::test] async fn upstream_failed_alias_route_resolves_auth_once() {
-        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {None}};
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {None::<NativeAuth>}};
         assert!(build_native_entries(None,Some(&aliases("anthropic","claude-opus-4",8)),Some(&auth),None).await.unwrap().is_empty());assert_eq!(*calls.lock().unwrap(),["claude-opus-4"]);
     }
     #[tokio::test] async fn upstream_dotted_private_routes_rejected_before_auth() {
         let mut first=model("openai","gpt-5.5");first.base_url="https://localhost./v1".into();let mut second=model("openai","gpt-4.1");second.base_url="https://127.1../v1".into();
-        let auth=|_:NativeModelInfo|async {panic!("private routes cannot resolve auth")};
+        let auth=|_:NativeModelInfo|async -> Option<NativeAuth> { panic!("private routes cannot resolve auth") };
         assert!(build_native_entries(None,Some(&[first,second]),Some(&auth),None).await.unwrap().is_empty());
     }
     #[tokio::test] async fn upstream_dotted_public_aliases_preserve_first_endpoint() {
         let mut first=model("openai","gpt-5.5");first.base_url="https://api.example.test./v1".into();let second=model("openai","gpt-4.1");
-        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some("fixture-key".into())}};
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some(NativeAuth{api_key:"fixture-key".into(),headers:None,base_url:None})}};
         let entries=build_native_entries(None,Some(&[first,second]),Some(&auth),None).await.unwrap();assert_eq!(entries.len(),1);assert_eq!(entries[0].config.base_url.as_deref(),Some("https://api.example.test./v1/responses"));assert_eq!(*calls.lock().unwrap(),["gpt-5.5"]);
     }
     #[tokio::test] async fn upstream_distinct_endpoints_preserve_both_candidates() {
         let mut first=model("openai","gpt-4.1");first.base_url="https://a.example.test/v1".into();let mut second=model("openai","gpt-5.5");second.base_url="https://b.example.test/v1".into();
-        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some("fixture-key".into())}};
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some(NativeAuth{api_key:"fixture-key".into(),headers:None,base_url:None})}};
         let entries=build_native_entries(None,Some(&[first,second]),Some(&auth),None).await.unwrap();assert_eq!(entries.len(),2);assert_ne!(entries[0].config.id,entries[1].config.id);
         assert_eq!(entries.iter().map(|entry|entry.config.base_url.as_deref().unwrap()).collect::<Vec<_>>(),["https://a.example.test/v1/responses","https://b.example.test/v1/responses"]);assert_eq!(*calls.lock().unwrap(),["gpt-4.1","gpt-5.5"]);
     }
     #[tokio::test] async fn upstream_query_preserved_fragments_deduplicated() {
         let mut first=model("openai","gpt-5.5");first.base_url="https://api.example.test/v1?token=fixture#first".into();let mut second=model("openai","gpt-4.1");second.base_url="https://api.example.test/v1?token=fixture#second".into();
-        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some("fixture-key".into())}};
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some(NativeAuth{api_key:"fixture-key".into(),headers:None,base_url:None})}};
         let entries=build_native_entries(None,Some(&[first,second]),Some(&auth),None).await.unwrap();assert_eq!(entries.len(),1);assert_eq!(entries[0].config.base_url.as_deref(),Some("https://api.example.test/v1/responses?token=fixture"));assert!(!entries[0].config.id.as_ref().unwrap().contains("fixture"));assert_eq!(*calls.lock().unwrap(),["gpt-5.5"]);
     }
     #[tokio::test] async fn native_discovery_deduplicates_before_auth_including_failed_active_route() {
         let calls=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let recorded=calls.clone();
-        let auth=move |model:NativeModelInfo| {recorded.lock().unwrap().push(model.id.clone());async move {if model.id=="gpt-5.5" {None} else {Some("fixture-key".into())}}};
+        let auth=move |model:NativeModelInfo| {recorded.lock().unwrap().push(model.id.clone());async move {if model.id=="gpt-5.5" {None} else {Some(NativeAuth{api_key:"fixture-key".into(),headers:None,base_url:None})}}};
         let active=model("openai","gpt-5.5");let aliases=[model("openai","gpt-4.1")];
         assert!(build_native_entries(Some(&active),Some(&aliases),Some(&auth),None).await.unwrap().is_empty());assert_eq!(*calls.lock().unwrap(),["gpt-5.5"]);
         calls.lock().unwrap().clear();
@@ -181,17 +185,23 @@ mod tests {
         assert!(entries.iter().all(|entry|entry.config.id.as_ref().unwrap().starts_with("native-")));assert_ne!(entries[0].config.id,entries[1].config.id);
     }
     #[tokio::test] async fn native_entry_preserves_source_fields_and_rejects_private_before_auth() {
-        let auth=|_:NativeModelInfo|async {Some("fixture-key".into())};
+        let auth=|_:NativeModelInfo|async {Some(NativeAuth{api_key:"fixture-key".into(),headers:None,base_url:None})};
         let entry=build_native_entry(Some(&model("deepseek","deepseek-v4-flash")),Some(&auth),None,None).await.unwrap().unwrap();
         assert_eq!(entry.config.id.as_deref(),Some("deepseek/native"));assert_eq!(entry.config.model.as_deref(),Some("deepseek-v4-flash"));assert_eq!(entry.priority,Some(-1.));
         assert_eq!(entry.config.base_url.as_deref(),Some("https://api.example.test/anthropic/v1/messages"));
         let mut private=model("openai","gpt-5");private.base_url="https://localhost./v1".into();
-        let no_auth=|_:NativeModelInfo|async {panic!("private URL must not resolve auth")};
+        let no_auth=|_:NativeModelInfo|async -> Option<NativeAuth> { panic!("private URL must not resolve auth") };
         assert!(build_native_entry(Some(&private),Some(&no_auth),None,None).await.unwrap().is_none());
+    }
+    #[tokio::test] async fn native_auth_headers_and_credential_host_are_bound_to_route() {
+        let auth=|_:NativeModelInfo|async {Some(NativeAuth{api_key:"fixture-key".into(),headers:Some(std::collections::BTreeMap::from([("X-Account".into(),"enterprise".into())])),base_url:Some("https://account.example.test/v1".into())})};
+        let entry=build_native_entry(Some(&model("openai","gpt-5")),Some(&auth),None,None).await.unwrap().unwrap();
+        assert_eq!(entry.config.base_url.as_deref(),Some("https://account.example.test/v1/responses"));
+        assert_eq!(entry.config.headers.as_ref().unwrap()["X-Account"],"enterprise");
     }
     #[tokio::test] async fn native_auth_cancellation_subscribes_before_resolution() {
         let signal=maho_tools::definition::AbortSignal::default();let trigger=signal.clone();
-        let auth=move |_:NativeModelInfo| {let trigger=trigger.clone();async move {trigger.abort();std::future::pending::<Option<String>>().await}};
+        let auth=move |_:NativeModelInfo| {let trigger=trigger.clone();async move {trigger.abort();std::future::pending::<Option<NativeAuth>>().await}};
         assert!(matches!(tokio::time::timeout(std::time::Duration::from_secs(5),build_native_entry(Some(&model("openai","gpt-5")),Some(&auth),None,Some(&signal))).await.unwrap(),Err(maho_tools::definition::ToolError::Aborted)));
     }
     #[test] fn discovered_ids_use_first_sixteen_sha256_hex_characters() { assert_eq!(discovered_native_entry_id(SearchProvider::Openai,"openai|https://api.example.test/v1/responses"),"native-openai-9c901901d1756287"); }
