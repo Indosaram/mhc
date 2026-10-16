@@ -160,6 +160,15 @@ fn fallback_events_update_model_and_count() {
 }
 
 #[test]
+fn progress_selects_initial_retry_and_resumed_waiting_verbs() {
+    assert_eq!(select_live_activity_verb(None, 0, 0, false, false), "starting");
+    assert_eq!(select_live_activity_verb(None, 0, 1, false, false), "retrying");
+    assert_eq!(select_live_activity_verb(None, 0, 0, false, true), "resumed, waiting for input");
+    assert_eq!(select_live_activity_verb(None, 0, 0, true, false), "running");
+    assert_eq!(select_live_activity_verb(Some("read file"), 0, 0, false, true), "running read file");
+}
+
+#[test]
 fn no_events_yield_base_status() {
     let target = ChildProgressTarget {
         category: Some("deep".to_string()),

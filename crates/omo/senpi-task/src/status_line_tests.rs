@@ -164,6 +164,32 @@ fn agent_type_with_resolved_model_is_qualified_like_category() {
 }
 
 #[test]
+fn simultaneous_agent_and_category_are_both_rendered() {
+    assert_eq!(
+        target(StatusTargetInput {
+            agent_type: Some("oracle"),
+            category: Some("deep-high"),
+            ..StatusTargetInput::default()
+        }),
+        Some("agent:oracle→category:deep-high".to_string())
+    );
+}
+
+#[test]
+fn empty_turn_token_is_omitted_and_failed_turn_is_reported() {
+    let stats = StatusLineStats { failed_turns: 2, ..StatusLineStats::default() };
+    assert_eq!(
+        compose_status_line(&StatusLineInput {
+            identity: "task",
+            stats: Some(&stats),
+            verb: Some("retrying"),
+            ..StatusLineInput::default()
+        }),
+        "task · failed 2 · retrying"
+    );
+}
+
+#[test]
 fn agent_type_with_raw_model_is_qualified() {
     assert_eq!(
         target(StatusTargetInput {

@@ -136,7 +136,42 @@ pub struct ResolvedModelRecord {
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectiveModelSource { Category, Explicit, Agent, Set, Cycle, Restore, Fallback, FallbackRevert }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveModelRecord {
+    pub provider: String,
+    pub model_id: String,
+    pub display: String,
+    pub source: EffectiveModelSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub switched_by_operator: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuspensionReason { DaemonUnavailable, HandoffParked, HostDraining, HostIncompatible, IdleEvicted, OwnHostUnreachable, RevivalDeferred, StoreIndexUnavailable }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AwaitingInputReason { ResumedTurnAborted, ResumedTurnUnfinished }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskAwaitingInput { pub reason: AwaitingInputReason, pub since: String }
 
 impl ResolvedModelRecord {
     pub fn new(source: ResolvedModelSource, provider: &str, model_id: &str) -> Self {
@@ -148,6 +183,7 @@ impl ResolvedModelRecord {
             variant: None,
             reasoning_effort: None,
             reasoning: None,
+            service_tier: None,
         }
     }
 }
@@ -158,7 +194,15 @@ impl ResolvedModelRecord {
 pub struct TaskRunStats {
     pub runtime_ms: u64,
     pub turns: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_turns: Option<u64>,
     pub tool_calls: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -173,7 +217,25 @@ pub struct TaskRunStats {
     pub cache_hit_rate_last: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", serialize_with = "js_number")]
     pub cache_hit_rate_run: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_status: Option<DurationSourceStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_status: Option<TokenCoverageStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_status: Option<CostReportStatus>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurationSourceStatus { Monotonic, Reconstructed, Unavailable }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenCoverageStatus { Complete, Partial, Unavailable }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostReportStatus { Reported, Invalid, Unavailable }
 
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
@@ -346,7 +408,18 @@ pub struct TaskRecordInput {
     pub runner_kind: Option<RunnerKind>,
     /// The daemon identity of a host-session child (TS TaskRecordInput.host_session).
     pub host_session: Option<HostSessionIdentity>,
+    pub team_run_id: Option<String>,
+    pub team_name: Option<String>,
+    pub team_member_name: Option<String>,
+    pub team_role: Option<String>,
+    pub task_seq: Option<u64>,
+    pub config_generation: Option<u64>,
+    pub background_mode: Option<BackgroundMode>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundMode { Foreground, Background, Promoted }
 
 /// The durable task record; field order mirrors what the TypeScript store writes.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -365,6 +438,32 @@ pub struct TaskRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     pub notification: TaskNotification,
+    #[serde(default)]
+    pub run_start_epoch: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_member_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_generation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_mode: Option<BackgroundMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_model: Option<EffectiveModelRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suspension_reason: Option<SuspensionReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub awaiting_input: Option<TaskAwaitingInput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -417,6 +516,17 @@ pub struct TaskRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_session: Option<HostSessionIdentity>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuspensionReason { DaemonUnavailable, HandoffParked, HostDraining, HostIncompatible, IdleEvicted, OwnHostUnreachable, RevivalDeferred, StoreIndexUnavailable }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AwaitingInputReason { ResumedTurnAborted, ResumedTurnUnfinished }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskAwaitingInput { pub reason: AwaitingInputReason, pub since: String }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskTransition {
@@ -530,6 +640,10 @@ pub struct HostSessionIdentity {
     pub instance_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daemon_pid: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adopted_entry_id: Option<String>,
 }
 
 /// The runner kind of a task: a child process, or a session of the shared daemon.
