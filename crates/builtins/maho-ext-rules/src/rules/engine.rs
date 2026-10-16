@@ -50,7 +50,7 @@ impl Engine {
         self.state.cwd = Some(cwd.to_string_lossy().into_owned());
         let mut result = LoadResult { rules: Vec::new(), diagnostics: Vec::new() };
         if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Dynamic) { return self.store(result); }
-        let root = super::project_root::widen_to_repository_root(self.deps.find_project_root(cwd), &self.home_dir);
+        let root = self.deps.find_project_root(cwd);
         let disabled = self.disabled_sources();
         let candidates = self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: None, home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut RuleDiscoveryCache::default());
         let mut selected_root_single = false;
@@ -115,12 +115,12 @@ impl Engine {
         if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Static) { return Vec::new(); }
         let disabled = self.disabled_sources();
         let mut discovery = RuleDiscoveryCache::default();
-        let cwd_root = super::project_root::widen_to_repository_root(self.deps.find_project_root(cwd), &self.home_dir);
+        let cwd_root = self.deps.find_project_root(cwd);
         let mut seen = BTreeSet::new();
         let mut result = Vec::new();
         for target in targets {
             if !seen.insert(target) { continue; }
-            let root = if cwd_root.as_deref().is_some_and(|root| target.starts_with(root)) { cwd_root.clone() } else { super::project_root::widen_to_repository_root(self.deps.find_project_root(target), &self.home_dir) };
+            let root = super::project_root::widen_to_repository_root(if cwd_root.as_deref().is_some_and(|root| target.starts_with(root)) { cwd_root.clone() } else { self.deps.find_project_root(target) }, &self.home_dir);
             let candidates = self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery);
             let candidate_fingerprints = sort_candidates(&candidates).into_iter().map(|candidate| {
                 let stat = self.deps.file_fingerprint(Path::new(&candidate.path));
