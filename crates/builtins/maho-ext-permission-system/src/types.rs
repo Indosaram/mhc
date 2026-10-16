@@ -13,7 +13,7 @@ pub enum PermissionValue { Action(Action), Patterns(Map<String, Value>) }
 pub type PermissionConfig = Vec<(String, PermissionValue)>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum PermissionPresetName { FullAccess, Workspace, ReadOnly, Ask }
+pub enum PermissionPresetName { FullAccess, Workspace, AcceptEdits, Auto, ReadOnly, Ask }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Reply { Once, Always, Reject }
