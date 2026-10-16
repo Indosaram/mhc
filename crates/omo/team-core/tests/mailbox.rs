@@ -14,6 +14,7 @@ use team_core::error::TeamCoreError;
 use team_core::team_mailbox::{
     InboxConsumerLeaseOptions, SendContext, ack_messages, commit_delivery_reservation,
     is_message_consumed, list_unread_messages, poll_and_build_injection,
+    read_unread_message_by_id,
     reserve_message_for_delivery, send_message, with_inbox_consumer_lease,
 };
 use team_core::team_registry::{get_inbox_dir, resolve_base_dir};
@@ -277,6 +278,29 @@ fn list_unread_messages_returns_fifo_skipping_malformed_processed_and_dot_files(
         unread.iter().map(|m| m.body.as_str()).collect::<Vec<_>>(),
         vec!["earlier", "later"]
     );
+}
+
+#[test]
+fn read_unread_message_by_id_finds_reserved_message_and_propagates_read_errors() {
+    let (_dir, config) = config("team-mailbox-exact-read-");
+    let team_run_id = uuid();
+    let msg = message("m2", "m1", "reserved but unread", 100);
+    send_message(&msg, &team_run_id, &config, &lead_ctx(&["m1"])).expect("send");
+    let reservation = reserve_message_for_delivery(&team_run_id, "m1", &msg.message_id, &config)
+        .expect("reserve")
+        .expect("reservation exists");
+    assert_eq!(
+        read_unread_message_by_id(&team_run_id, "m1", &msg.message_id, &config)
+            .expect("read reserved message"),
+        Some(msg.clone())
+    );
+
+    let unread_path = inbox(&config, &team_run_id, "m1").join("broken.json");
+    fs::create_dir(&unread_path).expect("make unread path a directory");
+    let error = read_unread_message_by_id(&team_run_id, "m1", "broken", &config)
+        .expect_err("exact path read error must propagate");
+    assert!(error.to_string().contains("directory"));
+    assert!(reservation.reserved_path.exists());
 }
 
 // --- poll.test.ts ----------------------------------------------------------------------------
