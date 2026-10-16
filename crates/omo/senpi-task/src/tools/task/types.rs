@@ -25,6 +25,7 @@ pub struct ResolvedSpawnItem {
     pub merge: Option<IsolationMergeMode>,
     pub load_skills: Vec<String>,
     pub tools: Option<Vec<String>>,
+    pub run_in_background: Option<bool>,
     pub target: SpawnTarget,
 }
 

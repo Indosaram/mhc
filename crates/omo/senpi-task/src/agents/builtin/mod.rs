@@ -86,6 +86,19 @@ pub fn curated_readonly_agent_names() -> BTreeSet<&'static str> {
         .collect()
 }
 
+pub fn ulw_reviewer_agent_names() -> BTreeSet<&'static str> {
+    ["omo-native-code-reviewer", "omo-native-gate-reviewer", "omo-native-qa-executor"].into_iter().collect()
+}
+
+pub fn canonical_agent_name(name: &str) -> String {
+    match name.trim() {
+        "omo-senpi-code-reviewer" => "omo-native-code-reviewer".to_string(),
+        "omo-senpi-gate-reviewer" => "omo-native-gate-reviewer".to_string(),
+        "omo-senpi-qa-executor" => "omo-native-qa-executor".to_string(),
+        name => name.to_string(),
+    }
+}
+
 fn entry(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFallbackEntry {
     crate::delegate_adapter::fallback_entry(providers, model, variant)
 }
