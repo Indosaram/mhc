@@ -21,8 +21,7 @@ mod tests {
         let result = ReflectionFinalizeResult {
             status: ReflectionOutcome::Failed,
             detail: Some("secret_like_content: detected credential".into()),
-            cleanup: Default::default(),
-            sha: None,
+            cleanup: memory_core::reflection::worktree::ReflectionCleanupReceipt { worktree_removed: true, branch_removed: true },
         };
         assert_eq!(failure_reason(&result), Some("secret_like_content"));
     }
