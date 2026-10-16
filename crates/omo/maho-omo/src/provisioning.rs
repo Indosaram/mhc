@@ -10,12 +10,33 @@ use std::sync::Arc;
 
 pub const TOOLKIT_BIN_ENV: &str = "OMO_AGENT_TOOLKIT_BIN";
 pub const DAG_SDK_ROOT_ENV: &str = "OMO_DAG_SDK_ROOT";
+pub const TOOLKIT_SURFACE_MARKER: &str = "{\"surface\":\"omo-senpi\"}\n";
+
+const TOOLKIT_ARTIFACTS: &[&str] = &[
+    "cli.js",
+    "directive.md",
+    "ulw-loop/cli.js",
+    "ulw-loop/surface.json",
+    "omo-agent-toolkit",
+    "omo-agent-toolkit.cmd",
+];
 
 pub type EnvReader = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 pub type EnvWriter = Arc<dyn Fn(&str, Option<&str>) + Send + Sync>;
 
 pub fn path_delimiter() -> char {
     if cfg!(windows) { ';' } else { ':' }
+}
+
+pub fn validate_staged_toolkit(base_dir: &Path) -> bool {
+    if !base_dir.is_dir() {
+        return false;
+    }
+    if !TOOLKIT_ARTIFACTS.iter().all(|artifact| base_dir.join(artifact).is_file()) {
+        return false;
+    }
+    std::fs::read_to_string(base_dir.join("ulw-loop/surface.json"))
+        .is_ok_and(|marker| marker == TOOLKIT_SURFACE_MARKER)
 }
 
 pub fn toolkit_base_dir_default() -> PathBuf {
@@ -61,7 +82,7 @@ impl ProvisioningOptions {
 pub fn provision_toolkit_path(options: &ProvisioningOptions) -> Vec<(String, Option<String>)> {
     let base_dir = options.toolkit_base_dir.clone().unwrap_or_else(toolkit_base_dir_default);
     let mut updates = Vec::new();
-    if base_dir.as_os_str().is_empty() || !base_dir.is_dir() {
+    if base_dir.as_os_str().is_empty() || !validate_staged_toolkit(&base_dir) {
         return updates;
     }
     let base = base_dir.to_string_lossy().into_owned();
