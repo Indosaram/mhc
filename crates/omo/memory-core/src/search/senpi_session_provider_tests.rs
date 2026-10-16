@@ -9,6 +9,18 @@ use tempfile::tempdir;
 use super::*;
 use crate::search::engine::{SearchOptions, search_transcripts};
 
+#[test]
+fn memory_owned_custom_messages_are_excluded_but_other_custom_channels_remain_searchable() {
+    let hidden = json!({"type":"message","id":"hidden","message":{"role":"custom","customType":"omo-memory:notice","content":"secret memory note"}});
+    let foreign = json!({"type":"message","id":"foreign","message":{"role":"custom","customType":"extension:custom","content":"visible extension note"}});
+    let mut docs: Vec<SearchDocument> = Vec::new();
+    for value in [hidden, foreign] {
+        if let Some(document) = to_document(value.as_object().expect("object"), "c") { docs.push(document); }
+    }
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, "foreign");
+}
+
 fn header_line(id: &str, cwd: &str) -> String {
     json!({
         "type": "session",

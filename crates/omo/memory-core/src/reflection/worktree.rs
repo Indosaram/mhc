@@ -269,7 +269,6 @@ where
 
     let cleanup = cleanup_reflection_worktree(worktree);
     if !cleanup.worktree_removed || !cleanup.branch_removed {
-        status = ReflectionOutcome::Failed;
         detail = Some(match detail {
             Some(d) => format!("{d}; Reflection cleanup did not fully complete"),
             None => "Reflection cleanup did not fully complete".to_string(),

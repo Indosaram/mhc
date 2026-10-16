@@ -44,6 +44,10 @@ pub struct ReflectionTranscriptState {
     pub last_reflection_succeeded_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_compaction: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consecutive_failures: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_eligible_at: Option<String>,
 }
 
 fn reflected_cursor_index(entries: &[TranscriptEntry], message_id: &str) -> Option<usize> {
@@ -136,22 +140,18 @@ pub(crate) fn derive_state_with_total(
         last_reflection_started_at: state.last_reflection_started_at.clone(),
         last_reflection_succeeded_at: state.last_reflection_succeeded_at.clone(),
         pending_compaction: state.pending_compaction,
+        consecutive_failures: state.consecutive_failures,
+        next_eligible_at: state.next_eligible_at.clone(),
     }
 }
 
 /// Capture a slice of unreflected entries bounded by canonical messages.
-pub fn capture_cursor_snapshot(
+pub fn capture_cursor_snapshot_with_max_bytes(
     entries: &[TranscriptEntry],
     state: &ReflectionTranscriptState,
+    max_bytes: Option<u64>,
 ) -> Option<ReflectionSnapshot> {
-    capture_cursor_snapshot_limit(entries, state, REFLECTION_SNAPSHOT_MAX_BYTES)
-}
-
-fn capture_cursor_snapshot_limit(
-    entries: &[TranscriptEntry],
-    state: &ReflectionTranscriptState,
-    max_bytes: usize,
-) -> Option<ReflectionSnapshot> {
+    let max_bytes = max_bytes.map_or(REFLECTION_SNAPSHOT_MAX_BYTES, |value| value.min(usize::MAX as u64) as usize);
     let anchor_index = state
         .reflected_through_message_id
         .as_deref()
@@ -206,7 +206,6 @@ fn capture_cursor_snapshot_limit(
         return None;
     }
 
-    let slice_start = search_start;
     Some(ReflectionSnapshot {
         start_message_id: start.source_message_id().to_string(),
         end_message_id,
@@ -215,14 +214,6 @@ fn capture_cursor_snapshot_limit(
         entries: entries[slice_start..end_line].to_vec(),
         backlog_remaining: (entries.len() > end_line).then_some(entries.len() - end_line),
     })
-}
-
-pub fn capture_cursor_snapshot_with_max_bytes(
-    entries: &[TranscriptEntry],
-    state: &ReflectionTranscriptState,
-    max_bytes: usize,
-) -> Option<ReflectionSnapshot> {
-    capture_cursor_snapshot_limit(entries, state, max_bytes)
 }
 
 /// Finalize a reflection run, updating the cursor on success.
@@ -244,6 +235,8 @@ pub fn finalize_cursor(
     updated.reflected_through_byte_offset =
         Some(reflected_through_byte_offset(entries, &snapshot.end_message_id));
     updated.unreflected_bytes = Some(serialized_bytes(&entries[end_line..]));
+    updated.consecutive_failures = Some(0);
+    updated.next_eligible_at = None;
     updated.reflected_completed_steps = count_completed_steps(snapshot_entries);
     updated.last_reflection_succeeded_at = Some(succeeded_at.to_string());
     derive_state_with_entries(&updated, entries)
@@ -262,6 +255,8 @@ pub fn initial_reflection_state() -> ReflectionTranscriptState {
         last_reflection_started_at: None,
         last_reflection_succeeded_at: None,
         pending_compaction: None,
+        consecutive_failures: None,
+        next_eligible_at: None,
     }
 }
 
@@ -310,9 +305,6 @@ pub fn parse_state(raw: &str) -> Result<ReflectionTranscriptState, JournalError>
         .map(String::from);
 
     let pending_compaction = obj.get("pending_compaction").and_then(|v| v.as_bool());
-    let reflected_through_byte_offset = obj.get("reflected_through_byte_offset").and_then(|v| v.as_u64()).map(|v| v as usize);
-    let unreflected_bytes = obj.get("unreflected_bytes").and_then(|v| v.as_u64()).map(|v| v as usize);
-
     Ok(ReflectionTranscriptState {
         schema_version: REFLECTION_STATE_SCHEMA_VERSION.to_string(),
         reflected_through_message_id,
@@ -324,6 +316,8 @@ pub fn parse_state(raw: &str) -> Result<ReflectionTranscriptState, JournalError>
         last_reflection_started_at,
         last_reflection_succeeded_at,
         pending_compaction,
+        consecutive_failures: obj.get("consecutive_failures").and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()),
+        next_eligible_at: obj.get("next_eligible_at").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
     })
 }
 

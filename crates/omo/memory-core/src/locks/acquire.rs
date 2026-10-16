@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::lock_record::{LockRecord, parse_lock_record};
 use super::candidate_sweep::{CandidateSweepOptions, sweep_stale_lock_candidates};
-use super::process_identity::{ProcessLiveness, get_pid_liveness, get_process_start_identity};
+use super::process_identity::{ProcessLiveness, get_pid_liveness, get_process_start_identity, start_identities_conflict};
 
 /// Error raised when an exclusive lock is currently held by another owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,7 +200,7 @@ fn is_proven_dead(owner: &LockRecord) -> bool {
     }
     let actual_start = get_process_start_identity(owner.pid);
     match actual_start {
-        Some(actual) if owner.process_start != "unavailable" => actual != owner.process_start,
+        Some(actual) if owner.process_start != "unavailable" => start_identities_conflict(&owner.process_start, &actual),
         _ => false,
     }
 }

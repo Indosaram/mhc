@@ -21,14 +21,17 @@ impl MemorySeedRepo for MockGitMemoryRepo {
 }
 
 #[test]
-fn test_build_default_seed_files_when_called_then_produces_three_files_with_expected_paths_and_frontmatter()
+fn test_build_default_seed_files_when_called_then_produces_six_files_with_expected_paths_and_frontmatter()
  {
     let files = build_default_seed_files();
-    assert_eq!(files.len(), 3);
+    assert_eq!(files.len(), 6);
 
     let paths: Vec<String> = files.iter().map(|f| f.relative_path.clone()).collect();
     assert!(paths.contains(&"system/persona.md".to_string()));
     assert!(paths.contains(&"system/human.md".to_string()));
+    assert!(paths.contains(&"system/boundaries.md".to_string()));
+    assert!(paths.contains(&"system/self-aware.md".to_string()));
+    assert!(paths.contains(&"reference/self/observations.md".to_string()));
     assert!(paths.contains(&"skills/memory-discipline/SKILL.md".to_string()));
 
     for file in &files {
@@ -69,7 +72,7 @@ fn test_init_memory_with_seeds_when_called_on_fresh_repo_then_commits_initial_se
 
     let recorded = repo.recorded_init_options.lock().unwrap().take().unwrap();
     assert_eq!(recorded.author_name, Some("Seed Test Agent".to_string()));
-    assert_eq!(recorded.seed_files.len(), 3);
+    assert_eq!(recorded.seed_files.len(), 6);
 }
 
 #[test]
@@ -85,7 +88,7 @@ fn test_init_memory_with_seeds_when_called_without_author_name_then_uses_none_au
 
     let recorded = repo.recorded_init_options.lock().unwrap().take().unwrap();
     assert_eq!(recorded.author_name, None);
-    assert_eq!(recorded.seed_files.len(), 3);
+    assert_eq!(recorded.seed_files.len(), 6);
 }
 
 #[test]

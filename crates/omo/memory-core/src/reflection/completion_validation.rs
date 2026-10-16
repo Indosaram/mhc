@@ -33,6 +33,17 @@ pub enum CompletionValidation {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DreamTokenBudgetValidation { Valid { total_tokens: usize, target_tokens: usize }, BudgetNotMet { total_tokens: usize, target_tokens: usize, detail: String } }
+
+pub fn validate_dream_token_budget(origin: super::machine::DreamOrigin, total_tokens: usize, target_tokens: usize) -> DreamTokenBudgetValidation {
+    if origin != super::machine::DreamOrigin::Pressure || total_tokens < target_tokens {
+        DreamTokenBudgetValidation::Valid { total_tokens, target_tokens }
+    } else {
+        DreamTokenBudgetValidation::BudgetNotMet { total_tokens, target_tokens, detail: format!("Committed system/ estimate is {total_tokens} tokens; pressure dream target is below {target_tokens} tokens") }
+    }
+}
+
 /// Validates worktree invariants, git administrative snapshots, and branch commits.
 pub fn validate_completion(
     worktree: &ReflectionWorktree,
