@@ -31,6 +31,7 @@ pub use logger::{LogEntry, LogLevel, LogSink, RecordingLogger, SinkLogger, Stder
 pub use provisioning::{
     DAG_SDK_ROOT_ENV, EnvReader, EnvWriter, ProvisioningOptions, TOOLKIT_BIN_ENV, dag_sdk_base_dir_default,
     path_delimiter, provision_dag_sdk_root, provision_toolkit_path, toolkit_base_dir_default,
+    validate_staged_toolkit, TOOLKIT_SURFACE_MARKER,
 };
 pub use runtime::{BATCH_WINDOW, ConfigAccessor, OmoComponentContext, OmoRuntime, OmoRuntimeOptions};
 pub use scheduler::{
