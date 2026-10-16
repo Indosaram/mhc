@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 pub const OPENAI_WEB_SEARCH_SECTION: &str = "\n## Web Search\n\nNative web search is available in this session.\nUse web search when the user asks for current or online information.\nPrefer web search over guessing when freshness matters.\n";
 const SOURCES: &str = "web_search_call.action.sources";
+const SERVER_SEARCH_FALLBACK: &str = "server_search_fallback";
+const SERVER_SEARCH_DISABLED: &str = "server_search_disabled";
 
 pub fn parse_enabled(value: Option<&str>) -> bool {
     !value.is_some_and(|value| matches!(value.trim().to_lowercase().as_str(), "0" | "false" | "no" | "off"))
@@ -42,6 +44,10 @@ fn needs_strip(payload: &Value) -> bool {
 }
 /// `None` when `add_openai_web_search_to_payload` would return the payload unchanged, so callers can skip copying it.
 pub fn add_openai_web_search_to_payload_if_changed(model: Option<&Model>, payload: &Value, enabled: bool) -> Option<Value> {
+    if payload.get(SERVER_SEARCH_FALLBACK).and_then(Value::as_bool) == Some(true)
+        || payload.get(SERVER_SEARCH_DISABLED).and_then(Value::as_bool) == Some(true) {
+        return needs_strip(payload).then(|| strip(payload));
+    }
     if !responses(model) { return needs_strip(payload).then(|| strip(payload)); }
     if !payload.is_object() { return None; }
     let supports = supports_native_openai_web_search(model);
@@ -52,6 +58,10 @@ pub fn add_openai_web_search_to_payload_if_changed(model: Option<&Model>, payloa
     Some(add_openai_web_search_to_payload(model, payload, enabled))
 }
 pub fn add_openai_web_search_to_payload(model: Option<&Model>, payload: &Value, enabled: bool) -> Value {
+    if payload.get(SERVER_SEARCH_FALLBACK).and_then(Value::as_bool) == Some(true)
+        || payload.get(SERVER_SEARCH_DISABLED).and_then(Value::as_bool) == Some(true) {
+        return strip(payload);
+    }
     if !responses(model) { return strip(payload); }
     if !payload.is_object() { return payload.clone(); }
     let supports = supports_native_openai_web_search(model);

@@ -71,6 +71,21 @@ fn proxy_strip() { let m=model("openai-responses","https://quotio.example/v1",No
 fn proxy_optin() { let m=model("openai-responses","https://quotio.example/v1",Some(true)); assert_eq!(add_openai_web_search_to_payload(Some(&m),&json!({}),true)["tools"][0]["type"],"web_search_preview"); }
 
 #[test]
+fn strips_search_when_server_search_fallback_is_marked() {
+ let payload=json!({"server_search_fallback":true,"tools":[{"type":"web_search_preview"},{"name":"web_search"}],"include":["reasoning.encrypted_content","web_search_call.action.sources"],"tool_choice":{"type":"web_search_preview"}});
+ let result=add_openai_web_search_to_payload(Some(&model("openai-responses","https://api.openai.com/v1",None)),&payload,true);
+ assert_eq!(result["tools"],json!([{"name":"web_search"}]));
+ assert_eq!(result["include"],json!(["reasoning.encrypted_content"]));
+ assert!(result.get("tool_choice").is_none());
+}
+
+#[test]
+fn disabled_server_search_does_not_inject_native_search() {
+ let payload=json!({"server_search_disabled":true});
+ assert_eq!(add_openai_web_search_to_payload(Some(&model("openai-responses","https://api.openai.com/v1",None)),&payload,true),payload);
+}
+
+#[test]
 fn unset_true() { assert!(parse_enabled(None)); }
 
 #[test]

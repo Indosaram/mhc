@@ -35,6 +35,7 @@ use maho_cli::cli::args::*;
 #[test] fn parses_session_value() { let value = parse(&["--session", "sample"]); assert_eq!(value.session.as_deref(), Some("sample")); }
 #[test] fn parses_session_id_value() { let value = parse(&["--session-id", "sample"]); assert_eq!(value.session_id.as_deref(), Some("sample")); }
 #[test] fn parses_fork_value() { let value = parse(&["--fork", "sample"]); assert_eq!(value.fork.as_deref(), Some("sample")); }
+#[test] fn parses_rebind_value() { let value = parse(&["--rebind", "sample"]); assert_eq!(value.rebind.as_deref(), Some("sample")); }
 #[test] fn parses_session_dir_value() { let value = parse(&["--session-dir", "sample"]); assert_eq!(value.session_dir.as_deref(), Some("sample")); }
 #[test] fn parses_export_value() { let value = parse(&["--export", "sample"]); assert_eq!(value.export.as_deref(), Some("sample")); }
 #[test] fn parses_use_theme_value() { let value = parse(&["--use-theme", "sample"]); assert_eq!(value.use_theme.as_deref(), Some("sample")); }
