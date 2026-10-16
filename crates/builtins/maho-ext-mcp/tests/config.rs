@@ -13,7 +13,21 @@ fn write(path: &Path, data: Value) {
     fs::write(path, data.to_string()).expect("write fixture config");
 }
 fn load(root: &Path, trusted: bool, env: &BTreeMap<String, String>) -> Result<ResolvedMcpConfig, McpConfigValidationError> {
-    load_mcp_config(LoadMcpConfigOptions { cwd: root, agent_dir: &root.join("agent"), env, project_trusted: trusted })
+    load_mcp_config(LoadMcpConfigOptions { cwd: root, agent_dir: &root.join("agent"), env, project_trusted: trusted, home_dir: Some(root), claude_config_dir: None })
+}
+#[test]
+fn claude_mcp_loader_accepts_injected_home_and_config_directories() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let config = root.path().join("claude-config");
+    write(&root.path().join("agent/mcp.json"), json!({"settings":{"importConfigs":["claude"]}}));
+    write(&home.join(".claude.json"), json!({"mcpServers":{"home":{"command":"home"}}}));
+    write(&config.join(".mcp.json"), json!({"mcpServers":{"config":{"command":"config"}}}));
+    write(&root.path().join(".claude/.mcp.json"), json!({"mcpServers":{"local":{"command":"local"}}}));
+    let result = load_mcp_config(LoadMcpConfigOptions { cwd: root.path(), agent_dir: &root.path().join("agent"), env: &BTreeMap::new(), project_trusted: true, home_dir: Some(&home), claude_config_dir: Some(&config) }).unwrap();
+    assert!(result.servers.contains_key("home"));
+    assert!(result.servers.contains_key("config"));
+    assert!(result.servers.contains_key("local"));
 }
 #[test]
 fn trusted_configs_merge_and_interpolate() {

@@ -174,21 +174,33 @@ fn trusted_config(raw: Option<Value>, env: &BTreeMap<String, String>) -> Result<
 pub fn load_mcp_config(options: LoadMcpConfigOptions<'_>) -> Result<ResolvedMcpConfig, McpConfigValidationError> {
     let global_path = options.agent_dir.join("mcp.json");
     let project_path = options.cwd.join(".omo/mcp.json");
-    let claude_path = options.cwd.join(".mcp.json");
+    let home_dir = options.home_dir.map(Path::to_path_buf).or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from)).unwrap_or_default();
+    let claude_config_dir = options.claude_config_dir.map(Path::to_path_buf).unwrap_or_else(|| home_dir.join(".claude"));
+    let claude_user_path = home_dir.join(".claude.json");
+    let claude_config_path = claude_config_dir.join(".mcp.json");
+    let claude_project_path = options.cwd.join(".mcp.json");
+    let claude_local_path = options.cwd.join(".claude/.mcp.json");
     let mut diagnostics = Vec::new();
     let global = trusted_config(read_config(&global_path, true, &mut diagnostics)?, options.env)?;
     let project_raw = read_config(&project_path, options.project_trusted, &mut diagnostics)?;
     let project = if options.project_trusted { trusted_config(project_raw.clone(), options.env)? } else { None };
     let preliminary = merge_settings(global.as_ref().and_then(|c| c.settings.as_ref()), project.as_ref().and_then(|c| c.settings.as_ref()))?;
     let import = preliminary.import_configs.as_ref().is_some_and(|i| i.iter().any(|v| v == "claude"));
-    let claude_raw = if import { read_config(&claude_path, options.project_trusted, &mut diagnostics)? } else { None };
-    let claude = if import && options.project_trusted { trusted_config(claude_raw.clone(), options.env)? } else { None };
-    let settings = merge_settings(Some(&merge_settings(global.as_ref().and_then(|c| c.settings.as_ref()), claude.as_ref().and_then(|c| c.settings.as_ref()))?), project.as_ref().and_then(|c| c.settings.as_ref()))?;
+    let mut claude_configs = Vec::new();
+    if import {
+        for (path, trusted) in [(&claude_user_path, true), (&claude_config_path, true), (&claude_project_path, options.project_trusted), (&claude_local_path, options.project_trusted)] {
+            let raw = read_config(path, trusted, &mut diagnostics)?;
+            let config = if trusted { trusted_config(raw.clone(), options.env)? } else { None };
+            claude_configs.push((config, raw, path.clone(), trusted));
+        }
+    }
+    let claude_settings = claude_configs.iter().filter_map(|(config, _, _, _)| config.as_ref().and_then(|c| c.settings.as_ref())).try_fold(None, |settings, next| {
+        merge_settings(settings.as_ref(), Some(next)).map(Some)
+    })?;
+    let settings = merge_settings(Some(&merge_settings(global.as_ref().and_then(|c| c.settings.as_ref()), claude_settings.as_ref())?), project.as_ref().and_then(|c| c.settings.as_ref()))?;
     let mut result = ResolvedMcpConfig { settings, servers: BTreeMap::new(), diagnostics };
     for (config, raw, source, path, trusted) in [
         (global, None, McpServerSource::Global, global_path, true),
-        (claude, claude_raw, McpServerSource::Claude, claude_path, options.project_trusted),
-        (project, project_raw, McpServerSource::Project, project_path, options.project_trusted),
     ] {
         if trusted {
             for (name, declaration) in config.and_then(|c| c.mcp_servers).unwrap_or_default() {
@@ -202,6 +214,34 @@ pub fn load_mcp_config(options: LoadMcpConfigOptions<'_>) -> Result<ResolvedMcpC
                 }
                 result.servers.insert(name.clone(), ResolvedMcpServer { name: name.clone(), source, source_path: path.clone(), state: McpServerState::Untrusted, transport: None, config_hash: None, config: None });
             }
+        }
+    }
+    for (config, raw, path, trusted) in claude_configs {
+        if trusted {
+            for (name, declaration) in config.and_then(|c| c.mcp_servers).unwrap_or_default() {
+                let config = normalize_server(declaration);
+                result.servers.insert(name.clone(), resolved_server(name, McpServerSource::Claude, path.clone(), config)?);
+            }
+        } else if let Some(servers) = raw.as_ref().and_then(|r| r.get("mcpServers")).and_then(Value::as_object) {
+            for name in servers.keys() {
+                if let Some(existing) = result.servers.get(name).filter(|s| s.state != McpServerState::Untrusted) {
+                    result.diagnostics.push(format!("Blocked untrusted claude MCP server '{name}' from shadowing trusted {} server.", existing.source)); continue;
+                }
+                result.servers.insert(name.clone(), ResolvedMcpServer { name: name.clone(), source: McpServerSource::Claude, source_path: path.clone(), state: McpServerState::Untrusted, transport: None, config_hash: None, config: None });
+            }
+        }
+    }
+    if options.project_trusted {
+        for (name, declaration) in project.and_then(|c| c.mcp_servers).unwrap_or_default() {
+            let config = normalize_server(declaration);
+            result.servers.insert(name.clone(), resolved_server(name, McpServerSource::Project, project_path.clone(), config)?);
+        }
+    } else if let Some(servers) = project_raw.as_ref().and_then(|r| r.get("mcpServers")).and_then(Value::as_object) {
+        for name in servers.keys() {
+            if let Some(existing) = result.servers.get(name).filter(|s| s.state != McpServerState::Untrusted) {
+                result.diagnostics.push(format!("Blocked untrusted project MCP server '{name}' from shadowing trusted {} server.", existing.source)); continue;
+            }
+            result.servers.insert(name.clone(), ResolvedMcpServer { name: name.clone(), source: McpServerSource::Project, source_path: project_path.clone(), state: McpServerState::Untrusted, transport: None, config_hash: None, config: None });
         }
     }
     Ok(result)
