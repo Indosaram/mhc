@@ -552,6 +552,13 @@ impl ExtensionRunner {
     pub fn has_handlers(&self, kind: EventKind) -> bool {
         self.extensions.iter().any(|e| e.handlers.get(&kind).is_some_and(|handlers| !handlers.is_empty()) || self.runtime.has_live_handlers(&e.identity.path, kind))
     }
+    pub fn preview_unsafe_before_agent_start_paths(&self) -> Vec<String> {
+        self.extensions.iter().filter_map(|extension| {
+            let handlers = extension.handlers.get(&EventKind::BeforeAgentStart)?;
+            let options = extension.handler_options.get(&EventKind::BeforeAgentStart);
+            handlers.iter().enumerate().any(|(index, _)| !options.and_then(|options| options.get(index)).is_some_and(|options| options.preview_safe)).then(|| extension.identity.path.clone())
+        }).collect()
+    }
     fn handlers(&self, kind: EventKind) -> Vec<(String, ExtensionHandler)> {
         let mut out = Vec::new();
         for e in self.extensions.iter() {
@@ -893,6 +900,18 @@ impl ExtensionRunner {
             }
         }
         Ok(None)
+    }
+    pub async fn emit_provider_stream_event(&mut self, provider: String, api: String, model: String, data: JsonValue) -> Result<(), ExtensionFailure> {
+        self.emit(ExtensionEvent::ProviderStreamEvent { provider, api, model, data }).await?;
+        Ok(())
+    }
+    pub async fn emit_session_control_wake(&mut self, source: String, reason: String) -> Result<(), ExtensionFailure> {
+        self.emit(ExtensionEvent::SessionControlWake { source, reason }).await?;
+        Ok(())
+    }
+    pub async fn emit_tool_activated(&mut self, tool_names: Vec<String>) -> Result<(), ExtensionFailure> {
+        self.emit(ExtensionEvent::ToolActivated { tool_names }).await?;
+        Ok(())
     }
     pub async fn emit_resources_discover(&mut self, cwd: std::path::PathBuf, reason: SessionReason) -> Result<DiscoveredResources, ExtensionFailure> {
         self.runtime.assert_active()?;
