@@ -1,7 +1,31 @@
 use maho_core::dynamic_prompt::build::BuildDynamicSystemPromptOptions;
 use maho_ext_prompt_preset::{presets::{ModelMetadata, resolve_preset}, settings::PromptPresetName};
 fn options() -> BuildDynamicSystemPromptOptions<'static> {
-    BuildDynamicSystemPromptOptions { cwd: "/tmp/project".into(), selected_tools: vec!["eval".into(), "read".into()], tool_snippets: Default::default(), prompt_guidelines: Vec::new(), context_files: Vec::new(), skills: Vec::new(), tuning_section: None, core_prompt: None, workstation_dialect: None }
+    BuildDynamicSystemPromptOptions { cwd: "/tmp/project".into(), selected_tools: vec!["eval".into(), "read".into()], tool_snippets: Default::default(), prompt_guidelines: Vec::new(), context_files: Vec::new(), skills: Vec::new(), tuning_section: None, core_prompt: None, workstation_dialect: None, surface: maho_core::dynamic_prompt::PromptSurface::Terminal }
+}
+#[test]
+fn surface_is_visible_to_core_prompt_overrides() {
+    let core = |context: &maho_core::dynamic_prompt::build::DynamicPromptCoreContext| format!("{:?}", context.surface);
+    let mut options = options();
+    options.core_prompt = Some(&core);
+    options.surface = maho_core::dynamic_prompt::PromptSurface::Chat;
+    let prompt = maho_core::dynamic_prompt::build::build_dynamic_system_prompt(&options);
+    assert!(prompt.starts_with("Chat\n"));
+    assert!(prompt.contains("Current working directory: /tmp/project"));
+}
+#[test]
+fn user_addenda_are_composed_with_app_surface_presets() {
+    let preset = resolve_preset(ModelMetadata { id: "unknown", provider: "fixture", name: None, prompt_preset: None }, PromptPresetName::Gpt55, options()).unwrap();
+    assert!(preset.prompt.contains("## Handoff"));
+    assert!(preset.prompt.contains("Ask: [the user's original request]"));
+}
+#[test]
+fn explicit_prompt_presets_render_chat_without_a_handoff_ledger() {
+    let mut options = options();
+    options.surface = maho_core::dynamic_prompt::PromptSurface::Chat;
+    let preset = resolve_preset(ModelMetadata { id: "unknown", provider: "fixture", name: None, prompt_preset: None }, PromptPresetName::Gpt55, options).unwrap();
+    assert!(preset.prompt.contains("## Replies"));
+    assert!(!preset.prompt.contains("Ask: [the user's original request]"));
 }
 #[test]
 fn all_explicit_presets_dispatch_to_nonempty_prompts() {

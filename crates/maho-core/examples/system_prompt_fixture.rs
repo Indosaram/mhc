@@ -53,6 +53,7 @@ fn main() {
         tuning_section: None,
         core_prompt: None,
         workstation_dialect: None,
+        surface: maho_core::dynamic_prompt::PromptSurface::Terminal,
     });
 
     print!("{prompt}");

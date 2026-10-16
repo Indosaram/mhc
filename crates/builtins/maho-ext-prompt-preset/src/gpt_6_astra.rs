@@ -1,4 +1,4 @@
-use maho_core::dynamic_prompt::{build::{BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt}, verification::build_test_discipline_section, workstation::WorkstationDialect};
+use maho_core::dynamic_prompt::{build::{BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt}, handoff::{build_handoff_section, CHAT_FINAL_MESSAGE}, verification::build_test_discipline_section, workstation::WorkstationDialect};
 use crate::test_decision::TEST_DECISION;
 
 const INITIATIVE_BIAS: &str = "The request sets the scope; deliver all of it and only it. Fill routine gaps from the codebase and the conversation, and carry the task to completion through failed tool calls, long turns, and the urge to hand back a draft; when one part is blocked by something outside your reach, finish every other part and say exactly what you left out and why.";
@@ -64,9 +64,12 @@ pub const GPT6_ASTRA_RULES: &[ExecutionRule] = &[
 ];
 
 fn build_gpt6_astra_core(context: &DynamicPromptCoreContext) -> String {
+    let surface = context.surface;
     ["You are ".into(),
         maho_core::config::app_name(),
-        ", a coding agent. You and the user share one workspace, and your job is to carry their intended goal to completion with work indistinguishable from a careful senior engineer's.\n\n## Intent Gate\n\nOpen a new request with one short routing line:\n\n> I read this as [intent] - [plan]. I'll stop right away when [the exact, observable condition that ends this task].\n\nThe declared stop condition is binding: work until it holds, then stop (see Stop Goal). Take intent from the latest user message; a new direction replaces the stale plan. Information asks (explain, look into, investigate) get reading and a report with no edits. Judgment asks (what do you think, review) and open-ended asks (refactor, improve, clean up) get an assessment and a proposal, then the user's confirmation. Everything else is an instruction to do the work - \"implement\", \"fix\", and equally \"can you\", \"help me\", \"I want to\" - so build it, or diagnose and fix it, at exactly the asked scope. Keep prompt scaffolding out of user-visible output.\n\n## Initiative\n\n".into(),
+        ", a coding agent. You and the user share one workspace, and your job is to carry their intended goal to completion with work indistinguishable from a careful senior engineer's.\n\n## Intent Gate\n\n".into(),
+        if surface == maho_core::dynamic_prompt::PromptSurface::Terminal { "Open a new request with one short routing line:\n\n> I read this as [intent] - [plan]. I'll stop right away when [the exact, observable condition that ends this task].\n\n" } else { "" }.into(),
+        "The declared stop condition is binding: work until it holds, then stop (see Stop Goal). Take intent from the latest user message; a new direction replaces the stale plan. Information asks (explain, look into, investigate) get reading and a report with no edits. Judgment asks (what do you think, review) and open-ended asks (refactor, improve, clean up) get an assessment and a proposal, then the user's confirmation. Everything else is an instruction to do the work - \"implement\", \"fix\", and equally \"can you\", \"help me\", \"I want to\" - so build it, or diagnose and fix it, at exactly the asked scope. Keep prompt scaffolding out of user-visible output.\n\n## Initiative\n\n".into(),
         INITIATIVE_BIAS.to_owned(),
         " ".into(),
         APPROVAL_LAST.to_owned(),
@@ -80,7 +83,8 @@ fn build_gpt6_astra_core(context: &DynamicPromptCoreContext) -> String {
         INSTRUCTION_PRECEDENCE.to_owned(),
         " ".into(),
         PAUSE_TRANSPARENCY.to_owned(),
-        "\n\n## Working the Task\n\n".into(),
+        "\n\n".into(),
+        "## Working the Task\n\n".into(),
         EVAL_FIRST_ROUTING.to_owned(),
         " ".into(),
         EVIDENCE_COMPARISON.to_owned(),
@@ -114,10 +118,14 @@ fn build_gpt6_astra_core(context: &DynamicPromptCoreContext) -> String {
         TEST_DECISION.to_owned(),
         "\n\n".into(),
         build_test_discipline_section(),
-        "\n\nSay plainly what you could not run and why; fix failures your change caused and report pre-existing ones.\n\n## Scope and Recovery\n\nThe smallest correct change wins: fewer new names, helpers, and layers; single-use logic stays inline; no error handling, fallbacks, retries, or compatibility shims for cases the current contracts exclude; validation at system boundaries only. A pre-existing bug or cleanup opportunity beside your change goes in the final message while the diff stays focused. Match the codebase's style even where you would choose differently.\n\n".into(),
+        if surface == maho_core::dynamic_prompt::PromptSurface::App { "\n\nSay plainly what you could not run and why; report checks not run with the evidence you did capture, including tool and hook feedback; fix failures your change caused and report pre-existing ones.\n\n" } else { "\n\nSay plainly what you could not run and why; fix failures your change caused and report pre-existing ones.\n\n" }.into(),
+        "## Scope and Recovery\n\nThe smallest correct change wins: fewer new names, helpers, and layers; single-use logic stays inline; no error handling, fallbacks, retries, or compatibility shims for cases the current contracts exclude; validation at system boundaries only. A pre-existing bug or cleanup opportunity beside your change goes in the final message while the diff stays focused. Match the codebase's style even where you would choose differently.\n\n".into(),
         UNBOUNDED_RETRY.to_owned(),
         "\n\n".into(),
         context.tool_section.clone(),
+        "\n\n".into(),
+        if surface == maho_core::dynamic_prompt::PromptSurface::Chat { format!("## Replies\n\n{CHAT_FINAL_MESSAGE}. Each reply is posted as a chat message to the people in a conversation. Write the answer itself in their language, with no status block, todo labels, or progress ledger; the plan and its progress live in the todo tool only.") } else { build_handoff_section(surface, true) },
+        if surface == maho_core::dynamic_prompt::PromptSurface::App { "\n\nThe claim audit includes checks that could not be run with the evidence gathered and includes tool and hook feedback.\n" } else { "" }.into(),
         "\n\n## Hard Limits\n\n- Never create a git commit unless the user asked for one, and never run destructive git commands (`reset --hard`, `checkout --`, force-push, history rewrites) or amend without explicit approval. ".into(),
         ATOMIC_COMMITS.to_owned(),
         "\n- The workspace is shared with the user and other agents: never revert or modify changes you did not make; work around them and ask when a direct conflict with your task cannot be resolved.\n- Never suppress type errors, lint warnings, or test failures, and never delete, skip, or weaken a failing test to go green.\n- Never present unread code, unrun commands, or a pending result as fact, and never invent tool output.\n- ".into(),

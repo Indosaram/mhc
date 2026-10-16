@@ -8,7 +8,7 @@ use super::policies::build_policies_section;
 use super::style::build_style_section;
 use super::tool_categorization::categorize_tools;
 use super::tool_section::build_tool_section;
-use super::types::AvailableTool;
+use super::types::{AvailableTool, PromptSurface};
 use super::verification::build_verification_section;
 use super::working_task::build_working_task_section;
 use super::workstation::{BuildWorkstationSectionOptions, WorkstationDialect, build_workstation_section};
@@ -19,6 +19,7 @@ use crate::system_prompt::ContextFile;
 pub struct DynamicPromptCoreContext {
     pub tools: Vec<AvailableTool>,
     pub tool_section: String,
+    pub surface: PromptSurface,
 }
 
 /// `BuildDynamicSystemPromptOptions`.
@@ -32,6 +33,7 @@ pub struct BuildDynamicSystemPromptOptions<'a> {
     pub tuning_section: Option<String>,
     pub core_prompt: Option<&'a dyn Fn(&DynamicPromptCoreContext) -> String>,
     pub workstation_dialect: Option<WorkstationDialect>,
+    pub surface: PromptSurface,
 }
 
 fn build_context_files_section(context_files: &[ContextFile]) -> String {
@@ -67,7 +69,7 @@ pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>
     let tool_section = build_tool_section(&tools, &options.tool_snippets, &options.prompt_guidelines);
 
     let mut sections: Vec<String> = match options.core_prompt {
-        Some(core_prompt) => vec![core_prompt(&DynamicPromptCoreContext { tools: tools.clone(), tool_section: tool_section.clone() })],
+        Some(core_prompt) => vec![core_prompt(&DynamicPromptCoreContext { tools: tools.clone(), tool_section: tool_section.clone(), surface: options.surface })],
         None => vec![
             build_identity_section(),
             String::new(),
@@ -135,6 +137,7 @@ mod tests {
             tuning_section: None,
             core_prompt: None,
             workstation_dialect: None,
+            surface: PromptSurface::Terminal,
         }
     }
 
