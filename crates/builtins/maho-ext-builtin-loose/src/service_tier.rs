@@ -1,17 +1,48 @@
 use serde_json::Value;
 use maho_ext_api::ServiceTier;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestedServiceTier { Auto, Flex, Priority, Ultrafast }
 pub const CODEX_RESPONSES_API:&str="openai-codex-responses";
 pub fn supports_service_tier(api:Option<&str>)->bool{matches!(api,Some("openai-responses"|CODEX_RESPONSES_API))}
-pub fn add_service_tier_to_payload(api:Option<&str>,mut payload:Value,tier:Option<ServiceTier>)->Value{
-    if supports_service_tier(api)&&let Some(tier)=tier&&let Some(object)=payload.as_object_mut()&&!object.contains_key("service_tier"){
-        object.insert("service_tier".into(),Value::String(match tier{ServiceTier::Auto=>"auto",ServiceTier::Flex=>"flex",ServiceTier::Priority=>"priority"}.into()));
+pub fn service_tier_for_provider(provider:Option<&str>,tier:Option<RequestedServiceTier>)->Option<RequestedServiceTier>{
+    match tier { Some(RequestedServiceTier::Ultrafast) if matches!(provider,Some("openai"|"chatgpt-subscription"))=>Some(RequestedServiceTier::Ultrafast),Some(RequestedServiceTier::Ultrafast)=>None,other=>other }
+}
+pub fn ultrafast_selection_warning(provider:&str,model_id:&str,tier:Option<RequestedServiceTier>)->Option<String>{
+    if tier!=Some(RequestedServiceTier::Ultrafast){return None;}
+    if !matches!(provider,"openai"|"chatgpt-subscription"){return Some(format!("Ultrafast is only sent to OpenAI and ChatGPT Subscription; {provider}/{model_id} runs at its default tier"));}
+    if !matches!(model_id,"gpt-6-astra"|"gpt-6.1-sol"){return Some(format!("Ultrafast is documented for GPT-6 Astra and GPT-6.1 Sol; {provider}/{model_id} may reject or ignore it"));}
+    None
+}
+pub fn add_service_tier_to_payload(api:Option<&str>,mut payload:Value,tier:Option<RequestedServiceTier>)->Value{
+    if let Some(tier)=tier.filter(|tier|*tier!=RequestedServiceTier::Ultrafast||matches!(api,Some(CODEX_RESPONSES_API)))&&supports_service_tier(api)&&let Some(object)=payload.as_object_mut()&&!object.contains_key("service_tier"){
+        object.insert("service_tier".into(),Value::String(match tier{RequestedServiceTier::Auto=>"auto",RequestedServiceTier::Flex=>"flex",RequestedServiceTier::Priority=>"priority",RequestedServiceTier::Ultrafast=>"ultrafast"}.into()));
     }
     payload
+}
+pub fn add_standard_service_tier_to_payload(api:Option<&str>,payload:Value,tier:Option<ServiceTier>)->Value{
+    add_service_tier_to_payload(api,payload,tier.map(|tier|match tier{ServiceTier::Auto=>RequestedServiceTier::Auto,ServiceTier::Flex=>RequestedServiceTier::Flex,ServiceTier::Priority=>RequestedServiceTier::Priority}))
+}
+
+#[cfg(test)]
+mod ultrafast_tests {
+    use super::*;
+    #[test]
+    fn preserves_ultrafast_and_only_maps_it_for_supported_providers(){
+        assert_eq!(service_tier_for_provider(Some("openai"),Some(RequestedServiceTier::Ultrafast)),Some(RequestedServiceTier::Ultrafast));
+        assert_eq!(service_tier_for_provider(Some("gateway"),Some(RequestedServiceTier::Ultrafast)),None);
+        assert_eq!(add_service_tier_to_payload(Some(CODEX_RESPONSES_API),serde_json::json!({}),Some(RequestedServiceTier::Ultrafast))["service_tier"],"ultrafast");
+        assert!(ultrafast_selection_warning("openai","gpt-6-astra",Some(RequestedServiceTier::Ultrafast)).is_none());
+        assert!(ultrafast_selection_warning("gateway","model",Some(RequestedServiceTier::Ultrafast)).is_some());
+    }
 }
 pub fn effective_service_tier(api:Option<&str>,session_fast_mode:bool,context_tier:Option<ServiceTier>,settings_tier:Option<ServiceTier>,live_memory_tier:Option<ServiceTier>,same_base_key:bool,catalog_explains_priority:bool)->Option<ServiceTier>{
     if api==Some(CODEX_RESPONSES_API){
         if session_fast_mode{Some(ServiceTier::Priority)}else if live_memory_tier==Some(ServiceTier::Auto)&&same_base_key&&context_tier==Some(ServiceTier::Priority)&&catalog_explains_priority{None}else{context_tier}
     }else{context_tier.or(settings_tier)}
+}
+pub fn remove_unsupported_ultrafast_payload(api:Option<&str>,provider:Option<&str>,tier:Option<RequestedServiceTier>,mut payload:Value)->Value{
+    if tier==Some(RequestedServiceTier::Ultrafast)&&service_tier_for_provider(provider,tier).is_none()&&supports_service_tier(api)&&let Some(object)=payload.as_object_mut(){object.remove("service_tier");}
+    payload
 }
 
 use maho_ext_api::*;
@@ -86,7 +117,8 @@ impl Extension for ServiceTierExtension{
                 let model=ctx.model.as_ref();let memory=model.map(|model|memory_model(ctx,host.as_ref(),model));let catalog=model.and_then(|model|host.catalog_tier(model));
                 let state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let api=model.map(|model|model.api.as_str());
-                let tier=effective_service_tier(api,state.fast,ctx.service_tier,state.global,state.memory,memory.as_ref().map(key)==state.key,catalog==Some(ServiceTier::Priority));
+                let effective=effective_service_tier(api,state.fast,ctx.service_tier,state.global,state.memory,memory.as_ref().map(key)==state.key,catalog==Some(ServiceTier::Priority)).map(|tier|match tier{ServiceTier::Auto=>RequestedServiceTier::Auto,ServiceTier::Flex=>RequestedServiceTier::Flex,ServiceTier::Priority=>RequestedServiceTier::Priority});
+                let tier=service_tier_for_provider(model.map(|model|model.provider.as_str()),effective);
                 // Same gate as `add_service_tier_to_payload`: skip copying a payload it would leave untouched.
                 if !(supports_service_tier(api)&&tier.is_some()&&payload.as_object().is_some_and(|object|!object.contains_key("service_tier"))){return Ok(EventResult::None);}
                 return Ok(EventResult::ProviderPayload(add_service_tier_to_payload(api,payload.clone(),tier)));
