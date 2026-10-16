@@ -167,6 +167,48 @@ fn given_an_empty_tasks_array_when_shape_validated_then_returns_an_empty_tasks_e
     assert_eq!(shape_code(&params), BatchShapeErrorCode::EmptyTasks);
 }
 
+#[test]
+fn given_agreeing_item_background_flags_when_resolved_then_hoists_the_shared_value() {
+    let params = SpawnParamsInput {
+        tasks: Some(vec![
+            SpawnItemInput { run_in_background: Some(true), ..item("one") },
+            SpawnItemInput { run_in_background: Some(true), ..item("two") },
+        ]),
+        ..SpawnParamsInput::default()
+    };
+
+    assert_eq!(resolve_run_in_background(&params), Ok(Some(true)));
+}
+
+#[test]
+fn given_conflicting_top_level_and_item_background_flags_when_resolved_then_returns_error() {
+    let params = SpawnParamsInput {
+        run_in_background: Some(true),
+        tasks: Some(vec![SpawnItemInput {
+            run_in_background: Some(false),
+            ..item("one")
+        }]),
+        ..SpawnParamsInput::default()
+    };
+
+    let error = resolve_run_in_background(&params).expect_err("conflicting flags");
+    assert!(error.message.contains("run_in_background is batch-wide"));
+    assert!(error.message.contains("top-level=true, tasks[0]=false"));
+}
+
+#[test]
+fn given_item_background_flags_without_top_level_value_when_resolved_then_hoists_the_value() {
+    let params = SpawnParamsInput {
+        tasks: Some(vec![
+            SpawnItemInput { run_in_background: Some(false), ..item("one") },
+            item("two"),
+        ]),
+        ..SpawnParamsInput::default()
+    };
+
+    assert_eq!(resolve_run_in_background(&params), Ok(Some(false)));
+}
+
 // resolveSpawnItems
 
 #[test]

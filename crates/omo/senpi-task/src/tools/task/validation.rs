@@ -84,6 +84,11 @@ pub enum BatchShapeErrorCode {
     EmptyTasks,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunInBackgroundConflictError {
+    pub message: String,
+}
+
 impl BatchShapeErrorCode {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -146,6 +151,7 @@ const PROMPT_AND_TASKS_MESSAGE: &str =
 const NO_PROMPT_OR_TASKS_MESSAGE: &str = "Provide EITHER prompt OR tasks. One field is required.";
 
 const EMPTY_TASKS_MESSAGE: &str = "tasks must contain at least one item.";
+const RUN_IN_BACKGROUND_CONFLICT_MESSAGE: &str = "run_in_background is batch-wide: every value in one task call must agree. Set it once at the top level (true returns every task id immediately; false waits for every result) and drop the disagreeing item-level values.";
 
 fn present(value: Option<&str>) -> Option<&str> {
     value.filter(|text| !text.trim().is_empty())
@@ -197,6 +203,30 @@ pub fn validate_batch_shape(params: &SpawnParamsInput) -> BatchShape {
         (None, Some(_)) => BatchShape::Batch,
         (Some(_), None) => BatchShape::Single,
     }
+}
+
+pub fn resolve_run_in_background(
+    params: &SpawnParamsInput,
+) -> Result<Option<bool>, RunInBackgroundConflictError> {
+    let mut seen = Vec::new();
+    let mut value = params.run_in_background;
+    if let Some(top_level) = value {
+        seen.push(format!("top-level={top_level}"));
+    }
+    if let Some(tasks) = &params.tasks {
+        for (index, item) in tasks.iter().enumerate() {
+            if let Some(item_value) = item.run_in_background {
+                seen.push(format!("tasks[{index}]={item_value}"));
+                if value.is_some_and(|existing| existing != item_value) {
+                    return Err(RunInBackgroundConflictError {
+                        message: format!("{RUN_IN_BACKGROUND_CONFLICT_MESSAGE} Seen: {}.", seen.join(", ")),
+                    });
+                }
+                value = Some(item_value);
+            }
+        }
+    }
+    Ok(value)
 }
 
 fn single_item(params: &SpawnParamsInput, prompt: &str) -> SpawnItemInput {
