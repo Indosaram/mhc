@@ -8,6 +8,8 @@ fn preset_full(){assert_eq!(DEFAULT_PERMISSION_PRESET,PermissionPresetName::Full
 #[test]
 fn preset_ask(){assert_eq!(rules_for_preset(PermissionPresetName::Ask),vec![rule("*","*",Action::Ask)]);}
 #[test]
+fn preset_auto_and_accept_edits(){assert_eq!(rules_for_preset(PermissionPresetName::Auto),vec![rule("*","*",Action::Ask)]);assert_eq!(rules_for_preset(PermissionPresetName::AcceptEdits),vec![rule("*","*",Action::Ask),rule("read","*",Action::Allow),rule("list","*",Action::Allow),rule("grep","*",Action::Allow),rule("edit","*",Action::Allow),rule("bash","*",Action::Ask),rule("external_directory","*",Action::Ask)]);}
+#[test]
 fn preset_workspace(){assert_eq!(rules_for_preset(PermissionPresetName::Workspace),vec![rule("*","*",Action::Ask),rule("read","*",Action::Allow),rule("list","*",Action::Allow),rule("grep","*",Action::Allow),rule("edit","*",Action::Allow),rule("bash","*",Action::Allow),rule("external_directory","*",Action::Ask)]);}
 #[test]
 fn preset_read_only(){let rules=rules_for_preset(PermissionPresetName::ReadOnly);assert_eq!(rules[4],rule("edit","*",Action::Ask));assert_eq!(rules[5],rule("bash","*",Action::Ask));assert_eq!(rules[6],rule("external_directory","*",Action::Ask));}

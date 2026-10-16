@@ -13,6 +13,8 @@ fn file_tools(){for name in ["edit","write","multiedit","read"]{let r=parse(name
 #[test]
 fn aliases(){assert_eq!(parse("read",json!({"file_path":"src/foo"}))[0].patterns,vec!["src/foo"]);}
 #[test]
+fn read_permission_alias_scopes_external_always_to_parent(){let requests=parse("read_permission",json!({"path":"/etc/config"}));assert_eq!(requests[0].permission,"read");assert_eq!(requests[1].permission,"external_directory");assert_eq!(requests[1].always,vec!["/etc/*"]);}
+#[test]
 fn external_file(){let r=parse("write",json!({"path":"/etc/config"}));assert_eq!(r[1].permission,"external_directory");assert_eq!(r[1].always,vec!["/etc/*"]);}
 #[test]
 fn grep_pattern(){assert_eq!(parse("grep",json!({"pattern":"TODO"}))[0].patterns,vec!["TODO"]);}

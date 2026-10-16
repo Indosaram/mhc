@@ -14,15 +14,9 @@ pub struct ParserRegistry {
 fn request(permission:&str,patterns:Vec<String>,always:Vec<String>)->PermissionRequest {PermissionRequest{permission:permission.into(),patterns,always}}
 fn fallback(permission:&str)->Vec<PermissionRequest>{vec![request(permission,vec!["*".into()],vec!["*".into()])]}
 fn string<'a>(input:&'a Value,keys:&[&str])->Option<&'a str>{keys.iter().find_map(|key|input.get(key).and_then(Value::as_str))}
-fn parent_pattern(path:&str,directory:bool)->String{
-    if path=="~"||path=="$HOME"{return format!("{path}/*");}
-    if path.ends_with('/')||path.ends_with('\\'){return format!("{path}*");}
-    if directory{return format!("{path}/*");}
-    match path.rfind(['/', '\\']){Some(index) if index>0=>format!("{}/*",&path[..index]),_=>path.into()}
-}
 fn external(mut requests:Vec<PermissionRequest>,paths:&[String],location:(&Path,&Path),directory:bool)->Vec<PermissionRequest>{
     let paths:Vec<String>=paths.iter().filter(|path|is_external_path(path,location.0,location.1)).cloned().collect();
-    if !paths.is_empty(){requests.push(request("external_directory",paths.clone(),paths.iter().map(|path|parent_pattern(path,directory)).collect()));}
+    if !paths.is_empty(){requests.push(request("external_directory",paths.clone(),paths.iter().map(|path|external_dir::to_parent_directory_pattern(path,directory)).collect()));}
     requests
 }
 impl ParserRegistry {
@@ -49,7 +43,7 @@ pub fn create_builtin_parser_registry()->ParserRegistry{
             let always=if prefix.is_empty(){vec!["*".into()]}else{vec![prefix.clone(),format!("{prefix} *")]};
             let mut requests=vec![request("bash",vec![if prefix.is_empty(){command.into()}else{prefix}],always)];
             let paths=extract_external_paths(command,cwd,home);
-            if !paths.is_empty(){requests.push(request("external_directory",paths.clone(),paths.iter().map(|path|parent_pattern(path,false)).collect()));}
+            if !paths.is_empty(){requests.push(request("external_directory",paths.clone(),paths.iter().map(|path|external_dir::to_parent_directory_pattern(path,false)).collect()));}
             requests
         }));
     }
@@ -60,7 +54,7 @@ pub fn create_builtin_parser_registry()->ParserRegistry{
         }
         bash(input,cwd,home)
     }));
-    for (name,permission) in [("edit","edit"),("write","edit"),("apply_patch","edit"),("multiedit","edit"),("read","read")]{
+    for (name,permission) in [("edit","edit"),("write","edit"),("apply_patch","edit"),("multiedit","edit"),("read","read"),("read_permission","read")]{
         registry.register(name,Arc::new(move|input,cwd,home|{
             let paths=if let Some(path)=string(input,&["path","file_path"]).filter(|path|!path.is_empty()){
                 vec![path.into()]
@@ -68,7 +62,7 @@ pub fn create_builtin_parser_registry()->ParserRegistry{
                 maho_ext_gpt_apply_patch::text::extract_patched_paths(string(input,&["input","patchText"]).unwrap_or_default())
             }else{Vec::new()};
             if paths.is_empty(){return fallback(permission);}
-            let requests=paths.iter().map(|path|request(permission,vec![path.clone()],vec![path.clone()])).collect();
+            let requests=paths.iter().map(|path|request(permission,vec![path.clone()],vec![if permission=="read" {external_dir::to_parent_directory_pattern(path,false)} else {path.clone()}])).collect();
             external(requests,&paths,(cwd,home),false)
         }));
     }

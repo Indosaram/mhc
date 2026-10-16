@@ -3,6 +3,8 @@ use std::collections::BTreeSet;
 
 pub const EDIT_TOOLS: [&str; 4] = ["edit", "write", "apply_patch", "multiedit"];
 pub const DEFAULT_PERMISSION_PRESET: PermissionPresetName = PermissionPresetName::FullAccess;
+pub const ACCEPT_EDITS_PERMISSION_PRESET_CAPABILITY: &str = "permission_preset_accept_edits";
+pub const AUTO_PERMISSION_PRESET_CAPABILITY: &str = "permission_preset_auto";
 
 pub fn expand(path: &str, home: &str) -> String {
     if path == "~" { return home.into(); }
@@ -27,9 +29,10 @@ pub fn rules_for_preset(preset: PermissionPresetName) -> Ruleset {
     match preset {
         PermissionPresetName::FullAccess => vec![rule("*",Action::Allow)],
         PermissionPresetName::Ask => vec![rule("*",Action::Ask)],
-        PermissionPresetName::Workspace | PermissionPresetName::ReadOnly => vec![
+        PermissionPresetName::Auto => vec![rule("*",Action::Ask)],
+        PermissionPresetName::Workspace | PermissionPresetName::AcceptEdits | PermissionPresetName::ReadOnly => vec![
             rule("*",Action::Ask), rule("read",Action::Allow),rule("list",Action::Allow),rule("grep",Action::Allow),
-            rule("edit",if preset == PermissionPresetName::Workspace { Action::Allow } else { Action::Ask }),
+            rule("edit",if preset != PermissionPresetName::ReadOnly { Action::Allow } else { Action::Ask }),
             rule("bash",if preset == PermissionPresetName::Workspace { Action::Allow } else { Action::Ask }),rule("external_directory",Action::Ask),
         ],
     }

@@ -5,6 +5,14 @@ pub fn expand_home(input:&str,home:&Path)->PathBuf {
     for prefix in ["~/","~\\","$HOME/","$HOME\\"] {if let Some(rest)=input.strip_prefix(prefix){return home.join(rest);}}
     PathBuf::from(input)
 }
+pub fn to_parent_directory_pattern(input:&str,directory:bool)->String {
+    if input=="~"||input=="$HOME" {return format!("{input}/*");}
+    if directory || input.ends_with('/') || input.ends_with('\\') {return format!("{input}*");}
+    match input.rfind(['/', '\\']) {
+        Some(index) if index>0 => format!("{}/*",&input[..index]),
+        _ => input.into(),
+    }
+}
 fn normalize(path:&Path)->PathBuf {
     let mut result=PathBuf::from("/");
     for part in path.to_string_lossy().split('/') {match part {""|"."=>{},".."=>{result.pop();},part=>result.push(part)}}
