@@ -42,7 +42,9 @@ pub fn find_available_recommendation<'a>(recommendations:&'a [Recommendation],av
     }
     None
 }
-pub fn can_auto_switch(_mode:&str,provenance:Option<&str>)->bool{matches!(provenance,Some("provider-default"|"first-available"))}
+pub fn can_auto_switch(mode:&str,provenance:Option<&str>)->bool{
+    mode!="app-server"&&matches!(provenance,Some("provider-default"|"first-available"))
+}
 
 use maho_ext_api::{Extension,ExtensionApi,ExtensionContext,ExtensionEvent,EventKind,EventResult,FlagType,FlagValue,ExtensionMode,ModelSelectSource,NotificationType,ExtensionFailure};
 use std::sync::{Arc,Mutex};
