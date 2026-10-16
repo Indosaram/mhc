@@ -20,6 +20,13 @@ pub fn claim_onboarding(state_dir: &Path) -> bool {
     let Ok(mut file) = private_file(&mut options).open(state_dir.join(ONBOARDING_MARKER)) else { return false; };
     file.write_all(json!({"completedAt":jiff::Timestamp::now().to_string(),"version":1}).to_string().as_bytes()).is_ok()
 }
+pub fn release_onboarding(state_dir: &Path) -> io::Result<()> {
+    match fs::remove_file(state_dir.join(ONBOARDING_MARKER)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
 pub fn is_onboarding_complete(state_dir: &Path) -> bool { state_dir.join(ONBOARDING_MARKER).exists() }
 pub fn get_onboarding_marker_mtime(state_dir: &Path) -> Option<f64> {
     fs::metadata(state_dir.join(ONBOARDING_MARKER)).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs_f64()*1000.0)
