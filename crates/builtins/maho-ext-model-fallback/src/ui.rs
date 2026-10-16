@@ -30,3 +30,20 @@ pub async fn run_fallback_menu(ctx:&ExtensionContext,is_using_oauth:&(dyn Fn(&ma
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rendered_menu_state_includes_chains_policy_and_live_status() {
+        let mut chains = std::collections::BTreeMap::new();
+        chains.insert("vendor/model".to_owned(), vec!["other/fallback".to_owned()]);
+        let settings = RetryFallbackSettings { model_fallback: true, chains, revert_policy: FallbackRevertPolicy::Never };
+        let status = Some(maho_ext_api::RetryFallbackStatus { active: true, current_model: Some("other/fallback".into()), original_selector: Some("vendor/model".into()), pinned: true });
+        let rendered = render_fallback_state(&settings, status);
+        assert!(rendered.contains("vendor/model -> other/fallback"));
+        assert!(rendered.contains("Revert policy: never"));
+        assert!(rendered.contains("active on other/fallback from vendor/model (pinned)"));
+    }
+}
