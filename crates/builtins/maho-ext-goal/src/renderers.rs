@@ -49,9 +49,12 @@ pub fn parse_render_details(value:&Value)->Option<GoalToolRenderDetails> {
     let notice=object.get("notice").and_then(Value::as_str).map(str::to_owned);
     if goal.is_null() { return Some(GoalToolRenderDetails { goal:None,notice }); }
     let status:GoalStatus=serde_json::from_value(goal.get("status")?.clone()).ok()?;
+    let stopped=goal.get("continuationStoppedAt").and_then(Value::as_f64);
+    let status=if status==GoalStatus::Active&&stopped.is_some() { GoalStatus::Paused } else { status };
     Some(GoalToolRenderDetails { goal:Some(GoalToolSnapshot {
         thread_id:goal.get("threadId").and_then(Value::as_str).unwrap_or("").into(),
         objective:goal.get("objective")?.as_str()?.into(),status,
+        continuation_stopped_at:stopped,
         tokens_used:goal.get("tokensUsed")?.as_f64()?,time_used_seconds:goal.get("timeUsedSeconds")?.as_f64()?,
         created_at:goal.get("createdAt")?.as_f64()?,updated_at:goal.get("updatedAt")?.as_f64()?,
         blocked_reason:goal.get("blockedReason").and_then(Value::as_str).map(str::to_owned),
@@ -65,7 +68,8 @@ pub fn resolve_render_details(details:Option<&Value>,text:&str)->Option<GoalTool
     parse_render_details(&serde_json::from_str::<Value>(text).ok()?)
 }
 pub fn goal_widget_lines(goal:&GoalToolSnapshot,expanded:bool,fg:impl Fn(&str,&str)->String,bold:impl Fn(&str)->String)->Result<Vec<String>,maho_ext_api::ExtensionFailure> {
-    let status=fg(status_color(goal.status),&bold(&format!("{} {}",status_glyph(goal.status),goal.status)));
+    let label=if goal.continuation_stopped_at.is_some()&&goal.status==GoalStatus::Paused { "paused (stopped)" } else { crate::format::goal_status_label(goal.status) };
+    let status=fg(status_color(goal.status),&bold(&format!("{} {label}",status_glyph(goal.status))));
     let usage=format!(" • {} tokens • {}",crate::format::format_tokens_compact(goal.tokens_used),crate::format::format_goal_elapsed_seconds(goal.time_used_seconds));
     let mut lines=vec![format!("{status}{}",fg("muted",&usage))];
     let objectives=goal.objective.split('\n').map(|line|line.trim_matches(crate::validation::js_whitespace)).filter(|line|!line.is_empty()).collect::<Vec<_>>();
@@ -117,7 +121,7 @@ pub fn render_goal_tool_result(result:&maho_ext_api::ToolResult,expanded:bool,fg
         roles.borrow_mut().clear(); result.details=Some(serde_json::json!({"goal":null,"notice":"hint"})); render_goal_tool_result(&result,false,fg,str::to_owned).unwrap(); assert_eq!(*roles.borrow(),["dim","dim"]);
     }
     #[test] fn widget_composition_limits_collapsed_objectives_and_formats_expanded_dates() {
-        let goal=GoalToolSnapshot { thread_id:"s".into(),objective:"one\n two\n three".into(),status:GoalStatus::Blocked,tokens_used:12.0,time_used_seconds:30.0,created_at:1.2349,updated_at:-0.001,blocked_reason:Some("waiting".into()),blocked_at:Some(1.0) };
+        let goal=GoalToolSnapshot { thread_id:"s".into(),objective:"one\n two\n three".into(),status:GoalStatus::Blocked,continuation_stopped_at:None,tokens_used:12.0,time_used_seconds:30.0,created_at:1.2349,updated_at:-0.001,blocked_reason:Some("waiting".into()),blocked_at:Some(1.0) };
         let styles=std::cell::RefCell::new(Vec::new());
         let collapsed=goal_widget_lines(&goal,false,|style,text| { styles.borrow_mut().push(style.to_owned()); text.into() },str::to_owned).unwrap();
         assert_eq!(collapsed.len(),5); assert_eq!(*styles.borrow(),["error","muted","toolOutput","toolOutput","dim","warning"]);

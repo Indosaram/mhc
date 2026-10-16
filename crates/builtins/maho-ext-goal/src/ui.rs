@@ -5,7 +5,14 @@ pub const OBJECTIVE_PREVIEW_MAX_LENGTH:usize=32;
 pub fn truncate_goal_objective(objective:&str,max_length:usize)->String {
     let normalized=objective.split(js_whitespace).filter(|part|!part.is_empty()).collect::<Vec<_>>().join(" ");
     if normalized.encode_utf16().count()<=max_length { return normalized; }
-    let truncated=String::from_utf16_lossy(&normalized.encode_utf16().take(max_length.saturating_sub(1)).collect::<Vec<_>>()); format!("{}\u{2026}",truncated.trim_end_matches(js_whitespace))
+    let units=normalized.encode_utf16().take(max_length.saturating_sub(1)).collect::<Vec<_>>();
+    let truncated=units.iter().map(|unit|char::from_u32(u32::from(*unit)).unwrap_or('\u{fffd}')).collect::<String>(); format!("{}\u{2026}",truncated.trim_end_matches(js_whitespace))
+}
+#[cfg(test)] mod stopped_marker_tests {
+    use super::*;
+    #[test] fn utf16_preview_exposes_replacement_for_a_split_surrogate() {
+        assert_eq!(truncate_goal_objective(&format!("{}😀x", "a".repeat(30)),32),format!("{}\u{fffd}…","a".repeat(30)));
+    }
 }
 pub fn goal_status_text(goal:&Goal,live_elapsed_seconds:Option<f64>)->String {
     match goal.status {

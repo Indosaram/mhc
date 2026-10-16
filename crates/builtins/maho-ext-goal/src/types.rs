@@ -34,6 +34,8 @@ pub struct Goal {
     pub unattended_continuations: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_continuation_signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_stopped_at: Option<u64>,
     pub created_at: u64,
     pub updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,6 +58,8 @@ pub struct GoalUpdate { pub objective: Option<String>, pub status: Option<GoalSt
 #[serde(rename_all = "camelCase")]
 pub struct GoalToolSnapshot {
     pub thread_id: String, pub objective: String, pub status: GoalStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_stopped_at: Option<f64>,
     pub tokens_used: f64, pub time_used_seconds: f64, pub created_at: f64, pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
@@ -63,5 +67,7 @@ pub struct GoalToolSnapshot {
     pub blocked_at: Option<f64>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct GoalToolResponse { pub goal: Option<GoalToolSnapshot> }
+pub struct GoalToolResponse { pub goal: Option<GoalToolSnapshot>, #[serde(skip_serializing_if = "Option::is_none")] pub continuation: Option<GoalToolContinuation> }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GoalToolContinuation { pub status: String, pub message: String }
 pub fn is_record(value: &serde_json::Value) -> bool { value.is_object() || value.is_array() }
