@@ -1,4 +1,4 @@
-use maho_ext_permission_system::{cli::parse_permission_flag, types::{Action, Rule}};
+use maho_ext_permission_system::{cli::{parse_permission_flag,parse_permission_preset_name}, types::{Action, PermissionPresetName, Rule}};
 
 fn rule(permission: &str, pattern: &str, action: Action) -> Rule {
     Rule { permission: permission.into(), pattern: pattern.into(), action }
@@ -24,5 +24,12 @@ fn complete_flag_values_match_source_matrix() {
         let actual = parse_permission_flag(input);
         // Then every field and the rule order match, not just the count.
         assert_eq!(actual, expected, "{input}");
+    }
+}
+
+#[test]
+fn accepts_all_upstream_preset_names() {
+    for (name,preset) in [("full-access",PermissionPresetName::FullAccess),("workspace",PermissionPresetName::Workspace),("accept-edits",PermissionPresetName::AcceptEdits),("auto",PermissionPresetName::Auto),("read-only",PermissionPresetName::ReadOnly),("ask",PermissionPresetName::Ask)] {
+        assert_eq!(parse_permission_preset_name(name),Some(preset));
     }
 }
