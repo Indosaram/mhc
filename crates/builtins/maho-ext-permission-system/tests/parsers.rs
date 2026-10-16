@@ -70,7 +70,10 @@ fn custom_parser_returns_custom_requests() {
 #[test]
 fn list_default(){for name in ["find","ls"]{let r=parse(name,json!({}));assert_eq!(r[0].permission,"list");assert_eq!(r[0].patterns,vec!["."]);}}
 #[test]
+fn glob_uses_list_permission(){let r=parse("glob",json!({"path":"src"}));assert_eq!(r[0].permission,"list");assert_eq!(r[0].patterns,vec!["src"]);}
+#[test]
 fn fallback(){assert_eq!(parse("unknown",json!({}))[0].patterns,vec!["*"]);}
+#[test]
 #[test]
 fn apply_patch_explicit_file_uses_edit_permission(){
     let requests=parse("apply_patch",json!({"path":"src/file.rs"}));

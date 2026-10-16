@@ -9,6 +9,7 @@ fn later_presets_restore_ask_boundaries_after_full_access() {
         (PermissionPresetName::AcceptEdits, vec![("edit", "src/index.ts", Action::Allow), ("bash", "git status", Action::Ask), ("external_directory", "../outside", Action::Ask)]),
         (PermissionPresetName::Auto, vec![("read", "README.md", Action::Ask), ("bash", "git status", Action::Ask)]),
         (PermissionPresetName::ReadOnly, vec![("read", "README.md", Action::Allow), ("bash", "git status", Action::Ask), ("edit", "src/index.ts", Action::Ask), ("unknown_tool", "*", Action::Ask)]),
+        (PermissionPresetName::Auto, vec![("read", "README.md", Action::Ask), ("bash", "git status", Action::Ask), ("edit", "src/index.ts", Action::Ask)]),
     ] {
         let earlier = rules_for_preset(PermissionPresetName::FullAccess);
         let later = rules_for_preset(preset);

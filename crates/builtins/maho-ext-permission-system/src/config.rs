@@ -35,6 +35,7 @@ pub fn rules_for_preset(preset: PermissionPresetName) -> Ruleset {
             rule("edit",if preset != PermissionPresetName::ReadOnly { Action::Allow } else { Action::Ask }),
             rule("bash",if preset == PermissionPresetName::Workspace { Action::Allow } else { Action::Ask }),rule("external_directory",Action::Ask),
         ],
+        PermissionPresetName::Auto => vec![rule("*", Action::Ask)],
     }
 }
 pub fn merge(rulesets: &[&[Rule]]) -> Ruleset { rulesets.iter().flat_map(|rules| rules.iter().cloned()).collect() }
