@@ -60,4 +60,11 @@ mod tests {
         use maho_tools::definition::ToolContent;
         assert_eq!(visible_result_text(&[ToolContent::text("visible"),ToolContent::Text {text:"hidden".to_owned(),audience:Some("model".to_owned())},ToolContent::text("next")]),"visible\nnext");
     }
+
+    #[test]
+    fn upstream_tool_call_labels_match_terminal_golden_text() {
+        assert_eq!(bash_output_call_label(&serde_json::json!({"bash_id":"bash_12"})),"bash_output bash_12");
+        assert_eq!(monitor_call_label(&serde_json::json!({"action":"rearm","bash_id":"bash_3"})),"monitor rearm bash_3");
+        assert_eq!(monitor_call_label(&serde_json::json!({"command":"printf ready"})),"monitor printf ready");
+    }
 }
