@@ -40,12 +40,13 @@ pub fn register(api: &mut ExtensionApi, options: CodemodeExtensionOptions) -> Re
     let state=Arc::new(Mutex::new(ExtensionState {runtime:None,cells:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),context:None,model_id:None,generation:0,completion_handles:Arc::new(Default::default())}));
     let host=Arc::new(Mutex::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone())));
     let ticker_context=Arc::downgrade(&state);
-    let ticker=Arc::new(Mutex::new(extension::eval_status_ticker::EvalStatusTicker::new(Arc::new(move |status| {
+    let ticker=Arc::new(Mutex::new(extension::eval_status_ticker::EvalStatusTicker::new_with_try_render(Arc::new(move |status| {
         let context=ticker_context.upgrade().and_then(|state|state.lock().expect("extension state").context.clone());
         if let Some(context)=context {
             let status=match status {Some(status) if context.mode==maho_ext_api::ExtensionMode::Tui => {let theme=context.ui.theme();Some(theme.bg("selectedBg",&theme.fg("text",&status)))}, status=>status};
             context.ui.set_status(extension::eval_status::EVAL_CELLS_STATUS_KEY,status.as_deref());
         }
+        Ok(())
     }),Arc::new(||std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64()*1000.0))));
     let notifier=Arc::new(Mutex::new(extension::eval_notifier::EvalNotifier::default()));
     let cells=create_extension_cells(&host,&state,&ticker,&notifier,&Default::default(),None);

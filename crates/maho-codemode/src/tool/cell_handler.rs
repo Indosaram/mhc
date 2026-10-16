@@ -108,7 +108,7 @@ impl CellHandler {
         } else if is_reserved_tool_name(name) {
             let tools=if name==crate::bridge::reserved::RESERVED_OUTPUT_TOOL {Ok(None)} else {runtime.tools.as_ref().map(|list|list()).transpose()};
             match tools {
-                Ok(tools)=>run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:runtime.executor.as_ref(),task_tool_name:&runtime.settings.task_tools.task,task_output_tool_name:&runtime.settings.task_tools.output,tools:tools.as_deref(),execute_options:options,emit_status,agent_bridge:&agent_bridge}).await.map(|value|(value,true,None,None)).map_err(|error| {error_code=error.code();error.to_string()}),
+                Ok(tools)=>run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:runtime.executor.as_ref(),task_tool_name:&runtime.settings.task_tools.task,task_output_tool_name:&runtime.settings.task_tools.output,tools:tools.as_deref(),execute_options:options,emit_status,agent_bridge:&agent_bridge,environments:None}).await.map(|value|(value,true,None,None)).map_err(|error| {error_code=error.code();error.to_string()}),
                 Err(error)=>Err(error),
             }
         } else {
