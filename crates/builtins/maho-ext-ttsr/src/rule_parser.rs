@@ -13,7 +13,16 @@ fn fields(metadata:&str)->Map<String,Value> {
             format!("{key}: {}",if decimal.is_empty() { "0" } else { decimal })
         } else { line.to_owned() }
     }).collect::<Vec<_>>().join("\n");
-    if let Ok(value)=serde_yaml::from_str::<Value>(&normalized) { return value.as_object().cloned().unwrap_or_default(); }
+    if let Ok(value)=serde_yaml::from_str::<Value>(&normalized) {
+        let mut result=value.as_object().cloned().unwrap_or_default();
+        for line in normalized.lines() {
+            let Some((key,raw))=line.split_once(':') else { continue; };
+            if key.is_empty()||!key.chars().all(|value|value.is_ascii_alphanumeric()||matches!(value,'_'|'-')) { continue; }
+            let Ok(Value::Mapping(mapping))=serde_yaml::from_str::<Value>(&format!("{key}: {raw}")) else { continue; };
+            if let Some(value)=mapping.get(Value::String(key.into())) { result.insert(key.into(),value.clone()); }
+        }
+        return result;
+    }
     let mut fields=Map::new();
     for line in normalized.split('\n') { let Some((key,raw))=line.split_once(':') else { continue; }; if key.is_empty() || !key.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'_'|'-')) { continue; } let raw=maho_ai::utils::js::trim(raw); let parsed=serde_yaml::from_str::<Value>(raw).ok().filter(|value|!value.is_object()).unwrap_or_else(||Value::String(raw.into())); fields.insert(key.into(),if raw.is_empty() { Value::String(String::new()) } else { parsed }); }
     fields
