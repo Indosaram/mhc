@@ -6,7 +6,7 @@ impl OutputExecuteTool for Fixture {
     fn execute_tool<'a>(&'a self, _: &'a str, _: Value, _: ExecuteToolOptions) -> ExecuteToolFuture<'a> { Box::pin(async { Ok(AgentToolResult::text("transcript")) }) }
 }
 async fn run(name: &str, args: Value, tools: Option<&[EvalSchemaToolInfo]>) -> Result<Value, ReservedDispatchError> {
-    run_reserved_tool(name,ReservedDispatchContext { call_id:"call",args:&args,executor:&Fixture,task_tool_name:"task",task_output_tool_name:"task_output",tools,execute_options:ExecuteToolOptions::default(),emit_status:None,agent_bridge:&AgentBridge::default() }).await
+    run_reserved_tool(name,ReservedDispatchContext { call_id:"call",args:&args,executor:&Fixture,task_tool_name:"task",task_output_tool_name:"task_output",tools,execute_options:ExecuteToolOptions::default(),emit_status:None,agent_bridge:&AgentBridge::default(),environments:None }).await
 }
 #[tokio::test] async fn routes_all_reserved_tools() {
     assert_eq!(run("__agent__",json!({"prompt":"x"}),None).await.unwrap(),json!({"text":"transcript"}));

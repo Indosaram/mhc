@@ -5,6 +5,7 @@ use maho_ai::utils::abort::{AbortController, AbortReason};
 pub type SessionDisposeFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 pub trait SessionManagerLifecycle: crate::tool::eval_tool_options::EvalKernelManager {
     fn dispose(&self) -> SessionDisposeFuture<'_>;
+    fn set_context(&self, _context: crate::tool::eval_tool_options::EvalInvocationContext) {}
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -26,6 +27,7 @@ struct ProxyState {
     generation: u64,
     started: bool,
     accepting_executions: bool,
+    session_context: Option<crate::tool::eval_tool_options::EvalInvocationContext>,
     next_execution: u64,
     executions: HashMap<u64, TrackedExecution>,
 }
@@ -123,6 +125,7 @@ impl SessionManagerProxy {
             let mut state = self.state.lock().expect("session proxy poisoned");
             if state.generation == generation {
                 state.current = Some(next.clone());
+                if let Some(context) = state.session_context.clone() { next.set_context(context); }
                 state.started = true;
                 state.accepting_executions = true;
                 true
@@ -137,6 +140,15 @@ impl SessionManagerProxy {
         self.settle_executions().await;
         let current = self.state.lock().expect("session proxy poisoned").current.take();
         self.dispose_quietly(current).await;
+    }
+
+    pub fn set_context(&self, context: crate::tool::eval_tool_options::EvalInvocationContext) {
+        let manager = {
+            let mut state = self.state.lock().expect("session proxy poisoned");
+            state.session_context = Some(context.clone());
+            state.current.clone()
+        };
+        if let Some(manager) = manager { manager.set_context(context); }
     }
 }
 

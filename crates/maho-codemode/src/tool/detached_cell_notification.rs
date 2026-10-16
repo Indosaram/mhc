@@ -3,7 +3,7 @@ use maho_ext_api::ContentBlock;
 use super::{detached_cell_contract::{EvalDetachedCellSnapshot, EvalDetachedCellState}, interrupt_note::{interruption_state_note, unknown_interruption_state_note}, types::EvalLanguage};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EvalDetachedCellNotification { pub cell_id: String, pub content: String }
+pub struct EvalDetachedCellNotification { pub cell_id: String, pub content: String, pub images: Vec<crate::tool::image_resize::EvalImageContent> }
 
 pub fn detached_notification_spill_path(artifacts_dir: Option<&Path>, cell_id: &str) -> Option<PathBuf> {
     let safe = cell_id.chars().map(|character| if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') { character } else { '_' }).collect::<String>();
@@ -48,7 +48,11 @@ pub async fn build_detached_cell_notification(snapshot: &EvalDetachedCellSnapsho
         while !text.is_char_boundary(start) { start += 1; }
         format!("{header}\nBuffered output tail:\n{}\n{note}</system-reminder>\n[…notification tail capped…]{spill_notice}", &text[start..])
     } else { body };
-    EvalDetachedCellNotification { cell_id: snapshot.cell_id.clone(), content }
+    let images = snapshot.result.content.iter().filter_map(|part| match part {
+        ContentBlock::Image(image) => Some(crate::tool::image_resize::EvalImageContent { data: image.data.clone(), mime_type: image.mime_type.clone() }),
+        _ => None,
+    }).collect();
+    EvalDetachedCellNotification { cell_id: snapshot.cell_id.clone(), content, images }
 }
 
 fn memory_state_note(memory: Option<&serde_json::Value>) -> String {
