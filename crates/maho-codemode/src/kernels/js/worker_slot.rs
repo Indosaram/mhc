@@ -33,7 +33,7 @@ impl WorkerSlot {
             if let Some(mut failed)=self.worker.take() { let _ = failed.terminate().await; }
             if signal.aborted() {return initialized;}
         }
-        self.worker=Some(super::inline_worker::create_inline_worker(options.cwd,options.parallel_pool_width,&options.environment)?);
+        self.worker=Some(super::inline_worker::create_inline_worker(options.cwd,options.parallel_pool_width)?);
         self.mode=JavaScriptKernelMode::Inline;
         if let Err(error)=self.worker.as_mut().expect("published inline worker").initialize(&options,signal).await {self.retire().await?;return Err(error);}
         Ok(())

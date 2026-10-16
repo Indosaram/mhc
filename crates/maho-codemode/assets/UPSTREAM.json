@@ -1,0 +1,267 @@
+{
+  "upstream": {
+    "repository": "https://github.com/code-yeongyu/senpi",
+    "packagePath": "packages/senpi-codemode/src"
+  },
+  "note": "Provenance of every runtime asset embedded by src/kernels/shared/runtime_asset.rs. status: verbatim = byte-identical to upstreamCommit; patched = upstreamCommit plus the described mhc change; local = mhc-only; unported = exists upstream, intentionally not shipped. Run scripts/codemode-upstream-diff.py <senpi checkout> to see upstream drift; update sha256 here when an asset changes.",
+  "assets": [
+    {
+      "path": "kernels/jl/prelude.jl",
+      "status": "verbatim",
+      "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
+      "sha256": "613e88ddf68f8781738bb9e4af934c52eedb602d4b836c4e78d7ce41b8b51989"
+    },
+    {
+      "path": "kernels/jl/runner.jl",
+      "status": "patched",
+      "upstreamCommit": "0d2271793ce114157563589d2af96d0387f2313a",
+      "change": "completion bridge call sends cellId",
+      "sha256": "14176530f30f7d4c60c76e85eec84560818348a04866828e3b585e1904e23f7d"
+    },
+    {
+      "path": "kernels/js/display-image.js",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "81485d6ff5d0b2ed8dc5935870a431ff0ea6eb9b06d4ab68374e5beb1f93df33"
+    },
+    {
+      "path": "kernels/js/handles.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "in-cell wait()/handle() over the host handle tools",
+      "sha256": "9bbc436534992a4c0b109bed72570c62546f01c63a91f546fdba9c65bcb61376"
+    },
+    {
+      "path": "kernels/js/inline-worker-entry.js",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "3cfbdf41a73b44aaac3685e5080b637c55aabf6e6411d0d1ccdcfbb015fbbf6c"
+    },
+    {
+      "path": "kernels/js/kernel-tools-context.js",
+      "status": "verbatim",
+      "upstreamCommit": "d0392b0814f3c033f58d09dc181321858be27a75",
+      "sha256": "16726443eb63c193af690143076612c94ff20bb820c212da90adcdddb73bd36e"
+    },
+    {
+      "path": "kernels/js/kernel-tools-define.js",
+      "status": "verbatim",
+      "upstreamCommit": "48bdf145c07bb2c294fbd3a406b8769353dd6353",
+      "sha256": "2dbdd82e132d1795ac6d1109b95e2d7b5d3778522f168da77b6a6f1d41cf3134"
+    },
+    {
+      "path": "kernels/js/kernel-tools-errors.js",
+      "status": "verbatim",
+      "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
+      "sha256": "fbaa43535ed188b78ae4a2511f59ea52965a14847aeed2d13dee95ed066969ad"
+    },
+    {
+      "path": "kernels/js/kernel-tools-naming.js",
+      "status": "verbatim",
+      "upstreamCommit": "48bdf145c07bb2c294fbd3a406b8769353dd6353",
+      "sha256": "3612420ff610cc6cfea9cce60ef9b9c2b5c9ab68e9b31295f06a9fef68faa4d2"
+    },
+    {
+      "path": "kernels/js/kernel-tools-parse.js",
+      "status": "verbatim",
+      "upstreamCommit": "d4bf2152425fff45215d79fcb9a07957cb9ed46e",
+      "sha256": "9ace10acf6adb1d61c079b7f5029bb8181ef4b755a26cf42ac80503f09d46a5e"
+    },
+    {
+      "path": "kernels/js/kernel-tools-pump.js",
+      "status": "verbatim",
+      "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
+      "sha256": "91de9cb9d8e28882df08aac045659000285c9914138981befba878d2ea14d731"
+    },
+    {
+      "path": "kernels/js/kernel-tools-registry.js",
+      "status": "verbatim",
+      "upstreamCommit": "0330381c09f7713e670a68ac1348e38d459e2641",
+      "sha256": "9ba10399520bf6c8b05569e35b0511d7bcaa775eaeb724c7fa7fa499f98551d0"
+    },
+    {
+      "path": "kernels/js/kernel-tools-schema.js",
+      "status": "verbatim",
+      "upstreamCommit": "48bdf145c07bb2c294fbd3a406b8769353dd6353",
+      "sha256": "6c4dbc3f06307ac0e50dfc66e7e7b44ea80659ab1af16a86c9f1d203bbd0ae34"
+    },
+    {
+      "path": "kernels/js/kernel-tools-scope.js",
+      "status": "verbatim",
+      "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
+      "sha256": "933867430cfde1116d72011f85565a305d2c866eb5514e2b1904b2007ed4ba19"
+    },
+    {
+      "path": "kernels/js/process-tree.js",
+      "status": "verbatim",
+      "upstreamCommit": "f821f6988a50af4a61093c1675eb2fda0c63682b",
+      "sha256": "654293536b821afa0790c9350319d8ff9e68443f52b3c1655f7d6cd1e99d5c84"
+    },
+    {
+      "path": "kernels/js/worker-core.js",
+      "status": "patched",
+      "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
+      "change": "bridge errors forward error.data",
+      "sha256": "b4466fde1c59c752b675b1a08605b3c72838fd9a00b1aaf12533a644f98ee1d9"
+    },
+    {
+      "path": "kernels/js/worker-entry.js",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "f80879f6fba0ede8b767f4038540d81779c71889ee13aec8483686e1eff72339"
+    },
+    {
+      "path": "kernels/js/worker-indirect-eval.js",
+      "status": "verbatim",
+      "upstreamCommit": "0eb6a7f5ac959c510f1059ccf739060b7e6aac2b",
+      "sha256": "67266c729ffbf5237166c4e7c69a82fd66f58f2adb0d70dea74cf31008122ea8"
+    },
+    {
+      "path": "kernels/js/worker-runtime.js",
+      "status": "patched",
+      "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
+      "change": "installs wait()/handle() from handles.js",
+      "sha256": "8d86e50de338cf6ef26a9e41ebcb285a4e5fc1c18a8ad55d00f6063ca4ce0e9a"
+    },
+    {
+      "path": "kernels/js/worker-shadow-guard.js",
+      "status": "verbatim",
+      "upstreamCommit": "0eb6a7f5ac959c510f1059ccf739060b7e6aac2b",
+      "sha256": "95d7208c4d3e7749697c60ba210ce4dc0f98c858a1fa468fa2103736376f1987"
+    },
+    {
+      "path": "kernels/js/worker-shell-capture.js",
+      "status": "verbatim",
+      "upstreamCommit": "c44e259d177bc65b02e5912395dbc3f58ae5e741",
+      "sha256": "71f151a18b861556cc640847060c6b8f20fd829a3a508869c0bb1afa76eda19a"
+    },
+    {
+      "path": "kernels/js/workpool.js",
+      "status": "verbatim",
+      "upstreamCommit": "d0392b0814f3c033f58d09dc181321858be27a75",
+      "sha256": "21075bd31fe1eca2565fbe8b279987f8f6df0821517f191d3ddaf82848912b23"
+    },
+    {
+      "path": "kernels/py/prelude.py",
+      "status": "patched",
+      "upstreamCommit": "b01b281fa24655bbdb310bd462be300a411c8811",
+      "change": "completion cellId and host-computed per-cell preludes",
+      "sha256": "6646eb526038cf94dbfbab1419a7b6ce795162309613779f3eaabdb9c84e7a4a"
+    },
+    {
+      "path": "kernels/rb/prelude.rb",
+      "status": "patched",
+      "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
+      "change": "completion bridge call sends cellId",
+      "sha256": "f2cb58d6c2156776428883b096d8e86db9dba6eca2d112e030993c938abd14cf"
+    },
+    {
+      "path": "kernels/rb/runner.rb",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "2fdbf81059031ab742e88297dac7fd2ef23c2e66c64bb2923e15dbb15ef7e8fd"
+    },
+    {
+      "path": "kernels/rb/workpool.rb",
+      "status": "verbatim",
+      "upstreamCommit": "0d2271793ce114157563589d2af96d0387f2313a",
+      "sha256": "16d0ca253e71aef5e8363b732e84a8500ceec666aa56bccefc13048f4a99ce0d"
+    },
+    {
+      "path": "skill/bun-1-4/references/breaking-changes.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "953d1aa28738df1ec2da77b3c69c7da5068e12fa8ceb4e221e29d0c8b1bc8dca"
+    },
+    {
+      "path": "skill/bun-1-4/references/build.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "f0d463fb48197cb52b9c2e7982bfa0c2b525444e629137b03d9bac0ade5ccdd4"
+    },
+    {
+      "path": "skill/bun-1-4/references/dev-tooling.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "2cd1f5b3751c2449cf13987d384932b8a9aa894a1b81d2a821346861bae21c84"
+    },
+    {
+      "path": "skill/bun-1-4/references/http-networking.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "a0186b25dff5ee8aaa948a3f526ada667362609183fc1190f1e0b5314f7fb260"
+    },
+    {
+      "path": "skill/bun-1-4/references/install.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "8300dde1e05b3b68aa145c3120d2b36e111f4e22524aadbb41dc3e143cdae22d"
+    },
+    {
+      "path": "skill/bun-1-4/references/node-compat-platforms.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "1a6b528281b6266a56bb779d737d5c76cc6eb1235bf8ed738d399b03b605538d"
+    },
+    {
+      "path": "skill/bun-1-4/references/performance.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "e40a59c0882cb4b9aa5f3e81cfa241f4c3a5f5e141f706a7670e1b8382136e8e"
+    },
+    {
+      "path": "skill/bun-1-4/references/runtime-apis.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "6d5ff56b46652748a84360d28beda00402946b46e8144ebd6299390f53332f8e"
+    },
+    {
+      "path": "skill/bun-1-4/references/security.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "c9a6ea6f1611a3b0562f134eff9f92d100382a0bd31af522c158afbf07a875c7"
+    },
+    {
+      "path": "skill/bun-1-4/references/test.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "cc2237e210da3ac237b8c9ed2aeced43beec127e78acfe6a1e1b5e49622964db"
+    },
+    {
+      "path": "skill/bun-1-4/SKILL.md",
+      "status": "verbatim",
+      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
+      "sha256": "c62d01920c6aa560ffbacd9db37af445495aad8f1d32283371e4400d106fc51a"
+    },
+    {
+      "path": "kernels/js/worker-global-sizes.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+    },
+    {
+      "path": "kernels/js/worker-heap.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+    },
+    {
+      "path": "kernels/js/worker-memory.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+    },
+    {
+      "path": "kernels/js/worker-webview-client.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+    },
+    {
+      "path": "kernels/js/worker-webview.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+    }
+  ]
+}

@@ -18,10 +18,10 @@ enum Command {
     Close(oneshot::Sender<Result<(), String>>),
 }
 
-struct WorkerOptions { cwd: PathBuf, session_id: String, width: u64, environment: Option<SessionEnvironment>, connection: BridgeConnectionConfig, executable: PathBuf, names: KernelToolNames }
+struct WorkerOptions { cwd: PathBuf, session_id: String, width: u64, environment: Option<SessionEnvironment>, connection: BridgeConnectionConfig, names: KernelToolNames }
 impl WorkerOptions {
     fn startup<'a>(&'a self,names:&'a (Vec<String>,Vec<String>)) -> WorkerStartupOptions<'a> {
-        WorkerStartupOptions {cwd:&self.cwd, session_id:&self.session_id, parallel_pool_width:self.width, connection:&self.connection, generation:0, host_tool_names:&names.0, foreign_language_names:&names.1, session_env:self.environment.as_ref(), worker_entry:None, environment:crate::kernels::shared::runtime_asset::CodemodeRuntimeAssetEnvironment {bun_version:None,executable_path:&self.executable}}
+        WorkerStartupOptions {cwd:&self.cwd, session_id:&self.session_id, parallel_pool_width:self.width, connection:&self.connection, generation:0, host_tool_names:&names.0, foreign_language_names:&names.1, session_env:self.environment.as_ref(), worker_entry:None}
     }
 }
 
@@ -51,7 +51,7 @@ impl JavaScriptKernel {
         let startup_owner=owner_signal.clone();
         let shutdown=maho_ai::utils::abort::AbortController::new();
         let loader=LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:connection.local_roots.clone(),artifacts_dir:connection.artifacts_dir.as_ref().map(PathBuf::from)})?;
-        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,executable:std::env::current_exe()?,connection,names};
+        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,connection,names};
         let startup_options=options;let startup_shutdown=shutdown.clone();
         let (mut sender,receiver)=oneshot::channel();
         tokio::spawn(async move {

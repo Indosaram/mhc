@@ -83,8 +83,7 @@ async fn start_transport(options: &PythonTransportOptions,signal:&maho_ai::utils
 }
 
 fn python_prelude_path() -> Result<std::path::PathBuf,String> {
-    let executable=std::env::current_exe().map_err(|error|error.to_string())?;
-    super::transport::resolve_python_prelude_path(super::transport::PythonPreludePathOptions {local_path:None,environment:crate::kernels::shared::runtime_asset::CodemodeRuntimeAssetEnvironment {bun_version:None,executable_path:&executable}}).map_err(|error|error.to_string())
+    super::transport::resolve_python_prelude_path(super::transport::PythonPreludePathOptions {local_path:None}).map_err(|error|error.to_string())
 }
 
 fn settle(mut run: PendingRun, mut result: Value, retained: bool) {

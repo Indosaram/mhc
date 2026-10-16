@@ -70,56 +70,38 @@ fn extracts_live_native_tool_context_session() {
 }
 
 #[test]
-fn sidecar_paths_for_all_interpreters() {
-    let root = tempfile::tempdir().unwrap();
-    let executable = root.path().join("pi/pi");
+fn every_interpreter_resolves_its_embedded_asset_without_the_build_tree() {
+    let absent = Path::new("/absent/override");
     for relative in ["kernels/rb/runner.rb", "kernels/jl/runner.jl", "kernels/py/prelude.py", "kernels/js/worker-entry.js", "kernels/js/inline-worker-entry.js"] {
-        let sidecar = root.path().join("pi/node_modules/@code-yeongyu/senpi-codemode/src").join(relative);
-        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
-        std::fs::write(&sidecar, "runner").unwrap();
-        let local = root.path().join("$bunfs").join(relative);
-        let environment = CodemodeRuntimeAssetEnvironment { bun_version: Some("1.4.0"), executable_path: &executable };
-        assert_eq!(require_codemode_runtime_asset(&local, Path::new(relative), &environment).unwrap(), sidecar);
+        let resolved = require_codemode_runtime_asset(Some(absent), Path::new(relative)).unwrap();
+        assert!(resolved.ends_with(relative), "{relative} resolved to {}", resolved.display());
+        assert_eq!(std::fs::read(&resolved).unwrap(), std::fs::read(build_tree_runtime_asset_path(Path::new(relative))).unwrap());
         let wrapper = match relative {
-            "kernels/rb/runner.rb" => maho_codemode::kernels::rb::kernel::resolve_ruby_runner_path_with(Some(&local), &environment),
-            "kernels/jl/runner.jl" => maho_codemode::kernels::jl::kernel::resolve_julia_runner_path_with(Some(&local), &environment),
-            "kernels/py/prelude.py" => maho_codemode::kernels::py::transport::resolve_python_prelude_path(maho_codemode::kernels::py::transport::PythonPreludePathOptions { local_path:Some(&local), environment }),
-            "kernels/js/worker-entry.js" => maho_codemode::kernels::js::worker_startup::resolve_js_worker_entry_path(Some(&local), &environment),
-            "kernels/js/inline-worker-entry.js" => maho_codemode::kernels::js::inline_worker::resolve_inline_worker_entry_path(Some(&local), &environment),
+            "kernels/rb/runner.rb" => maho_codemode::kernels::rb::kernel::resolve_ruby_runner_path_with(Some(absent)),
+            "kernels/jl/runner.jl" => maho_codemode::kernels::jl::kernel::resolve_julia_runner_path_with(Some(absent)),
+            "kernels/py/prelude.py" => maho_codemode::kernels::py::transport::resolve_python_prelude_path(maho_codemode::kernels::py::transport::PythonPreludePathOptions { local_path: Some(absent) }),
+            "kernels/js/worker-entry.js" => maho_codemode::kernels::js::worker_startup::resolve_js_worker_entry_path(Some(absent)),
+            "kernels/js/inline-worker-entry.js" => maho_codemode::kernels::js::inline_worker::resolve_inline_worker_entry_path(Some(absent)),
             _ => unreachable!("fixture runner list"),
         };
-        assert_eq!(wrapper.unwrap(), sidecar);
+        assert_eq!(wrapper.unwrap(), resolved);
     }
 }
 
 #[test]
-fn local_asset_precedes_sidecar() {
+fn existing_override_precedes_embedded_asset() {
     let root = tempfile::tempdir().unwrap();
     let local = root.path().join("runner.rb");
     std::fs::write(&local, "runner").unwrap();
-    let executable = root.path().join("pi");
-    let env = CodemodeRuntimeAssetEnvironment { bun_version: None, executable_path: &executable };
-    assert_eq!(require_codemode_runtime_asset(&local, Path::new("kernels/rb/runner.rb"), &env).unwrap(), local);
-    assert_eq!(maho_codemode::kernels::rb::kernel::resolve_ruby_runner_path_with(Some(&local), &env).unwrap(), local);
+    assert_eq!(require_codemode_runtime_asset(Some(&local), Path::new("kernels/rb/runner.rb")).unwrap(), local);
+    assert_eq!(maho_codemode::kernels::rb::kernel::resolve_ruby_runner_path_with(Some(&local)).unwrap(), local);
 }
 
 #[test]
 fn missing_required_asset_returns_paths() {
-    let env = CodemodeRuntimeAssetEnvironment { bun_version: None, executable_path: Path::new("/absent/pi") };
     // Embedded kernel scripts back every shipped path, so only an unknown asset can be missing.
-    let error = require_codemode_runtime_asset(Path::new("/absent/runner"), Path::new("kernels/rb/absent.rb"), &env).unwrap_err();
+    let error = require_codemode_runtime_asset(Some(Path::new("/absent/runner")), Path::new("kernels/rb/absent.rb")).unwrap_err();
     assert_eq!(error.local_path, Path::new("/absent/runner"));
     assert_eq!(error.package_relative_path, Path::new("kernels/rb/absent.rb"));
-}
-
-#[test]
-fn virtual_path_variants() {
-    for path in ["/$bunfs/a", "/tmp/~BUN/a", "/tmp/%7EBUN/a"] { assert!(is_bun_virtual_path(Path::new(path))); }
-    assert!(!is_bun_virtual_path(Path::new("/tmp/a")));
-}
-
-#[test]
-fn optional_resolver_returns_missing_local_path() {
-    let env = CodemodeRuntimeAssetEnvironment { bun_version: None, executable_path: Path::new("/absent/pi") };
-    assert_eq!(resolve_codemode_runtime_asset(Path::new("/absent/runner"), Path::new("kernels/rb/runner.rb"), &env), Path::new("/absent/runner"));
+    assert!(!error.to_string().contains("node_modules"), "{error}");
 }

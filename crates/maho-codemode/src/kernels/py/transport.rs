@@ -2,11 +2,10 @@ use std::{collections::HashMap, path::{Path, PathBuf}, time::Duration};
 use serde_json::{Value, json};
 use tokio::{io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader}, process::{Child, ChildStdin}, sync::mpsc, task::JoinHandle};
 use super::process::{KernelSpawnOptions, default_spawn, hard_kill, split_command, sweep_process_group, wait_for_exit};
-use crate::{bridge::protocol::BridgeConnectionConfig, kernels::{session_env::apply_session_environment, shared::runtime_asset::{CodemodeRuntimeAssetEnvironment, CodemodeRuntimeAssetMissingError, require_codemode_runtime_asset}}};
+use crate::{bridge::protocol::BridgeConnectionConfig, kernels::{session_env::apply_session_environment, shared::runtime_asset::{CodemodeRuntimeAssetMissingError, require_codemode_runtime_asset}}};
 
 pub struct PythonPreludePathOptions<'a> {
     pub local_path: Option<&'a Path>,
-    pub environment: CodemodeRuntimeAssetEnvironment<'a>,
 }
 
 #[cfg(test)]
@@ -38,7 +37,7 @@ mod startup_tests {
 }
 
 pub fn resolve_python_prelude_path(options: PythonPreludePathOptions<'_>) -> Result<PathBuf, CodemodeRuntimeAssetMissingError> {
-    require_codemode_runtime_asset(options.local_path.unwrap_or(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/py/prelude.py"))), Path::new("kernels/py/prelude.py"), &options.environment)
+    require_codemode_runtime_asset(options.local_path, Path::new("kernels/py/prelude.py"))
 }
 
 pub fn failed_python_result(cell_id: &str, message: &str, stack: Option<&str>) -> Value {

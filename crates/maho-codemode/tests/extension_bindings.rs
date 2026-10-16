@@ -9,7 +9,7 @@ fn api() -> ExtensionApi {
 #[test]
 fn registers_real_resource_event_handler() {
     let mut api = api();
-    register_bun_skill_contribution(&mut api, Arc::new(|| None), "/tmp".into(), "/usr/bin/node".into());
+    register_bun_skill_contribution(&mut api, Arc::new(|| None), "/tmp".into());
     assert_eq!(api.registered.handlers[&EventKind::ResourcesDiscover].len(), 1);
 }
 
@@ -27,20 +27,19 @@ fn resolves_shipped_skill_only_for_bun_kernel() {
     std::fs::write(&skill, "fixture").unwrap();
     let base = root.path().join("extension");
     std::fs::create_dir(&base).unwrap();
-    assert!(active_bun_skill_path(None, &base, Path::new("/usr/bin/node")).is_none());
-    assert!(active_bun_skill_path(Some("1.4.0"), &base, Path::new("/usr/bin/bun")).unwrap().exists());
+    assert!(active_bun_skill_path(None, &base).is_none());
+    assert!(active_bun_skill_path(Some("1.4.0"), &base).unwrap().exists());
 }
 
 #[test]
 fn binary_away_from_build_tree_uses_embedded_skill_tree() {
     let root = tempfile::tempdir().unwrap();
-    let skill = active_bun_skill_path(Some("1.4.0"), &root.path().join("extension"), &root.path().join("mhc")).expect("embedded skill");
+    let skill = active_bun_skill_path(Some("1.4.0"), &root.path().join("extension")).expect("embedded skill");
     assert!(skill.ends_with("skill/bun-1-4/SKILL.md"));
     assert_eq!(std::fs::read_to_string(&skill).unwrap(), include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/SKILL.md")));
     assert!(skill.with_file_name("references").join("runtime-apis.md").is_file());
 }
 
-use std::path::Path;
 #[tokio::test]
 async fn unbound_execute_tool_propagates_real_api_error() {
     let api = api();

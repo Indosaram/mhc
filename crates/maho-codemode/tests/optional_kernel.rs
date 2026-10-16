@@ -18,17 +18,11 @@ fn optional_runner_assets_exist() {
 }
 
 #[test]
-fn optional_wrappers_resolve_executable_sidecars() {
-    use maho_codemode::kernels::shared::runtime_asset::CodemodeRuntimeAssetEnvironment;
-    let root=tempfile::tempdir().unwrap();
-    let executable=root.path().join("pi/pi");
-    let environment=CodemodeRuntimeAssetEnvironment {bun_version:Some("1.4.0"),executable_path:&executable};
-    for (language,file) in [("rb","runner.rb"),("jl","runner.jl")] {
-        let sidecar=root.path().join("pi/node_modules/@code-yeongyu/senpi-codemode/src/kernels").join(language).join(file);
-        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();std::fs::write(&sidecar,"runner").unwrap();
-        let local=root.path().join("$bunfs").join(file);
-        let actual=if language=="rb" {maho_codemode::kernels::rb::kernel::resolve_ruby_runner_path_with(Some(&local),&environment)}else {maho_codemode::kernels::jl::kernel::resolve_julia_runner_path_with(Some(&local),&environment)}.unwrap();
-        assert_eq!(actual,sidecar);
+fn optional_wrappers_resolve_embedded_runners() {
+    let absent=std::path::Path::new("/absent/override");
+    for (actual,file) in [(maho_codemode::kernels::rb::kernel::resolve_ruby_runner_path_with(Some(absent)).unwrap(),"rb/runner.rb"),(maho_codemode::kernels::jl::kernel::resolve_julia_runner_path_with(Some(absent)).unwrap(),"jl/runner.jl")] {
+        assert!(actual.ends_with(format!("kernels/{file}")));
+        assert_eq!(std::fs::read(&actual).unwrap(),std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/kernels").join(file)).unwrap());
     }
 }
 
