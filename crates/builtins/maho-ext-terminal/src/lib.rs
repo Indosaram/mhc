@@ -26,4 +26,5 @@ pub mod monitor_permission;
 pub mod prompt;
 pub mod session_bundle;
 pub mod terminal_state;
+pub mod screen_text;
 pub use extension::TerminalExtension;
