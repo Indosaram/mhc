@@ -6,7 +6,12 @@ pub const WIDGET_KEY: &str = "ext:nested-agents:widget";
 pub fn update_status(ctx: &ExtensionContext, cache: &InjectionCache, key: &str, has_errors: bool) {
  if !ctx.has_ui { return; }
  let count = cache.get_cache_size(key);
- let text = (count != 0).then(|| format!("🤖 {count}{}", if has_errors { " ⚠️" } else { "" }));
+ let text = (count != 0).then(|| {
+  let theme = ctx.ui.theme();
+  let mut text = theme.fg("dim", &format!("🤖 {count}"));
+  if has_errors { text.push_str(&theme.fg("warning", " ⚠️")); }
+  text
+ });
  ctx.ui.set_status(STATUS_KEY, text.as_deref());
 }
 pub fn clear_status(ctx: &ExtensionContext) { if ctx.has_ui { ctx.ui.set_status(STATUS_KEY, None); } }
@@ -21,10 +26,12 @@ pub fn display_path(cwd: &Path, absolute_path: &Path) -> String {
 pub fn update_widget(ctx: &ExtensionContext, visible: bool, files: &[InjectedFileInfo]) {
  if !ctx.has_ui { return; }
  let content = if visible && !files.is_empty() {
-  let mut lines = vec!["Nested Context:".into()];
+  let theme = ctx.ui.theme();
+  let mut lines = vec![theme.fg("accent", "Nested Context:")];
   lines.extend(files.iter().map(|file| {
    let display = display_path(&ctx.cwd, &file.absolute_path);
-   format!("  {display}{}", if file.truncated { " (truncated)" } else { "" })
+   let text = format!("  {display}{}", if file.truncated { " (truncated)" } else { "" });
+   theme.fg(if file.truncated { "warning" } else { "dim" }, &text)
   }));
   Some(WidgetContent::Lines(lines))
  } else { None };
