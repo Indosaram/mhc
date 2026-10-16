@@ -12,6 +12,8 @@ use crate::locks::lock_record::{CreateLockRecordOptions, create_lock_record};
 
 use super::paths::SOUL_PATHS;
 
+pub const SOUL_SCAN_PAGE: usize = 32;
+
 /// Canonical filename for the soul head watermark record.
 pub const SOUL_NOTICE_WATERMARK_FILENAME: &str = "soul-head.json";
 
@@ -117,16 +119,35 @@ fn consume_under_lock(
     let log_options = GitLogOptions {
         range: Some(range),
         paths: Some(SOUL_PATHS.iter().map(|s| s.to_string()).collect()),
+        limit: Some(SOUL_SCAN_PAGE),
         ..Default::default()
     };
 
-    let commits = match repo.log(Some(&log_options)) {
+    let mut commits = match repo.log(Some(&log_options)) {
         Ok(c) => c,
         Err(_) => {
             write_watermark(notices_dir, &head)?;
             return Ok(None);
         }
     };
+
+    if commits.len() == SOUL_SCAN_PAGE
+        && commits
+            .iter()
+            .all(|commit| commit.trailers.get("Omo-Writer").map(String::as_str) == Some("memory-tool"))
+    {
+        let unbounded = GitLogOptions {
+            limit: None,
+            ..log_options
+        };
+        commits = match repo.log(Some(&unbounded)) {
+            Ok(commits) => commits,
+            Err(_) => {
+                write_watermark(notices_dir, &head)?;
+                return Ok(None);
+            }
+        };
+    }
 
     let newest = commits
         .into_iter()

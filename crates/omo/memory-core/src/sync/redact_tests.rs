@@ -188,3 +188,10 @@ fn test_redact_url_when_pem_blocks_then_matching_labels_replace_and_mismatched_e
 fn test_redact_url_when_empty_url_then_empty_string_returned() {
     assert_eq!(redact_url(""), "");
 }
+
+#[test]
+fn test_redact_url_when_credential_contains_zero_width_obfuscation_then_entire_original_span_is_masked() {
+    let value = "to\u{200B}ken=abc123";
+    assert!(contains_secret_like_material(value));
+    assert_eq!(redact_url(value), "***");
+}

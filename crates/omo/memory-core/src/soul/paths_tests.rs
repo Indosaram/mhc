@@ -4,7 +4,14 @@ use super::{MEMORY_SOUL_EDIT_RESULT_TOKEN, SOUL_EDIT_RESULT_LINE, SOUL_PATHS, to
 
 #[test]
 fn given_soul_paths_when_checked_then_constants_match_specification() {
-    assert_eq!(SOUL_PATHS, ["system/persona.md", "system/identity.md"]);
+    assert_eq!(
+        SOUL_PATHS,
+        [
+            "system/persona.md",
+            "system/identity.md",
+            "system/boundaries.md"
+        ]
+    );
     assert_eq!(MEMORY_SOUL_EDIT_RESULT_TOKEN, "soul edit");
     assert_eq!(
         SOUL_EDIT_RESULT_LINE,
@@ -16,6 +23,7 @@ fn given_soul_paths_when_checked_then_constants_match_specification() {
 fn given_matching_paths_when_evaluated_then_touches_soul_path_returns_true() {
     assert!(touches_soul_path(&["system/persona.md"]));
     assert!(touches_soul_path(&["system/identity.md"]));
+    assert!(touches_soul_path(&["system/boundaries.md"]));
     assert!(touches_soul_path(&[
         "other/file.md",
         "system/persona.md",

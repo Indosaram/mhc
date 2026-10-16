@@ -82,7 +82,7 @@ const MAX_FAILED_HUNK_PREVIEW_CHARS: usize = 2_000;
 const MAX_CURRENT_FILE_PREVIEW_CHARS: usize = 4_000;
 
 fn failure(message: &str) -> MemoryPatchParseError {
-    MemoryPatchParseError::new(format!("memory_apply_patch: {message}"))
+        MemoryPatchParseError::new(format!("memory apply_patch: {message}"))
 }
 
 fn directive_path(

@@ -37,6 +37,9 @@ static SECRET_PATTERNS: LazyLock<Vec<regress::Regex>> = LazyLock::new(|| {
 
 /// True when `value` holds secret-like material (upstream `containsSecretLikeMaterial`).
 pub fn contains_secret_like_material(value: &str) -> bool {
+    if normalized_secret_detect(value) {
+        return true;
+    }
     let units: Vec<u16> = value.encode_utf16().collect();
     SECRET_PATTERNS
         .iter()
@@ -46,6 +49,10 @@ pub fn contains_secret_like_material(value: &str) -> bool {
 
 /// Mask every secret-like pattern in upstream order, then every complete PEM block.
 pub fn redact_secret_like_material(value: &str) -> String {
+    let normalized = normalized_secret_spans(value);
+    if !normalized.is_empty() {
+        return mask_spans(value, normalized);
+    }
     let mut units: Vec<u16> = value.encode_utf16().collect();
     for pattern in SECRET_PATTERNS.iter() {
         units = replace_all_ucs2(pattern, &units);
@@ -61,6 +68,61 @@ pub fn redact_secret_like_material(value: &str) -> String {
         offset = block.start + mask_len;
     }
     String::from_utf16_lossy(&units)
+}
+
+fn normalized_secret_detect(value: &str) -> bool {
+    !normalized_secret_spans(value).is_empty()
+}
+
+fn normalized_secret_spans(value: &str) -> Vec<(usize, usize)> {
+    let mut shadow = String::new();
+    let mut byte_map = Vec::new();
+    let mut dropped = false;
+    for (index, character) in value.char_indices() {
+        let control = character.is_control() && character != '\n' && character != '\t';
+        let format = matches!(character as u32, 0x00AD | 0x061C | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF);
+        if character == '\u{00A0}' {
+            shadow.push(' ');
+            byte_map.push(index);
+            dropped = false;
+        } else if control || format {
+            dropped = true;
+        } else {
+            if dropped && !shadow.is_empty() { shadow.push(' '); byte_map.push(index); }
+            dropped = false;
+            shadow.push(character);
+            byte_map.extend(std::iter::repeat_n(index, character.len_utf16()));
+        }
+    }
+    let units: Vec<u16> = shadow.encode_utf16().collect();
+    let mut spans = Vec::new();
+    for pattern in SECRET_PATTERNS.iter() {
+        for matched in pattern.find_from_ucs2(&units, 0) {
+            let range = matched.range();
+            if let (Some(start), Some(last)) = (byte_map.get(range.start), byte_map.get(range.end.saturating_sub(1))) {
+                spans.push((*start, last + shadow[*last..].chars().next().map_or(0, char::len_utf8)));
+            }
+        }
+    }
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for span in spans {
+        if let Some(last) = merged.last_mut() && span.0 <= last.1 { last.1 = last.1.max(span.1); }
+        else { merged.push(span); }
+    }
+    merged
+}
+
+fn mask_spans(value: &str, spans: Vec<(usize, usize)>) -> String {
+    let mut output = String::new();
+    let mut cursor = 0;
+    for (start, end) in spans {
+        output.push_str(&value[cursor..start]);
+        output.push_str(MASK);
+        cursor = end;
+    }
+    output.push_str(&value[cursor..]);
+    output
 }
 
 /// Replace every non-overlapping match of `pattern` in `input` with the mask,
