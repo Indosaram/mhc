@@ -18,11 +18,11 @@ pub struct HelpUiBindings{
 pub fn native_display(bindings:HelpUiBindings)->HelpDisplay{
     let bindings=Arc::new(bindings);
     Arc::new(move|ctx,markdown|{let bindings=bindings.clone();Box::pin(async move{
-        ctx.ui.custom_factory(Arc::new(move|host,theme,_,done|{
+        ctx.ui.custom_factory(Arc::new(move|host,theme,keybindings,done|{
             let rows=(bindings.rows)(host);let render=(bindings.render)(host);let theme=(bindings.theme)(theme);
             let markdown=markdown.clone();
             Box::pin(async move{
-                let panel=panel::HelpPanel::new(&markdown,theme?,rows,render,std::rc::Rc::new(move||done(maho_ext_api::JsonValue::Null)));
+                let panel=panel::HelpPanel::new(&markdown,theme?,rows,render,keybindings.clone(),std::rc::Rc::new(move||done(maho_ext_api::JsonValue::Null)));
                 Ok(Box::new(panel) as Box<dyn maho_tui::tui::Component>)
             })
         }),maho_ext_api::CustomUiFactoryOptions{overlay:true,overlay_options:Some(maho_ext_api::ExtensionOverlayOptions::Static(Arc::new(||maho_tui::tui::OverlayOptions{
