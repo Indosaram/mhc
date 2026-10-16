@@ -62,6 +62,26 @@ async fn end(api: &ExtensionApi) {
 }
 
 #[tokio::test]
+async fn continuation_waits_for_settlement_and_rejects_aborted_outcome() {
+    let (api, actions, _) = coordinator_harness(Some(active_runner()));
+    let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(true), abort_source: None, will_retry: Some(false) };
+    api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &support::context()).await.expect("agent end");
+    assert!(actions.0.lock().expect("messages").is_empty());
+    api.registered.handlers[&EventKind::AgentSettled][0](&mut ExtensionEvent::AgentSettled, &support::context()).await.expect("settled");
+    assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+#[tokio::test]
+async fn eligible_continuation_is_not_delivered_before_settlement() {
+    let (api, actions, _) = coordinator_harness(Some(active_runner()));
+    let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };
+    api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &support::context()).await.expect("agent end");
+    assert!(actions.0.lock().expect("messages").is_empty());
+    api.registered.handlers[&EventKind::AgentSettled][0](&mut ExtensionEvent::AgentSettled, &support::context()).await.expect("settled");
+    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+}
+
+#[tokio::test]
 async fn idle_user_input_resets_stale_status_without_querying() {
     let (api, actions, calls) = register_status();
     end(&api).await;
