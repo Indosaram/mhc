@@ -77,6 +77,8 @@ impl SubprocessProcess {
     }
 
     pub fn pid(&self) -> Option<u32> { self.child.id() }
+    pub async fn wait(&mut self) -> Result<std::process::ExitStatus, ProcessError> { self.child.wait().await.map_err(ProcessError::Io) }
+    pub async fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, ProcessError> { self.child.try_wait().map_err(ProcessError::Io) }
     pub fn is_retiring(&self) -> bool { self.retiring }
     pub async fn send(&mut self, message: &Value) -> Result<bool, ProcessError> {
         if self.retiring { return Ok(false); }

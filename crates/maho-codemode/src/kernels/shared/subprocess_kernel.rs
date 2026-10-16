@@ -21,6 +21,8 @@ pub struct SubprocessKernel {
     pid: Arc<Mutex<Option<u32>>>,
     actor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     shutdown: maho_ai::utils::abort::AbortController,
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pending: std::sync::Arc<std::sync::Mutex<Vec<super::subprocess_contract::KernelRunInput>>>,
 }
 
 impl SubprocessKernel {
@@ -33,15 +35,19 @@ impl SubprocessKernel {
         let listener=signal.add_abort_listener(move |reason|cancel.abort(Some(reason.clone())));
         if signal.aborted() {shutdown.abort(signal.reason());}
         let pid = Arc::new(Mutex::new(process.pid()));
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let pending = Arc::new(Mutex::new(Vec::new()));
         let snapshot = Arc::new(Mutex::new((None, vec![])));
         let (commands, receiver) = mpsc::unbounded_channel();
-        let owner=signal.clone();let actor_signal=shutdown.signal();let actor_snapshot=snapshot.clone();let actor_pid=pid.clone();
-        let actor=tokio::spawn(async move {run_actor(options, process, receiver, actor_snapshot, actor_pid,actor_signal).await;owner.remove_abort_listener(listener);});
-        Ok(Self { commands, snapshot, pid,shutdown,actor:tokio::sync::Mutex::new(Some(actor)) })
+        let owner=signal.clone();let actor_signal=shutdown.signal();let actor_snapshot=snapshot.clone();let actor_pid=pid.clone();let actor_alive=alive.clone();let actor_pending=pending.clone();
+        let actor=tokio::spawn(async move {run_actor(options, process, receiver, actor_snapshot, actor_pid,actor_signal,actor_alive,actor_pending).await;owner.remove_abort_listener(listener);});
+        Ok(Self { commands, snapshot, pid,shutdown,alive,pending,actor:tokio::sync::Mutex::new(Some(actor)) })
     }
 
     pub fn pid(&self) -> Option<u32> { *self.pid.lock().expect("kernel pid lock") }
     pub fn queue_snapshot(&self) -> QueueSnapshot { self.snapshot.lock().expect("kernel queue lock").clone() }
+    pub fn is_alive(&self) -> bool { self.alive.load(std::sync::atomic::Ordering::Acquire) }
+    pub fn drain_pending(&self) -> Vec<KernelRunInput> { std::mem::take(&mut *self.pending.lock().expect("pending kernel runs")) }
 
     pub async fn run(&self, input: KernelRunInput, mut on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
         let (frames, mut messages) = mpsc::unbounded_channel();
@@ -155,7 +161,7 @@ async fn replace_process(options: &SubprocessKernelOptions, process: &mut Subpro
     Ok(())
 }
 
-async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProcess, mut commands: mpsc::UnboundedReceiver<Command>, snapshot: Arc<Mutex<QueueSnapshot>>, pid: Arc<Mutex<Option<u32>>>,shutdown:maho_ai::utils::abort::AbortSignal) {
+async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProcess, mut commands: mpsc::UnboundedReceiver<Command>, snapshot: Arc<Mutex<QueueSnapshot>>, pid: Arc<Mutex<Option<u32>>>,shutdown:maho_ai::utils::abort::AbortSignal,alive:Arc<std::sync::atomic::AtomicBool>,pending:Arc<std::sync::Mutex<Vec<super::subprocess_contract::KernelRunInput>>>) {
     let mut runs = SubprocessRunQueue::default();
     let origin = tokio::time::Instant::now();
     let now = || origin.elapsed().as_secs_f64() * 1000.0;
@@ -179,6 +185,12 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
         tokio::select! {
             command = commands.recv() => match command {
                 Some(Command::Run(_, _, _, response)) if failure.is_some() => { drop(response); }
+                Some(Command::Run(input, on_message, on_started, response)) if !alive.load(std::sync::atomic::Ordering::Acquire) => {
+                    pending.lock().expect("pending kernel runs").push(input);
+                    drop(on_message);
+                    drop(on_started);
+                    drop(response);
+                }
                 Some(Command::Run(input, on_message, on_started, response)) => {
                     let mut result = runs.enqueue(input, on_message, on_started);
                     tokio::spawn(async move { if let Ok(result) = (&mut result).await { let _ = response.send(result); } });
@@ -212,23 +224,42 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                     runs.settle_all("Kernel is closing", now()); runs.clear_tool_calls();
                     let result = process.shutdown(Some(&json!({"type":"close"}))).await.map_err(|error| error.to_string());
                     *pid.lock().expect("kernel pid lock") = None;
+                    alive.store(false,std::sync::atomic::Ordering::Release);
                     let _ = response.send(result); break;
                 }
-                None => { runs.settle_all("Kernel is closing", now()); if let Err(error) = process.shutdown(Some(&json!({"type":"close"}))).await { maho_ext_api::diagnostic(&format!("kernel close failed: {error}")); } break; }
+                None => { runs.settle_all("Kernel is closing", now()); if let Err(error) = process.shutdown(Some(&json!({"type":"close"}))).await { maho_ext_api::diagnostic(&format!("kernel close failed: {error}")); } alive.store(false,std::sync::atomic::Ordering::Release); break; }
             },
             message = process.next_message(), if failure.is_none() => match message {
                 Ok(message) => {
                     let startup_failure = (message["type"] == "init-failed").then(|| message["error"]["message"].as_str().unwrap_or("initialization failed").to_owned());
                     if runs.handle_message(message, options.on_message.as_ref()) { deadline = None; }
+                    if runs.active().is_none() && process.try_wait().await.is_ok_and(|status| status.is_some()) {
+                        let reason = "Kernel process exited".to_owned();
+                        pending.lock().expect("pending kernel runs").extend(runs.drain().into_iter().map(|run| run.input));
+                        alive.store(false, std::sync::atomic::Ordering::Release);
+                        failure = Some(reason);
+                    }
                     if let Some(error) = startup_failure {
-                        failure = Some(ProcessError::Startup(error).to_string());
+                        let reason=ProcessError::Startup(error).to_string();
+                        if let Some(mut active)=runs.release_active() {let result=failure_result(&active,&reason,now());settle_pending_run(&mut active,result);}
+                        let queued=runs.drain().into_iter().map(|run|run.input).collect::<Vec<_>>();
+                        pending.lock().expect("pending kernel runs").extend(queued);
+                        alive.store(false,std::sync::atomic::Ordering::Release);
+                        failure = Some(reason);
                         runs.clear_tool_calls();
-                        runs.settle_all(failure.as_deref().expect("startup failure"), now());
                         deadline = None;
                         if let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { maho_ext_api::diagnostic(&format!("kernel retirement failed: {error}")); }
                     }
                 }
-                Err(error) => { failure = Some(error.to_string()); runs.clear_tool_calls(); if let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { maho_ext_api::diagnostic(&format!("kernel retirement failed: {error}")); } }
+                Err(error) => {
+                    let reason=error.to_string();
+                    if let Some(mut active)=runs.release_active() { let result=failure_result(&active,&reason,now()); settle_pending_run(&mut active,result); }
+                    let queued=runs.drain().into_iter().map(|run| run.input).collect::<Vec<_>>();
+                    pending.lock().expect("pending kernel runs").extend(queued);
+                    alive.store(false,std::sync::atomic::Ordering::Release);
+                    failure=Some(reason);runs.clear_tool_calls();
+                    if let Err(error)=process.terminate("TERM",Duration::from_millis(1500)).await {maho_ext_api::diagnostic(&format!("kernel retirement failed: {error}"));}
+                }
             },
             () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending::<()>().await } }, if deadline.is_some() => {
                 if let Some(mut run) = runs.release_active() {
@@ -243,6 +274,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
     }
     *snapshot.lock().expect("kernel queue lock") = (None, vec![]);
     *pid.lock().expect("kernel pid lock") = None;
+    alive.store(false,std::sync::atomic::Ordering::Release);
 }
 
 #[cfg(test)]

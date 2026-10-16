@@ -146,7 +146,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     let run_input=EvalKernelRunInput {cell_id:invocation.cell_id.clone(),code:invocation.input.code.clone(),timeout_ms:None,preludes,on_started:Some(Arc::new(move ||{
         started_manager.lock().expect("cell manager lock").mark_running(&started_cell);
         let _=started_tx.send(serde_json::json!({"type":"host-started"}));
-    })),on_message:Some(Arc::new(move |message|{let _=messages_tx.send(message.clone());}))};
+    })),on_message:Some(Arc::new(move |message|{let _=messages_tx.send(message.clone());})),resolve_at_start:None,bridge_cell_token:None};
     let mut deadline=cell.lock().expect("managed cell lock").deadlines.signal();
     let (result_tx,mut result_rx)=tokio::sync::oneshot::channel();
     let work_execution=execution.clone();let work_manager=manager.clone();let work_cell=cell.clone();

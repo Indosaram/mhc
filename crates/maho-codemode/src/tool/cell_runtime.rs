@@ -23,12 +23,12 @@ pub struct CellState {
 
 // `state.output` holds the finished output only; while running, `details` reads the collector's
 // aggregate directly instead of copying it into `state.output` on every frame.
-pub struct CellResultBuilder { pub state: CellState, output: EvalOutputCollector, finished: bool, coalesce_updates: bool, update_pending: bool }
+pub struct CellResultBuilder { pub state: CellState, output: EvalOutputCollector, finished: bool, coalesce_updates: bool, update_pending: bool, memory: Option<Value>, kernel_state: Option<Value>, restart_notice: Option<String> }
 
 impl CellResultBuilder {
     pub fn new(mut state: CellState, options: EvalOutputOptions) -> Self {
         if state.status != "queued" { state.status = "running".into(); }
-        let mut builder = Self {state,output:EvalOutputCollector::new(options),finished:false,coalesce_updates:false,update_pending:false};
+        let mut builder = Self {state,output:EvalOutputCollector::new(options),finished:false,coalesce_updates:false,update_pending:false,memory:None,kernel_state:None,restart_notice:None};
         builder.emit_update(false);
         builder
     }
@@ -55,9 +55,12 @@ impl CellResultBuilder {
 
     pub async fn finalize(&mut self, result: &Value) -> Result<AgentToolResult, String> {
         self.state.duration_ms=result["durationMs"].as_f64().unwrap_or(0.0);
+        self.memory=result.get("memory").cloned();
+        self.kernel_state=result.get("kernelState").cloned();
+        self.restart_notice=result["notice"].as_str().map(str::to_owned);
         let ok=result["ok"]==true;
         if ok {
-            if let Some(value)=result["valueRepr"].as_str().filter(|value|!value.is_empty()) {self.push(&format!("{value}\n")).await?;}
+            if let Some(value)=result["valueRepr"].as_str().filter(|value|!value.is_empty()) {self.output.push_value(&format!("{value}\n")).await.map_err(|error|error.to_string())?; self.request_update();}
             self.state.status="complete".into();
         } else {
             let error=result["error"]["message"].as_str().unwrap_or("").to_owned();
@@ -81,8 +84,10 @@ impl CellResultBuilder {
         self.finished=true;
         let details=self.details(Some(&output),is_error);
         self.emit_update(is_error);
-        let text=if !output.output.is_empty() {output.output.clone()} else if !output.images.is_empty() {format!("(displayed {} image{}; no text output)",output.images.len(),if output.images.len()==1 {""} else {"s"})} else {"(no output)".into()};
+        let shown=if !output.output.is_empty() {output.output.clone()} else if !output.images.is_empty() {format!("(displayed {} image{}; no text output)",output.images.len(),if output.images.len()==1 {""} else {"s"})} else {"(no output)".into()};
+        let text=output.meta.as_ref().map_or(shown.clone(),|meta|format!("{shown}\n{}",crate::output::output_meta::format_model_truncation_notice(meta)));
         let mut result=AgentToolResult::text(text);
+        for notice in [self.restart_notice.clone(),self.memory.as_ref().and_then(|memory|memory.get("notice").and_then(Value::as_str).map(str::to_owned))].into_iter().flatten() { result.content.push(ContentBlock::Text(maho_ext_api::TextContent {text:notice})); }
         result.content.extend(output.images.into_iter().map(|image|ContentBlock::Image(ImageContent {data:image.data,mime_type:image.mime_type})));
         result.details=details;
         Ok(result)
@@ -114,6 +119,8 @@ impl CellResultBuilder {
         if output.is_some_and(|output|output.has_markdown) {cell["hasMarkdown"]=json!(true);}
         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64()*1000.0;
         let mut details=json!({"language":state.input.language,"languages":[state.input.language],"summary":state.input.summary,"durationMs":state.duration_ms,"wallDurationMs":(now-state.started_at).max(0.0),"toolCallCount":state.tool_call_metrics.len(),"toolCalls":state.tool_calls,"truncated":output.is_some_and(|output|output.truncated),"cells":[cell]});
+        if let Some(memory)=output.and_then(|_|self.memory.as_ref()) {details["memory"]=memory.clone();}
+        if let Some(kernel_state)=self.kernel_state.as_ref() {details["kernelState"]=kernel_state.clone();}
         if let Some(runtime)=&state.runtime {details["runtime"]=json!(runtime);}
         if is_error {details["isError"]=json!(true);}
         if let Some(phase)=&state.phase {details["phase"]=json!(phase);}
@@ -156,7 +163,7 @@ mod tests {
     async fn coalesced_frames_publish_on_flush_and_finish_always_emits() {
         let updates=Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let sink=updates.clone();
-        let state=CellState {input:EvalToolInput {language:EvalLanguage::Py,code:"print(1)".into(),summary:"burst".into(),action:None,timeout:None,on_timeout:None,reset:None},runtime:None,started_at:0.0,run_started_at:Some(0.0),queued_behind:None,on_update:Some(Arc::new(move |result:AgentToolResult|sink.lock().unwrap().push(result.details["cells"][0]["output"].as_str().unwrap_or("").to_owned()))),tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into()};
+        let state=CellState {input:EvalToolInput {language:EvalLanguage::Py,code:"print(1)".into(),summary:"burst".into(),action:None,timeout:None,on_timeout:None,reset:None,isolate:None},runtime:None,started_at:0.0,run_started_at:Some(0.0),queued_behind:None,on_update:Some(Arc::new(move |result:AgentToolResult|sink.lock().unwrap().push(result.details["cells"][0]["output"].as_str().unwrap_or("").to_owned()))),tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into()};
         let mut builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:None,head_bytes:20480,max_columns:768,provider:None,api:None,image_sdk:Arc::new(Sdk)});
         builder.coalesce_updates();
         builder.push("a\n").await.unwrap();builder.push("b\n").await.unwrap();builder.set_phase("p".into());

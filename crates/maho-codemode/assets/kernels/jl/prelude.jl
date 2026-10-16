@@ -41,6 +41,24 @@ function senpi_with_bridge_timeout_pause(operation::Function)
     end
 end
 
+const SENPI_HANDLES_INCLUDED = Ref(false)
+const SENPI_HANDLES_INCLUDE_LOCK = ReentrantLock()
+
+function senpi_ensure_handles()
+    lock(SENPI_HANDLES_INCLUDE_LOCK) do
+        if !SENPI_HANDLES_INCLUDED[]
+            include(joinpath(@__DIR__, "handles.jl"))
+            SENPI_HANDLES_INCLUDED[] = true
+        end
+    end
+    nothing
+end
+
+function handle(value)
+    senpi_ensure_handles()
+    Base.invokelatest(() -> senpi_handle_view(value))
+end
+
 function senpi_url_decode(value::AbstractString)
     out = IOBuffer()
     index = 1
@@ -282,7 +300,8 @@ function agent(prompt::AbstractString; agent="task", model=nothing, label=nothin
     if details isa AbstractDict && haskey(details, "isolation")
         result["details"] = Dict("isolation" => details["isolation"])
     end
-    result
+    senpi_ensure_handles()
+    Base.invokelatest(() -> senpi_handle_view(result))
 end
 
 function senpi_pool_map(items, callback)
