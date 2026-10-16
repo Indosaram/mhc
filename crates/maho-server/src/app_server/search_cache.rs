@@ -3,11 +3,11 @@ use std::{collections::VecDeque,path::Path,sync::Arc};
 
 #[derive(Clone,Debug)]
 pub struct SearchSessionRecord {pub thread: Value,pub recency_at: String,pub searchable_text: String,
-    /// `to_locale_lowercase(searchable_text)` computed once per record for non-ASCII text (`None` when ASCII),
-    /// so `thread/search` does not re-lowercase every transcript on every request.
+    /// `to_locale_lowercase(searchable_text)` computed once per record (`None` only for records built
+    /// outside the cache), so `thread/search` runs a plain `str::contains` per request.
     pub searchable_lower: Option<String>}
 impl SearchSessionRecord {
-    pub fn lowered(text: &str) -> Option<String> {(!text.is_ascii()).then(||super::js_semantics::to_locale_lowercase(text))}
+    pub fn lowered(text: &str) -> Option<String> {Some(if text.is_ascii() {text.to_ascii_lowercase()} else {super::js_semantics::to_locale_lowercase(text)})}
     fn bytes(&self) -> usize {self.searchable_text.len()+self.searchable_lower.as_ref().map_or(0,String::len)}
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -90,11 +90,12 @@ mod tests {
         let message = serde_json::json!({"type":"message","timestamp":1,"message":{"role":"user","content":"0123456789"}}).to_string();
         let paths = ["a","b","c"].map(|name|directory.path().join(format!("{name}.jsonl")));
         for path in &paths {std::fs::write(path,format!("{header}\n{message}")).unwrap();}
-        let mut cache = ThreadSearchCache::with_budget(usize::MAX,20);
+        // Each record counts its text plus the cached lowercase copy: 10 + 10 bytes.
+        let mut cache = ThreadSearchCache::with_budget(usize::MAX,40);
         for path in &paths {cache.load_file(path).await.unwrap().unwrap();}
-        assert_eq!((cache.stats().entries,cache.text_bytes),(2,20));
+        assert_eq!((cache.stats().entries,cache.text_bytes),(2,40));
         cache.load_file(&paths[2]).await.unwrap();assert_eq!(cache.stats().hits,1);
         std::fs::remove_file(&paths[2]).unwrap();assert!(cache.load_file(&paths[2]).await.unwrap().is_none());
-        assert_eq!((cache.stats().entries,cache.text_bytes),(1,10));
+        assert_eq!((cache.stats().entries,cache.text_bytes),(1,20));
     }
 }
