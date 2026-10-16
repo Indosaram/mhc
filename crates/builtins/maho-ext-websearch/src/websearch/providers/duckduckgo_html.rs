@@ -19,7 +19,7 @@ pub fn build_request(ctx:&BuildContext<'_>)->Result<BuiltSearchRequest,url::Pars
     }
     if !replaced { pairs.push(("q".into(),query)); }
     url.query_pairs_mut().clear().extend_pairs(pairs);
-    Ok(BuiltSearchRequest{url:url.into(),method:"GET",headers:BTreeMap::from([("Accept".into(),"text/html".into())]),body:Value::Null})
+    Ok(BuiltSearchRequest{url:url.into(),method:"GET",headers:BTreeMap::from([("Accept".into(),"text/html".into())]),body:None})
 }
 pub fn normalize_response(data:&Value)->Vec<SearchResultItem> {
     let html=data.get("html").and_then(Value::as_str).unwrap_or_default();
@@ -38,4 +38,5 @@ mod tests {
         let results=normalize_response(&json!({"html":"<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.test\">A &amp; <b>B</b></a><a class=\"result__snippet\">two   words</a>"})); assert_eq!(results[0].title,"A & B"); assert_eq!(results[0].url,"https://a.test"); assert_eq!(results[0].snippet.as_deref(),Some("two words"));
     }
     #[test] fn invalid_links_are_discarded() { assert!(normalize_response(&json!({"html":"<a class=\"result__a\" href=\"/relative\">Title</a>"})).is_empty()); }
+    #[test] fn get_requests_represent_absent_body_explicitly() { let ctx=BuildContext{query:"query",max_results:10.,api_key:None,base_url:None,allowed_domains:None,blocked_domains:None}; assert!(build_request(&ctx).unwrap().body.is_none()); }
 }
