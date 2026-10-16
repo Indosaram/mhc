@@ -51,3 +51,19 @@ fn edit_aliases_preserve_precedence_and_filter_invalid_entries() {
     assert_eq!(edits[1].old_string, "d");
     assert_eq!(edits[1].new_string, "e");
 }
+
+#[test]
+fn absent_session_uses_upstream_unknown_fallback() {
+    struct MissingSession;
+    impl ToolSessionManager for MissingSession { fn session_id(&self) -> &str { "" } fn session_file(&self) -> Option<&Path> { None } }
+    impl SessionManager for MissingSession {
+        fn get_entries(&self) -> Vec<SessionEntry> { Vec::new() }
+        fn get_branch(&self) -> Vec<SessionEntry> { Vec::new() }
+        fn get_leaf_id(&self) -> Option<String> { None }
+        fn get_session_name(&self) -> Option<String> { None }
+    }
+    let mut ctx = support::context();
+    ctx.session_manager = Arc::new(MissingSession);
+    let event = ToolResultEvent { tool_name: "write".into(), tool_call_id: "id".into(), input: serde_json::json!({}), content: Vec::new(), details: None, is_error: false, usage: None };
+    assert_eq!(to_hook_input(&event, &ctx, "/tmp/file").session_id, "unknown");
+}

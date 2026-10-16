@@ -7,7 +7,7 @@ use maho_ext_api::*;
 use crate::constants::COMMENT_CHECKER_FEEDBACK_HEADER;
 use crate::downloader::download_senpi_comment_checker_binary;
 use crate::failure_notice::report_comment_checker_failure;
-use crate::hook_input::to_hook_input;
+use crate::hook_input::{to_apply_patch_hook_inputs, to_hook_input};
 use crate::resolver::resolve_senpi_comment_checker_binary;
 use crate::runner::default_run_comment_checker;
 use crate::types::SenpiCommentCheckerDownloadOptions;
@@ -19,6 +19,7 @@ struct State {
     inert_for_session: bool,
     missing_binary_notice_logged: bool,
     reported: BTreeSet<PathBuf>,
+    ensuring_binary: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -63,30 +64,23 @@ impl Extension for CommentCheckerComponent {
                     let ExtensionEvent::ToolResult(event) = event else {
                         return Ok(EventResult::None);
                     };
-                    if event.is_error || !matches!(event.tool_name.as_str(), "edit" | "write") {
+                    if event.is_error || !matches!(event.tool_name.as_str(), "edit" | "write" | "apply_patch") {
                         return Ok(EventResult::None);
                     }
-                    let Some(path) = event.input["path"].as_str() else {
-                        return Ok(EventResult::None);
-                    };
-                    let joined = ctx.cwd.join(path);
-                    let mut absolute = PathBuf::new();
-                    for part in joined.components() {
-                        match part {
-                            std::path::Component::CurDir => {}
-                            std::path::Component::ParentDir => {
-                                absolute.pop();
-                            }
-                            other => absolute.push(other.as_os_str()),
-                        }
-                    }
+                    let patch_inputs = if event.tool_name == "apply_patch" { to_apply_patch_hook_inputs(event, ctx) } else { Vec::new() };
+                    let paths = if event.tool_name == "apply_patch" {
+                        patch_inputs.iter().filter_map(|(_, input)| input.tool_input.file_path.as_ref().map(PathBuf::from)).collect::<Vec<_>>()
+                    } else if let Some(path) = event.input["path"].as_str() {
+                        vec![normalize_path(&ctx.cwd.join(path))]
+                    } else { return Ok(EventResult::None); };
+                    if paths.is_empty() { return Ok(EventResult::None); }
 
                     // Check if already reported or if session is inert
                     {
                         let s = state
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if s.inert_for_session || s.reported.contains(&absolute) {
+                        if s.inert_for_session || paths.iter().all(|path| s.reported.contains(path)) {
                             return Ok(EventResult::None);
                         }
                     }
@@ -102,6 +96,10 @@ impl Extension for CommentCheckerComponent {
                     let binary = match cached_binary {
                         Some(b) => b,
                         None => {
+                            let _ensuring = state.ensuring_binary.lock().await;
+                            if let Some(binary) = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).binary.clone() {
+                                binary
+                            } else {
                             let resolved = match &resolve {
                                 Some(r) => r(),
                                 None => {
@@ -146,6 +144,7 @@ impl Extension for CommentCheckerComponent {
                                 }
                             }
                             final_binary
+                            }
                         }
                     };
 
@@ -156,50 +155,31 @@ impl Extension for CommentCheckerComponent {
                     if let Some(update) = &ctx.update_tool_hook_status {
                         update("(OmO) Checking Comments");
                     }
-                    let input = comment_checker_core::RunCommentCheckerInput {
-                        hook_input: to_hook_input(
-                            event,
-                            ctx,
-                            &absolute.to_string_lossy(),
-                        ),
-                        binary_path: Some(binary.to_string_lossy().into_owned()),
-                        custom_prompt: None,
-                    };
-                    let result = match &check {
-                        Some(check) => check(input).await,
-                        None => default_run_comment_checker(&input).await,
-                    }
-                    .map_err(|e| ExtensionFailure::new(e.to_string()))?;
-
-                    if let Some(failure) = &result.failure {
-                        let mut s = state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        s.inert_for_session = true;
-                        report_comment_checker_failure(
-                            ctx.logger.as_ref(),
-                            Some(&ctx.ui),
-                            &binary.to_string_lossy(),
-                            failure,
-                        );
-                        return Ok(EventResult::None);
-                    }
-
-                    let message = normalize_feedback_text(&result.message);
-                    if !result.has_comments || message.is_empty() {
-                        return Ok(EventResult::None);
-                    }
-                    state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .reported
-                        .insert(absolute.clone());
                     let mut content = event.content.clone();
-                    content.push(ToolContent::text(format!(
-                        "{COMMENT_CHECKER_FEEDBACK_HEADER} {}:
-{message}",
-                        absolute.display()
-                    )));
+                    let inputs = if event.tool_name == "apply_patch" {
+                        patch_inputs.into_iter().map(|(_, hook_input)| hook_input).collect::<Vec<_>>()
+                    } else {
+                        vec![to_hook_input(event, ctx, &paths[0].to_string_lossy())]
+                    };
+                    for hook_input in inputs {
+                        let Some(path) = hook_input.tool_input.file_path.as_ref() else { continue; };
+                        let absolute = PathBuf::from(path);
+                        if state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).reported.contains(&absolute) { continue; }
+                        let input = comment_checker_core::RunCommentCheckerInput { hook_input, binary_path: Some(binary.to_string_lossy().into_owned()), custom_prompt: None };
+                        let result = match &check { Some(check) => check(input).await, None => default_run_comment_checker(&input).await }.map_err(|e| ExtensionFailure::new(e.to_string()))?;
+                        if let Some(failure) = &result.failure {
+                            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).inert_for_session = true;
+                            report_comment_checker_failure(ctx.logger.as_ref(), Some(&ctx.ui), &binary.to_string_lossy(), failure);
+                            return Ok(EventResult::None);
+                        }
+                        let message = normalize_feedback_text(&result.message);
+                        if result.has_comments && !message.is_empty() {
+                            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).reported.insert(absolute.clone());
+                            content.push(ToolContent::text(format!("{COMMENT_CHECKER_FEEDBACK_HEADER} {}:
+{message}", absolute.display())));
+                        }
+                    }
+                    if content.len() == event.content.len() { return Ok(EventResult::None); }
                     Ok(EventResult::ToolResult(ToolResultEventResult {
                         content: Some(content),
                         ..Default::default()
@@ -208,4 +188,16 @@ impl Extension for CommentCheckerComponent {
             }),
         );
     }
+}
+
+fn normalize_path(path: &std::path::Path) -> PathBuf {
+    let mut absolute = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {},
+            std::path::Component::ParentDir => { absolute.pop(); },
+            other => absolute.push(other.as_os_str()),
+        }
+    }
+    absolute
 }
