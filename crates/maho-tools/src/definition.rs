@@ -53,6 +53,7 @@ pub trait ToolContext: Send + Sync {
     fn thinking_level(&self) -> Option<ThinkingLevel>;
     fn session_manager(&self) -> &dyn ToolSessionManager;
     fn goal_store_file(&self) -> Option<&Path>;
+    fn browser_engine(&self) -> Option<&str> { None }
     /// The session's steering abort signal, when the host exposes one (codemode detaches a
     /// running eval cell on steering). Defaults to `None` for hosts without a steering surface.
     fn get_steering_signal(&self) -> Option<AbortSignal> { None }
@@ -101,9 +102,14 @@ pub struct ToolResult {
     pub content: Vec<ToolContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<Value>,
+}
+impl Default for ToolResult {
+    fn default() -> Self { Self { content: Vec::new(), details: None, structured_content: None } }
 }
 impl ToolResult {
-    pub fn text(text: impl Into<String>) -> Self { Self { content: vec![ToolContent::text(text)], details: None } }
+    pub fn text(text: impl Into<String>) -> Self { Self { content: vec![ToolContent::text(text)], details: None, structured_content: None } }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -162,6 +168,7 @@ pub struct ToolDefinition {
     pub prompt_snippet: Option<String>,
     pub prompt_guidelines: Option<Vec<String>>,
     pub parameters: Value,
+    pub output_schema: Option<Value>,
     pub freeform: Option<FreeformToolFormat>,
     pub constrained_sampling: Option<ConstrainedSampling>,
     pub render_shell: Option<RenderShell>,
@@ -178,6 +185,6 @@ impl ToolDefinition {
             allow_lazy_activation: None, prompt_snippet: None, prompt_guidelines: None,
             freeform: None, constrained_sampling: None, render_shell: None,
             prepare_arguments: None, execution_mode: None,
-            permission_parser: None, kernel_prelude: None }
+            permission_parser: None, kernel_prelude: None, output_schema: None }
     }
 }

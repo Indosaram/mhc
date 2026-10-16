@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
-pub use crate::model::{CursorAgentCompat, CursorReasoning, DevinAgentCompat, Model, ModelCompat};
+pub use crate::model::{CursorAgentCompat, CursorReasoning, DevinAgentCompat, Model, ModelCompat, ModelImageInputLimits, ModelImageResizeOptions, ModelInputLimits};
 pub use crate::openai_responses_compat::{OpenAIResponsesCompat, SessionAffinityFormat};
 pub use crate::utils::diagnostics::AssistantMessageDiagnostic;
 pub use crate::utils::event_stream::AssistantMessageEventStream;
@@ -942,6 +942,8 @@ pub struct Tool {
     pub description: String,
     /// JSON Schema (`TSchema`).
     pub parameters: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freeform: Option<FreeformToolFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
