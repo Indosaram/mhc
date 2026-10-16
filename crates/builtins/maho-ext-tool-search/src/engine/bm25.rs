@@ -68,15 +68,18 @@ impl Bm25Index {
             for term in &content { count += 1.0; if entry.term_freq.contains_key(*term) { matched += 1.0; } }
             results.push(Bm25Result { name: entry.doc.name.clone(), score, exact, coverage: matched / count, doc: entry.doc.clone() });
         }
-        static COLLATOR:std::sync::LazyLock<icu_collator::CollatorBorrowed<'static>>=std::sync::LazyLock::new(||icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error)));
-        let collator=&*COLLATOR;
-        results.sort_by(|a,b| b.exact.cmp(&a.exact).then_with(|| b.score.total_cmp(&a.score)).then_with(|| collator.compare(&a.name,&b.name)));
+        results.sort_by(|a,b| b.exact.cmp(&a.exact).then_with(|| b.score.total_cmp(&a.score)).then_with(|| javascript_locale_compare(&a.name,&b.name)));
         if let Some(precision) = options.precision {
             let floor = results.iter().find(|r| !r.exact).map_or(0.0, |r| r.score) * precision.min_score_ratio;
             results.retain(|r| r.exact || (r.coverage >= precision.min_coverage && r.score >= floor));
         }
         results.truncate(limit); results
     }
+}
+
+fn javascript_locale_compare(left:&str,right:&str)->std::cmp::Ordering {
+    static COLLATOR:std::sync::LazyLock<icu_collator::CollatorBorrowed<'static>>=std::sync::LazyLock::new(||icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error)));
+    COLLATOR.compare(left,right)
 }
 
 pub fn stem_token(token: &str) -> String {
@@ -119,6 +122,11 @@ mod tests {
     #[test] fn source_filter() { let mut a=doc("search_a"); a.source=ToolSearchSource::Mcp; let b=doc("search_b"); let r=build_bm25_index(&[a,b]).search("search",25,&Bm25SearchOptions { source:Some(ToolSearchSource::Extension), ..Default::default() }); assert_eq!(r.len(),1); assert_eq!(r[0].name,"search_b"); }
     #[test] fn group_filter() { let mut a=doc("search_a"); a.group="docs".into(); let b=doc("search_b"); let r=build_bm25_index(&[a,b]).search("search",25,&Bm25SearchOptions { group:Some("docs".into()), ..Default::default() }); assert_eq!(r.len(),1); assert_eq!(r[0].name,"search_a"); }
     #[test] fn stable_ties() { let i=build_bm25_index(&[doc("b_tool"),doc("a_tool")]); let a=i.search("tool",25,&Default::default()); let b=i.search("tool",25,&Default::default()); assert_eq!(a,b); assert_eq!(a[0].name,"a_tool"); }
+    #[test] fn locale_ordering_matches_javascript_locale_compare() {
+        let names=["z_tool","A_tool","a_tool","ä_tool","aa_tool","e_tool","é_tool"];
+        let results=build_bm25_index(&names.map(doc)).search("tool",25,&Bm25SearchOptions{exact_match:Some(false),..Default::default()});
+        assert_eq!(results.iter().map(|result|result.name.as_str()).collect::<Vec<_>>(),["a_tool","A_tool","ä_tool","aa_tool","e_tool","é_tool","z_tool"]);
+    }
     #[test] fn plural_stems() { assert_eq!(stem_token("libraries"),"library"); assert_eq!(stem_token("messages"),"message"); assert_eq!(stem_token("status"),"status"); assert_eq!(stem_token("class"),"class"); }
     #[test] fn precision_drops_incidental_terms() { let mut a=doc("full"); a.description=Some("search weather forecast city".into()); let mut b=doc("partial"); b.description=Some("search".into()); let r=build_bm25_index(&[a,b]).search("search weather forecast city",25,&Bm25SearchOptions { precision:Some(DEFAULT_BM25_PRECISION), ..Default::default() }); assert_eq!(r.len(),1); }
     #[test] fn zero_limit() { assert!(build_bm25_index(&[doc("search")]).search("search",0,&Default::default()).is_empty()); }
