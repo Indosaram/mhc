@@ -66,8 +66,7 @@ impl MatcherCache {
         } else {
             let mut set = PatternSet { key, positive: Vec::new(), negative: Vec::new() };
             for pattern in patterns {
-                let negated = pattern.starts_with('!');
-                let value = pattern.strip_prefix('!').unwrap_or(&pattern);
+                let (negated, value) = if let Some(value) = pattern.strip_prefix('!') { (true, value) } else { (false, pattern.as_str()) };
                 let compiled = create_glob_matcher(value)?;
                 if negated { set.negative.push(compiled); } else { set.positive.push((pattern, compiled)); }
             }
@@ -76,7 +75,7 @@ impl MatcherCache {
         };
         self.sets.push_back(set);
         let set = self.sets.back().unwrap_or_else(|| unreachable!("set was just inserted"));
-        let bases = [Some(input.project_relative), input.scope_relative.filter(|value| !value.is_empty()), Some(input.basename)];
+        let bases = [Some(input.project_relative), input.scope_relative, Some(input.basename)];
         for (pattern, matcher) in &set.positive {
             for base in bases.into_iter().flatten() {
                 let base = base.replace('\\', "/");
