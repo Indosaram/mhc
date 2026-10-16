@@ -6,11 +6,13 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub struct AskUserState { pub timed_out: bool, pub unavailable: bool }
+#[derive(Clone, Copy)]
+pub(crate) struct QuestionExecution { pub variant: AskUserVariant, pub resuming: bool, pub required: bool }
 fn unavailable(request: &QuestionRequest) -> QuestionResponse {
     QuestionResponse { status: QuestionStatus::Unavailable, answers: Default::default(), comment: None, unanswered: request.questions.iter().map(|question| question.id.clone()).collect(), auto_resolved_after_ms: None }
 }
-fn result(variant: AskUserVariant, request: &QuestionRequest, response: &QuestionResponse) -> AgentToolResult {
-    let text=if response.status==QuestionStatus::Cancelled{response.comment.clone().unwrap_or_else(||format_result_text(response,&request.questions))}else{format_result_text(response,&request.questions)};
+fn result(variant: AskUserVariant, request: &QuestionRequest, response: &QuestionResponse, required: bool) -> AgentToolResult {
+    let text=if required && !matches!(response.status,QuestionStatus::Answered|QuestionStatus::CommentSubmitted){crate::format::format_required_no_answer(response,&request.questions)}else if response.status==QuestionStatus::Cancelled{response.comment.clone().unwrap_or_else(||format_result_text(response,&request.questions))}else{format_result_text(response,&request.questions)};
     AgentToolResult { content: vec![ContentBlock::Text(TextContent { text, audience: None, text_signature: None })], details: format_result_details(variant, response, &request.questions), usage: None, added_tool_names: None, terminate: None, is_error: None }
 }
 fn emit_wake(bus:&EventBus,session:&str){
@@ -44,34 +46,35 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
                 Ok(request)=>request,
                 Err(message)=>return Ok(AgentToolResult{content:vec![ContentBlock::Text(TextContent{text:message,audience:None,text_signature:None})],details:json!({"status":"unavailable"}),usage:None,added_tool_names:None,terminate:None,is_error:None}),
             };
+            let required=args.get("required").and_then(serde_json::Value::as_bool)==Some(true);
             let (timed_out, unavailable_now) = {
                 let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 (current.timed_out,current.unavailable||!settings.enabled||sender.get_flag("no-ask-user")==Some(FlagValue::Boolean(true))||matches!(ctx.mode,ExtensionMode::Print|ExtensionMode::Json))
             };
             if timed_out {
-                let mut response=result(variant,&request,&unavailable(&request));
-                response.content=vec![ContentBlock::Text(TextContent{text:"The user did not answer the previous question this turn; continue without asking again.".into(),audience:None,text_signature:None})];
+                let response=result(variant,&request,&unavailable(&request),required);
                 return Ok(response);
             }
             if unavailable_now {
                 state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unavailable=true;
                 let actions=sender.runtime.session_actions()?;
                 actions.set_active_tools(actions.get_active_tools()?.into_iter().filter(|name|!crate::family::TOOL_NAMES.contains(&name.as_str())).collect())?;
-                return Ok(result(variant,&request,&unavailable(&request)));
+                return Ok(result(variant,&request,&unavailable(&request),required));
             }
-            start_question(sender, ctx.clone(), request, signal, state, variant, false).await
+            start_question(sender, ctx.clone(), request, signal, state, QuestionExecution { variant, resuming: false, required }).await
         })
     })) { std::panic::panic_any(error); }
     api.registered.tool_renderers.insert(tool_name(variant).into(),Arc::new(crate::render::renderers()));
 }
 
-pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionContext, request: QuestionRequest, signal: Option<maho_ai::utils::abort::AbortSignal>, state: Arc<Mutex<AskUserState>>, variant: AskUserVariant, resuming: bool) -> Result<AgentToolResult, ExtensionFailure> {
+pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionContext, request: QuestionRequest, signal: Option<maho_ai::utils::abort::AbortSignal>, state: Arc<Mutex<AskUserState>>, execution: QuestionExecution) -> Result<AgentToolResult, ExtensionFailure> {
+            let QuestionExecution { variant, resuming, required } = execution;
             let id = request.request_id.clone();
             let session = ctx.session_manager.session_id().to_owned();
             if let Some(existing) = get_pending_questions(&session).into_iter().find(|entry| entry.request.request_id == id) {
                 let mut completion = existing.completion.clone();
                 loop {
-                    if let Some(response) = completion.borrow().clone() { return Ok(result(variant, &request, &response)); }
+                    if let Some(response) = completion.borrow().clone() { return Ok(result(variant, &request, &response,required)); }
                     completion.changed().await.map_err(|_| ExtensionFailure::new("Question owner disappeared"))?;
                 }
             }
@@ -159,7 +162,7 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
             if resuming || !request.wait_for_answer { return Ok(AgentToolResult { content: vec![ContentBlock::Text(TextContent { text:"Question accepted; the answer will arrive as a user message.".into(), audience:None, text_signature:None })], details:json!({"accepted":true,"requestId":id,"status":"pending"}), usage:None,added_tool_names:None,terminate:None,is_error:None }); }
             loop {
                 let response = completion.borrow().clone();
-                if let Some(response) = response { task.await.map_err(|error|ExtensionFailure::new(error.to_string()))?; return Ok(result(variant, &request, &response)); }
+                if let Some(response) = response { task.await.map_err(|error|ExtensionFailure::new(error.to_string()))?; return Ok(result(variant, &request, &response,required)); }
                 completion.changed().await.map_err(|_|ExtensionFailure::new("Question owner disappeared"))?;
             }
 }

@@ -12,8 +12,9 @@ pub(crate) async fn resume_dangling_questions(sender:std::sync::Arc<maho_ext_api
     for dangling in find_dangling_questions(&entries){
         if !pending.insert(dangling.tool_call_id.clone()){continue;}
         sender.append_entry(ASK_USER_RESUMED_ENTRY,Some(serde_json::json!({"toolCallId":dangling.tool_call_id})))?;
+        let required=dangling.args.get("required").and_then(Value::as_bool)==Some(true);
         let request=to_canonical(dangling.variant,&dangling.args,dangling.tool_call_id.clone(),Some(timeout)).unwrap_or_else(|_|maho_ext_api::QuestionRequest{request_id:dangling.tool_call_id,questions:vec![],wait_for_answer:false,timeout_ms:timeout});
-        crate::tool::start_question(sender.clone(),ctx.clone(),request,None,std::sync::Arc::new(std::sync::Mutex::new(crate::tool::AskUserState::default())),dangling.variant,true).await?;
+        crate::tool::start_question(sender.clone(),ctx.clone(),request,None,std::sync::Arc::new(std::sync::Mutex::new(crate::tool::AskUserState::default())),crate::tool::QuestionExecution{variant:dangling.variant,resuming:true,required}).await?;
     }
     Ok(())
 }
