@@ -1,4 +1,5 @@
 use senpi_task::host::SenpiModelRegistry;
+pub fn read_model_context_window(entry:&serde_json::Value)->Option<u64>{entry.get("contextWindow").and_then(serde_json::Value::as_u64)}
 pub trait MemoryModelRegistryContext{fn model_registry(&self)->Option<&dyn SenpiModelRegistry>;}
 pub fn resolve_memory_model_registry(context:Option<&dyn MemoryModelRegistryContext>)->Option<&dyn SenpiModelRegistry>{context?.model_registry()}
 pub struct NativeMemoryModelRegistry(pub std::sync::Arc<dyn maho_ext_api::ModelRegistry>);
@@ -15,4 +16,5 @@ mod tests{
     impl MemoryModelRegistryContext for Context{fn model_registry(&self)->Option<&dyn SenpiModelRegistry>{self.registry.then_some(self)}}
     #[test]fn complete_native_registry_returned_by_identity(){let context=Context{registry:true};let registry=resolve_memory_model_registry(Some(&context)).unwrap();assert!(std::ptr::eq(registry,&context as &dyn SenpiModelRegistry));assert_eq!(registry.get_available().unwrap(),serde_json::json!([]));assert_eq!(registry.find("provider","id"),None);}
     #[test]fn missing_capability_rejected(){assert!(resolve_memory_model_registry(None).is_none());assert!(resolve_memory_model_registry(Some(&Context{registry:false})).is_none());}
+    #[test]fn context_window_reader_accepts_only_unsigned_integer(){assert_eq!(read_model_context_window(&serde_json::json!({"contextWindow":131072})),Some(131072));assert_eq!(read_model_context_window(&serde_json::json!({"contextWindow":"131072"})),None);assert_eq!(read_model_context_window(&serde_json::json!({})),None);}
 }

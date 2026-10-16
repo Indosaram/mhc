@@ -34,7 +34,7 @@ impl MemoryGuard {
     pub fn check(&mut self,context:Option<&MemoryIdentityContext>,cwd:&Path,tool_name:&str,input:&serde_json::Value,session_id:Option<&str>,captured_tools:&[String])->std::io::Result<MemoryGuardDecision>{
         let Some(context)=context else{return Ok(MemoryGuardDecision::Allow);};
         if !input.is_object(){return Ok(MemoryGuardDecision::Allow);}
-        let own=resolve_path(&context.identity_paths.root)?;let agents=own.parent().unwrap_or(Path::new("/")).to_path_buf();let mut foreign=Vec::new();
+        let own=resolve_path(&context.durable_root)?;let agents=own.parent().unwrap_or(Path::new("/")).to_path_buf();let mut foreign=Vec::new();
         match std::fs::read_dir(&agents){Ok(entries)=>{for entry in entries{let entry=entry?;if entry.file_name()!=std::ffi::OsStr::new(&context.identity){foreign.push(entry.path());}}},Err(error) if matches!(error.kind(),std::io::ErrorKind::NotFound|std::io::ErrorKind::NotADirectory)=>{},Err(error)=>return Err(error)}
         if matches_tool(tool_name,"bash") {
             if let Some(command)=input.get("command").and_then(serde_json::Value::as_str) {
