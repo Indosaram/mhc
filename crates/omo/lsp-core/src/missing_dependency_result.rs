@@ -1,5 +1,6 @@
 use crate::lsp::errors::LspError;
 use crate::lsp::types::FailedServerLookupResult;
+use crate::lsp::server_install_state::load_install_decision;
 use crate::lsp::utils::handle_missing_dependency_error;
 use crate::request_context::lsp_request_context;
 use serde_json::Map;
@@ -95,15 +96,22 @@ fn missing_dependency_availability(error: &LspError) -> Option<Value> {
         FailedServerLookupResult::NotInstalled {
             server,
             install_hint,
-        } => json!({
-            "kind": "not_installed",
-            "serverId": server.id,
-            "command": server.command,
-            "extensions": server.extensions,
-            "installHint": install_hint,
-            "installDecisionTool": context.capabilities.install_decision_tool,
-            "installDecisionsPath": context.install_decisions_path,
-        }),
+        } => {
+            let decision = load_install_decision(&server.id)
+                .ok()
+                .flatten()
+                .map(|record| json!({ "decision": record.decision.as_str(), "decidedAt": record.decided_at }));
+            json!({
+                "kind": "not_installed",
+                "serverId": server.id,
+                "command": server.command,
+                "extensions": server.extensions,
+                "installHint": install_hint,
+                "installDecisionTool": context.capabilities.install_decision_tool,
+                "installDecisionsPath": context.install_decisions_path,
+                "decision": decision,
+            })
+        }
     })
 }
 

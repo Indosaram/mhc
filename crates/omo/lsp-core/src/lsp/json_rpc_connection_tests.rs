@@ -77,6 +77,34 @@ async fn given_active_request_when_signal_aborts_then_cancel_uses_same_id_and_la
 }
 
 #[tokio::test]
+async fn given_request_write_in_progress_when_signal_aborts_then_cancel_follows_request_frame() {
+    let (_server_to_client, client_reader) = tokio::io::duplex(64 * 1024);
+    let (client_writer, mut client_to_server) = tokio::io::duplex(1);
+    let connection = JsonRpcConnection::new(client_reader, client_writer);
+    connection.listen();
+    let controller = AbortController::new();
+    let signal = controller.signal();
+    let request = {
+        let connection = connection.clone();
+        tokio::spawn(async move {
+            connection
+                .send_request("textDocument/diagnostic", None, Some(&signal))
+                .await
+        })
+    };
+
+    tokio::task::yield_now().await;
+    controller.abort_with(LspError::other("caller cancelled"));
+    let mut buffer = Vec::new();
+    let request_frame = read_message(&mut client_to_server, &mut buffer).await;
+    let cancel_frame = read_message(&mut client_to_server, &mut buffer).await;
+    assert_eq!(request_frame["method"], json!("textDocument/diagnostic"));
+    assert_eq!(cancel_frame["method"], json!("$/cancelRequest"));
+    assert_eq!(cancel_frame["params"]["id"], request_frame["id"]);
+    assert_eq!(request.await.expect("join"), Err(LspError::other("caller cancelled")));
+}
+
+#[tokio::test]
 async fn unknown_server_request_gets_method_not_found_and_error_responses_carry_the_code() {
     let (mut server_to_client, client_reader) = tokio::io::duplex(64 * 1024);
     let (client_writer, mut client_to_server) = tokio::io::duplex(64 * 1024);

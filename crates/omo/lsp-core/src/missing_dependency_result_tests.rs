@@ -2,6 +2,7 @@ use super::*;
 use crate::lsp::errors::LspError;
 use crate::lsp::types::FailedServerLookupResult;
 use crate::lsp::types::ServerLookupInfo;
+use crate::lsp::server_install_state::{InstallDecision, record_install_decision};
 use crate::request_context::join;
 use crate::request_context::parse_lsp_request_context;
 use crate::request_context::run_with_request_context;
@@ -96,6 +97,12 @@ fn not_installed_lookup_includes_install_decision_availability() {
     };
 
     let result = run_with_request_context(context, || {
+        record_install_decision(
+            "typescript",
+            InstallDecision::Declined,
+            Some("2026-10-16T12:00:00.000Z".to_string()),
+        )
+        .expect("record install decision");
         missing_dependency_result(&error, details(json!({ "filePath": "src/file.ts" })))
     })
     .expect("missing dependency");
@@ -114,6 +121,7 @@ fn not_installed_lookup_includes_install_decision_availability() {
                 "installHint": "npm install -g typescript-language-server typescript",
                 "installDecisionTool": true,
                 "installDecisionsPath": decisions,
+                "decision": { "decision": "declined", "decidedAt": "2026-10-16T12:00:00.000Z" },
             },
         })
     );
