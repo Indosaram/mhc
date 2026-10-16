@@ -46,7 +46,7 @@ impl RecoveryTextProjection {
 
     pub fn start(&self, projection: &mut StreamMessageProjection, native_projection: &mut RecoveryNativeProjection, source: &AssistantMessage) -> bool {
         let outer_index = projection.start_text(self.inner_index, source.content.get(self.inner_index));
-        native_projection.start_text(self.inner_index, outer_index)
+        native_projection.start_text(&projection.message, self.inner_index, outer_index)
     }
 
     pub fn feed(&mut self, projection: &mut StreamMessageProjection, native_projection: &mut RecoveryNativeProjection, text: &str) -> bool {
@@ -73,7 +73,7 @@ impl RecoveryTextProjection {
         self.project_parser_events(projection, native_projection, events);
         self.flush_text(projection);
         projection.finish_text();
-        native_projection.extend_text(self.inner_index);
+        native_projection.extend_text(&projection.message, self.inner_index);
         self.finished = true;
         self.saw_tool_call
     }
@@ -112,7 +112,7 @@ impl RecoveryTextProjection {
                 }
             }
         }
-        native_projection.extend_text(self.inner_index);
+        native_projection.extend_text(&projection.message, self.inner_index);
     }
 
     fn flush_text(&mut self, projection: &mut StreamMessageProjection) {
@@ -164,7 +164,7 @@ mod tests {
         let stream = AssistantMessageEventStream::assistant();
         let source = message(vec![]);
         let mut projection = StreamMessageProjection::new(stream.clone(), source.clone(), StreamMessageProjectionOptions::default());
-        let mut native_projection = RecoveryNativeProjection::new(stream, message(vec![]), ToolCallFormat::Antml);
+        let mut native_projection = RecoveryNativeProjection::new(stream, ToolCallFormat::Antml);
         let mut text_projection = RecoveryTextProjection::new(vec![tool("get_weather")], 0, RecoveryTextProjectionOptions::default());
 
         assert!(text_projection.start(&mut projection, &mut native_projection, &source));
