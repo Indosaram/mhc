@@ -24,6 +24,7 @@ pub enum ModifierKey {
 pub trait NativeClipboard: Send + Sync {
     fn get_text(&self) -> Result<Option<String>, String>;
     fn get_image(&self) -> Result<Option<Vec<u8>>, String>;
+    fn get_file_paths(&self) -> Result<Option<Vec<String>>, String> { Ok(None) }
     fn set_text(&self, _text: &str) -> Option<Result<(), String>> {
         None
     }

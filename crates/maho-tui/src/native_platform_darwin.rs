@@ -1,12 +1,12 @@
 //! Port of senpi `packages/tui/native/darwin/src/darwin-platform.m`, the macOS native platform
 //! helper: modifier state through `CGEventSourceFlagsState` and the general `NSPasteboard` for
-//! clipboard text and images. Registered by
+//! clipboard text, images, and file URLs. Registered by
 //! [`crate::native_platform::register_builtin_native_platform_helper`].
 
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSPasteboard;
 use objc2_core_graphics::{CGEventFlags, CGEventSource, CGEventSourceStateID};
-use objc2_foundation::{NSArray, NSString};
+use objc2_foundation::{NSArray, NSString, NSURL};
 
 use crate::native_platform::{ModifierKey, NativeClipboard, NativePlatformHelper};
 
@@ -77,6 +77,24 @@ impl NativeClipboard for DarwinPlatformHelper {
                 .dataForType(&tiff_type)
                 .ok_or_else(|| "Clipboard does not contain an image".to_string())?;
             tiff_to_png(&tiff.to_vec()).map(Some)
+        })
+    }
+
+    fn get_file_paths(&self) -> Result<Option<Vec<String>>, String> {
+        autoreleasepool(|_| {
+            let pasteboard = NSPasteboard::generalPasteboard();
+            let classes = NSArray::from_slice(&[&*NSURL::class()]);
+            let options = objc2_foundation::NSDictionary::from_slices(
+                &[&*NSString::from_str("NSPasteboardURLReadingFileURLsOnlyKey")],
+                &[&*objc2_foundation::NSNumber::new_bool(true)],
+            );
+            let objects = pasteboard.readObjectsForClasses_options(&classes, &options);
+            Ok((!objects.is_empty()).then(|| {
+                objects.iter().filter_map(|object| {
+                    let url = object.downcast_ref::<NSURL>()?;
+                    url.path().map(|path| path.to_string())
+                }).collect()
+            }))
         })
     }
 

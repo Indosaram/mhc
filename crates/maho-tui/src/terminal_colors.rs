@@ -12,13 +12,26 @@ pub struct RgbColor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OscColorTarget { Foreground, Background, Palette(u16) }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OscColorResponse { pub target: OscColorTarget, pub rgb: Option<RgbColor> }
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TerminalColors { pub foreground: Option<RgbColor>, pub background: Option<RgbColor>, pub palette: Vec<Option<RgbColor>> }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalColorScheme {
     Dark,
     Light,
 }
 
+
 static OSC11_BACKGROUND_COLOR_RESPONSE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\x1b\]11;([^\x07\x1b]*)(?:\x07|\x1b\\)$").expect("valid regex")
+});
+static OSC_COLOR_RESPONSE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\x1b\](?:(1[01])|4;(\d{1,3}));([^\x07\x1b]*)(?:\x07|\x1b\\)$").expect("valid regex")
 });
 static COLOR_SCHEME_REPORT_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:\x1b\[\?997;(1|2)n)+$").expect("valid regex"));
@@ -82,11 +95,37 @@ pub fn parse_osc11_background_color(data: &str) -> Option<RgbColor> {
     let rgb_value = RGB_PREFIX.replace(value, "");
     let mut parts = rgb_value.split('/');
     let (red, green, blue) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() { return None; }
     Some(RgbColor {
         r: parse_osc_hex_channel(red)?,
         g: parse_osc_hex_channel(green)?,
         b: parse_osc_hex_channel(blue)?,
     })
+}
+
+pub fn parse_osc_color_response(data: &str) -> Option<OscColorResponse> {
+    let captures = OSC_COLOR_RESPONSE_PATTERN.captures(data)?;
+    let target = match captures.get(1).map(|m| m.as_str()) {
+        Some("10") => OscColorTarget::Foreground,
+        Some("11") => OscColorTarget::Background,
+        _ => OscColorTarget::Palette(captures.get(2)?.as_str().parse().ok()?),
+    };
+    let value = captures.get(3)?.as_str().trim();
+    let rgb = if let Some(hex) = value.strip_prefix('#') {
+        if HEX6.is_match(hex) { Some(hex_to_rgb(value)) }
+        else if HEX12.is_match(hex) { Some(RgbColor { r: parse_osc_hex_channel(&hex[0..4])?, g: parse_osc_hex_channel(&hex[4..8])?, b: parse_osc_hex_channel(&hex[8..12])? }) }
+        else { None }
+    } else {
+        let rgb_value = RGB_PREFIX.replace(value, "");
+        let mut parts = rgb_value.split('/');
+        let (r, g, b) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() { None } else { Some(RgbColor { r: parse_osc_hex_channel(r)?, g: parse_osc_hex_channel(g)?, b: parse_osc_hex_channel(b)? }) }
+    };
+    Some(OscColorResponse { target, rgb })
+}
+
+pub fn is_terminal_color_da1(data: &str) -> bool {
+    Regex::new(r"^\x1b\[\?[\d;]*c$").is_ok_and(|pattern| pattern.is_match(data))
 }
 
 pub fn parse_terminal_color_scheme_report(data: &str) -> Option<TerminalColorScheme> {
@@ -181,5 +220,21 @@ mod tests {
             parse_osc11_background_color("\x1b]11;rgb:zz/00/00\x07"),
             None
         );
+    }
+
+    #[test]
+    fn parses_osc_foreground_background_and_palette_replies() {
+        assert_eq!(parse_osc_color_response("\x1b]10;#123456\x07"), Some(OscColorResponse { target: OscColorTarget::Foreground, rgb: Some(rgb(0x12, 0x34, 0x56)) }));
+        assert_eq!(parse_osc_color_response("\x1b]11;rgb:ffff/0000/8000\x1b\\"), Some(OscColorResponse { target: OscColorTarget::Background, rgb: Some(rgb(255, 0, 128)) }));
+        assert_eq!(parse_osc_color_response("\x1b]4;256;#abcdef\x07"), Some(OscColorResponse { target: OscColorTarget::Palette(256), rgb: Some(rgb(0xab, 0xcd, 0xef)) }));
+        assert_eq!(parse_osc_color_response("\x1b]4;1;rgb:ff/00/00/ff\x07"), None);
+    }
+
+    #[test]
+    fn parses_default_and_palette_color_replies() {
+        assert_eq!(parse_osc_color_response("\x1b]10;#123456\x07"), Some(OscColorResponse { target: OscColorTarget::Foreground, rgb: Some(rgb(0x12, 0x34, 0x56)) }));
+        assert_eq!(parse_osc_color_response("\x1b]11;rgb:ffff/0000/8000\x1b\\"), Some(OscColorResponse { target: OscColorTarget::Background, rgb: Some(rgb(255, 0, 128)) }));
+        assert_eq!(parse_osc_color_response("\x1b]4;15;#abcdef\x07"), Some(OscColorResponse { target: OscColorTarget::Palette(15), rgb: Some(rgb(0xab, 0xcd, 0xef)) }));
+        assert!(is_terminal_color_da1("\x1b[?1;2c"));
     }
 }
