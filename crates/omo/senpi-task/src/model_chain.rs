@@ -83,26 +83,37 @@ pub fn chain_rung_candidates(options: &ChainRungCandidateOptions<'_>) -> Vec<Mod
         return Vec::new();
     };
     let mut rungs = vec![ModelChainCandidate::of(options.selected_model)];
-    for entry in &options.chain[selected_index + 1..] {
-        let concrete = entry
-            .providers
-            .iter()
-            .map(|provider| {
-                format!(
-                    "{provider}/{}",
-                    transform_model_for_provider(provider, &entry.model)
-                )
-            })
-            .find(|concrete| options.available_models.contains(concrete));
-        if let Some(concrete) = concrete {
-            rungs.push(ModelChainCandidate {
-                model: concrete,
-                variant: entry.variant.clone(),
-                reasoning_effort: None,
-            });
-        }
-    }
+    rungs.extend(available_chain_candidates(
+        &options.chain[selected_index + 1..],
+        options.available_models,
+    ));
     rungs
+}
+
+pub fn available_chain_candidates(
+    chain: &[DelegateFallbackEntry],
+    available_models: &BTreeSet<String>,
+) -> Vec<ModelChainCandidate> {
+    chain
+        .iter()
+        .filter_map(|entry| {
+            entry.providers.iter().find_map(|provider| {
+                let model_id = entry
+                    .model
+                    .strip_prefix(&format!("{provider}/"))
+                    .unwrap_or(&entry.model);
+                let concrete = format!(
+                    "{provider}/{}",
+                    transform_model_for_provider(provider, model_id)
+                );
+                available_models.contains(&concrete).then(|| ModelChainCandidate {
+                    model: concrete,
+                    variant: entry.variant.clone(),
+                    reasoning_effort: None,
+                })
+            })
+        })
+        .collect()
 }
 
 fn locate_selected_rung(options: &ChainRungCandidateOptions<'_>) -> Option<usize> {
@@ -113,10 +124,12 @@ fn locate_selected_rung(options: &ChainRungCandidateOptions<'_>) -> Option<usize
     }
     options.chain.iter().position(|entry| {
         entry.providers.iter().any(|provider| {
-            format!(
-                "{provider}/{}",
-                transform_model_for_provider(provider, &entry.model)
-            ) == options.selected_model
+            let model_id = entry
+                .model
+                .strip_prefix(&format!("{provider}/"))
+                .unwrap_or(&entry.model);
+            format!("{provider}/{}", transform_model_for_provider(provider, model_id))
+                == options.selected_model
         })
     })
 }
@@ -132,3 +145,7 @@ fn to_resolved_model_record(
         ..ResolvedModelRecord::new(source, &parsed.provider, &parsed.model_id)
     })
 }
+
+#[cfg(test)]
+#[path = "model_chain_tests.rs"]
+mod tests;

@@ -32,6 +32,8 @@ pub struct ToolProgressDetails {
     pub last_assistant_line: Option<String>,
     pub turns: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_turns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<f64>,
@@ -62,6 +64,8 @@ pub struct ChildProgress<C: Fn() -> u64> {
     last_assistant_line: Option<String>,
     last_total_tokens: Option<f64>,
     fallback_count: u64,
+    turn_resumed: bool,
+    awaiting_input: bool,
 }
 
 pub fn create_child_progress<C: Fn() -> u64 + Clone>(
@@ -80,12 +84,25 @@ pub fn create_child_progress<C: Fn() -> u64 + Clone>(
         last_assistant_line: None,
         last_total_tokens: None,
         fallback_count: 0,
+        turn_resumed: false,
+        awaiting_input: false,
     }
 }
 
 impl<C: Fn() -> u64> ChildProgress<C> {
     pub fn accept(&mut self, event: &ManagedChildEvent) -> bool {
         let stats_changed = self.tracker.accept(event);
+        match event.event_type.as_str() {
+            "host_turn_resumed" => {
+                self.turn_resumed = true;
+                return true;
+            }
+            "task_awaiting_input" => {
+                self.awaiting_input = true;
+                return true;
+            }
+            _ => {}
+        }
         match event.event_type.as_str() {
             "retry_fallback_applied" => {
                 let Some(to) = &event.to else {
@@ -135,6 +152,7 @@ impl<C: Fn() -> u64> ChildProgress<C> {
             current_tool: self.current_tool.clone(),
             last_assistant_line: self.last_assistant_line.clone(),
             turns: stats.turns as f64,
+            failed_turns: stats.failed_turns.map(|turns| turns as f64),
             tool_calls: Some(stats.tool_calls as f64),
             tokens: self.last_total_tokens,
             output_tokens: stats.output_tokens.map(|tokens| tokens as f64),
@@ -168,6 +186,7 @@ impl<C: Fn() -> u64> ChildProgress<C> {
         });
         let line_stats = StatusLineStats {
             turns: stats.turns,
+            failed_turns: stats.failed_turns.unwrap_or_default(),
             tool_calls: stats.tool_calls,
             runtime_ms: Some(stats.runtime_ms),
             tokens_per_second: stats.tokens_per_second,
@@ -175,16 +194,39 @@ impl<C: Fn() -> u64> ChildProgress<C> {
             cache_hit_rate_last: stats.cache_hit_rate_last,
             cache_hit_rate_run: stats.cache_hit_rate_run,
         };
-        let verb = match &self.current_tool {
-            Some(tool) => format!("running {tool}"),
-            None => "running".to_string(),
-        };
+        let verb = select_live_activity_verb(
+            self.current_tool.as_deref(),
+            stats.turns,
+            stats.failed_turns.unwrap_or_default(),
+            self.turn_resumed,
+            self.awaiting_input,
+        );
         compose_status_line(&StatusLineInput {
             identity: &identity,
             target: status_target.as_deref(),
             stats: Some(&line_stats),
             verb: Some(&verb),
         })
+    }
+}
+
+pub fn select_live_activity_verb(
+    tool: Option<&str>,
+    turns: u64,
+    failed_turns: u64,
+    turn_resumed: bool,
+    awaiting_input: bool,
+) -> String {
+    if let Some(tool) = tool {
+        format!("running {tool}")
+    } else if turns > 0 || turn_resumed {
+        "running".to_string()
+    } else if awaiting_input {
+        "resumed, waiting for input".to_string()
+    } else if failed_turns > 0 {
+        "retrying".to_string()
+    } else {
+        "starting".to_string()
     }
 }
 
@@ -218,6 +260,7 @@ pub fn read_tool_progress_details(value: &Value) -> Option<ToolProgressDetails> 
         current_tool: optional_string("currentTool").ok()?,
         last_assistant_line: optional_string("lastAssistantLine").ok()?,
         turns,
+        failed_turns: optional_number("failedTurns").ok()?,
         tool_calls: optional_number("toolCalls").ok()?,
         tokens: optional_number("tokens").ok()?,
         output_tokens: optional_number("outputTokens").ok()?,

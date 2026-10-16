@@ -94,6 +94,10 @@ pub struct ManagerStartSpec {
     pub model: Option<String>,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub team_run_id: Option<String>,
+    pub team_name: Option<String>,
+    pub team_member_name: Option<String>,
+    pub team_role: Option<String>,
     pub cwd: Option<String>,
     pub instructions: Option<String>,
     pub allowed_subagents: Option<Vec<String>>,
@@ -145,6 +149,7 @@ pub struct PlanResolutionError {
     pub category: Option<String>,
     pub attempted_chain: Option<Vec<DelegateFallbackEntry>>,
     pub missing_providers: Option<Vec<String>>,
+    pub unlisted_provider_model: Option<String>,
 }
 
 impl PlanResolutionError {
@@ -157,6 +162,7 @@ impl PlanResolutionError {
             category: None,
             attempted_chain: None,
             missing_providers: None,
+            unlisted_provider_model: None,
         }
     }
 }

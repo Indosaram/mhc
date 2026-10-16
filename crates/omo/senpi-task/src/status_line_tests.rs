@@ -164,6 +164,32 @@ fn agent_type_with_resolved_model_is_qualified_like_category() {
 }
 
 #[test]
+fn simultaneous_agent_and_category_are_both_rendered() {
+    assert_eq!(
+        target(StatusTargetInput {
+            agent_type: Some("oracle"),
+            category: Some("deep-high"),
+            ..StatusTargetInput::default()
+        }),
+        Some("agent:oracle→category:deep-high".to_string())
+    );
+}
+
+#[test]
+fn empty_turn_token_is_omitted_and_failed_turn_is_reported() {
+    let stats = StatusLineStats { failed_turns: 2, ..StatusLineStats::default() };
+    assert_eq!(
+        compose_status_line(&StatusLineInput {
+            identity: "task",
+            stats: Some(&stats),
+            verb: Some("retrying"),
+            ..StatusLineInput::default()
+        }),
+        "task · failed 2 · retrying"
+    );
+}
+
+#[test]
 fn agent_type_with_raw_model_is_qualified() {
     assert_eq!(
         target(StatusTargetInput {
@@ -281,6 +307,7 @@ fn full_live_facts_follow_canonical_grammar() {
     let stats = StatusLineStats {
         runtime_ms: Some(1_000),
         turns: 3,
+        failed_turns: 0,
         tool_calls: 7,
         tokens_per_second: Some(62.0),
         ..StatusLineStats::default()
@@ -301,6 +328,7 @@ fn only_cost_sits_before_tps() {
     let stats = StatusLineStats {
         runtime_ms: Some(1_000),
         turns: 3,
+        failed_turns: 0,
         tool_calls: 7,
         tokens_per_second: Some(62.0),
         cost_usd: Some(0.4213),
@@ -323,6 +351,7 @@ fn cache_rate_without_cost_renders_no_spend() {
     let stats = StatusLineStats {
         runtime_ms: Some(0),
         turns: 1,
+        failed_turns: 0,
         tool_calls: 0,
         tokens_per_second: Some(8.0),
         cache_hit_rate_last: Some(0.5),
@@ -344,6 +373,7 @@ fn single_tool_call_is_singular() {
     let stats = StatusLineStats {
         runtime_ms: Some(0),
         turns: 1,
+        failed_turns: 0,
         tool_calls: 1,
         ..StatusLineStats::default()
     };
