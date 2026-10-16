@@ -4,11 +4,11 @@ use sha2::{Digest,Sha256};
 pub struct Snapshot {
     pub sdk_session_id:String,pub account_name:String,pub model_id:String,pub system_prompt_hash:String,pub toolset_hash:String,
     pub sent_count:usize,pub sent_hashes:Vec<String>,pub last_assistant_uuid:Option<String>,pub assistant_uuid_by_index:BTreeMap<usize,String>,
-    pub pending_fork_reason:Option<String>,pub tainted_reason:Option<String>,pub sent_prefix_hash:Option<String>,pub unanswered_turn_digest:Option<String>,pub sdk_session_id_confirmed:Option<bool>,
+    pub pending_fork_reason:Option<String>,pub tainted_reason:Option<String>,pub sent_prefix_hash:Option<String>,pub unanswered_turn_digest:Option<String>,pub sdk_session_id_confirmed:Option<bool>,pub credential_digest:Option<String>,
 }
 pub struct ContinuityInput<'a> {
     pub entry:Option<&'a Snapshot>,pub binding:Option<&'a Snapshot>,pub current_hashes:&'a [String],pub account_name:&'a str,pub model_id:&'a str,
-    pub system_prompt_hash:&'a str,pub toolset_hash:&'a str,pub transcript_available:bool,pub cross_account_resume_supported:bool,pub idle_expired:bool,pub invalidation_reason:Option<&'a str>,
+    pub system_prompt_hash:&'a str,pub toolset_hash:&'a str,pub transcript_available:bool,pub cross_account_resume_supported:bool,pub idle_expired:bool,pub invalidation_reason:Option<&'a str>,pub credential_digest:Option<&'a str>,
 }
 #[derive(Debug,PartialEq,Eq)]
 pub enum Decision {Bootstrap {reason:Option<String>},Delta {from:usize},Reattach {sdk_session_id:String,from:usize,reason:String},Fork {sdk_session_id:String,at_uuid:String,from:usize,reason:String},Flatten {reason:String}}
@@ -39,15 +39,17 @@ fn from_binding(input:&ContinuityInput<'_>,binding:&Snapshot)->Decision {
         return flatten(if input.current_hashes.len()<binding.sent_count {"history_rolled_back"}else {"sent_stream_diverged"});
     }
     if shared==binding.sent_count {return reattach(binding,reason.unwrap_or("registry_miss"));}
-    match &binding.last_assistant_uuid {None=>flatten("registry_miss"),Some(uuid)=>Decision::Fork {sdk_session_id:binding.sdk_session_id.clone(),at_uuid:uuid.clone(),from:shared,reason:if shared<binding.sent_count {"history_rolled_back"}else {"sent_stream_diverged"}.into()}}
+    let reason=if shared<binding.sent_count {"history_rolled_back"}else {"sent_stream_diverged"};
+    match binding.assistant_uuid_by_index.range(1..=shared).next_back() {Some((index,uuid))=>Decision::Fork {sdk_session_id:binding.sdk_session_id.clone(),at_uuid:uuid.clone(),from:*index,reason:reason.into()},None=>flatten(if binding.last_assistant_uuid.is_some() {reason}else {"registry_miss"})}
 }
 pub fn decide(input:&ContinuityInput<'_>)->Decision {
     let mut decision=if let Some(entry)=input.entry {
-        if let Some(divergence)=entry.pending_fork_reason.as_deref().or(entry.tainted_reason.as_deref()) {fork(entry,entry.sent_count,match divergence {"assistant_rewritten"=>"assistant_rewritten","compaction"=>"tainted_compaction",_=>"other"})}
+        if !input.cross_account_resume_supported&&entry.account_name!=input.account_name {flatten("cross_root_unsupported")}
+        else if let Some(divergence)=entry.pending_fork_reason.as_deref().or(entry.tainted_reason.as_deref()) {if divergence=="compaction" {flatten("tainted_compaction")}else {fork(entry,entry.sent_count,match divergence {"assistant_rewritten"=>"assistant_rewritten",_=>"other"})}}
         else {let shared=common_prefix(&entry.sent_hashes,input.current_hashes);
             if shared<entry.sent_count {let rolled_back=input.current_hashes.len()<entry.sent_count&&shared==input.current_hashes.len();fork(entry,if rolled_back {input.current_hashes.len()}else {shared+1},if rolled_back {"history_rolled_back"}else {"sent_stream_diverged"})}
             else if input.idle_expired {reattach(entry,"idle_ttl")}
-            else if let Some(reason)=drift(input,entry) {reattach(entry,reason)}else {Decision::Delta {from:entry.sent_count}}
+            else if let Some(reason)=drift(input,entry) {reattach(entry,reason)}else if input.credential_digest.is_some_and(|digest|entry.credential_digest.as_deref().is_some_and(|old|old!=digest)) {reattach(entry,"credential_refreshed")}else {Decision::Delta {from:entry.sent_count}}
         }
     } else if let Some(binding)=input.binding {let decision=from_binding(input,binding);if binding.sdk_session_id_confirmed==Some(false)&&matches!(decision,Decision::Reattach {..}|Decision::Fork {..}) {flatten("session_unconfirmed")}else {decision}}
     else {Decision::Bootstrap {reason:None}};
@@ -62,7 +64,7 @@ pub fn sanitize_reason(reason:&str)->String {
         if ["compaction","fork","abort","assistant_provenance_unverified"].contains(&suffix) {return mapped;}
     }
     match reason {
-        "prefix_matched"|"registry_miss"|"idle_ttl"|"capacity"|"model_selected"|"thinking_level_selected"|"bound_account_token_expiring"|"account_changed"|"model_changed"|"toolset_changed"|"system_prompt_changed"|"assistant_stream_diverged"|"options_changed"|"history_rolled_back"|"assistant_rewritten"|"transcript_missing"|"cross_root_unsupported"|"sent_stream_diverged"|"branch_diverged"|"branch_boundary_unavailable"|"branch_resume"|"tainted_compaction"|"tainted_fork"|"tainted_abort"|"tainted_assistant_provenance_unverified"|"resume_initialization_failed"|"resume_initialization_aborted"|"resume_mode_off"|"query_failed"|"turn_attribution_failed"|"session_unconfirmed"|"abort_timeout"|"extensions_removed"|"session_shutdown"|"timeout_retry"|"other"=>reason,
+        "prefix_matched"|"registry_miss"|"idle_ttl"|"capacity"|"model_selected"|"thinking_level_selected"|"bound_account_token_expiring"|"account_changed"|"model_changed"|"toolset_changed"|"system_prompt_changed"|"credential_refreshed"|"assistant_stream_diverged"|"options_changed"|"history_rolled_back"|"assistant_rewritten"|"transcript_missing"|"cross_root_unsupported"|"sent_stream_diverged"|"branch_diverged"|"branch_boundary_unavailable"|"branch_resume"|"tainted_compaction"|"tainted_fork"|"tainted_abort"|"tainted_assistant_provenance_unverified"|"resume_initialization_failed"|"resume_initialization_aborted"|"resume_mode_off"|"query_failed"|"turn_attribution_failed"|"session_unconfirmed"|"abort_timeout"|"extensions_removed"|"session_shutdown"|"timeout_retry"|"other"=>reason,
         _=>{
             let text=reason.to_lowercase();
             return if ["did not terminate","interrupt failed"].iter().any(|s|text.contains(s)) {"abort_timeout"}
@@ -75,7 +77,7 @@ pub fn sanitize_reason(reason:&str)->String {
 mod tests {
     use super::*;
     fn snapshot()->Snapshot {Snapshot {sdk_session_id:"sdk".into(),account_name:"primary".into(),model_id:"model".into(),system_prompt_hash:"prompt".into(),toolset_hash:"tools".into(),sent_count:2,sent_hashes:vec!["h1".into(),"h2".into()],last_assistant_uuid:Some("a2".into()),assistant_uuid_by_index:[(1,"a1".into()),(2,"a2".into())].into(),..Default::default()}}
-    fn input<'a>(hashes:&'a [String])->ContinuityInput<'a> {ContinuityInput {entry:None,binding:None,current_hashes:hashes,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None}}
+    fn input<'a>(hashes:&'a [String])->ContinuityInput<'a> {ContinuityInput {entry:None,binding:None,current_hashes:hashes,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None,credential_digest:None}}
     #[test]
     fn live_delta_drift_and_strict_boundary() {
         let mut entry=snapshot();let hashes=vec!["h1".into(),"h2".into(),"h3".into()];let mut request=input(&hashes);request.entry=Some(&entry);assert_eq!(decide(&request),Decision::Delta {from:2});request.model_id="other";assert_eq!(decide(&request),reattach(&entry,"model_changed"));
@@ -90,5 +92,14 @@ mod tests {
     fn restored_prefix_fails_closed_and_invalidations_are_sanitized() {
         for (text,expected) in [("tainted:abort","tainted_abort"),("interrupt failed","abort_timeout"),("result arrived before replay claim","turn_attribution_failed"),("Claude Code query ended before init","query_failed")] {assert_eq!(sanitize_reason(text),expected);}
         let hashes=vec!["h1".into(),"different".into(),"h3".into()];let mut binding=snapshot();binding.sent_prefix_hash=Some(prefix_digest(&binding.sent_hashes,2));let mut request=input(&hashes);request.binding=Some(&binding);assert_eq!(decide(&request),flatten("sent_stream_diverged"));request.binding=None;request.invalidation_reason=Some("arbitrary credential text");assert_eq!(decide(&request),Decision::Bootstrap {reason:Some("other".into())});request.invalidation_reason=Some("compaction");assert_eq!(decide(&request),Decision::Bootstrap {reason:Some("tainted_compaction".into())});
+    }
+    #[test]
+    fn restored_fork_uses_newest_mapped_boundary_inside_shared_prefix() {
+        let hashes=vec!["h1".into(),"changed".into()];let mut binding=snapshot();binding.sent_count=2;binding.sent_hashes=vec!["h1".into(),"h2".into()];binding.last_assistant_uuid=Some("a2".into());binding.assistant_uuid_by_index=[(1,"a1".into()),(2,"a2".into())].into();let mut request=input(&hashes);request.binding=Some(&binding);
+        assert_eq!(decide(&request),Decision::Fork {sdk_session_id:"sdk".into(),at_uuid:"a1".into(),from:1,reason:"history_rolled_back".into()});
+    }
+    #[test]
+    fn live_compaction_and_cross_account_roots_flatten_but_shared_root_refresh_reattaches() {
+        let hashes=vec!["h1".into(),"h2".into()];let mut compacted=snapshot();compacted.pending_fork_reason=Some("compaction".into());let mut request=input(&hashes);request.entry=Some(&compacted);assert_eq!(decide(&request),flatten("tainted_compaction"));let entry=snapshot();request.entry=Some(&entry);request.account_name="secondary";request.cross_account_resume_supported=false;assert_eq!(decide(&request),flatten("cross_root_unsupported"));let mut refreshed=snapshot();refreshed.credential_digest=Some("old".into());request.entry=Some(&refreshed);request.cross_account_resume_supported=true;request.account_name="primary";request.credential_digest=Some("new");assert_eq!(decide(&request),reattach(&refreshed,"credential_refreshed"));
     }
 }

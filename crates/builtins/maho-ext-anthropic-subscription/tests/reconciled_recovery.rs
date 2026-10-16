@@ -262,13 +262,13 @@ fn directive_payload_fixture_collapses_to_latest_and_reduces_size() {
 fn continuity_divergence_matrix_keeps_live_sessions_resumable() {
     let hashes=vec!["h1".into(),"h2".into(),"h3".into(),"h4".into()];
     let entry=Snapshot {sdk_session_id:"sdk".into(),sent_count:3,sent_hashes:hashes[..3].to_vec(),last_assistant_uuid:Some("a3".into()),assistant_uuid_by_index:BTreeMap::from([(1,"a1".into()),(2,"a2".into()),(3,"a3".into())]),account_name:"primary".into(),model_id:"model".into(),system_prompt_hash:"prompt".into(),toolset_hash:"tools".into(),..Default::default()};
-    let request=continuity_input_fn(|entry:&Snapshot,current:&[String]|ContinuityInput {entry:Some(entry),binding:None,current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None});
+    let request=continuity_input_fn(|entry:&Snapshot,current:&[String]|ContinuityInput {entry:Some(entry),binding:None,current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None,credential_digest:None});
     for decision in [
         decide(&request(&entry,&hashes)),
         decide(&{let mut r=request(&entry,&hashes);r.account_name="other";r}),
         decide(&{let mut r=request(&entry,&hashes);r.model_id="other";r}),
         decide(&{let mut r=request(&entry,&hashes);r.system_prompt_hash="other";r}),
-        decide(&request(&Snapshot {pending_fork_reason:Some("compaction".into()),..entry.clone()},&hashes)),
+        decide(&request(&Snapshot {pending_fork_reason:Some("assistant_rewritten".into()),..entry.clone()},&hashes)),
         decide(&request(&Snapshot {tainted_reason:Some("abort".into()),..entry.clone()},&hashes)),
         decide(&request(&entry,&["h1".into(),"h2".into()])),
     ] {assert!(!matches!(decision,Decision::Flatten {..}));}
@@ -281,9 +281,9 @@ fn observability_buckets_failure_vocabulary_and_cold_seed_fields() {
         if !is_error { assert_eq!(expected,"other"); }
     }
     let mut pending=PendingCloseCauses::default();
-    let cold=observe(SyncObservationInput {kind:"cold-seed",reason:Some("transcript_missing"),delta_messages:5,first_turn:false,session:"telemetry",payload_bytes:Some(214_328),collapsed_directives:Some(4)},&mut pending);
+    let cold=observe(SyncObservationInput {kind:"cold-seed",reason:Some("transcript_missing"),delta_messages:5,first_turn:false,session:"telemetry",payload_bytes:Some(214_328),collapsed_directives:Some(4),settings_source:None},&mut pending);
     assert_eq!(cold.payload_bytes,Some(214_328));assert_eq!(cold.collapsed_directives,Some(4));
-    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:3,first_turn:false,session:"telemetry",payload_bytes:Some(999),collapsed_directives:Some(9)},&mut pending);
+    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:3,first_turn:false,session:"telemetry",payload_bytes:Some(999),collapsed_directives:Some(9),settings_source:None},&mut pending);
     assert_eq!(delta.payload_bytes,None);assert_eq!(delta.collapsed_directives,None);
 }
 
@@ -476,7 +476,7 @@ fn continuity_snapshot() -> Snapshot {
 }
 
 fn continuity_input<'a>(hashes:&'a [String])->ContinuityInput<'a> {
-    ContinuityInput {entry:None,binding:None,current_hashes:hashes,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None}
+    ContinuityInput {entry:None,binding:None,current_hashes:hashes,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None,credential_digest:None}
 }
 
 #[test]
@@ -513,7 +513,7 @@ fn continuity_retry_checkpoint_requires_matching_prefix_and_fingerprint_drift_re
 fn retry_checkpoint_shadowing_cold_replays_only_on_matching_prefix() {
     let hashes=vec!["h1".to_owned(),"h2".to_owned(),"h3".to_owned()];
     let mut binding=Snapshot {sdk_session_id:"sdk".into(),sent_count:2,sent_hashes:vec!["h1".into(),"h2".into()],last_assistant_uuid:Some("a2".into()),account_name:"primary".into(),model_id:"model".into(),system_prompt_hash:"prompt".into(),toolset_hash:"tools".into(),unanswered_turn_digest:Some(prefix_digest(&hashes,3)),..Default::default()};
-    let input=continuity_input_fn(|binding:&Snapshot,current:&[String]|ContinuityInput {entry:None,binding:Some(binding),current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None});
+    let input=continuity_input_fn(|binding:&Snapshot,current:&[String]|ContinuityInput {entry:None,binding:Some(binding),current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None,credential_digest:None});
     let with_prefix=Snapshot {sent_prefix_hash:Some(prefix_digest(&hashes,2)),..binding.clone()};
     assert!(matches!(decide(&input(&with_prefix,&hashes)),Decision::Fork {reason,..} if reason=="timeout_retry"));
     binding.sent_prefix_hash=Some(prefix_digest(&["h1".into(),"other".into()],2));
@@ -524,7 +524,7 @@ fn retry_checkpoint_shadowing_cold_replays_only_on_matching_prefix() {
 fn restart_binding_rejects_unconfirmed_session_and_reattaches_on_fingerprint_drift() {
     let hashes=vec!["h1".to_owned(),"h2".to_owned(),"h3".to_owned()];
     let mut binding=Snapshot {sdk_session_id:"sdk".into(),sent_count:2,sent_hashes:vec!["h1".into(),"h2".into()],account_name:"primary".into(),model_id:"model".into(),system_prompt_hash:"prompt".into(),toolset_hash:"tools".into(),..Default::default()};
-    let input=continuity_input_fn(|binding:&Snapshot,current:&[String]|ContinuityInput {entry:None,binding:Some(binding),current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"changed-prompt",toolset_hash:"changed-tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None});
+    let input=continuity_input_fn(|binding:&Snapshot,current:&[String]|ContinuityInput {entry:None,binding:Some(binding),current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"changed-prompt",toolset_hash:"changed-tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None,credential_digest:None});
     assert_eq!(decide(&input(&binding,&hashes)),Decision::Reattach {sdk_session_id:"sdk".into(),from:2,reason:"system_prompt_changed".into()});
     binding.sdk_session_id_confirmed=Some(false);
     assert_eq!(decide(&input(&binding,&hashes)),Decision::Flatten {reason:"session_unconfirmed".into()});
@@ -533,9 +533,9 @@ fn restart_binding_rejects_unconfirmed_session_and_reattaches_on_fingerprint_dri
 #[test]
 fn cold_seed_observations_project_telemetry_only_for_cold_seed() {
     let mut pending=PendingCloseCauses::default();
-    let cold=observe(SyncObservationInput {kind:"cold-seed",reason:Some("registry_miss"),delta_messages:5,first_turn:true,session:"s",payload_bytes:Some(100),collapsed_directives:Some(4)},&mut pending);
+    let cold=observe(SyncObservationInput {kind:"cold-seed",reason:Some("registry_miss"),delta_messages:5,first_turn:true,session:"s",payload_bytes:Some(100),collapsed_directives:Some(4),settings_source:None},&mut pending);
     assert_eq!(cold.kind,"bootstrap");assert_eq!(cold.payload_bytes,Some(100));assert_eq!(cold.collapsed_directives,Some(4));
-    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:2,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(9)},&mut pending);
+    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:2,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(9),settings_source:None},&mut pending);
     assert_eq!(delta.kind,"delta");assert_eq!(delta.payload_bytes,None);assert_eq!(delta.collapsed_directives,None);
 }
 
@@ -637,9 +637,9 @@ fn observed_terminal_failure_reason_vocabulary_is_sanitized() {
 #[test]
 fn telemetry_is_omitted_for_resume_and_delta_observations() {
     let mut pending=PendingCloseCauses::default();
-    let resume=observe(SyncObservationInput {kind:"resume",reason:Some("history_rolled_back"),delta_messages:2,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(3)},&mut pending);
+    let resume=observe(SyncObservationInput {kind:"resume",reason:Some("history_rolled_back"),delta_messages:2,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(3),settings_source:None},&mut pending);
     assert_eq!(resume.kind,"fork");assert_eq!(resume.payload_bytes,None);assert_eq!(resume.collapsed_directives,None);
-    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:1,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(3)},&mut pending);
+    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:1,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(3),settings_source:None},&mut pending);
     assert_eq!(delta.kind,"delta");assert_eq!(delta.payload_bytes,None);assert_eq!(delta.collapsed_directives,None);
 }
 

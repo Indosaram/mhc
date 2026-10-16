@@ -9,6 +9,7 @@ pub struct SessionEntry {
     pub model_id: String,
     pub system_prompt_hash: String,
     pub toolset_hash: String,
+    pub credential_digest: Option<String>,
     pub pump: PumpEntry,
     query: Option<SdkQueryHandle>,
     pub sent_hashes: Vec<String>,
@@ -37,7 +38,7 @@ impl SessionEntry {
         if !options["extraArgs"].is_object() { options["extraArgs"] = json!({}); }
         options["extraArgs"]["replay-user-messages"] = json!("");
         let query = SdkQueryHandle::spawn(input.executable, &options, input.environment).await?;
-        Ok(Self { session_id: input.session_id.into(), account_name: input.account_name.into(), model_id: input.model_id.into(), system_prompt_hash: input.system_prompt_hash.into(), toolset_hash: input.toolset_hash.into(),
+        Ok(Self { session_id: input.session_id.into(), account_name: input.account_name.into(), model_id: input.model_id.into(), system_prompt_hash: input.system_prompt_hash.into(), toolset_hash: input.toolset_hash.into(), credential_digest: None,
             pump: PumpEntry { sdk_session_id: input.sdk_session_id.into(), sdk_session_id_confirmed: input.resume_at.is_some(), generation: input.generation, state: SessionState::Starting, active_turn: None }, query: Some(query), sent_hashes: Vec::new(), assistant_uuid_by_index: BTreeMap::new(), last_used_at: input.now, pending_fork_reason: None, tainted_reason: None, branch_info: None })
     }
     pub fn evictable(&self) -> bool { matches!(self.pump.state, SessionState::IdleSynced | SessionState::Tainted) && self.pump.active_turn.is_none() }
