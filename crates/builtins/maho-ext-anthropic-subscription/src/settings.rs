@@ -1,5 +1,7 @@
 use serde_json::{Value,Map};
 use std::collections::BTreeMap;
+use std::sync::{Mutex,OnceLock};
+use sha2::Digest;
 pub struct ProviderSettings {pub values:Map<String,Value>,pub prompt_mode_from_env:bool}
 fn valid_choice(key:&str,value:&Value)->bool {let choices:&[&str]=match key {"systemPromptMode"=>&["preset-append","full","override"],"resumeMode"=>&["auto","off"],"tokenInjection"=>&["oauth-slots","config-dir","ambient"],_=>return false};value.as_str().is_some_and(|s|choices.contains(&s))}
 fn parse(value:&Value)->Map<String,Value> {
@@ -8,6 +10,7 @@ fn parse(value:&Value)->Map<String,Value> {
         "enabled"|"appendSystemPrompt"|"strictMcpConfig"=>value.is_boolean(),
         "systemPromptFile"|"pinnedAccount"=>value.as_str().is_some_and(|s|!s.is_empty()),
         "settingSources"=>value.as_array().is_some_and(|items|items.iter().all(|v|v.as_str().is_some_and(|s|["user","project","local"].contains(&s)))),
+        "compactionOwner"=>value.as_str().is_some_and(|s|["senpi","sdk"].contains(&s)),
         _=>valid_choice(key,value),
     };if valid {result.insert(key.clone(),value.clone());}}result
 }
@@ -26,6 +29,23 @@ pub fn resolve_prompt_mode(settings:&ProviderSettings)->ResolvedPromptMode {
     if let Some(append)=settings.values.get("appendSystemPrompt").and_then(Value::as_bool) {return ResolvedPromptMode {mode:if append {"full"}else {"preset-append"}.into(),source:"legacy",conflict:false};}
     ResolvedPromptMode {mode:"full".into(),source:"default",conflict:false}
 }
+pub fn resolve_compaction_owner(settings:&ProviderSettings)->&str {
+    settings.values.get("compactionOwner").and_then(Value::as_str).unwrap_or("senpi")
+}
+struct DiskCache { key:String, global:Value, project:Value }
+fn disk_cache()->&'static Mutex<Option<DiskCache>> { static CACHE:OnceLock<Mutex<Option<DiskCache>>>=OnceLock::new();CACHE.get_or_init(||Mutex::new(None)) }
+pub fn load_from_disk(cwd:&std::path::Path,agent_dir:&std::path::Path,home_dir:&std::path::Path,environment:&BTreeMap<String,String>)->ProviderSettings {
+    let global_path=maho_core::settings_manager::get_settings_path(&cwd.to_string_lossy(),&agent_dir.to_string_lossy(),maho_core::settings_manager::SettingsScope::Global,&home_dir.to_string_lossy());
+    let project_path=maho_core::settings_manager::get_settings_path(&cwd.to_string_lossy(),&agent_dir.to_string_lossy(),maho_core::settings_manager::SettingsScope::Project,&home_dir.to_string_lossy());
+    let revision=|path:&str|std::fs::read(path).map(|bytes|format!("{:x}",sha2::Sha256::digest(bytes))).unwrap_or_else(|_|"missing".into());
+    let key=format!("{}|{}|{}|{}|{}",cwd.display(),global_path,revision(&global_path),project_path,revision(&project_path));
+    let mut cache=disk_cache().lock().expect("settings disk cache");
+    if cache.as_ref().is_none_or(|cached|cached.key!=key) {
+        let load=|path:&str|std::fs::read_to_string(path).ok().and_then(|text|maho_core::settings_manager::parse_settings_json(&text).ok()).map(Value::Object).unwrap_or(Value::Null);
+        *cache=Some(DiskCache {key,global:load(&global_path),project:load(&project_path)});
+    }
+    let cached=cache.as_ref().expect("settings cache populated");load(&cached.global,&cached.project,environment)
+}
 #[cfg(test)]
 mod tests {
     use super::*;use serde_json::json;
@@ -40,5 +60,19 @@ mod tests {
         let settings=load(&json!({}),&json!({}),&BTreeMap::new());assert_eq!(resolve_prompt_mode(&settings).source,"default");
         let project=json!({"anthropicSubscriptionProvider":{"appendSystemPrompt":false}});let settings=load(&json!({}),&project,&BTreeMap::new());assert_eq!(resolve_prompt_mode(&settings).mode,"preset-append");
         let environment=[("SENPI_CLAUDE_SDK_OAUTH_SYSTEM_PROMPT_MODE".into(),"override".into())].into();let settings=load(&json!({}),&project,&environment);assert_eq!(resolve_prompt_mode(&settings),ResolvedPromptMode {mode:"override".into(),source:"env",conflict:true});
+    }
+    #[test]
+    fn compaction_owner_defaults_and_obeys_setting_precedence() {
+        let settings=load(&json!({}),&json!({}),&BTreeMap::new());assert_eq!(resolve_compaction_owner(&settings),"senpi");
+        let settings=load(&json!({"anthropicSubscriptionProvider":{"compactionOwner":"sdk"}}),&json!({"anthropicSubscriptionProvider":{"compactionOwner":"senpi"}}),&BTreeMap::new());assert_eq!(resolve_compaction_owner(&settings),"senpi");
+    }
+    #[test]
+    fn disk_settings_cache_reuses_revision_and_invalidates_on_content_change() {
+        let directory=tempfile::tempdir().expect("directory");let agent=directory.path().join("agent");std::fs::create_dir_all(&agent).expect("agent dir");
+        let project=directory.path().join(".omo");std::fs::create_dir_all(&project).expect("project dir");let settings_file=project.join("settings.json");
+        std::fs::write(&settings_file,r#"{"anthropicSubscriptionProvider":{"enabled":true}}"#).expect("settings");
+        let env=BTreeMap::new();let first=load_from_disk(directory.path(),&agent,directory.path(),&env);assert_eq!(first.values["enabled"],true);
+        std::fs::write(&settings_file,r#"{"anthropicSubscriptionProvider":{"enabled":false}}"#).expect("update settings");
+        let second=load_from_disk(directory.path(),&agent,directory.path(),&env);assert_eq!(second.values["enabled"],false);
     }
 }

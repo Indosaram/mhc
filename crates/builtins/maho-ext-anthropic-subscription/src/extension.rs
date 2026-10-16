@@ -28,7 +28,9 @@ impl AnthropicSubscriptionExtension {
                     Ok(resolved) => resolved,
                     Err(error) => return crate::stream::failed_stream(model, &error.to_string()),
                 };
-                crate::stream::stream_anthropic_subscription(model.clone(), context.clone(), options, crate::stream::StreamDeps { executable, source, cwd: cwd.clone(), agent_dir: agent_dir.clone(), environment: environment.clone(), settings: (oauth.settings)(), store: oauth.store.clone(), refresh: oauth.flow.clone(), registry: registry.clone(), watch: watch.clone(), now: Arc::new(maho_ai::utils::diagnostics::now_ms) })
+                let settings=(oauth.settings)();
+                let settings=if settings.values.is_empty() { crate::settings::load_from_disk(&cwd,&agent_dir,&dirs::home_dir().unwrap_or_else(||cwd.clone()),&environment) } else { settings };
+                crate::stream::stream_anthropic_subscription(model.clone(), context.clone(), options, crate::stream::StreamDeps { executable, source, cwd: cwd.clone(), agent_dir: agent_dir.clone(), environment: environment.clone(), settings, store: oauth.store.clone(), refresh: oauth.flow.clone(), registry: registry.clone(), watch: watch.clone(), now: Arc::new(maho_ai::utils::diagnostics::now_ms) })
             }) as maho_ext_api::types::ProviderStream
         };
         Self { oauth, stream, settings, registry, watch }
