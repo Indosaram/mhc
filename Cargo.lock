@@ -4410,6 +4410,13 @@ dependencies = [
 [[package]]
 name = "maho-omo-agent-home"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "maho-omo-ast-grep"
@@ -4545,6 +4552,7 @@ dependencies = [
  "maho-omo-agent-home",
  "maho-omo-config-core",
  "maho-omo-config-resolution",
+ "rustix 1.1.4",
  "serde_json",
  "sha2",
  "tempfile",
@@ -4673,6 +4681,7 @@ dependencies = [
  "maho-mcp-stdio-core",
  "maho-memory-core",
  "maho-model-core",
+ "maho-omo-agent-home",
  "maho-omo-config-core",
  "maho-rpc",
  "maho-senpi-task",
@@ -4882,6 +4891,13 @@ dependencies = [
 [[package]]
 name = "maho-process-env"
 version = "0.0.0"
+
+[[package]]
+name = "maho-prompts-core"
+version = "0.0.0"
+dependencies = [
+ "maho-model-core",
+]
 
 [[package]]
 name = "maho-pty"
