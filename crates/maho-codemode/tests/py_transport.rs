@@ -1,4 +1,4 @@
-use maho_codemode::kernels::{py::transport::*, shared::runtime_asset::CodemodeRuntimeAssetEnvironment};
+use maho_codemode::kernels::py::transport::*;
 use std::path::Path;
 
 #[tokio::test]
@@ -20,20 +20,9 @@ async fn close_reaps_python_when_close_frame_cannot_be_written() {
 
 #[test]
 fn shipped_prelude_resolves_without_interpreter_rewrite() {
-    let path=resolve_python_prelude_path(PythonPreludePathOptions{local_path:None,environment:CodemodeRuntimeAssetEnvironment{bun_version:None,executable_path:Path::new("/tmp/mhc")}}).unwrap();
-    assert!(path.ends_with("assets/kernels/py/prelude.py"));
-    assert!(path.is_file());
-}
-
-#[test]
-fn python_prelude_wrapper_resolves_compiled_sidecar() {
-    let root=tempfile::tempdir().unwrap();
-    let executable=root.path().join("pi/pi");
-    let sidecar=root.path().join("pi/node_modules/@code-yeongyu/senpi-codemode/src/kernels/py/prelude.py");
-    std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
-    std::fs::write(&sidecar,"runner").unwrap();
-    let local=root.path().join("$bunfs/prelude.py");
-    assert_eq!(resolve_python_prelude_path(PythonPreludePathOptions{local_path:Some(&local),environment:CodemodeRuntimeAssetEnvironment{bun_version:Some("1.4.0"),executable_path:&executable}}).unwrap(),sidecar);
+    let path=resolve_python_prelude_path(PythonPreludePathOptions{local_path:None}).unwrap();
+    assert!(path.ends_with("kernels/py/prelude.py"));
+    assert_eq!(std::fs::read(&path).unwrap(),std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"),"/assets/kernels/py/prelude.py")).unwrap());
 }
 
 #[test]

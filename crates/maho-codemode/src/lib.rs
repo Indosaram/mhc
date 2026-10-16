@@ -55,7 +55,7 @@ pub fn register(api: &mut ExtensionApi, options: CodemodeExtensionOptions) -> Re
     api.register_removed_tool_hint("wait","wait was removed; detached eval cells notify when complete. Use eval({ action: \"peek\"|\"stop\", cell_id }) to inspect or stop one.");
     host.lock().expect("extension api").registered=api.registered.clone();
     let version=(options.js_runtime.name=="bun").then(||options.js_runtime.version.clone());
-    extension::skill_contribution::register_bun_skill_contribution(api,Arc::new(move ||version.clone()),PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),std::env::current_exe().map_err(|error|ExtensionFailure::new(error.to_string()))?);
+    extension::skill_contribution::register_bun_skill_contribution(api,Arc::new(move ||version.clone()),PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"));
     let start_host=host.clone();let start_state=state.clone();let start_proxy=proxy.clone();let start_options=options.clone();let start_ticker=ticker.clone();let start_notifier=notifier.clone();
     api.on(EventKind::SessionStart,Arc::new(move |_,context| {
         let host=start_host.clone();let state=start_state.clone();let proxy=start_proxy.clone();let options=start_options.clone();let ticker=start_ticker.clone();let notifier=start_notifier.clone();
@@ -176,8 +176,7 @@ fn monitor_is_registered(api:&ExtensionApi) -> bool {
 
 fn active_bun_skill_path(js_runtime:&tool::types::EvalRuntimeInfo) -> Option<String> {
     let version=(js_runtime.name=="bun").then_some(js_runtime.version.as_str());
-    let executable=std::env::current_exe().ok()?;
-    extension::skill_contribution::active_bun_skill_path(version,&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),&executable).map(|path|path.to_string_lossy().into_owned())
+    extension::skill_contribution::active_bun_skill_path(version,&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")).map(|path|path.to_string_lossy().into_owned())
 }
 
 fn host_line(js_runtime:&tool::types::EvalRuntimeInfo) -> String {

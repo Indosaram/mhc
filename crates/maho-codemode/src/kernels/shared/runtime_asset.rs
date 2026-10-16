@@ -1,50 +1,35 @@
 use std::path::{Path, PathBuf};
 
-pub struct CodemodeRuntimeAssetEnvironment<'a> {
-    pub bun_version: Option<&'a str>,
-    pub executable_path: &'a Path,
-}
-
 #[derive(Debug, thiserror::Error)]
-#[error("codemode runtime asset {package_relative_path} is unavailable: module-relative path {local_path} is not readable and the codemode sidecar is missing beside the executable {executable_path} (expected {sidecar_path}). Ship node_modules/@code-yeongyu/senpi-codemode next to the executable.")]
+#[error("codemode runtime asset {package_relative_path} is unavailable: it is not embedded in this binary or could not be extracted, and {local_path} is not readable")]
 pub struct CodemodeRuntimeAssetMissingError {
     pub package_relative_path: PathBuf,
     pub local_path: PathBuf,
-    pub sidecar_path: PathBuf,
-    pub executable_path: PathBuf,
 }
 
-pub fn is_bun_virtual_path(path: &Path) -> bool {
-    let path = path.to_string_lossy();
-    path.contains("/$bunfs/") || path.contains("~BUN") || path.contains("%7EBUN")
+/// Where `package_relative_path` lives in this crate's source tree (`kernels/*` under `assets/`).
+pub fn build_tree_runtime_asset_path(package_relative_path: &Path) -> PathBuf {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if package_relative_path.starts_with("kernels") { root.join("assets").join(package_relative_path) } else { root.join(package_relative_path) }
 }
 
-fn sidecar_path_for(package_relative_path: &Path, executable_path: &Path) -> PathBuf {
-    executable_path.parent().unwrap_or(Path::new(".")).join("node_modules/@code-yeongyu/senpi-codemode/src").join(package_relative_path)
-}
-
-pub fn require_codemode_runtime_asset(local_path: &Path, package_relative_path: &Path, environment: &CodemodeRuntimeAssetEnvironment<'_>) -> Result<PathBuf, CodemodeRuntimeAssetMissingError> {
-    let sidecar_path = sidecar_path_for(package_relative_path, environment.executable_path);
-    if !is_bun_virtual_path(local_path) && local_path.exists() { return Ok(local_path.into()); }
-    if sidecar_path.exists() { return Ok(sidecar_path); }
+/// An existing explicit `local_override` wins. Otherwise the copy embedded in this binary is used, so the
+/// scripts always match the Rust host they talk to; the build tree is only a last resort, because a
+/// checkout at the compile-time path may hold a different revision or be gone.
+pub fn require_codemode_runtime_asset(local_override: Option<&Path>, package_relative_path: &Path) -> Result<PathBuf, CodemodeRuntimeAssetMissingError> {
+    if let Some(path) = local_override.filter(|path| path.exists()) { return Ok(path.into()); }
     if let Some(embedded) = materialize_embedded_runtime_asset(package_relative_path) { return Ok(embedded); }
+    let build_tree = build_tree_runtime_asset_path(package_relative_path);
+    if build_tree.exists() { return Ok(build_tree); }
     Err(CodemodeRuntimeAssetMissingError {
-        package_relative_path: package_relative_path.into(), local_path: local_path.into(),
-        sidecar_path, executable_path: environment.executable_path.into(),
+        package_relative_path: package_relative_path.into(),
+        local_path: local_override.map_or(build_tree, Path::to_path_buf),
     })
 }
 
-pub fn resolve_codemode_runtime_asset(local_path: &Path, package_relative_path: &Path, environment: &CodemodeRuntimeAssetEnvironment<'_>) -> PathBuf {
-    if local_path.exists() { return local_path.into(); }
-    if environment.bun_version.is_some_and(|version| !version.is_empty()) {
-        let sidecar = sidecar_path_for(package_relative_path, environment.executable_path);
-        if sidecar.exists() { return sidecar; }
-    }
-    local_path.into()
-}
-
-/// Kernel scripts and the bun-1-4 skill tree compiled into the binary, keyed by package-relative path. A distributed binary runs
-/// away from the build tree and without the senpi-codemode sidecar, so these are extracted on demand.
+/// Kernel scripts and the bun-1-4 skill tree compiled into the binary, keyed by package-relative path. A distributed
+/// binary runs away from the build tree, so these are extracted on demand. Their upstream senpi provenance is
+/// recorded in `assets/UPSTREAM.json`; `scripts/codemode-upstream-diff.py` reports upstream drift.
 const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
     ("kernels/jl/prelude.jl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/jl/prelude.jl"))),
     ("kernels/jl/runner.jl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/jl/runner.jl"))),
@@ -131,11 +116,32 @@ mod tests {
     }
 
     #[test]
-    fn missing_local_and_sidecar_fall_back_to_embedded_asset() {
-        let environment = CodemodeRuntimeAssetEnvironment { bun_version: None, executable_path: Path::new("/absent/mhc") };
-        let resolved = require_codemode_runtime_asset(Path::new("/absent/runner.rb"), Path::new("kernels/rb/runner.rb"), &environment).expect("embedded runner");
+    fn missing_override_falls_back_to_embedded_asset() {
+        let resolved = require_codemode_runtime_asset(Some(Path::new("/absent/runner.rb")), Path::new("kernels/rb/runner.rb")).expect("embedded runner");
         assert!(resolved.ends_with("kernels/rb/runner.rb"));
-        assert!(resolved.is_file());
+        assert_eq!(std::fs::read_to_string(&resolved).expect("runner"), include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/runner.rb")));
         assert!(resolved.with_file_name("prelude.rb").is_file());
+    }
+
+    #[test]
+    fn upstream_manifest_matches_every_embedded_asset() {
+        use sha2::Digest;
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/UPSTREAM.json"))).expect("manifest json");
+        let entries = manifest["assets"].as_array().expect("assets array");
+        let shipped: std::collections::BTreeMap<&str, &serde_json::Value> = entries.iter()
+            .filter(|entry| entry["status"] != "unported")
+            .map(|entry| (entry["path"].as_str().expect("path"), entry)).collect();
+        let embedded: std::collections::BTreeSet<&str> = EMBEDDED_RUNTIME_ASSETS.iter().map(|(path, _)| *path).collect();
+        assert_eq!(shipped.keys().copied().collect::<std::collections::BTreeSet<_>>(), embedded, "UPSTREAM.json must list exactly the embedded assets");
+        for (path, content) in EMBEDDED_RUNTIME_ASSETS {
+            let entry = shipped[path];
+            let digest = sha2::Sha256::digest(content.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+            assert_eq!(entry["sha256"], digest.as_str(), "{path} changed without updating UPSTREAM.json");
+            match entry["status"].as_str() {
+                Some("verbatim" | "patched") => assert!(entry["upstreamCommit"].as_str().is_some_and(|commit| commit.len() == 40), "{path} needs a full upstream commit"),
+                Some("local") => assert!(entry["upstreamCommit"].is_null(), "{path} is mhc-only"),
+                other => panic!("{path} has unknown status {other:?}"),
+            }
+        }
     }
 }

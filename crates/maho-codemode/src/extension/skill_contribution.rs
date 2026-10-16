@@ -1,4 +1,4 @@
-use crate::kernels::shared::runtime_asset::{CodemodeRuntimeAssetEnvironment, materialize_embedded_runtime_asset, resolve_codemode_runtime_asset};
+use crate::kernels::shared::runtime_asset::materialize_embedded_runtime_asset;
 use maho_ext_api::{diagnostic, EventKind, EventResult, ExtensionApi, ResourcesDiscoverResult};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
@@ -16,30 +16,27 @@ pub fn bun_version_supports_skill(version: Option<&str>) -> bool {
     }
 }
 
-pub fn bundled_bun_skill_path(base_dir: &Path, environment: &CodemodeRuntimeAssetEnvironment<'_>) -> Option<PathBuf> {
+pub fn bundled_bun_skill_path(base_dir: &Path) -> Option<PathBuf> {
     let local = base_dir.join("../skill/bun-1-4/SKILL.md");
-    let relative = Path::new("skill/bun-1-4/SKILL.md");
-    let candidate = resolve_codemode_runtime_asset(&local, relative, environment);
-    if candidate.exists() { return Some(candidate); }
-    // A distributed binary has neither the module-relative skill nor the sidecar; the skill tree is
-    // embedded beside the kernel scripts, as `require_codemode_runtime_asset` does for kernels.
-    if let Some(embedded) = materialize_embedded_runtime_asset(relative) && embedded.exists() { return Some(embedded); }
+    if local.exists() { return Some(local); }
+    // A distributed binary runs away from the build tree; the skill tree is embedded beside the
+    // kernel scripts, as `require_codemode_runtime_asset` does for kernels.
+    if let Some(embedded) = materialize_embedded_runtime_asset(Path::new("skill/bun-1-4/SKILL.md")) && embedded.exists() { return Some(embedded); }
     if !LOGGED_MISSING_BUN_SKILL.swap(true, Ordering::Relaxed) {
-        let sidecar = environment.executable_path.parent().unwrap_or(Path::new(".")).join("node_modules/@code-yeongyu/senpi-codemode/src").join(relative);
-        diagnostic(&format!("[senpi-codemode] bundled bun-1-4 skill not found at {} or {}; skipping contribution", local.display(), sidecar.display()));
+        diagnostic(&format!("[senpi-codemode] bundled bun-1-4 skill not found at {} and the embedded copy could not be extracted; skipping contribution", local.display()));
     }
     None
 }
 
-pub fn active_bun_skill_path(version: Option<&str>, base_dir: &Path, executable_path: &Path) -> Option<PathBuf> {
+pub fn active_bun_skill_path(version: Option<&str>, base_dir: &Path) -> Option<PathBuf> {
     if !bun_version_supports_skill(version) { return None; }
-    bundled_bun_skill_path(base_dir, &CodemodeRuntimeAssetEnvironment { bun_version: version, executable_path })
+    bundled_bun_skill_path(base_dir)
 }
 
-pub fn register_bun_skill_contribution(api: &mut ExtensionApi, version: Arc<dyn Fn() -> Option<String> + Send + Sync>, base_dir: PathBuf, executable_path: PathBuf) {
+pub fn register_bun_skill_contribution(api: &mut ExtensionApi, version: Arc<dyn Fn() -> Option<String> + Send + Sync>, base_dir: PathBuf) {
     api.on(EventKind::ResourcesDiscover, Arc::new(move |_, _| {
         let version = version();
-        let path = active_bun_skill_path(version.as_deref(), &base_dir, &executable_path);
+        let path = active_bun_skill_path(version.as_deref(), &base_dir);
         Box::pin(async move {
             Ok(match path {
                 Some(path) => EventResult::ResourcesDiscover(ResourcesDiscoverResult { skill_paths: vec![path.to_string_lossy().into_owned().into()], ..Default::default() }),

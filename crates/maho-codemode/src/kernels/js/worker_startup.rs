@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
-use crate::{bridge::protocol::BridgeConnectionConfig, kernels::shared::{runtime_asset::{CodemodeRuntimeAssetEnvironment, CodemodeRuntimeAssetMissingError, require_codemode_runtime_asset}, subprocess_process::ProcessError}};
+use crate::{bridge::protocol::BridgeConnectionConfig, kernels::shared::{runtime_asset::{CodemodeRuntimeAssetMissingError, require_codemode_runtime_asset}, subprocess_process::ProcessError}};
 use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, inline_worker::create_inline_worker};
 
-pub fn resolve_js_worker_entry_path(local_path: Option<&Path>, environment: &CodemodeRuntimeAssetEnvironment<'_>) -> Result<PathBuf, CodemodeRuntimeAssetMissingError> {
-    require_codemode_runtime_asset(local_path.unwrap_or(Path::new(concat!(env!("CARGO_MANIFEST_DIR"),"/assets/kernels/js/worker-entry.js"))), Path::new("kernels/js/worker-entry.js"), environment)
+pub fn resolve_js_worker_entry_path(local_path: Option<&Path>) -> Result<PathBuf, CodemodeRuntimeAssetMissingError> {
+    require_codemode_runtime_asset(local_path, Path::new("kernels/js/worker-entry.js"))
 }
 
 /// senpi `spawnWorker` (worker-startup.ts:51): `options.workerEntryUrl ?? resolveJsWorkerEntryUrl()`; an
@@ -11,7 +11,7 @@ pub fn resolve_js_worker_entry_path(local_path: Option<&Path>, environment: &Cod
 pub fn explicit_or_resolved_worker_entry(options: &WorkerStartupOptions<'_>) -> Result<PathBuf, ProcessError> {
     match options.worker_entry {
         Some(entry) => Ok(entry.to_path_buf()),
-        None => resolve_js_worker_entry_path(None, &options.environment).map_err(|error| ProcessError::Startup(error.to_string())),
+        None => resolve_js_worker_entry_path(None).map_err(|error| ProcessError::Startup(error.to_string())),
     }
 }
 
@@ -25,7 +25,6 @@ pub struct WorkerStartupOptions<'a> {
     pub foreign_language_names: &'a [String],
     pub session_env: Option<&'a crate::kernels::session_env::SessionEnvironment>,
     pub worker_entry: Option<&'a Path>,
-    pub environment: CodemodeRuntimeAssetEnvironment<'a>,
 }
 
 pub async fn start_worker_with_inline_fallback(options: &WorkerStartupOptions<'_>, signal: &maho_ai::utils::abort::AbortSignal) -> Result<WorkerHost, ProcessError> {
@@ -39,7 +38,7 @@ pub async fn start_worker_with_inline_fallback(options: &WorkerStartupOptions<'_
         }
     }
     if signal.aborted() { return Err(ProcessError::Startup("JavaScript worker startup was cancelled".into())); }
-    let mut worker = create_inline_worker(options.cwd, options.parallel_pool_width, &options.environment)?;
+    let mut worker = create_inline_worker(options.cwd, options.parallel_pool_width)?;
     if let Err(error) = worker.initialize(options, signal).await {
         worker.terminate().await?;
         return Err(error);
