@@ -26,6 +26,7 @@ pub fn is_ls_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "
 
 pub type ExtensionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ExtensionFailure>> + Send + 'a>>;
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EvalHandleKind { Agent, Completion, Workpool }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -295,6 +296,30 @@ pub struct ProviderObjectConfig {
     pub extra_body: Option<BTreeMap<String, JsonValue>>,
     pub model_extra_bodies: BTreeMap<String, BTreeMap<String, JsonValue>>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionPresetName { FullAccess, Workspace, ReadOnly, Ask }
+pub type MemoryReporter = Arc<dyn Fn() -> BTreeMap<String, usize> + Send + Sync>;
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolNamespace { pub name: String, pub description: Option<String> }
+pub trait ToolLoadout: Send + Sync {
+    fn declared(&self) -> Vec<AgentTool>;
+    fn callable(&self) -> Vec<AgentTool>;
+    fn registered(&self) -> Vec<AgentTool>;
+    fn get_exposure(&self, name: &str) -> Option<ToolExposure>;
+    fn get_namespace(&self, name: &str) -> Option<ToolNamespace>;
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolLoadoutChanges { pub descriptions: BTreeMap<String, String>, pub hidden_declarations: Vec<String> }
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolResultEventChanges {
+    pub content: Option<Vec<ContentBlock>>,
+    pub details: Option<JsonValue>,
+    pub structured_content: Option<JsonValue>,
+    pub is_error: Option<bool>,
+    pub usage: Option<Usage>,
+}
+
 impl ProviderRegistration {
     pub fn name(&self) -> &str { match self { Self::Config { name, .. } | Self::ConfigOptions { name, .. } => name, Self::Native(provider) => provider.id() } }
 }

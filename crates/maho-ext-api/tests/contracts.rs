@@ -24,6 +24,17 @@ fn public_tool_guards_and_default_profile_preserve_contract_values() {
 }
 
 #[test]
+fn kernel_tool_scope_preserves_allow_and_deny_lists() {
+    let names = KernelToolInvokeScope {
+        allow: Some(vec!["read".into(), "grep".into()]),
+        deny: Some(vec!["write".into()]),
+    };
+    assert_eq!(names.allow.as_deref().map(|values| values.iter().map(String::as_str).collect::<Vec<_>>()), Some(vec!["read", "grep"]));
+    assert_eq!(names.deny.as_deref().map(|values| values.iter().map(String::as_str).collect::<Vec<_>>()), Some(vec!["write"]));
+    assert!(current_kernel_tools().is_none());
+}
+
+#[test]
 fn every_event_kind_roundtrips_without_duplicate_names() {
     let names: std::collections::BTreeSet<_> = EventKind::ALL.iter().map(|kind| kind.as_str()).collect();
     assert_eq!(names.len(), 43);
