@@ -29,7 +29,7 @@ pub fn theme_from_extension(theme: &maho_ext_api::Theme, mode: crate::theme::Col
     };
     let colors = theme.colors.iter().chain(theme.backgrounds.iter())
         .filter_map(|(key, prefix)| parse(prefix).map(|value| (key.clone(), value))).collect();
-    let json = crate::theme::theme_json::ThemeJson { name: theme.name.clone().unwrap_or_else(|| "<in-memory>".into()), vars: BTreeMap::new(), colors, export_colors: BTreeMap::new() };
+    let json = crate::theme::theme_json::ThemeJson { name: theme.name.clone().unwrap_or_else(|| "<in-memory>".into()), appearance: None, vars: BTreeMap::new(), colors, export_colors: BTreeMap::new() };
     crate::theme::Theme::from_json(json, mode)
 }
 

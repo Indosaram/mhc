@@ -102,6 +102,7 @@ pub struct ProviderErrorPresentation {
     pub notices: Vec<ProviderFailureNotice>,
     current: Option<usize>,
     pending: bool,
+    retry_awaiting_finish: bool,
 }
 impl ProviderErrorPresentation {
     pub fn new() -> Self {
@@ -109,6 +110,7 @@ impl ProviderErrorPresentation {
     }
     pub fn record(&mut self, raw: &str, expanded: bool) {
         self.pending = true;
+        self.retry_awaiting_finish = true;
         let index = match self.current {
             Some(i) => i,
             None => {
@@ -137,8 +139,15 @@ impl ProviderErrorPresentation {
     }
     pub fn clear(&mut self) {
         self.pending = false;
+        self.retry_awaiting_finish = false;
         self.hide_summary();
     }
+    pub fn clear_transient(&mut self) {
+        self.pending = false;
+        self.hide_summary();
+    }
+    pub fn has_active_retry(&self) -> bool { self.pending }
+    pub fn awaiting_retry_finish(&self) -> bool { self.retry_awaiting_finish }
     pub fn finish(&mut self, raw: Option<&str>, attempts: Option<usize>) {
         if let Some(raw) = raw.filter(|r| !r.is_empty()) {
             self.record(raw, false);
@@ -147,6 +156,7 @@ impl ProviderErrorPresentation {
             return;
         }
         self.pending = false;
+        self.retry_awaiting_finish = false;
         let count = attempts.map_or_else(String::new, |n| format!(" after {n} retries"));
         if let Some(i) = self.current {
             self.notices[i].summary = Some(format!(
@@ -157,5 +167,23 @@ impl ProviderErrorPresentation {
     pub fn new_turn(&mut self) {
         self.finish(None, None);
         self.current = None;
+    }
+}
+
+#[cfg(test)]
+mod retry_episode_tests {
+    use super::*;
+    #[test]
+    fn retry_lifecycle_distinguishes_transient_clear_from_episode_end() {
+        let mut state = ProviderErrorPresentation::new();
+        state.record("network error", false);
+        assert!(state.has_active_retry());
+        assert!(state.awaiting_retry_finish());
+        state.clear_transient();
+        assert!(!state.has_active_retry());
+        assert!(state.awaiting_retry_finish());
+        state.finish(None, Some(2));
+        assert!(!state.awaiting_retry_finish());
+        assert!(state.notices[0].summary.as_deref().is_some_and(|s| s.contains("after 2 retries")));
     }
 }

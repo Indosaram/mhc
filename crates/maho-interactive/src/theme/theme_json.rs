@@ -10,11 +10,16 @@ pub enum ColorValue {
 pub struct ThemeJson {
     pub name: String,
     #[serde(default)]
+    pub appearance: Option<ThemeAppearance>,
+    #[serde(default)]
     pub vars: BTreeMap<String, ColorValue>,
     pub colors: BTreeMap<String, ColorValue>,
     #[serde(default, rename = "export")]
     pub export_colors: BTreeMap<String, ColorValue>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeAppearance { Dark, Light }
 #[derive(Debug, thiserror::Error)]
 pub enum ThemeError {
     #[error("Invalid theme: {0}")]
@@ -58,6 +63,12 @@ fn collect_schema_errors(value: &serde_json::Value, missing: &mut Vec<String>) -
     }
     if root.get("name").is_some_and(|name| !name.is_string()) {
         errors.push(("/name".to_owned(), "must be string".to_owned()));
+    }
+    if root.get("appearance").is_some_and(|appearance| !matches!(appearance.as_str(), Some("dark" | "light"))) {
+        errors.push(("/appearance".to_owned(), "must be equal to one of the allowed values".to_owned()));
+    }
+    if root.get("appearance").is_some_and(|appearance| !matches!(appearance.as_str(), Some("dark" | "light"))) {
+        errors.push(("/appearance".to_owned(), "must be equal to one of the allowed values".to_owned()));
     }
     let mut record = |key: &str, required: &[&str], optional_keys: Option<&[&str]>| {
         let Some(entry) = root.get(key) else { return };
@@ -166,5 +177,15 @@ mod tests {
             error,
             "Invalid theme \"mine\":\n\n\nOther errors:\n  - /name: must be string\n  - /colors/accent: must match a schema in anyOf"
         );
+    }
+
+    #[test]
+    fn accepts_and_validates_appearance() {
+        let mut doc = dark();
+        doc["appearance"] = serde_json::json!("light");
+        let parsed = validate_theme_json("mine", doc.clone()).expect("appearance accepted");
+        assert_eq!(parsed.appearance, Some(ThemeAppearance::Light));
+        doc["appearance"] = serde_json::json!("automatic");
+        assert!(validate_theme_json("mine", doc).is_err());
     }
 }
