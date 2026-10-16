@@ -4,7 +4,7 @@ use maho_tui::tui::Component;
 fn main()->Result<(),Box<dyn std::error::Error>>{
     let width=std::env::args().nth(1).map_or(Ok(80),|value|value.parse::<usize>())?;
     let colors=[("toolTitle",6),("accent",6),("muted",7),("dim",8),("error",1),("success",2),("warning",3)].into_iter().map(|(key,value)|(key.into(),ColorValue::Index(value))).collect();
-    let theme=Theme::from_json(ThemeJson{name:"fixture".into(),vars:Default::default(),colors,export_colors:Default::default()},ColorMode::Truecolor)?;
+    let theme=Theme::from_json(ThemeJson{appearance:None,name:"fixture".into(),vars:Default::default(),colors,export_colors:Default::default()},ColorMode::Truecolor)?;
     let mut call=render_search_call(&SearchParams{query:"native renderer".into(),allowed_domains:Some(vec!["example.org".into()]),blocked_domains:None},&theme);
     for line in call.render(width){println!("{line}");}
     let result:SearchRenderDetails=serde_json::from_value(serde_json::json!({"provider":"exa","entryId":"primary","query":"native renderer","results":[{"title":"Native result","url":"https://example.org","snippet":"A deterministic snippet"}],"durationMs":1500,"truncated":true,"strategy":"priority","attempts":[{"provider":"exa","entryId":"primary","durationMs":1500,"resultsCount":1}]}))?;
