@@ -13,7 +13,12 @@ pub fn xai_provider() -> Arc<dyn Provider> {
         base_url: Some("https://api.x.ai/v1".into()),
         headers: None,
         auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("xAI API key", &["XAI_API_KEY"]))), oauth: Some(Arc::new(lazy_oauth("xAI (Grok/X subscription)", true, Some("Sign in with SuperGrok or X Premium".into()), || Box::pin(crate::auth::oauth::load::load_xai_oauth())))) }),
-        models: super::xai_models::xai_models(),
+        models: super::xai_models::xai_models().into_iter().map(|mut model| {
+            let mut compat = model.compat.take().unwrap_or_default();
+            compat.0.insert("webSearchToolType".into(), serde_json::json!("web_search"));
+            model.compat = Some(compat);
+            model
+        }).collect(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

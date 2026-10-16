@@ -66,6 +66,12 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
         .get("prompt_tokens_details")
         .and_then(|details| details.get("cache_write_tokens"))
         .and_then(Value::as_u64)
+        .or_else(|| {
+            raw_usage
+                .get("prompt_tokens_details")
+                .and_then(|details| details.get("cache_creation_tokens"))
+                .and_then(Value::as_u64)
+        })
         .unwrap_or(0);
     let cache_read_tokens = if cache_write_tokens > 0 {
         reported_cached_tokens.saturating_sub(cache_write_tokens)
@@ -343,6 +349,17 @@ mod tests {
         assert_eq!(usage.input, 100);
         assert_eq!(usage.cache_read, 0);
         assert_eq!(usage.cache_write, 0);
+    }
+
+    #[test]
+    fn usage_counts_cache_creation_tokens_as_writes_when_needed() {
+        let usage = parse_usage(
+            &json!({ "prompt_tokens": 100, "completion_tokens": 0, "prompt_tokens_details": { "cached_tokens": 30, "cache_creation_tokens": 10 } }),
+            &model(),
+        );
+        assert_eq!(usage.input, 70);
+        assert_eq!(usage.cache_read, 20);
+        assert_eq!(usage.cache_write, 10);
     }
 }
 

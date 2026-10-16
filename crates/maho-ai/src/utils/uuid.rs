@@ -18,16 +18,21 @@ struct Generator {
     sequence: Option<u64>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static GENERATOR: std::cell::RefCell<Generator> = const { std::cell::RefCell::new(Generator { last_ordinary_timestamp: -1, sequence: None }) };
+}
+#[cfg(not(test))]
 static GENERATOR: Mutex<Generator> = Mutex::new(Generator { last_ordinary_timestamp: -1, sequence: None });
 
-/// Test-only override of the "current time" `uuidv7(None)` reads, mirroring `vi.useFakeTimers()`
-/// plus `vi.setSystemTime()`; nextest runs each `#[test]` in its own process, so this static resets per test.
 #[cfg(test)]
-static MOCK_NOW_MS: Mutex<Option<i64>> = Mutex::new(None);
+thread_local! {
+    static MOCK_NOW_MS: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
 
 #[cfg(test)]
 fn current_time_ms() -> i64 {
-    MOCK_NOW_MS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).unwrap_or_else(super::diagnostics::now_ms)
+    MOCK_NOW_MS.with(|mock| mock.get()).unwrap_or_else(super::diagnostics::now_ms)
 }
 
 #[cfg(not(test))]
@@ -67,28 +72,28 @@ pub fn uuidv7(timestamp_ms: Option<f64>) -> Result<String, UuidError> {
         return Err(UuidError::TimestampOutOfRange);
     }
     let requested = requested_f64 as i64;
-    let mut state = GENERATOR.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let effective = match timestamp_ms {
-        None => {
-            let t = requested.max(state.last_ordinary_timestamp);
-            state.last_ordinary_timestamp = t;
-            t
-        }
-        Some(_) => requested,
-    };
-
     let mut bytes: [u8; 16] = random_bytes();
-    let sequence = match state.sequence {
-        None => (u64::from(bytes[1]) << 32)
-            | (u64::from(bytes[2]) << 24)
-            | (u64::from(bytes[3]) << 16)
-            | (u64::from(bytes[4]) << 8)
-            | u64::from(bytes[5]),
-        Some(MAX_SEQUENCE) => return Err(UuidError::SequenceExhausted),
-        Some(previous) => previous + 1,
-    };
-    state.sequence = Some(sequence);
-    drop(state);
+    let (effective, sequence) = with_generator(|state| {
+        let effective = match timestamp_ms {
+            None => {
+                let t = requested.max(state.last_ordinary_timestamp);
+                state.last_ordinary_timestamp = t;
+                t
+            }
+            Some(_) => requested,
+        };
+        let sequence = match state.sequence {
+            None => (u64::from(bytes[1]) << 32)
+                | (u64::from(bytes[2]) << 24)
+                | (u64::from(bytes[3]) << 16)
+                | (u64::from(bytes[4]) << 8)
+                | u64::from(bytes[5]),
+            Some(MAX_SEQUENCE) => return Err(UuidError::SequenceExhausted),
+            Some(previous) => previous + 1,
+        };
+        state.sequence = Some(sequence);
+        Ok((effective, sequence))
+    })?;
 
     let timestamp = effective.unsigned_abs();
     for (index, byte) in bytes.iter_mut().enumerate().take(6) {
@@ -104,8 +109,20 @@ pub fn uuidv7(timestamp_ms: Option<f64>) -> Result<String, UuidError> {
 }
 
 #[cfg(test)]
+fn with_generator<T>(f: impl FnOnce(&mut Generator) -> T) -> T {
+    GENERATOR.with(|state| f(&mut state.borrow_mut()))
+}
+
+#[cfg(not(test))]
+fn with_generator<T>(f: impl FnOnce(&mut Generator) -> T) -> T {
+    let mut state = GENERATOR.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(&mut state)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
 
     /// UUIDv7 regex: version nibble `7`, variant `8|9|a|b`.
     fn assert_matches_uuid_v7(id: &str) {
@@ -133,13 +150,15 @@ mod tests {
     /// Sets the mock clock `uuidv7(None)` reads for the current test process, mirroring
     /// `vi.setSystemTime`.
     fn set_mock_now_ms(value: i64) {
-        *MOCK_NOW_MS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(value);
+        MOCK_NOW_MS.with(|mock| mock.set(Some(value)));
     }
 
     /// Port of "generates ordered UUIDv7s while preserving follower timestamps" (uuid.test.ts).
     #[test]
     fn generates_ordered_uuid_v7s_while_preserving_follower_timestamps() {
-        const TIMESTAMP: i64 = 0x0123_4567_89ab;
+        MOCK_NOW_MS.with(|mock| mock.set(None));
+        *MOCK_RANDOM_BYTES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        const TIMESTAMP: i64 = 2_000_000_000_000;
         set_mock_now_ms(TIMESTAMP);
 
         let first = uuidv7(None).expect("uuid");
@@ -172,7 +191,8 @@ mod tests {
     /// Port of "uses fresh randomness for every UUID tail" (uuid.test.ts).
     #[test]
     fn uses_fresh_randomness_for_every_uuid_tail() {
-        const TIMESTAMP: i64 = 0x0123_4567_89ab;
+        MOCK_NOW_MS.with(|mock| mock.set(None));
+        const TIMESTAMP: i64 = 2_000_000_000_000;
         let counter = std::sync::atomic::AtomicU8::new(0);
         *MOCK_RANDOM_BYTES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(move || {
             let byte = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;

@@ -27,6 +27,8 @@ pub struct OpenAIResponsesCompat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_web_search_preview: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_tool_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_image_generation: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_strict_mode: Option<bool>,
