@@ -1,5 +1,6 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequiredCompactionFallbackFailure {
+    UnsafeRetainedContent,
     SummarizationTimeout,
     SummarizationProviderFailure,
     UpstreamStreamTruncated,
@@ -9,6 +10,7 @@ pub enum RequiredCompactionFallbackFailure {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SummaryFailure {
+    UnsafeRetainedSuffix,
     Timeout,
     CredentialFailover,
     Request { transient: bool, refused: bool, truncated: bool },
@@ -19,6 +21,7 @@ pub enum SummaryFailure {
 
 pub fn classify_required_compaction_fallback_failure(error: SummaryFailure, message: &str) -> Option<RequiredCompactionFallbackFailure> {
     match error {
+        SummaryFailure::UnsafeRetainedSuffix => Some(RequiredCompactionFallbackFailure::UnsafeRetainedContent),
         SummaryFailure::Timeout => Some(RequiredCompactionFallbackFailure::SummarizationTimeout),
         SummaryFailure::Request { transient: true, truncated: true, .. } => Some(RequiredCompactionFallbackFailure::UpstreamStreamTruncated),
         SummaryFailure::OverflowExhausted => Some(RequiredCompactionFallbackFailure::SummarizationOverflowExhausted),
@@ -31,6 +34,7 @@ pub fn classify_required_compaction_fallback_failure(error: SummaryFailure, mess
 
 pub fn format_required_compaction_fallback_notice(failure: RequiredCompactionFallbackFailure, cause: Option<&str>) -> String {
     let cause_text = match failure {
+        RequiredCompactionFallbackFailure::UnsafeRetainedContent => "no replay-safe retained suffix fits the context",
         RequiredCompactionFallbackFailure::SummarizationTimeout => "the summary stream ran out of its time budget",
         RequiredCompactionFallbackFailure::SummarizationProviderFailure => "the provider ended the summary stream with an error",
         RequiredCompactionFallbackFailure::UpstreamStreamTruncated => "the provider truncated the summary stream",
@@ -47,6 +51,7 @@ pub fn format_required_compaction_fallback_notice(failure: RequiredCompactionFal
 
 fn failure_name(failure: RequiredCompactionFallbackFailure) -> &'static str {
     match failure {
+        RequiredCompactionFallbackFailure::UnsafeRetainedContent => "unsafe-retained-content",
         RequiredCompactionFallbackFailure::SummarizationTimeout => "summarization-timeout",
         RequiredCompactionFallbackFailure::SummarizationProviderFailure => "summarization-provider-failure",
         RequiredCompactionFallbackFailure::UpstreamStreamTruncated => "upstream-stream-truncated",
@@ -91,6 +96,21 @@ mod meaningful_user_tests {
     fn visible_compatibility_letters_remain_fallback_boundaries() {
         assert!(has_visible_user_text("\u{200b}\u{ff21}\u{fe0f}"));
     }
+}
+
+fn project_failed_turn_fragments(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut dropped = vec![false; messages.len()];
+    for (index, message) in messages.iter().enumerate() {
+        if message["role"] != "assistant" || message["stopReason"] != "aborted" { continue; }
+        dropped[index] = true;
+        let calls: Vec<_> = message["content"].as_array().into_iter().flatten()
+            .filter(|block| block["type"] == "toolCall")
+            .filter_map(|block| block["id"].as_str()).collect();
+        for (later, candidate) in messages.iter().enumerate().skip(index + 1) {
+            if candidate["role"] == "toolResult" && candidate["toolCallId"].as_str().is_some_and(|id| calls.contains(&id)) { dropped[later] = true; }
+        }
+    }
+    messages.iter().zip(dropped).filter_map(|(message, dropped)| (!dropped).then(|| message.clone())).collect()
 }
 
 fn complete_tool_chains(messages: &[serde_json::Value]) -> bool {
@@ -193,7 +213,7 @@ pub fn create_required_compaction_fallback(
     let projected: Vec<_> = build_context_entries(&projection_entries, None).iter()
         .flat_map(|entry| session_entry_to_context_messages(entry).into_iter().map(|message| (entry["id"].clone(), message))).collect();
     let projected_messages: Vec<_> = projected.iter().map(|(_, message)| message.clone()).collect();
-    let normalized = maho_core::messages::drop_failed_assistant_turns(projected_messages.clone());
+    let normalized = project_failed_turn_fragments(&projected_messages);
     let mut next = 0;
     let retained_positions: Vec<_> = normalized.iter().map(|message| {
         let offset = projected_messages[next..].iter().position(|candidate|candidate == message)

@@ -44,6 +44,7 @@ pub mod speculative;
 pub mod todo_bridge;
 pub mod openai_remote_dependencies;
 pub mod context_pipeline;
+pub mod context_reduction_frontier;
 pub mod deterministic_fallback;
 pub mod openai_remote;
 
@@ -190,6 +191,7 @@ impl maho_ext_api::Extension for CompactionExtension {
         }
         {
             let latch = std::sync::Arc::new(std::sync::Mutex::new(emergency_prune::EmergencyPruneLatch::default()));
+            let reduction_state = std::sync::Arc::new(std::sync::Mutex::new(context_reduction_frontier::ContextReductionState::default()));
             let warm = std::sync::Arc::clone(&warm);
             let generation = std::sync::Arc::clone(&generation);
             let idle_state = std::sync::Arc::clone(&state);
@@ -199,7 +201,7 @@ impl maho_ext_api::Extension for CompactionExtension {
             api.on(maho_ext_api::EventKind::AgentEnd,std::sync::Arc::new(move |event,context| {
                 let result = (|| {
                     let maho_ext_api::ExtensionEvent::AgentEnd {aborted,will_retry,..} = event else {return Ok(maho_ext_api::EventResult::None);};
-                    if lane_policy::live_disables_senpi_compaction(&idle_lane,context) || !matches!(context.mode,maho_ext_api::ExtensionMode::Tui | maho_ext_api::ExtensionMode::Rpc | maho_ext_api::ExtensionMode::AppServer) {return Ok(maho_ext_api::EventResult::None);}
+                    if lane_policy::live_disables_senpi_compaction(&idle_lane,context) || !matches!(context.mode,maho_ext_api::ExtensionMode::Tui | maho_ext_api::ExtensionMode::Rpc) {return Ok(maho_ext_api::EventResult::None);}
                     let settings = extension_wiring::live_settings(context)?;
                     let usage = context.get_context_usage()?;
                     let state = idle_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -254,7 +256,9 @@ impl maho_ext_api::Extension for CompactionExtension {
             let state = std::sync::Arc::clone(&state);
             let logger = std::sync::Arc::clone(&logger);
             let context_lane = std::sync::Arc::clone(&lane);
+            let context_reduction_state = std::sync::Arc::clone(&reduction_state);
             api.on(maho_ext_api::EventKind::Context, std::sync::Arc::new(move |event, context| {
+                let context_reduction_state = std::sync::Arc::clone(&context_reduction_state);
                 let result = (|| {
                     let maho_ext_api::ExtensionEvent::Context { messages, entry_ids } = event else { return Ok(maho_ext_api::EventResult::None); };
                     let lane_owns_compaction = lane_policy::live_disables_senpi_compaction(&context_lane, context);
@@ -267,6 +271,8 @@ impl maho_ext_api::Extension for CompactionExtension {
                         && tokens.is_some_and(|tokens|tokens >= window as f64 * policy::compute_effective_threshold(window as f64, state.last_yield));
                     let raw = messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                     let provider_native_path = openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref());
+                    let append_only_transcript = context.mode == maho_ext_api::ExtensionMode::AppServer;
+                    let mut reduction_state = context_reduction_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     // Only the provider-native replay boundary reads the branch; skip the full branch copy otherwise.
                     let branch_entries = if provider_native_path { speculative::branch_values(context) } else { Vec::new() };
                     let output = context_pipeline::build_compaction_context(context_pipeline::CompactionContextInput {
@@ -274,6 +280,9 @@ impl maho_ext_api::Extension for CompactionExtension {
                         prompt_context_window: extension_wiring::get_prompt_context_window(window as f64, context.model.as_ref().map(|model|model.max_tokens as f64)) as u64,
                         usage_tokens: tokens, provider_native_path,
                         tool_admission_enabled: settings.ideal.tool_admission_enabled != Some(false), breaker_fallback, lane_owns_compaction,
+                        context_reduction_state: Some(&mut reduction_state), context_overhead_tokens: 0,
+                        unreduced_messages: Some(messages),
+                        reduction_ceiling_tokens: None, reduction_block_budget_ratio: None, append_only_transcript,
                         emergency_prune_latch: &mut latch.lock().unwrap_or_else(std::sync::PoisonError::into_inner), reminder: None,
                         now: chrono::Utc::now().timestamp_millis(),
                     }).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
