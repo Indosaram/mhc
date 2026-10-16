@@ -2,9 +2,9 @@ use serde_json::{Map, Value};
 
 use crate::shared::{DagOwnerKind, DagTaskOwner};
 use crate::state::{
-    DeliverAs, HostSessionIdentity, IsolationRecord, PendingSteeringEntry, RESIDENCY_STATES,
+    AwaitingInputReason, BackgroundMode, DeliverAs, EffectiveModelRecord, HostSessionIdentity, IsolationRecord, PendingSteeringEntry, RESIDENCY_STATES,
     RESOLVED_MODEL_SOURCES, ResidencyState, ResolvedModelRecord, ResolvedModelSource, RunnerKind,
-    SpawnSpecV1, TASK_STATUSES, TaskIsolationSpec, TaskNotification, TaskRecord, TaskRunStats,
+    SpawnSpecV1, SuspensionReason, TaskAwaitingInput, TASK_STATUSES, TaskIsolationSpec, TaskNotification, TaskRecord, TaskRunStats,
     TaskSpawnSpec, TaskStatus, parse_task_id,
 };
 
@@ -47,6 +47,9 @@ pub fn parse_task_record(
     let isolation = read_optional_isolation(record)?;
     let runner_kind = read_optional_runner_kind(record)?;
     let host_session = read_optional_host_session(record)?;
+    let effective_model = record.get("effective_model").map(|value| serde_json::from_value::<EffectiveModelRecord>(value.clone()).map_err(|error| format!("effective_model is invalid: {error}"))).transpose()?;
+    let suspension_reason = record.get("suspension_reason").map(|value| serde_json::from_value::<SuspensionReason>(value.clone()).map_err(|error| format!("suspension_reason is invalid: {error}"))).transpose()?;
+    let awaiting_input = record.get("awaiting_input").map(|value| serde_json::from_value::<TaskAwaitingInput>(value.clone()).map_err(|error| format!("awaiting_input is invalid: {error}"))).transpose()?;
 
     let task_id =
         parse_task_id(&read_string(record, "task_id")?).map_err(|error| error.to_string())?;
@@ -65,6 +68,19 @@ pub fn parse_task_record(
         updated_at: read_string(record, "updated_at")?,
         started_at,
         notification: read_notification(record)?,
+        run_start_epoch: read_optional_integer(record, "run_start_epoch")?.unwrap_or(0),
+        team_run_id: read_optional_string(record, "team_run_id")?,
+        team_name: read_optional_string(record, "team_name")?,
+        team_member_name: read_optional_string(record, "team_member_name")?,
+        team_role: read_optional_string(record, "team_role")?,
+        task_seq: read_optional_count(record, "task_seq")?,
+        config_generation: read_optional_count(record, "config_generation")?,
+        background_mode: record.get("background_mode").map(|value| serde_json::from_value::<BackgroundMode>(value.clone()).map_err(|error| format!("background_mode is invalid: {error}"))).transpose()?,
+        effective_model,
+        suspension_reason,
+        awaiting_input,
+        failure_kind: read_optional_string(record, "failure_kind")?,
+        failure_reason: read_optional_string(record, "failure_reason")?,
         name,
         task_summary,
         description,
@@ -154,7 +170,11 @@ fn read_optional_run_stats(record: &Object) -> ParseResult<Option<TaskRunStats>>
     Ok(Some(TaskRunStats {
         runtime_ms: read_count(stats, "runtime_ms")?,
         turns: read_count(stats, "turns")?,
+        failed_turns: read_optional_count(stats, "failed_turns")?,
         tool_calls: read_count(stats, "tool_calls")?,
+        input_tokens: read_optional_count(stats, "input_tokens")?,
+        cache_read_tokens: read_optional_count(stats, "cache_read_tokens")?,
+        cache_write_tokens: read_optional_count(stats, "cache_write_tokens")?,
         output_tokens: read_optional_count(stats, "output_tokens")?,
         total_tokens: read_optional_count(stats, "total_tokens")?,
         generation_ms: read_optional_count(stats, "generation_ms")?,
@@ -162,6 +182,9 @@ fn read_optional_run_stats(record: &Object) -> ParseResult<Option<TaskRunStats>>
         cost_usd: read_optional_number(stats, "cost_usd")?,
         cache_hit_rate_last: read_optional_number(stats, "cache_hit_rate_last")?,
         cache_hit_rate_run: cache_hit_rate_run.or(legacy_cache_hit_rate),
+        duration_status: stats.get("duration_status").map(|value| serde_json::from_value(value.clone()).map_err(|error| format!("duration_status is invalid: {error}"))).transpose()?,
+        token_status: stats.get("token_status").map(|value| serde_json::from_value(value.clone()).map_err(|error| format!("token_status is invalid: {error}"))).transpose()?,
+        cost_status: stats.get("cost_status").map(|value| serde_json::from_value(value.clone()).map_err(|error| format!("cost_status is invalid: {error}"))).transpose()?,
     }))
 }
 
@@ -283,6 +306,7 @@ fn read_resolved_model(value: &Object) -> ParseResult<ResolvedModelRecord> {
         variant,
         reasoning_effort,
         reasoning,
+        service_tier: read_optional_string(value, "service_tier")?,
     })
 }
 

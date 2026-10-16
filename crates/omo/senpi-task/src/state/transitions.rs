@@ -5,8 +5,32 @@ use super::types::{
 
 /// Suspended residencies are never continuable: messaging a suspended child must not wake it.
 pub fn messageability(status: TaskStatus, residency_state: ResidencyState) -> Messageability {
+    messageability_with_runner(status, residency_state, None, None, None, false)
+}
+
+pub fn messageability_with_runner(
+    status: TaskStatus,
+    residency_state: ResidencyState,
+    execution_mode: Option<&str>,
+    runner_kind: Option<super::types::RunnerKind>,
+    host_session: Option<&super::types::HostSessionIdentity>,
+    daemon_reachable: bool,
+) -> Messageability {
     match residency_state {
-        ResidencyState::Disposed | ResidencyState::PersistedOnly | ResidencyState::RpcDetached => {
+        ResidencyState::Disposed | ResidencyState::PersistedOnly => {
+            return Messageability::NotContinuable;
+        }
+        ResidencyState::RpcDetached => {
+            if runner_kind == Some(super::types::RunnerKind::HostSession)
+                && host_session.is_some() && daemon_reachable
+                && matches!(status, TaskStatus::Running | TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted) {
+                return Messageability::Revive;
+            }
+            if execution_mode == Some("process")
+                && runner_kind != Some(super::types::RunnerKind::HostSession)
+                && matches!(status, TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted) {
+                return Messageability::Revive;
+            }
             return Messageability::NotContinuable;
         }
         ResidencyState::Resident | ResidencyState::Evicted => {}
