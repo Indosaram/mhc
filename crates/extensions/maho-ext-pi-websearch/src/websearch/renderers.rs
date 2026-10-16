@@ -5,7 +5,7 @@ use super::{types::*,tool::SearchParams,native::provider_name,search::provider_e
 
 pub fn registered_renderers() -> maho_ext_api::ToolRenderers<(), serde_json::Value> {
     use maho_interactive::theme::{ColorMode, theme_json::{ThemeJson, ColorValue}};
-    let theme = |theme: &maho_ext_api::Theme| Theme::from_json(ThemeJson {
+    let theme = |theme: &maho_ext_api::Theme| Theme::from_json(ThemeJson {appearance:None,
         name: theme.name.clone().unwrap_or_default(),
         vars: theme.vars.iter().map(|(key, value)| (key.clone(), ColorValue::Text(value.clone()))).collect(),
         colors: theme.colors.iter().chain(&theme.backgrounds).map(|(key, value)| (key.clone(), ColorValue::Text(value.clone()))).collect(),
