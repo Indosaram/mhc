@@ -4,6 +4,7 @@
 //! hardcoded fallback chains, the resolution pipeline, and runtime-fallback error classification.
 
 mod connected_providers_cache;
+mod claude_model_mapper;
 mod context_overflow;
 mod context_limit_resolver;
 mod fallback_chain_from_models;
@@ -40,6 +41,7 @@ mod runtime_fallback_model;
 mod runtime_fallback_retryable_patterns;
 
 pub use connected_providers_cache::*;
+pub use claude_model_mapper::*;
 pub use context_overflow::*;
 pub use context_limit_resolver::*;
 pub use fallback_chain_from_models::*;

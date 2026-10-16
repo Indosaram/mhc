@@ -130,6 +130,7 @@ pub struct ResolvedMcpConfig {
 pub struct LoadMcpConfigOptions<'a> {
     pub cwd: &'a std::path::Path, pub agent_dir: &'a std::path::Path,
     pub env: &'a BTreeMap<String, String>, pub project_trusted: bool,
+    pub home_dir: Option<&'a std::path::Path>, pub claude_config_dir: Option<&'a std::path::Path>,
 }
 pub fn get_server_endpoint_validation_error(config: &RawConfig) -> Option<String> {
     for (name, server) in config.mcp_servers.iter().flat_map(|servers| servers.iter()) {
