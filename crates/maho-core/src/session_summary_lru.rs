@@ -108,6 +108,7 @@ mod tests {
                 message_count: 0,
                 last_activity_time: None,
                 all_messages_text: text.to_owned(),
+                repository_identity: None,
             }),
             mtime: chrono::Utc::now(),
         }
