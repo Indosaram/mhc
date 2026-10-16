@@ -59,7 +59,7 @@ mhc 是 [senpi](https://github.com/code-yeongyu/senpi)（终端 AI 编程智能�
 
 ## 🚀 安装
 
-目前没有预编译版本，需要从源码构建。依赖：Rust 1.95（由 `rust-toolchain.toml` 自动选择）、[Bun](https://bun.sh)，以及一份
+目前没有预编译版本，需要从源码构建。依赖：Rust 1.95（由 `rust-toolchain.toml` 自动选择）、`protoc`（`maho-ai` 构建脚本需要）、[Bun](https://bun.sh)，以及一份
 oh-my-openagent 源码（版本见 [PINS.md](PINS.md)，用于打包内置技能）。
 
 ```bash
@@ -115,11 +115,15 @@ mhc --tools read,grep,find,ls -p "审查 src/ 的代码" # 只读模式
 mhc --help                                         # 查看全部选项
 ```
 
-配置目录为 `~/.omo/agent`（可用 `MAHO_CODING_AGENT_DIR` 修改）。已在使用 OmO 的话：
+配置位于 `~/.omo/agent` 与 `~/.omo/omo.jsonc`，与 senpi 上的 OmO 使用同一份文件，因此现有的 OmO 配置
+（提供商、`models.json`、认证、agents 与 categories）会被直接读取。也可以在交互界面中用 `/login` 登录提供商。
+如果想使用独立目录，请设置 `MAHO_CODING_AGENT_DIR` 并把 OmO 配置复制进去：
 
 ```bash
-mhc import-omo        # 从 ~/.omo/agent 导入 settings、models、keybindings、auth 与会话
+MAHO_CODING_AGENT_DIR=~/.maho/agent mhc import-omo   # 复制 settings、models、keybindings、auth 与会话
 ```
+
+更多：[命令行参考](docs/cli.md) · [配置与环境变量](docs/configuration.md)
 
 ## 🗂 项目结构
 
@@ -137,11 +141,11 @@ mhc import-omo        # 从 ~/.omo/agent 导入 settings、models、keybindings�
 ## 🚧 项目状态
 
 项目仍在积极开发中，与上游的对齐工作尚未全部完成。上游源码版本固定在 [PINS.md](PINS.md)，
-各 crate 的移植对照记录在 `parity.d/` 中。
+各 crate 的移植对照记录在 `parity.d/` 中（格式见 [tools/PARITY-FORMAT.md](tools/PARITY-FORMAT.md)）。
 
 ## 🤝 参与贡献
 
-请先阅读 [AGENTS.md](AGENTS.md)。核心规则：
+请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [AGENTS.md](AGENTS.md)。核心规则：
 
 - 以 senpi 为唯一上游，逐文件移植，保持命名与顺序，行为必须与固定版本完全一致。
 - golden fixture 只能通过 `tools/golden` 从上游生成，不能手写。
