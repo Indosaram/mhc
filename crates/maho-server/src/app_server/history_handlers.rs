@@ -1,7 +1,35 @@
 use super::{archive_state::ThreadArchiveState,history_pagination::{HistoryKind,HistoryPaginationOptions,HistoryValue,SortDirection,paginate_history},registry::{JsonRpcError,MethodRegistration,MethodScope},server_core::ServerCore,thread_registry::ThreadRegistry,turn_log::{LoggedTurn,TurnLog},wire_thread::{logged_turn_with_view,turns_from_session_entries,wire_item_to_thread_item}};
 use serde_json::{Value,json};
-use std::{borrow::Cow,sync::Arc};
+use std::{borrow::Cow,collections::VecDeque,sync::Arc,time::SystemTime};
 use tokio::sync::{Mutex,RwLock};
+
+/// (thread id, session file path, created_at fallback, file len, mtime) of one session-entry rebuild.
+type RebuiltTurnsKey = (String,String,String,u64,SystemTime);
+const REBUILT_TURNS_CAPACITY: usize = 4;
+/// The last few session-entry rebuilds, so paging an unchanged session file does not re-read and
+/// re-parse it for every page. Locked only from blocking threads, never across an `.await`.
+static REBUILT_TURNS: std::sync::Mutex<VecDeque<(RebuiltTurnsKey,Arc<Vec<LoggedTurn>>)>> = std::sync::Mutex::new(VecDeque::new());
+fn rebuilt_turns_cache() -> std::sync::MutexGuard<'static,VecDeque<(RebuiltTurnsKey,Arc<Vec<LoggedTurn>>)>> {
+    REBUILT_TURNS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+/// The turns `rebuild` builds from `path`, reused while the file's len and mtime are unchanged.
+/// The stamp is read before the rebuild, so a write racing it changes the stamp and rebuilds next time.
+fn rebuilt_turns(id: &str,path: Option<&str>,created_at: &str,rebuild: impl FnOnce() -> Vec<LoggedTurn>) -> Arc<Vec<LoggedTurn>> {
+    let stamp = path.and_then(|path|{let metadata = std::fs::metadata(path).ok()?;Some((path,metadata.len(),metadata.modified().ok()?))});
+    let Some((path,len,modified)) = stamp else {return Arc::new(rebuild())};
+    let key = (id.to_owned(),path.to_owned(),created_at.to_owned(),len,modified);
+    if let Some((_,turns)) = rebuilt_turns_cache().iter().find(|(cached,_)|cached == &key) {return turns.clone();}
+    let turns = Arc::new(rebuild());
+    let mut cache = rebuilt_turns_cache();
+    cache.retain(|(cached,_)|(&cached.0,&cached.1,&cached.2) != (&key.0,&key.1,&key.2));
+    if cache.len() >= REBUILT_TURNS_CAPACITY {cache.pop_front();}
+    cache.push_back((key,turns.clone()));
+    turns
+}
+/// Drops a thread's cached rebuilds (`thread/delete`, `thread/unarchive`).
+pub fn forget_rebuilt_turns(id: &str) {
+    rebuilt_turns_cache().retain(|(cached,_)|cached.0 != id);
+}
 
 pub async fn thread_history_turns(id: &str,threads: &ThreadRegistry,archive: &ThreadArchiveState,log: &Mutex<TurnLog>) -> Result<Vec<LoggedTurn>,JsonRpcError> {
     history_turns(id,threads,archive,log,|turns|turns.into_owned()).await
@@ -18,15 +46,17 @@ async fn history_turns<R>(id: &str,threads: &ThreadRegistry,archive: &ThreadArch
         {let log = log.lock().await;let logged = log.turns(id);if !logged.is_empty() {return Ok(read(Cow::Borrowed(logged)));}}
         // Release the entry guard before the synchronous history read/rebuild so streamed events are not stalled.
         let (session,created_at) = {let entry = entry.lock().await;(entry.session.clone(),entry.created_at.clone())};
-        let turns = tokio::task::spawn_blocking(move || session.with_session_manager(|manager|turns_from_session_entries(&manager.entries(),&created_at))).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
-        return Ok(read(Cow::Owned(turns)));
+        let id = id.to_owned();
+        // Only a persisted, flushed session's file holds every resident entry, so only it is a cache stamp.
+        let turns = tokio::task::spawn_blocking(move || session.with_session_manager(|manager|rebuilt_turns(&id,manager.session_file().filter(|_|manager.is_persisted() && manager.is_flushed()),&created_at,||turns_from_session_entries(&manager.entries(),&created_at)))).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+        return Ok(read(Cow::Borrowed(turns.as_slice())));
     }
     if let Some(info) = threads.list_session_infos().await.into_iter().find(|info|info.id == id) {
         // senpi `turnsForEntry`: the process-lifetime TurnLog wins over the session-entry rebuild.
         {let log = log.lock().await;let logged = log.turns(id);if !logged.is_empty() {return Ok(read(Cow::Borrowed(logged)));}}
         // The session-file read, JSON parse and turn rebuild are synchronous; keep them off the async worker.
-        let turns = tokio::task::spawn_blocking(move || turns_from_session_entries(&maho_core::session_manager::load_entries_from_file(&info.path),&info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis,true))).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
-        return Ok(read(Cow::Owned(turns)));
+        let turns = tokio::task::spawn_blocking(move || {let created_at = info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);rebuilt_turns(&info.id,Some(&info.path),&created_at,||turns_from_session_entries(&maho_core::session_manager::load_entries_from_file(&info.path),&created_at))}).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+        return Ok(read(Cow::Borrowed(turns.as_slice())));
     }
     if archive.list_archived_threads().await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?.iter().any(|thread|thread["id"] == id) {return Ok(read(Cow::Borrowed(log.lock().await.turns(id))));}
     Err(JsonRpcError::new(-32600,format!("thread not found: {id}")))
@@ -96,8 +126,41 @@ fn nullable_string(params: &Value,key: &str,message: &str) -> Result<Option<Stri
 }
 #[cfg(test)]
 mod tests {
-    use super::{Cow,LoggedTurn,occurrence_turns};
+    use super::{Arc,Cow,LoggedTurn,forget_rebuilt_turns,occurrence_turns,rebuilt_turns};
     use serde_json::json;
+    #[test]
+    fn rebuilt_turns_are_reused_until_the_session_file_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        std::fs::write(&path,"one\n").unwrap();
+        let path = path.display().to_string();
+        let rebuilds = std::cell::Cell::new(0);
+        let rebuild = ||{rebuilds.set(rebuilds.get() + 1);Vec::new()};
+        let first = rebuilt_turns("cache-thread",Some(&path),"c",rebuild);
+        let second = rebuilt_turns("cache-thread",Some(&path),"c",rebuild);
+        assert!(Arc::ptr_eq(&first,&second));
+        assert_eq!(rebuilds.get(),1);
+        // Same length, explicitly bumped mtime.
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(std::fs::metadata(&path).unwrap().modified().unwrap() + std::time::Duration::from_secs(5)).unwrap();
+        drop(file);
+        let bumped = rebuilt_turns("cache-thread",Some(&path),"c",rebuild);
+        assert!(!Arc::ptr_eq(&second,&bumped));
+        assert_eq!(rebuilds.get(),2);
+        // Changed length.
+        std::fs::write(&path,"one\ntwo\n").unwrap();
+        let grown = rebuilt_turns("cache-thread",Some(&path),"c",rebuild);
+        assert!(!Arc::ptr_eq(&bumped,&grown));
+        assert_eq!(rebuilds.get(),3);
+        assert!(Arc::ptr_eq(&grown,&rebuilt_turns("cache-thread",Some(&path),"c",rebuild)));
+        forget_rebuilt_turns("cache-thread");
+        rebuilt_turns("cache-thread",Some(&path),"c",rebuild);
+        assert_eq!(rebuilds.get(),4);
+        // No session file: never cached.
+        rebuilt_turns("cache-thread",None,"c",rebuild);
+        rebuilt_turns("cache-thread",None,"c",rebuild);
+        assert_eq!(rebuilds.get(),6);
+    }
     #[test]
     fn occurrence_turns_keep_search_results_identical() {
         let item = |value: serde_json::Value|value.as_object().unwrap().clone();
