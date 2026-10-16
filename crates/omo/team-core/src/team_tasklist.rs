@@ -15,7 +15,7 @@ use crate::team_registry::paths::{
     resolve_base_dir,
 };
 use crate::team_state_store::locks::{
-    LockOptions, atomic_write, detect_stale_lock, reap_stale_lock, with_lock,
+    LockOptions, atomic_write, detect_stale_lock, reap_stale_lock_with_threshold, with_lock,
 };
 use crate::types::{Task, TaskStatus};
 
@@ -274,7 +274,7 @@ pub fn claim_task(
         )));
     }
     if detect_stale_lock(&claim_lock_path, CLAIM_STALE_AFTER_MS) {
-        reap_stale_lock(&claim_lock_path);
+        reap_stale_lock_with_threshold(&claim_lock_path, CLAIM_STALE_AFTER_MS);
     } else if fs::symlink_metadata(&claim_lock_path).is_ok() {
         return Err(TeamCoreError::AlreadyClaimed);
     }

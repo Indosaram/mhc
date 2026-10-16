@@ -247,6 +247,12 @@ pub fn reap_stale_lock(lock_path: &Path) {
     reap_stale_lock_with(lock_path, &LockReleaseDeps::default());
 }
 
+pub fn reap_stale_lock_with_threshold(lock_path: &Path, stale_after_ms: i64) {
+    if detect_stale_lock(lock_path, stale_after_ms) {
+        reap_stale_lock(lock_path);
+    }
+}
+
 /// `reapStaleLock`: unlink, retrying EPERM/EBUSY up to three attempts 25ms apart.
 pub fn reap_stale_lock_with(lock_path: &Path, deps: &LockReleaseDeps<'_>) {
     for attempt in 1..=LOCK_RELEASE_RETRY_ATTEMPTS {
@@ -267,6 +273,43 @@ pub fn reap_stale_lock_with(lock_path: &Path, deps: &LockReleaseDeps<'_>) {
             Some(delay) => delay(LOCK_RELEASE_RETRY_MS),
             None => thread::sleep(Duration::from_millis(LOCK_RELEASE_RETRY_MS)),
         }
+    }
+}
+
+#[cfg(test)]
+mod threshold_tests {
+    use super::*;
+
+    #[test]
+    fn threshold_reaper_preserves_live_owner_lock() {
+        let directory = std::env::temp_dir()
+            .join(format!("team-core-lock-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).expect("create temporary directory");
+        let path = directory.join("claim.lock");
+        fs::write(
+            &path,
+            format!("test-owner\n{}\n{}\n", std::process::id(), now_ms()),
+        )
+        .expect("write lock");
+
+        reap_stale_lock_with_threshold(&path, 300_000);
+
+        assert!(path.exists());
+        fs::remove_dir_all(directory).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn threshold_reaper_removes_expired_dead_owner_lock() {
+        let directory = std::env::temp_dir()
+            .join(format!("team-core-lock-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).expect("create temporary directory");
+        let path = directory.join("claim.lock");
+        fs::write(&path, "test-owner\n2147483647\n1\n").expect("write lock");
+
+        reap_stale_lock_with_threshold(&path, 0);
+
+        assert!(!path.exists());
+        fs::remove_dir_all(directory).expect("remove temporary directory");
     }
 }
 
