@@ -73,8 +73,19 @@ echo "== sync local changes (commits after origin/main + uncommitted + untracked
 tmp_index=$(mktemp)
 cp "$(git rev-parse --git-path index)" "$tmp_index"
 GIT_INDEX_FILE=$tmp_index git add -A
+while IFS= read -r -d '' f; do
+  if [[ -f $f && $(wc -c < "$f") -gt 1000000 ]]; then
+    echo "   skip large untracked file: $f"
+    GIT_INDEX_FILE=$tmp_index git rm -q --cached -- "$f"
+  fi
+done < <(git ls-files -z --others --exclude-standard)
 GIT_INDEX_FILE=$tmp_index git diff --cached --binary "$base" > "$tmp_index.patch"
 rm -f "$tmp_index"
+if [[ $(wc -c < "$tmp_index.patch") -gt 1000000 ]]; then
+  echo "local diff is $(wc -c < "$tmp_index.patch") bytes; instabox exec --stdin is capped at 1 MB. Commit and push, then rerun." >&2
+  rm -f "$tmp_index.patch"
+  exit 1
+fi
 if [[ -s $tmp_index.patch ]]; then
   instabox exec "$machine" --stdin -- git -C /data/home/mhc apply --whitespace=nowarn < "$tmp_index.patch"
 fi

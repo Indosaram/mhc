@@ -59,7 +59,7 @@ scripts/instabox-build.sh -- check --workspace              # any cargo args aft
 scripts/instabox-build.sh -m bong-h-2 -k h -- clippy -p maho-ai --all-targets -- -D warnings
 ```
 
-- Run it from the checkout/worktree whose code should be built. It resets the box clone to `merge-base HEAD origin/main`, then applies local commits after that, staged/unstaged edits and untracked files as one binary diff. Nothing is pushed.
+- Run it from the checkout/worktree whose code should be built. It resets the box clone to `merge-base HEAD origin/main`, then applies local commits after that, staged/unstaged edits and untracked files as one binary diff. Nothing is pushed. `instabox exec --stdin` caps that diff at 1 MB: untracked files over 1 MB (build output like `dist/`) are skipped, and a larger diff fails with a request to commit and push first.
 - Machines: `bong-g-1..5` use key `g`, `bong-h-1..5` use key `h` (`-m`, `-k`; default `bong-g-1`/`g`). Each box is 4 vCPU / 8 GB, Debian 13; repo at `/data/home/mhc`, log at `/data/home/instabox-run.log`. Give parallel jobs different machines.
 - Keys live only in `~/.config/instabox/keys.env` (`INSTABOX_KEY_G`, `INSTABOX_KEY_H`). Never write a key into the repo; it is public. Ad-hoc commands: `INSTABOX_API_KEY=$INSTABOX_KEY_G instabox exec <machine> -- <cmd>` (`instabox ls`, `resume`, `ssh`, `files`).
 - Boxes auto-pause after 30 min idle; `exec` resumes them. First run on a fresh box installs rustup 1.95.0 into `~/.rustup` (`/opt/rust` is root-owned) and protoc 29.3 into `~/protoc` (needed by `maho-ai` build.rs; no apt/sudo).
