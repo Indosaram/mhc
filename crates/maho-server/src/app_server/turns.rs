@@ -67,6 +67,11 @@ impl TurnEngine {
                 // The projector reads only the message role/responseId and the update's own fields, so
                 // a streamed update skips encoding the accumulated message and its `partial` copy.
                 maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::MessageUpdate { message, assistant_message_event }) => message_update_value(message, assistant_message_event),
+                // Nothing reads these (the projector keys on assistant message_start/end, extension turns on
+                // user message_start): skip encoding tool-result payloads that would only be dropped.
+                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::TurnEnd { .. }) => return,
+                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::MessageEnd { message }) if message.role() != "assistant" => return,
+                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::MessageStart { message }) if !matches!(message.role(), "assistant" | "user") => return,
                 maho_ext_api::AgentSessionEvent::Agent(event) => serde_json::to_value(event),
                 maho_ext_api::AgentSessionEvent::AgentEnd { .. } => Ok(json!({"type":"agent_end"})),
                 // senpi `ensureSessionSubscription` forwards every session event; the projector turns
