@@ -11,3 +11,4 @@ pub mod utils;
 pub mod extension_system_migration;
 pub mod experimental;
 pub mod package_manager_cli;
+pub mod senpi_install;
