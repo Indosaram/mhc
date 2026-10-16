@@ -21,7 +21,11 @@ pub fn classify_path_environment(absolute_path: &str) -> PathClassification {
         return PathClassification::Unknown;
     }
     let normalized = absolute_path.replace('\\', "/");
-    if normalized.to_lowercase().contains("/onedrive") {
+    let lower = normalized.to_lowercase();
+    if lower
+        .split('/')
+        .any(|segment| segment == "onedrive" || segment.starts_with("onedrive - "))
+    {
         return PathClassification::Onedrive;
     }
     if normalized.contains("/Library/Mobile Documents/") {

@@ -12,7 +12,7 @@ pub fn transform_tool_name(tool_name: &str) -> String {
     if let Some(mapped) = special {
         return mapped.to_string();
     }
-    if trimmed.contains('-') || trimmed.contains('_') {
+    if trimmed.contains('-') || trimmed.contains('_') || trimmed.chars().any(char::is_whitespace) {
         return trimmed
             .split(|c: char| c == '-' || c == '_' || c.is_whitespace())
             .filter(|word| !word.is_empty())

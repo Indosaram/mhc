@@ -214,7 +214,7 @@ pub fn list_zip_entries_with_power_shell(
 }
 
 static TAR_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(r"^([^\s])\S*\s+\d+\s+\S+\s+\S+\s+\d+\s+\w+\s+\d+\s+(?:\d{2}:\d{2}|\d{4})\s+(.*)$")
+    compile(r"^([^\s])\S*\s+\d+\s+\S+\s+\S+\s+\d+\s+\S+\s+\d+\s+(?:\d{2}:\d{2}|\d{4})\s+(.*)$")
 });
 
 fn parse_tar_listed_zip_entry(line: &str) -> Option<ArchiveEntry> {
@@ -246,8 +246,7 @@ fn parse_tar_listed_zip_entry(line: &str) -> Option<ArchiveEntry> {
 pub fn parse_tar_listing_output(stdout: &str) -> Result<Vec<ArchiveEntry>, ZipListingError> {
     let lines: Vec<&str> = stdout
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.trim().is_empty())
         .collect();
     let mut entries = Vec::new();
     let mut unparsed = 0;
