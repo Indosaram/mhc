@@ -9,14 +9,19 @@ pub fn parse_enabled(value: Option<&str>) -> bool {
     !value.is_some_and(|value| matches!(value.trim().to_lowercase().as_str(), "0" | "false" | "no" | "off"))
 }
 fn enabled() -> bool { parse_enabled(std::env::var("PI_OPENAI_WEB_SEARCH").ok().as_deref()) }
-fn responses(model: Option<&Model>) -> bool { model.is_some_and(|model| matches!(model.api.as_str(), "openai-responses" | "azure-openai-responses")) }
+fn responses(model: Option<&Model>) -> bool { model.is_some_and(|model| matches!(model.api.as_str(), "openai-responses" | "azure-openai-responses" | "openai-codex-responses")) }
 pub fn supports_native_openai_web_search(model: Option<&Model>) -> bool {
     let Some(model) = model.filter(|_| responses(model)) else { return false };
     if model.api == "azure-openai-responses" { return true; }
+    if model.api == "openai-codex-responses" {
+        if model.id.contains("-spark") { return false; }
+        return model.compat.as_ref().and_then(|compat| compat.get("supportsWebSearchPreview")).and_then(Value::as_bool)
+            .unwrap_or_else(|| url::Url::parse(&model.base_url).ok().is_some_and(|url| url.host_str() == Some("chatgpt.com")));
+    }
     model.compat.as_ref().and_then(|compat| compat.get("supportsWebSearchPreview")).and_then(Value::as_bool)
         .unwrap_or_else(|| url::Url::parse(if model.base_url.is_empty() { "https://api.openai.com/v1" } else { &model.base_url }).ok().is_some_and(|url| url.host_str() == Some("api.openai.com")))
 }
-fn native(tool: &Value) -> bool { matches!(tool.get("type").and_then(Value::as_str), Some("web_search_preview" | "web_search_preview_2025_03_11")) }
+fn native(tool: &Value) -> bool { matches!(tool.get("type").and_then(Value::as_str), Some("web_search" | "web_search_preview" | "web_search_preview_2025_03_11")) }
 fn strip(payload: &Value) -> Value {
     if !payload.is_object() { return payload.clone(); }
     let mut result = payload.clone();
@@ -62,7 +67,7 @@ pub fn add_openai_web_search_to_payload(model: Option<&Model>, payload: &Value, 
         if tools != active { result["tools"] = json!(tools); }
         return result;
     }
-    if !tools.iter().any(native) { tools.push(json!({"type":"web_search_preview"})); }
+    if !tools.iter().any(native) { tools.push(json!({"type":if model.is_some_and(|model| model.api == "openai-codex-responses") { "web_search" } else { "web_search_preview" }})); }
     let mut include: Vec<Value> = payload.get("include").and_then(Value::as_array).into_iter().flatten().filter(|value| value.is_string()).cloned().collect();
     if !include.iter().any(|value| value.as_str() == Some(SOURCES)) { include.push(json!(SOURCES)); }
     result["tools"] = json!(tools);
