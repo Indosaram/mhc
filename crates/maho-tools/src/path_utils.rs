@@ -27,6 +27,8 @@ pub fn resolve_to_cwd(path: &str, cwd: &Path) -> PathBuf {
 }
 pub async fn path_exists(path: &Path) -> bool { tokio::fs::metadata(path).await.is_ok() }
 pub async fn resolve_read_path_async(path: &str, cwd: &Path) -> PathBuf {
+    let unquoted = unquoted_path(path);
+    let path = unquoted.as_deref().unwrap_or(path);
     let resolved = resolve_to_cwd(path, cwd);
     if path_exists(&resolved).await { return resolved; }
     let text = resolved.to_string_lossy();
@@ -40,6 +42,13 @@ pub async fn resolve_read_path_async(path: &str, cwd: &Path) -> PathBuf {
         if candidate != resolved && path_exists(&candidate).await { return candidate; }
     }
     resolved
+}
+fn unquoted_path(path: &str) -> Option<String> {
+    let path = path.trim();
+    let path = path.strip_prefix('@').unwrap_or(path);
+    let quote = path.chars().next()?;
+    if !matches!(quote, '\'' | '"') || !path.ends_with(quote) || path.len() <= quote.len_utf8() { return None; }
+    Some(path[quote.len_utf8()..path.len()-quote.len_utf8()].to_owned())
 }
 
 /// Component traversal with lstat/readlink only, used after the realpath deadline.

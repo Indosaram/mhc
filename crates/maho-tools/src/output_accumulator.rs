@@ -1,10 +1,11 @@
-use std::{io::Write, path::PathBuf};
+use std::{io::{Read, Seek, SeekFrom, Write}, path::PathBuf};
 use crate::{definition::ToolError, tail_window::TailWindow, truncate::*};
 pub struct OutputAccumulatorOptions { pub max_lines: usize, pub max_bytes: usize, pub temp_file_prefix: String }
 impl Default for OutputAccumulatorOptions {
     fn default() -> Self { Self { max_lines: DEFAULT_MAX_LINES, max_bytes: DEFAULT_MAX_BYTES, temp_file_prefix: "pi-output".into() } }
 }
 pub struct OutputSnapshot { pub content: String, pub truncation: TruncationResult, pub full_output_path: Option<PathBuf> }
+pub struct FullOutput { pub content: String, pub truncated: bool }
 pub struct OutputAccumulator {
     options: OutputAccumulatorOptions, tail: TailWindow, pending_utf8: Vec<u8>, raw: Vec<u8>, total_raw_bytes: usize,
     total_decoded_bytes: usize, completed_lines: usize, current_line_bytes: usize, finished: bool,
@@ -87,4 +88,73 @@ impl OutputAccumulator {
         self.temp_path = None; Ok(())
     }
     pub fn get_last_line_bytes(&self) -> usize { self.current_line_bytes }
+    pub fn read_full_output(&mut self, max_bytes: usize) -> Result<FullOutput, ToolError> {
+        let Some(file) = &mut self.temp else {
+            return Ok(truncate_full_output(&self.raw, max_bytes));
+        };
+        file.flush()?;
+        let size = file.metadata()?.len();
+        if size <= max_bytes as u64 {
+            file.seek(SeekFrom::Start(0))?;
+            let mut bytes = Vec::with_capacity(size as usize);
+            file.read_to_end(&mut bytes)?;
+            return Ok(truncate_full_output(&bytes, max_bytes));
+        }
+        let head_len = max_bytes / 2;
+        let tail_len = max_bytes - max_bytes / 2;
+        let tail_offset = size.saturating_sub(tail_len as u64);
+        if head_len == 0 {
+            let mut tail = vec![0; tail_len];
+            file.seek(SeekFrom::Start(tail_offset))?;
+            file.read_exact(&mut tail)?;
+            let mut tail_start = 0;
+            while tail_start < tail.len() && tail[tail_start] & 0xc0 == 0x80 { tail_start += 1; }
+            let omitted = size.saturating_sub((tail.len() - tail_start) as u64);
+            return Ok(FullOutput { content: format!("\n\n[... {omitted} bytes omitted ...]\n\n{}", String::from_utf8_lossy(&tail[tail_start..])), truncated: true });
+        }
+        let mut head = vec![0; head_len];
+        let mut head_extra = [0u8; 3];
+        let mut tail = vec![0; tail_len];
+        file.seek(SeekFrom::Start(0))?;
+        file.read_exact(&mut head)?;
+        let head_extra_len = (size as usize).saturating_sub(head_len).min(head_extra.len());
+        if tail_offset < (head_len + head_extra_len) as u64 {
+            file.seek(SeekFrom::Start(0))?;
+            let mut all = Vec::new();
+            file.read_to_end(&mut all)?;
+            return Ok(truncate_full_output(&all, max_bytes));
+        }
+        file.read_exact(&mut head_extra[..head_extra_len])?;
+        file.seek(SeekFrom::Start(tail_offset))?;
+        file.read_exact(&mut tail)?;
+        let mut head_end = head_len;
+        let mut sequence_start = head_len - 1;
+        while sequence_start > 0 && head[sequence_start] & 0xc0 == 0x80 { sequence_start -= 1; }
+        let lead = head[sequence_start];
+        let width = if lead < 0x80 { 1 } else if lead < 0xe0 { 2 } else if lead < 0xf0 { 3 } else { 4 };
+        let available = head_len - sequence_start + head_extra[..head_extra_len].iter().take_while(|byte| **byte & 0xc0 == 0x80).count();
+        if width > available { head_end = sequence_start; }
+        let mut tail_start = 0;
+        while tail_start < tail.len() && (tail[tail_start] & 0xc0) == 0x80 { tail_start += 1; }
+        let omitted = size.saturating_sub(head_end as u64).saturating_sub((tail.len() - tail_start) as u64);
+        let content = format!("{}\n\n[... {omitted} bytes omitted ...]\n\n{}", String::from_utf8_lossy(&head[..head_end]), String::from_utf8_lossy(&tail[tail_start..]));
+        Ok(FullOutput { content, truncated: true })
+    }
+}
+fn truncate_full_output(bytes: &[u8], max_bytes: usize) -> FullOutput {
+    if bytes.len() <= max_bytes { return FullOutput { content: String::from_utf8_lossy(bytes).into_owned(), truncated: false }; }
+    let head_len = max_bytes / 2;
+    let tail_len = max_bytes - head_len;
+    let mut head_end = head_len.min(bytes.len());
+    while head_end > 0 && head_end < bytes.len() && (bytes[head_end] & 0xc0) == 0x80 { head_end -= 1; }
+    if head_end == head_len && head_end > 0 {
+        let lead = bytes[head_end - 1];
+        if lead >= 0xc2 {
+            let width = if lead <= 0xdf { 2 } else if lead <= 0xef { 3 } else if lead <= 0xf4 { 4 } else { 1 };
+            if head_end - 1 + width > head_len { head_end -= 1; }
+        }
+    }
+    let mut tail_start = bytes.len().saturating_sub(tail_len); while tail_start < bytes.len() && (bytes[tail_start] & 0xc0) == 0x80 { tail_start += 1; }
+    let omitted = tail_start.saturating_sub(head_end);
+    FullOutput { content: format!("{}\n\n[... {omitted} bytes omitted ...]\n\n{}", String::from_utf8_lossy(&bytes[..head_end]), String::from_utf8_lossy(&bytes[tail_start..])), truncated: true }
 }

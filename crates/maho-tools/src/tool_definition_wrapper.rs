@@ -2,7 +2,38 @@ use std::sync::Arc;
 use maho_agent::{AgentTool,AgentToolResult,ToolExecutionMode as AgentExecutionMode};
 use maho_ai::types::{ContentBlock,ImageContent,TextAudience,TextContent};
 use crate::definition::*;
-pub type ContextFactory = Arc<dyn Fn() -> Arc<dyn ToolContext> + Send + Sync>;
+pub type ContextFactory = Arc<dyn Fn(&str, Option<&maho_ai::utils::abort::AbortSignal>) -> Arc<dyn ToolContext> + Send + Sync>;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::Mutex;
+    struct Session;
+    impl ToolSessionManager for Session { fn session_id(&self) -> &str { "session" } fn session_file(&self) -> Option<&Path> { None } }
+    struct Context { session: Session }
+    impl ToolContext for Context {
+        fn cwd(&self) -> &Path { Path::new(".") }
+        fn model(&self) -> Option<&maho_ai::model::Model> { None }
+        fn thinking_level(&self) -> Option<maho_ai::types::ThinkingLevel> { None }
+        fn session_manager(&self) -> &dyn ToolSessionManager { &self.session }
+        fn goal_store_file(&self) -> Option<&Path> { None }
+    }
+    #[test]
+    fn wrapper_context_factory_receives_call_id_and_abort_signal() {
+        let observed = Arc::new(Mutex::new(None));
+        let capture = Arc::clone(&observed);
+        let factory: ContextFactory = Arc::new(move |id, signal| {
+            *capture.lock().expect("capture lock") = Some((id.to_owned(), signal.is_some()));
+            Arc::new(Context { session: Session })
+        });
+        let definition = ToolDefinition::new("test", "test", serde_json::json!({}), Arc::new(|_| Box::pin(async { Ok(ToolResult::default()) })));
+        let wrapped = wrap_tool_definition(definition, Some(factory));
+        let runtime_signal = maho_ai::utils::abort::AbortController::new();
+        let future = (wrapped.execute)("call-1".into(), serde_json::json!({}), Some(runtime_signal.signal()), None);
+        std::mem::drop(future);
+        assert_eq!(*observed.lock().expect("capture lock"), Some(("call-1".into(), true)));
+    }
+}
 fn into_agent_result(result: ToolResult) -> AgentToolResult {
     AgentToolResult { content:result.content.into_iter().map(|part| match part {
         ToolContent::Text { text,audience } => ContentBlock::Text(TextContent { text,audience:audience.map(|_| TextAudience::Model),text_signature:None }),
@@ -22,15 +53,15 @@ fn from_agent_result(result: AgentToolResult) -> Result<ToolResult,ToolError> {
             ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => return Err(ToolError::Message("Tool results must contain text or image content".into())),
         }
     }
-    Ok(ToolResult { content,details:(!result.details.is_null()).then_some(result.details) })
+    Ok(ToolResult { content,details:(!result.details.is_null()).then_some(result.details),structured_content:result.structured_content })
 }
 pub fn wrap_tool_definition(definition: ToolDefinition,context_factory: Option<ContextFactory>) -> AgentTool {
     let prepare = definition.prepare_arguments.clone().map(|prepare| Arc::new(move |args| match prepare(args) { Ok(args) => args, Err(error) => serde_json::json!({"error":error.to_string()}) }) as maho_agent::ToolArgumentShim);
     let execute = definition.execute;
     AgentTool { label:definition.label,prepare_arguments:prepare,replay:None,execution_mode:definition.execution_mode.map(|mode| match mode { ToolExecutionMode::Sequential => AgentExecutionMode::Sequential,ToolExecutionMode::Parallel => AgentExecutionMode::Parallel }),
-        tool:maho_ai::types::Tool { name:definition.name,description:definition.description,parameters:definition.parameters,freeform:definition.freeform,constrained_sampling:definition.constrained_sampling },
+        tool:maho_ai::types::Tool { name:definition.name,description:definition.description,parameters:definition.parameters,output_schema:definition.output_schema,freeform:definition.freeform,constrained_sampling:definition.constrained_sampling },
         execute:Arc::new(move |id,params,signal,on_update| {
-            let execute = Arc::clone(&execute); let context = context_factory.as_ref().map(|factory| factory());
+            let execute = Arc::clone(&execute); let context = context_factory.as_ref().map(|factory| factory(id.as_str(),signal.as_ref()));
             Box::pin(async move {
                 let local_signal = AbortSignal::default();
                 let listener = signal.as_ref().map(|signal| { let local = local_signal.clone(); let listener = signal.add_abort_listener(move |_| local.abort()); if signal.aborted() { local_signal.abort(); } listener });
@@ -60,7 +91,7 @@ pub fn create_tool_definition_from_agent_tool(tool: AgentTool) -> ToolDefinition
             }
         })
     }));
-    definition.label = tool.label; definition.freeform = tool.tool.freeform; definition.constrained_sampling = tool.tool.constrained_sampling;
+    definition.label = tool.label; definition.freeform = tool.tool.freeform; definition.output_schema = tool.tool.output_schema; definition.constrained_sampling = tool.tool.constrained_sampling;
     definition.prepare_arguments = shim.map(|shim| Arc::new(move |args| Ok(shim(args))) as PrepareArguments);
     definition.execution_mode = tool.execution_mode.map(|mode| match mode { AgentExecutionMode::Sequential => ToolExecutionMode::Sequential,AgentExecutionMode::Parallel => ToolExecutionMode::Parallel }); definition
 }
