@@ -1,4 +1,4 @@
-use crate::todo_types::{TodoItem, TodoPhase, TodoStatus};
+use crate::todo_types::{TodoAsk, TodoItem, TodoPhase, TodoStatus};
 use std::sync::LazyLock;
 use regex::Regex;
 
@@ -33,6 +33,16 @@ pub fn get_todo_result_lines(phases: &[TodoPhase]) -> Vec<String> {
     }
     lines
 }
+pub fn describe_ask_now_next(phases:&[TodoPhase],ask:Option<&TodoAsk>)->(String,String,String) {
+    let ask=ask.map_or("(no user request captured)",|value|value.text.as_str()).to_owned();
+    let located=phases.iter().flat_map(|phase|phase.tasks.iter().map(move |task|(phase,task))).collect::<Vec<_>>();
+    if located.is_empty(){return (ask,"none - no todo list".into(),"none".into());}
+    let current=crate::todo_query::next_actionable_task(phases);
+    let now=located.iter().find(|(_,task)|current.is_some_and(|current|std::ptr::eq(*task,current))).map_or_else(||"none - all tasks closed".into(),|(phase,task)|format!("{} ({})",task.content,phase.name));
+    let next=located.iter().find(|(_,task)|task.status==TodoStatus::Pending&&current.is_none_or(|current|!std::ptr::eq(*task,current))).map_or_else(||"none".into(),|(phase,task)|format!("{} ({})",task.content,phase.name));
+    (ask,now,next)
+}
+pub fn format_ask_now_next_header(phases:&[TodoPhase],ask:Option<&TodoAsk>)->String { let (ask,now,next)=describe_ask_now_next(phases,ask);format!("Ask: {ask}\nNow: {now}\nNext: {next}\n\n") }
 pub fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) -> String {
     let total = phases.iter().map(|p| p.tasks.len()).sum::<usize>();
     if total == 0 {
@@ -93,4 +103,5 @@ mod tests {
         assert_eq!(format_summary(&[], &[], false), "Todo list cleared.");
         assert_eq!(format_summary(&[], &["missing".into()], false), "Errors: missing");
     }
+    #[test] fn ask_now_next_header_tracks_active_and_next_tasks(){let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Compile".into(),status:TodoStatus::InProgress},TodoItem{content:"Test".into(),status:TodoStatus::Pending}]}];let ask=TodoAsk{entry_id:"m1".into(),text:"Ship it".into(),captured_at:1};assert_eq!(format_ask_now_next_header(&phases,Some(&ask)),"Ask: Ship it\nNow: Compile (Build)\nNext: Test (Build)\n\n");}
 }
