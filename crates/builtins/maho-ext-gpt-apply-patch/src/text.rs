@@ -16,8 +16,12 @@ pub fn strip_heredoc(input:&str)->&str {
 }
 pub fn extract_patched_paths(text:&str)->Vec<String> {
     let normalized=normalize_patch_text(text);
-    strip_heredoc(&normalized).split(['\n','\u{2028}','\u{2029}']).filter_map(|line|["*** Add File: ","*** Delete File: ","*** Update File: ","*** Move to: "].iter().find_map(|p|line.strip_prefix(p)).filter(|p|!p.is_empty()).map(str::to_owned)).collect()
+    strip_heredoc(&normalized).split(['\n','\u{2028}','\u{2029}']).filter_map(|line| {
+        let trimmed=line.trim_matches(js_whitespace);
+        ["*** Add File: ","*** Delete File: ","*** Update File: ","*** Move to: "].iter().find_map(|prefix|trimmed.strip_prefix(prefix)).map(str::to_owned)
+    }).collect()
 }
+fn js_whitespace(character:char)->bool { matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -26,4 +30,5 @@ mod tests {
     #[test] fn normalizes_line_endings() { assert_eq!(normalize_patch_text("a\r\nb\rc"),"a\nb\nc"); }
     #[test] fn strips_heredoc() { assert_eq!(strip_heredoc("cat <<'PATCH'\na\nPATCH"),"a"); assert_eq!(strip_heredoc("<<PATCH\na\nOTHER"),"<<PATCH\na\nOTHER"); }
     #[test] fn paths_include_move() { assert_eq!(extract_patched_paths("*** Add File: a\r\n*** Move to: b"),["a","b"]); }
+    #[test] fn path_extraction_matches_trimmed_header_whitespace() { assert_eq!(extract_patched_paths("  *** Add File: a  \n\t*** Move to: b\u{00a0}"),["a","b"]); }
 }

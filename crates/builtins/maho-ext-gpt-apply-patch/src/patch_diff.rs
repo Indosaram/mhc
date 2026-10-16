@@ -1,5 +1,9 @@
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct PatchDiff { pub diff:String,pub added:usize,pub removed:usize }
+pub fn locale_compare(left:&str,right:&str)->std::cmp::Ordering {
+    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error));
+    collator.compare(left,right)
+}
 pub fn create_patch_diff(old:&str,new:&str)->PatchDiff {
     let width=old.split('\n').count().max(new.split('\n').count()).to_string().len();
     let (mut old_line,mut new_line,mut added,mut removed)=(1,1,0,0); let mut output=Vec::new();
@@ -27,4 +31,5 @@ mod tests {
     #[test] fn numbered_replacement_preserves_context() { assert_eq!(create_patch_diff("same\nold\n","same\nnew\n"),PatchDiff{diff:" 1 same\n-2 old\n+2 new".into(),added:1,removed:1}); }
     #[test] fn identical_content_is_not_elided() { assert_eq!(create_patch_diff("a\nb","a\nb"),PatchDiff{diff:" 1 a\n 2 b".into(),added:0,removed:0}); assert!(create_patch_diff("","").diff.is_empty()); }
     #[test] fn newline_only_change_counts_both_lines() { assert_eq!(create_patch_diff("a","a\n").diff,"-1 a\n+1 a"); }
+    #[test] fn locale_order_uses_collation_not_codepoint_order() { assert_eq!(locale_compare("ä","z"),std::cmp::Ordering::Less); }
 }
