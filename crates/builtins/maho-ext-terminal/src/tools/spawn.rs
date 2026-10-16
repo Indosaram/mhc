@@ -4,7 +4,8 @@ use maho_pty::PtyExit;
 pub fn command_options(command:&str,cwd:Option<&std::path::Path>,shell_path:Option<&str>)->std::io::Result<(maho_pty::PtySessionOptions,Option<String>)> {
     let shell=maho_tools::shell::get_shell_config(shell_path).map_err(std::io::Error::other)?;
     let use_stdin=shell.command_transport==Some("stdin");
-    let mut options=maho_pty::PtySessionOptions::new(shell.shell);options.args=shell.args;
+    let is_windows_git_bash=cfg!(windows) && shell.kind==Some(maho_tools::shell::ShellKind::Bash) && shell.command_transport.is_none();
+    let mut options=maho_pty::PtySessionOptions::new(shell.shell);options.args=if is_windows_git_bash {vec!["-lc".to_owned()]} else {shell.args};
     if !use_stdin {options=options.arg(command);}
     if let Some(cwd)=cwd {options=options.cwd(cwd);}
     // spawn.ts: `env: { ...ctx.getEnv(), ...request.envOverrides }`; getEnv is `getShellEnv()`. Later `.env()` pushes override.
@@ -29,6 +30,21 @@ mod tests {
         let bin=maho_core::config::get_bin_dir();let delimiter=if cfg!(windows) {';'} else {':'};
         let path=options.env.iter().find(|(key,_)|key.eq_ignore_ascii_case("path")).map(|(_,value)|value.clone()).unwrap_or_default();
         assert!(path.split(delimiter).any(|entry|entry==bin));Ok(())
+    }
+    #[test]
+    fn legacy_wsl_bash_uses_stdin_transport() -> std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let path=dir.path().join("bash.exe");std::fs::write(&path,b"")?;
+        let input=format!("{}\\Windows\\System32\\bash.exe",dir.path().display());
+        let (options,stdin)=command_options("echo ready",None,Some(&input))?;
+        assert_eq!(options.args,["-s"]);assert_eq!(stdin,Some("echo ready\n".to_owned()));Ok(())
+    }
+    #[cfg(windows)]
+    #[test]
+    fn git_bash_uses_login_command_mode() -> std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let path=dir.path().join("bash.exe");std::fs::write(&path,b"")?;
+        let (options,stdin)=command_options("echo ready",None,Some(path.to_str().unwrap()))?;
+        if cfg!(windows) {assert_eq!(options.args, ["-lc", "echo ready"]);} else {assert_eq!(options.args,["-c","echo ready"]);}
+        assert_eq!(stdin,None);Ok(())
     }
     #[test] fn exit_priority() {assert_eq!(describe_exit(None),None);assert_eq!(describe_exit(Some(&PtyExit {exit_code:Some(0),cancelled:true,timed_out:true})),Some("timed_out".to_owned()));assert_eq!(describe_exit(Some(&PtyExit {exit_code:Some(9),cancelled:false,timed_out:false})),Some("exited_9".to_owned()));}
 }
