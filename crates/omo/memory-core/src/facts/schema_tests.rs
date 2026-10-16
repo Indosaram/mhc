@@ -18,6 +18,8 @@ fn test_identity_paths(root: PathBuf) -> MemoryIdentityPaths {
         viewers: runtime.join("viewers"),
         push_queue: runtime.join("push-queue"),
         facts_queue: runtime.join("facts-queue"),
+        memory_usage: runtime.join("memory-usage"),
+        memory_maintenance: runtime.join("memory-maintenance"),
         facts: runtime.join("facts"),
         notices: runtime.join("notices"),
         tool_receipts: runtime.join("tool-receipts"),

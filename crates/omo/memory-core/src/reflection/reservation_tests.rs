@@ -73,6 +73,7 @@ fn make_request(trigger: ReflectionTrigger, convo: &str) -> ReflectionRequest {
                 end_message_id: "m1".to_string(),
                 start_line: 0,
                 end_snapshot_line: 1,
+                backlog_remaining: None,
                 entries: Vec::new(),
             },
         }],
