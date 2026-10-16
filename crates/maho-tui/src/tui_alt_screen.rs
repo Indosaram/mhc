@@ -84,6 +84,7 @@ fn same_scroll_view(a: &Option<Rc<RefCell<ScrollView>>>, b: &Option<Rc<RefCell<S
 }
 
 pub type CopySelectionHook = Rc<dyn Fn(String) -> std::sync::mpsc::Receiver<bool>>;
+pub type CopySelectionHookWithError = Rc<dyn Fn(String) -> std::sync::mpsc::Receiver<Result<(), String>>>;
 
 const SELECTION_AUTO_SCROLL_INTERVAL_MS: u64 = 50;
 
@@ -126,6 +127,53 @@ struct LastComponentClick {
 }
 
 const ALT_WHEEL_SCROLL_MULTIPLIER: i64 = 5;
+const WHEEL_BURST_GAP_MS: u64 = 5;
+const WHEEL_GESTURE_GAP_MS: u64 = 200;
+const WHEEL_REFERENCE_GAP_MS: f64 = 100.0;
+const MAX_AUTO_WHEEL_LINES: f64 = 6.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WheelScrollLines { Fixed(i64), Auto }
+
+#[derive(Default)]
+pub struct WheelScrollAccelerator {
+    lines: Option<i64>,
+    last_time: Option<u64>,
+    last_direction: i64,
+    average_gap: Option<f64>,
+    carry: f64,
+}
+
+impl WheelScrollAccelerator {
+    fn next(&mut self, direction: i64, now: u64) -> i64 {
+        if let Some(lines) = self.lines { return lines.max(1); }
+        if cfg!(target_os = "macos") && ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"].iter().any(|key| std::env::var_os(key).is_some()) { return 1; }
+        let Some(previous) = self.last_time.replace(now) else { self.last_direction = direction; return 1; };
+        let gap = now.saturating_sub(previous);
+        let same = direction == self.last_direction && gap <= WHEEL_GESTURE_GAP_MS;
+        self.last_direction = direction;
+        if !same { self.average_gap = None; self.carry = 0.0; return 1; }
+        if gap < WHEEL_BURST_GAP_MS { return 1; }
+        let average = self.average_gap.map_or(gap as f64, |old| (old + gap as f64) / 2.0);
+        self.average_gap = Some(average);
+        let value = (WHEEL_REFERENCE_GAP_MS / average).clamp(1.0, MAX_AUTO_WHEEL_LINES) + self.carry;
+        let whole = value.floor() as i64;
+        self.carry = value - whole as f64;
+        whole
+    }
+}
+
+#[cfg(test)]
+mod wheel_scroll_tests {
+    use super::*;
+
+    #[test]
+    fn auto_mode_accelerates_a_fast_wheel_gesture() {
+        let mut wheel = WheelScrollAccelerator::default();
+        assert_eq!(wheel.next(1, 100), 1);
+        assert_eq!(wheel.next(1, 120), if cfg!(target_os = "macos") { 1 } else { 5 });
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchSelectionMode {
@@ -201,7 +249,8 @@ pub struct TuiAltScreen {
     open_url: Option<OpenUrlFn>,
     on_right_click_paste: Option<RightClickPasteFn>,
     copy_selection: Option<CopySelectionHook>,
-    pending_copy_results: Vec<std::sync::mpsc::Receiver<bool>>,
+    copy_selection_with_error: Option<CopySelectionHookWithError>,
+    pending_copy_results: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     last_click: Option<LastClick>,
     scrollbar_drag: Option<ScrollbarDrag>,
     scrollbar_hover: Option<Rc<RefCell<ScrollView>>>,
@@ -213,7 +262,7 @@ pub struct TuiAltScreen {
     /// senpi's `searchCurrentMatchStyle` option.
     search_current_match_style: Rc<dyn Fn(&str) -> String>,
     /// senpi's `wheelScrollLines` option (default 1).
-    wheel_scroll_lines: i64,
+    wheel_scroll_accelerator: WheelScrollAccelerator,
     mouse_capture: Option<TuiMouseDispatchTarget>,
     mouse_press_target: Option<TuiMouseDispatchTarget>,
     mouse_press_point: Option<(i64, i64)>,
@@ -293,6 +342,7 @@ impl TuiAltScreen {
             open_url: None,
             on_right_click_paste: None,
             copy_selection: None,
+            copy_selection_with_error: None,
             pending_copy_results: Vec::new(),
             last_click: None,
             scrollbar_drag: None,
@@ -301,7 +351,7 @@ impl TuiAltScreen {
             search_navigation_button_style: Rc::new(|text: &str, _hovered: bool| text.to_string()),
             search_match_style: Rc::new(default_search_match_style),
             search_current_match_style: Rc::new(default_search_current_match_style),
-            wheel_scroll_lines: 1,
+            wheel_scroll_accelerator: WheelScrollAccelerator::default(),
             mouse_capture: None,
             mouse_press_target: None,
             mouse_press_point: None,
@@ -1319,12 +1369,14 @@ impl TuiAltScreen {
 
     /// Sets senpi's `wheelScrollLines` option (logical lines per wheel event, at least 1).
     pub fn set_wheel_scroll_lines(&mut self, lines: i64) {
-        self.wheel_scroll_lines = lines.max(1);
+        self.wheel_scroll_accelerator.lines = Some(lines.max(1));
     }
 
+    pub fn set_wheel_scroll_auto(&mut self) { self.wheel_scroll_accelerator.lines = None; }
+
     /// senpi's `getWheelScrollLines`: SGR button bit 3 (value 8) is the Alt modifier.
-    fn get_wheel_scroll_lines(&self, button: i64) -> i64 {
-        let lines = self.wheel_scroll_lines;
+    fn get_wheel_scroll_lines(&mut self, button: i64) -> i64 {
+        let lines = self.wheel_scroll_accelerator.next(button & 3, self.now_ms);
         if (button & 8) != 0 {
             lines * ALT_WHEEL_SCROLL_MULTIPLIER
         } else {
@@ -1830,8 +1882,9 @@ impl TuiAltScreen {
         let mut render = false;
         let mut finished = Vec::new();
         self.pending_copy_results.retain(|receiver| match receiver.try_recv() {
-            Ok(ok) => {
-                finished.push(ok);
+            Ok(result) => {
+                finished.push(result.is_ok());
+                if let Err(error) = result { self.flash(&error, None, now_ms); }
                 false
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => true,
@@ -2040,6 +2093,10 @@ impl TuiAltScreen {
         self.copy_selection = copy_selection;
     }
 
+    pub fn set_copy_selection_with_error(&mut self, copy_selection: Option<CopySelectionHookWithError>) {
+        self.copy_selection_with_error = copy_selection;
+    }
+
     /// Copy the active selection; returns whether a copy was started. With a
     /// [`CopySelectionHook`] the outcome is flashed by [`TuiAltScreen::tick`] once it settles.
     pub fn copy_active_selection_to_clipboard(&mut self, terminal: &mut dyn Terminal) -> bool {
@@ -2056,8 +2113,18 @@ impl TuiAltScreen {
     /// senpi's `copyTextToClipboard`: prefer the injected clipboard (which reports real
     /// success), else write OSC 52 and flash "Copied!".
     fn copy_text_to_clipboard(&mut self, text: String, terminal: &mut dyn Terminal) -> bool {
-        if let Some(copy_selection) = self.copy_selection.clone() {
+        if let Some(copy_selection) = self.copy_selection_with_error.clone() {
             self.pending_copy_results.push(copy_selection(text));
+            return true;
+        }
+        if let Some(copy_selection) = self.copy_selection.clone() {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let original = copy_selection(text);
+            std::thread::spawn(move || {
+                let result = original.recv().map(|ok| if ok { Ok(()) } else { Err("Copy failed".to_string()) }).unwrap_or_else(|_| Err("Copy failed".to_string()));
+                let _ = sender.send(result);
+            });
+            self.pending_copy_results.push(receiver);
             return true;
         }
         let encoded = base64_encode::encode_base64(text.as_bytes());
