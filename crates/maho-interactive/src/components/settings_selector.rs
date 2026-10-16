@@ -112,6 +112,38 @@ pub enum FullscreenExitOutput {
     ResumeHint,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuietStartup { Off, Initial, All }
+
+impl QuietStartup {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Initial, Self::All];
+    pub const fn as_str(self) -> &'static str { match self { Self::Off => "off", Self::Initial => "initial", Self::All => "all" } }
+    pub fn from_name(value: &str) -> Option<Self> { Self::ALL.into_iter().find(|mode| mode.as_str() == value) }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullscreenWheelScrollLines { Auto, Lines(u32) }
+
+impl FullscreenWheelScrollLines {
+    pub fn from_setting(value: &str) -> Option<Self> {
+        if value == "auto" { Some(Self::Auto) } else { value.parse::<u32>().ok().filter(|n| *n > 0).map(Self::Lines) }
+    }
+    pub fn as_setting(self) -> String { match self { Self::Auto => "auto".to_owned(), Self::Lines(n) => n.to_string() } }
+}
+
+#[cfg(test)]
+mod parity_settings_tests {
+    use super::*;
+
+    #[test]
+    fn quiet_startup_and_wheel_settings_preserve_modes() {
+        assert_eq!(QuietStartup::from_name("initial"), Some(QuietStartup::Initial));
+        assert_eq!(QuietStartup::from_name("all"), Some(QuietStartup::All));
+        assert_eq!(FullscreenWheelScrollLines::from_setting("auto"), Some(FullscreenWheelScrollLines::Auto));
+        assert_eq!(FullscreenWheelScrollLines::from_setting("5"), Some(FullscreenWheelScrollLines::Lines(5)));
+    }
+}
+
 impl FullscreenExitOutput {
     pub const ALL: [Self; 2] = [Self::Transcript, Self::ResumeHint];
 
@@ -245,7 +277,8 @@ pub struct SettingsConfig {
     pub editor_padding_x: usize,
     pub output_pad: u8,
     pub autocomplete_max_visible: usize,
-    pub quiet_startup: bool,
+    pub quiet_startup: QuietStartup,
+    pub fullscreen_wheel_scroll_lines: FullscreenWheelScrollLines,
     pub default_project_trust: DefaultProjectTrust,
     pub clear_on_shrink: bool,
     pub show_terminal_progress: bool,
@@ -288,7 +321,8 @@ impl Default for SettingsConfig {
             editor_padding_x: 0,
             output_pad: 1,
             autocomplete_max_visible: 10,
-            quiet_startup: false,
+            quiet_startup: QuietStartup::Off,
+            fullscreen_wheel_scroll_lines: FullscreenWheelScrollLines::Auto,
             default_project_trust: DefaultProjectTrust::Ask,
             clear_on_shrink: true,
             show_terminal_progress: false,
@@ -332,7 +366,7 @@ pub struct SettingsCallbacks {
     pub on_editor_padding_x_change: Option<Box<dyn FnMut(usize)>>,
     pub on_output_pad_change: Option<Box<dyn FnMut(u8)>>,
     pub on_autocomplete_max_visible_change: Option<Box<dyn FnMut(usize)>>,
-    pub on_quiet_startup_change: Option<Box<dyn FnMut(bool)>>,
+    pub on_quiet_startup_change: Option<Box<dyn FnMut(QuietStartup)>>,
     pub on_default_project_trust_change: Option<Box<dyn FnMut(DefaultProjectTrust)>>,
     pub on_clear_on_shrink_change: Option<Box<dyn FnMut(bool)>>,
     pub on_show_terminal_progress_change: Option<Box<dyn FnMut(bool)>>,
@@ -341,6 +375,7 @@ pub struct SettingsCallbacks {
     pub on_fullscreen_exit_output_change: Option<Box<dyn FnMut(FullscreenExitOutput)>>,
     pub on_fullscreen_scrollbar_change: Option<Box<dyn FnMut(String)>>,
     pub on_fullscreen_copy_on_select_change: Option<Box<dyn FnMut(bool)>>,
+    pub on_fullscreen_wheel_scroll_lines_change: Option<Box<dyn FnMut(FullscreenWheelScrollLines)>>,
     pub on_warnings_change: Option<Box<dyn FnMut(WarningSettings)>>,
     pub on_cancel: Option<Box<dyn FnMut()>>,
 }
@@ -1013,8 +1048,8 @@ impl SettingsSelectorComponent {
                 id: "quiet-startup".to_owned(),
                 label: "Quiet startup".to_owned(),
                 description: Some("Disable verbose printing at startup".to_owned()),
-                current_value: config.quiet_startup.to_string(),
-                values: Some(vec!["true".to_owned(), "false".to_owned()]),
+                current_value: config.quiet_startup.as_str().to_owned(),
+                values: Some(QuietStartup::ALL.iter().map(|mode| mode.as_str().to_owned()).collect()),
                 submenu: None,
             },
             SettingItem {
@@ -1190,6 +1225,14 @@ impl SettingsSelectorComponent {
                 ),
                 current_value: config.fullscreen_copy_on_select.to_string(),
                 values: Some(vec!["true".to_owned(), "false".to_owned()]),
+                submenu: None,
+            },
+            SettingItem {
+                id: "fullscreen-wheel-scroll-lines".to_owned(),
+                label: "Fullscreen wheel scrolling".to_owned(),
+                description: Some("Lines per mouse-wheel event in fullscreen mode; auto speeds up fast wheel spins where the terminal does not".to_owned()),
+                current_value: config.fullscreen_wheel_scroll_lines.as_setting(),
+                values: Some(vec!["auto".to_owned(), "1".to_owned(), "2".to_owned(), "3".to_owned(), "5".to_owned(), "10".to_owned(), config.fullscreen_wheel_scroll_lines.as_setting()]),
                 submenu: None,
             },
             SettingItem {
@@ -1420,7 +1463,7 @@ impl SettingsSelectorComponent {
                 "collapse-changelog" => {
                     call(&mut callbacks.on_collapse_changelog_change, new_value == "true");
                 }
-                "quiet-startup" => call(&mut callbacks.on_quiet_startup_change, new_value == "true"),
+                "quiet-startup" => if let Some(value) = QuietStartup::from_name(new_value) { call(&mut callbacks.on_quiet_startup_change, value); },
                 "install-telemetry" => {
                     call(&mut callbacks.on_enable_install_telemetry_change, new_value == "true");
                 }
@@ -1474,6 +1517,11 @@ impl SettingsSelectorComponent {
                 }
                 "fullscreen-copy-on-select" => {
                     call(&mut callbacks.on_fullscreen_copy_on_select_change, new_value == "true");
+                }
+            "fullscreen-wheel-scroll-lines" => {
+                    if let Some(value) = FullscreenWheelScrollLines::from_setting(new_value) {
+                        call(&mut callbacks.on_fullscreen_wheel_scroll_lines_change, value);
+                    }
                 }
                 "theme" => call(&mut callbacks.on_theme_change, new_value.to_owned()),
                 _ => {}

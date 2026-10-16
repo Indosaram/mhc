@@ -10,6 +10,8 @@ pub fn build_help_markdown(extension_commands: &[SlashCommandInfo]) -> String {
         "- Type `!` to run bash, or `!!` to run bash without adding the command or output to context.".into(),
         "- Type `/` for commands.".into(),
         "- Drop files into the terminal to attach them.".into(),
+        format!("- Press `{}` to cycle thinking level.", key_display_text("app.thinking.cycle")),
+        "- Use `/resume` or `/sessions` to switch sessions.".into(),
         format!("- Press `{}` to paste an image, with text fallback.", key_display_text("app.clipboard.pasteImage")),
         format!("- Press `{}` to queue a follow-up message.", key_display_text("app.message.followUp")),
         "- Press `?` on an empty input to show the shortcut overlay.".into(),

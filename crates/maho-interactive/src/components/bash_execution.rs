@@ -78,6 +78,7 @@ pub struct BashExecutionComponent {
     exclude_from_context: bool,
     theme: Theme,
     content: Container,
+    render_revision: u64,
 }
 
 impl BashExecutionComponent {
@@ -106,12 +107,14 @@ impl BashExecutionComponent {
             exclude_from_context,
             theme,
             content: Container::new(),
+            render_revision: 0,
         }
     }
 
     pub fn set_expanded(&mut self, expanded: bool) {
         self.expanded = expanded;
         self.update_display();
+        self.render_revision = self.render_revision.wrapping_add(1);
     }
 
     pub fn append_output(&mut self, chunk: &str) {
@@ -129,6 +132,7 @@ impl BashExecutionComponent {
             self.output_lines.drain(..excess);
         }
         self.update_display();
+        self.render_revision = self.render_revision.wrapping_add(1);
     }
 
     pub fn set_complete(
@@ -150,6 +154,7 @@ impl BashExecutionComponent {
         self.full_output_path = full_output_path;
         self.loader.borrow_mut().stop();
         self.update_display();
+        self.render_revision = self.render_revision.wrapping_add(1);
     }
 
     pub fn tick(&mut self, now_ms: u64) -> bool {
@@ -254,6 +259,8 @@ impl BashExecutionComponent {
     pub fn get_command(&self) -> &str {
         &self.command
     }
+
+    pub fn render_revision(&self) -> u64 { self.render_revision }
 }
 
 impl Component for BashExecutionComponent {
