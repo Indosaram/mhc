@@ -11,6 +11,15 @@ pub const SESSION_CONTEXT_CAPABILITY: &str = "session_context";
 pub const SESSION_KIND_CAPABILITY: &str = "session_kind";
 pub const AUTO_TITLE_PER_SESSION_CAPABILITY: &str = "auto_title_per_session";
 pub const DURABLE_SESSION_ID_CAPABILITY: &str = "durable_session_id";
+pub const DETACH_CONNECTION_CAPABILITY: &str = "detach_connection";
+pub const SESSION_STATUS_CAPABILITY: &str = "session_status";
+pub const WARM_CAPABILITY: &str = "warm";
+pub const MOVED_PATH_GUARD_CAPABILITY: &str = "moved_path_guard";
+pub const PROMPT_SURFACE_CAPABILITY: &str = "prompt_surface";
+pub const BROWSER_ENGINE_CAPABILITY: &str = "browser_engine";
+pub const RETRY_FALLBACK_PROFILE_CAPABILITY: &str = "retry_fallback_profile";
+pub const RETRY_FALLBACK_COMMAND_CAPABILITY: &str = "retry_fallback_command";
+pub const PROMPT_SURFACE_CHAT_CAPABILITY: &str = "prompt_surface_chat";
 pub const RPC_CLIENT_CAPABILITIES_ENV: &str = "SENPI_RPC_CLIENT_CAPABILITIES";
 pub const DEFAULT_CUSTOM_EXTENSION_LABEL: &str = "custom UI component";
 
@@ -30,4 +39,5 @@ mod tests {
     #[test] fn capable_client_receives_trimmed_extension_notice() { assert_eq!(build_custom_unsupported_request(&[CUSTOM_UNSUPPORTED_CAPABILITY.into()]," test ","id").unwrap()["extensionName"],"test"); }
     #[test] fn empty_name_uses_fallback_label() { assert_eq!(build_custom_unsupported_request(&[CUSTOM_UNSUPPORTED_CAPABILITY.into()]," ","id").unwrap()["extensionName"],DEFAULT_CUSTOM_EXTENSION_LABEL); }
     #[test] fn parser_trims_and_preserves_duplicates() { assert_eq!(parse_client_capabilities(Some(" question, ,question,media_placeholders ")),vec!["question","question","media_placeholders"]); assert!(parse_client_capabilities(None).is_empty()); }
+    #[test] fn newer_host_capabilities_match_rpc_protocol_names(){assert_eq!([DETACH_CONNECTION_CAPABILITY,SESSION_STATUS_CAPABILITY,WARM_CAPABILITY,MOVED_PATH_GUARD_CAPABILITY,PROMPT_SURFACE_CAPABILITY,BROWSER_ENGINE_CAPABILITY,RETRY_FALLBACK_PROFILE_CAPABILITY,RETRY_FALLBACK_COMMAND_CAPABILITY,PROMPT_SURFACE_CHAT_CAPABILITY],["detach_connection","session_status","warm","moved_path_guard","prompt_surface","browser_engine","retry_fallback_profile","retry_fallback_command","prompt_surface_chat"]);}
 }

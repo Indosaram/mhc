@@ -4,6 +4,8 @@ use std::path::{Path,PathBuf};
 use serde_json::Value;
 pub const HOST_CRASH_RECORD_LIMIT:usize = 50;
 pub fn host_crash_record_file(daemon_dir:&Path) -> PathBuf { daemon_dir.join("crashes.jsonl") }
+/// Returns only terminal crash records, excluding clean engine stops and watchdog evidence.
+pub fn is_host_crash(record:&Value)->bool{record.get("kind").and_then(Value::as_str)!=Some("rpc-host-watchdog")&&record.get("detection").and_then(Value::as_str)!=Some("engine_stop")}
 pub fn read_host_crash_records(daemon_dir:&Path) -> Vec<Value> {
     let Ok(raw) = fs::read_to_string(host_crash_record_file(daemon_dir)) else { return Vec::new(); };
     raw.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()).filter(|value| value.is_object() && value.get("at").is_some_and(Value::is_string)).collect()
@@ -42,4 +44,5 @@ mod tests {
     #[test] fn crash_loop_keeps_newest_fifty() { let dir=tempfile::tempdir().unwrap();for i in 0..60 { record_host_crash(dir.path(),&json!({"at":"2026-10-01T00:00:00.000Z","uptimeMs":i})); }let records=read_host_crash_records(dir.path());assert_eq!(records.len(),50);assert_eq!(records[0]["uptimeMs"],10);assert_eq!(records[49]["uptimeMs"],59); }
     #[test] fn unusable_directory_does_not_interrupt_shutdown() { let dir=tempfile::tempdir().unwrap();let file=dir.path().join("file");fs::write(&file,"x").unwrap();record_host_crash(&file.join("daemon"),&json!({"at":"fixed"})); }
     #[test] fn torn_final_line_is_skipped() { let dir=tempfile::tempdir().unwrap();record_host_crash(dir.path(),&json!({"at":"fixed","uptimeMs":42}));let mut file=OpenOptions::new().append(true).open(host_crash_record_file(dir.path())).unwrap();write!(file,"{{\"at\":\"tru").unwrap();assert_eq!(read_host_crash_records(dir.path()).len(),1); }
+    #[test] fn crash_classification_excludes_watchdog_and_engine_stop(){assert!(!is_host_crash(&json!({"kind":"rpc-host-watchdog"})));assert!(!is_host_crash(&json!({"detection":"engine_stop"})));assert!(is_host_crash(&json!({"kind":"rpc-host","detection":"supervisor"})));assert!(is_host_crash(&json!({"at":"legacy"})));}
 }
