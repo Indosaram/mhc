@@ -14,6 +14,7 @@ fn stored_goal() -> Goal {
         consecutive_continuations: None,
         unattended_continuations: None,
         last_continuation_signature: None,
+        continuation_stopped_at: None,
         created_at: 10,
         updated_at: 20,
         last_started_at: None,
