@@ -21,7 +21,7 @@ use crate::image_stub::{
 };
 use crate::terminal::Terminal;
 use crate::terminal_colors::{
-    is_osc11_background_color_response, parse_osc11_background_color,
+    is_terminal_color_da1, parse_osc_color_response,
     parse_terminal_color_scheme_report, RgbColor, TerminalColorScheme,
 };
 use crate::utils::{
@@ -42,7 +42,6 @@ const FAKE_CURSOR_RESET: &str = "\x1b[0m";
 const ENABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS: &str = "\x1b[?2031h";
 const DISABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS: &str = "\x1b[?2031l";
 const QUERY_CELL_SIZE: &str = "\x1b[16t";
-const QUERY_OSC11_BACKGROUND_COLOR: &str = "\x1b]11;?\x07";
 const QUERY_TERMINAL_COLOR_SCHEME: &str = "\x1b[?996n";
 
 /// senpi checks `process.env.TMUX` (any non-empty value) before toggling tmux focus reporting.
@@ -74,14 +73,12 @@ fn parse_cell_size_response(data: &str) -> Option<(u32, u32)> {
 #[derive(Clone)]
 pub struct TerminalQueryTicket<T>(Rc<RefCell<Option<T>>>);
 
-impl<T: Copy> TerminalQueryTicket<T> {
+impl<T: Clone> TerminalQueryTicket<T> {
     fn pending() -> Self {
         Self(Rc::new(RefCell::new(None)))
     }
 
-    pub fn result(&self) -> Option<T> {
-        *self.0.borrow()
-    }
+    pub fn result(&self) -> Option<T> { self.0.borrow().clone() }
 
     fn settle(&self, value: T) {
         let mut slot = self.0.borrow_mut();
@@ -1290,8 +1287,7 @@ pub struct TuiBase {
     terminal_color_scheme_notifications_enabled: bool,
     terminal_color_scheme_listeners: Vec<(u64, TerminalColorSchemeListener)>,
     next_terminal_color_scheme_listener_id: u64,
-    pending_osc11_background_replies: usize,
-    pending_osc11_background_queries: std::collections::VecDeque<PendingTerminalQuery<Option<RgbColor>>>,
+    pending_terminal_colors_queries: Vec<PendingTerminalColorsQuery>,
     pending_terminal_color_scheme_queries: Vec<PendingTerminalQuery<Option<TerminalColorScheme>>>,
     /// senpi's `#muxDetector` (`TuiConstructorOptions.muxDetector`, default
     /// [`crate::mux::is_multiplexer_session`]).
@@ -1299,6 +1295,13 @@ pub struct TuiBase {
     /// senpi `logDirectory`: directory for debug/crash logs (`PI_DEBUG_REDRAW`, render errors),
     /// defaulting to `~/.senpi/agent`.
     log_directory: std::path::PathBuf,
+}
+
+struct PendingTerminalColorsQuery {
+    ticket: TerminalQueryTicket<crate::terminal_colors::TerminalColors>,
+    deadline_ms: u64,
+    colors: crate::terminal_colors::TerminalColors,
+    replied: std::collections::HashSet<String>,
 }
 
 impl TuiBase {
@@ -1314,8 +1317,7 @@ impl TuiBase {
             terminal_color_scheme_notifications_enabled: false,
             terminal_color_scheme_listeners: Vec::new(),
             next_terminal_color_scheme_listener_id: 0,
-            pending_osc11_background_replies: 0,
-            pending_osc11_background_queries: std::collections::VecDeque::new(),
+            pending_terminal_colors_queries: Vec::new(),
             pending_terminal_color_scheme_queries: Vec::new(),
             mux_detector: Box::new(crate::mux::is_multiplexer_session),
             log_directory: default_diagnostic_log_directory(),
@@ -1477,12 +1479,21 @@ impl TuiBase {
 
     /// senpi's `queryTerminalBackgroundColor` (OSC 11). The ticket settles with the parsed color,
     /// or `None` once `now_ms + timeout_ms` passes in [`TuiBase::poll_terminal_queries`].
-    pub fn query_terminal_background_color(&mut self, terminal: &mut dyn Terminal, timeout_ms: u64, now_ms: u64) -> TerminalQueryTicket<Option<RgbColor>> {
+    pub fn query_terminal_colors(&mut self, terminal: &mut dyn Terminal, timeout_ms: u64, now_ms: u64) -> TerminalQueryTicket<crate::terminal_colors::TerminalColors> {
         let ticket = TerminalQueryTicket::pending();
-        self.pending_osc11_background_queries.push_back(PendingTerminalQuery { ticket: ticket.clone(), deadline_ms: now_ms.saturating_add(timeout_ms) });
-        self.pending_osc11_background_replies += 1;
-        terminal.write(QUERY_OSC11_BACKGROUND_COLOR);
+        self.pending_terminal_colors_queries.push(PendingTerminalColorsQuery {
+            ticket: ticket.clone(), deadline_ms: now_ms.saturating_add(timeout_ms),
+            colors: crate::terminal_colors::TerminalColors { palette: vec![None; 16], ..Default::default() },
+            replied: HashSet::new(),
+        });
+        terminal.write("\x1b]10;?\x07\x1b]11;?\x07");
+        for index in 0..16 { terminal.write(&format!("\x1b]4;{index};?\x07")); }
+        terminal.write("\x1b[c");
         ticket
+    }
+
+    pub fn terminal_colors_snapshot(&self) -> Option<crate::terminal_colors::TerminalColors> {
+        self.pending_terminal_colors_queries.first().map(|query| query.colors.clone())
     }
 
     /// senpi's `queryTerminalColorScheme` (DSR 996): settles with the next color-scheme report,
@@ -1497,11 +1508,9 @@ impl TuiBase {
     /// Settles every terminal query whose timeout has passed (senpi's per-query `setTimeout`);
     /// call once per driver loop iteration.
     pub fn poll_terminal_queries(&mut self, now_ms: u64) {
-        for query in &self.pending_osc11_background_queries {
-            if query.deadline_ms <= now_ms {
-                query.ticket.settle(None);
-            }
-        }
+        self.pending_terminal_colors_queries.retain(|query| {
+            if query.deadline_ms <= now_ms { query.ticket.settle(query.colors.clone()); false } else { true }
+        });
         self.pending_terminal_color_scheme_queries.retain(|query| {
             if query.deadline_ms <= now_ms {
                 query.ticket.settle(None);
@@ -1511,16 +1520,30 @@ impl TuiBase {
         });
     }
 
-    /// senpi's `consumeOsc11BackgroundResponse`: a reply is consumed while any OSC 11 query is
-    /// outstanding, even after that query timed out.
-    fn consume_osc11_background_response(&mut self, data: &str) -> bool {
-        if self.pending_osc11_background_replies == 0 || !is_osc11_background_color_response(data) {
-            return false;
+    /// Consumes the next matching OSC color response or DA1 terminator.
+    fn consume_terminal_color_response(&mut self, data: &str) -> bool {
+        let Some(query) = self.pending_terminal_colors_queries.first_mut() else { return false; };
+        if is_terminal_color_da1(data) {
+            let query = self.pending_terminal_colors_queries.remove(0);
+            query.ticket.settle(query.colors);
+            return true;
         }
-        let rgb = parse_osc11_background_color(data);
-        self.pending_osc11_background_replies -= 1;
-        if let Some(query) = self.pending_osc11_background_queries.pop_front() {
-            query.ticket.settle(rgb);
+        let Some(response) = parse_osc_color_response(data) else { return false; };
+        let (key, slot) = match response.target {
+            crate::terminal_colors::OscColorTarget::Foreground => ("foreground".to_string(), 0),
+            crate::terminal_colors::OscColorTarget::Background => ("background".to_string(), 1),
+            crate::terminal_colors::OscColorTarget::Palette(index) if index < 16 => (index.to_string(), usize::from(index) + 2),
+            crate::terminal_colors::OscColorTarget::Palette(_) => return true,
+        };
+        if !query.replied.insert(key) { return true; }
+        match slot {
+            0 => query.colors.foreground = response.rgb,
+            1 => query.colors.background = response.rgb,
+            _ => query.colors.palette[slot - 2] = response.rgb,
+        }
+        if query.replied.len() == 18 {
+            let query = self.pending_terminal_colors_queries.remove(0);
+            query.ticket.settle(query.colors);
         }
         true
     }
@@ -2288,7 +2311,7 @@ impl TuiBase {
                 data = focus.data;
             }
         }
-        if self.consume_osc11_background_response(&data)
+        if self.consume_terminal_color_response(&data)
             || self.consume_terminal_color_scheme_report(&data)
             || self.consume_cell_size_response(&data)
         {

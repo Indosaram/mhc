@@ -587,6 +587,33 @@ fn should_emit_paste_event_for_complete_bracketed_paste() {
 }
 
 #[test]
+fn should_group_unbracketed_multiline_burst_as_paste() {
+    let mut h = H::new(StdinBufferOptions::default());
+    h.input("first\nsecond\n");
+    assert_eq!(h.paste, ["first\nsecond\n"]);
+}
+
+#[test]
+fn should_group_fast_unbracketed_multiline_input_as_paste() {
+    let mut h = H::new(StdinBufferOptions { burst_window_ms: Some(20), ..Default::default() });
+    h.input("first\nsecond\n");
+    assert_eq!(h.paste, ["first\nsecond\n"]);
+    assert!(h.data.is_empty());
+}
+
+#[test]
+fn should_hold_trailing_newline_after_fast_text_for_fragment_continuation() {
+    let mut h = H::new(StdinBufferOptions { burst_window_ms: Some(20), ..Default::default() });
+    h.input("first");
+    h.advance(5);
+    h.input("\n");
+    assert!(h.data.is_empty());
+    h.advance(20);
+    assert_eq!(h.data, ["\n"]);
+}
+
+
+#[test]
 fn should_handle_paste_arriving_in_chunks() {
     let mut h = H::default_test();
     h.input("\x1b[200~");
