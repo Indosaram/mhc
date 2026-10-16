@@ -22,14 +22,14 @@ pub fn estimate_quick_cost(pricing: Pricing, profile: MemoryWorkloadProfile) -> 
     (profile.input_tokens * pricing.input + profile.cache_read_tokens * pricing.cache_read.unwrap_or(pricing.input) + profile.output_tokens * pricing.output.unwrap_or(0.0)) / 1_000_000.0
 }
 #[derive(Clone, Debug)]
-pub struct MemoryRouteCandidate { pub model: String, pub thinking: Option<String>, pub cost: Option<Pricing> }
+pub struct MemoryRouteCandidate { pub model: String, pub thinking: Option<String>, pub cost: Option<Pricing>, pub context_window: Option<u64> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Route { Fork, Quick }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reason { Cheaper, OnlyCandidate, NoPricing, SurfaceExcluded, UnknownContext }
+pub enum Reason { Cheaper, OnlyCandidate, NoPricing, SurfaceExcluded, UnknownContext, WindowUnfit }
 #[derive(Clone, Debug)]
 pub struct MemoryLaunchRoute { pub route: Route, pub model: String, pub thinking: Option<String>, pub reason: Reason, pub fork_cost: Option<f64>, pub quick_cost: Option<f64> }
-pub struct MemoryLaunchRouteInput<'a> { pub surface: MemoryLaunchSurface, pub quick: Option<&'a MemoryRouteCandidate>, pub session: Option<&'a MemoryRouteCandidate>, pub parent_context_tokens: Option<f64>, pub turns: u32, pub cache_hit: bool }
+pub struct MemoryLaunchRouteInput<'a> { pub surface: MemoryLaunchSurface, pub quick: Option<&'a MemoryRouteCandidate>, pub session: Option<&'a MemoryRouteCandidate>, pub parent_context_tokens: Option<f64>, pub payload_tokens: Option<f64>, pub turns: u32, pub cache_hit: bool }
 #[derive(Debug)]
 pub struct MissingQuickCandidate;
 impl std::fmt::Display for MissingQuickCandidate { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("chooseMemoryLaunchRoute requires a quick candidate") } }
@@ -42,6 +42,8 @@ pub fn choose_memory_launch_route(input: &MemoryLaunchRouteInput<'_>) -> Result<
     let Some(pricing) = session.cost else { return Ok(pick(Route::Quick, quick, Reason::NoPricing)); };
     let Some(parent_context_tokens) = input.parent_context_tokens else { return Ok(pick(Route::Quick, quick, Reason::UnknownContext)); };
     let profile = input.surface.profile();
+    let Some(context_window) = session.context_window else { return Ok(pick(Route::Quick, quick, Reason::UnknownContext)); };
+    if parent_context_tokens + 3_800.0 + input.payload_tokens.unwrap_or(0.0) + 500.0 * f64::from(input.turns) > context_window as f64 * 0.8 { return Ok(pick(Route::Quick, quick, Reason::WindowUnfit)); }
     let fork_cost = estimate_fork_cost(&ForkCostInput { pricing, parent_context_tokens, turns: input.turns, output_tokens: profile.output_tokens, cache_hit: input.cache_hit });
     let Some(quick_pricing) = quick.cost else { return Ok(pick(Route::Quick, quick, Reason::NoPricing)); };
     let quick_cost = estimate_quick_cost(quick_pricing, profile);
@@ -59,7 +61,7 @@ mod tests {
     const OPUS: Pricing = Pricing { input: 5.0, cache_read: Some(0.5), output: Some(25.0) };
     fn fork(parent: f64, turns: u32, cache_hit: bool) -> f64 { estimate_fork_cost(&ForkCostInput { pricing: KIMI, parent_context_tokens: parent, turns, output_tokens: 6996.0, cache_hit }) }
     fn candidate(cost: Option<Pricing>) -> MemoryRouteCandidate { MemoryRouteCandidate { model: "fixture/model".into(), thinking: None, cost } }
-    fn route(surface: MemoryLaunchSurface, session: Option<&MemoryRouteCandidate>, parent_context_tokens: Option<f64>, turns: u32) -> MemoryLaunchRoute { choose_memory_launch_route(&MemoryLaunchRouteInput { surface, quick: Some(&candidate(Some(KIMI))), session, parent_context_tokens, turns, cache_hit: true }).unwrap() }
+    fn route(surface: MemoryLaunchSurface, session: Option<&MemoryRouteCandidate>, parent_context_tokens: Option<f64>, turns: u32) -> MemoryLaunchRoute { choose_memory_launch_route(&MemoryLaunchRouteInput { surface, quick: Some(&candidate(Some(KIMI))), session, parent_context_tokens, payload_tokens: None, turns, cache_hit: true }).unwrap() }
     #[test]
     fn per_turn_cache_billing() { let one = fork(156_872.0, 1, true); let five = fork(156_872.0, 5, true); let twenty_one = fork(156_872.0, 21, true); assert!((one / 0.26042 - 0.17).abs() < 0.05); assert!((five / 0.26042 - 0.54).abs() < 0.05); assert!((twenty_one / 0.26042 - 2.08).abs() < 0.05); assert!(twenty_one > five * 3.0); }
     #[test]
@@ -80,6 +82,15 @@ mod tests {
     fn no_session_uses_quick() { assert_eq!(route(MemoryLaunchSurface::Reflection, None, Some(156_872.0), 3).route, Route::Quick); }
     #[test]
     fn unknown_context_uses_quick() { assert_eq!(route(MemoryLaunchSurface::Reflection, Some(&candidate(Some(LUNA))), None, 3).reason, Reason::UnknownContext); }
+    #[test]
+    fn inherited_context_and_expected_work_must_fit_session_window() {
+        let quick = candidate(Some(KIMI));
+        let mut session = candidate(Some(LUNA));
+        session.context_window = Some(100_000);
+        let choice = choose_memory_launch_route(&MemoryLaunchRouteInput { surface: MemoryLaunchSurface::Reflection, quick: Some(&quick), session: Some(&session), parent_context_tokens: Some(70_000.0), payload_tokens: Some(5_000.0), turns: 10, cache_hit: true }).unwrap();
+        assert_eq!(choice.route, Route::Quick);
+        assert_eq!(choice.reason, Reason::WindowUnfit);
+    }
     #[test]
     fn measured_profile_matches_range() { let cost = estimate_quick_cost(KIMI, REFLECTION_PROFILE); assert!(cost > 0.26042 * 0.5); assert!(cost < 0.26042 * 2.0); }
     #[test]
