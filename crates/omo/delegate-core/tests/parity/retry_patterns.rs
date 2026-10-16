@@ -21,6 +21,7 @@ fn unknown_category_output_retry_guidance_preserves_available_options() {
         .map(|(_, list)| list.split(", ").collect());
 
     assert!(!guidance.is_empty());
+    assert!(guidance.contains("run_in_background=true"));
     let available_options = available_options.unwrap_or_default();
     assert!(!available_options.is_empty());
     assert!(
@@ -28,4 +29,17 @@ fn unknown_category_output_retry_guidance_preserves_available_options() {
             .iter()
             .all(|option| guidance.contains(option))
     );
+}
+
+#[test]
+fn background_retry_pattern_recommends_standard_spawn() {
+    let pattern = delegate_core::DELEGATE_TASK_ERROR_PATTERNS
+        .iter()
+        .find(|pattern| pattern.error_type == "missing_run_in_background");
+
+    let Some(pattern) = pattern else {
+        panic!("background retry pattern is missing");
+    };
+    assert!(pattern.fix_hint.contains("run_in_background=true (the standard spawn)"));
+    assert!(pattern.fix_hint.contains("run_in_background=false for a short child"));
 }

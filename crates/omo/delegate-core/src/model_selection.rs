@@ -24,6 +24,7 @@ pub struct DelegateModelResolutionInput {
     pub category_default_model: Option<String>,
     pub is_user_configured_category_model: bool,
     pub fallback_chain: Option<Vec<DelegateFallbackEntry>>,
+    pub allow_unlisted_providers: bool,
     pub available_models: IndexSet<String>,
     pub system_default_model: Option<String>,
 }
@@ -82,6 +83,12 @@ fn get_explicit_high_base_model(model: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn model_id_for_provider<'a>(provider: &str, model: &'a str) -> &'a str {
+    model
+        .strip_prefix(&format!("{provider}/"))
+        .unwrap_or(model)
 }
 
 fn parse_user_fallback_model(fallback_model: &str) -> Option<ParsedUserFallback> {
@@ -296,6 +303,7 @@ pub fn resolve_model_for_delegate_task(
                 fallback_chain,
                 &input.available_models,
                 explicit_high_model.zip(explicit_high_base_model),
+                input.allow_unlisted_providers,
             )
         };
         if chain_result.is_some() {
@@ -351,6 +359,7 @@ fn resolve_warm_fallback_chain(
     fallback_chain: &[DelegateFallbackEntry],
     available_models: &IndexSet<String>,
     explicit_high: Option<(&str, &str)>,
+    allow_unlisted_providers: bool,
 ) -> Option<DelegateModelResolutionResult> {
     let choose = |matched: String, entry: &DelegateFallbackEntry| match explicit_high {
         Some((high_model, high_base))
@@ -363,15 +372,27 @@ fn resolve_warm_fallback_chain(
 
     for (entry_index, entry) in fallback_chain.iter().enumerate() {
         for provider in &entry.providers {
-            let transformed_model_id = transform_model_for_provider(provider, &entry.model);
-            let full_model = format!("{provider}/{transformed_model_id}");
-            if let Some(matched) = fuzzy_match_model(
-                &full_model,
+            let entry_model_id = model_id_for_provider(provider, &entry.model);
+            let transformed_model_id = transform_model_for_provider(provider, entry_model_id);
+    let mut matched = fuzzy_match_model(
+                &format!("{provider}/{transformed_model_id}"),
                 available_models,
                 Some(std::slice::from_ref(provider)),
-            ) {
+            );
+            if matched.is_none() && transformed_model_id != entry_model_id {
+                matched = fuzzy_match_model(
+                    &format!("{provider}/{entry_model_id}"),
+                    available_models,
+                    Some(std::slice::from_ref(provider)),
+                );
+            }
+            if let Some(matched) = matched {
                 return choose(matched, entry);
             }
+        }
+
+        if !allow_unlisted_providers {
+            continue;
         }
 
         let later_rung_providers: IndexSet<&str> = fallback_chain[entry_index + 1..]

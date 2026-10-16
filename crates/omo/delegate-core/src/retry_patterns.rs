@@ -11,7 +11,7 @@ pub const DELEGATE_TASK_ERROR_PATTERNS: &[DelegateTaskErrorPattern] = &[
     DelegateTaskErrorPattern {
         pattern: "run_in_background",
         error_type: "missing_run_in_background",
-        fix_hint: "Add run_in_background=false (for delegation) or run_in_background=true (for parallel exploration)",
+        fix_hint: "Add run_in_background=true (the standard spawn) or run_in_background=false for a short child whose result gates your very next call",
     },
     DelegateTaskErrorPattern {
         pattern: "load_skills",
