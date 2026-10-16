@@ -526,14 +526,7 @@ impl FactsQueue {
             .filter_map(|(key, value)| {
                 let claim_id = value.get("claimId")?.as_str()?;
                 let claimed_at_iso = value.get("claimedAt")?.as_str()?;
-                let claimed_at = time::OffsetDateTime::parse(
-                    claimed_at_iso,
-                    &time::format_description::well_known::Rfc3339,
-                )
-                .ok()?
-                .unix_timestamp_nanos()
-                .checked_div(1_000_000)?;
-                let claimed_at = i64::try_from(claimed_at).ok()?;
+                let claimed_at = crate::support::time::parse_rfc3339(claimed_at_iso)?;
                 (!claim_id.is_empty()).then(|| {
                     (
                         key,
