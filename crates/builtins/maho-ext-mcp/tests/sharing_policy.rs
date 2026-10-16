@@ -6,7 +6,7 @@ fn resolved_template(variable:&str) {
     let root=tempfile::tempdir().expect("temporary config root");
     std::fs::write(root.path().join("mcp.json"),json!({"mcpServers":{"fx":{"type":"stdio","command":"server","args":[format!("${{{variable}}}")]}}}).to_string()).expect("write config");
     let env=BTreeMap::from([(variable.into(),"resolved".into())]);
-    let config=load_mcp_config(LoadMcpConfigOptions {cwd:root.path(),agent_dir:root.path(),env:&env,project_trusted:true}).expect("resolve config");
+    let config=load_mcp_config(LoadMcpConfigOptions {cwd:root.path(),agent_dir:root.path(),env:&env,project_trusted:true,home_dir:None,claude_config_dir:None}).expect("resolve config");
     let config=config.servers["fx"].config.as_ref().expect("resolved server");
     assert_eq!(config.args.as_ref().expect("resolved arguments"),&["resolved"]);
     assert!(!shareable(config,None));

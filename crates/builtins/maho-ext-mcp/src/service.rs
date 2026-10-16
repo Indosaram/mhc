@@ -53,7 +53,7 @@ impl McpService {
     /// trigger (`attach_session`, skill attach, deferred startup connects).
     pub fn bind_registration(&mut self,registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>,tool_search:Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>){self.registration_inputs=Some(McpRegistrationInputs {registrar,tool_search});}
     pub async fn attach_session(&mut self,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>,project_trusted:bool,declarations:&[maho_ext_api::RegisteredMcpServerDeclaration])->Result<(),McpServiceError> {
-        let mut config=load_mcp_config(LoadMcpConfigOptions {cwd,agent_dir,env,project_trusted})?;
+        let mut config=load_mcp_config(LoadMcpConfigOptions {cwd,agent_dir,env,project_trusted,home_dir:None,claude_config_dir:None})?;
         crate::config::merge_extension_mcp_servers(&mut config,declarations)?;
         self.sync_from_config(config,cwd,agent_dir,env).await?;
         // Upstream `attachSession` registers tools once per attach when a `pi` is
