@@ -227,7 +227,7 @@ pub fn verify_ast_grep_runtime(
         return Err(integrity(&runtime, "runtime is not a file"));
     }
     #[cfg(unix)]
-    if platform != "win32" && metadata.permissions().mode() & 0o555 == 0 {
+    if platform != "win32" && std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()) & 0o555 == 0 {
         return Err(integrity(&runtime, "runtime is unreadable or non-executable"));
     }
     let actual_hash = hex_digest(&runtime).map_err(|error| integrity(&runtime, error.to_string()))?;
