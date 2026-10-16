@@ -12,6 +12,10 @@ fn marker(text: &str) -> Option<&str> {
     None
 }
 fn approximate_tokens(text: &str) -> usize { text.encode_utf16().count().div_ceil(4) }
+fn char_boundary(units: &[u16], index: usize, round_up: bool) -> usize {
+    if index == 0 || index >= units.len() || !(0xDC00..=0xDFFF).contains(&units[index]) || !(0xD800..=0xDBFF).contains(&units[index - 1]) { index }
+    else if round_up { index + 1 } else { index - 1 }
+}
 fn total_tokens(results: &[ToolResult]) -> usize {
     results.iter().flat_map(|result| &result.content).map(|block| match block {
         ToolContent::Text {text,..} => approximate_tokens(text),
@@ -23,11 +27,13 @@ pub fn truncate_oversized_tool_results(results: &[ToolResult]) -> Vec<ToolResult
         let mut next = result.clone();
         for block in &mut next.content {
             if let ToolContent::Text {text,..} = block {
-                let bytes = text.len();
+                let bytes = text.as_bytes().len();
                 if bytes <= 4096 || marker(text).is_some() { continue; }
                 let units: Vec<u16> = text.encode_utf16().collect();
-                let head = String::from_utf16_lossy(&units[..800.min(units.len())]);
-                let tail = String::from_utf16_lossy(&units[units.len().saturating_sub(400)..]);
+                let head_end = char_boundary(&units, 800.min(units.len()), false);
+                let tail_start = char_boundary(&units, units.len().saturating_sub(400), true);
+                let head = String::from_utf16_lossy(&units[..head_end]);
+                let tail = String::from_utf16_lossy(&units[tail_start..]);
                 *text = format!("{head}\n<truncated:{bytes} bytes original; middle elided to save context - re-run this tool with a narrower range (read offset/limit or a filtered command) to retrieve the elided content>\n{tail}");
             }
         }

@@ -1,6 +1,6 @@
 use maho_ai::types::Message;
 use serde_json::Value;
-use crate::{context_reduction::{ReduceContextOptions, reduce_context_messages, should_apply_context_reduction}, emergency_prune::{EmergencyPruneLatch, engaged_emergency_prune}, openai_remote::{OpenAiRemoteReplayBoundary, mark_openai_remote_replay_boundary}, orchestration::{admit_owned_context_tool_results, inject_token_budget_reminder}, overflow_retry::estimate_total_tokens, repair_tool_pairs::repair_orphaned_tool_results};
+use crate::{context_reduction::{ReduceContextOptions, reduce_context_messages}, context_reduction_frontier::{reduce_context_with_frontier, ContextReductionState}, emergency_prune::{EmergencyPruneLatch, engaged_emergency_prune}, openai_remote::{OpenAiRemoteReplayBoundary, mark_openai_remote_replay_boundary}, orchestration::{admit_owned_context_tool_results, inject_token_budget_reminder}, overflow_retry::estimate_total_tokens, repair_tool_pairs::repair_orphaned_tool_results};
 
 pub struct CompactionContextInput<'a> {
     pub messages: &'a [Value],
@@ -15,6 +15,12 @@ pub struct CompactionContextInput<'a> {
     pub tool_admission_enabled: bool,
     pub breaker_fallback: bool,
     pub lane_owns_compaction: bool,
+    pub context_reduction_state: Option<&'a mut ContextReductionState>,
+    pub unreduced_messages: Option<&'a [Message]>,
+    pub context_overhead_tokens: u64,
+    pub reduction_ceiling_tokens: Option<u64>,
+    pub reduction_block_budget_ratio: Option<f64>,
+    pub append_only_transcript: bool,
     pub emergency_prune_latch: &'a mut EmergencyPruneLatch,
     pub reminder: Option<&'a str>,
     pub now: i64,
@@ -51,13 +57,25 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
         return Ok(CompactionContextOutput { messages: repair_orphaned_tool_results(&typed_messages(input.messages)?, input.now), emergency_prune_tokens: None, replay_boundary: None });
     }
     let admitted = admit_owned_context_tool_results(input.messages.to_vec(), input.context_window, input.tool_admission_enabled);
-    let source = if input.breaker_fallback || should_apply_context_reduction(input.usage_tokens, input.context_window as f64, None, input.provider_native_path) {
+    let native = input.provider_native_path;
+    let managed = !input.append_only_transcript && !native;
+    let mut reduction_state = input.context_reduction_state;
+    let mut local_reduction_state = ContextReductionState::default();
+    let source = if managed {
+        let state = reduction_state.as_deref_mut().unwrap_or(&mut local_reduction_state);
+        let unreduced_converted=typed_messages(input.messages)?;
+        let reduced = reduce_context_with_frontier(&typed_messages(&admitted)?, input.unreduced_messages.unwrap_or(&unreduced_converted), state, input.context_window, input.reduction_ceiling_tokens.unwrap_or(input.prompt_context_window), input.context_overhead_tokens, input.reduction_block_budget_ratio, input.breaker_fallback);
+        reduced.into_iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?
+    } else if native && input.breaker_fallback && !input.append_only_transcript {
         reduce_context_messages(&typed_messages(&admitted)?, &ReduceContextOptions::builtin()).messages.into_iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?
     } else { admitted };
+    let before_prune=estimate_total_tokens(&source).saturating_add(input.context_overhead_tokens);
     let source_entry_ids = realign_entry_ids(input.messages, input.entry_ids, &source);
     // A released latch leaves `source` as-is: no token report and the same entry stamps.
-    let (pruned, entry_ids, emergency_prune_tokens) = match engaged_emergency_prune(&source, input.prompt_context_window, Some(input.emergency_prune_latch)) {
-        None => (source, source_entry_ids, None),
+    let reduction_engaged = managed && reduction_state.as_deref().unwrap_or(&local_reduction_state).engaged;
+    let emergency_window = if reduction_engaged { input.prompt_context_window.saturating_sub(input.context_overhead_tokens) } else { input.prompt_context_window };
+    let (pruned, entry_ids, emergency_prune_tokens) = match engaged_emergency_prune(&source, emergency_window, Some(input.emergency_prune_latch)) {
+        None => (source.clone(), source_entry_ids, None),
         Some(emergency) => {
             let tokens = (emergency.needs_aggressive_compaction || emergency.messages != source)
                 .then(|| (estimate_total_tokens(&source), estimate_total_tokens(&emergency.messages)));
@@ -67,7 +85,14 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
     };
     let (marked, replay_boundary) = mark_openai_remote_replay_boundary(pruned, &entry_ids, input.model, input.branch_entries);
     let reminded = if input.reminder.is_some_and(|reminder| !reminder.is_empty()) { inject_token_budget_reminder(&marked, input.reminder) } else { marked };
-    Ok(CompactionContextOutput { messages: repair_orphaned_tool_results(&typed_messages(&reminded)?, input.now), emergency_prune_tokens, replay_boundary })
+    let after_prune=estimate_total_tokens(&reminded).saturating_add(input.context_overhead_tokens);
+    let output = repair_orphaned_tool_results(&typed_messages(&reminded)?, input.now);
+    if managed && reduction_engaged && emergency_prune_tokens.is_some() {
+        let state=reduction_state.as_deref_mut().unwrap_or(&mut local_reduction_state);
+        if emergency_prune_tokens.is_some_and(|(_, tokens)| tokens.saturating_add(input.context_overhead_tokens) > input.prompt_context_window)
+            || after_prune > input.prompt_context_window || (after_prune < before_prune && input.emergency_prune_latch.engaged) { state.compaction_required = true; }
+    }
+    Ok(CompactionContextOutput { messages: output, emergency_prune_tokens, replay_boundary })
 }
 
 #[cfg(test)]
