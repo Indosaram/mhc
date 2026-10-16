@@ -81,8 +81,9 @@ fn totals_and_tps_derive_from_generation_time() {
         "role": "assistant", "content": [{ "type": "text", "text": "done" }],
         "usage": { "output": 50, "totalTokens": 600 },
     })));
+    let stats = tracker.snapshot(11_000);
     assert_eq!(
-        tracker.snapshot(11_000),
+        TaskRunStats { duration_status: None, token_status: None, cost_status: None, ..stats.clone() },
         TaskRunStats {
             runtime_ms: 10_000,
             turns: 2,
@@ -103,8 +104,9 @@ fn non_assistant_and_missing_usage_report_only_counted_facts() {
     tracker.accept(&message_end(
         json!({ "role": "assistant", "content": [{ "type": "text", "text": "ok" }] }),
     ));
+    let stats = tracker.snapshot(2_000);
     assert_eq!(
-        tracker.snapshot(2_000),
+        TaskRunStats { duration_status: None, token_status: None, cost_status: None, ..stats.clone() },
         TaskRunStats {
             runtime_ms: 1_000,
             turns: 1,
@@ -113,6 +115,30 @@ fn non_assistant_and_missing_usage_report_only_counted_facts() {
             ..TaskRunStats::default()
         }
     );
+}
+
+#[test]
+fn failed_assistant_turn_is_excluded_from_usage_and_generation_totals() {
+    let (now, read) = clock(1_000);
+    let mut tracker = create_run_stats_tracker(1_000, read);
+    now.set(3_000);
+    tracker.accept(&message_end(json!({
+        "role": "assistant", "stopReason": "error",
+        "usage": { "input": 80, "output": 40, "totalTokens": 120, "cost": 0.25 },
+    })));
+    now.set(5_000);
+    tracker.accept(&assistant_usage(json!({
+        "input": 10, "output": 20, "totalTokens": 30, "cost": 0.1,
+    })));
+    let stats = tracker.snapshot(5_000);
+    assert_eq!(stats.turns, 1);
+    assert_eq!(stats.failed_turns, Some(1));
+    assert_eq!(stats.input_tokens, Some(10));
+    assert_eq!(stats.output_tokens, Some(20));
+    assert_eq!(stats.total_tokens, Some(30));
+    assert_eq!(stats.generation_ms, Some(2_000));
+    assert_eq!(stats.cost_usd, Some(0.1));
+    assert_eq!(stats.token_status, Some(crate::state::TokenCoverageStatus::Complete));
 }
 
 #[test]
