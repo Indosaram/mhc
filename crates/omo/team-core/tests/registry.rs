@@ -44,7 +44,7 @@ fn home() -> PathBuf {
 fn resolve_base_dir_defaults_to_home_omo() {
     assert_eq!(
         resolve_base_dir(&TeamModeConfig::default()),
-        home().join(".maho")
+        home().join(".omo")
     );
 }
 

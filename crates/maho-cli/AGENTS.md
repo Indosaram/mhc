@@ -7,10 +7,10 @@ Primary user-facing command-line interface entry points, argument parsing, and m
 | Task | Location | Notes |
 |------|----------|-------|
 | CLI command routing | `src/cli/` | Subcommand dispatch (agent, run, serve, config) |
-| Configuration loading | `src/config.rs` | Local and global `.maho` config discovery |
+| Configuration loading | `src/config.rs` | Local and global `.omo` config discovery |
 | Config discovery hierarchy | `src/nearest_parent_config.rs` | Walking upward to find closest repo configurations |
 | Migrations | `src/migrations_state.rs` | Migration state tracking and status inspection |
-| Brand & directory migrations | `src/brand_dir_migration.rs` | Migrating legacy directory structures to `.maho` |
+| Brand & directory migrations | `src/brand_dir_migration.rs` | Migrating legacy directory structures to `.omo` |
 | Extension migrations | `src/extension_system_migration.rs` | Native extension metadata verification |
 | Working directory validation | `src/valid_cwd.rs` | CWD verification and path normalization |
 
@@ -27,4 +27,4 @@ Primary user-facing command-line interface entry points, argument parsing, and m
 
 ## NOTES
 - Scored 15 due to module boundary responsibility as the primary binary entry point.
-- Global config directory resolves to `~/.maho/agent` while project state remains in `.omo`.
+- Global config directory resolves to `~/.omo/agent` while project state remains in `.omo`.

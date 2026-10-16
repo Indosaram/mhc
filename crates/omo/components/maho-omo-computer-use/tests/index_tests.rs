@@ -613,8 +613,8 @@ async fn test_given_status_command_when_executed_then_reports_engine_prelude_sou
 async fn test_given_disabled_skills_names_computer_use_then_no_skill_contributed() {
     let dir = tempfile::tempdir().expect("test value");
     let home = dir.path().join("home");
-    std::fs::create_dir_all(home.join(".maho")).expect("test value");
-    std::fs::write(home.join(".maho/omo.jsonc"), "{\"disabled_skills\":[\"computer-use\"]}").expect("config");
+    std::fs::create_dir_all(home.join(".omo")).expect("test value");
+    std::fs::write(home.join(".omo/omo.jsonc"), "{\"disabled_skills\":[\"computer-use\"]}").expect("config");
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), home.to_string_lossy().to_string());
     let skill = maho_omo_bundled_skills::contributed_skill::resolve_contributed_skill(

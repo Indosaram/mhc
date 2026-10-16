@@ -115,7 +115,7 @@ mhc --tools read,grep,find,ls -p "审查 src/ 的代码" # 只读模式
 mhc --help                                         # 查看全部选项
 ```
 
-配置目录为 `~/.maho/agent`（可用 `MAHO_CODING_AGENT_DIR` 修改）。已在使用 OmO 的话：
+配置目录为 `~/.omo/agent`（可用 `MAHO_CODING_AGENT_DIR` 修改）。已在使用 OmO 的话：
 
 ```bash
 mhc import-omo        # 从 ~/.omo/agent 导入 settings、models、keybindings、auth 与会话

@@ -159,7 +159,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         for text in &parsed.messages { mode.enqueue_submission(text, None); }
         let clock = std::time::Instant::now();
         let mut installed_native_renderers = Vec::new();
-        let mut applied_renderer_generation: Option<u64> = None;
+        let mut installed_renderer_revision: Option<(u64, u64)> = None;
         // senpi `applyTerminalTitle` / `setProgress`: written only when the value changes.
         let mut applied_title: Option<String> = None;
         let mut last_size = (terminal.columns(), terminal.rows());
@@ -191,10 +191,11 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             }
             mode.drain_events();
             while let Ok(request) = widget_requests.try_recv() { mode.handle_ui_request(request); }
-            // Re-derive the renderer snapshot only when the live tool/renderer inventory changed;
-            // the generation is read first so a concurrent change forces one more recompute.
-            let renderer_generation = session.native_tool_renderers_generation();
-            if applied_renderer_generation != Some(renderer_generation) {
+            // Rebuild the renderer snapshots only when the bound runner or its live tools changed:
+            // walking every extension's tools and renderers each frame kept an idle session busy.
+            // `None` (no runner yet, or its lock is held this tick) keeps the installed set.
+            if let Some(revision) = session.tool_renderers_revision() && installed_renderer_revision != Some(revision) {
+                installed_renderer_revision = Some(revision);
                 let native = session.native_tool_renderers_snapshot::<(), serde_json::Value>().await;
                 let patch = session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>().await;
                 let inventory: Vec<_> = native.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))
@@ -204,7 +205,6 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
                     for (name, renderers) in patch { mode.install_native_tool_renderers(name, renderers); }
                     installed_native_renderers = inventory;
                 }
-                applied_renderer_generation = Some(renderer_generation);
             }
             host.rows.set(usize::from(terminal.rows()));
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
@@ -328,7 +328,18 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
                 screen.do_render(&mut terminal);
                 host.full_redraws.set(screen.base_mut().full_redraws());
             }
-            terminal.pump(screen.base().min_render_interval_ms()).map_err(|error| error.to_string())?;
+            match terminal.pump(screen.base().min_render_interval_ms()) {
+                Ok(()) => {}
+                // The terminal closed without a SIGHUP reaching this process (the PTY master went
+                // away): shut down like the hangup signal instead of polling a dead stdin forever.
+                Err(error) if error.is_hangup() => {
+                    #[cfg(unix)]
+                    crate::utils::shell::kill_tracked_detached_children();
+                    mode.shutdown_requested = true;
+                    break;
+                }
+                Err(error) => return Err(error.to_string()),
+            }
             tokio::task::yield_now().await;
         }
         Ok(())

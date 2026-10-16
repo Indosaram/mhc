@@ -1,7 +1,11 @@
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 mod extension;
 pub use extension::FerryxAgentState;
+
+/// `wake_source_state` sources that mean the agent is still waiting on its own background work
+/// (monitors, background shells, senpi tasks, DAG runs, detached eval cells).
+pub const BACKGROUND_WAKE_SOURCES: [&str; 5] = ["terminal-monitors", "terminal-background-sessions", "senpi-task", "omo-dag", "senpi-codemode"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentState { Idle, Working, Blocked }
@@ -15,14 +19,25 @@ pub struct State {
     pub root_session: bool,
     blocking_questions: Vec<(String, Option<String>)>,
     non_blocking_ids: HashSet<String>,
+    active_wake_sources: BTreeSet<String>,
     last_state: Option<AgentState>,
     last_provider_session_id: Option<String>,
 }
 impl State {
     pub fn desired_state(&self) -> AgentState {
         if !self.blocking_questions.is_empty() { AgentState::Blocked }
-        else if self.agent_active { AgentState::Working }
+        else if self.agent_active || self.waiting_on_background() { AgentState::Working }
         else { AgentState::Idle }
+    }
+    pub fn waiting_on_background(&self) -> bool { !self.active_wake_sources.is_empty() }
+    /// Tracks background wake sources. Returns true only when waiting starts: a drain is published
+    /// by the turn that delivers the completion, so it never flaps `idle` before that turn starts.
+    pub fn wake_source(&mut self, data: &Value) -> bool {
+        let Some(source) = data.get("source").and_then(Value::as_str).filter(|source| BACKGROUND_WAKE_SOURCES.contains(source)) else { return false; };
+        let Some(count) = data.get("activeCount").and_then(Value::as_f64).filter(|count| count.is_finite()) else { return false; };
+        let was_waiting = self.waiting_on_background();
+        if count > 0.0 { self.active_wake_sources.insert(source.to_owned()); } else { self.active_wake_sources.remove(source); }
+        self.root_session && !was_waiting && self.waiting_on_background()
     }
     pub fn blocked_detail(&self) -> Option<&str> { self.blocking_questions.iter().filter_map(|(_, label)| label.as_deref()).find(|label| !label.is_empty()) }
     pub fn asked(&mut self, data: &Value) -> bool {
@@ -84,6 +99,9 @@ mod tests {
     #[test] fn idle_when_question_released() { let mut value = State { root_session: true, ..Default::default() }; value.blocked(&json!({"active":true,"id":"a"})); value.blocked(&json!({"active":false,"id":"a"})); assert_eq!(value.desired_state(), AgentState::Idle); }
     #[test] fn published_when_session_rotates() { let mut value = State::default(); value.publish(true, Some("a")); assert_eq!(value.publish(false, Some("b")), Some(AgentState::Idle)); }
     #[test] fn suppressed_when_no_change() { let mut value = State::default(); value.publish(true, None); assert_eq!(value.publish(false, None), None); }
+    #[test] fn working_while_background_work_waits() { let mut value = State { root_session: true, ..Default::default() }; assert!(value.wake_source(&json!({"source":"senpi-task","activeCount":1}))); assert_eq!(value.desired_state(), AgentState::Working); assert!(!value.wake_source(&json!({"source":"senpi-task","activeCount":0}))); assert_eq!(value.desired_state(), AgentState::Idle); }
+    #[test] fn unrelated_wake_source_ignored() { let mut value = State { root_session: true, ..Default::default() }; assert!(!value.wake_source(&json!({"source":"memory-dream","activeCount":1}))); assert!(!value.wake_source(&json!({"source":"ask-user","activeCount":1}))); assert_eq!(value.desired_state(), AgentState::Idle); }
+    #[test] fn idle_only_after_every_background_source_drains() { let mut value = State { root_session: true, ..Default::default() }; value.wake_source(&json!({"source":"terminal-monitors","activeCount":2})); assert!(!value.wake_source(&json!({"source":"omo-dag","activeCount":1}))); value.wake_source(&json!({"source":"terminal-monitors","activeCount":0})); assert_eq!(value.desired_state(), AgentState::Working); value.wake_source(&json!({"source":"omo-dag","activeCount":0})); assert_eq!(value.desired_state(), AgentState::Idle); }
     #[test] fn detail_when_first_label_present() { let mut value = State { root_session: true, ..Default::default() }; value.blocked(&json!({"active":true,"id":"a","label":"Dialog"})); assert_eq!(value.blocked_detail(), Some("Dialog")); }
     #[test] fn label_when_header_and_question() { assert_eq!(question_label(&json!({"questions":[{"header":" H ","question":" Q "}]})), Some("H — Q".into())); }
 }

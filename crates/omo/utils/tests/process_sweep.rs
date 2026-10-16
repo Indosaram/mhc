@@ -297,13 +297,13 @@ fn proxy_sweep_kills_only_orphan_and_writes_family_stamp() {
     assert_eq!(killer.calls(), vec!["term:401"]);
     assert_eq!(
         result.result.stamp_file,
-        home.path().join(".maho/lsp-daemon/lsp-proxy-sweep.stamp")
+        home.path().join(".omo/lsp-daemon/lsp-proxy-sweep.stamp")
     );
     assert!(result.result.stamp_file.exists());
     assert!(
         !home
             .path()
-            .join(".maho/codegraph/zombie-sweep.stamp")
+            .join(".omo/codegraph/zombie-sweep.stamp")
             .exists()
     );
 }
@@ -365,7 +365,7 @@ fn home_base(home: &Path) -> (LspDaemonBaseDirOptions, PathBuf) {
             home_dir: Some(home.to_path_buf()),
             ..Default::default()
         },
-        home.join(".maho/lsp-daemon"),
+        home.join(".omo/lsp-daemon"),
     )
 }
 
@@ -504,7 +504,7 @@ fn stale_version_with_dead_owner_has_nothing_to_kill() {
 #[test]
 fn unknown_current_version_skips_conservatively() {
     let home = tempfile::tempdir().expect("tempdir");
-    let base_dir = home.path().join(".maho/lsp-daemon");
+    let base_dir = home.path().join(".omo/lsp-daemon");
     write_owner(&base_dir.join("v0.0.1"), 750);
 
     let result = sweep_stale_lsp_daemon_versions(&SweepStaleLspDaemonVersionsOptions {
@@ -1223,7 +1223,7 @@ fn ambient_codegraph_install_dir_is_not_trusted() {
     });
     let expected = home
         .path()
-        .join(".maho/codegraph")
+        .join(".omo/codegraph")
         .to_string_lossy()
         .into_owned();
     assert_eq!(

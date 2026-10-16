@@ -66,8 +66,8 @@ async fn resolved_file_and_environment_capacity_is_enforced_by_callable() {
     use maho_codemode::{config::settings::*,tool::detached_cell_manager::DetachedCellManagerOptions};
     for (file,environment,capacity) in [(json!({}),None,15),(json!({"maxDetachedCells":4}),None,4),(json!({"maxDetachedCells":4}),Some("2"),2),(json!({"maxDetachedCells":4}),Some("0"),4),(json!({"maxDetachedCells":4}),Some("bad"),4)] {
         let root=tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join(".maho")).unwrap();
-        std::fs::write(root.path().join(".maho/codemode.json"),file.to_string()).unwrap();
+        std::fs::create_dir(root.path().join(".omo")).unwrap();
+        std::fs::write(root.path().join(".omo/codemode.json"),file.to_string()).unwrap();
         let mut loaded=load_codemode_settings(root.path(),root.path()).await.unwrap();
         assert!(loaded.warnings.is_empty());
         let environment=environment.map(|value|Environment::from([("SENPI_CODEMODE_MAX_DETACHED_CELLS".into(),value.into())])).unwrap_or_default();

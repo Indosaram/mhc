@@ -326,20 +326,20 @@ mod tests {
         let cwd = tmp.path().join("project");
         std::fs::create_dir_all(&cwd).expect("mkdir");
         let cwd = cwd.to_string_lossy().into_owned();
-        std::fs::create_dir_all(tmp.path().join(".maho/agent")).expect("mkdir");
+        std::fs::create_dir_all(tmp.path().join(".omo/agent")).expect("mkdir");
         std::fs::create_dir_all(tmp.path().join(".agents/skills")).expect("mkdir");
         assert!(!has_trust_requiring_project_resources(&home, Some(&home)));
         assert!(!has_trust_requiring_project_resources(&cwd, Some(&home)));
 
-        std::fs::write(tmp.path().join(".maho/settings.json"), "{}").expect("write");
+        std::fs::write(tmp.path().join(".omo/settings.json"), "{}").expect("write");
         assert!(has_trust_requiring_project_resources(&home, Some(&home)));
-        std::fs::remove_file(tmp.path().join(".maho/settings.json")).expect("remove");
+        std::fs::remove_file(tmp.path().join(".omo/settings.json")).expect("remove");
 
-        std::fs::create_dir_all(std::path::Path::new(&cwd).join(".maho")).expect("mkdir");
+        std::fs::create_dir_all(std::path::Path::new(&cwd).join(".omo")).expect("mkdir");
         assert!(!has_trust_requiring_project_resources(&cwd, Some(&home)));
-        std::fs::write(std::path::Path::new(&cwd).join(".maho/settings.json"), "{}").expect("write");
+        std::fs::write(std::path::Path::new(&cwd).join(".omo/settings.json"), "{}").expect("write");
         assert!(has_trust_requiring_project_resources(&cwd, Some(&home)));
-        std::fs::remove_dir_all(std::path::Path::new(&cwd).join(".maho")).expect("remove");
+        std::fs::remove_dir_all(std::path::Path::new(&cwd).join(".omo")).expect("remove");
 
         std::fs::write(std::path::Path::new(&cwd).join("AGENTS.md"), "x").expect("write");
         assert!(!has_trust_requiring_project_resources(&cwd, Some(&home)));

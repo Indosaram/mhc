@@ -20,7 +20,7 @@ fn trusted_configs_merge_and_interpolate() {
     let root = tempfile::tempdir().unwrap();
     write(&root.path().join("agent/mcp.json"), json!({"settings":{"importConfigs":["claude"],"toolPrefix":"global"},"mcpServers":{"shared":{"command":"global"},"http":{"url":"https://example.test/mcp","headers":{"Authorization":"Bearer ${TOKEN}"}}}}));
     write(&root.path().join(".mcp.json"), json!({"mcpServers":{"claude":{"command":"claude","args":["${ABSENT:-fallback}"]}}}));
-    write(&root.path().join(".maho/mcp.json"), json!({"settings":{"toolPrefix":"project"},"mcpServers":{"shared":{"command":"project","args":["${TOKEN}"]}}}));
+    write(&root.path().join(".omo/mcp.json"), json!({"settings":{"toolPrefix":"project"},"mcpServers":{"shared":{"command":"project","args":["${TOKEN}"]}}}));
     let result = load(root.path(), true, &BTreeMap::from([("TOKEN".into(),"value".into())])).unwrap();
     assert_eq!(result.settings.tool_prefix.as_deref(), Some("project"));
     assert_eq!(result.servers["shared"].config.as_ref().unwrap().args.as_ref().unwrap(), &["value"]);
@@ -150,7 +150,7 @@ fn disabled_placeholder_is_valid() {
 fn untrusted_project_is_not_interpolated_or_spawnable() {
     let root = tempfile::tempdir().unwrap();
     write(&root.path().join("agent/mcp.json"),json!({"mcpServers":{"global":{"command":"node"}}}));
-    write(&root.path().join(".maho/mcp.json"),json!({"mcpServers":{"project":{"command":"$(forbidden)"}}}));
+    write(&root.path().join(".omo/mcp.json"),json!({"mcpServers":{"project":{"command":"$(forbidden)"}}}));
     let result = load(root.path(),false,&BTreeMap::new()).unwrap();
     let mut names = Vec::new(); visit_spawnable_mcp_servers(&result,|n,_| names.push(n.to_owned()));
     assert_eq!(names,["global"]); assert!(result.servers["project"].config.is_none());
@@ -159,20 +159,20 @@ fn untrusted_project_is_not_interpolated_or_spawnable() {
 fn untrusted_sources_cannot_shadow_global() {
     let root = tempfile::tempdir().unwrap();
     write(&root.path().join("agent/mcp.json"),json!({"settings":{"importConfigs":["claude"]},"mcpServers":{"x":{"command":"global"}}}));
-    for path in [".mcp.json",".maho/mcp.json"] { write(&root.path().join(path),json!({"mcpServers":{"x":{"command":"untrusted"}}})); }
+    for path in [".mcp.json",".omo/mcp.json"] { write(&root.path().join(path),json!({"mcpServers":{"x":{"command":"untrusted"}}})); }
     let result = load(root.path(),false,&BTreeMap::new()).unwrap();
     assert_eq!(result.servers["x"].source,McpServerSource::Global); assert_eq!(result.diagnostics.len(),2);
 }
 #[test]
 fn malformed_untrusted_config_is_diagnostic() {
     let root = tempfile::tempdir().unwrap();
-    fs::create_dir(root.path().join(".maho")).unwrap(); fs::write(root.path().join(".maho/mcp.json"),"{").unwrap();
+    fs::create_dir(root.path().join(".omo")).unwrap(); fs::write(root.path().join(".omo/mcp.json"),"{").unwrap();
     assert_eq!(load(root.path(),false,&BTreeMap::new()).unwrap().diagnostics.len(),1);
 }
 #[test]
 fn trusted_project_can_spawn() {
     let root = tempfile::tempdir().unwrap();
-    write(&root.path().join(".maho/mcp.json"),json!({"mcpServers":{"x":{"command":"${COMMAND}"}}}));
+    write(&root.path().join(".omo/mcp.json"),json!({"mcpServers":{"x":{"command":"${COMMAND}"}}}));
     let result = load(root.path(),true,&BTreeMap::from([("COMMAND".into(),"node".into())])).unwrap();
     assert_eq!(result.servers["x"].config.as_ref().unwrap().command.as_deref(),Some("node"));
 }
@@ -198,7 +198,7 @@ fn disabled_global_wins_over_extension() {
 #[test]
 fn extension_replaces_untrusted_placeholder() {
     let root = tempfile::tempdir().unwrap();
-    write(&root.path().join(".maho/mcp.json"),json!({"mcpServers":{"x":{"command":"evil"}}}));
+    write(&root.path().join(".omo/mcp.json"),json!({"mcpServers":{"x":{"command":"evil"}}}));
     let mut result = load(root.path(),false,&BTreeMap::new()).unwrap();
     merge_extension_mcp_servers(&mut result,&[declaration("x")]).unwrap();
     assert_eq!(result.servers["x"].source,McpServerSource::Extension); assert_eq!(result.diagnostics.len(),1);

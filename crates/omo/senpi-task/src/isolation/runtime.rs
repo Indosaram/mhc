@@ -98,7 +98,7 @@ pub fn isolation_backends() -> Vec<Arc<dyn IsolationBackend>> {
 #[derive(Clone, Debug, Default)]
 pub struct IsolationRuntimeOptions {
     /// The OS home directory (`HOME` / `USERPROFILE`); the sandbox lands at `<home_dir>/.omo/wt`.
-    /// Defaults to [`os_home_dir`]. This is NOT the `.maho` profile root.
+    /// Defaults to [`os_home_dir`]. This is NOT the `.omo` profile root.
     pub home_dir: Option<PathBuf>,
 }
 
@@ -199,7 +199,7 @@ impl IsolationRuntime for CoreIsolationRuntime {
         // The producer's choose_base_dir(repo_root, home_dir, id) places a SAME-DEVICE sandbox at
         // `<home_dir>/.omo/wt/<segment>`, so the startup sweep scans that parent. `home_dir` here is
         // the OS home (HOME / USERPROFILE) unless the caller overrode
-        // IsolationRuntimeOptions.home_dir; it is NOT the `.maho` profile root (that is the
+        // IsolationRuntimeOptions.home_dir; it is NOT the `.omo` profile root (that is the
         // agent/config home, a separate concept). The `.omo` segment is the SOURCE IDENTITY and is
         // not renamed, and no path relocation is performed here - this mirrors upstream
         // createIsolationRuntime's `sweepRoots: [join(homeDir, ".omo", "wt")]`. A cross-device
@@ -215,7 +215,7 @@ pub fn create_isolation_runtime(options: &IsolationRuntimeOptions) -> Arc<dyn Is
 }
 
 /// The OS home directory (`HOME` / `USERPROFILE`); the default for `IsolationRuntimeOptions.home_dir`
-/// (the producer's `util::home_dir()`). This is the OS home, NOT the `.maho` profile root.
+/// (the producer's `util::home_dir()`). This is the OS home, NOT the `.omo` profile root.
 fn os_home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))

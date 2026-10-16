@@ -5,11 +5,11 @@ fn missing_empty(){ let d=tempfile::tempdir().expect("dir"); assert!(load_approv
 #[test]
 fn roundtrip(){ let d=tempfile::tempdir().expect("dir"); let rules=vec![rule(Action::Allow)]; append_approved(d.path(),&rules).expect("append"); assert_eq!(load_approved(d.path()).expect("load"),rules); }
 #[test]
-fn malformed_skipped(){ let d=tempfile::tempdir().expect("dir"); append_approved(d.path(),&[rule(Action::Allow)]).expect("append"); let path=d.path().join(".maho/permissions-approved.jsonl"); let mut content=std::fs::read_to_string(&path).expect("read"); content.push_str("bad json\n"); std::fs::write(path,content).expect("write"); assert_eq!(load_approved(d.path()).expect("load"),vec![rule(Action::Allow)]); }
+fn malformed_skipped(){ let d=tempfile::tempdir().expect("dir"); append_approved(d.path(),&[rule(Action::Allow)]).expect("append"); let path=d.path().join(".omo/permissions-approved.jsonl"); let mut content=std::fs::read_to_string(&path).expect("read"); content.push_str("bad json\n"); std::fs::write(path,content).expect("write"); assert_eq!(load_approved(d.path()).expect("load"),vec![rule(Action::Allow)]); }
 #[test]
 fn multiple_appends(){ let d=tempfile::tempdir().expect("dir"); append_approved(d.path(),&[rule(Action::Allow)]).expect("append"); let other=Rule{permission:"write".into(),pattern:"*.ts".into(),action:Action::Ask}; append_approved(d.path(),std::slice::from_ref(&other)).expect("append"); assert_eq!(load_approved(d.path()).expect("load"),[rule(Action::Allow),other]); }
 #[test]
-fn empty_append_no_file(){ let d=tempfile::tempdir().expect("dir"); append_approved(d.path(),&[]).expect("append"); assert!(!d.path().join(".maho").exists()); }
+fn empty_append_no_file(){ let d=tempfile::tempdir().expect("dir"); append_approved(d.path(),&[]).expect("append"); assert!(!d.path().join(".omo").exists()); }
 #[test]
 fn clear_missing(){ let d=tempfile::tempdir().expect("dir"); clear_approved(d.path()).expect("clear"); }
 #[test]
@@ -23,8 +23,8 @@ fn append_creates_directory_and_preserves_jsonl_order() {
     // When appending the rules.
     append_approved(dir.path(), &rules).expect("append");
     // Then the directory exists and each serialized line retains its rule.
-    assert!(dir.path().join(".maho").is_dir());
-    let raw = std::fs::read_to_string(dir.path().join(".maho/permissions-approved.jsonl")).expect("raw JSONL");
+    assert!(dir.path().join(".omo").is_dir());
+    let raw = std::fs::read_to_string(dir.path().join(".omo/permissions-approved.jsonl")).expect("raw JSONL");
     let actual: Vec<Rule> = raw.lines().map(|line| serde_json::from_str(line).expect("rule line")).collect();
     assert_eq!(actual, rules);
 }
@@ -37,7 +37,7 @@ fn clear_removes_existing_permissions_file() {
     // When clearing approvals.
     clear_approved(dir.path()).expect("clear");
     // Then no permissions file remains.
-    assert!(!dir.path().join(".maho/permissions-approved.jsonl").exists());
+    assert!(!dir.path().join(".omo/permissions-approved.jsonl").exists());
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn compact_missing_file_creates_nothing() {
     // When compacting absent storage.
     compact_approved(dir.path()).expect("compact missing");
     // Then it remains absent.
-    assert!(!dir.path().join(".maho").exists());
+    assert!(!dir.path().join(".omo").exists());
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn malformed_middle_line_preserves_valid_neighbors() {
     // Given valid rules on each side of malformed JSON.
     let dir = tempfile::tempdir().expect("project");
     append_approved(dir.path(), &[rule(Action::Allow)]).expect("append");
-    let path = dir.path().join(".maho/permissions-approved.jsonl");
+    let path = dir.path().join(".omo/permissions-approved.jsonl");
     let mut raw = std::fs::read_to_string(&path).expect("read");
     raw.push_str("invalid json\n{\"permission\":\"write\",\"pattern\":\"*.ts\",\"action\":\"deny\"}\n");
     std::fs::write(&path, raw).expect("fixture");

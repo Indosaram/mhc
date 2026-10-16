@@ -135,7 +135,7 @@ fn a_pinned_timestamp_still_yields_distinct_backup_paths() {
 #[test]
 fn editing_a_missing_user_config_creates_it_with_the_header() {
     let (_root, home, _project) = fixture();
-    let config_path = format!("{home}/.maho/omo.jsonc");
+    let config_path = format!("{home}/.omo/omo.jsonc");
     let env = env_of(&[("HOME", &home)]);
 
     let mut options = user_options(&env);
@@ -180,8 +180,8 @@ fn editing_an_existing_project_json_preserves_the_path_and_the_settings() {
 #[test]
 fn editing_an_existing_user_json_preserves_the_path_and_the_settings() {
     let (_root, home, project) = fixture();
-    let config_path = format!("{home}/.maho/omo.json");
-    let shadow_path = format!("{home}/.maho/omo.jsonc");
+    let config_path = format!("{home}/.omo/omo.json");
+    let shadow_path = format!("{home}/.omo/omo.jsonc");
     write_file(
         &config_path,
         "{\"task\":{\"default_concurrency\":9,\"wait\":{\"max_ms\":70000}}}\n",
@@ -314,7 +314,7 @@ fn the_user_write_target_never_leaves_the_dot_omo_directory() {
     options.edits = vec![edit(&["task", "default_concurrency"], json!(3))];
     let created = update_omo_config(&options).expect("write");
 
-    assert_eq!(created.path, format!("{home}/.maho/omo.jsonc"));
+    assert_eq!(created.path, format!("{home}/.omo/omo.jsonc"));
     assert!(
         std::fs::read_to_string(format!("{legacy_dir}/omo.jsonc"))
             .expect("legacy content")
@@ -322,7 +322,7 @@ fn the_user_write_target_never_leaves_the_dot_omo_directory() {
     );
 
     let (_second_root, second_home, _second_project) = fixture();
-    let json_path = format!("{second_home}/.maho/omo.json");
+    let json_path = format!("{second_home}/.omo/omo.json");
     write_file(&json_path, "{\"task\":{\"default_concurrency\":9}}\n");
     let second_env = env_of(&[
         ("HOME", &second_home),
@@ -338,7 +338,7 @@ fn the_user_write_target_never_leaves_the_dot_omo_directory() {
         std::path::Path::new(&edited.path)
             .parent()
             .map(|parent| parent.to_string_lossy().to_string()),
-        Some(format!("{second_home}/.maho"))
+        Some(format!("{second_home}/.omo"))
     );
 }
 

@@ -179,10 +179,6 @@ fn receipt_identity_from_input(input: &MemoryReceiptInput) -> String {
     }
 }
 
-fn receipt_identity_from_receipt(receipt: &MemoryReceipt) -> String {
-    receipt_identity_from_input(&receipt.input)
-}
-
 pub fn append_memory_receipt(runtime_dir: &Path, input: &MemoryReceiptInput) -> Result<(), String> {
     under_receipts_lock(runtime_dir, || {
         let receipt = to_receipt(input);
@@ -197,22 +193,16 @@ pub fn append_memory_receipt_once(
     runtime_dir: &Path,
     input: &MemoryReceiptInput,
 ) -> Result<bool, String> {
+    // The file is append-only and never truncated, so a receipt seen once stays recorded: answer
+    // that case without the lock (and its fsync). Reconcile re-offers every terminal run's receipt
+    // on each start and shutdown, so this is the common path.
+    let identity = receipt_identity_from_input(input);
+    if contains_receipt_identity(&read_text(runtime_dir)?, &identity) {
+        return Ok(false);
+    }
     under_receipts_lock(runtime_dir, || {
-        let identity = receipt_identity_from_input(input);
         let text = read_text(runtime_dir)?;
-        // Only a line holding the receipt's own id (as written, JSON-escaped) can share its identity, so
-        // every other line is skipped before it is parsed; nothing parsed is retained.
-        let id = match input {
-            MemoryReceiptInput::Facts { batch_id, .. } => batch_id,
-            MemoryReceiptInput::Run { run_id, .. } => run_id,
-        };
-        let needle = serde_json::to_string(id).map_err(|e| e.to_string())?;
-        if text
-            .split('\n')
-            .filter(|line| !line.is_empty() && line.contains(needle.as_str()))
-            .filter_map(parse_receipt)
-            .any(|r| receipt_identity_from_receipt(&r) == identity)
-        {
+        if contains_receipt_identity(&text, &identity) {
             return Ok(false);
         }
         let receipt = to_receipt(input);
@@ -410,6 +400,52 @@ fn parse_receipts(text: &str) -> ParsedReceipts {
         receipts,
         skipped_partial_lines,
     }
+}
+
+/// Whether a stored line carries `identity`. Only each line's identity fields are decoded; building
+/// every full receipt made each append cost a whole-file JSON-tree parse.
+fn contains_receipt_identity(text: &str, identity: &str) -> bool {
+    text.split('\n')
+        .filter(|line| !line.is_empty())
+        .any(|line| receipt_identity_from_line(line).as_deref() == Some(identity))
+}
+
+/// The identity of a stored line, under exactly the validity rules of [`parse_receipt`], without
+/// materializing the receipt.
+fn receipt_identity_from_line(line: &str) -> Option<String> {
+    // Only these fields are materialized; every other key is skipped without building a tree.
+    #[derive(Deserialize)]
+    struct IdentityLine {
+        v: Option<serde_json::Value>,
+        at: Option<serde_json::Value>,
+        event: Option<serde_json::Value>,
+        kind: Option<serde_json::Value>,
+        #[serde(rename = "batchId")]
+        batch_id: Option<serde_json::Value>,
+        #[serde(rename = "runId")]
+        run_id: Option<serde_json::Value>,
+        generation: Option<serde_json::Value>,
+    }
+    let line: IdentityLine = serde_json::from_str(line).ok()?;
+    if line.v?.as_u64()? != 1 {
+        return None;
+    }
+    line.at?.as_str()?;
+    let event = line.event?;
+    let event = event.as_str()?;
+    let kind = line.kind?;
+    let kind = kind.as_str()?;
+    let identity = if kind == "facts" {
+        let batch_id = line.batch_id?;
+        receipt_identity(&MemoryReceiptIdentityInput::Facts { kind, batch_id: batch_id.as_str()?, event })
+    } else if kind == "reflection" || kind == "dream" {
+        let run_id = line.run_id?;
+        let generation = line.generation?;
+        receipt_identity(&MemoryReceiptIdentityInput::Run { kind, run_id: run_id.as_str()?, event, generation: generation.as_str()? })
+    } else {
+        return None;
+    };
+    Some(identity)
 }
 
 fn parse_receipt(line: &str) -> Option<MemoryReceipt> {

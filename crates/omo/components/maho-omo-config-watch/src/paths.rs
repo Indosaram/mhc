@@ -2,7 +2,7 @@ use std::{collections::BTreeMap,path::{Path,PathBuf}};
 use maho_omo_agent_home::resolve_agent_home;
 pub const OMO_CONFIG_FILE_FILTER_GLOBS:[&str;2]=["/omo.jsonc","/omo.json"];
 pub const OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;3]=["/.omo","/.omo/omo.jsonc","/.omo/omo.json"];
-pub const USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;1]=["/.maho"];
+pub const USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;1]=["/.omo"];
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct OmoConfigWatchTarget { pub path:PathBuf,pub kind:&'static str,pub filter_globs:Vec<String> }
 #[derive(Clone,Debug,PartialEq,Eq)]
@@ -16,7 +16,7 @@ pub fn resolve_omo_config_watch_target_resolution(cwd:&Path,home:&Path,env:&BTre
     let configured=omo_config_core::resolve_omo_config_paths(&omo_config_core::ResolveOmoConfigPathsOptions{cwd:cwd.to_string_lossy().into_owned(),env:Some(loader_env),file_system:None,platform:Some("linux".into())});
     let mut project_directories:std::collections::BTreeSet<PathBuf>=configured.into_iter().filter(|p|p.scope=="project").filter_map(|p|PathBuf::from(p.path).parent().map(Path::to_owned)).collect();
     project_directories.extend(omo_config_core::find_project_config_paths_farthest_first(&cwd.to_string_lossy(),&home.to_string_lossy(),&omo_config_core::StdReadFileSystem,None).into_iter().filter_map(|p|PathBuf::from(p).parent().map(Path::to_owned)));
-    let user=home.join(".maho"); let mut targets=Vec::new();
+    let user=home.join(".omo"); let mut targets=Vec::new();
     if user.is_dir() { targets.push(target(user.clone(),&OMO_CONFIG_FILE_FILTER_GLOBS)); }
     else if let Some(parent)=user.parent().filter(|p|p.is_dir()) { targets.push(target(parent.to_owned(),&USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS)); }
     let mut ancestors=Vec::new();

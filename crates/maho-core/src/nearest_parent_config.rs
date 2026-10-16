@@ -56,17 +56,17 @@ mod tests {
         let home = tmp.path().join("home");
         let project = tmp.path().join("proj");
         let nested = project.join("a/b");
-        std::fs::create_dir_all(project.join(".maho/agent")).expect("mkdir");
+        std::fs::create_dir_all(project.join(".omo/agent")).expect("mkdir");
         std::fs::create_dir_all(&nested).expect("mkdir");
         std::fs::create_dir_all(&home).expect("mkdir");
         let found = find_nearest_parent_config_dir(
             &nested.to_string_lossy(),
             &home.to_string_lossy(),
-            ".maho",
+            ".omo",
             Some("agent"),
             None,
         );
-        assert_eq!(found.as_deref(), Some(project.join(".maho").to_string_lossy().as_ref()));
+        assert_eq!(found.as_deref(), Some(project.join(".omo").to_string_lossy().as_ref()));
     }
 
     #[test]
@@ -75,7 +75,7 @@ mod tests {
         let home = tmp.path().join("home");
         let nested = home.join("a/b");
         std::fs::create_dir_all(&nested).expect("mkdir");
-        assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".maho", Some("agent"), None).is_none());
+        assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".omo", Some("agent"), None).is_none());
     }
 
     #[cfg(unix)]
@@ -87,9 +87,9 @@ mod tests {
         let nested = project.join("a");
         std::fs::create_dir_all(&home).expect("mkdir");
         std::fs::create_dir_all(&nested).expect("mkdir");
-        std::fs::create_dir_all(home.join("real/.maho/agent")).expect("mkdir");
-        std::os::unix::fs::symlink(home.join("real/.maho"), project.join(".maho")).expect("symlink");
-        assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".maho", Some("agent"), None).is_none());
+        std::fs::create_dir_all(home.join("real/.omo/agent")).expect("mkdir");
+        std::os::unix::fs::symlink(home.join("real/.omo"), project.join(".omo")).expect("symlink");
+        assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".omo", Some("agent"), None).is_none());
     }
 
     #[test]
@@ -98,14 +98,14 @@ mod tests {
         let home = tmp.path().join("home");
         let project = tmp.path().join("proj");
         let nested = project.join("a");
-        std::fs::create_dir_all(project.join(".maho")).expect("mkdir");
+        std::fs::create_dir_all(project.join(".omo")).expect("mkdir");
         std::fs::create_dir_all(&nested).expect("mkdir");
         std::fs::create_dir_all(&home).expect("mkdir");
-        assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".maho", None, Some("settings.json")).is_none());
-        std::fs::write(project.join(".maho/settings.json"), "{}").expect("write");
+        assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".omo", None, Some("settings.json")).is_none());
+        std::fs::write(project.join(".omo/settings.json"), "{}").expect("write");
         assert_eq!(
-            find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".maho", None, Some("settings.json")).as_deref(),
-            Some(project.join(".maho").to_string_lossy().as_ref())
+            find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".omo", None, Some("settings.json")).as_deref(),
+            Some(project.join(".omo").to_string_lossy().as_ref())
         );
     }
 }

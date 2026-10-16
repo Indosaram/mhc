@@ -81,9 +81,9 @@ async fn runtime_preparation_loads_project_settings_applies_language_overrides_a
     let root=tempfile::tempdir().unwrap();
     let cwd=root.path().join("project");
     let home=root.path().join("home");
-    std::fs::create_dir_all(cwd.join(".maho")).unwrap();
+    std::fs::create_dir_all(cwd.join(".omo")).unwrap();
     std::fs::create_dir(&home).unwrap();
-    std::fs::write(cwd.join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":false,"rb":false,"jl":false},"parallelPoolWidth":3.9}"#).unwrap();
+    std::fs::write(cwd.join(".omo/codemode.json"),r#"{"languages":{"py":false,"js":false,"rb":false,"jl":false},"parallelPoolWidth":3.9}"#).unwrap();
     let environment=std::collections::HashMap::from([("SENPI_CODEMODE_JS".into(),"true".into())]);
     let session_file=root.path().join("session.jsonl");
     let event=serde_json::json!({"sessionId":"runtime-session"});

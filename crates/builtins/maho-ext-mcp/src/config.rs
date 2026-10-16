@@ -173,7 +173,7 @@ fn trusted_config(raw: Option<Value>, env: &BTreeMap<String, String>) -> Result<
 }
 pub fn load_mcp_config(options: LoadMcpConfigOptions<'_>) -> Result<ResolvedMcpConfig, McpConfigValidationError> {
     let global_path = options.agent_dir.join("mcp.json");
-    let project_path = options.cwd.join(".maho/mcp.json");
+    let project_path = options.cwd.join(".omo/mcp.json");
     let claude_path = options.cwd.join(".mcp.json");
     let mut diagnostics = Vec::new();
     let global = trusted_config(read_config(&global_path, true, &mut diagnostics)?, options.env)?;

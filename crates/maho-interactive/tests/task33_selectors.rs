@@ -626,31 +626,31 @@ fn config_selector_groups_resources_and_toggles_them() {
     let resolved = ResolvedPaths {
         skills: vec![
             ResolvedResource {
-                path: "/home/u/.maho/agent/skills/alpha/SKILL.md".to_owned(),
+                path: "/home/u/.omo/agent/skills/alpha/SKILL.md".to_owned(),
                 enabled: true,
                 metadata: PathMetadata {
                     source: "auto".to_owned(),
                     scope: SourceScope::User,
                     origin: SourceOrigin::TopLevel,
-                    base_dir: Some("/home/u/.maho/agent/skills".to_owned()),
+                    base_dir: Some("/home/u/.omo/agent/skills".to_owned()),
                 },
             },
             ResolvedResource {
-                path: "/home/u/.maho/agent/skills/beta/SKILL.md".to_owned(),
+                path: "/home/u/.omo/agent/skills/beta/SKILL.md".to_owned(),
                 enabled: false,
                 metadata: PathMetadata {
                     source: "auto".to_owned(),
                     scope: SourceScope::User,
                     origin: SourceOrigin::TopLevel,
-                    base_dir: Some("/home/u/.maho/agent/skills".to_owned()),
+                    base_dir: Some("/home/u/.omo/agent/skills".to_owned()),
                 },
             },
         ],
         ..ResolvedPaths::default()
     };
-    let groups = build_groups(&resolved, "/home/u/.maho/agent", "/home/u", ".maho");
+    let groups = build_groups(&resolved, "/home/u/.omo/agent", "/home/u", ".omo");
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].label, "User (~/.maho/agent/skills/)");
+    assert_eq!(groups[0].label, "User (~/.omo/agent/skills/)");
     assert_eq!(groups[0].subgroups.len(), 1);
     let names: Vec<&str> = groups[0].subgroups[0]
         .items
@@ -669,8 +669,8 @@ fn config_selector_groups_resources_and_toggles_them() {
         scopes,
         Box::new(settings),
         "/home/u/project",
-        "/home/u/.maho/agent",
-        ".maho",
+        "/home/u/.omo/agent",
+        ".omo",
         Box::new(|| {}),
         Box::new(|| {}),
         Box::new(|| {}),

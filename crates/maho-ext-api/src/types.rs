@@ -1651,18 +1651,13 @@ struct RuntimeState {
     live_filesystem_policies: BTreeMap<String, Vec<FilesystemPolicy>>,
     live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
     live_erased_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn ErasedToolRenderers>>>,
+    /// Bumped on every change to `live_tools` / `live_tool_renderers` / `live_erased_tool_renderers`,
+    /// so a caller can rebuild a tool or renderer snapshot only when the registry actually moved.
+    tool_generation: u64,
     extension_tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>,
     eval_handle_host: Option<SharedEvalHandleHost>,
 }
 pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
-/// Process-wide generation of the live tool / tool-renderer inventory. Bumped after every
-/// mutation of `live_tools`, `live_tool_renderers` or `live_erased_tool_renderers` (and by hosts
-/// that swap a runner), so a reader that observed an unchanged value can skip re-deriving the
-/// renderer snapshot. Read it BEFORE taking a snapshot: a bump racing the snapshot then forces
-/// one extra recompute instead of a missed change.
-static TOOL_RENDERER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub fn tool_renderer_generation() -> u64 { TOOL_RENDERER_GENERATION.load(std::sync::atomic::Ordering::Acquire) }
-pub fn bump_tool_renderer_generation() { TOOL_RENDERER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel); }
 pub type LiveEntryRenderers = BTreeMap<String, (EntryRenderer, Option<EntryRendererOptions>)>;
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
@@ -1685,9 +1680,9 @@ impl ExtensionRuntime {
                 state.live_tools.extend(pending.tools);
                 state.live_tool_renderers.extend(pending.tool_renderers);
                 state.live_erased_tool_renderers.extend(pending.erased_tool_renderers);
+                state.tool_generation += 1;
                 if let Some(host) = pending.eval_handle_host { state.eval_handle_host = Some(host); }
             }
-            bump_tool_renderer_generation();
             for change in pending.providers { match change {
                 ProviderRegistrationChange::Register(registration, path) => self.register_provider(registration, &path)?,
                 ProviderRegistrationChange::Unregister(name, path) => self.unregister_provider(&name, &path)?,
@@ -1712,10 +1707,10 @@ impl ExtensionRuntime {
     pub fn rollback_registration(&self, checkpoint: RuntimeRegistrationCheckpoint) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let next_id = state.next_classifier_id;
+        let tool_generation = state.tool_generation;
         *state = checkpoint.0;
         state.next_classifier_id = next_id;
-        drop(state);
-        bump_tool_renderer_generation();
+        state.tool_generation = tool_generation + 1;
     }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions = Some(actions); }
     pub fn session_actions(&self) -> Result<Arc<dyn ExtensionSessionActions>, ExtensionFailure> {
@@ -1758,12 +1753,11 @@ impl ExtensionRuntime {
         state.live_markdown_transformers.clear(); state.live_rpc_handlers.clear();
         state.live_flags.clear();
         state.live_tools.clear(); state.live_tool_renderers.clear(); state.live_erased_tool_renderers.clear(); state.extension_tool_executors.clear();
+        state.tool_generation += 1;
         state.eval_handle_host = None;
         state.live_mcp_servers.clear();
         state.live_message_renderers.clear(); state.live_entry_renderers.clear();
         state.live_filesystem_policies.clear();
-        drop(state);
-        bump_tool_renderer_generation();
     }
     pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -1820,6 +1814,10 @@ impl ExtensionRuntime {
     /// cloning the list; `None` when no live list is published for `path` (same as `live_tools`).
     pub fn live_tools_contain(&self, path: &str, name: &str) -> Option<bool> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tools.get(path).map(|tools| tools.iter().any(|tool| tool.definition.name == name))
+    }
+    /// Changes whenever the live tool or tool-renderer registrations change.
+    pub fn tool_generation(&self) -> u64 {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tool_generation
     }
     pub fn live_tool_definition(&self, name: &str) -> Option<ToolDefinition> {
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2114,8 +2112,7 @@ impl ExtensionApi {
             state.live_tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
             state.live_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.tool_renderers.clone());
             state.live_erased_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.erased_tool_renderers.clone());
-            drop(state);
-            bump_tool_renderer_generation();
+            state.tool_generation += 1;
         }
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {

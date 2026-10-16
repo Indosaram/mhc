@@ -1,6 +1,9 @@
 fn main() {
     if let Err(error) = run() {
-        eprintln!("{error}");
+        // `eprintln!` panics when stderr is gone (a hung-up terminal), turning exit 1 into a 101
+        // panic; report best-effort instead.
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{error}");
         std::process::exit(1);
     }
 }
@@ -82,7 +85,7 @@ fn run() -> Result<(), String> {
     if argv.first().is_some_and(|arg| arg == "import-omo") {
         let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
         let mut from = PathBuf::from(&home).join(".omo/agent");
-        let to = PathBuf::from(&home).join(".maho/agent");
+        let to = PathBuf::from(maho_core::config::get_agent_dir());
         let mut force = false;
         let mut args = argv.iter().skip(1);
         while let Some(arg) = args.next() {
