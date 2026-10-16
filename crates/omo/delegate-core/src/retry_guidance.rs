@@ -37,7 +37,7 @@ pub fn build_retry_guidance(error_info: &DetectedError) -> String {
     }
 
     guidance.push_str(
-        "\n **Action**: Retry task NOW with corrected parameters.\n\n Example of CORRECT call:\n ```\n task(\n   description=\"Task description\",\n   prompt=\"Detailed prompt...\",\n   category=\"unspecified-low\",  // OR subagent_type=\"explore\"\n   run_in_background=false,\n   load_skills=[]\n )\n ```\n ",
+        "\n **Action**: Retry task NOW with corrected parameters.\n\n Example of CORRECT call:\n ```\n task(\n   description=\"Task description\",\n   prompt=\"Detailed prompt...\",\n   category=\"unspecified-low\",  // OR subagent_type=\"explore\"\n   run_in_background=true,\n   load_skills=[]\n )\n ```\n ",
     );
 
     guidance
