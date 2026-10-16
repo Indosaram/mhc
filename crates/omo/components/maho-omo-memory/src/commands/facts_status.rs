@@ -69,13 +69,18 @@ fn round_div(value: i64, divisor: i64) -> i64 {
     if remainder.abs() * 2 >= divisor { quotient + value.signum() } else { quotient }
 }
 
-fn first_line(detail: Option<&str>) -> Option<String> {
-    let line = detail?.split('\n').next()?.trim();
-    if line.is_empty() {
-        None
-    } else {
-        Some(line.to_owned())
+fn failure_detail(detail: Option<&str>) -> Option<String> {
+    let detail = detail?.trim();
+    if detail.is_empty() {
+        return None;
     }
+    const MAX_DETAIL_CHARS: usize = 240;
+    let bounded: String = detail.chars().take(MAX_DETAIL_CHARS).collect();
+    Some(if detail.chars().count() > MAX_DETAIL_CHARS {
+        format!("{bounded}…")
+    } else {
+        bounded
+    })
 }
 
 /// One bounded advisory line, or nothing when the ledger is clean.
@@ -162,7 +167,7 @@ pub fn format_facts_status(identity: &str, state: &FactsOverview) -> String {
             .cmp(&parse_iso_ms(&left.last_failure_at).unwrap_or(0))
     });
     for record in newest_first.iter().take(MAX_LISTED_CONVERSATIONS) {
-        let detail = first_line(record.last_detail.as_deref())
+        let detail = failure_detail(record.last_detail.as_deref())
             .map(|detail| format!(" - {detail}"))
             .unwrap_or_default();
         lines.push(format!(
@@ -336,8 +341,17 @@ mod tests {
             5
         );
         assert!(text.contains("boom 0"));
-        assert!(!text.contains("second line"));
+        assert!(text.contains("second line"));
         assert!(text.contains("/facts retry"));
+    }
+
+    #[test]
+    fn given_a_long_failure_detail_when_rendering_status_then_the_cause_is_bounded() {
+        let mut record = parked_record("msg");
+        record.last_detail = Some(format!("{}cause", "x".repeat(240)));
+        let text = format_facts_status("agent-x", &overview(vec![record]));
+        assert!(text.contains(&format!("{}…", "x".repeat(240))));
+        assert!(!text.contains("cause"));
     }
 
     #[test]
