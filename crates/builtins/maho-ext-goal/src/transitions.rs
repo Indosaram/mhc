@@ -10,6 +10,7 @@ pub fn transition_goal_status(current: &Goal, status: GoalStatus, source: GoalUp
     let mut next = current.clone();
     next.status = status;
     next.updated_at = updated_at;
+    if status == GoalStatus::Active && source == GoalUpdateSource::User { next.continuation_stopped_at = None; }
     if status == GoalStatus::Blocked {
         if current.status != GoalStatus::Blocked {
             let blocked_reason = reason.map(|r| r.trim_matches(crate::validation::js_whitespace)).filter(|r| !r.is_empty()).ok_or_else(|| GoalError::InvalidMutation("reason is required when status is blocked".into()))?;
@@ -24,7 +25,7 @@ pub fn transition_goal_status(current: &Goal, status: GoalStatus, source: GoalUp
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn goal() -> Goal { Goal { id: "g".into(), thread_id: "t".into(), objective: "work".into(), status: GoalStatus::Active, token_budget: None, tokens_used: 0, time_used_seconds: 0.0, consecutive_continuations: None, unattended_continuations: None, last_continuation_signature: None, created_at: 1, updated_at: 1, last_started_at: Some(1), blocked_reason: None, blocked_at: None, completed_at: None } }
+    fn goal() -> Goal { Goal { id: "g".into(), thread_id: "t".into(), objective: "work".into(), status: GoalStatus::Active, token_budget: None, tokens_used: 0, time_used_seconds: 0.0, consecutive_continuations: None, unattended_continuations: None, last_continuation_signature: None, continuation_stopped_at:None, created_at: 1, updated_at: 1, last_started_at: Some(1), blocked_reason: None, blocked_at: None, completed_at: None } }
     #[test] fn model_block_requires_reason() { let current = goal(); let result = transition_goal_status(&current, GoalStatus::Blocked, GoalUpdateSource::Model, None, 2); assert!(result.is_err()); }
     #[test] fn model_cannot_pause() { let current = goal(); let result = transition_goal_status(&current, GoalStatus::Paused, GoalUpdateSource::Model, None, 2); assert!(result.is_err()); }
     #[test] fn complete_rejects_reason() { let current = goal(); let result = transition_goal_status(&current, GoalStatus::Complete, GoalUpdateSource::Model, Some("done"), 2); assert!(result.is_err()); }

@@ -60,7 +60,8 @@ pub fn parse_goal_file(raw: &str, legacy: bool) -> Result<GoalFile, GoalError> {
     if !(strings_valid && status_valid && required_numbers && optional_numbers && blocked_valid) { return Err(GoalError::InvalidStore("goal store contains an invalid goal".into())); }
     for key in ["consecutiveContinuations", "unattendedContinuations"] { if fields.get(key).is_none_or(|v| !safe(v)) { fields.remove(key); } }
     if fields.get("lastContinuationSignature").is_none_or(|v| !v.is_string()) { fields.remove("lastContinuationSignature"); }
-    for key in ["tokensUsed","createdAt","updatedAt","tokenBudget","lastStartedAt","completedAt","blockedAt","consecutiveContinuations","unattendedContinuations"] {
+    if fields.get("continuationStoppedAt").is_none_or(|v| !safe(v)) { fields.remove("continuationStoppedAt"); }
+    for key in ["tokensUsed","createdAt","updatedAt","tokenBudget","lastStartedAt","completedAt","blockedAt","consecutiveContinuations","unattendedContinuations","continuationStoppedAt"] {
         if let Some(number)=fields.get(key).and_then(Value::as_f64) { fields.insert(key.into(),Value::from(number as u64)); }
     }
     let goal = serde_json::from_value(value).map_err(|error| GoalError::InvalidStore(error.to_string()))?;
