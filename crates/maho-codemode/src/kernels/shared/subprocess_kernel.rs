@@ -184,13 +184,13 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
         }
         tokio::select! {
             command = commands.recv() => match command {
-                Some(Command::Run(_, _, _, response)) if failure.is_some() => { drop(response); }
-                Some(Command::Run(input, on_message, on_started, response)) if !alive.load(std::sync::atomic::Ordering::Acquire) => {
+                Some(Command::Run(input, on_message, on_started, response)) if failure.is_some() && !alive.load(std::sync::atomic::Ordering::Acquire) => {
                     pending.lock().expect("pending kernel runs").push(input);
                     drop(on_message);
                     drop(on_started);
                     drop(response);
                 }
+                Some(Command::Run(_, _, _, response)) if failure.is_some() => { drop(response); }
                 Some(Command::Run(input, on_message, on_started, response)) => {
                     let mut result = runs.enqueue(input, on_message, on_started);
                     tokio::spawn(async move { if let Ok(result) = (&mut result).await { let _ = response.send(result); } });
