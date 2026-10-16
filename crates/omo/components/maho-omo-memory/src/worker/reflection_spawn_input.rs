@@ -14,13 +14,15 @@ pub struct ReflectionCandidateSpawnInput<'a> {
 pub fn prepare_reflection_candidate_spawn(input: ReflectionCandidateSpawnInput<'_>) -> Result<ReflectionSpawnArgs, std::io::Error> {
     let sessions = input.identity.paths.reflection.join("runs");
     let skills = input.identity.paths.runtime.join("skills-usage.json");
+    let memory = input.identity.paths.runtime.join("memory-usage.json");
     let state = input.identity.paths.runtime.join("dream/state.json");
     let base = &input.config["memory"]["people"];
     let override_policy = &input.config["memory"]["agents"][&input.identity.id]["people"];
     let field = |key: &str| override_policy.get(key).filter(|value| !value.is_null()).or_else(|| base.get(key));
     let policy = DreamPeoplePolicy { enabled: field("enabled").and_then(serde_json::Value::as_bool).unwrap_or(true), max_entries: field("max_entries").and_then(serde_json::Value::as_u64).and_then(|value| usize::try_from(value).ok()).unwrap_or(40), max_entry_chars: field("max_entry_chars").and_then(serde_json::Value::as_u64).and_then(|value| usize::try_from(value).ok()).unwrap_or(200) };
     let fork = input.parent_session_file.is_some();
-    let prepared = PrepareReflectionSpawnInput { parent_session_file: input.parent_session_file, parent_cwd: input.parent_cwd, run: input.run, worktree: input.worktree, reflection_sessions_dir: &sessions, category: input.category, model: &input.candidate.model, thinking: input.candidate.thinking.as_deref(), load_extensions: input.candidate.load_extensions, attempt: Some(input.attempt), hard_deadline_at: Some(input.hard_deadline_at), next_attempt: input.next_attempt, env: input.env, merge_policy: input.merge_policy, skills_usage_source: &skills, dream_state_source: &state, people_policy: &policy, launch: input.launch, now_ms: input.now_ms };
+    let budget=input.config["memory"]["compile_warn_tokens"].as_u64().and_then(|value|usize::try_from(value).ok()).unwrap_or(30_000);
+    let prepared = PrepareReflectionSpawnInput { parent_session_file: input.parent_session_file, parent_cwd: input.parent_cwd, run: input.run, worktree: input.worktree, reflection_sessions_dir: &sessions, category: input.category, model: &input.candidate.model, thinking: input.candidate.thinking.as_deref(), load_extensions: input.candidate.load_extensions, attempt: Some(input.attempt), hard_deadline_at: Some(input.hard_deadline_at), next_attempt: input.next_attempt, env: input.env, merge_policy: input.merge_policy, skills_usage_source: &skills, memory_usage_source: &memory, dream_state_source: &state, people_policy: &policy, system_token_budget: Some(budget), system_token_target: Some(budget*85/100), launch: input.launch, now_ms: input.now_ms };
     if fork { prepare_reflection_fork_spawn(prepared) } else { prepare_reflection_spawn(prepared) }
 }
 
