@@ -22,7 +22,7 @@ keys_file="$HOME/.config/oldbox42/keys.env"
 [[ -r $keys_file ]] || { echo "missing $keys_file" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$keys_file"
-key_var="INSTABOX_KEY_$(printf %s "$key" | tr "[:lower:]" "[:upper:]")"  # bash 3.2 (macOS) has no ${var^^}
+key_var="INSTABOX_KEY_$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
 export INSTABOX_API_KEY="${!key_var:?no key $key_var in $keys_file}"
 command -v oldbox42 >/dev/null || { echo "oldbox42 CLI missing: npm i -g oldbox42@latest" >&2; exit 2; }
 
