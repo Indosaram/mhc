@@ -62,6 +62,11 @@ fn given_only_category_when_validated_then_resolves_to_a_category_selection() {
 }
 
 #[test]
+fn given_legacy_category_alias_when_validated_then_canonical_name_is_selected() {
+    assert_eq!(target(Some("deep"), None, None), TaskTargetSelection::Category("deep-low".to_string()));
+}
+
+#[test]
 fn given_only_subagent_type_when_validated_then_resolves_to_a_subagent_selection() {
     assert_eq!(
         target(None, Some("momus"), None),

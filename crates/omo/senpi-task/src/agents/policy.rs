@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use super::builtin::MOMUS_SEND_DENIAL_REMINDER;
+use super::builtin::PLAN_REVIEWER_SEND_DENIAL_REMINDER;
 
 /// A fire-and-forget agent: task/task_cancel/task_output only, never task_send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,11 +14,11 @@ pub struct AgentInteractionPolicy {
 }
 
 pub const AGENT_INTERACTION_POLICIES: [(&str, AgentInteractionPolicy); 1] = [(
-    "momus",
+    "plan-reviewer",
     AgentInteractionPolicy {
         one_shot: true,
         prompt_contract: "plan-review",
-        send_denial_reminder: MOMUS_SEND_DENIAL_REMINDER,
+        send_denial_reminder: PLAN_REVIEWER_SEND_DENIAL_REMINDER,
     },
 )];
 
@@ -31,6 +31,7 @@ pub fn one_shot_agent_names() -> BTreeSet<&'static str> {
 }
 
 pub fn interaction_policy_for_agent(agent_name: &str) -> Option<AgentInteractionPolicy> {
+    let agent_name = agent_name.trim();
     AGENT_INTERACTION_POLICIES
         .iter()
         .find(|(name, _)| *name == agent_name)
@@ -47,11 +48,11 @@ pub struct AgentInvocationCondition {
 const PLAN_GATE: AgentInvocationCondition = AgentInvocationCondition {
     requires_skills: &["ulw-plan"],
     requires_plan_artifact: true,
-    forbids_skills: &["start-work"],
+    forbids_skills: &["ulw-execute"],
 };
 
 pub const AGENT_INVOCATION_CONDITIONS: [(&str, AgentInvocationCondition); 2] =
-    [("metis", PLAN_GATE), ("momus", PLAN_GATE)];
+    [("plan-consultant", PLAN_GATE), ("plan-reviewer", PLAN_GATE)];
 
 pub fn plan_gated_agent_names() -> BTreeSet<&'static str> {
     AGENT_INVOCATION_CONDITIONS
@@ -110,6 +111,7 @@ pub enum InvocationGuardVerdict {
 }
 
 pub fn invocation_condition_for_agent(agent_name: &str) -> Option<AgentInvocationCondition> {
+    let agent_name = agent_name.trim();
     AGENT_INVOCATION_CONDITIONS
         .iter()
         .find(|(name, _)| *name == agent_name)

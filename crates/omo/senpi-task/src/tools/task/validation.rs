@@ -175,7 +175,9 @@ pub fn validate_task_target(params: TargetInput<'_>) -> TaskTargetSelection {
             TaskTargetErrorCode::CategoryWithModel,
             CATEGORY_WITH_MODEL_MESSAGE,
         ),
-        (Some(category), None) => TaskTargetSelection::Category(category.trim().to_string()),
+        (Some(category), None) => TaskTargetSelection::Category(
+            omo_config_core::canonical_category_name(category.trim()),
+        ),
         (None, Some(subagent)) => TaskTargetSelection::SubagentType(subagent.trim().to_string()),
         (None, None) => target_error(TaskTargetErrorCode::NoTarget, NO_TARGET_MESSAGE),
     }
