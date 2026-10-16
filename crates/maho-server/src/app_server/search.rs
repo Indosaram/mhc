@@ -26,11 +26,14 @@ fn search_window_keeps(record: &impl SearchWindowRecord,params: &ParsedSearchPar
     params.source_kinds.iter().any(|kind|kind == "appServer") && archived.contains(record.thread()["id"].as_str().unwrap_or_default()) == params.archived && lowercase_contains(record.searchable_text(),&params.search_term)
 }
 /// `to_locale_lowercase(text).contains(term)` for an already-lowercased `term`, without
-/// allocating the lowercase copy when `text` is ASCII.
+/// allocating the lowercase copy except for final-sigma or multi-char-lowercase text.
 fn lowercase_contains(text: &str,term: &str) -> bool {
     if term.is_empty() {return true;}
     if text.is_ascii() {return text.as_bytes().windows(term.len()).any(|window|window.eq_ignore_ascii_case(term.as_bytes()));}
-    super::js_semantics::to_locale_lowercase(text).contains(term)
+    // `str::to_lowercase` is per-char except final-sigma context and multi-char expansions
+    // (a term could start mid-expansion); keep the exact allocating path for those texts only.
+    if text.chars().any(|character|character == '\u{3a3}' || character.to_lowercase().len() != 1) {return super::js_semantics::to_locale_lowercase(text).contains(term);}
+    text.char_indices().any(|(index,_)|{let mut lower = text[index..].chars().flat_map(char::to_lowercase);term.chars().all(|expected|lower.next() == Some(expected))})
 }
 pub fn search_window<R: SearchWindowRecord>(records: &mut Vec<R>,params: &ParsedSearchParams,archived: &BTreeSet<String>) -> Result<Value,JsonRpcError> {
     records.retain(|record|search_window_keeps(record,params,archived));
@@ -89,4 +92,19 @@ pub fn literal_snippet(text: &str,term: &str) -> String {
     let index = lower[..byte_index].encode_utf16().count();let text = text.encode_utf16().collect::<Vec<_>>();
     let start = index.saturating_sub(80);let end = (index+term.encode_utf16().count()+80).min(text.len());
     format!("{}{}{}",if start > 0 {"... "} else {""},String::from_utf16_lossy(&text[start.min(text.len())..end]),if end < text.len() {" ..."} else {""})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn lowercase_contains_matches_allocating_lowercase() {
+        let texts = ["안녕하세요 Rust 세계","ÉCOLE Café NAÏVE","MiXeD 한글 CaSe Ünïcödé","ΣΊΣΥΦΟΣ ΟΔΟΣ","İstanbul KİLİM","straße STRASSE","Ǆemal ǅ ǆ","plain ascii Text"];
+        let terms = ["","안녕","rust 세","세계","école","café naï","é","mixed 한글 case","ünïcödé","σίσυφος","σ","ς","οδος","i̇stanbul","i̇","kilim","straße","ǆemal","ǆ","ascii text","absent","하세요 r"];
+        for text in texts {
+            for term in terms {
+                assert_eq!(lowercase_contains(text,term),super::super::js_semantics::to_locale_lowercase(text).contains(term),"{text:?} {term:?}");
+            }
+        }
+    }
 }

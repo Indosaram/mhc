@@ -23,12 +23,15 @@ pub fn logged_turn_to_wire_turn(turn: &LoggedTurn) -> Value {
     logged_turn_with_view(turn,"full")
 }
 pub fn logged_turn_with_view(turn: &LoggedTurn,view: &str) -> Value {
-    let items = turn.items.iter().map(|item|wire_item_to_thread_item(&Value::Object(item.clone()))).collect::<Vec<_>>();
+    // Selection reads the raw items with `wire_item_to_thread_item`'s type/id defaults, so only kept items are converted.
+    let convert = |item: &serde_json::Map<String,Value>|wire_item_to_thread_item(&Value::Object(item.clone()));
     let items = match view {"notLoaded"=>Vec::new(),"summary"=>{
-        let first = items.iter().find(|item|item["type"] == "userMessage");
-        let last = items.iter().rev().find(|item|item["type"] == "agentMessage");
-        match (first,last) {(Some(first),Some(last)) if first["id"] != last["id"]=>vec![first.clone(),last.clone()],(Some(first),_)=>vec![first.clone()],(_,Some(last))=>vec![last.clone()],_=>Vec::new()}
-    },_=>items};
+        fn kind(item: &serde_json::Map<String,Value>) -> &str {item.get("type").and_then(Value::as_str).unwrap_or("agentMessage")}
+        fn id(item: &serde_json::Map<String,Value>) -> &str {item.get("id").and_then(Value::as_str).filter(|id|!id.is_empty()).unwrap_or("item")}
+        let first = turn.items.iter().find(|item|kind(item) == "userMessage");
+        let last = turn.items.iter().rev().find(|item|kind(item) == "agentMessage");
+        match (first,last) {(Some(first),Some(last)) if id(first) != id(last)=>vec![convert(first),convert(last)],(Some(first),_)=>vec![convert(first)],(_,Some(last))=>vec![convert(last)],_=>Vec::new()}
+    },_=>turn.items.iter().map(convert).collect::<Vec<_>>()};
     json!({"id":turn.turn_id,"items":items,"itemsView":view,"status":match turn.status { TurnStatus::Running => "inProgress", TurnStatus::Completed => "completed", TurnStatus::Failed => "failed", TurnStatus::Interrupted => "interrupted" },"error":turn.error.as_ref().map(|message|json!({"message":message,"codexErrorInfo":"other","additionalDetails":null})),"startedAt":iso_seconds(&turn.started_at),"completedAt":turn.completed_at.as_deref().map(iso_seconds),"durationMs":turn.duration_ms})
 }
 pub fn wire_item_to_thread_item(item: &Value) -> Value {
@@ -83,4 +86,39 @@ pub async fn build_wire_thread(entry: &ThreadEntry, log: &tokio::sync::Mutex<Tur
         }
     } else { Vec::new() };
     Ok(json!({"id":entry.id,"sessionId":entry.session.session_id(),"forkedFromId":null,"parentThreadId":null,"preview":entry.preview().unwrap_or_default(),"ephemeral":false,"modelProvider":model.provider,"createdAt":iso_seconds(&entry.created_at),"updatedAt":iso_seconds(&entry.updated_at),"recencyAt":iso_seconds(&entry.updated_at),"status":if entry.active_turn.is_some() {json!({"type":"active","activeFlags":[]})} else {json!({"type":"idle"})},"path":path,"cwd":entry.cwd,"cliVersion":version,"source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":git_info,"name":entry.session.session_name(),"turns":turns}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn old_logged_turn_with_view(turn: &LoggedTurn,view: &str) -> Value {
+        let items = turn.items.iter().map(|item|wire_item_to_thread_item(&Value::Object(item.clone()))).collect::<Vec<_>>();
+        let items = match view {"notLoaded"=>Vec::new(),"summary"=>{
+            let first = items.iter().find(|item|item["type"] == "userMessage");
+            let last = items.iter().rev().find(|item|item["type"] == "agentMessage");
+            match (first,last) {(Some(first),Some(last)) if first["id"] != last["id"]=>vec![first.clone(),last.clone()],(Some(first),_)=>vec![first.clone()],(_,Some(last))=>vec![last.clone()],_=>Vec::new()}
+        },_=>items};
+        json!({"id":turn.turn_id,"items":items,"itemsView":view,"status":match turn.status { TurnStatus::Running => "inProgress", TurnStatus::Completed => "completed", TurnStatus::Failed => "failed", TurnStatus::Interrupted => "interrupted" },"error":turn.error.as_ref().map(|message|json!({"message":message,"codexErrorInfo":"other","additionalDetails":null})),"startedAt":iso_seconds(&turn.started_at),"completedAt":turn.completed_at.as_deref().map(iso_seconds),"durationMs":turn.duration_ms})
+    }
+    fn turn(items: Vec<Value>) -> LoggedTurn {
+        LoggedTurn {turn_id:"turn-1".into(),started_at:"2026-01-01T00:00:00Z".into(),completed_at:Some("2026-01-01T00:00:05Z".into()),duration_ms:Some(5000),error:Some("boom".into()),status:TurnStatus::Failed,items:items.into_iter().filter_map(|item|match item {Value::Object(map)=>Some(map),_=>None}).collect()}
+    }
+    #[test]
+    fn logged_turn_with_view_matches_convert_all_then_select() {
+        let cases = vec![
+            vec![],
+            vec![json!({"id":"u1","type":"userMessage","content":"x"}),json!({"id":"r","type":"reasoning","text":"t"}),json!({"id":"a1","type":"agentMessage","text":"one"}),json!({"id":"c","type":"commandExecution","output":"big"}),json!({"id":"a2","text":"untyped is agent"})],
+            vec![json!({"type":"userMessage"}),json!({"id":"","type":"agentMessage"})],
+            vec![json!({"id":"same","type":"userMessage"}),json!({"id":"same","type":"agentMessage","text":"t"})],
+            vec![json!({"id":"a","type":"agentMessage","text":"only agent"}),json!({"id":7,"type":"plan"})],
+            vec![json!({"id":"u","type":"userMessage","clientId":"cid","content":[]}),json!({"id":"p","type":"plan"})],
+            vec![json!({"type":"reasoning","summary":[]})],
+        ];
+        for items in cases {
+            let turn = turn(items);
+            for view in ["full","summary","notLoaded"] {
+                assert_eq!(serde_json::to_string(&logged_turn_with_view(&turn,view)).ok(),serde_json::to_string(&old_logged_turn_with_view(&turn,view)).ok(),"view {view}");
+            }
+        }
+    }
 }
