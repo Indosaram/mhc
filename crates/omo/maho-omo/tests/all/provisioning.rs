@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use maho_omo::{
-    DAG_SDK_ROOT_ENV, ProvisioningOptions, TOOLKIT_BIN_ENV, path_delimiter, provision_dag_sdk_root, provision_toolkit_path,
+    DAG_SDK_ROOT_ENV, ProvisioningOptions, TOOLKIT_BIN_ENV, TOOLKIT_SURFACE_MARKER, path_delimiter,
+    provision_dag_sdk_root, provision_toolkit_path, validate_staged_toolkit,
 };
 
 type AppliedLog = Arc<Mutex<Vec<(String, Option<String>)>>>;
@@ -55,7 +56,7 @@ impl Fixture {
 #[test]
 fn a_bare_path_with_no_preset_bin_prepends_the_dir_and_sets_the_bin() {
     let fixture = Fixture::new();
-    std::fs::create_dir_all(fixture.base_dir()).expect("toolkit dir");
+    create_staged_toolkit(&fixture);
     let options = fixture.options(&[("PATH", Some("/usr/bin:/bin"))]);
 
     let updates = provision_toolkit_path(&options);
@@ -70,7 +71,7 @@ fn a_bare_path_with_no_preset_bin_prepends_the_dir_and_sets_the_bin() {
 #[test]
 fn a_preset_bin_is_kept_while_the_dir_is_still_prepended() {
     let fixture = Fixture::new();
-    std::fs::create_dir_all(fixture.base_dir()).expect("toolkit dir");
+    create_staged_toolkit(&fixture);
     let options = fixture.options(&[
         ("PATH", Some("/usr/bin")),
         (TOOLKIT_BIN_ENV, Some("/preset/omo-agent-toolkit.js")),
@@ -86,7 +87,7 @@ fn a_preset_bin_is_kept_while_the_dir_is_still_prepended() {
 #[test]
 fn an_empty_preset_bin_is_treated_as_unset() {
     let fixture = Fixture::new();
-    std::fs::create_dir_all(fixture.base_dir()).expect("toolkit dir");
+    create_staged_toolkit(&fixture);
     let options = fixture.options(&[("PATH", Some("/usr/bin")), (TOOLKIT_BIN_ENV, Some(""))]);
 
     let updates = provision_toolkit_path(&options);
@@ -101,7 +102,7 @@ fn an_empty_preset_bin_is_treated_as_unset() {
 #[test]
 fn running_twice_keeps_exactly_one_leading_toolkit_entry() {
     let fixture = Fixture::new();
-    std::fs::create_dir_all(fixture.base_dir()).expect("toolkit dir");
+    create_staged_toolkit(&fixture);
     let base = fixture.base_dir().to_string_lossy().into_owned();
     let first = fixture.options(&[("PATH", Some("/usr/bin"))]);
     provision_toolkit_path(&first);
@@ -123,6 +124,33 @@ fn an_absent_toolkit_dir_leaves_the_environment_untouched() {
 
     assert!(provision_toolkit_path(&options).is_empty());
     assert!(fixture.applied().is_empty());
+}
+
+#[test]
+fn toolkit_path_requires_complete_artifacts_and_the_omo_senpi_surface_marker() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.base_dir().join("ulw-loop")).expect("toolkit dir");
+    std::fs::write(fixture.base_dir().join("ulw-loop/surface.json"), TOOLKIT_SURFACE_MARKER).expect("marker");
+    assert!(!validate_staged_toolkit(&fixture.base_dir()));
+    let options = fixture.options(&[("PATH", Some("/usr/bin"))]);
+    assert!(provision_toolkit_path(&options).is_empty());
+    assert!(fixture.applied().is_empty());
+
+    create_staged_toolkit(&fixture);
+    assert!(validate_staged_toolkit(&fixture.base_dir()));
+    assert_eq!(
+        provision_toolkit_path(&options).iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+        vec!["PATH", TOOLKIT_BIN_ENV]
+    );
+}
+
+fn create_staged_toolkit(fixture: &Fixture) {
+    let base = fixture.base_dir();
+    std::fs::create_dir_all(base.join("ulw-loop")).expect("toolkit dir");
+    for path in ["cli.js", "directive.md", "ulw-loop/cli.js", "omo-agent-toolkit", "omo-agent-toolkit.cmd"] {
+        std::fs::write(base.join(path), "artifact").expect("artifact");
+    }
+    std::fs::write(base.join("ulw-loop/surface.json"), TOOLKIT_SURFACE_MARKER).expect("marker");
 }
 
 #[test]
