@@ -649,16 +649,6 @@ pub fn get_theme_export_colors(json: &ThemeJson) -> Result<BTreeMap<String, Stri
     }
     Ok(colors)
 }
-#[cfg(test)]
-mod oklch_tests {
-    use super::*;
-    #[test]
-    fn parses_oklch_to_rgb() {
-        let rgb = parse_ok_color("oklch(0.5 0.1 30)").expect("valid OKLCH");
-        assert!(rgb[0] > rgb[1]);
-        assert!(rgb[0] > rgb[2]);
-    }
-}
 impl Theme {
     pub fn get_thinking_border_color(
         &self,
@@ -681,5 +671,15 @@ impl Theme {
     }
     pub fn get_bash_mode_border_color(&self, text: &str) -> String {
         self.fg(ThemeColor::BashMode, text)
+    }
+}
+#[cfg(test)]
+mod oklch_tests {
+    use super::*;
+    #[test]
+    fn parses_oklch_to_rgb() {
+        let rgb = parse_ok_color("oklch(0.5 0.1 30)").expect("valid OKLCH");
+        assert!(rgb[0] > rgb[1]);
+        assert!(rgb[0] > rgb[2]);
     }
 }
