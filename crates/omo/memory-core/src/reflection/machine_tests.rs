@@ -28,6 +28,8 @@ fn journal(steps: usize, pending_compaction: Option<bool>) -> JournalSnapshot {
         state: ReflectionTranscriptState {
             schema_version: "v3_assistant_steps".to_string(),
             reflected_through_message_id: None,
+            reflected_through_byte_offset: None,
+            unreflected_bytes: None,
             total_completed_steps: steps,
             reflected_completed_steps: 0,
             steps_since_last_successful_reflection: steps,
@@ -40,6 +42,7 @@ fn journal(steps: usize, pending_compaction: Option<bool>) -> JournalSnapshot {
             end_message_id: format!("msg-{}", steps.saturating_sub(1)),
             start_line: 0,
             end_snapshot_line: steps,
+            backlog_remaining: None,
             entries,
         }),
     }
@@ -60,6 +63,7 @@ fn request(
                 end_message_id: "msg-0".to_string(),
                 start_line: 0,
                 end_snapshot_line: 1,
+                backlog_remaining: None,
                 entries: Vec::new(),
             },
         })
