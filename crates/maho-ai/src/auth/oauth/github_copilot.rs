@@ -643,6 +643,10 @@ impl OAuthAuth for GitHubCopilotOAuth {
         true
     }
 
+    fn rejected_token_statuses(&self) -> &[u16] {
+        &[401, 403]
+    }
+
     async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
         self.login_github_copilot(interaction).await
     }
@@ -710,6 +714,11 @@ mod tests {
             get_github_copilot_base_url(Some("no-proxy-ep"), None).as_str(),
             "https://api.individual.githubcopilot.com"
         );
+    }
+
+    #[test]
+    fn rejected_token_statuses_match_copilot_contract() {
+        assert_eq!(GitHubCopilotOAuth::new(default_transport()).rejected_token_statuses(), &[401, 403]);
     }
 
     #[test]
