@@ -8,6 +8,7 @@ use crate::tools::patch_parser::{
 fn test_rejects_malformed_patch_headers_and_footers() {
     let err1 = parse_memory_patch("invalid").unwrap_err();
     assert!(err1.message.contains("patch must start with"));
+    assert!(err1.message.starts_with("memory apply_patch:"));
 
     let err2 = parse_memory_patch("*** Begin Patch\n+line\n").unwrap_err();
     assert!(err2.message.contains("patch must end with"));
