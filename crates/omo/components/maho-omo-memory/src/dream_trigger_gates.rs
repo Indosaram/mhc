@@ -27,7 +27,7 @@ pub fn evaluate_dream_gates<E>(origin:DreamOrigin,settings:&DreamTriggerSettings
     if !settings.enabled{return Ok(Err(DreamGateRejection::Disabled));}
     if origin==DreamOrigin::Shutdown&&!settings.shutdown_launch{return Ok(Err(DreamGateRejection::ShutdownDisabled));}
     if let Some(last)=last_dream_at_ms()?&&now_ms-last<=settings.min_hours_between*3_600_000.0{return Ok(Err(DreamGateRejection::TooSoon));}
-    if unreflected_bytes()?<=DREAM_VOLUME_GATE_BYTES{return Ok(Err(DreamGateRejection::InsufficientVolume));}
+    if origin!=DreamOrigin::Pressure&&unreflected_bytes()?<=DREAM_VOLUME_GATE_BYTES{return Ok(Err(DreamGateRejection::InsufficientVolume));}
     Ok(Ok(()))
 }
 pub fn read_last_dream_at_ms(runtime:&Path)->std::io::Result<Option<f64>>{
