@@ -32,7 +32,7 @@ async fn faux_registered_component_preserves_idle_prompt_and_provider_reply() {
 }
 
 #[tokio::test]
-async fn fresh_home_bootstrap_runs_through_native_session() {
+async fn interactive_prompt_claims_without_bootstrap() {
     let root = tempfile::tempdir().expect("private state");
     struct TestUi;
     impl maho_ext_api::ExtensionUi for TestUi {
@@ -83,9 +83,8 @@ async fn fresh_home_bootstrap_runs_through_native_session() {
     result.expect("bounded startup and prompt").expect("prompt");
     assert!(maho_omo_onboarding::state::is_onboarding_complete(root.path()));
     let bootstraps:Vec<_>=messages.iter().filter(|message|message["customType"]=="omo-onboarding:bootstrap").collect();
-    assert_eq!(bootstraps.len(),1);assert_eq!(bootstraps[0]["display"],false);
+    assert!(bootstraps.is_empty());
     let assistants:Vec<_>=messages.iter().filter(|message|message["role"]=="assistant").collect();
-    assert_eq!(assistants.len(),2);
+    assert_eq!(assistants.len(),1);
     assert_eq!(assistants[0]["content"][0]["text"],"Welcome.");
-    assert_eq!(assistants[1]["content"][0]["text"],"Hello.");
 }
