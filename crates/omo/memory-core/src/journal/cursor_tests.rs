@@ -7,6 +7,17 @@ use crate::journal::entries::{
 use crate::journal::store::{TranscriptJournal, TranscriptJournalOptions};
 
 #[test]
+fn reflected_byte_offset_stops_at_the_selected_message() {
+    let entries = vec![
+        TranscriptEntry::Text(TextTranscriptEntry { kind: "assistant".to_string(), text: "one".to_string(), captured_at: "t".to_string(), source_line_id: "l1".to_string(), source_message_id: "m1".to_string() }),
+        TranscriptEntry::Text(TextTranscriptEntry { kind: "assistant".to_string(), text: "two".to_string(), captured_at: "t".to_string(), source_line_id: "l2".to_string(), source_message_id: "m2".to_string() }),
+    ];
+    let offset = reflected_through_byte_offset(&entries, "m1");
+    assert!(offset > 0);
+    assert!(offset < journal_byte_offset(&entries));
+}
+
+#[test]
 fn test_reflection_state_not_mutated_when_aborted_signal_on_snapshot_capture() {
     // given
     let temp_dir = tempfile::tempdir().unwrap();
@@ -214,7 +225,7 @@ fn test_snapshot_respects_byte_budget_and_reflected_offset_tracks_message_group(
         "assistant", "x".repeat(100), "now", format!("line-{i}"), format!("message-{i}"),
     ))).collect();
     let state = initial_reflection_state();
-    let snapshot = capture_cursor_snapshot_with_max_bytes(&entries, &state, 1024).expect("snapshot exists");
+    let snapshot = capture_cursor_snapshot_with_max_bytes(&entries, &state, Some(1024)).expect("snapshot exists");
     let serialized_bytes: usize = snapshot.entries.iter().map(|entry| serde_json::to_vec(entry).expect("serialize").len() + 1).sum();
     assert!(serialized_bytes <= 1024);
     assert_eq!(reflected_through_byte_offset(&entries, &snapshot.end_message_id), serialized_bytes);

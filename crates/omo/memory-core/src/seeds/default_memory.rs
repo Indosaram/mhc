@@ -1,7 +1,7 @@
 //! Default memory block content constants and persona seed definitions.
 
 /// Standard labels for default memory blocks in system prompt projections.
-pub const DEFAULT_MEMORY_BLOCK_LABELS: &[&str] = &["persona", "human"];
+pub const DEFAULT_MEMORY_BLOCK_LABELS: &[&str] = &["persona", "human", "boundaries", "self-aware"];
 
 /// SHA-256 digest of the exact v1 persona seed file used for advisory /doctor detection.
 pub const V1_PERSONA_SEED_SHA256: &str =
@@ -33,6 +33,23 @@ Observations about this person appear here. Each entry follows the format:
 - [YYYY-MM-DD] <content> <!-- src: <ids>[; n=<count>][; pattern: <type>; confidence: low|medium|high][; status: open] -->
 
 Prefer concrete observations over generic summaries. Keep this file current and remove what no longer applies."#;
+
+pub const DEFAULT_BOUNDARIES_BODY: &str = r#"What the person you work with told you not to do, in their own words. Add an entry only when they say it, never from inference or a refusal of your own:
+- [YYYY-MM-DD] "<their exact words>" <!-- src: <ids> -->
+
+Their current instruction wins over every entry here; on a collision, say so once and follow it."#;
+
+pub const DEFAULT_SELF_AWARE_BODY: &str = r#"How you look from the outside: what your person, reviewers, tests, and tools showed about your behavior, each quoted with its source. Reflection maintains this summary from reference/self/observations.md; you add there, never here.
+
+Read each entry as a reading of you to test, not a rule. When one collides with your person's current ask, follow the ask.
+
+- [YYYY-MM-DD] cond: <when> | reaction: "<their words>" (<src>) | obs: <what you did, counted> | next: <what you will check> <!-- status: hypothesis|observed|disconfirmed; expires: YYYY-MM-DD -->"#;
+
+pub const DEFAULT_SELF_OBSERVATIONS_BODY: &str = r#"One line per external reaction to your behavior, appended when it happens:
+
+- [YYYY-MM-DD] cond: <when> | reaction: "<their words>" (<src>) | obs: <what you did, counted> | next: <what you will check> <!-- status: hypothesis|observed|disconfirmed; expires: YYYY-MM-DD -->
+
+Add a line when your person corrects or characterizes you, a reviewer or gate rejects your work, or a test contradicts what you claimed. Quote them; count what you did; name the next check."#;
 
 #[cfg(test)]
 #[path = "default_memory_tests.rs"]

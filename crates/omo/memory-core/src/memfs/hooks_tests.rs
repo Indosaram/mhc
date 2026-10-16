@@ -88,6 +88,8 @@ fn test_hook_scripts_when_checked_then_parse_as_posix_sh_without_bash_only_const
         assert!(!script.contains("disown"));
         assert!(!script.contains("env bash"));
     }
+    assert!(PRE_COMMIT_HOOK_SCRIPT.contains("safe YAML plain scalar") || PRE_COMMIT_HOOK_SCRIPT.contains("safe YAML scalar"));
+    assert!(PRE_COMMIT_HOOK_SCRIPT.contains("secret screening"));
 }
 
 #[test]
@@ -219,7 +221,7 @@ mod hook_behaviour {
                 ),
                 (
                     "skills/deploy/SKILL.md",
-                    "---\nname: deploy\nunknown_key: fine\n---\n\nsteps\n",
+                    "---\ndescription: Deploy skill\nname: deploy\nunknown_key: fine\n---\n\nsteps\n",
                 ),
                 ("README.md", "no frontmatter here\n"),
             ],

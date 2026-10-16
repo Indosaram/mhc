@@ -1,7 +1,7 @@
 //! Git hook scripts installed into memory repositories.
 
 /// Pre-commit validator script for staged memory markdown.
-pub const PRE_COMMIT_HOOK_SCRIPT: &str = r#"#!/bin/sh
+pub const PRE_COMMIT_HOOK_SCRIPT: &str = r##"#!/bin/sh
 # Validate frontmatter in staged memory .md files.
 # Installed by omo memory-core. Do not edit by hand - regenerated on startup.
 
@@ -33,8 +33,10 @@ check_keys() {
       [ "$key" = "$k" ] && known=true && break
     done
     if [ "$known" = false ]; then
-      printf "  %s: unknown frontmatter key '%s' (allowed: %s)\n" "$1" "$key" "$ALL_KNOWN_KEYS"
-      continue
+      case "$4" in
+        skill) ;;
+        *) printf "  %s: unknown frontmatter key '%s' (allowed: %s)\n" "$1" "$key" "$ALL_KNOWN_KEYS"; continue ;;
+      esac
     fi
 
     if [ "$key" = read_only ]; then
@@ -53,6 +55,7 @@ check_keys() {
       case "$value" in
         "") printf "  %s: 'description' must not be empty\n" "$1" ;;
         [\>\|]*) printf "  %s: 'description' must be a non-empty single line\n" "$1" ;;
+        *": "*|*":"|*" #"*|"["*|"]"*|"{"*|"}"*|"&"*|"!"*|"|"*|">"*|"%"*|"@"*|","*|"?"*|"-"|"- "*) printf "  %s: 'description' is not a safe YAML scalar\n" "$1" ;;
       esac
     fi
   done
@@ -60,6 +63,7 @@ check_keys() {
 
 check_file() {
   file="$1"
+  policy="${2:-contract}"
   staged=$(git show ":$file")
 
   if [ "$(printf '%s\n' "$staged" | head -1)" != "---" ]; then
@@ -80,7 +84,7 @@ check_file() {
   fi
 
   frontmatter=$(printf '%s\n' "$staged" | tail -n +2 | head -n $((closing_line - 1)))
-  check_keys "$file" "$head_content" "$frontmatter"
+  check_keys "$file" "$head_content" "$frontmatter" "$policy"
 
   if ! printf '%s\n' "$frontmatter" | grep -q '^description:'; then
     printf "  %s: missing required field 'description'\n" "$file"
@@ -100,13 +104,15 @@ errors=$(
       printf '  %s: invalid skill path (skills must be folders). Use skills/<name>/SKILL.md\n' "$skill_file"
     done
 
-  # Frontmatter is validated for system/ and reference/ markdown only.
+  # Frontmatter is validated for system/reference/people and skill documents.
   # SKILL.md files live under skills/ and are never matched here.
   git diff --cached --name-only --diff-filter=ACM |
-    grep -E '^(memory/)?(system|reference)/.*\.md$' |
+    grep -E '^(memory/)?(system|reference|people)/.*\.md$' |
     while IFS= read -r file; do
       check_file "$file"
     done
+
+  git diff --cached --name-only --diff-filter=ACM | grep -E '^(memory/)?skills/.+/SKILL\.md$' | while IFS= read -r file; do check_file "$file" skill; done
 )
 
 if [ -n "$errors" ]; then
@@ -115,8 +121,15 @@ if [ -n "$errors" ]; then
   exit 1
 fi
 
+secret_failed=$(git diff --cached --no-renames --diff-filter=AMT --raw --no-abbrev | while IFS= read -r line; do
+  meta=${line%%"$TAB"*}; p=${line#*"$TAB"}; set -- $meta; [ "$2" = "160000" ] && continue
+  blob=$(git cat-file blob "$4" 2>/dev/null) || { printf 'memory pre-commit: %s could not be read for secret screening\n' "$p"; continue; }
+  if printf '%s' "$blob" | grep -E -q '(^|[^A-Za-z0-9_])AKIA[0-9A-Z]{16}([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])sk-(proj-)?[-_A-Za-z0-9]+'; then printf 'memory pre-commit: %s contains secret-like content\n' "$p"; fi
+done)
+if [ -n "$secret_failed" ]; then printf '%s\n' "$secret_failed"; exit 1; fi
+
 exit 0
-"#;
+"##;
 
 /// Post-commit mirror push script to an optional user-owned remote.
 pub const POST_COMMIT_HOOK_SCRIPT: &str = r#"#!/bin/sh
