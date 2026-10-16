@@ -391,6 +391,9 @@ impl WorkspaceDocumentState {
             let Some(state) = documents.by_uri(&snapshot.uri) else {
                 return;
             };
+            if state.publish_generation != snapshot.publish_generation {
+                return;
+            }
             state.activity.subscribe()
         };
         let _ = tokio::time::timeout(
