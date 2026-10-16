@@ -293,6 +293,7 @@ fn transform_tool_name_cases() {
         (" delegate_task", "DelegateTask"),
         ("delegate_task ", "DelegateTask"),
         (" delegate_task ", "DelegateTask"),
+        ("delegate task", "DelegateTask"),
         (" webfetch", "WebFetch"),
         (" read ", "Read"),
         ("webfetch", "WebFetch"),
@@ -310,12 +311,12 @@ fn transform_tool_name_cases() {
 }
 
 #[test]
-fn replace_tool_args_patches_a_copy() {
-    let original = obj(json!({"command": "git status", "timeout": 30}));
-    let mut args = original.clone();
+fn replace_tool_args_mutates_the_existing_map() {
+    let mut args = obj(json!({"command": "git status", "timeout": 30}));
+    let original_ptr = &args as *const Map<String, Value>;
     replace_tool_args(&mut args, &obj(json!({"command": "git log"})));
     assert_eq!(args, obj(json!({"command": "git log", "timeout": 30})));
-    assert_eq!(original["command"], json!("git status"));
+    assert_eq!(original_ptr, &args as *const Map<String, Value>);
 }
 
 #[test]
@@ -401,6 +402,8 @@ fn classify_path_environment_cases() {
             PathClassification::Icloud,
         ),
         ("/Users/x/OneDrive/foo", PathClassification::Onedrive),
+        ("/tmp/OneDriveThing/file", PathClassification::Unknown),
+        ("/tmp/OneDrive - Team/file", PathClassification::Onedrive),
         ("C:\\Users\\x\\OneDrive\\foo", PathClassification::Onedrive),
         ("/Users/x/Desktop/foo", PathClassification::DesktopSync),
         (
@@ -414,6 +417,22 @@ fn classify_path_environment_cases() {
     for (path, expected) in cases {
         assert_eq!(classify_path_environment(path), expected, "{path}");
     }
+}
+
+#[test]
+fn frontmatter_default_mode_strips_leading_bom() {
+    let parsed = parse_frontmatter("\u{feff}---\ntitle: demo\n---\nbody", FrontmatterMode::Default);
+    assert_eq!(parsed.data["title"], json!("demo"));
+    assert_eq!(parsed.body, "body");
+}
+
+#[test]
+fn tar_listing_preserves_entry_path_whitespace() {
+    let parsed = parse_tar_listing_output(
+        "-rw-r--r-- 1 user group 3 2026-10-16 10:00  file.txt \n",
+    )
+    .expect("valid tar line");
+    assert_eq!(parsed[0].path, " file.txt ");
 }
 
 #[test]
