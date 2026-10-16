@@ -21,8 +21,7 @@ pub async fn register_metadata_handlers(core: &Arc<RwLock<ServerCore>>,threads: 
                 let entry = entry.lock().await;
                 let path = entry.session.session_file().ok_or_else(||JsonRpcError::new(-32603,format!("Thread {id} has no session path for metadata state")))?;
                 state.update_git_info(id,std::path::Path::new(&path),&params["gitInfo"]).await.map_err(metadata_error)?;
-                let mut log = log.lock().await;
-                build_wire_thread(&entry,&mut log,false,&version).await.map_err(metadata_error)?
+                build_wire_thread(&entry,&log,false,&version).await.map_err(metadata_error)?
             };
             Ok(json!({"thread":wire}))
         })

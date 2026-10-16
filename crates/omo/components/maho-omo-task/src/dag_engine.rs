@@ -20,6 +20,14 @@ const SCHEDULABLE_RUN_STATUSES: [DagRunStatus; 2] = [DagRunStatus::Pending, DagR
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> { mutex.lock().unwrap_or_else(PoisonError::into_inner) }
 fn failure(error: impl std::fmt::Display) -> maho_ext_api::ExtensionFailure { maho_ext_api::ExtensionFailure::new(error.to_string()) }
 
+/// Writes back one run's published seq as a max: a concurrent ring subscriber may have advanced it
+/// (or any other run's seq) meanwhile, and lowering it would replay already-delivered events.
+fn raise_delivered(delivered: &Mutex<BTreeMap<DagRunId, u64>>, run: &DagRunId, seq: u64) {
+    let mut delivered = lock(delivered);
+    let entry = delivered.entry(run.clone()).or_insert(0);
+    *entry = (*entry).max(seq);
+}
+
 /// TS `schedulers` map value: the scheduler plus its background `running` promise.
 struct DagOwnedScheduler {
     scheduler: Arc<DagSchedulerContext>,
@@ -470,12 +478,12 @@ let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::
             if log_len.is_some() && lock(&self.published_log_len).get(&run).copied() == log_len { continue; }
             let listeners = lock(&self.run_listeners).clone();
             let on_event = self.durable_listener();
-            let mut delivered = lock(&self.delivered).clone();
+            let mut delivered: BTreeMap<DagRunId, u64> = lock(&self.delivered).get(&run).map(|seq| (run.clone(), *seq)).into_iter().collect();
             match crate::dag_runtime::publish_durable_events(&self.store, &run, &mut delivered, &listeners, &on_event) {
                 Ok(()) => if let Some(len) = log_len { lock(&self.published_log_len).insert(run.clone(), len); },
                 Err(error) => maho_ext_api::diagnostic(&format!("DAG durable event publish failed: {error}")),
             }
-            lock(&self.delivered).extend(delivered);
+            if let Some(seq) = delivered.get(&run).copied() { raise_delivered(&self.delivered, &run, seq); }
         }
     }
 
@@ -816,5 +824,23 @@ fn terminal_node_json(node: &senpi_task::dag::handle::DagTerminalNodeResult) -> 
             value
         }
         DagTerminalNodeResult::Skipped { dependency_ids } => serde_json::json!({"state":"skipped","dependencyIds":dependency_ids}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_write_back_never_lowers_a_delivered_seq() {
+        let delivered = Mutex::new(BTreeMap::from([("live".to_owned(), 9), ("idle".to_owned(), 4)]));
+        // A checkpoint publishes "idle" 4 -> 6 while the live run's subscriber advances it 9 -> 12.
+        lock(&delivered).insert("live".to_owned(), 12);
+        raise_delivered(&delivered, &"idle".to_owned(), 6);
+        assert_eq!(*lock(&delivered), BTreeMap::from([("live".to_owned(), 12), ("idle".to_owned(), 6)]));
+        // A stale write-back for a run another publisher advanced keeps the larger seq.
+        raise_delivered(&delivered, &"live".to_owned(), 9);
+        raise_delivered(&delivered, &"new".to_owned(), 2);
+        assert_eq!(*lock(&delivered), BTreeMap::from([("live".to_owned(), 12), ("idle".to_owned(), 6), ("new".to_owned(), 2)]));
     }
 }

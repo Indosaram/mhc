@@ -162,10 +162,10 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         let guarded=work_execution.wait(operation);
         tokio::pin!(guarded);
         let mut bridge_calls=Vec::<super::cell_handler::PendingCellToolCall>::new();
-        // The live snapshot is rebuilt once a burst of kernel frames drains (or every
-        // LIVE_REBUILD_INTERVAL during a sustained burst), and always on host-started, tool-call
-        // completion and detach; the final result comes from `finish`, not from this snapshot.
-        let mut live_built=std::time::Instant::now();
+        // Frame updates publish at most once per LIVE_REBUILD_INTERVAL (a trailing timer publishes
+        // the last frames of a quiet burst), and always on host-started, tool-call completion and
+        // detach; the final result comes from `finish`, not from this snapshot.
+        let mut live_gate=LiveRebuildGate::new();
         let mut detach_watch=work_execution.detached();
         let mut detach_seen=false;
         let mut result=loop {
@@ -181,11 +181,15 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                     std::task::Poll::Pending
                 }),if !bridge_calls.is_empty()=>{
                     if let Err(error)=handler.finish_tool_call(completed) {work_execution.cancel(AbortReason::new("Error",error));}
-                    *live.lock().expect("live result lock")=handler.builder.live_result();live_built=std::time::Instant::now();
+                    *live.lock().expect("live result lock")=handler.builder.live_result();live_gate.rebuilt();
                 },
                 detached=async {detach_watch.wait_for(|detached|*detached).await.is_ok()},if !detach_seen=>{
                     detach_seen=true;
-                    if detached {*live.lock().expect("live result lock")=handler.builder.live_result();live_built=std::time::Instant::now();}
+                    if detached {*live.lock().expect("live result lock")=handler.builder.live_result();live_gate.rebuilt();}
+                },
+                ()=tokio::time::sleep_until(live_gate.trailing()),if handler.builder.update_pending()=>{
+                    handler.builder.flush_update();
+                    *live.lock().expect("live result lock")=handler.builder.live_result();live_gate.rebuilt();
                 },
                 message=messages.recv()=>if let Some(message)=message {
                     if !active.load(std::sync::atomic::Ordering::SeqCst) {continue;}
@@ -210,9 +214,9 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                         };
                         if let Err(error)=handled {work_execution.cancel(AbortReason::new("Error",error));}
                     }
-                    if message["type"]=="host-started" || messages.is_empty() || live_built.elapsed()>=LIVE_REBUILD_INTERVAL {
+                    if live_gate.due(message["type"]=="host-started") {
                         handler.builder.flush_update();
-                        *live.lock().expect("live result lock")=handler.builder.live_result();live_built=std::time::Instant::now();
+                        *live.lock().expect("live result lock")=handler.builder.live_result();live_gate.rebuilt();
                     }
                 },
                 changed=deadline.changed()=>if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_cell.lock().expect("managed cell lock").record_deadline_expiry(expiry.kind);work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
@@ -325,6 +329,16 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
 /// Longest a sustained burst of kernel frames may leave the live (peek) snapshot unrebuilt.
 const LIVE_REBUILD_INTERVAL:std::time::Duration=std::time::Duration::from_millis(50);
 
+/// Time floor between frame-driven live rebuilds; `trailing` is when a pending update is due.
+struct LiveRebuildGate {built:tokio::time::Instant}
+
+impl LiveRebuildGate {
+    fn new() -> Self {Self {built:tokio::time::Instant::now()}}
+    fn due(&self, host_started:bool) -> bool {host_started || self.built.elapsed()>=LIVE_REBUILD_INTERVAL}
+    fn trailing(&self) -> tokio::time::Instant {self.built+LIVE_REBUILD_INTERVAL}
+    fn rebuilt(&mut self) {self.built=tokio::time::Instant::now();}
+}
+
 /// senpi's `EvalBackgroundCapacityError` catch: the refused cell settles `cancelled` with the
 /// machine-readable capacity code on an error result.
 fn capacity_result(result:&AgentToolResult,duration_ms:f64) -> AgentToolResult {
@@ -340,5 +354,50 @@ fn emit_early_failure(options:&CreateEvalToolOptions,invocation:&EvalCellInvocat
         callback(super::eval_execution_event::build_eval_execution_event_payload(super::eval_execution_event::BuildEvalExecutionEventOptions {
             cell_id:&invocation.cell_id,language:invocation.input.language,started_at,completed_at,queued_ms:(completed_at-started_at).max(0.0),detached:false,metrics:&[],tool_calls:&[],state_error:Some(error),outcome:super::eval_execution_event::EvalExecutionSettleOutcome::Error(error),
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Mirrors the run loop's frame and trailing-timer arms: a slow stream (1 frame/ms for 200 ms)
+    // must flush on the time floor, not once per frame, and still publish its last frame promptly.
+    #[tokio::test(start_paused = true)]
+    async fn slow_frame_stream_flushes_on_interval_and_publishes_last_frame() {
+        let start=tokio::time::Instant::now();
+        let (tx,mut rx)=tokio::sync::mpsc::unbounded_channel::<u32>();
+        tokio::spawn(async move {
+            for frame in 1..=200 {tokio::time::sleep_until(start+std::time::Duration::from_millis(frame.into())).await;if tx.send(frame).is_err() {return;}}
+        });
+        let mut gate=LiveRebuildGate::new();
+        let (mut pending,mut open,mut latest)=(false,true,0);
+        let mut flushes=Vec::<(std::time::Duration,u32)>::new();
+        while open || pending {
+            tokio::select! {
+                frame=rx.recv(),if open=>match frame {
+                    Some(frame)=>{latest=frame;pending=true;if gate.due(false) {pending=false;flushes.push((start.elapsed(),latest));gate.rebuilt();}},
+                    None=>open=false,
+                },
+                ()=tokio::time::sleep_until(gate.trailing()),if pending=>{pending=false;flushes.push((start.elapsed(),latest));gate.rebuilt();},
+            }
+        }
+        let last_frame_at=std::time::Duration::from_millis(200);
+        assert!(flushes.len()<=5,"{flushes:?}");
+        let (at,frame)=*flushes.last().expect("a flush");
+        assert_eq!(frame,200,"{flushes:?}");
+        assert!(at<=last_frame_at+LIVE_REBUILD_INTERVAL,"{flushes:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gate_is_due_on_host_started_or_after_interval() {
+        let mut gate=LiveRebuildGate::new();
+        assert!(!gate.due(false));
+        assert!(gate.due(true));
+        tokio::time::advance(LIVE_REBUILD_INTERVAL).await;
+        assert!(gate.due(false));
+        gate.rebuilt();
+        assert!(!gate.due(false));
+        assert_eq!(gate.trailing(),tokio::time::Instant::now()+LIVE_REBUILD_INTERVAL);
     }
 }
