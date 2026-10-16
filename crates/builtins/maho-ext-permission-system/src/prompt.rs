@@ -28,5 +28,5 @@ pub async fn show_permission_prompt(ctx:&ExtensionContext,request:&Request)->Rep
         Some("Deny with feedback")=>(Reply::Reject,ctx.ui.input("Feedback",Some("Why are you denying this permission? (optional)"),ExtensionUiDialogOptions::default()).await.filter(|message|!message.is_empty())),
         _=>(Reply::Reject,None),
     };
-    ReplyInput{request_id:request.id.clone(),reply,message}
+    ReplyInput{request_id:request.id.clone(),reply,message,always:None}
 }
