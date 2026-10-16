@@ -32,6 +32,8 @@ pub async fn run_command_hook(handler:&ExecutableHookHandler,input:&serde_json::
     process.current_dir(options.cwd).env_clear().envs(env).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     #[cfg(unix)]
     process.process_group(0);
+    #[cfg(windows)]
+    process.creation_flags(0x0000_0200);
     let mut child=process.spawn()?;let pid=child.id();
     let tracked_pid=pid.and_then(|pid|i32::try_from(pid).ok());
     if let Some(pid)=tracked_pid {maho_tools::shell::track_detached_child_pid(pid);}
@@ -72,6 +74,14 @@ async fn kill_child_tree(child:&mut tokio::process::Child,pid:Option<u32>)->std:
     if let Some(pid)=pid {
         let pid=i32::try_from(pid).map_err(std::io::Error::other)?;
         match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid),nix::sys::signal::Signal::SIGKILL) {Ok(())=>{},Err(nix::errno::Errno::ESRCH)=>{},Err(error)=>return Err(std::io::Error::other(error))}
+        return Ok(());
+    }
+    #[cfg(windows)]
+    if let Some(pid)=pid {
+        let status=tokio::process::Command::new("taskkill.exe").args(["/PID",&pid.to_string(),"/T","/F"]).status().await;
+        let Ok(status)=status else {child.start_kill()?;return Ok(());};
+        if status.success() || status.code()==Some(128) {return Ok(());}
+        child.start_kill()?;
         return Ok(());
     }
     child.start_kill()
