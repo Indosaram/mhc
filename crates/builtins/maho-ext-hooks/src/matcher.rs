@@ -13,12 +13,12 @@ pub struct HookMatcherResult<'a> {
 
 /// Compiles a hook matcher once per distinct pattern; the error text is cached so diagnostics stay identical.
 /// Hands out `Arc` clones: cloning a `Regex` itself would rebuild its search-cache pool on every call.
-pub(crate) fn compiled_matcher(pattern:&str)->Result<std::sync::Arc<fancy_regex::Regex>,String> {
-    type Cache=std::collections::HashMap<String,Result<std::sync::Arc<fancy_regex::Regex>,String>>;
+pub(crate) fn javascript_matcher(pattern:&str)->Result<std::sync::Arc<regex::Regex>,String> {
+    type Cache=std::collections::HashMap<String,Result<std::sync::Arc<regex::Regex>,String>>;
     static CACHE:std::sync::LazyLock<std::sync::Mutex<Cache>>=std::sync::LazyLock::new(Default::default);
     let mut cache=CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(cached)=cache.get(pattern) {return cached.clone();}
-    cache.entry(pattern.to_owned()).or_insert_with(||fancy_regex::Regex::new(pattern).map(std::sync::Arc::new).map_err(|error|error.to_string())).clone()
+    cache.entry(pattern.to_owned()).or_insert_with(||regex::Regex::new(pattern).map(std::sync::Arc::new).map_err(|error|error.to_string())).clone()
 }
 
 pub fn matching_hook_handlers<'a>(input: HookMatcherInput<'_>, handlers: &'a [ExecutableHookHandler]) -> HookMatcherResult<'a> {
@@ -35,8 +35,8 @@ pub fn matching_hook_handlers<'a>(input: HookMatcherInput<'_>, handlers: &'a [Ex
         let matcher=handler.matcher.as_deref().unwrap_or("").trim();
         if matcher.is_empty() || matcher=="*" {result.handlers.push(handler);continue;}
         let literal=matcher.split(['|',',']).map(str::trim).filter(|s|!s.is_empty()).any(|s|subjects.iter().any(|input|input==s));
-        let matched=match compiled_matcher(matcher) {
-            Ok(regex)=>literal || subjects.iter().any(|s|regex.is_match(s).unwrap_or(false)),
+        let matched=match javascript_matcher(matcher) {
+            Ok(regex)=>literal || subjects.iter().any(|s|regex.is_match(s)),
             Err(error)=> {
                 result.diagnostics.push(diagnostic(DiagnosticDraft {
                     code:"invalid_matcher",event:Some(handler.event.as_str()),
@@ -115,5 +115,12 @@ mod tests {
             let result=matching_hook_handlers(HookMatcherInput {event,tool_name:""},&handlers);
             assert!(result.diagnostics.is_empty());assert_eq!(result.handlers.len(),1);
         }
+    }
+
+    #[test]
+    fn matcher_rejects_fancy_regex_syntax_not_supported_by_javascript() {
+        assert!(javascript_matcher(r"(a)\1").is_err());
+        assert!(javascript_matcher(r"(?=a)a").is_err());
+        assert!(javascript_matcher(r"a+").is_ok());
     }
 }
