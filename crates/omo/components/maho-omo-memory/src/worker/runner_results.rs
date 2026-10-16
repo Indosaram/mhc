@@ -12,6 +12,8 @@ pub fn failure_reason(result: &ReflectionFinalizeResult) -> Option<&'static str>
     }
 }
 
+pub fn cleanup_succeeded(result: &ReflectionFinalizeResult) -> bool { result.cleanup.worktree_removed && result.cleanup.branch_removed }
+pub fn error_message(error: &dyn std::fmt::Display) -> String { error.to_string() }
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -26,5 +28,3 @@ mod tests {
         assert_eq!(failure_reason(&result), Some("secret_like_content"));
     }
 }
-pub fn cleanup_succeeded(result: &ReflectionFinalizeResult) -> bool { result.cleanup.worktree_removed && result.cleanup.branch_removed }
-pub fn error_message(error: &dyn std::fmt::Display) -> String { error.to_string() }
