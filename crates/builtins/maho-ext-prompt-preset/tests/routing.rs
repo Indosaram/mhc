@@ -26,3 +26,5 @@ fn dated_deepseek_snapshot_precedes_retired_alias() { let mut model = model("dee
 fn specific_claude_release_precedes_generic_family() { assert_eq!(resolve_preset_name(model("claude-opus-5.5"), P::Auto), Some(P::ClaudeOpus55)); assert_eq!(resolve_preset_name(model("claude-mythos-5.1"), P::Auto), Some(P::ClaudeFable51)); }
 #[test]
 fn rolling_kimi_product_aliases_route_by_version() { assert_eq!(resolve_preset_name(model("kimi-for-coding"), P::Auto), Some(P::KimiK28)); assert_eq!(resolve_preset_name(model("kimi-for-coding-highspeed"), P::Auto), Some(P::KimiK27)); }
+#[test]
+fn swe2_atlas_prompt_routes_to_kimi_k3() { for id in ["swe-2", "devin/swe-2", "devin/swe-2-medium", "devin/swe-2-high", "devin/swe-2-max", "devin/swe-2-low", "devin/swe-2-high-lite"] { assert_eq!(resolve_preset_name(model(id), P::Auto), Some(P::KimiK3), "model id {id}"); } }
