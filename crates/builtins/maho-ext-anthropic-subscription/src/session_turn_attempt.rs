@@ -7,6 +7,7 @@ pub fn binding_from_entry(entry: &SessionEntry, hashes: &[String]) -> Snapshot {
         system_prompt_hash: entry.system_prompt_hash.clone(), toolset_hash: entry.toolset_hash.clone(), sent_count: hashes.len(), sent_hashes: hashes.to_vec(),
         last_assistant_uuid: entry.assistant_uuid_by_index.get(&hashes.len()).cloned(), assistant_uuid_by_index: entry.assistant_uuid_by_index.clone(),
         pending_fork_reason: entry.pending_fork_reason.clone(), tainted_reason: entry.tainted_reason.clone(), sdk_session_id_confirmed: Some(entry.pump.sdk_session_id_confirmed),
+        credential_digest: entry.credential_digest.clone(),
         ..Default::default()
     }
 }
