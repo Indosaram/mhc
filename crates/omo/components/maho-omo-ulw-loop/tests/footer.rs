@@ -8,6 +8,22 @@ use maho_omo_ulw_loop::footer_status::*;
 #[test] fn first_valid_goal_has_priority()->Result<(),Box<dyn std::error::Error>> { let root=tempfile::tempdir()?;let first=root.path().join("first");let second=root.path().join("second");std::fs::write(&first,r#"{"version":1,"goal":{"status":"complete"}}"#)?;std::fs::write(&second,r#"{"version":1,"goal":{"status":"active"}}"#)?;assert!(!goal_active(&FooterRuntime{ui:support::context().ui,goal_paths:vec![first,second]}));Ok(()) }
 
 #[test]
+fn goal_cache_invalidates_on_metadata_change_and_clears_on_dispose() -> Result<(), Box<dyn std::error::Error>> {
+    let root=tempfile::tempdir()?;
+    let path=root.path().join("goal.json");
+    std::fs::write(&path,r#"{"version":1,"goal":{"status":"active"}}"#)?;
+    let mut footer=FooterStatus::default();
+    footer.sync(Some(FooterRuntime{ui:support::context().ui,goal_paths:vec![path.clone()]}),true);
+    assert!(footer.running);
+    std::fs::write(&path,r#"{"version":1,"goal":{"status":"complete"},"revision":2}"#)?;
+    footer.tick();
+    assert!(!footer.running);
+    footer.dispose();
+    assert!(footer.goal_cache.entries.is_empty());
+    Ok(())
+}
+
+#[test]
 fn headless_context_does_not_publish_or_start_footer() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let path = root.path().join("goal.json");
