@@ -35,7 +35,8 @@ fn is_single_edit(value: &Value) -> bool {
         && value.get("oldText").is_some_and(Value::is_string)
         && value.get("newText").is_some_and(Value::is_string)
 }
-pub fn prepare_edit_arguments(mut input: Value) -> Value {
+pub fn prepare_edit_arguments(input: Value) -> Value {
+    let mut input = input.clone();
     let Some(args) = input.as_object_mut() else {
         return input;
     };
@@ -66,6 +67,7 @@ pub fn prepare_edit_arguments(mut input: Value) -> Value {
     }
     input
 }
+
 pub fn create_edit_tool<T: HasExecutionToolContext>() -> AgentHarnessTool<T> {
     AgentHarnessTool {
         label: "edit".into(), prepare_arguments: Some(Arc::new(prepare_edit_arguments)), replay: None,
@@ -103,5 +105,19 @@ pub fn create_edit_tool<T: HasExecutionToolContext>() -> AgentHarnessTool<T> {
                 Ok(result)
             }, &context).await
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_edit_arguments;
+    use serde_json::json;
+
+    #[test]
+    fn normalization_does_not_mutate_original_arguments() {
+        let original = json!({"edits":{"oldText":"before","newText":"after"}});
+        let normalized = prepare_edit_arguments(original.clone());
+        assert_eq!(original, json!({"edits":{"oldText":"before","newText":"after"}}));
+        assert_eq!(normalized, json!({"edits":[{"oldText":"before","newText":"after"}]}));
     }
 }

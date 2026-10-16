@@ -6,7 +6,7 @@ pub fn detect_supported_image_mime_type(buffer: &[u8]) -> Option<&'static str> {
     if buffer.starts_with(PNG_SIGNATURE) {
         return (is_png(buffer) && !is_animated_png(buffer)).then_some("image/png");
     }
-    if buffer.starts_with(b"GIF") {
+    if buffer.starts_with(b"GIF87a") || buffer.starts_with(b"GIF89a") {
         return Some("image/gif");
     }
     if buffer.starts_with(b"RIFF") && starts_with_ascii(buffer, 8, b"WEBP") {
@@ -17,6 +17,7 @@ pub fn detect_supported_image_mime_type(buffer: &[u8]) -> Option<&'static str> {
     }
     None
 }
+
 pub fn encode_base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::new();
@@ -104,4 +105,17 @@ fn read_u32_le(buffer: &[u8], offset: usize) -> u32 {
 }
 fn starts_with_ascii(buffer: &[u8], offset: usize, text: &[u8]) -> bool {
     buffer.get(offset..offset + text.len()) == Some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_supported_image_mime_type;
+
+    #[test]
+    fn accepts_only_defined_gif_signatures() {
+        assert_eq!(detect_supported_image_mime_type(b"GIF87a"), Some("image/gif"));
+        assert_eq!(detect_supported_image_mime_type(b"GIF89a"), Some("image/gif"));
+        assert_eq!(detect_supported_image_mime_type(b"GIF"), None);
+        assert_eq!(detect_supported_image_mime_type(b"GIF90a"), None);
+    }
 }
