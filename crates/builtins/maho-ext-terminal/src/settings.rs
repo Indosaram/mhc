@@ -23,12 +23,14 @@ pub struct ResolvedTerminalSettings {
     pub timeout_action: TimeoutAction,
     pub notify: NotifyMode,
     pub monitor: MonitorDeliverySettings,
+    pub max_durable_monitors: Option<usize>,
 }
 
 pub const TERMINAL_SETTINGS_DEFAULTS: ResolvedTerminalSettings = ResolvedTerminalSettings {
     default_cols: 120.0, default_rows: 40.0, scrollback: 10_000.0, max_sessions: 32.0,
     timeout_action: TimeoutAction::Background, notify: NotifyMode::Wake,
     monitor: MonitorDeliverySettings { coalesce_window_ms: 2000.0, rate_limit_ms: 5000.0, max_lines_per_injection: 50.0, max_chars_per_injection: 4096.0, wake_budget: 5.0 },
+    max_durable_monitors: None,
 };
 
 fn positive_int(value: Option<&Value>, fallback: f64, maximum: f64) -> f64 {
@@ -57,6 +59,7 @@ pub fn resolve_terminal_settings(raw: Option<&Value>) -> ResolvedTerminalSetting
             max_chars_per_injection:positive_int(raw.get("monitorMaxCharsPerInjection"),defaults.monitor.max_chars_per_injection,16_384.0),
             wake_budget:positive_int(raw.get("monitorWakeBudget"),defaults.monitor.wake_budget,100.0),
         },
+        max_durable_monitors:raw.get("maxDurableMonitors").and_then(Value::as_f64).filter(|value|value.is_finite()&&*value>=1.0).map(|value|value.trunc() as usize),
     }
 }
 
@@ -100,5 +103,12 @@ mod tests {
     fn project_layer_overrides_global_and_fractions_truncate() {
         let result=load_terminal_settings(Some(&json!({"defaultCols":200,"scrollback":0})),Some(&json!({"defaultCols":123.9,"notify":"next-turn"})));
         assert_eq!(result.default_cols,123.0);assert_eq!(result.scrollback,0.0);assert_eq!(result.notify,NotifyMode::NextTurn);
+    }
+
+    #[test]
+    fn durable_monitor_cap_is_optional_and_positive_only() {
+        assert_eq!(resolve_terminal_settings(Some(&json!({"maxDurableMonitors":3.9}))).max_durable_monitors,Some(3));
+        assert_eq!(resolve_terminal_settings(Some(&json!({"maxDurableMonitors":0}))).max_durable_monitors,None);
+        assert_eq!(TERMINAL_SETTINGS_DEFAULTS.max_durable_monitors,None);
     }
 }
