@@ -156,6 +156,14 @@ pub fn lint_dag_definition_nodes(nodes: &[NodeInput]) -> Vec<String> {
                 node.id
             ));
         }
+        for marker in ["DELIVERABLE:", "SCOPE:", "VERIFY:"] {
+            if !node.prompt.contains(marker) {
+                warnings.push(format!(
+                    "node \"{}\": prompt is missing the {marker} marker from the mass-ulw node prompt contract (TASK/DELIVERABLE/SCOPE/VERIFY/STOP WHEN)",
+                    node.id
+                ));
+            }
+        }
         if !node.prompt.contains("STOP WHEN") {
             warnings.push(format!(
                 "node \"{}\": prompt is missing a STOP WHEN condition from the mass-ulw node prompt contract",

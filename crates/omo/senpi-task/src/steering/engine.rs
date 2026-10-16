@@ -91,6 +91,27 @@ impl SteeringEngine {
         Self { port, active_sends: Mutex::new(HashSet::new()) }
     }
 
+    pub fn has_in_flight_send(&self, task_id: &str) -> bool {
+        self.active_sends.lock().unwrap_or_else(PoisonError::into_inner).contains(task_id)
+    }
+
+    pub fn has_pending_sends(&self, task_id: &str) -> bool {
+        self.has_in_flight_send(task_id)
+            || self.try_load(task_id).is_some_and(|record| record.pending_steering.as_ref().is_some_and(|queue| !queue.is_empty()))
+    }
+
+    pub fn try_begin_send(&self, task_id: &str) -> bool {
+        self.begin_send(task_id)
+    }
+
+    pub fn end_send(&self, task_id: &str) {
+        self.active_sends.lock().unwrap_or_else(PoisonError::into_inner).remove(task_id);
+    }
+
+    pub fn release_send_lease(&self, task_id: &str) {
+        self.end_send(task_id);
+    }
+
     fn begin_send(&self, task_id: &str) -> bool {
         self.active_sends.lock().unwrap_or_else(PoisonError::into_inner).insert(task_id.to_string())
     }

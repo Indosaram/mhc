@@ -431,6 +431,10 @@ impl TaskManager {
 
     pub fn has_free_slot(&self, model: &str) -> bool { lock(&self.inner.concurrency).has_free_slot(model) }
     pub fn state_dir(&self) -> &Path { self.inner.store.state_dir() }
+    pub fn has_pending_sends(&self, task_id: &str) -> bool { self.inner.steering.has_pending_sends(task_id) }
+    pub fn has_in_flight_sends(&self, task_id: &str) -> bool { self.inner.steering.has_in_flight_send(task_id) }
+    pub fn try_begin_send(&self, task_id: &str) -> bool { self.inner.steering.try_begin_send(task_id) }
+    pub fn end_send(&self, task_id: &str) { self.inner.steering.end_send(task_id); }
     pub fn run_epoch(&self, task_id: &str) -> Option<i64> { self.inner.try_load(task_id).map(|record| record.notification.run_epoch) }
     pub fn next_workpool_epoch(&self, task_id: &str) -> Option<i64> { self.run_epoch(task_id).map(|epoch| epoch.saturating_add(1)) }
 
