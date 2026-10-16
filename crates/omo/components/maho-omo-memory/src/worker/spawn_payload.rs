@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap,path::{Path, PathBuf}};
 use memory_core::facts::{FactsPayload,serialize_facts_payload,load_facts_persona};
-use super::{run_artifacts::RunAttempt,spawn_types::{FactsSpawnArgs,FactsSpawnPaths},model_preflight::Launcher};
+use super::{run_artifacts::RunAttempt,spawn_types::{FactsSpawnArgs,FactsSpawnPaths},model_preflight::Launcher,senpi_command::{without_foreign_package_dir_env,resolve_memory_child_launch,SenpiLaunchRuntime}};
 use memory_core::reflection::{ReservedRun, ReflectionTrigger, ReflectionWorktree, load_dream_persona, load_reflection_persona};
 use super::spawn_types::{DreamPeoplePolicy, ReflectionSpawnArgs, ReflectionSpawnPaths};
 
@@ -20,8 +20,11 @@ pub struct PrepareReflectionSpawnInput<'a> {
     pub env: BTreeMap<String, String>,
     pub merge_policy: &'a str,
     pub skills_usage_source: &'a Path,
+    pub memory_usage_source: &'a Path,
     pub dream_state_source: &'a Path,
     pub people_policy: &'a DreamPeoplePolicy,
+    pub system_token_budget: Option<usize>,
+    pub system_token_target: Option<usize>,
     pub launch: Launcher,
     pub now_ms: f64,
 }
@@ -102,14 +105,18 @@ pub fn prepare_reflection_spawn(input: PrepareReflectionSpawnInput<'_>) -> Resul
     #[cfg(unix)] { use std::os::unix::fs::DirBuilderExt; builder.mode(0o700); }
     builder.create(&session_dir)?;
     let is_dream = input.run.request.trigger == ReflectionTrigger::Dream;
+    if is_dream && (input.system_token_budget.is_none() || input.system_token_target.is_none()) { return Err(invalid("dream spawn requires a system token budget and target")); }
     let transcript = session_dir.join("transcript-payload.json");
     let persona = session_dir.join("reflection-persona.md");
     let prompt = session_dir.join("reflection-task.md");
     let skills_usage = is_dream.then(|| session_dir.join("skills-usage.json"));
     let dream_state = is_dream.then(|| session_dir.join("dream-state.json"));
     let dream_policy = is_dream.then(|| session_dir.join("dream-policy.json"));
+    let memory_usage = is_dream.then(|| session_dir.join("memory-usage.json"));
+    let system_tokens = is_dream.then(|| session_dir.join("system-tokens.json"));
+    let audit = is_dream.then(|| session_dir.join("audit.json"));
     let payload_paths: Vec<&Path> = [&transcript, &persona, &prompt].into_iter().map(PathBuf::as_path)
-        .chain(skills_usage.as_deref()).chain(dream_state.as_deref()).chain(dream_policy.as_deref()).collect();
+        .chain(skills_usage.as_deref()).chain(memory_usage.as_deref()).chain(dream_state.as_deref()).chain(dream_policy.as_deref()).chain(system_tokens.as_deref()).chain(audit.as_deref()).collect();
     #[cfg(unix)] {
         use std::os::unix::fs::PermissionsExt;
         for path in &payload_paths {
@@ -121,44 +128,54 @@ pub fn prepare_reflection_spawn(input: PrepareReflectionSpawnInput<'_>) -> Resul
     std::fs::write(&transcript, format!("{}\n", serde_json::to_string_pretty(&serde_json::json!({"schemaVersion":1,"runId":input.run.run_id,"request":input.run.request}))?))?;
     std::fs::write(&persona, if is_dream { load_dream_persona().markdown } else { load_reflection_persona().markdown })?;
     std::fs::write(&prompt, task_prompt(input.run, &input.worktree.dir, &transcript))?;
-    if let (Some(skills), Some(state), Some(policy)) = (&skills_usage, &dream_state, &dream_policy) {
-        for (source, destination) in [(input.skills_usage_source, skills), (input.dream_state_source, state)] {
+    if let (Some(skills), Some(memory), Some(state), Some(policy), Some(tokens), Some(audit_path)) = (&skills_usage, &memory_usage, &dream_state, &dream_policy, &system_tokens, &audit) {
+        for (source, destination) in [(input.skills_usage_source, skills), (input.memory_usage_source, memory), (input.dream_state_source, state)] {
             let content = match std::fs::read(source) {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(), Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}\n".into(), Err(e) => return Err(e),
             };
             std::fs::write(destination, content)?;
         }
         std::fs::write(policy, format!("{}\n", serde_json::to_string_pretty(&serde_json::json!({"version":1,"people":{"enabled":input.people_policy.enabled,"max_entries":input.people_policy.max_entries,"max_entry_chars":input.people_policy.max_entry_chars}}))?))?;
+        let estimate = crate::commands::tokens::estimate_system_tokens(&input.worktree.dir);
+        let file_rows: Vec<_> = estimate.files.iter().map(|file| serde_json::json!({"path":file.path,"bytes":file.bytes,"tokens":file.tokens})).collect();
+        std::fs::write(tokens, format!("{}\n", serde_json::to_string_pretty(&serde_json::json!({"totalTokens":estimate.total_tokens,"files":file_rows}))?))?;
+        let audit_value=serde_json::json!({"systemTokens":estimate.total_tokens,"budgetTokens":input.system_token_budget,"files":estimate.files.iter().map(|file| serde_json::json!({"path":file.path,"bytes":file.bytes,"tokens":file.tokens})).collect::<Vec<_>>()});
+        std::fs::write(audit_path, format!("{}\n",serde_json::to_string_pretty(&audit_value)?))?;
     }
     #[cfg(unix)] {
         use std::os::unix::fs::PermissionsExt;
         for path in &payload_paths { std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400))?; }
     }
     let dream_target = if is_dream { input.run.request.target_doc.as_deref().map(|target| resolve_dream_target(&input.worktree.dir, target)).transpose()? } else { None };
-    let mut env = input.env;
+    let launch=resolve_memory_child_launch(Some(&input.launch.command),Some(&input.launch.prefix_args),&input.env,&SenpiLaunchRuntime{is_bun_binary:false,is_compiled_engine:false,exec_path:&input.launch.command,platform:std::env::consts::OS,argv:&[],resolve_installed_cli:&||None}).map_err(|error|invalid(&error.to_string()))?;
+    let mut env = without_foreign_package_dir_env(&input.env,&launch);
     for (key, value) in [("MEMORY_DIR", &input.worktree.dir), ("TRANSCRIPT_PATH", &transcript)] { env.insert(key.into(), value.to_string_lossy().into_owned()); }
     for (key, value) in [("SKILLS_USAGE_PATH", &skills_usage), ("DREAM_STATE_PATH", &dream_state), ("DREAM_POLICY_PATH", &dream_policy), ("DREAM_TARGET_PATH", &dream_target)] {
         if let Some(value) = value { env.insert(key.into(), value.to_string_lossy().into_owned()); }
     }
+    for (key,value) in [("MEMORY_USAGE_PATH",&memory_usage),("SYSTEM_TOKENS_PATH",&system_tokens),("AUDIT_PATH",&audit)] { if let Some(value)=value { env.insert(key.into(),value.to_string_lossy().into_owned()); } }
+    if let (Some(budget),Some(target))=(input.system_token_budget,input.system_token_target) { env.insert("SYSTEM_TOKEN_BUDGET".into(),budget.to_string()); env.insert("SYSTEM_TOKEN_TARGET".into(),target.to_string()); }
     env.insert("SENPI_MEMORY_REFLECTION".into(), "1".into());
     env.insert("SENPI_PTY_FORCE_PIPE".into(), "1".into());
     if input.load_extensions == Some(true) { env.insert("OMO_SENPI_DISABLED".into(), "1".into()); }
-    let mut args = input.launch.prefix_args;
+    let mut args = launch.prefix_args;
     args.extend(["-p".into(), "--system-prompt".into(), persona.to_string_lossy().into_owned(), "--tools".into(), "bash,edit".into(), "--no-extensions".into(), "--no-skills".into(), "--no-prompt-templates".into(), "--no-context-files".into(), "--session-dir".into(), session_dir.to_string_lossy().into_owned(), "--model".into(), input.model.into()]);
     if input.load_extensions == Some(true) { args.retain(|arg| arg != "--no-extensions"); }
     if let Some(thinking) = input.thinking { args.extend(["--thinking".into(), thinking.into()]); }
     args.push(format!("@{}", prompt.display()));
     let trigger = match input.run.request.trigger { ReflectionTrigger::StepCount => "step-count", ReflectionTrigger::Compaction => "compaction", ReflectionTrigger::Manual => "manual", ReflectionTrigger::Dream => "dream" };
     let origin = if is_dream { input.run.request.origin.map(|origin| match origin { memory_core::reflection::DreamOrigin::Manual => "manual", memory_core::reflection::DreamOrigin::Idle => "idle", memory_core::reflection::DreamOrigin::Shutdown => "shutdown" }.into()) } else { None };
-    Ok(ReflectionSpawnArgs { parent_session_file: None, run_id: Some(input.run.run_id.clone()), attempt: input.attempt.unwrap_or(1), hard_deadline_at: input.hard_deadline_at.unwrap_or(input.now_ms + 900_000.0), category: input.category.into(), conversation_ids: input.run.request.conversation_ids.clone(), model: input.model.into(), thinking: input.thinking.map(str::to_owned), load_extensions: input.load_extensions, next_attempt: input.next_attempt, kind: Some(if is_dream { "dream" } else { "reflection" }.into()), trigger: Some(trigger.into()), origin, merge_policy: Some(input.merge_policy.into()), target_doc: input.run.request.target_doc.clone(), worktree: Some(input.worktree.clone()), command: input.launch.command, args, cwd: input.worktree.dir.clone(), env, paths: ReflectionSpawnPaths { session_dir, worktree: input.worktree.dir.clone(), git_common_dir: input.worktree.common_config_path.parent().unwrap_or_else(|| Path::new(".")).into(), transcript, persona, prompt, skills_usage, dream_state, dream_policy, dream_target } })
+    Ok(ReflectionSpawnArgs { parent_session_file: None, run_id: Some(input.run.run_id.clone()), attempt: input.attempt.unwrap_or(1), hard_deadline_at: input.hard_deadline_at.unwrap_or(input.now_ms + 900_000.0), category: input.category.into(), conversation_ids: input.run.request.conversation_ids.clone(), model: input.model.into(), thinking: input.thinking.map(str::to_owned), load_extensions: input.load_extensions, next_attempt: input.next_attempt, kind: Some(if is_dream { "dream" } else { "reflection" }.into()), trigger: Some(trigger.into()), origin, merge_policy: Some(input.merge_policy.into()), target_doc: input.run.request.target_doc.clone(), system_token_budget: input.system_token_budget, system_token_target: input.system_token_target, worktree: Some(input.worktree.clone()), command: launch.command, args, cwd: input.worktree.dir.clone(), env, paths: ReflectionSpawnPaths { session_dir, worktree: input.worktree.dir.clone(), git_common_dir: input.worktree.common_config_path.parent().unwrap_or_else(|| Path::new(".")).into(), transcript, persona, prompt, skills_usage, memory_usage, dream_state, dream_policy, system_tokens, audit, dream_target } })
 }
 
 pub fn prepare_reflection_fork_spawn(input: PrepareReflectionSpawnInput<'_>) -> Result<ReflectionSpawnArgs, std::io::Error> {
     let parent_session_file = input.parent_session_file.map(Path::to_path_buf);
     let parent_cwd = input.parent_cwd.map(Path::to_path_buf);
+    let prefix_args=input.launch.prefix_args.clone();
     let mut base = prepare_reflection_spawn(input)?;
     let parent = parent_session_file.ok_or_else(|| invalid("fork-mode reflection requires the parent session file"))?;
-    let mut args = vec!["-p".into(), "--fork".into(), parent.to_string_lossy().into_owned(), "--session-dir".into(), base.paths.session_dir.to_string_lossy().into_owned(), "--model".into(), base.model.clone()];
+    let mut args = prefix_args;
+    args.extend(["-p".into(), "--fork".into(), parent.to_string_lossy().into_owned(), "--session-dir".into(), base.paths.session_dir.to_string_lossy().into_owned(), "--model".into(), base.model.clone()]);
     if let Some(thinking) = &base.thinking { args.extend(["--thinking".into(), thinking.clone()]); }
     args.push(format!("@{}", base.paths.prompt.display()));
     base.env.remove("OMO_SENPI_DISABLED");
@@ -194,7 +211,7 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         (run, worktree, DreamPeoplePolicy { enabled: true, max_entries: 3, max_entry_chars: 500 })
     }
     fn reflection_input<'a>(root: &'a Path, run: &'a ReservedRun, worktree: &'a ReflectionWorktree, policy: &'a DreamPeoplePolicy) -> PrepareReflectionSpawnInput<'a> {
-        PrepareReflectionSpawnInput { parent_session_file: None, parent_cwd: None, run, worktree, reflection_sessions_dir: root, category: "quick", model: "p/m", thinking: Some("low"), load_extensions: None, attempt: None, hard_deadline_at: None, next_attempt: None, env: Default::default(), merge_policy: "auto", skills_usage_source: root, dream_state_source: root, people_policy: policy, launch: Launcher { command: "mhc".into(), prefix_args: vec!["prefix".into()] }, now_ms: 42.0 }
+        PrepareReflectionSpawnInput { parent_session_file: None, parent_cwd: None, run, worktree, reflection_sessions_dir: root, category: "quick", model: "p/m", thinking: Some("low"), load_extensions: None, attempt: None, hard_deadline_at: None, next_attempt: None, env: Default::default(), merge_policy: "auto", skills_usage_source: root, memory_usage_source: root, dream_state_source: root, people_policy: policy, system_token_budget: None, system_token_target: None, launch: Launcher { command: "mhc".into(), prefix_args: vec!["prefix".into()] }, now_ms: 42.0 }
     }
     #[test]
     fn reflection_payload_metadata_and_retry() {
@@ -257,6 +274,7 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         let mut input = reflection_input(root.path(), &run, &worktree, &policy);
         input.skills_usage_source = &skills;
         input.dream_state_source = &missing;
+        input.system_token_budget=Some(1000); input.system_token_target=Some(900);
         let args = prepare_reflection_spawn(input).unwrap();
         assert_eq!(std::fs::read(args.paths.skills_usage.unwrap()).unwrap(), [b'{', 0xef, 0xbf, 0xbd, b'}']);
         assert_eq!(std::fs::read_to_string(args.paths.dream_state.unwrap()).unwrap(), "{}\n");
@@ -274,6 +292,7 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         let mut input = reflection_input(root.path(), &run, &worktree, &policy);
         input.skills_usage_source = &skills;
         input.dream_state_source = &missing;
+        input.system_token_budget=Some(1000); input.system_token_target=Some(900);
         let args = prepare_reflection_spawn(input).unwrap();
         assert_eq!(std::fs::read_to_string(args.paths.skills_usage.unwrap()).unwrap(), "{\"raw\":true}\n");
         assert_eq!(std::fs::read_to_string(args.paths.dream_state.unwrap()).unwrap(), "{}\n");
@@ -282,6 +301,9 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         assert_eq!(args.paths.dream_target.unwrap(), worktree.dir.join("system/persona.md"));
         assert_eq!(args.origin.as_deref(), Some("idle"));
         assert_eq!(args.env["SENPI_MEMORY_REFLECTION"], "1");
+        assert_eq!(args.env["SYSTEM_TOKEN_BUDGET"],"1000");
+        let audit:serde_json::Value=serde_json::from_slice(&std::fs::read(args.paths.audit.unwrap()).unwrap()).unwrap();
+        assert_eq!(audit["budgetTokens"],1000);
     }
     #[test]
     fn fork_preserves_parent_prefix_identity() {
@@ -297,6 +319,11 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         assert_eq!(&args.args[..2], &["-p", "--fork"]);
         assert!(!args.args.iter().any(|arg| arg == "prefix" || arg == "--tools" || arg.starts_with("--no-")));
         assert!(prepare_reflection_fork_spawn(reflection_input(root.path(), &run, &worktree, &policy)).is_err());
+    }
+    #[test]
+    fn dream_requires_budget_metadata() {
+        let root=tempfile::tempdir().unwrap(); let (mut run,worktree,policy)=reflection_fixture(root.path()); run.request.trigger=ReflectionTrigger::Dream; run.request.origin=Some(memory_core::reflection::DreamOrigin::Idle);
+        assert!(matches!(prepare_reflection_spawn(reflection_input(root.path(),&run,&worktree,&policy)),Err(error) if error.to_string()=="dream spawn requires a system token budget and target"));
     }
     #[test]
     fn dream_target_and_run_id_boundaries() {
