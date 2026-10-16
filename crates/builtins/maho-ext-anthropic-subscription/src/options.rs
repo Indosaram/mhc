@@ -14,7 +14,7 @@ pub fn build_query_configuration(input:QueryOptionsInput<'_>)->anyhow::Result<Va
     };
     let tool_less=input.stream_options["toolChoice"]=="none";let empty_tools=input.context["tools"].as_array().is_none_or(Vec::is_empty);
     let mut options=tool_options(input.settings,tool_less,empty_tools,input.tools);options.extend(thinking_options(input.model,input.stream_options["reasoning"].as_str(),input.stream_options.get("thinkingBudgets")));
-    options.extend(json!({"cwd":input.cwd,"model":input.model["id"],"permissionMode":"dontAsk","includePartialMessages":true,"systemPrompt":system_prompt,"settings":{"autoCompactEnabled":true},"settingSources":setting_sources(input.settings,&mode,input.lane)}).as_object().expect("configuration object").clone());
+    options.extend(json!({"cwd":input.cwd,"model":input.model["id"],"permissionMode":"dontAsk","includePartialMessages":true,"systemPrompt":system_prompt,"settings":{"autoCompactEnabled":crate::settings::resolve_compaction_owner(input.settings)=="senpi"},"settingSources":setting_sources(input.settings,&mode,input.lane)}).as_object().expect("configuration object").clone());
     if let Some(executable)=input.executable.filter(|value|!value.is_empty()) {options.insert("pathToClaudeCodeExecutable".into(),json!(executable));}Ok(Value::Object(options))
 }
 pub fn setting_sources(settings:&crate::settings::ProviderSettings,mode:&str,lane:crate::auth_lane::TokenInjection)->Value {
