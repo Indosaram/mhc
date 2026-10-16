@@ -16,7 +16,7 @@ fn scope_rules(settings:&Map<String,Value>,scope:&str,home:&str)->Result<Ruleset
     let mut rules=Vec::new();
     if let Some(value)=settings.get("permissionPreset") {
         let Some(name)=value.as_str() else {return Err(SettingsError::InvalidPreset(format!("Invalid {scope} permissionPreset {value}. Expected a string.")))};
-        let preset=parse_permission_preset_name(name).ok_or_else(||SettingsError::InvalidPreset(format!("Invalid {scope} permissionPreset \"{name}\". Expected one of: full-access, workspace, read-only, ask.")))?;
+        let preset=parse_permission_preset_name(name).ok_or_else(||SettingsError::InvalidPreset(format!("Invalid {scope} permissionPreset \"{name}\". Expected one of: full-access, workspace, accept-edits, auto, read-only, ask.")))?;
         rules.extend(rules_for_preset(preset));
     }
     if let Some(config)=settings.get("permission").and_then(Value::as_object) {
