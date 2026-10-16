@@ -988,6 +988,9 @@ fn start_warnings_on_contract_violation() {
     assert_eq!(details["kind"], "started");
     let warnings = details["warnings"].as_array().unwrap();
     assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("\"plan\"") && w.as_str().unwrap().contains("TASK:")));
+    for marker in ["DELIVERABLE:", "SCOPE:", "VERIFY:"] {
+        assert!(warnings.iter().any(|warning| warning.as_str().unwrap().contains(marker)), "missing {marker} warning");
+    }
     assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("verification")));
     assert!(get_text(&result.content[0]).contains("warning"));
 }
