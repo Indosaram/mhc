@@ -1,17 +1,20 @@
 use serde_json::Value;
-use crate::todo_types::TodoPhase;
+use crate::todo_types::{TodoAsk,TodoPhase,TodoState};
 pub struct NativeTodotoolsExtension {pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,pub copy_markdown:crate::commands::CopyTodoMarkdown,pub widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
-struct NativeTodoAccessors {phases:std::sync::Mutex<Vec<TodoPhase>>,ui:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>,widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
+struct NativeTodoAccessors {phases:std::sync::Mutex<Vec<TodoPhase>>,ask:std::sync::Mutex<Option<TodoAsk>>,ui:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>,widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
 impl crate::tools_todo::TodoAccessors for NativeTodoAccessors {
     fn get_current_phases(&self)->Vec<TodoPhase>{self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
     fn set_current_phases(&self,phases:Vec<TodoPhase>){*self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=phases;}
+    fn get_current_ask(&self)->Option<TodoAsk>{self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
+    fn set_current_ask(&self,ask:Option<TodoAsk>){*self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ask;}
+    fn get_current_state(&self)->TodoState{TodoState{phases:self.get_current_phases(),ask:self.get_current_ask()}}
     fn sync_widget(&self,_:&dyn maho_ext_api::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>{
-        if let Some(ui)=self.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){ui.set_widget("todo-sidebar",crate::todo_widget_component::widget_content(&self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner),completed,self.widget_sender.clone()),Default::default());}Ok(())
+        if let Some(ui)=self.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){ui.set_widget("todo-sidebar",crate::todo_widget_component::widget_content_with_ask(&self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner),self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(),completed,self.widget_sender.clone()),Default::default());}Ok(())
     }
 }
 impl maho_ext_api::Extension for NativeTodotoolsExtension {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi){
-        let accessors=std::sync::Arc::new(NativeTodoAccessors {phases:Default::default(),ui:Default::default(),widget_sender:self.widget_sender.clone()});
+        let accessors=std::sync::Arc::new(NativeTodoAccessors {phases:Default::default(),ask:Default::default(),ui:Default::default(),widget_sender:self.widget_sender.clone()});
         for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree]{let captured=accessors.clone();api.on(event,std::sync::Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {*captured.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.has_ui.then(||ctx.ui.clone());Ok(maho_ext_api::EventResult::None)})}));}
         TodotoolsExtension {actions:self.actions.clone(),accessors:accessors.clone(),copy_markdown:self.copy_markdown.clone()}.register(api);
         api.on(maho_ext_api::EventKind::SessionShutdown,std::sync::Arc::new(move |_,ctx|{let accessors=accessors.clone();Box::pin(async move {if ctx.has_ui{ctx.ui.set_widget("todo-sidebar",None,Default::default());}accessors.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();Ok(maho_ext_api::EventResult::None)})}));
@@ -37,7 +40,9 @@ pub fn register_state_hooks(api:&mut maho_ext_api::ExtensionApi,actions:std::syn
             let accessors=accessors.clone();
             Box::pin(async move {
                 let entries=ctx.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
-                accessors.set_current_phases(crate::todo_storage::get_latest_phases_from_branch_entries(&entries));
+                let state=crate::todo_storage::get_latest_state_from_branch_entries(&entries);
+                accessors.set_current_phases(state.phases);
+                accessors.set_current_ask(state.ask);
                 accessors.sync_widget(ctx,&[])?;
                 Ok(maho_ext_api::EventResult::None)
             })
@@ -51,7 +56,7 @@ pub fn register_state_hooks(api:&mut maho_ext_api::ExtensionApi,actions:std::syn
                 let message=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                 for phases in native_todo_updates(&message) {
                     accessors.set_current_phases(phases.clone());
-                    actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::json!({"schema":"v2","phases":phases})))?;
+                    actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::json!({"schema":"v2","phases":phases,"ask":accessors.get_current_ask()})))?;
                     accessors.sync_widget(ctx,&[])?;
                 }
             }

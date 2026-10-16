@@ -33,7 +33,7 @@ Example: {"op":"init","list":[{"phase":"Setup","items":["Survey code","Write tes
 - Keep task/phase strings stable once introduced. done/start/drop take the task's EXACT text — copy it verbatim from the latest todo result; when it is lost, view echoes the list.
 
 ## When to create a list
-- Task requires 3+ distinct steps
+Create a list when the user requests it, provides multiple tasks, or asks for three or more distinct steps.
 - User explicitly requests one
 - User provides a set of tasks
 - New instructions arrive mid-task — reconcile before acting: keep what they don't conflict with, amend what they contradict, append what they add; replace only on explicit redirect
@@ -47,6 +47,7 @@ pub const TASK_MANAGEMENT_SECTION:&str="
 <Task_Management>
 ## Todo Management
 
+Use a todo list for a multi-step plan, especially when it has three or more distinct steps.
 Use the todo tool for multi-step work; its description carries the operations, anatomy, and rules. Mark each item done the moment it finishes and reconcile the list against the newest user message before ending a turn.
 
 ## Evidence

@@ -12,6 +12,11 @@ pub struct TodoItem { pub content:String, pub status:TodoStatus }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct TodoPhase { pub name:String, pub tasks:Vec<TodoItem> }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct TodoAsk { pub entry_id:String, pub text:String, pub captured_at:u64 }
+#[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
+pub struct TodoState { pub phases:Vec<TodoPhase>, #[serde(skip_serializing_if="Option::is_none")] pub ask:Option<TodoAsk> }
+#[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct TodoCompletionTransition { pub phase:String, pub content:String }
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="lowercase")]
@@ -22,6 +27,8 @@ pub struct TodoToolDetails {
     #[serde(skip_serializing_if="Option::is_none")]
     pub op:Option<TodoOperation>,
     pub phases:Vec<TodoPhase>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub ask:Option<TodoAsk>,
     pub storage:TodoStorage,
     #[serde(skip_serializing_if="Option::is_none")]
     pub corrections:Option<Vec<String>>,
@@ -31,7 +38,7 @@ pub struct TodoToolDetails {
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub enum TodoStateSchema { #[serde(rename="v2")] V2 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct TodoStateEntry { pub schema:TodoStateSchema, pub phases:Vec<TodoPhase> }
+pub struct TodoStateEntry { pub schema:TodoStateSchema, pub phases:Vec<TodoPhase>, #[serde(skip_serializing_if="Option::is_none")] pub ask:Option<TodoAsk> }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct TodoPhaseInput { pub phase:String, pub items:Vec<String> }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
