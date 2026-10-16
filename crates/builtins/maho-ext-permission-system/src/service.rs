@@ -11,7 +11,8 @@ impl PermissionService {
     pub fn new(static_ruleset: Ruleset, approved: Ruleset, emitter: PermissionEventEmitter) -> Self {
         Self { pending: Vec::new(), approved, static_ruleset, emitter, id_counter: 0 }
     }
-    pub fn ask(&mut self, mut info: Request) -> impl Future<Output=Result<(),PermissionError>> + use<> {
+    pub fn ask(&mut self, info: Request) -> impl Future<Output=Result<(),PermissionError>> + use<> {
+        let mut info=info;
         if info.id.is_empty() { self.id_counter += 1; info.id=format!("permission-{}",self.id_counter); }
         let mut denied=Vec::new(); let mut needs_ask=false;
         for pattern in &info.patterns {
@@ -53,7 +54,7 @@ impl PermissionService {
             }
             Reply::Once => { if entry.sender.send(Ok(())).is_err() { maho_ext_api::diagnostic("Permission requester dropped before approval"); } }
             Reply::Always => {
-                for pattern in &entry.info.always { self.approved.push(Rule {permission:entry.info.permission.clone(),pattern:pattern.clone(),action:Action::Allow}); }
+                for pattern in input.always.as_ref().unwrap_or(&entry.info.always) { self.approved.push(Rule {permission:entry.info.permission.clone(),pattern:pattern.clone(),action:Action::Allow}); }
                 if entry.sender.send(Ok(())).is_err() { maho_ext_api::diagnostic("Permission requester dropped before approval"); }
                 let mut index=0;
                 while index<self.pending.len() {

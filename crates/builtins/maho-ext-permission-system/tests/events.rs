@@ -1,6 +1,6 @@
 use maho_ext_permission_system::{events::{PermissionEventEmitter,PermissionRepliedEvent},types::{Request,PermissionDecision}};
 use std::sync::{Arc,Mutex};
-fn request()->Request{Request{id:"req-123".into(),session_id:"sess-456".into(),permission:"bash".into(),patterns:vec!["/home/user/file.txt".into()],always:vec![],metadata:Default::default(),tool:None}}
+fn request()->Request{Request::new("req-123".into(),"sess-456".into(),"bash".into(),vec!["/home/user/file.txt".into()],vec![],Default::default())}
 #[test]
 fn asked_bus_payload(){let emitter=PermissionEventEmitter::default();let seen=Arc::new(Mutex::new(None));let captured=seen.clone();let _subscription=emitter.bus.on("permission_asked",Arc::new(move|value|*captured.lock().expect("lock")=Some(value.clone())));emitter.emit_asked(&request()).expect("emit");assert_eq!(seen.lock().expect("lock").as_ref().expect("payload")["id"],"req-123");}
 #[test]
