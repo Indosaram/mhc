@@ -20,6 +20,8 @@ pub struct Model {
     pub provider: ProviderId,
     pub base_url: String,
     pub reasoning: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking_level: Option<ModelThinkingLevel>,
     /// In a present map, omitting `xhigh` or `max` disables that extended tier; ordinary missing
     /// levels use provider defaults. `None` (null) marks any level as unsupported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
