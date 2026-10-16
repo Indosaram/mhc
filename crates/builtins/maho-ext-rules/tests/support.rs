@@ -1,4 +1,4 @@
-use maho_ext_rules::rules::{project_root::find_project_root, truncator::{truncate_rule, truncate_budget, BudgetRule}, tool_paths::extract_tool_paths};
+use maho_ext_rules::rules::{project_root::find_project_root, truncator::{truncate_rule, truncate_budget, BudgetRule}, tool_paths::extract_tool_paths, finder::{hephaestus_variant_file_for_model, is_hephaestus_candidate_enabled}};
 use maho_ext_api::ToolResultEvent;
 #[test]
 fn missing_root_marker_terminates_at_filesystem_root() { let dir = tempfile::tempdir().unwrap(); assert!(find_project_root(dir.path(), Some(&[".nonexistent-marker-senpi"])).is_none()); }
@@ -10,6 +10,17 @@ fn missing_start_returns_none() { let dir = tempfile::tempdir().unwrap(); assert
 fn small_rule_is_not_truncated() { let result = truncate_rule("a😀", 3, "r"); assert_eq!((result.body.as_str(), result.original_length, result.truncated), ("a😀", 3, false)); }
 #[test]
 fn truncation_notice_survives_smaller_than_notice_budget() { let result = truncate_rule("abcdef", 1, "r"); assert!(result.truncated); assert!(result.body.ends_with("r]")); }
+#[test]
+fn hephaestus_gpt6_variant_is_selected_and_never_truncated() {
+    assert_eq!(hephaestus_variant_file_for_model(Some("OpenAI/GPT-6-Codex")), "gpt-6.md");
+    assert_eq!(hephaestus_variant_file_for_model(Some("gpt-5.6-codex")), "gpt-5.6.md");
+    assert_eq!(hephaestus_variant_file_for_model(None), "gpt-5.5.md");
+    assert!(is_hephaestus_candidate_enabled("bundled-rules/hephaestus/gpt-6.md", Some("gpt-6")));
+    assert!(!is_hephaestus_candidate_enabled("bundled-rules/hephaestus/gpt-5.5.md", Some("gpt-6")));
+    let result = truncate_rule("long hephaestus instruction", 1, "bundled-rules/hephaestus/gpt-6.md");
+    assert!(!result.truncated);
+    assert_eq!(result.body, "long hephaestus instruction");
+}
 #[test]
 fn budget_drops_rule_when_notice_cannot_fit() { let result = truncate_budget(&[BudgetRule { body:"abcdef".into(), relative_path:"r".into() }], 1); assert!(result.is_empty()); }
 #[test]
