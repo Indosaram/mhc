@@ -71,6 +71,28 @@ fn proxy_strip() { let m=model("openai-responses","https://quotio.example/v1",No
 fn proxy_optin() { let m=model("openai-responses","https://quotio.example/v1",Some(true)); assert_eq!(add_openai_web_search_to_payload(Some(&m),&json!({}),true)["tools"][0]["type"],"web_search_preview"); }
 
 #[test]
+fn codex_responses_uses_web_search() {
+ let m=model("openai-codex-responses","https://chatgpt.com/backend-api/codex",None);
+ assert!(supports_native_openai_web_search(Some(&m)));
+ assert_eq!(add_openai_web_search_to_payload(Some(&m),&json!({}),true)["tools"],json!([{"type":"web_search"}]));
+}
+
+#[test]
+fn codex_spark_does_not_support_web_search() {
+ let mut m=model("openai-codex-responses","https://chatgpt.com/backend-api/codex",None);
+ m.id="gpt-5-spark".into();
+ assert!(!supports_native_openai_web_search(Some(&m)));
+}
+
+#[test]
+fn codex_explicit_capability_overrides_host() {
+ let yes=model("openai-codex-responses","https://proxy.example/v1",Some(true));
+ let no=model("openai-codex-responses","https://chatgpt.com/backend-api/codex",Some(false));
+ assert!(supports_native_openai_web_search(Some(&yes)));
+ assert!(!supports_native_openai_web_search(Some(&no)));
+}
+
+#[test]
 fn unset_true() { assert!(parse_enabled(None)); }
 
 #[test]
