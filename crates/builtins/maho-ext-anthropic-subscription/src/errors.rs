@@ -70,6 +70,18 @@ pub fn classify_sdk_error(error: &Value) -> SdkErrorClassification {
     result(Other, false)
 }
 
+fn underlying_error(error: &Value) -> &Value {
+    let mut current = error;
+    while let Some(original) = current.get("original") {
+        current = original;
+    }
+    current
+}
+
+pub fn classify_sdk_error_through_failover(error: &Value) -> SdkErrorClassification {
+    classify_sdk_error(underlying_error(error))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +122,10 @@ mod tests {
         assert_eq!(classify_sdk_error(&json!("HTTP 529")).kind, SdkErrorKind::Overloaded);
         assert!(!classify_sdk_error(&json!("model_not_found")).retryable);
         assert!(!classify_sdk_error(&json!("unknown error")).retryable);
+    }
+    #[test]
+    fn classifies_errors_wrapped_by_failover() {
+        let wrapped = json!({"classification":{"kind":"other"},"original":{"original":"rate_limit"}});
+        assert_eq!(classify_sdk_error_through_failover(&wrapped), SdkErrorClassification { kind: SdkErrorKind::RateLimit, retryable: true });
     }
 }
