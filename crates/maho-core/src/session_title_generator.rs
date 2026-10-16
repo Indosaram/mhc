@@ -10,8 +10,8 @@ use serde_json::Value;
 
 pub const TITLE_SYSTEM_PROMPT: &str = "Generate a concise title for this coding-agent session.\n\nRules:\n- Use 3 to 6 words.\n- Prefer concrete nouns and verbs from the user's task.\n- Do not include quotes, punctuation at the end, markdown, or explanations.\n- If the input is only a greeting, acknowledgement, or too vague to title, return <title>none</title>.\n- Respond only as <title>Session Title</title>.";
 
-pub const LOW_SIGNAL_PROMPTS: [&str; 14] = [
-    "hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay", "k", "yes", "no", "yep", "nope", "hmm",
+pub const LOW_SIGNAL_PROMPTS: [&str; 13] = [
+    "hi", "hello", "hey", "yo", "thanks", "thank you", "ok", "okay", "k", "yes", "no", "yep", "nope",
 ];
 
 pub const MAX_TITLE_RETRIES: u32 = 1;
