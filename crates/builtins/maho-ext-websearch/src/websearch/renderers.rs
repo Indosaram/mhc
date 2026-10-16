@@ -16,7 +16,7 @@ fn theme(source:&maho_ext_api::Theme)->maho_interactive::theme::Theme {
         (key.clone(),value)
     }).collect();
     let mode=if source.colors.values().chain(source.backgrounds.values()).any(|prefix|prefix.starts_with("\x1b[38;2;")||prefix.starts_with("\x1b[48;2;")){ColorMode::Truecolor}else{ColorMode::Color256};
-    maho_interactive::theme::Theme::from_json(ThemeJson {name:source.name.clone().unwrap_or_default(),colors,vars:Default::default(),export_colors:Default::default()},mode).unwrap_or_else(|error|std::panic::panic_any(error))
+    maho_interactive::theme::Theme::from_json(ThemeJson {appearance:None,name:source.name.clone().unwrap_or_default(),colors,vars:Default::default(),export_colors:Default::default()},mode).unwrap_or_else(|error|std::panic::panic_any(error))
 }
 fn text<'a>(value:&'a serde_json::Value,key:&str)->&'a str {value[key].as_str().unwrap_or("")}
 fn shorten(value:&str,max:usize)->String {
