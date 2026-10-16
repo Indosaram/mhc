@@ -3,9 +3,13 @@
 use serde_json::{Map, Value};
 
 pub fn replace_tool_args(args: &mut Map<String, Value>, patch: &Map<String, Value>) {
-    let mut next = args.clone();
     for (key, value) in patch {
-        next.insert(key.clone(), value.clone());
+        args.insert(key.clone(), value.clone());
     }
-    *args = next;
+}
+
+pub fn replace_frozen_tool_args(args: &mut Map<String, Value>, patch: &Map<String, Value>) {
+    let mut replacement = args.clone();
+    replacement.extend(patch.clone());
+    *args = replacement;
 }

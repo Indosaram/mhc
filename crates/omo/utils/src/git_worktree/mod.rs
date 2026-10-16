@@ -166,7 +166,7 @@ pub fn format_file_changes(stats: &[GitFileStat], notepad_path: Option<&str>) ->
                 GitFileStatus::Added => format!("(+{})", stat.added),
                 GitFileStatus::Deleted => format!("(-{})", stat.removed),
             };
-            lines.push(format!("  {}  {detail}", stat.path));
+            lines.push(format!("  {}  {detail}", escape_display_path(&stat.path)));
         }
         lines.push(String::new());
     }
@@ -177,9 +177,13 @@ pub fn format_file_changes(stats: &[GitFileStat], notepad_path: Option<&str>) ->
             .find(|stat| stat.path.replace('\\', "/") == normalized)
         {
             lines.push("[NOTEPAD UPDATED]".to_string());
-            lines.push(format!("  {}  (+{})", stat.path, stat.added));
+            lines.push(format!("  {}  (+{})", escape_display_path(&stat.path), stat.added));
             lines.push(String::new());
         }
     }
     lines.join("\n")
+}
+
+fn escape_display_path(path: &str) -> String {
+    path.chars().flat_map(char::escape_debug).collect()
 }

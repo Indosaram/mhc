@@ -83,7 +83,6 @@ pub fn set_clock_for_testing(clock: Option<Arc<dyn Clock>>) {
 
 static PROMPT_GATE_MESSAGES_FETCH_TIMEOUT_MS: LazyLock<RwLock<Option<u64>>> =
     LazyLock::new(|| RwLock::new(None));
-
 pub fn _set_prompt_gate_messages_fetch_timeout_ms_for_testing(value: Option<u64>) {
     *PROMPT_GATE_MESSAGES_FETCH_TIMEOUT_MS
         .write()

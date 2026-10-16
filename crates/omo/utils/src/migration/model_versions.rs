@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde_json::{Map, Value};
 
 pub const MODEL_VERSION_MAP: [(&str, &str); 1] =
-    [("anthropic/claude-opus-4-4", "anthropic/claude-opus-4-8")];
+    [("anthropic/claude-opus-4-4", "anthropic/claude-opus-5-5")];
 
 const CURRENT_USER_SELECTABLE_MODELS: [&str; 3] = [
     "anthropic/claude-opus-4-5",
@@ -52,7 +52,14 @@ pub fn migrate_model_versions(
             continue;
         };
         let key_name = migration_key(old_model, new_model);
-        if applied_migrations.is_some_and(|applied| applied.contains(&key_name)) {
+        if applied_migrations.is_some_and(|applied| {
+            applied.iter().any(|migration| {
+                migration
+                    .strip_prefix("model-version:")
+                    .and_then(|migration| migration.split_once("->"))
+                    .is_some_and(|(source, _)| source == old_model)
+            })
+        }) {
             result.migrated.insert(key.clone(), value.clone());
             continue;
         }
