@@ -9,11 +9,12 @@ use tokio::sync::{Mutex,RwLock};
 struct SearchCursor {search_term:String,sort_key:String,sort_direction:String,source_kinds:Vec<String>,archived:bool,anchor_id:String,include_anchor:bool}
 fn invalid(message: impl Into<String>) -> JsonRpcError {JsonRpcError::new(-32600,message)}
 /// The fields `search_window` reads, so cached records can be windowed without copying them.
-pub trait SearchWindowRecord {fn thread(&self) -> &Value;fn recency_at(&self) -> &str;fn searchable_text(&self) -> &str;}
+pub trait SearchWindowRecord {fn thread(&self) -> &Value;fn recency_at(&self) -> &str;fn searchable_text(&self) -> &str;fn searchable_lower(&self) -> Option<&str> {None}}
 impl SearchWindowRecord for SearchSessionRecord {
     fn thread(&self) -> &Value {&self.thread}
     fn recency_at(&self) -> &str {&self.recency_at}
     fn searchable_text(&self) -> &str {&self.searchable_text}
+    fn searchable_lower(&self) -> Option<&str> {self.searchable_lower.as_deref()}
 }
 /// A cache-shared record whose thread a loaded thread's wire may replace.
 struct SearchCandidate {thread: Option<Value>,record: Arc<SearchSessionRecord>}
@@ -21,9 +22,10 @@ impl SearchWindowRecord for SearchCandidate {
     fn thread(&self) -> &Value {self.thread.as_ref().unwrap_or(&self.record.thread)}
     fn recency_at(&self) -> &str {&self.record.recency_at}
     fn searchable_text(&self) -> &str {&self.record.searchable_text}
+    fn searchable_lower(&self) -> Option<&str> {self.record.searchable_lower.as_deref()}
 }
 fn search_window_keeps(record: &impl SearchWindowRecord,params: &ParsedSearchParams,archived: &BTreeSet<String>) -> bool {
-    params.source_kinds.iter().any(|kind|kind == "appServer") && archived.contains(record.thread()["id"].as_str().unwrap_or_default()) == params.archived && lowercase_contains(record.searchable_text(),&params.search_term)
+    params.source_kinds.iter().any(|kind|kind == "appServer") && archived.contains(record.thread()["id"].as_str().unwrap_or_default()) == params.archived && match record.searchable_lower() {Some(lower)=>lower.contains(params.search_term.as_str()),None=>lowercase_contains(record.searchable_text(),&params.search_term)}
 }
 /// `to_locale_lowercase(text).contains(term)` for an already-lowercased `term`, without
 /// allocating the lowercase copy except for final-sigma or multi-char-lowercase text.
@@ -71,7 +73,7 @@ pub async fn register_search_handler(core: &Arc<RwLock<ServerCore>>,threads: Arc
                 let id = wire["id"].as_str().unwrap_or_default().to_owned();
                 if let Some(candidate) = by_id.get_mut(&id) {candidate.thread = Some(wire);} else if let Ok(entry) = threads.get_loaded_thread(&id).await {
                     let entry = entry.lock().await;
-                    by_id.insert(id,SearchCandidate {thread:None,record:Arc::new(SearchSessionRecord {recency_at:wire["updatedAt"].as_str().unwrap_or_default().into(),thread:wire,searchable_text:entry.session.get_user_messages_for_forking().iter().map(|(_,text)|text.as_str()).collect::<Vec<_>>().join(" ")})});
+                    by_id.insert(id,SearchCandidate {thread:None,record:Arc::new(SearchSessionRecord {recency_at:wire["updatedAt"].as_str().unwrap_or_default().into(),thread:wire,searchable_lower:None,searchable_text:entry.session.get_user_messages_for_forking().iter().map(|(_,text)|text.as_str()).collect::<Vec<_>>().join(" ")})});
                 }
             }
             // Filter once; kept records stay shared with the cache instead of being copied.

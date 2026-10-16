@@ -2,7 +2,14 @@ use serde_json::{Value,json};
 use std::{collections::VecDeque,path::Path,sync::Arc};
 
 #[derive(Clone,Debug)]
-pub struct SearchSessionRecord {pub thread: Value,pub recency_at: String,pub searchable_text: String}
+pub struct SearchSessionRecord {pub thread: Value,pub recency_at: String,pub searchable_text: String,
+    /// `to_locale_lowercase(searchable_text)` computed once per record for non-ASCII text (`None` when ASCII),
+    /// so `thread/search` does not re-lowercase every transcript on every request.
+    pub searchable_lower: Option<String>}
+impl SearchSessionRecord {
+    pub fn lowered(text: &str) -> Option<String> {(!text.is_ascii()).then(||super::js_semantics::to_locale_lowercase(text))}
+    fn bytes(&self) -> usize {self.searchable_text.len()+self.searchable_lower.as_ref().map_or(0,String::len)}
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct SearchCacheStats {pub hits: usize,pub misses: usize,pub entries: usize}
 pub struct ThreadSearchCache {
@@ -42,14 +49,14 @@ impl ThreadSearchCache {
         let record = match parsed {Ok(record)=>record.map(Arc::new),Err(error) if error.kind() == std::io::ErrorKind::NotFound=>{self.remove(&key);return Ok(None)},Err(error)=>return Err(error)};
         self.remove(&key);
         if let Some(record) = &record {
-            self.text_bytes += record.searchable_text.len();self.entries.push_back((key,modified,Arc::clone(record)));
-            while self.entries.len() > self.max_entries || (self.text_bytes > self.max_text_bytes && self.entries.len() > 1) {if let Some((_,_,evicted)) = self.entries.pop_front() {self.text_bytes -= evicted.searchable_text.len();}}
+            self.text_bytes += record.bytes();self.entries.push_back((key,modified,Arc::clone(record)));
+            while self.entries.len() > self.max_entries || (self.text_bytes > self.max_text_bytes && self.entries.len() > 1) {if let Some((_,_,evicted)) = self.entries.pop_front() {self.text_bytes -= evicted.bytes();}}
         }
         Ok(record)
     }
     fn remove(&mut self,key: &str) {
         let text_bytes = &mut self.text_bytes;
-        self.entries.retain(|(name,_,record)|{let keep = name != key;if !keep {*text_bytes -= record.searchable_text.len();}keep});
+        self.entries.retain(|(name,_,record)|{let keep = name != key;if !keep {*text_bytes -= record.bytes();}keep});
     }
 }
 fn timestamp(value: &Value,fallback: i64) -> i64 {value.as_i64().or_else(||value.as_str().and_then(super::js_semantics::date_parse_ms)).unwrap_or(fallback)}
@@ -71,7 +78,7 @@ pub fn parse_search_session(path: &str,mtime: i64,contents: &str) -> Option<Sear
         if message["role"] == "user" && preview.is_none() {preview = Some(text.clone());}messages.push(text);
     }
     let header = header?;
-    Some(SearchSessionRecord {thread:json!({"id":header["id"],"sessionId":header["id"],"sessionPath":path,"cwd":header["cwd"],"createdAt":iso(timestamp(&header["timestamp"],mtime))?,"updatedAt":iso(activity)?,"status":{"type":"notLoaded"},"preview":preview,"name":name}),recency_at:iso(recency)?,searchable_text:messages.join(" ")})
+    Some(SearchSessionRecord {thread:json!({"id":header["id"],"sessionId":header["id"],"sessionPath":path,"cwd":header["cwd"],"createdAt":iso(timestamp(&header["timestamp"],mtime))?,"updatedAt":iso(activity)?,"status":{"type":"notLoaded"},"preview":preview,"name":name}),recency_at:iso(recency)?,searchable_lower:None,searchable_text:messages.join(" ")}).map(|mut record|{record.searchable_lower = SearchSessionRecord::lowered(&record.searchable_text);record})
 }
 #[cfg(test)]
 mod tests {
