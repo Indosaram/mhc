@@ -11,6 +11,7 @@ serde_json = { version = "=1.0.149", features = ["preserve_order"] }
 sha2 = "=0.10.9"
 thiserror = "=2.0.18"
 fancy-regex = "=0.16.2"
+regex = "=1.12.3"
 maho-core = { path = "../../maho-core" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.52.3", features = ["process", "io-util", "time", "macros", "rt-multi-thread"] }

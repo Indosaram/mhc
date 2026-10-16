@@ -52,7 +52,7 @@ async fn dispatch(ctx:&ExtensionContext,input:serde_json::Value)->Result<HookDis
             let mut matched=handler.event==crate::types::SupportedHookEvent::Notification||matcher.is_empty()||matcher=="*";
             if !matched {
                 matched=matcher.split(['|',',']).map(str::trim).filter(|part|!part.is_empty()).any(|part|subjects.contains(&part));
-                match crate::matcher::compiled_matcher(matcher) {Ok(regex)=>matched|=subjects.iter().any(|subject|regex.is_match(subject).unwrap_or(false)),Err(error)=>lifecycle_diagnostics.push(crate::types::HookDiagnostic {source:handler.source.clone(),event:Some(handler.event.as_str().to_owned()),code:"invalid_matcher".to_owned(),message:format!("Hook matcher is not a valid JavaScript regular expression: {error}"),path:format!("hooks.{}[{}].matcher",handler.event.as_str(),handler.group_index),severity:crate::types::Severity::Warning})}
+                match crate::matcher::javascript_matcher(matcher) {Ok(regex)=>matched|=subjects.iter().any(|subject|regex.is_match(subject)),Err(error)=>lifecycle_diagnostics.push(crate::types::HookDiagnostic {source:handler.source.clone(),event:Some(handler.event.as_str().to_owned()),code:"invalid_matcher".to_owned(),message:format!("Hook matcher is not a valid JavaScript regular expression: {error}"),path:format!("hooks.{}[{}].matcher",handler.event.as_str(),handler.group_index),severity:crate::types::Severity::Warning})}
             }
             if !matched||!crate::trust::is_command_hook_trusted(&handler,&state.trust,platform).map_err(|error|ExtensionFailure::new(error.to_string()))? {continue;}
             let mut handler=handler;handler.matcher=None;
