@@ -2,7 +2,7 @@ use crate::{todo_types::*,todo_query::next_actionable_task,todo_format::{sanitiz
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub enum TodoWidgetRow { Label(String),Task(TodoItem) }
 #[derive(Clone,Debug,PartialEq,Eq)]
-pub struct TodoWidgetModel { pub phase_name:String,pub rows:Vec<TodoWidgetRow> }
+pub struct TodoWidgetModel { pub phase_name:String,pub ask:Option<String>,pub rows:Vec<TodoWidgetRow> }
 fn omitted(count:usize,direction:&str)->TodoWidgetRow { TodoWidgetRow::Label(format!("... ({count} {direction} task{})",if count==1 { "" } else { "s" })) }
 pub fn get_todo_widget_model(phases:&[TodoPhase])->Option<TodoWidgetModel> {
     let active=next_actionable_task(phases)?;
@@ -21,8 +21,11 @@ pub fn get_todo_widget_model(phases:&[TodoPhase])->Option<TodoWidgetModel> {
         rows.extend(upcoming.iter().take(visible).map(|t|TodoWidgetRow::Task((*t).clone())));
         if upcoming.len()>visible { rows.push(omitted(upcoming.len()-visible,"later")); }
     }
-    Some(TodoWidgetModel{phase_name:phase.name.clone(),rows})
+    Some(TodoWidgetModel{phase_name:phase.name.clone(),ask:None,rows})
 }
+pub fn get_todo_widget_model_with_ask(phases:&[TodoPhase],ask:Option<&TodoAsk>)->Option<TodoWidgetModel>{let mut model=get_todo_widget_model(phases)?;model.ask=ask.map(|value|sanitize_todo_text(&value.text));Some(model)}
+#[cfg(test)]
+mod ask_widget_tests { use super::*; #[test] fn ask_anchor_is_attached_to_active_widget_model(){let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Compile".into(),status:TodoStatus::InProgress}]}];let ask=TodoAsk{entry_id:"m1".into(),text:"Ship safely".into(),captured_at:7};assert_eq!(get_todo_widget_model_with_ask(&phases,Some(&ask)).unwrap().ask.as_deref(),Some("Ship safely"));} }
 pub fn get_todo_widget_lines(phases:&[TodoPhase])->Option<Vec<String>> {
     Some(get_todo_widget_model(phases)?.rows.into_iter().map(|row|match row {
         TodoWidgetRow::Label(text)=>text,

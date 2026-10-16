@@ -30,8 +30,9 @@ pub fn format_task(task:&crate::todo_types::TodoItem,theme:&maho_interactive::th
     }
 }
 pub struct TodoWidgetComponent {model:TodoWidgetModel,theme:maho_interactive::theme::Theme,completion_keys:BTreeSet<String>,frame:Option<i64>,text:maho_tui::components::text::Text}
-pub fn widget_content(phases:&[crate::todo_types::TodoPhase],completed:&[TodoCompletionTransition],sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>)->Option<maho_ext_api::WidgetContent> {
-    let model=crate::todo_widget::get_todo_widget_model(phases)?;let completed=completed.to_vec();
+pub fn widget_content(phases:&[crate::todo_types::TodoPhase],completed:&[TodoCompletionTransition],sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>)->Option<maho_ext_api::WidgetContent> { widget_content_with_ask(phases,None,completed,sender) }
+pub fn widget_content_with_ask(phases:&[crate::todo_types::TodoPhase],ask:Option<&crate::todo_types::TodoAsk>,completed:&[TodoCompletionTransition],sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>)->Option<maho_ext_api::WidgetContent> {
+    let model=crate::todo_widget::get_todo_widget_model_with_ask(phases,ask)?;let completed=completed.to_vec();
     Some(maho_interactive::widget_clock::widget_content(std::sync::Arc::new(move |theme|TodoWidgetComponent::new(theme,model.clone(),&completed)),TodoWidgetComponent::tick,sender))
 }
 impl TodoWidgetComponent {
@@ -47,7 +48,8 @@ impl TodoWidgetComponent {
 }
 impl maho_ext_api::Component for TodoWidgetComponent {
     fn render(&mut self,width:usize)->Vec<String> {
-        self.text.set_text(self.model.rows.iter().map(|row|match row {TodoWidgetRow::Label(text)=>text.clone(),TodoWidgetRow::Task(task)=>format_task(task,&self.theme,self.completion_keys.contains(&task.content),self.frame)}).collect::<Vec<_>>().join("\n"));
+        let ask=self.model.ask.iter().map(|text|format!("Ask: {text}"));
+        self.text.set_text(ask.chain(self.model.rows.iter().map(|row|match row {TodoWidgetRow::Label(text)=>text.clone(),TodoWidgetRow::Task(task)=>format_task(task,&self.theme,self.completion_keys.contains(&task.content),self.frame)})).collect::<Vec<_>>().join("\n"));
         self.text.render(width)
     }
     fn invalidate(&mut self){self.text.invalidate();}
@@ -63,7 +65,7 @@ mod tests {
     #[test]
     fn component_advances_bounded_completion_frames_and_disposes() {
         use maho_ext_api::Component;
-        let model=TodoWidgetModel {phase_name:"Delivery".into(),rows:vec![TodoWidgetRow::Label("Delivery".into()),TodoWidgetRow::Task(crate::todo_types::TodoItem {content:"Finished".into(),status:TodoStatus::Completed}),TodoWidgetRow::Task(crate::todo_types::TodoItem {content:"Active".into(),status:TodoStatus::InProgress})]};
+        let model=TodoWidgetModel {phase_name:"Delivery".into(),ask:None,rows:vec![TodoWidgetRow::Label("Delivery".into()),TodoWidgetRow::Task(crate::todo_types::TodoItem {content:"Finished".into(),status:TodoStatus::Completed}),TodoWidgetRow::Task(crate::todo_types::TodoItem {content:"Active".into(),status:TodoStatus::InProgress})]};
         let completed=[TodoCompletionTransition {phase:"Delivery".into(),content:"Finished".into()}];
         let theme=maho_ext_api::Theme::default();
         let mut component=TodoWidgetComponent::new(&theme,model.clone(),&completed);
@@ -80,5 +82,5 @@ mod tests {
         disposed.dispose();assert!(!disposed.tick());
         for width in [40,80,120] {let lines=component.render(width);assert!(lines.iter().all(|line|maho_tui::utils::visible_width(line)<=width));println!("TODO_WIDGET_RENDER_JSON={}",serde_json::json!({"width":width,"states":[lines]}));}
     }
-    #[test] fn animation_targets_only_visible_completed_tasks_in_current_phase() { let model=TodoWidgetModel{phase_name:"Current".into(),rows:vec![TodoWidgetRow::Task(crate::todo_types::TodoItem{content:"visible".into(),status:TodoStatus::Completed}),TodoWidgetRow::Task(crate::todo_types::TodoItem{content:"pending".into(),status:TodoStatus::Pending})]}; let transitions=[("Current","visible"),("Other","visible"),("Current","hidden"),("Current","pending")].map(|(phase,content)|TodoCompletionTransition{phase:phase.into(),content:content.into()}); assert_eq!(get_animated_completion_keys(&model,&transitions),BTreeSet::from(["visible".into()])); }
+    #[test] fn animation_targets_only_visible_completed_tasks_in_current_phase() { let model=TodoWidgetModel{phase_name:"Current".into(),ask:None,rows:vec![TodoWidgetRow::Task(crate::todo_types::TodoItem{content:"visible".into(),status:TodoStatus::Completed}),TodoWidgetRow::Task(crate::todo_types::TodoItem{content:"pending".into(),status:TodoStatus::Pending})]}; let transitions=[("Current","visible"),("Other","visible"),("Current","hidden"),("Current","pending")].map(|(phase,content)|TodoCompletionTransition{phase:phase.into(),content:content.into()}); assert_eq!(get_animated_completion_keys(&model,&transitions),BTreeSet::from(["visible".into()])); }
 }
