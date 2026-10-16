@@ -1,0 +1,19 @@
+[package]
+name = "maho-prompts-core"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "prompts_core"
+path = "src/lib.rs"
+
+[dependencies]
+maho-model-core.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
