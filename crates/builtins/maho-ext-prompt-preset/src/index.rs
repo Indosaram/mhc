@@ -52,7 +52,7 @@ fn settings(ctx: &ExtensionContext) -> PromptPresetName {
 fn builder_input(options: &BuildSystemPromptOptions, ctx: &ExtensionContext) -> BuildDynamicSystemPromptOptions<'static> {
     BuildDynamicSystemPromptOptions {
         cwd: if options.cwd.as_os_str().is_empty() { ctx.cwd.to_string_lossy().into_owned() } else { options.cwd.to_string_lossy().into_owned() },
-        selected_tools: options.tools.clone(), tool_snippets: options.tool_snippets.iter().map(|(name, snippet)| (name.clone(), snippet.clone())).collect(), prompt_guidelines: options.prompt_guidelines.clone(),
+            selected_tools: options.tools.clone(), tool_snippets: options.tool_snippets.iter().map(|(name, snippet)| (name.clone(), snippet.clone())).collect(), prompt_guidelines: options.prompt_guidelines.clone(),
         context_files: options.context_files.iter().map(|file| maho_core::system_prompt::ContextFile { path: file.path.clone(), content: file.content.clone() }).collect(),
         skills: options.skills.iter().map(|skill| maho_core::skills::Skill {
             name: skill.name.clone(), description: skill.description.clone(), file_path: skill.file_path.clone(), base_dir: skill.base_dir.clone(), disable_model_invocation: skill.disable_model_invocation,
@@ -61,7 +61,7 @@ fn builder_input(options: &BuildSystemPromptOptions, ctx: &ExtensionContext) -> 
                 scope: match skill.source_info.scope { maho_ext_api::SourceScope::User => maho_core::source_info::SourceScope::User, maho_ext_api::SourceScope::Project => maho_core::source_info::SourceScope::Project, maho_ext_api::SourceScope::Temporary => maho_core::source_info::SourceScope::Temporary, maho_ext_api::SourceScope::System => maho_core::source_info::SourceScope::System },
                 origin: match skill.source_info.origin { maho_ext_api::SourceOrigin::Package => maho_core::source_info::SourceOrigin::Package, maho_ext_api::SourceOrigin::TopLevel => maho_core::source_info::SourceOrigin::TopLevel },
             },
-        }).collect(), tuning_section: None, core_prompt: None, workstation_dialect: None,
+        }).collect(), tuning_section: None, core_prompt: None, workstation_dialect: None, surface: match options.surface { maho_ext_api::PromptSurface::Terminal => maho_core::dynamic_prompt::PromptSurface::Terminal, maho_ext_api::PromptSurface::App => maho_core::dynamic_prompt::PromptSurface::App, maho_ext_api::PromptSurface::Chat => maho_core::dynamic_prompt::PromptSurface::Chat },
     }
 }
 pub fn has_user_system_prompt(options: &BuildSystemPromptOptions) -> bool { options.custom_prompt.as_deref().is_some_and(|prompt| !prompt.is_empty()) }

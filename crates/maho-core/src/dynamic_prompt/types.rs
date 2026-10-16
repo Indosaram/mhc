@@ -9,6 +9,14 @@ pub enum ToolCategory {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PromptSurface {
+    #[default]
+    Terminal,
+    App,
+    Chat,
+}
+
 /// `AvailableTool`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailableTool {
