@@ -9,10 +9,10 @@ fn real_tool_definitions_preserve_permission_parser_field_contracts() {
         ("bash", vec![("command",Some("string"))]),
         ("edit", vec![("path",Some("string")),("edits",Some("array"))]),
         ("write", vec![("path",Some("string")),("content",Some("string"))]),
-        ("read", vec![("path",Some("string")),("offset",None),("limit",None)]),
-        ("grep", vec![("pattern",Some("string")),("path",None)]),
-        ("find", vec![("pattern",Some("string")),("path",None),("limit",None)]),
-        ("ls", vec![("path",None),("limit",Some("number"))]),
+        ("read", vec![("path",Some("string")),("offset",Some("number")),("limit",Some("number"))]),
+        ("grep", vec![("pattern",Some("string")),("path",Some("string"))]),
+        ("find", vec![("pattern",Some("string")),("path",Some("string")),("limit",Some("number"))]),
+        ("ls", vec![("path",Some("string")),("limit",Some("number"))]),
     ] {
         let properties = tools[tool].parameters["properties"].as_object().expect("real tool properties");
         for (field, kind) in fields {
