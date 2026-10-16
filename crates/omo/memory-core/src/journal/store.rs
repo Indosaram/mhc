@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::journal::cursor::{
     ReflectionSnapshot, ReflectionTranscriptState, capture_cursor_snapshot_with_max_bytes, count_completed_steps,
-    derive_state, derive_state_with_total, finalize_cursor, initial_reflection_state, journal_byte_offset, parse_state,
+    derive_state, derive_state_with_total, finalize_cursor, initial_reflection_state, parse_state,
 };
 use crate::journal::entries::{
     TranscriptEntry, TranscriptProjection, parse_transcript_entry, project_transcript_entries,
@@ -230,7 +230,7 @@ impl TranscriptJournal {
     ) -> Result<(), JournalError> {
         let mut derived = derive_state_with_total(state, total_completed_steps);
         let (entries, raw) = self.read_entries_and_raw_unlocked()?;
-        derived.unreflected_bytes = Some((raw.len() as u64).saturating_sub(derived.reflected_through_byte_offset.unwrap_or(0)));
+        derived.unreflected_bytes = Some(raw.len().saturating_sub(derived.reflected_through_byte_offset.unwrap_or(0)));
         if derived.reflected_through_byte_offset.is_none() {
             derived.reflected_through_byte_offset = derived.reflected_through_message_id.as_deref().map(|id| crate::journal::cursor::reflected_through_byte_offset(&entries, id));
         }
