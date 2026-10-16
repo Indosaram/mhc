@@ -32,7 +32,8 @@ pub use pane_activate::{ActivateTmuxPaneRequest, activate_tmux_pane};
 pub use pane_close::{close_tmux_pane, close_tmux_pane_with_dependencies};
 pub use pane_command::{
     build_pane_auth_environment_args, build_pane_auth_environment_args_from,
-    build_tmux_attach_command, build_tmux_placeholder_command,
+    build_subagent_pane_title, build_tmux_attach_command, build_tmux_placeholder_command,
+    escape_tmux_format,
 };
 pub use pane_dimensions::{PaneDimensions, get_pane_dimensions};
 pub use pane_replace::{ReplaceTmuxPaneRequest, replace_tmux_pane};

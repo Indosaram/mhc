@@ -1,10 +1,10 @@
 //! Shell command strings run inside tmux panes.
 
-use utils::shell_escape_for_double_quoted_command;
-
 use crate::env_source::{EnvSource, ProcessEnv, is_set};
 
 const TMUX_COMMAND_SHELL: &str = "/bin/sh";
+const PLACEHOLDER_DESCRIPTION_LIMIT: usize = 2_000;
+const PANE_TITLE_DESCRIPTION_LIMIT: usize = 20;
 
 fn shell_quote_for_nested_command(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -39,12 +39,31 @@ pub fn build_tmux_attach_command(
     )
 }
 
+#[must_use]
+pub fn escape_tmux_format(value: &str) -> String {
+    value.replace('#', "##")
+}
+
+#[must_use]
+pub fn build_subagent_pane_title(description: &str) -> String {
+    let clean: String = description.chars().filter(|character| *character != '\0').collect();
+    let shown: String = clean.chars().take(PANE_TITLE_DESCRIPTION_LIMIT).collect();
+    format!("omo-subagent-{}", escape_tmux_format(&shown))
+}
+
 /// An inert placeholder that prints a ready banner and sleeps until respawned.
 #[must_use]
 pub fn build_tmux_placeholder_command(description: &str) -> String {
-    let escaped = shell_escape_for_double_quoted_command(description);
+    let clean: String = description.chars().filter(|character| *character != '\0').collect();
+    let shown: String = if clean.chars().count() > PLACEHOLDER_DESCRIPTION_LIMIT {
+        format!("{}…", clean.chars().take(PLACEHOLDER_DESCRIPTION_LIMIT).collect::<String>())
+    } else {
+        clean
+    };
+    let banner = shell_quote_for_nested_command(&format!("OMO subagent pane ready: {shown}"));
+    let hint = shell_quote_for_nested_command("Focus this pane to attach.");
     format!(
-        r#"{TMUX_COMMAND_SHELL} -c "printf '%s\n%s\n' \"OMO subagent pane ready: {escaped}\" \"Focus this pane to attach.\"; while :; do sleep 86400; done""#
+        r#"{TMUX_COMMAND_SHELL} -c "printf '%s\n%s\n' {banner} {hint}; while :; do sleep 86400; done""#
     )
 }
 
