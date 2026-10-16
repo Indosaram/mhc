@@ -67,9 +67,11 @@ pub struct LlamaModelInfo {
     pub meta: Option<LlamaModelMeta>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct LlamaServerProps {
     pub models_autoload: Option<bool>,
+    pub chat_template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -249,7 +251,10 @@ impl LlamaClient {
 
     pub async fn props(&self, signal: Option<&AbortSignal>) -> Result<LlamaServerProps, String> {
         let payload = self.request(reqwest::Method::GET, "/props", None, signal).await?;
-        Ok(LlamaServerProps { models_autoload: payload.get("models_autoload").and_then(Value::as_bool) })
+        Ok(LlamaServerProps {
+            models_autoload: payload.get("models_autoload").and_then(Value::as_bool),
+            chat_template: payload.get("chat_template").and_then(Value::as_str).map(str::to_owned),
+        })
     }
 
     pub async fn load(&self, model: &str, signal: Option<&AbortSignal>) -> Result<(), String> {
