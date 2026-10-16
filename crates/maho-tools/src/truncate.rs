@@ -76,6 +76,19 @@ pub fn truncate_line(line: &str, max_chars: usize) -> (String, bool) {
     else { (format!("{}... [truncated]", String::from_utf16_lossy(&units[..max_chars])), true) }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MiddleTruncationResult { pub content: String, pub truncated: bool, pub removed_chars: usize, pub total_bytes: usize, pub total_lines: usize }
+pub fn truncate_middle(content: &str, max_bytes: usize) -> MiddleTruncationResult {
+    let total_bytes = content.len();
+    let total_lines = if content.is_empty() { 0 } else { content.split_terminator('\n').count() };
+    if total_bytes <= max_bytes { return MiddleTruncationResult { content: content.into(), truncated: false, removed_chars: 0, total_bytes, total_lines }; }
+    let bytes = content.as_bytes(); let half = max_bytes / 2;
+    let mut head_end = half.min(bytes.len()); while head_end > 0 && !content.is_char_boundary(head_end) { head_end -= 1; }
+    let mut tail_start = bytes.len().saturating_sub(max_bytes - half); while tail_start < bytes.len() && !content.is_char_boundary(tail_start) { tail_start += 1; }
+    let removed_chars = content[head_end..tail_start].chars().count();
+    MiddleTruncationResult { content: format!("{}…{} chars truncated…{}", &content[..head_end], removed_chars, &content[tail_start..]), truncated: true, removed_chars, total_bytes, total_lines }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +108,12 @@ mod tests {
     #[test] fn oversized_first_line_is_not_partial() {
         let r = truncate_head("abcd", TruncationOptions { max_lines: 10, max_bytes: 3 });
         assert!(r.first_line_exceeds_limit); assert!(r.content.is_empty());
+    }
+    #[test] fn middle_truncation_preserves_utf8_boundaries() {
+        let result = truncate_middle("start한글end", 8);
+        assert!(result.truncated);
+        assert!(result.content.starts_with("sta"));
+        assert!(result.content.ends_with("end"));
+        assert!(result.content.contains(" chars truncated…"));
     }
 }

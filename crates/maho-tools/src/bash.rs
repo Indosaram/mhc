@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::BTreeMap, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::{Duration, Instant}};
 use serde::Deserialize;
 use serde_json::json;
 use crate::{definition::*, output_accumulator::{OutputAccumulator, OutputAccumulatorOptions, OutputSnapshot}, truncate::*, model_only_text::model_only_text};
@@ -31,6 +31,7 @@ async fn sleep_until_some(deadline: Option<tokio::time::Instant>) {
 impl BashOperations for LocalShellOperations {
     fn exec<'a>(&'a self, command: &'a str, cwd: &'a Path, options: BashExecOptions) -> ToolFuture<'a, BashExit> {
         Box::pin(async move {
+            let started_at = Instant::now();
             use crate::shell::{kill_process_tree, note_detached_child_exited, prune_tracked_detached_children, track_detached_child_pid};
             let timeout = resolve_timeout_ms(options.timeout)?;
             if options.signal.is_aborted() { return Err(ToolError::Message("aborted".into())); }
@@ -133,7 +134,7 @@ pub struct BashToolInput { pub command: String, pub timeout: Option<f64> }
 pub struct ShellToolConfig { pub name: String, pub shell_name: String, pub prompt_snippet: String, pub temp_file_prefix: String }
 pub fn resolve_spawn_context(command: String, cwd: PathBuf, hook: Option<&BashSpawnHook>, expose: bool, context: Option<&dyn ToolContext>, shell_env: Option<&ShellEnvProvider>) -> Result<BashSpawnContext, ToolError> {
     let mut env: BTreeMap<_,_> = shell_env.map_or_else(|| std::env::vars().collect(), |shell_env| shell_env());
-    for key in ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_CWD", "PI_GOAL_STORE_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"] { env.remove(key); }
+    for key in ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_CWD", "PI_GOAL_STORE_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL", "OMO_BROWSER_ENGINE"] { env.remove(key); }
     if expose && let Some(context) = context {
             env.insert("PI_SESSION_ID".into(), context.session_manager().session_id().into());
             env.insert("PI_SESSION_CWD".into(), context.cwd().to_string_lossy().into_owned());
@@ -145,8 +146,38 @@ pub fn resolve_spawn_context(command: String, cwd: PathBuf, hook: Option<&BashSp
                 env.insert("PI_PROVIDER".into(), provider.as_str().unwrap_or_default().into()); env.insert("PI_MODEL".into(), model.id.clone());
             }
             if let Some(level) = context.thinking_level() { env.insert("PI_REASONING_LEVEL".into(), serde_json::to_value(level)?.as_str().unwrap_or_default().into()); }
+            if let Some(engine) = context.browser_engine() { env.insert("OMO_BROWSER_ENGINE".into(), engine.into()); }
     }
     let context = BashSpawnContext { command, cwd, env }; if let Some(hook) = hook { hook(context) } else { Ok(context) }
+}
+#[cfg(test)]
+mod browser_env_tests {
+    use super::*;
+    #[test]
+    fn browser_engine_is_removed_from_inherited_shell_environment() {
+        let shell_env: ShellEnvProvider = Arc::new(|| BTreeMap::from([("OMO_BROWSER_ENGINE".into(), "stale".into())]));
+        let resolved = resolve_spawn_context("true".into(), PathBuf::from("."), None, false, None, Some(&shell_env)).expect("resolve shell context");
+        assert!(!resolved.env.contains_key("OMO_BROWSER_ENGINE"));
+    }
+    struct BrowserContext { session: Session }
+    struct Session;
+    impl ToolSessionManager for Session { fn session_id(&self) -> &str { "test" } fn session_file(&self) -> Option<&Path> { None } }
+    impl ToolContext for BrowserContext {
+        fn cwd(&self) -> &Path { Path::new(".") }
+        fn model(&self) -> Option<&maho_ai::model::Model> { None }
+        fn thinking_level(&self) -> Option<maho_ai::types::ThinkingLevel> { None }
+        fn session_manager(&self) -> &dyn ToolSessionManager { &self.session }
+        fn goal_store_file(&self) -> Option<&Path> { None }
+        fn browser_engine(&self) -> Option<&str> { Some("chromium") }
+    }
+    #[test]
+    fn browser_engine_is_exported_only_when_session_environment_is_exposed() {
+        let context = BrowserContext { session: Session };
+        let hidden = resolve_spawn_context("true".into(), PathBuf::from("."), None, false, Some(&context), None).expect("resolve hidden context");
+        let exposed = resolve_spawn_context("true".into(), PathBuf::from("."), None, true, Some(&context), None).expect("resolve exposed context");
+        assert!(!hidden.env.contains_key("OMO_BROWSER_ENGINE"));
+        assert_eq!(exposed.env.get("OMO_BROWSER_ENGINE").map(String::as_str), Some("chromium"));
+    }
 }
 fn format_output(snapshot: &OutputSnapshot, last_line_bytes: usize, empty: &str) -> (ToolResult, String) {
     let truncation = &snapshot.truncation;
@@ -169,6 +200,7 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
     let execute: ToolExecutor = Arc::new(move |call| {
         let cwd = cwd.clone(); let options = options.clone(); let ops = Arc::clone(&ops); let config = captured_config.clone();
         Box::pin(async move {
+            let started_at = Instant::now();
             let input: BashToolInput = serde_json::from_value(call.params)?;
             let command = match options.command_prefix.as_deref().filter(|p| !p.is_empty()) { Some(prefix) => format!("{prefix}\n{}", input.command), None => input.command };
             let context = resolve_spawn_context(command, call.context.map_or(cwd.as_path(), ToolContext::cwd).to_path_buf(), options.spawn_hook.as_ref(), options.expose_session_environment.unwrap_or(true), call.context, options.shell_env.as_ref())?;
@@ -216,8 +248,11 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
             if let Some(error) = update_error { output.remove_temp_file()?; return Err(error); }
             match execution {
                 Ok(exit) => {
-                    let (result, text) = format_output(&snapshot, output.get_last_line_bytes(), "(no output)");
-                    if let Some(code) = exit.exit_code.filter(|c| *c != 0) { return Err(ToolError::Message(format!("{text}\n\nCommand exited with code {code}"))); }
+                    let (mut result, text) = format_output(&snapshot, output.get_last_line_bytes(), "(no output)");
+                    let code = exit.exit_code.unwrap_or(1);
+                    let full_output = output.read_full_output(1024 * 1024)?;
+                    result.structured_content = Some(json!({"output":full_output.content,"truncated":full_output.truncated,"full_output_path":if full_output.truncated { snapshot.full_output_path.as_ref() } else { None },"exit_code":code,"wall_time_seconds":(started_at.elapsed().as_secs_f64()*10.0).round()/10.0}));
+                    if code != 0 { result.content = vec![ToolContent::text(format!("{text}\n\nCommand exited with code {code}"))]; }
                     Ok(result)
                 }
                 Err(error) => {
@@ -232,6 +267,7 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
         })
     });
     let mut tool = ToolDefinition::new(&config.name, &format!("Execute a {} command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.", config.shell_name), json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"}},"required":["command"]}), execute);
+    tool.output_schema = Some(json!({"type":"object","properties":{"output":{"type":"string"},"truncated":{"type":"boolean"},"full_output_path":{"type":"string"},"exit_code":{"type":"number"},"wall_time_seconds":{"type":"number"}},"required":["output","truncated","exit_code","wall_time_seconds"]}));
     tool.constrained_sampling = Some(maho_ai::types::ConstrainedSampling::Config(maho_ai::types::ConstrainedSamplingConfig::JsonSchema { strict: maho_ai::types::JsonSchemaStrictness::Prefer }));
     if expose_environment { tool.prompt_guidelines = Some(vec!["You can inspect PI_* environment variables for current model and session details.".into()]); }
     tool.prompt_snippet = Some(config.prompt_snippet); tool.exposure = Some(ToolExposure::Eval); tool

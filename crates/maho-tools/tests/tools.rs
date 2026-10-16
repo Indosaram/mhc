@@ -15,6 +15,12 @@ async fn read_offset_limit_and_continuation() {
     assert!(execute(&tool,json!({"path":"a","offset":8})).await.is_err());
 }
 #[tokio::test]
+async fn read_accepts_shell_quoted_paths() {
+    let dir = tempfile::tempdir().unwrap(); std::fs::write(dir.path().join("file name"),"contents").unwrap();
+    let tool = create_read_tool_definition(dir.path().into(),ReadToolOptions { folder: None, ..Default::default() });
+    assert_eq!(text(&execute(&tool,json!({"path":"\"file name\""})).await.unwrap()),"contents");
+}
+#[tokio::test]
 async fn read_line_cap_and_model_only_notice() {
     let dir = tempfile::tempdir().unwrap(); std::fs::write(dir.path().join("a"),(1..=2500).map(|n| format!("Line {n}")).collect::<Vec<_>>().join("\n")).unwrap();
     let tool = create_read_tool_definition(dir.path().into(),ReadToolOptions::default());
@@ -93,8 +99,38 @@ async fn native_grep_recovers_unmatched_pattern() {
 async fn bash_runs_real_pty_and_reports_failure() {
     let dir = tempfile::tempdir().unwrap(); let tool = create_bash_tool_definition(dir.path().into(),BashToolOptions::default());
     assert_eq!(text(&execute(&tool,json!({"command":"printf hello"})).await.unwrap()),"hello");
-    let error = execute(&tool,json!({"command":"printf problem; exit 7"})).await.unwrap_err();
-    assert!(error.to_string().contains("problem")); assert!(error.to_string().contains("Command exited with code 7"));
+    let result = execute(&tool,json!({"command":"printf problem; exit 7"})).await.unwrap();
+    assert!(text(&result).contains("problem")); assert!(text(&result).contains("Command exited with code 7"));
+    assert_eq!(result.structured_content.as_ref().unwrap()["exit_code"],7);
+}
+#[tokio::test]
+async fn bash_exposes_structured_result_for_nonzero_exit() {
+    let dir = tempfile::tempdir().unwrap(); let tool = create_bash_tool_definition(dir.path().into(),BashToolOptions::default());
+    let result = execute(&tool,json!({"command":"printf captured; exit 7"})).await.unwrap();
+    assert_eq!(result.structured_content.as_ref().unwrap()["output"],"captured");
+    assert_eq!(result.structured_content.as_ref().unwrap()["exit_code"],7);
+    assert!(text(&result).contains("Command exited with code 7"));
+}
+#[test]
+fn output_schema_survives_definition_wrapper() {
+    let definition = create_bash_tool_definition(std::path::PathBuf::from("."),BashToolOptions::default());
+    assert!(definition.output_schema.is_some());
+    let wrapped = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition,None);
+    assert!(wrapped.tool.output_schema.is_some());
+}
+#[test]
+fn middle_full_output_is_bounded_and_utf8_safe() {
+    let mut output = OutputAccumulator::new(OutputAccumulatorOptions { max_lines:1,max_bytes:4,temp_file_prefix:"maho-full-output".into() });
+    output.append_text("begin-한글-end").unwrap(); output.finish().unwrap(); output.close_temp_file().unwrap();
+    let full = output.read_full_output(8).unwrap();
+    assert!(full.truncated); assert!(full.content.starts_with("begi")); assert!(full.content.ends_with("-end"));
+    assert!(full.content.contains("bytes omitted")); output.remove_temp_file().unwrap();
+}
+#[test]
+fn glob_is_registered_in_all_tool_index() {
+    assert!(maho_tools::index::ALL_TOOL_NAMES.contains(&"glob"));
+    let tools = maho_tools::index::create_all_tool_definitions(std::path::Path::new("."),maho_tools::index::ToolsOptions::default());
+    assert_eq!(tools["glob"].exposure,Some(ToolExposure::Eval));
 }
 async fn exec_local(command: &str, env: std::collections::BTreeMap<String,String>) -> (Result<BashExit,ToolError>, String) {
     let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let captured = std::sync::Arc::clone(&output);
