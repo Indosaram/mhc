@@ -226,6 +226,27 @@ async fn releases_subscriptions_on_shutdown_and_replaces_them_on_repeated_regist
 }
 
 #[test]
+fn stands_down_when_another_omo_instance_registers() {
+    let mut api = api();
+    let events = api.events.clone();
+    let logs = logs();
+    let emissions = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&emissions);
+    let _observer = events.on(CONFIG_WATCH_REGISTER_CHANNEL, Arc::new(move |_| { counted.fetch_add(1, Ordering::SeqCst); }));
+    make(watched(vec![target("/project/.omo", &["/omo.jsonc"])], &logs)).register(&mut api);
+    let registration = RegisteredConfigWatch {
+        id: "omo".into(),
+        display_name: ".omo config".into(),
+        targets: vec![ConfigWatchTargetSpec { path: PathBuf::from("/other/.omo"), kind: ConfigWatchTargetKind::Dir, filter_globs: vec!["/omo.jsonc".into()] }],
+        validate: Arc::new(|_| ConfigWatchValidation::Ok),
+    };
+    events.publish_config_watch("other-omo", registration);
+    events.emit(CONFIG_WATCH_READY, &JsonValue::Null);
+    assert_eq!(emissions.load(Ordering::SeqCst), 2);
+    assert!(entries(&logs).iter().any(|(_, message, _)| message.contains("superseded")));
+}
+
+#[test]
 fn keeps_one_active_registration_when_ready_is_emitted_repeatedly() {
     let mut api = api();
     let events = api.events.clone();
