@@ -69,7 +69,6 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
     } else if native && input.breaker_fallback && !input.append_only_transcript {
         reduce_context_messages(&typed_messages(&admitted)?, &ReduceContextOptions::builtin()).messages.into_iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?
     } else { admitted };
-    let before_prune=estimate_total_tokens(&source).saturating_add(input.context_overhead_tokens);
     let source_entry_ids = realign_entry_ids(input.messages, input.entry_ids, &source);
     // A released latch leaves `source` as-is: no token report and the same entry stamps.
     let reduction_engaged = managed && reduction_state.as_deref().unwrap_or(&local_reduction_state).engaged;
@@ -85,14 +84,7 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
     };
     let (marked, replay_boundary) = mark_openai_remote_replay_boundary(pruned, &entry_ids, input.model, input.branch_entries);
     let reminded = if input.reminder.is_some_and(|reminder| !reminder.is_empty()) { inject_token_budget_reminder(&marked, input.reminder) } else { marked };
-    let after_prune=estimate_total_tokens(&reminded).saturating_add(input.context_overhead_tokens);
-    let output = repair_orphaned_tool_results(&typed_messages(&reminded)?, input.now);
-    if managed && reduction_engaged && emergency_prune_tokens.is_some() {
-        let state=reduction_state.as_deref_mut().unwrap_or(&mut local_reduction_state);
-        if emergency_prune_tokens.is_some_and(|(_, tokens)| tokens.saturating_add(input.context_overhead_tokens) > input.prompt_context_window)
-            || after_prune > input.prompt_context_window || (after_prune < before_prune && input.emergency_prune_latch.engaged) { state.compaction_required = true; }
-    }
-    Ok(CompactionContextOutput { messages: output, emergency_prune_tokens, replay_boundary })
+    Ok(CompactionContextOutput { messages: repair_orphaned_tool_results(&typed_messages(&reminded)?, input.now), emergency_prune_tokens, replay_boundary })
 }
 
 #[cfg(test)]
@@ -105,5 +97,20 @@ mod tests {
         let source = [json!({"role":"user","timestamp":1}), json!({"role":"toolResult","toolCallId":"t","timestamp":2}), json!({"role":"user","timestamp":3})];
         let ids = [Some("a".to_owned()), Some("b".to_owned()), Some("c".to_owned())];
         assert_eq!(realign_entry_ids(&source, &ids, &[source[0].clone(), source[2].clone()]), vec![Some("a".to_owned()), Some("c".to_owned())]);
+    }
+
+    #[test]
+    fn preview_context_skips_breaker_reduction() {
+        let messages = [json!({"role":"user","content":"keep this transcript","timestamp":1})];
+        let mut latch = EmergencyPruneLatch::default();
+        let output = build_compaction_context(CompactionContextInput {
+            messages: &messages, entry_ids: &[None], model: None, branch_entries: &[], context_window: 100_000,
+            prompt_context_window: 100_000, usage_tokens: Some(90_000.0), provider_native_path: false,
+            tool_admission_enabled: false, breaker_fallback: true, lane_owns_compaction: false,
+            append_only_transcript: false,
+            emergency_prune_latch: &mut latch, reminder: None, now: 0,
+        }).expect("valid context");
+        assert_eq!(output.messages.len(), 1);
+        assert_eq!(serde_json::to_value(&output.messages[0]).expect("message serializes")["content"], "keep this transcript");
     }
 }

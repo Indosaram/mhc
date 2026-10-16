@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex,OnceLock};
 use sha2::Digest;
 pub struct ProviderSettings {pub values:Map<String,Value>,pub prompt_mode_from_env:bool}
-fn valid_choice(key:&str,value:&Value)->bool {let choices:&[&str]=match key {"systemPromptMode"=>&["preset-append","full","override"],"resumeMode"=>&["auto","off"],"tokenInjection"=>&["oauth-slots","config-dir","ambient"],_=>return false};value.as_str().is_some_and(|s|choices.contains(&s))}
+fn valid_choice(key:&str,value:&Value)->bool {let choices:&[&str]=match key {"systemPromptMode"=>&["preset-append","full","override"],"resumeMode"=>&["auto","off"],"tokenInjection"=>&["oauth-slots","config-dir","ambient"],"compactionOwner"=>&["senpi","sdk"],_=>return false};value.as_str().is_some_and(|s|choices.contains(&s))}
 fn parse(value:&Value)->Map<String,Value> {
     let mut result=Map::new();let Some(object)=value.as_object() else {return result;};
     for (key,value) in object {let valid=match key.as_str() {
@@ -17,7 +17,7 @@ fn parse(value:&Value)->Map<String,Value> {
 pub fn load(global:&Value,project:&Value,environment:&BTreeMap<String,String>)->ProviderSettings {
     let block=|settings:&Value|settings.get("anthropicSubscriptionProvider").filter(|v|!v.is_null()).or_else(||settings.get("claudeSdkOauthProvider")).cloned().unwrap_or(Value::Null);
     let mut values=parse(&block(global));values.extend(parse(&block(project)));let mut env=Map::new();
-    for (suffix,key) in [("SYSTEM_PROMPT_MODE","systemPromptMode"),("SYSTEM_PROMPT_FILE","systemPromptFile"),("RESUME","resumeMode"),("TOKEN_INJECTION","tokenInjection"),("PINNED_ACCOUNT","pinnedAccount")] {if let Some(value)=environment.get(&format!("SENPI_CLAUDE_SDK_OAUTH_{suffix}")) {env.insert(key.into(),Value::String(value.clone()));}}
+    for (suffix,key) in [("SYSTEM_PROMPT_MODE","systemPromptMode"),("SYSTEM_PROMPT_FILE","systemPromptFile"),("RESUME","resumeMode"),("TOKEN_INJECTION","tokenInjection"),("PINNED_ACCOUNT","pinnedAccount"),("COMPACTION_OWNER","compactionOwner")] {if let Some(value)=environment.get(&format!("SENPI_CLAUDE_SDK_OAUTH_{suffix}")) {env.insert(key.into(),Value::String(value.clone()));}}
     if let Some(value)=environment.get("SENPI_CLAUDE_SDK_OAUTH_ENABLED") {match value.to_lowercase().as_str() {"true"|"1"=>{env.insert("enabled".into(),Value::Bool(true));},"false"|"0"=>{env.insert("enabled".into(),Value::Bool(false));},_=>{}}}
     if let Some(value)=environment.get("SENPI_CLAUDE_SDK_OAUTH_SETTING_SOURCES") {env.insert("settingSources".into(),Value::Array(if value.is_empty() {Vec::new()}else {value.split(',').map(|s|Value::String(s.trim().into())).collect()}));}
     let env=parse(&Value::Object(env));let prompt_mode_from_env=env.contains_key("systemPromptMode");values.extend(env);ProviderSettings {values,prompt_mode_from_env}
@@ -74,5 +74,15 @@ mod tests {
         let env=BTreeMap::new();let first=load_from_disk(directory.path(),&agent,directory.path(),&env);assert_eq!(first.values["enabled"],true);
         std::fs::write(&settings_file,r#"{"anthropicSubscriptionProvider":{"enabled":false}}"#).expect("update settings");
         let second=load_from_disk(directory.path(),&agent,directory.path(),&env);assert_eq!(second.values["enabled"],false);
+    }
+    #[test]
+    fn compaction_owner_resolves_with_environment_precedence() {
+        let global=json!({"anthropicSubscriptionProvider":{"compactionOwner":"senpi"}});
+        let project=json!({"anthropicSubscriptionProvider":{"compactionOwner":"sdk"}});
+        let settings=load(&global,&project,&BTreeMap::new());
+        assert_eq!(settings.values["compactionOwner"],"sdk");
+        let environment=[("SENPI_CLAUDE_SDK_OAUTH_COMPACTION_OWNER".into(),"senpi".into())].into();
+        let settings=load(&global,&project,&environment);
+        assert_eq!(settings.values["compactionOwner"],"senpi");
     }
 }
