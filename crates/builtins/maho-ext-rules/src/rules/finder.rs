@@ -62,6 +62,31 @@ pub fn find_rule_candidates(options: FinderOptions<'_>, cache: &mut RuleDiscover
     candidates
 }
 
+
+pub(crate) fn absolute(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::ParentDir => { normalized.pop(); },
+            std::path::Component::CurDir => {},
+            std::path::Component::Normal(_) | std::path::Component::RootDir | std::path::Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+fn candidate(path: &Path, real_path: PathBuf, root: &Path, source: &str, distance: usize, global: bool, single: bool) -> RuleCandidate {
+    RuleCandidate { path: path.to_string_lossy().into_owned(), real_path: real_path.to_string_lossy().into_owned(), source: source.into(), distance,
+        is_global: global, is_single_file: single, relative_path: path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/") }
+}
+fn add_directory(output: &mut Vec<RuleCandidate>, cache: &mut RuleDiscoveryCache, directory: &Path, root: &Path, source: &str, distance: usize, global: bool) {
+    let files = cache.scanned_rule_files.entry(directory.to_path_buf()).or_insert_with(|| scan_rule_files(directory, None, None));
+    for file in files { output.push(candidate(&file.path, std::fs::canonicalize(&file.path).unwrap_or_else(|_| file.path.clone()), root, source, distance, global, false)); }
+}
+fn add_file(output: &mut Vec<RuleCandidate>, cache: &mut RuleDiscoveryCache, path: &Path, root: &Path, source: &str, distance: usize, global: bool) {
+    let real = cache.single_file_info.entry(path.to_path_buf()).or_insert_with(|| path.is_file().then(|| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())));
+    if let Some(real) = real { output.push(candidate(path, real.clone(), root, source, distance, global, true)); }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,29 +112,4 @@ mod tests {
         assert_eq!(SOURCE_PRIORITY.iter().find(|(source, _)| *source == ".pi/rules").map(|(_, priority)| *priority), Some(0));
         let _ = fs::remove_dir_all(root);
     }
-}
-
-pub(crate) fn absolute(path: &Path) -> PathBuf {
-    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            std::path::Component::ParentDir => { normalized.pop(); },
-            std::path::Component::CurDir => {},
-            std::path::Component::Normal(_) | std::path::Component::RootDir | std::path::Component::Prefix(_) => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
-}
-fn candidate(path: &Path, real_path: PathBuf, root: &Path, source: &str, distance: usize, global: bool, single: bool) -> RuleCandidate {
-    RuleCandidate { path: path.to_string_lossy().into_owned(), real_path: real_path.to_string_lossy().into_owned(), source: source.into(), distance,
-        is_global: global, is_single_file: single, relative_path: path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/") }
-}
-fn add_directory(output: &mut Vec<RuleCandidate>, cache: &mut RuleDiscoveryCache, directory: &Path, root: &Path, source: &str, distance: usize, global: bool) {
-    let files = cache.scanned_rule_files.entry(directory.to_path_buf()).or_insert_with(|| scan_rule_files(directory, None, None));
-    for file in files { output.push(candidate(&file.path, std::fs::canonicalize(&file.path).unwrap_or_else(|_| file.path.clone()), root, source, distance, global, false)); }
-}
-fn add_file(output: &mut Vec<RuleCandidate>, cache: &mut RuleDiscoveryCache, path: &Path, root: &Path, source: &str, distance: usize, global: bool) {
-    let real = cache.single_file_info.entry(path.to_path_buf()).or_insert_with(|| path.is_file().then(|| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())));
-    if let Some(real) = real { output.push(candidate(path, real.clone(), root, source, distance, global, true)); }
 }
