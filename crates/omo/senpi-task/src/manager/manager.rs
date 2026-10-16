@@ -585,10 +585,16 @@ impl TaskManager {
     }
 
     pub fn start(&self, spec: &ManagerStartSpec) -> StartResult {
+        if let Some(refusal) = member_kernel_tool_refusal(spec) {
+            return refusal;
+        }
         self.start_prepared(spec, |_, _, _| Ok(()))
     }
 
     pub fn start_prepared(&self, spec: &ManagerStartSpec, prepare: impl FnOnce(&mut ManagerStartSpec, &ResolvedChildPlan, ExecutionMode) -> Result<(), String>) -> StartResult {
+        if let Some(refusal) = member_kernel_tool_refusal(spec) {
+            return refusal;
+        }
         let plan = match (self.inner.planner)(spec) {
             Ok(plan) => plan,
             Err(error) => return StartResult::PlanUnresolved(*error),
@@ -1092,6 +1098,16 @@ impl TaskManager {
     ) -> ReattachResult {
         self.inner.reattach(record, handle)
     }
+}
+
+fn member_kernel_tool_refusal(spec: &ManagerStartSpec) -> Option<StartResult> {
+    if spec.team_role.as_deref() != Some("member") || spec.kernel_tools.is_none() {
+        return None;
+    }
+    Some(StartResult::PlanUnresolved(PlanResolutionError::new(
+        PlanResolutionCode::InvalidTarget,
+        "Team members run out of process and cannot reach a parent JavaScript kernel, so they never receive parent kernel tools.",
+    )))
 }
 
 fn bookkeeping_failure(

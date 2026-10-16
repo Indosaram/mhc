@@ -8,6 +8,7 @@ use crate::manager::manager_tests::fakes::{Harness, base_spec, default_manager, 
 use crate::manager::types::ManagerStartSpec;
 use crate::tools::control::cancel::{
     TaskCancelDeps, TaskCancelInput, TaskCancelTool, create_task_cancel_tool, run_task_cancel,
+    with_dropped_steering_notice,
 };
 use crate::tools::control::send::run_task_send;
 use crate::tools::control::send_schema::{TaskSendInput, TaskSendMessage};
@@ -139,6 +140,19 @@ fn given_no_identifier_when_cancelled_then_invalid_arguments_is_returned() {
     let result = run_task_cancel(&harness.manager, &TaskCancelInput::default());
 
     assert_eq!(result.details.kind(), "invalid_arguments");
+}
+
+#[test]
+fn dropped_steering_notice_formats_singular_plural_and_zero_counts() {
+    assert_eq!(
+        with_dropped_steering_notice("Cancelled task.", 1),
+        "Cancelled task.\n1 queued message was not delivered. Resend it to a new task."
+    );
+    assert_eq!(
+        with_dropped_steering_notice("Cancelled task.", 2),
+        "Cancelled task.\n2 queued messages were not delivered. Resend them to a new task."
+    );
+    assert_eq!(with_dropped_steering_notice("Cancelled task.", 0), "Cancelled task.");
 }
 
 #[test]
