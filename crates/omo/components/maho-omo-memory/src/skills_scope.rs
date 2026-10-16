@@ -1,5 +1,5 @@
 use std::{path::PathBuf, sync::Arc};
-use maho_ext_api::{EventKind, EventResult, ExtensionApi, ResourcesDiscoverResult};
+use maho_ext_api::{EventKind, EventResult, ExtensionApi, ResourcesDiscoverResult, ResourceDiscoverEntry, SourceScope};
 use crate::context::MemoryIdentityContext;
 
 pub const MEMORY_SKILLS_DIRNAME: &str = "skills";
@@ -13,7 +13,7 @@ pub fn discover_memory_skills(event: EventKind, session_id: Option<&str>, resolv
     if event != EventKind::ResourcesDiscover { return None; }
     let context = resolve(session_id.filter(|id| !id.is_empty())?)?;
     let directory = memory_skills_dir(&context);
-    directory.exists().then(|| ResourcesDiscoverResult { skill_paths: vec![directory.to_string_lossy().into_owned().into()], ..Default::default() })
+    directory.exists().then(|| ResourcesDiscoverResult { skill_paths: vec![ResourceDiscoverEntry { path: directory.to_string_lossy().into_owned(), scope: Some(SourceScope::User) }], ..Default::default() })
 }
 
 pub fn register_memory_skills_scope(api: &mut ExtensionApi, resolve: ResolveSkillsContext) {

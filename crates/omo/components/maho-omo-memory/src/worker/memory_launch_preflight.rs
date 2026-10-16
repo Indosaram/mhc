@@ -21,6 +21,7 @@ where F: FnMut(ReflectionModelCandidate, usize, Option<RunAttempt>) -> Fut, Fut:
     use super::memory_model_attempts::MemoryModelAttemptError;
     let candidates: Vec<_> = std::iter::once(input.first).chain(input.rest.iter().cloned()).collect();
     let mut env = input.env.clone();
+    env.retain(|key, _| !key.ends_with("_PACKAGE_DIR"));
     env.insert(input.env_flag.into(), "1".into());
     env.insert("SENPI_PTY_FORCE_PIPE".into(), "1".into());
     let (preflight, warning) = cache.preflight(&candidates, input.launch, &env, input.config_sources, input.now_ms, PREFLIGHT_TIMEOUT_MS).await;
