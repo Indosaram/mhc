@@ -152,7 +152,7 @@ impl ProviderErrorPresentation {
         if let Some(raw) = raw.filter(|r| !r.is_empty()) {
             self.record(raw, false);
         }
-        if !self.pending {
+        if !self.pending && !self.retry_awaiting_finish {
             return;
         }
         self.pending = false;
