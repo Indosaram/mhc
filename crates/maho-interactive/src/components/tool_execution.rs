@@ -105,6 +105,7 @@ pub struct ToolExecutionComponent {
     renderer_invalidated: Rc<std::cell::Cell<bool>>,
     /// Memoized `exploration_call` result; dropped with the render cache on every state change.
     pub(super) exploration_cache: RefCell<Option<Option<super::exploration_call::ExplorationCall>>>,
+    result_byte_length: Option<usize>,
 }
 
 struct ToolExecutionRendererIdentity {
@@ -157,6 +158,7 @@ impl ToolExecutionComponent {
             custom: custom.clone(),
             renderer_invalidated: Rc::new(std::cell::Cell::new(false)),
             exploration_cache: RefCell::new(None),
+            result_byte_length: None,
         };
         let initial = component.create_render_state();
         if presentation == ToolExecutionPresentation::Grok {
@@ -248,6 +250,10 @@ impl ToolExecutionComponent {
     }
 
     pub fn update_result(&mut self, result: ToolExecutionResult, is_partial: bool) {
+        self.result_byte_length = Some(result.content.iter().map(|part| match part {
+            ToolContent::Text { text } => text.len(),
+            ToolContent::Image { data, .. } => data.len(),
+        }).sum());
         self.result = Some(result.clone());
         self.is_partial = is_partial;
         if !is_partial {
@@ -414,6 +420,7 @@ impl ToolExecutionComponent {
             "imageWidthCells": self.image_width_cells,
             "toolCallId": self.identity.tool_call_id,
             "toolName": self.identity.tool_name,
+            "resultByteLength": self.result_byte_length,
         }))
     }
 

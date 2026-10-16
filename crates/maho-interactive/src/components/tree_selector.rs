@@ -442,6 +442,7 @@ impl TreeList {
                 }
             }
 
+            if matches!(entry_type(&item.node.entry), "usage" | "context_usage") { continue; }
             result.push(FlatNode {
                 node: Rc::new(SessionTreeNode {
                     entry: item.node.entry.clone(),
@@ -777,6 +778,12 @@ impl TreeList {
                 parts.push("thinking".to_owned());
                 parts.push(entry_str(entry, "thinkingLevel").unwrap_or_default().to_owned());
             }
+            "context_edit" => {
+                parts.push("context edit".to_owned());
+                parts.push(if entry.get("replacement").is_some_and(Value::is_null) { "omit".to_owned() } else { "replace".to_owned() });
+                parts.push(entry_str(entry, "targetId").unwrap_or_default().to_owned());
+            }
+            "usage" | "context_usage" => return String::new(),
             "custom" => {
                 parts.push("custom".to_owned());
                 parts.push(entry_str(entry, "customType").unwrap_or_default().to_owned());
@@ -1019,6 +1026,7 @@ impl TreeList {
                 ThemeColor::Dim,
                 &format!("[thinking: {}]", entry_str(entry, "thinkingLevel").unwrap_or_default()),
             ),
+            "context_edit" => self.theme.fg(ThemeColor::Dim, &format!("[context {}: {}]", if entry.get("replacement").is_some_and(Value::is_null) { "omit" } else { "replace" }, entry_str(entry, "targetId").unwrap_or_default())),
             "custom" => self.theme.fg(
                 ThemeColor::Dim,
                 &format!("[custom: {}]", entry_str(entry, "customType").unwrap_or_default()),
