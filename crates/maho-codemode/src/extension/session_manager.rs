@@ -20,7 +20,7 @@ pub struct CreateCodemodeSessionManagerOptions {
 }
 
 pub struct CodemodeSessionManager {
-    options: CreateCodemodeSessionManagerOptions,
+        options: CreateCodemodeSessionManagerOptions,
     bridge: BridgeServerHandle,
     python: tokio::sync::Mutex<Option<Arc<PythonKernel>>>,
     javascript: tokio::sync::Mutex<Option<Arc<crate::kernels::js::context_manager::JavaScriptKernel>>>,
@@ -29,6 +29,7 @@ pub struct CodemodeSessionManager {
     javascript_shutdown: maho_ai::utils::abort::AbortController,
     dispose_result: tokio::sync::OnceCell<Result<(), String>>,
     contexts: Arc<std::sync::Mutex<HashMap<String,Arc<crate::tool::eval_tool_options::EvalInvocationContext>>>>,
+    session_context: Arc<std::sync::Mutex<Option<Arc<crate::tool::eval_tool_options::EvalInvocationContext>>>>,
 }
 
 impl CodemodeSessionManager {
@@ -38,12 +39,14 @@ impl CodemodeSessionManager {
         let task_tools = options.settings.task_tools.clone();
         let agent_bridge = AgentBridge::for_executor(&executor);
         let contexts: Arc<std::sync::Mutex<HashMap<String,Arc<crate::tool::eval_tool_options::EvalInvocationContext>>>>=Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let session_context=Arc::new(std::sync::Mutex::new(None));
+        let completion_session_context=session_context.clone();
         let completion_contexts=contexts.clone();let complete=options.complete.clone();
         let bridge = start_bridge_server(BridgeServerOptions {
             token: None, body_limit_bytes: None,
             on_emit: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             on_completion: Arc::new(move |mut request| {
-                request.context=request.cell_id.as_ref().and_then(|id|completion_contexts.lock().expect("invocation contexts").get(id).map(|context|context.as_ref().clone()));
+                request.context=request.cell_id.as_ref().and_then(|id|completion_contexts.lock().expect("invocation contexts").get(id).map(|context|context.as_ref().clone())).or_else(||completion_session_context.lock().expect("session context").as_ref().map(|context|context.as_ref().clone()));
                 complete(request)
             }),
             on_call: Arc::new(move |request| {
@@ -52,13 +55,13 @@ impl CodemodeSessionManager {
                 let task_tools = task_tools.clone();
                 let agent_bridge = agent_bridge.clone();
                 Box::pin(async move {
-                    let execute_options = ExecuteToolOptions { signal: Some(request.signal), ..Default::default() };
+                let execute_options = ExecuteToolOptions { signal: Some(request.signal.clone()), ..Default::default() };
                     if is_reserved_tool_name(&request.tool_name) {
                         let tools = if request.tool_name==crate::bridge::reserved::RESERVED_OUTPUT_TOOL {None} else {list_tools.as_ref().map(|list| list()).transpose().map_err(|error| json!({"name":"Error","message":error}))?};
                         run_reserved_tool(&request.tool_name, ReservedDispatchContext {
                             call_id: &request.call_id, args: &request.args, executor: executor.as_ref(),
                             task_tool_name: &task_tools.task, task_output_tool_name: &task_tools.output,
-                            tools: tools.as_deref(), execute_options, emit_status: None, agent_bridge: &agent_bridge,
+                            tools: tools.as_deref(), execute_options, emit_status: None, agent_bridge: &agent_bridge, environments: None,
                         }).await.map_err(|error| {
                             let mut payload=json!({"name":"Error","message":error.to_string()});
                             if let Some(code)=error.code() {payload["code"]=json!(code);}
@@ -75,7 +78,7 @@ impl CodemodeSessionManager {
                 })
             }),
         }).await?;
-        Ok(Self { options, bridge, python:tokio::sync::Mutex::new(None), javascript:tokio::sync::Mutex::new(None), subprocesses:tokio::sync::Mutex::new(HashMap::new()), disposed:AtomicBool::new(false), javascript_shutdown:maho_ai::utils::abort::AbortController::new(),dispose_result:tokio::sync::OnceCell::new(),contexts })
+        Ok(Self { options, bridge, python:tokio::sync::Mutex::new(None), javascript:tokio::sync::Mutex::new(None), subprocesses:tokio::sync::Mutex::new(HashMap::new()), disposed:AtomicBool::new(false), javascript_shutdown:maho_ai::utils::abort::AbortController::new(),dispose_result:tokio::sync::OnceCell::new(),contexts,session_context })
     }
 
     pub fn bridge_endpoint(&self) -> Result<(u16, &str), String> {
@@ -159,6 +162,9 @@ impl CodemodeSessionManager {
 
 impl SessionManagerLifecycle for CodemodeSessionManager {
     fn dispose(&self) -> SessionDisposeFuture<'_> { Box::pin(self.dispose()) }
+    fn set_context(&self, context: crate::tool::eval_tool_options::EvalInvocationContext) {
+        *self.session_context.lock().expect("session context")=Some(Arc::new(context));
+    }
 }
 
 impl EvalKernelManager for CodemodeSessionManager {

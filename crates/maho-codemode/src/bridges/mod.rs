@@ -6,3 +6,4 @@ pub mod schema_hint;
 pub mod schema_injection;
 pub mod eval_handle_bridge;
 pub mod handles;
+pub mod packages_install;

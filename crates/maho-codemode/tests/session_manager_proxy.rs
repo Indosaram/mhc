@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use maho_codemode::extension::session_manager_proxy::*;
 use maho_ai::utils::abort::AbortController;
 
-struct FakeManager { disposals: AtomicUsize, failure: Option<String>, contexts:Arc<Mutex<std::collections::HashSet<String>>> }
+struct FakeManager { disposals: AtomicUsize, failure: Option<String>, contexts:Arc<Mutex<std::collections::HashSet<String>>>, session_cwds: Arc<Mutex<Vec<String>>> }
 impl maho_codemode::tool::eval_tool_options::EvalKernelManager for FakeManager {
     fn get_kernel(&self, language: maho_codemode::tool::types::EvalLanguage) -> maho_codemode::tool::types::EvalKernelFuture<'_, Arc<dyn maho_codemode::tool::types::EvalKernel>> {
         Box::pin(async move { Err(format!("fixture kernel {language:?}")) })
@@ -16,9 +16,12 @@ impl SessionManagerLifecycle for FakeManager {
     fn dispose(&self) -> SessionDisposeFuture<'_> {
         Box::pin(async { self.disposals.fetch_add(1, Ordering::SeqCst); self.failure.clone().map_or(Ok(()), Err) })
     }
+    fn set_context(&self, context: maho_codemode::tool::eval_tool_options::EvalInvocationContext) {
+        self.session_cwds.lock().expect("session contexts").push(context.cwd.to_string_lossy().into_owned());
+    }
 }
 fn manager(failure: Option<&str>) -> Arc<FakeManager> {
-    Arc::new(FakeManager { disposals:AtomicUsize::new(0), failure:failure.map(str::to_owned),contexts:Default::default() })
+    Arc::new(FakeManager { disposals:AtomicUsize::new(0), failure:failure.map(str::to_owned),contexts:Default::default(),session_cwds:Default::default() })
 }
 fn proxy() -> (Arc<SessionManagerProxy>, Arc<Mutex<Vec<String>>>) {
     let failures = Arc::new(Mutex::new(Vec::new()));
@@ -65,6 +68,21 @@ async fn outgoing_teardown_failure_does_not_prevent_installation() {
     assert_eq!(outgoing.disposals.load(Ordering::SeqCst), 1);
     assert_eq!(*failures.lock().unwrap(), ["close failed"]);
     assert!(Arc::ptr_eq(&proxy.current().unwrap(), &(next as Arc<dyn SessionManagerLifecycle>)));
+    proxy.dispose().await;
+}
+
+#[tokio::test]
+async fn session_context_is_forwarded_to_current_and_replacement_managers() {
+    use maho_codemode::tool::eval_tool_options::EvalInvocationContext;
+    let (proxy, _) = proxy();
+    let context = EvalInvocationContext { model: None, cwd: "/session-context".into(), thinking_level: None, goal_store_file: None };
+    proxy.set_context(context.clone());
+    let first = manager(None);
+    assert!(proxy.replace(proxy.begin_replacement(), first.clone()).await);
+    let second = manager(None);
+    assert!(proxy.replace(proxy.begin_replacement(), second.clone()).await);
+    assert_eq!(*first.session_cwds.lock().expect("first context"), ["/session-context"]);
+    assert_eq!(*second.session_cwds.lock().expect("replacement context"), ["/session-context"]);
     proxy.dispose().await;
 }
 

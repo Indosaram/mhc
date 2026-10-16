@@ -22,7 +22,7 @@ impl EvalNotifier {
         for cell in &pending { self.notified.insert(cell.cell_id.clone()); }
         Some((CustomMessage {
             custom_type: EVAL_NOTIFICATION_CUSTOM_TYPE.into(),
-            content: vec![ToolContent::text(pending.iter().map(|cell| cell.content.as_str()).collect::<Vec<_>>().join("\n\n"))],
+            content: notification_content(&pending),
             display: false,
             details: None,
         }, SendMessageOptions { trigger_turn: true, deliver_as: Some(if mode == EvalNotifyMode::Wake { DeliverAs::Steer } else { DeliverAs::FollowUp }) }))
@@ -33,5 +33,26 @@ impl EvalNotifier {
             api.send_message(message, options)?;
         }
         Ok(())
+    }
+}
+
+fn notification_content(cells: &[&EvalDetachedCellNotification]) -> Vec<ToolContent> {
+    let text = cells.iter().map(|cell| cell.content.as_str()).collect::<Vec<_>>().join("\n\n");
+    let images = cells.iter().flat_map(|cell| cell.images.iter()).map(|image| {
+        ToolContent::Image { data: image.data.clone(), mime_type: image.mime_type.clone() }
+    });
+    std::iter::once(ToolContent::text(text)).chain(images).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::image_resize::EvalImageContent;
+
+    #[test]
+    fn notification_includes_images_after_combined_text() {
+        let cells = [EvalDetachedCellNotification { cell_id: "c".into(), content: "done".into(), images: vec![EvalImageContent { data: "aGVsbG8=".into(), mime_type: "image/png".into() }] }];
+        let content = notification_content(&[&cells[0]]);
+        assert!(matches!(content.as_slice(), [ToolContent::Text { text, .. }, ToolContent::Image { data, mime_type }] if text == "done" && data == "aGVsbG8=" && mime_type == "image/png"));
     }
 }

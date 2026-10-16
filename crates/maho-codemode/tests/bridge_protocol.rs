@@ -113,3 +113,20 @@ fn host_denial_detail_round_trip() {
     let message = json!({"type":"kernel-tool-invoke-reply","requestId":"i1","ok":false,"error":{"message":"denied","code":"kernel_tool_host_denied","details":{"tool":"read","call_id":"child","reason":"deny"}}});
     assert_eq!(decode_bridge_frame(&encode_bridge_frame(&message).unwrap(), None).unwrap(), message);
 }
+
+#[test]
+fn accepts_environment_prelude_webview_and_memory_messages() {
+    for message in [
+        json!({"type":"init","sessionId":"s","connection":{"port":1,"token":"t"},"memory":{"gcWatermarkBytes":1,"noticeBytes":2,"ceilingBytes":3}}),
+        json!({"type":"run","cellId":"c","code":"x","envRoot":"/tmp","sourceFile":"/tmp/c.py","preludes":{"install":[{"python":"pkg","exports":["name"]}],"remove":[]}}),
+        json!({"type":"webview-port","requestId":"r","ok":true,"port":8123}),
+        json!({"type":"memory-query","requestId":"q"}),
+        json!({"type":"memory-globals","cellId":"c"}),
+        json!({"type":"memory-query-result","requestId":"q","measure":"heap","liveBytes":12}),
+        json!({"type":"memory-globals-result","cellId":"c","globals":[{"name":"x","bytes":1}]}),
+        json!({"type":"kernel-memory-collected","liveBytes":3}),
+        json!({"type":"result","cellId":"c","ok":true,"durationMs":1,"kernelState":"restarted","memory":{},"notice":"memory"}),
+    ] {
+        assert_eq!(decode_bridge_frame(&encode_bridge_frame(&message).unwrap(), None).unwrap(), message);
+    }
+}

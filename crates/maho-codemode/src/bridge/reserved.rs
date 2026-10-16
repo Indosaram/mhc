@@ -1,6 +1,7 @@
 pub const RESERVED_AGENT_TOOL: &str = "__agent__";
 pub const RESERVED_OUTPUT_TOOL: &str = "__output__";
 pub const RESERVED_SCHEMA_TOOL: &str = "__schema__";
+pub const RESERVED_PACKAGES_INSTALL_TOOL: &str = "__packages_install__";
 pub const RESERVED_WAIT_TOOL: &str = "__wait__";
 pub const RESERVED_HANDLE_STATUS_TOOL: &str = "__handle_status__";
 pub const RESERVED_HANDLE_OUTPUT_TOOL: &str = "__handle_output__";

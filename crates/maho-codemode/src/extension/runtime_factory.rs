@@ -1,4 +1,4 @@
-use maho_ext_api::{AgentToolResult, ExecuteToolError, ExecuteToolOptions, ExtensionApi, ExtensionFailure, JsonValue};
+use maho_ext_api::{AgentToolResult, ExecuteToolError, ExecuteToolOptions, ExtensionApi, ExtensionFailure, JsonValue, ToolContext};
 
 pub async fn execute_tool(api: &ExtensionApi, tool_name: &str, params: JsonValue, mut options: ExecuteToolOptions) -> Result<AgentToolResult, ExecuteToolError> {
     options.activate_inactive_tool = Some(true);
@@ -118,7 +118,7 @@ where
         settings: prepared.settings, artifacts_dir: prepared.artifacts.dir, executor: host.executor, spawns})
 }
 
-pub fn runtime_host_from_api(api: std::sync::Arc<ExtensionApi>, context: &dyn maho_ext_api::ToolContext, complete: crate::bridge::http_server::BridgeCompletionHandler) -> Result<RuntimeHostOptions, ExtensionFailure> {
+pub fn runtime_host_from_api(api: std::sync::Arc<ExtensionApi>, context: &dyn ToolContext, complete: crate::bridge::http_server::BridgeCompletionHandler) -> Result<RuntimeHostOptions, ExtensionFailure> {
     let active_tools = api.get_active_tools()?;
     let executor = std::sync::Arc::new(RuntimeExecuteTool {api: api.clone(), active_tools: active_tools.clone()});
     let list_tools = std::sync::Arc::new(move || api.get_all_tools().map(|tools| tools.into_iter().map(|tool| crate::bridges::schema_bridge::EvalSchemaToolInfo {

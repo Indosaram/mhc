@@ -1,6 +1,6 @@
 use maho_ext_api::ExecuteToolOptions;
 use serde_json::Value;
-use crate::bridge::reserved::{RESERVED_AGENT_TOOL, RESERVED_OUTPUT_TOOL, RESERVED_SCHEMA_TOOL};
+use crate::bridge::reserved::{RESERVED_AGENT_TOOL, RESERVED_OUTPUT_TOOL, RESERVED_SCHEMA_TOOL, RESERVED_PACKAGES_INSTALL_TOOL};
 use super::{agent_bridge::{AgentBridge, AgentBridgeError, AgentBridgeOptions, AgentStatusEmitter}, output_bridge::{OutputBridgeError, OutputExecuteTool, run_eval_output}, schema_bridge::{EvalSchemaToolInfo, SchemaError, run_eval_schema}};
 
 pub struct ReservedDispatchContext<'a> {
@@ -13,6 +13,7 @@ pub struct ReservedDispatchContext<'a> {
     pub execute_options: ExecuteToolOptions,
     pub emit_status: Option<AgentStatusEmitter>,
     pub agent_bridge: &'a AgentBridge,
+    pub environments: Option<&'a dyn crate::bridges::packages_install::PackagesInstallEnvironments>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -25,9 +26,10 @@ pub enum ReservedDispatchError {
     #[error(transparent)] Output(#[from] OutputBridgeError),
     #[error(transparent)] Schema(#[from] SchemaError),
     #[error(transparent)] Serialize(#[from] serde_json::Error),
+    #[error(transparent)] PackagesInstall(#[from] crate::bridges::packages_install::PackagesInstallError),
 }
 
-pub fn is_reserved_tool_name(name: &str) -> bool { matches!(name, RESERVED_AGENT_TOOL | RESERVED_OUTPUT_TOOL | RESERVED_SCHEMA_TOOL) }
+pub fn is_reserved_tool_name(name: &str) -> bool { matches!(name, RESERVED_AGENT_TOOL | RESERVED_OUTPUT_TOOL | RESERVED_SCHEMA_TOOL | RESERVED_PACKAGES_INSTALL_TOOL) }
 
 impl ReservedDispatchError {
     pub fn code(&self) -> Option<&'static str> {
@@ -53,6 +55,7 @@ pub async fn run_reserved_tool(name: &str, context: ReservedDispatchContext<'_>)
         RESERVED_AGENT_TOOL => Ok(context.agent_bridge.run(context.args, AgentBridgeOptions { call_id:context.call_id,task_tool_name:context.task_tool_name,executor:context.executor,tools:context.tools,execute_options:context.execute_options,emit_status:context.emit_status }).await?),
         RESERVED_OUTPUT_TOOL => Ok(serde_json::to_value(run_eval_output(context.args.clone(),context.task_output_tool_name,context.executor,context.execute_options).await?)?),
         RESERVED_SCHEMA_TOOL => Ok(serde_json::to_value(run_eval_schema(context.args,context.tools.ok_or(ReservedDispatchError::SchemaUnavailable)?)?)?),
+        RESERVED_PACKAGES_INSTALL_TOOL => Ok(crate::bridges::packages_install::run_packages_install(context.args, context.environments, context.execute_options.signal.clone()).await?),
         _ => Err(ReservedDispatchError::NotReserved(name.into())),
     }
 }

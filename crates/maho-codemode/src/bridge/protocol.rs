@@ -89,6 +89,27 @@ pub struct BridgeConnectionConfig {
     pub parallel_pool_width: Option<u64>,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KernelMemoryThresholds { pub gc_watermark_bytes: u64, pub notice_bytes: u64, pub ceiling_bytes: u64 }
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KernelMemoryGlobal { pub name: String, pub bytes: u64, #[serde(default, skip_serializing_if = "Option::is_none")] pub approximate: Option<bool> }
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KernelMemoryReport {
+    pub live_bytes: u64, pub measure: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub approximate: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub gc_ran: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub globals: Option<Vec<KernelMemoryGlobal>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub over_ceiling: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub recycled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub notice: Option<String>,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeEnvironmentRevision { pub revision: u64, pub root: Option<String> }
+
 pub fn encode_bridge_frame(message: &Value) -> Result<String, serde_json::Error> {
     Ok(format!("{}\n", serde_json::to_string(message)?))
 }
@@ -135,20 +156,27 @@ fn valid_host_message(value: &Value) -> bool {
     match value.get("type").and_then(Value::as_str) {
         Some("init") => nonempty(value, "sessionId") && value.get("connection").is_some_and(connection)
             && optional(value, "sessionEnv", map_strings) && optional(value, "kernelGeneration", |v| integer(v, 1))
-            && optional(value, "hostToolNames", strings) && optional(value, "foreignLanguageNames", strings),
-        Some("run") => nonempty(value, "cellId") && string(value, "code") && optional(value, "timeoutMs", |v| integer(v, 1)),
+            && optional(value, "hostToolNames", strings) && optional(value, "foreignLanguageNames", strings)
+            && optional(value, "memory", |v| v.is_object() && ["gcWatermarkBytes", "noticeBytes", "ceilingBytes"].iter().all(|key| v.get(key).is_some_and(|item| integer(item, 0)))),
+        Some("run") => nonempty(value, "cellId") && string(value, "code") && optional(value, "timeoutMs", |v| integer(v, 1))
+            && optional(value, "envRoot", Value::is_string) && optional(value, "sourceFile", |v| v.as_str().is_some_and(|s| !s.is_empty()))
+            && optional(value, "preludes", |v| v.is_object() && v.get("install").and_then(Value::as_array).is_some_and(|items| items.iter().all(|item| item.get("python").is_some_and(Value::is_string) && item.get("exports").is_some_and(strings))) && v.get("remove").is_some_and(strings)),
         Some("tool-reply") => nonempty(value, "callId") && match value.get("ok").and_then(Value::as_bool) {
             Some(true) => value.get("value").is_some(), Some(false) => value.get("error").is_some_and(error), None => false,
         },
         Some("interrupt") => optional(value, "reason", Value::is_string),
         Some("close") => true,
+        Some("webview-port") => nonempty(value, "requestId") && match value.get("ok").and_then(Value::as_bool) { Some(true) => value.get("port").is_some(), Some(false) => value.get("error").is_some_and(error), None => false },
+        Some("memory-query") => nonempty(value, "requestId"),
+        Some("memory-globals") => nonempty(value, "cellId"),
         _ => super::kernel_tools_protocol::valid_host_message(value),
     }
 }
 
 pub fn is_kernel_to_host_message(value: &Value) -> bool {
     match value.get("type").and_then(Value::as_str) {
-        Some("ready" | "closed") => true,
+        Some("ready") => optional(value, "memoryGlobals", Value::is_boolean),
+        Some("closed") => true,
         Some("init-failed") => value.get("error").is_some_and(error),
         Some("text") => matches!(value.get("stream").and_then(Value::as_str), Some("stdout" | "stderr")) && string(value, "data"),
         Some("display") => nonempty(value, "mimeType") && string(value, "dataBase64"),
@@ -156,11 +184,17 @@ pub fn is_kernel_to_host_message(value: &Value) -> bool {
         Some("log") => string(value, "message"),
         Some("phase") => string(value, "title"),
         Some("status") => value.get("event").is_some_and(|event| event.is_object() && string(event, "op")),
+        Some("webview-connect") => nonempty(value, "requestId"),
+        Some("memory-query-result") => nonempty(value, "requestId") && value.get("liveBytes").is_some_and(|v| integer(v, 0)) && value.get("measure").and_then(Value::as_str) == Some("heap"),
+        Some("memory-globals-result") => nonempty(value, "cellId") && value.get("globals").and_then(Value::as_array).is_some_and(|values| values.len() <= 8 && values.iter().all(|item| nonempty(item, "name") && item.get("bytes").is_some_and(|v| integer(v, 0)) && optional(item, "approximate", Value::is_boolean))),
         Some("result") => nonempty(value, "cellId") && value.get("durationMs").is_some_and(|v| integer(v, 0))
+            && optional(value, "memory", Value::is_object) && optional(value, "notice", Value::is_string)
+            && optional(value, "kernelState", |v| matches!(v.as_str(), Some("lost" | "restarted" | "not-run")))
             && match value.get("ok").and_then(Value::as_bool) {
                 Some(true) => optional(value, "valueRepr", Value::is_string),
                 Some(false) => value.get("error").is_some_and(error), None => false,
             },
+        Some("kernel-memory-collected") => value.get("liveBytes").is_some_and(|v| integer(v, 0)),
         _ => super::kernel_tools_protocol::valid_kernel_message(value),
     }
 }
