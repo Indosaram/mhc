@@ -10,9 +10,9 @@ pub fn clamp_to_non_off(level:ModelThinkingLevel,capability:&ReasoningCapability
     for candidate in levels[..index].iter().rev(){if let Some(level)=supported(*candidate){return Some(level);}}
     capability.non_off_levels.first().copied()
 }
-pub fn preferred_on_level(last_on:Option<ModelThinkingLevel>,remembered:Option<ModelThinkingLevel>,global:Option<ModelThinkingLevel>,capability:&ReasoningCapability)->Option<ThinkingLevel>{
+pub fn preferred_on_level(last_on:Option<ModelThinkingLevel>,remembered:Option<ModelThinkingLevel>,model_default:Option<ModelThinkingLevel>,global:Option<ModelThinkingLevel>,capability:&ReasoningCapability)->Option<ThinkingLevel>{
     let non_off=|level:Option<ModelThinkingLevel>|level.filter(|level|*level!=ModelThinkingLevel::Off);
-    clamp_to_non_off(non_off(last_on).or_else(||non_off(remembered)).or_else(||non_off(global)).unwrap_or(ModelThinkingLevel::Medium),capability)
+    clamp_to_non_off(non_off(last_on).or_else(||non_off(remembered)).or_else(||non_off(model_default)).or_else(||non_off(global)).unwrap_or(ModelThinkingLevel::Medium),capability)
 }
 pub fn completions<'a>(values:&'a [&str],prefix:&str)->Option<Vec<&'a str>>{let values:Vec<_>=values.iter().copied().filter(|value|value.starts_with(prefix.trim())).collect();(!values.is_empty()).then_some(values)}
 
@@ -63,7 +63,7 @@ impl Extension for Reasoning{
                     else if level!=ModelThinkingLevel::Off{host.set_level(ctx,level)?;ctx.ui.notify(&reasoning_status(host.level(ctx)?),NotificationType::Info);}
                     else{
                         let preferences=host.preferences(ctx,model)?;
-                        if let Some(target)=preferred_on_level(preferences.last_on,preferences.remembered,preferences.global,&capability){host.restore_on(ctx,model,target).await?;ctx.ui.notify(&reasoning_status(host.level(ctx)?),NotificationType::Info);}else{ctx.ui.notify(&format!("Model {key} does not support reasoning."),NotificationType::Error);}
+                        if let Some(target)=preferred_on_level(preferences.last_on,preferences.remembered,model.default_thinking_level,preferences.global,&capability){host.restore_on(ctx,model,target).await?;ctx.ui.notify(&reasoning_status(host.level(ctx)?),NotificationType::Info);}else{ctx.ui.notify(&format!("Model {key} does not support reasoning."),NotificationType::Error);}
                     }
                 }else{
                     match capability.kind{
