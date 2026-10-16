@@ -26,6 +26,37 @@ pub struct SessionInfo {
     pub all_messages_text: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SessionSearchCache {
+    text_by_session: std::collections::HashMap<String, String>,
+    prepared_tokens: Option<(String, Vec<SearchToken>)>,
+    parsed_query: Option<(String, ParsedSearchQuery)>,
+}
+
+impl SessionSearchCache {
+    pub fn search_text<'a>(&'a mut self, session: &'a SessionInfo) -> &'a str {
+        let key = session.path.clone();
+        self.text_by_session.entry(key).or_insert_with(|| get_session_search_text(session)).as_str()
+    }
+
+    pub fn parsed_query(&mut self, query: &str) -> &ParsedSearchQuery {
+        if self.parsed_query.as_ref().is_none_or(|(cached, _)| cached != query) {
+            self.parsed_query = Some((query.to_owned(), parse_search_query(query)));
+        }
+        match self.parsed_query.as_ref() { Some((_, parsed)) => parsed, None => unreachable!() }
+    }
+
+    pub fn prepared_tokens(&mut self, query: &str) -> &[SearchToken] {
+        if self.prepared_tokens.as_ref().is_none_or(|(cached, _)| cached != query) {
+            let tokens = parse_search_query(query).tokens;
+            self.prepared_tokens = Some((query.to_owned(), tokens));
+        }
+        match self.prepared_tokens.as_ref() { Some((_, tokens)) => tokens, None => &[] }
+    }
+
+    pub fn clear_session(&mut self, path: &str) { self.text_by_session.remove(path); }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortMode {
     Threaded,

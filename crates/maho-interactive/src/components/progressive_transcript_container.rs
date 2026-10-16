@@ -28,6 +28,8 @@ pub struct ProgressiveTranscriptContainer {
     hydrated_from: usize,
     hydration_halted: bool,
     last_render_width: Option<usize>,
+    render_generation: u64,
+    child_render_cache: std::collections::HashMap<(usize, usize, u64), Vec<String>>,
 }
 
 impl ProgressiveTranscriptContainer {
@@ -40,6 +42,8 @@ impl ProgressiveTranscriptContainer {
             hydrated_from: PENDING_FIRST_PAINT,
             hydration_halted: false,
             last_render_width: None,
+            render_generation: 0,
+            child_render_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -48,6 +52,7 @@ impl ProgressiveTranscriptContainer {
     }
 
     pub fn add_child(&mut self, component: Rc<RefCell<dyn Component>>) {
+        self.child_render_cache.retain(|(index, _, _), _| *index < self.children.children.len());
         self.children.add_child(component);
     }
 
@@ -58,6 +63,7 @@ impl ProgressiveTranscriptContainer {
     pub fn rearm(&mut self) {
         self.hydrated_from = PENDING_FIRST_PAINT;
         self.hydration_halted = false;
+        self.child_render_cache.clear();
     }
 
     fn render_range(&mut self, from: usize, to: usize, width: usize) -> Vec<String> {
@@ -66,7 +72,14 @@ impl ProgressiveTranscriptContainer {
             let Some(child) = self.children.children.get(index) else {
                 continue;
             };
-            let child_lines = child.borrow_mut().render(width);
+            let key = (index, width, self.render_generation);
+            let child_lines = if let Some(cached) = self.child_render_cache.get(&key) {
+                cached.clone()
+            } else {
+                let rendered = child.borrow_mut().render(width);
+                self.child_render_cache.insert(key, rendered.clone());
+                rendered
+            };
             lines.extend(child_lines);
         }
         lines
@@ -97,6 +110,8 @@ impl Component for ProgressiveTranscriptContainer {
     }
 
     fn invalidate(&mut self) {
+        self.render_generation = self.render_generation.wrapping_add(1);
+        self.child_render_cache.clear();
         self.children.invalidate();
     }
 

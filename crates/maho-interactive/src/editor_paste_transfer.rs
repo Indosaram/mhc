@@ -31,6 +31,37 @@ pub fn strip_image_markers(text: &str) -> String {
     collapsed.trim().to_owned()
 }
 
+pub struct EditorCapabilities { pub paste_markers: bool, pub image_markers: bool, pub expanded_text: bool }
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use maho_tui::editor_component::EditorComponent;
+
+    struct CapabilityEditor;
+    impl EditorComponent for CapabilityEditor {
+        fn get_text(&self) -> String { String::new() }
+        fn set_text(&mut self, _text: &str) {}
+        fn get_paste_state(&self) -> Option<maho_tui::paste_markers::PasteState> { None }
+        fn set_paste_state(&mut self, _state: &maho_tui::paste_markers::PasteState) {}
+        fn get_image_marker_state(&self) -> Option<maho_tui::paste_markers::ImageMarkerState> { None }
+        fn set_image_marker_state(&mut self, _state: &maho_tui::paste_markers::ImageMarkerState) {}
+        fn get_expanded_text(&self) -> Option<String> { None }
+    }
+
+    #[test]
+    fn capability_flags_are_independent() {
+        let capabilities = editor_capabilities(&CapabilityEditor);
+        assert!(!capabilities.paste_markers);
+        assert!(!capabilities.image_markers);
+        assert!(!capabilities.expanded_text);
+    }
+}
+
+pub fn editor_capabilities(editor: &dyn EditorComponent) -> EditorCapabilities {
+    EditorCapabilities { paste_markers: editor.get_paste_state().is_some(), image_markers: editor.get_image_marker_state().is_some(), expanded_text: editor.get_expanded_text().is_some() }
+}
+
 pub fn transfer_editor_content(source: &dyn EditorComponent, target: &mut dyn EditorComponent) -> bool {
     let raw = source.get_text();
     let pastes = source.get_paste_state();
