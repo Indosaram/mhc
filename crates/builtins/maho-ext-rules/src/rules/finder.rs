@@ -76,6 +76,33 @@ pub fn find_rule_candidates(options: FinderOptions<'_>, cache: &mut RuleDiscover
     candidates
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn discovers_pi_rule_sources_with_upstream_priority() {
+        let root = std::env::temp_dir().join(format!("maho-rules-pi-{}", std::process::id()));
+        let home = root.join("home");
+        let project = root.join("project");
+        fs::create_dir_all(project.join(".pi/rules")).expect("create project rules");
+        fs::create_dir_all(home.join(".pi/rules")).expect("create home rules");
+        fs::write(project.join(".pi/rules/project.md"), "project").expect("write project rule");
+        fs::write(home.join(".pi/rules/home.md"), "home").expect("write home rule");
+        let disabled = BTreeSet::new();
+        let mut cache = RuleDiscoveryCache::default();
+        let candidates = find_rule_candidates(FinderOptions {
+            project_root: Some(&project), target_file: None, home_dir: &home,
+            disabled_sources: &disabled, skip_user_home: false,
+        }, &mut cache);
+        assert!(candidates.iter().any(|candidate| candidate.source == ".pi/rules" && candidate.path.ends_with("project.md")));
+        assert!(candidates.iter().any(|candidate| candidate.source == "~/.pi/rules" && candidate.path.ends_with("home.md")));
+        assert_eq!(SOURCE_PRIORITY.iter().find(|(source, _)| *source == ".pi/rules").map(|(_, priority)| *priority), Some(0));
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
 pub(crate) fn absolute(path: &Path) -> PathBuf {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut normalized = PathBuf::new();
