@@ -34,12 +34,14 @@ impl ToolTelemetry {
         if let Some(feature)=feature && self.feature_usage.entry(session.into()).or_default().insert(feature) {vec![("feature_used",json!({"$session_id":hash,"feature":feature}))]} else {Vec::new()}
     }
 }
+/// Tools `ToolTelemetry::record` can emit for; every other tool result is skipped before copying its input.
+const RECORDED_TOOLS:[&str;6]=["read","task","create_goal","team_create","memory_apply_patch","memory"];
 pub type ToolDiagnostics=std::sync::Arc<dyn Fn(&maho_ext_api::ExtensionContext,&str,Value)+Send+Sync>;
 pub fn register_omo_native_tool_telemetry(api:&mut maho_ext_api::ExtensionApi,skills_root:std::path::PathBuf,hash:std::sync::Arc<dyn Fn(&str)->String+Send+Sync>,capture:crate::omo_native_parallel_summary::SummaryCapture,diagnostics:Option<ToolDiagnostics>) {
     use std::sync::{Arc,Mutex};
     use maho_ext_api::{EventKind,EventResult,ExtensionEvent};
     let state=Arc::new(Mutex::new(ToolTelemetry::for_skills_root(&skills_root)));let results=Arc::clone(&state);
-    api.on(EventKind::ToolResult,Arc::new(move |event,ctx| {let at_session=ctx.session_manager.session_id();let output=if let ExtensionEvent::ToolResult(event)=event {if !event.input.is_object() && let Some(diagnostics)=&diagnostics {diagnostics(ctx,"omo-native tool_result missing input",json!({"toolName":event.tool_name}));}results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record(&json!({"type":"tool_result","toolName":event.tool_name,"input":event.input,"isError":event.is_error}),at_session,&hash(at_session),&ctx.cwd,&skills_root)} else {Vec::new()};let capture=Arc::clone(&capture);Box::pin(async move {for (name,properties) in output {capture(name,properties);}Ok(EventResult::None)})}));
+    api.on(EventKind::ToolResult,Arc::new(move |event,ctx| {let at_session=ctx.session_manager.session_id();let output=if let ExtensionEvent::ToolResult(event)=event {if !event.input.is_object() && let Some(diagnostics)=&diagnostics {diagnostics(ctx,"omo-native tool_result missing input",json!({"toolName":event.tool_name}));}let recorded=RECORDED_TOOLS.iter().any(|tool|matches_tool_name(&event.tool_name,tool));if recorded {results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record(&json!({"type":"tool_result","toolName":event.tool_name,"input":event.input,"isError":event.is_error}),at_session,&hash(at_session),&ctx.cwd,&skills_root)} else {Vec::new()}} else {Vec::new()};let capture=Arc::clone(&capture);Box::pin(async move {for (name,properties) in output {capture(name,properties);}Ok(EventResult::None)})}));
     api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear(ctx.session_manager.session_id());Box::pin(async {Ok(EventResult::None)})}));
 }
 #[cfg(test)]

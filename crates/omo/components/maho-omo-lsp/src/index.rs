@@ -79,6 +79,8 @@ impl LspComponent {
                 });
                 let formatted=formatter.format_tool_result(event,&ctx.cwd,Some(ctx.session_manager.session_id())).await;
                 let has_format_content=formatted.content.is_some();
+                // Nothing to append and no diagnostics to run: skip copying the whole tool result.
+                if !has_format_content && formatted.error.as_deref().is_none_or(str::is_empty) && (!diagnostics_enabled || !should_run_post_edit_diagnostics(event)) {return Ok(EventResult::None);}
                 let mut after_format=event.clone();
                 if let Some(content)=formatted.content {after_format.content.extend(content);}
                 let formatted_result=||if has_format_content {EventResult::ToolResult(ToolResultEventResult {content:Some(after_format.content.clone()),details:None,is_error:None,usage:None})} else {EventResult::None};
