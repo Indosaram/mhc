@@ -62,7 +62,8 @@ pub fn is_local_path(value: &str) -> bool {
         || trimmed.starts_with("github:")
         || trimmed.starts_with("http:")
         || trimmed.starts_with("https:")
-        || trimmed.starts_with("ssh:"))
+        || trimmed.starts_with("ssh:")
+        || trimmed.starts_with("builtin:"))
 }
 
 /// `normalizeWindowsShellPath`: convert Git Bash/MSYS/Cygwin/WSL drive paths.
@@ -218,6 +219,7 @@ mod tests {
         assert!(!is_local_path("npm:foo"));
         assert!(!is_local_path("git:github.com/x/y"));
         assert!(!is_local_path("https://example.com"));
+        assert!(!is_local_path("builtin:task-member"));
     }
 
     #[test]
