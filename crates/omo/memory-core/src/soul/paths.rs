@@ -1,7 +1,11 @@
 //! Soul file identity and result directives for memory modifications.
 
 /// Canonical soul file paths monitored for persona and identity mutations.
-pub const SOUL_PATHS: [&str; 2] = ["system/persona.md", "system/identity.md"];
+pub const SOUL_PATHS: [&str; 3] = [
+    "system/persona.md",
+    "system/identity.md",
+    "system/boundaries.md",
+];
 
 /// Stable machine-consumed token embedded in tool result soul-edit directives.
 pub const MEMORY_SOUL_EDIT_RESULT_TOKEN: &str = "soul edit";
