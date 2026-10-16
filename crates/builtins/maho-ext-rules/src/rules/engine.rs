@@ -73,21 +73,21 @@ impl Engine {
         let mut seen_targets = BTreeSet::new();
         let mut seen_rules = BTreeSet::new();
         let mut caches = LoadCaches::default();
-        let mut roots = BTreeMap::new();
         let mut candidate_sets = BTreeMap::new();
         for target in targets {
             if !seen_targets.insert(target) { continue; }
-            let directory = super::finder::absolute(target).parent().map(Path::to_path_buf).unwrap_or_default();
-            let root = roots.entry(directory.clone()).or_insert_with(|| super::project_root::widen_to_repository_root(self.deps.find_project_root(target), &self.home_dir)).clone();
-            let candidates = candidate_sets.entry((root.clone(), directory)).or_insert_with(|| self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery));
+            let discovery_target = canonicalize_path(target);
+            let directory = discovery_target.parent().map(Path::to_path_buf).unwrap_or_default();
+            let root = self.deps.find_project_root(discovery_target.parent().unwrap_or(&discovery_target));
+            let candidates = candidate_sets.entry((root.clone(), directory)).or_insert_with(|| self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(&discovery_target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery));
             for candidate in sort_candidates(candidates) {
                 let Some(mut rule) = load_candidate_cached(candidate, root.as_deref(), &mut result.diagnostics, &mut caches, self.deps.as_ref()) else { continue; };
-                let basename = target.file_name().unwrap_or_default().to_string_lossy();
-                let relative = root.as_deref().map(|root| relative_path(root, target)).unwrap_or_else(|| basename.to_string());
+                let basename = discovery_target.file_name().unwrap_or_default().to_string_lossy();
+                let relative = root.as_deref().map(|root| relative_path(root, &discovery_target)).unwrap_or_else(|| basename.to_string());
                 let scope = if rule.candidate.is_global { None } else if rule.candidate.is_single_file { Path::new(&rule.candidate.path).parent().map(Path::to_path_buf) } else {
                     root.as_ref().map(|root| rule.candidate.relative_path.find(&rule.candidate.source).map_or_else(|| root.clone(), |index| root.join(rule.candidate.relative_path[..index].trim_end_matches('/'))))
                 };
-                let scope_relative = scope.as_deref().map(|scope| relative_path(scope, target));
+                let scope_relative = scope.as_deref().map(|scope| relative_path(scope, &discovery_target));
                 let key = [root.as_ref().map_or_else(String::new, |root| root.to_string_lossy().into_owned()), super::finder::absolute(target).to_string_lossy().replace('\\', "/"), rule.candidate.real_path.clone(), rule.candidate.relative_path.clone(), rule.candidate.source.clone(), if rule.candidate.is_global { "global" } else { "project" }.into(), if rule.candidate.is_single_file { "single" } else { "multi" }.into(), rule.candidate.distance.to_string(), rule.content_hash.clone()].join("\0");
                 let reason = if let Some(index) = self.dynamic_matches.iter().position(|(cached, _)| cached == &key) {
                     let cached = self.dynamic_matches.remove(index).unwrap_or_else(||unreachable!("existing cache index"));
@@ -115,13 +115,13 @@ impl Engine {
         if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Static) { return Vec::new(); }
         let disabled = self.disabled_sources();
         let mut discovery = RuleDiscoveryCache::default();
-        let cwd_root = self.deps.find_project_root(cwd);
         let mut seen = BTreeSet::new();
         let mut result = Vec::new();
         for target in targets {
             if !seen.insert(target) { continue; }
-            let root = super::project_root::widen_to_repository_root(if cwd_root.as_deref().is_some_and(|root| target.starts_with(root)) { cwd_root.clone() } else { self.deps.find_project_root(target) }, &self.home_dir);
-            let candidates = self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery);
+            let discovery_target = canonicalize_path(target);
+            let root = self.deps.find_project_root(discovery_target.parent().unwrap_or(&discovery_target));
+            let candidates = self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(&discovery_target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery);
             let candidate_fingerprints = sort_candidates(&candidates).into_iter().map(|candidate| {
                 let stat = self.deps.file_fingerprint(Path::new(&candidate.path));
                 [candidate.real_path, candidate.relative_path, candidate.source, if candidate.is_global { "global" } else { "project" }.into(), if candidate.is_single_file { "single" } else { "multi" }.into(), candidate.distance.to_string(), stat].join("\0")
@@ -148,6 +148,9 @@ pub fn relative_path(base: &Path, target: &Path) -> String {
     let target: Vec<_> = target.components().collect();
     let shared = base.iter().zip(&target).take_while(|(base, target)| base == target).count();
     std::iter::repeat_n("..".to_owned(), base.len() - shared).chain(target[shared..].iter().map(|component| component.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>().join("/")
+}
+fn canonicalize_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| super::finder::absolute(path))
 }
 fn load_candidate_cached(candidate: RuleCandidate, root: Option<&Path>, diagnostics: &mut Vec<RuleDiagnostic>, caches: &mut LoadCaches, deps: &dyn EngineDeps) -> Option<LoadedRule> {
     let key = (root.map(Path::to_path_buf), candidate.real_path.clone());

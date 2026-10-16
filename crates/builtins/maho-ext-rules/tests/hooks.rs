@@ -58,6 +58,11 @@ fn context() -> ExtensionContext {
         get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
         registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default() }
 }
+fn with_cwd(mut ctx: ExtensionContext, cwd: &std::path::Path) -> ExtensionContext {
+    ctx.cwd = cwd.into();
+    ctx.get_system_prompt_options_fn = Arc::new({ let cwd = cwd.to_path_buf(); move || BuildSystemPromptOptions { cwd: cwd.clone(), ..Default::default() } });
+    ctx
+}
 
 #[tokio::test]
 async fn static_hook_reemits_from_base_and_omits_native_context() {
@@ -65,11 +70,11 @@ async fn static_hook_reemits_from_base_and_omits_native_context() {
  std::fs::write(root.path().join("Cargo.toml"), "").unwrap();
  let instructions = root.path().join("AGENTS.md");
  std::fs::write(&instructions, "fixture").unwrap();
- let mut ctx = context(); ctx.cwd = root.path().into();
+ let ctx = with_cwd(context(), root.path());
  let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
  let home = tempfile::tempdir().unwrap();
  maho_ext_rules::Rules::register_with_config(&mut api, maho_ext_rules::config::config_from_environment(|_| None), home.path().into());
- let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), images: None, system_prompt: "base".into(), system_prompt_options: BuildSystemPromptOptions::default() });
+ let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), images: None, system_prompt: "base".into(), system_prompt_options: (ctx.get_system_prompt_options_fn)() });
  let hook = &api.registered.handlers[&EventKind::BeforeAgentStart][0];
  let first = hook(&mut event, &ctx).await.unwrap();
  let second = hook(&mut event, &ctx).await.unwrap();
@@ -89,7 +94,7 @@ async fn dynamic_hook_injects_structural_grammar_matched_rule() {
  std::fs::create_dir_all(root.path().join(".omo/rules")).unwrap();
  std::fs::write(root.path().join(".omo/rules/grammar.md"), "---\nglobs: ['**/*.{rs,ts}']\n---\nfixture grammar rule").unwrap();
  std::fs::write(root.path().join("sample.rs"), "fn main() {}").unwrap();
- let mut ctx = context(); ctx.cwd = root.path().into();
+ let ctx = with_cwd(context(), root.path());
  let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
  api.runtime.bind(Arc::new(RecordingActions::default()));
  let home = tempfile::tempdir().unwrap();
@@ -109,7 +114,7 @@ async fn dynamic_hook_injects_extglob_rule_for_matching_target() {
  std::fs::create_dir_all(root.path().join(".omo/rules")).expect("rules");
  std::fs::write(root.path().join(".omo/rules/grammar.md"), "---\nglobs: '**/*.@(rs|ts)'\n---\nfixture").expect("rule");
  std::fs::write(root.path().join("sample.rs"), "fn main() {}").expect("target");
- let mut ctx = context(); ctx.cwd = root.path().into();
+ let ctx = with_cwd(context(), root.path());
  let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
  let actions = Arc::new(RecordingActions::default());
  api.runtime.bind(actions.clone());
@@ -130,7 +135,7 @@ async fn registered_hook_tracks_dynamic_injection_across_session_transitions() {
  std::fs::create_dir_all(root.path().join(".omo/rules")).expect("rules");
  std::fs::write(root.path().join(".omo/rules/native.md"), "---\nglobs: \"*.rs\"\n---\ndynamic fixture").expect("rule");
  std::fs::write(root.path().join("file.rs"), "target").expect("target");
- let mut ctx = context(); ctx.cwd = root.path().into();
+ let ctx = with_cwd(context(), root.path());
  let mut api = ExtensionApi::new(LoadedExtension::new("rules", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
  let actions = Arc::new(RecordingActions::default());
  api.runtime.bind(actions.clone());
