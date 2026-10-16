@@ -116,7 +116,11 @@ fn build_task_tool_params() -> Value {
                             "items": { "type": "string" },
                             "description": "Skills loaded for this task."
                         },
-                        "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool names to capture from the parent session for this child." }
+                        "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool names to capture from the parent session for this child." },
+                        "run_in_background": {
+                            "type": "boolean",
+                            "description": "Must agree with the top-level batch mode."
+                        }
                     },
                     "required": ["prompt"]
                 },

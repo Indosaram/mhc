@@ -258,7 +258,7 @@ pub fn single_spawn_params(
         description: item.description.clone(),
         category,
         subagent_type,
-        run_in_background,
+        run_in_background: item.run_in_background.or(run_in_background),
         name: item.name.clone(),
         model: item.model.clone(),
         load_skills: Some(item.load_skills.clone()),

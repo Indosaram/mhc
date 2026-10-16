@@ -10,7 +10,7 @@ mod types;
 
 pub use builtin::{
     AGENT_FALLBACK_CHAINS, BUILTIN_AGENT_DEFAULTS, agent_fallback_chain, builtin_agent,
-    curated_readonly_agent_names,
+    canonical_agent_name, curated_readonly_agent_names, ulw_reviewer_agent_names,
 };
 pub use loader::{
     AgentRegistry, load_agents, load_agents_with_registry, map_omo_config_agents, register_agent,

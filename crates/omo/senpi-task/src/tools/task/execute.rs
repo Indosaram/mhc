@@ -24,6 +24,7 @@ use crate::tools::task::types::{
 use crate::tools::task::validation::{
     BatchShape, SpawnParamsInput, TargetInput, TaskTargetSelection, resolve_spawn_items,
     validate_batch_shape, validate_task_target,
+    RunInBackgroundResolution, resolve_run_in_background,
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -98,6 +99,10 @@ impl TaskExecute<'_> {
         let Some(first) = items.first() else {
             return Ok(invalid_arguments("Provide at least one task item."));
         };
+        let run_in_background = match resolve_run_in_background(params) {
+            RunInBackgroundResolution::Value(value) => value,
+            RunInBackgroundResolution::Conflict(message) => return Ok(invalid_arguments(&message)),
+        };
         // `apply`/`merge` are isolation-only: asking to merge a child that never ran in a clone is a
         // caller mistake, refused BEFORE any spawn so zero child sessions are created.
         for item in &items {
@@ -123,7 +128,7 @@ impl TaskExecute<'_> {
             return run_spawn(
                 self.deps,
                 RunSpawnInput {
-                    params: single_spawn_params(first, params.run_in_background),
+                    params: single_spawn_params(first, run_in_background),
                     signal,
                     on_update,
                     ctx,
@@ -134,7 +139,6 @@ impl TaskExecute<'_> {
 
         let deps = self.deps;
         let parent_session_id = ctx.session_id.clone();
-        let run_in_background = params.run_in_background;
         let skill_summaries: Mutex<HashMap<usize, TaskSkillSummary>> = Mutex::default();
         let start_item = |item: &ResolvedSpawnItem| -> Result<StartResult, String> {
             let mut item_params: SingleSpawnParams = single_spawn_params(item, run_in_background);
@@ -207,7 +211,7 @@ impl TaskExecute<'_> {
             items: &items,
             signal,
             ctx,
-            run_in_background: params.run_in_background == Some(true),
+            run_in_background: run_in_background == Some(true),
             start_item: start_item_static,
             skill_summary_for: Some(skill_summary_static),
             options: self.options.clone(),

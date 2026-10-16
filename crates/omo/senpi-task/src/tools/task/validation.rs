@@ -56,6 +56,7 @@ pub struct SpawnItemInput {
     pub isolated: Option<bool>,
     pub apply: Option<bool>,
     pub merge: Option<IsolationMergeMode>,
+    pub run_in_background: Option<bool>,
 }
 
 /// The spawn-shaped subset of the task tool params.
@@ -75,6 +76,34 @@ pub struct SpawnParamsInput {
     pub merge: Option<IsolationMergeMode>,
     pub run_in_background: Option<bool>,
     pub tasks: Option<Vec<SpawnItemInput>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunInBackgroundResolution {
+    Value(Option<bool>),
+    Conflict(String),
+}
+
+const RUN_IN_BACKGROUND_CONFLICT_MESSAGE: &str = "run_in_background is batch-wide: every value in one task call must agree. Set it once at the top level (true returns every task id immediately; false waits for every result) and drop the disagreeing item-level values.";
+
+pub fn resolve_run_in_background(params: &SpawnParamsInput) -> RunInBackgroundResolution {
+    let mut values = Vec::new();
+    if let Some(value) = params.run_in_background {
+        values.push(("top-level".to_string(), value));
+    }
+    for (index, item) in params.tasks.iter().flatten().enumerate() {
+        if let Some(value) = item.run_in_background {
+            values.push((format!("tasks[{index}]"), value));
+        }
+    }
+    let has_true = values.iter().any(|(_, value)| *value);
+    let has_false = values.iter().any(|(_, value)| !*value);
+    if has_true && has_false {
+        let seen = values.iter().map(|(label, value)| format!("{label}={value}")).collect::<Vec<_>>().join(", ");
+        RunInBackgroundResolution::Conflict(format!("{RUN_IN_BACKGROUND_CONFLICT_MESSAGE} Seen: {seen}."))
+    } else {
+        RunInBackgroundResolution::Value(values.first().map(|(_, value)| *value))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +238,7 @@ fn single_item(params: &SpawnParamsInput, prompt: &str) -> SpawnItemInput {
         isolated: params.isolated,
         apply: params.apply,
         merge: params.merge,
+        run_in_background: params.run_in_background,
         ..SpawnItemInput::default()
     }
 }
@@ -266,6 +296,7 @@ pub fn resolve_spawn_items(
                 .or_else(|| params.load_skills.clone())
                 .unwrap_or_default(),
             tools: input.tools.or_else(|| params.tools.clone()),
+            run_in_background: input.run_in_background.or(params.run_in_background),
             target,
         });
     }

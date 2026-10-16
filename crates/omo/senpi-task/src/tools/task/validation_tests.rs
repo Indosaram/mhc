@@ -2,9 +2,23 @@
 // allow: SIZE_OK - one-to-one translation of validation.test.ts.
 
 use pretty_assertions::assert_eq;
+use crate::tools::task::types::{TaskToolDetails, TaskToolItemDetail, TaskToolMode};
 
 use super::*;
-use crate::tools::task::types::{TaskToolDetails, TaskToolItemDetail, TaskToolMode};
+
+#[test]
+fn rejects_disagreeing_run_in_background_values() {
+    let params = SpawnParamsInput {
+        run_in_background: Some(true),
+        tasks: Some(vec![SpawnItemInput {
+            prompt: "first".into(),
+            run_in_background: Some(false),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    assert!(matches!(resolve_run_in_background(&params), RunInBackgroundResolution::Conflict(_)));
+}
 
 fn target(
     category: Option<&str>,
@@ -194,6 +208,7 @@ fn given_legacy_single_prompt_params_when_resolved_then_yields_exactly_one_item(
             merge: None,
             load_skills: strings(&["a"]),
             tools: None,
+            run_in_background: None,
             target: SpawnTarget::SubagentType("momus".to_string()),
         }]
     );
@@ -386,6 +401,7 @@ fn given_the_batch_types_when_constructed_then_resolved_item_and_item_detail_hav
         merge: None,
         load_skills: Vec::new(),
         tools: None,
+        run_in_background: None,
         target: SpawnTarget::Category("quick".to_string()),
     };
     let detail = TaskToolItemDetail {
