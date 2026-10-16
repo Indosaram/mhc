@@ -23,6 +23,7 @@ const BRACKETED_PASTE_START: &str = "\x1b[200~";
 const BRACKETED_PASTE_END: &str = "\x1b[201~";
 const MOUSE_FRAGMENT_MAX_LEN: usize = 64;
 const MOUSE_FRAGMENT_GRACE_MS: u64 = 750;
+const DEFAULT_BURST_WINDOW_MS: u64 = 20;
 
 /// Millisecond clock; tests inject a manual one.
 pub trait Clock: Send + Sync {
@@ -229,6 +230,7 @@ pub struct StdinBufferOptions {
     pub timeout: Option<u64>,
     /// Max wait after a lone ESC before treating it as Escape (default 10ms).
     pub escape_timeout: Option<u64>,
+    pub burst_window_ms: Option<u64>,
 }
 
 /// Incremental UTF-8 decoder with Node `StringDecoder` semantics: a truncated trailing
@@ -299,6 +301,11 @@ pub struct StdinBuffer {
     deadline_flushes_only: bool,
     timeout_ms: u64,
     escape_timeout_ms: u64,
+    burst_window_ms: u64,
+    last_input_at: Option<u64>,
+    held_newline: String,
+    held_newline_ends_paste: bool,
+    last_burst_paste_at: Option<u64>,
     mouse_fragment_started_at: Option<u64>,
     discarding_mouse_fragment: bool,
     paste_mode: bool,
@@ -320,6 +327,11 @@ impl StdinBuffer {
             deadline_flushes_only: false,
             timeout_ms: options.timeout.unwrap_or(DEFAULT_SEQUENCE_TIMEOUT_MS),
             escape_timeout_ms: options.escape_timeout.unwrap_or(DEFAULT_ESCAPE_TIMEOUT_MS),
+            burst_window_ms: options.burst_window_ms.unwrap_or(DEFAULT_BURST_WINDOW_MS),
+            last_input_at: None,
+            held_newline: String::new(),
+            held_newline_ends_paste: false,
+            last_burst_paste_at: None,
             mouse_fragment_started_at: None,
             discarding_mouse_fragment: false,
             paste_mode: false,
@@ -345,6 +357,15 @@ impl StdinBuffer {
         }
         let flush_only = self.deadline_flushes_only;
         self.deadline = None;
+        if !self.held_newline.is_empty() {
+            let mut events = Vec::new();
+            self.release_held_newline(&mut events);
+            if !self.buffer.is_empty() {
+                let flushed = self.flush();
+                for sequence in flushed { self.emit_data_sequence(sequence, &mut events); }
+            }
+            return events;
+        }
         let flushed = self.flush();
         let mut events = Vec::new();
         if !flush_only {
@@ -405,6 +426,20 @@ impl StdinBuffer {
             }
             self.discarding_mouse_fragment = false;
         }
+        let chunk_at = (!s.is_empty()).then(|| self.clock.now_ms());
+        let burst_gap = chunk_at.zip(self.last_input_at).map(|(now, last)| now.saturating_sub(last));
+        if let Some(now) = chunk_at {
+            self.last_input_at = Some(now);
+        }
+        if !self.held_newline.is_empty() {
+            if burst_gap.is_some_and(|gap| gap >= self.burst_window_ms) {
+                self.release_held_newline(events);
+            } else {
+                self.buffer.push_str(&self.held_newline);
+                self.held_newline.clear();
+                self.held_newline_ends_paste = false;
+            }
+        }
         self.buffer.push_str(&s);
 
         if self.paste_mode {
@@ -413,6 +448,11 @@ impl StdinBuffer {
             self.buffer.clear();
             self.finish_paste_if_complete(previous_len, events);
             return;
+        }
+
+        if self.buffer.find(BRACKETED_PASTE_START).is_some() {
+            self.held_newline.clear();
+            self.held_newline_ends_paste = false;
         }
 
         if let Some(start_index) = self.buffer.find(BRACKETED_PASTE_START) {
@@ -430,6 +470,11 @@ impl StdinBuffer {
             self.finish_paste_if_complete(0, events);
             return;
         }
+
+        if self.consume_unbracketed_burst(burst_gap, events) {
+            return;
+        }
+
 
         let result = extract_complete_sequences(&self.buffer);
         self.buffer = result.remainder;
@@ -457,6 +502,62 @@ impl StdinBuffer {
             };
             self.set_timer(ms, false);
         }
+    }
+
+    fn line_break_count(text: &str) -> usize {
+        let mut count = 0;
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\r' {
+                count += 1;
+                if chars.peek() == Some(&'\n') { chars.next(); }
+            } else if ch == '\n' { count += 1; }
+        }
+        count
+    }
+
+    fn consume_unbracketed_burst(&mut self, burst_gap: Option<u64>, events: &mut Vec<StdinEvent>) -> bool {
+        let text = &self.buffer;
+        if text.is_empty() || text.contains(ESC) || text.contains(BRACKETED_PASTE_START) { return false; }
+        let breaks = Self::line_break_count(text);
+        if breaks == 0 { return false; }
+        let has_text = text.chars().any(|ch| ch != '\r' && ch != '\n');
+        let mut seen_break = false;
+        let mut newline_before_text = false;
+        let mut previous_cr = false;
+        for ch in text.chars() {
+            if ch == '\r' || ch == '\n' {
+                if ch == '\n' && previous_cr { previous_cr = false; continue; }
+                seen_break = true;
+            } else if seen_break { newline_before_text = true; break; }
+            previous_cr = ch == '\r';
+        }
+        if (breaks >= 2 || newline_before_text) && has_text {
+            let paste = std::mem::take(&mut self.buffer);
+            self.last_burst_paste_at = self.last_input_at;
+            events.push(StdinEvent::Paste(paste));
+            return true;
+        }
+        let trailing_start = text.char_indices().rev().find(|(_, ch)| *ch != '\r' && *ch != '\n').map_or(0, |(i,ch)| i + ch.len_utf8());
+        if trailing_start == text.len() || burst_gap.is_none_or(|gap| gap >= self.burst_window_ms) { return false; }
+        let head = self.buffer[..trailing_start].to_string();
+        let trailing = self.buffer[trailing_start..].to_string();
+        let ends_paste = self.last_burst_paste_at.zip(self.last_input_at).is_some_and(|(paste, now)| now.saturating_sub(paste) < self.burst_window_ms);
+        if head.is_empty() && !ends_paste { return false; }
+        for ch in head.chars() { self.emit_data_sequence(ch.to_string(), events); }
+        self.buffer.clear();
+        self.held_newline = trailing;
+        self.held_newline_ends_paste = ends_paste;
+        self.set_timer(self.burst_window_ms, true);
+        true
+    }
+
+    fn release_held_newline(&mut self, events: &mut Vec<StdinEvent>) {
+        if self.held_newline.is_empty() { return; }
+        let held = std::mem::take(&mut self.held_newline);
+        let ends_paste = std::mem::replace(&mut self.held_newline_ends_paste, false);
+        if ends_paste { events.push(StdinEvent::Paste(held)); }
+        else { for ch in held.chars() { self.emit_data_sequence(ch.to_string(), events); } }
     }
 
     /// `searched_len` bytes of `paste_buffer` were already searched without finding the end
@@ -525,6 +626,10 @@ impl StdinBuffer {
     pub fn clear(&mut self) {
         self.deadline = None;
         self.buffer.clear();
+        self.last_input_at = None;
+        self.held_newline.clear();
+        self.held_newline_ends_paste = false;
+        self.last_burst_paste_at = None;
         self.paste_mode = false;
         self.paste_buffer.clear();
         self.mouse_fragment_started_at = None;

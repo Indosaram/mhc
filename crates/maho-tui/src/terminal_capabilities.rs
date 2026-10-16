@@ -87,7 +87,7 @@ pub fn detect_terminal_capabilities_in(
     let term_program = get("TERM_PROGRAM").to_lowercase();
     let terminal_emulator = get("TERMINAL_EMULATOR");
     let color_term = get("COLORTERM");
-    let true_color = color_term == "truecolor" || color_term == "24bit";
+    let true_color = color_term == "truecolor" || color_term == "24bit" || term.ends_with("-direct");
 
     if has("TMUX") || term.starts_with("tmux") {
         let detector = *TMUX_IMAGE_DETECTOR
@@ -190,6 +190,8 @@ mod tests {
         assert_eq!(d(&[]), caps(None, false, false));
         let win = detect_terminal_capabilities_in(&env_from(&[]), "win32", None);
         assert_eq!(win, caps(None, true, false));
+        assert!(d(&[("TERM", "xterm-truecolor-direct")]).true_color);
+        assert!(!d(&[("TERM", "xterm-256color")]).true_color);
     }
 
     #[test]

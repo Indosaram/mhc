@@ -36,9 +36,6 @@ use crate::utils::{
     truncate_to_width, visible_width, word_segments,
 };
 
-/// A double/triple-click word-selection joiner set: fullscreen owns mouse selection and
-/// mirrors common terminal word-selection behavior by keeping paths and kebab-case tokens
-/// whole (senpi's `TERMINAL_WORD_SELECTION_JOINERS`).
 /// Opens a URL from the transcript (Ctrl+click).
 pub type OpenUrlFn = Rc<dyn Fn(&str)>;
 /// senpi's `onRightClickPaste`: handles an unmodified secondary-button press for clipboard paste.
@@ -86,8 +83,6 @@ fn same_scroll_view(a: &Option<Rc<RefCell<ScrollView>>>, b: &Option<Rc<RefCell<S
     }
 }
 
-/// senpi's `copySelection` option: copy text to the system clipboard and report success
-/// through the returned channel (senpi's `Promise<boolean>`).
 pub type CopySelectionHook = Rc<dyn Fn(String) -> std::sync::mpsc::Receiver<bool>>;
 
 const SELECTION_AUTO_SCROLL_INTERVAL_MS: u64 = 50;
@@ -1329,10 +1324,11 @@ impl TuiAltScreen {
 
     /// senpi's `getWheelScrollLines`: SGR button bit 3 (value 8) is the Alt modifier.
     fn get_wheel_scroll_lines(&self, button: i64) -> i64 {
+        let lines = self.wheel_scroll_lines;
         if (button & 8) != 0 {
-            self.wheel_scroll_lines * ALT_WHEEL_SCROLL_MULTIPLIER
+            lines * ALT_WHEEL_SCROLL_MULTIPLIER
         } else {
-            self.wheel_scroll_lines
+            lines
         }
     }
 
@@ -1845,7 +1841,8 @@ impl TuiAltScreen {
             }
         });
         for ok in finished {
-            self.flash(if ok { "Copied!" } else { "Copy failed" }, None, now_ms);
+            if ok { self.flash("Copied!", None, now_ms); }
+            else { self.flash("Copy failed", None, now_ms); }
             render = true;
         }
         if self.flashes.tick(now_ms) {

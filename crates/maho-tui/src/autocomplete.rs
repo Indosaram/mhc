@@ -19,6 +19,10 @@ use crate::slash_command_autocomplete::get_slash_command_suggestions;
 
 const PATH_DELIMITERS: [char; 5] = [' ', '\t', '"', '\'', '='];
 
+fn is_autocomplete_separator(ch: char) -> bool {
+    matches!(ch, '，' | '．' | '。' | '、' | '；' | '：' | '！' | '？' | '）' | '】' | '》' | '」' | '』' | '〉' | '〕' | '｝' | '］' | '｠' | '“' | '”' | '‘' | '’' | '…' | '—' | '»')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AutocompleteItem {
     pub value: String,
@@ -249,7 +253,7 @@ fn build_fd_path_query(query: &str) -> String {
 fn find_last_delimiter(text: &str) -> Option<usize> {
     text.char_indices()
         .rev()
-        .find(|(_, ch)| PATH_DELIMITERS.contains(ch))
+        .find(|(_, ch)| PATH_DELIMITERS.contains(ch) || is_autocomplete_separator(*ch))
         .map(|(index, _)| index)
 }
 
@@ -278,7 +282,7 @@ fn is_token_start(text: &str, index: usize) -> bool {
     text[..index]
         .chars()
         .next_back()
-        .is_some_and(|ch| PATH_DELIMITERS.contains(&ch))
+        .is_some_and(|ch| PATH_DELIMITERS.contains(&ch) || is_autocomplete_separator(ch) || matches!(ch, '(' | '[' | '{' | '<' | '`'))
 }
 
 fn extract_quoted_prefix(text: &str) -> Option<String> {
@@ -609,8 +613,9 @@ impl CombinedAutocompleteProvider {
             None => 0,
         };
 
-        if text[token_start..].starts_with('@') {
-            return Some(text[token_start..].to_string());
+        let token = &text[token_start..];
+        if token.starts_with('@') {
+            return Some(token.to_string());
         }
 
         None
