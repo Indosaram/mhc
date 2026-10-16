@@ -268,7 +268,23 @@ impl DagStorePaths {
     }
 
     pub fn result(&self, run_id: &str, node_id: &str) -> PathBuf {
-        self.results.join(run_id).join(format!("{node_id}.txt"))
+        if !crate::dag::types::is_safe_dag_path_segment(run_id) {
+            panic!("Unsafe dag result path: run id \"{run_id}\" is not a safe path segment");
+        }
+        let run_dir = self.results.join(run_id);
+        let output = run_dir.join(format!("{node_id}.txt"));
+        let relative = output.strip_prefix(&run_dir).ok();
+        if relative.is_none_or(|path| {
+            path.is_absolute()
+                || path == Path::new("..")
+                || path.components().any(|component| component == std::path::Component::ParentDir)
+        }) {
+            panic!("Unsafe dag result path: node id \"{node_id}\" escapes the run results directory");
+        }
+        if !crate::dag::types::is_safe_dag_path_segment(node_id) {
+            panic!("Unsafe dag result path: node id \"{node_id}\" is not a safe path segment");
+        }
+        output
     }
 
     pub fn run_lock(&self, run_id: &str) -> PathBuf {
@@ -1284,13 +1300,7 @@ fn corrupt(
 }
 
 fn assert_safe_segment(value: &str, label: &str) -> Result<(), DagStoreError> {
-    if value.is_empty()
-        || value == "."
-        || value == ".."
-        || value.contains('/')
-        || value.contains('\\')
-        || value.contains('\0')
-    {
+    if !crate::dag::types::is_safe_dag_path_segment(value) {
         return Err(DagStoreError::Message(format!("Invalid {label}")));
     }
     Ok(())

@@ -633,7 +633,7 @@ fn start_run_locked(
         .map_err(DagManagerError::from)?;
     // A key whose run record is gone (retention pruned it) is stale, not a conflict: the key is
     // rewritten by the fresh run below. Conflict is reserved for a key with a LIVE divergent run.
-    let existing = match existing_key {
+    let existing = match &existing_key {
         Some(key) => inner
             .store
             .read_checkpoint::<DagRunRecordV1>(&key.run_id)
@@ -650,6 +650,14 @@ fn start_run_locked(
                 ),
             )
             .with_run_id(existing.run_id.clone()));
+        }
+        if let Some(key) = existing_key.as_ref()
+            && key.definition_fingerprint.as_deref() != Some(definition_fingerprint)
+        {
+            return Err(DagManagerError::new(
+                DagManagerErrorCode::DefinitionConflict,
+                format!("dag run key \"{}\" has a mismatched stored fingerprint", definition.key),
+            ).with_run_id(existing.run_id.clone()));
         }
         // Reuse never re-materializes skills: the run keeps its creation-time effective_prompt.
         return Ok(DagStartResult {

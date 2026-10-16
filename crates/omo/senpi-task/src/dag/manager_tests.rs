@@ -16,6 +16,33 @@ const PARENT_SESSION_ID: &str = "ses_parent";
 const OTHER_SESSION_ID: &str = "ses_other";
 const ROOT_SESSION_ID: &str = "ses_root";
 
+#[test]
+fn given_a_reused_run_when_its_stored_key_fingerprint_differs_then_reuse_is_rejected() {
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let started = dag.start(DagStartParams {
+        definition: plan_build_definition(),
+        parent_session_id: PARENT_SESSION_ID.to_string(),
+        root_session_id: ROOT_SESSION_ID.to_string(),
+    }).expect("start run");
+    let key = store.read_key(PARENT_SESSION_ID, "release-plan")
+        .expect("key read").expect("key");
+    store.write_key(&crate::dag::store::DagKeyRecord {
+        schema_version: crate::dag::types::SchemaVersion1,
+        parent_session_id: key.parent_session_id,
+        run_key: key.run_key,
+        run_id: started.snapshot.run_id,
+        definition_fingerprint: Some("mismatch".to_string()),
+    }).expect("rewrite key");
+    let error = dag.start(DagStartParams {
+        definition: plan_build_definition(),
+        parent_session_id: PARENT_SESSION_ID.to_string(),
+        root_session_id: ROOT_SESSION_ID.to_string(),
+    }).expect_err("mismatched key stamp must refuse reuse");
+    assert_eq!(error.code, DagManagerErrorCode::DefinitionConflict);
+}
+
 fn temp_project() -> std::path::PathBuf {
     tempfile::tempdir().expect("tempdir").keep()
 }
@@ -534,6 +561,33 @@ fn given_the_same_run_key_in_two_different_sessions_when_both_start_then_each_se
     assert!(!theirs.reused);
     assert_ne!(theirs.snapshot.run_id, mine.snapshot.run_id);
     assert_eq!(run_files(&store).len(), 2);
+}
+
+#[test]
+fn given_a_stored_key_with_a_mismatched_fingerprint_when_started_then_reuse_is_rejected() {
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let started = dag.start(DagStartParams {
+        definition: plan_build_definition(),
+        parent_session_id: PARENT_SESSION_ID.to_string(),
+        root_session_id: ROOT_SESSION_ID.to_string(),
+    }).expect("start");
+    let key = store.read_key(PARENT_SESSION_ID, "build").expect("read key").expect("key");
+    store.write_key(&crate::dag::store::DagKeyRecord {
+        schema_version: crate::dag::types::SchemaVersion1,
+        parent_session_id: key.parent_session_id,
+        run_key: key.run_key,
+        run_id: started.snapshot.run_id,
+        definition_fingerprint: Some("wrong-fingerprint".to_string()),
+    }).expect("tamper key fingerprint");
+
+    let error = dag.start(DagStartParams {
+        definition: plan_build_definition(),
+        parent_session_id: PARENT_SESSION_ID.to_string(),
+        root_session_id: ROOT_SESSION_ID.to_string(),
+    }).expect_err("fingerprint mismatch must block reuse");
+    assert_eq!(error.code, DagManagerErrorCode::DefinitionConflict);
 }
 
 #[test]
