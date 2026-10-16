@@ -3,12 +3,16 @@ use maho_core::agent_abort_provenance::AgentEndEvent;
 use maho_ext_api::AbortSource;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum GoalAgentEndRoute { PolicyBlock,SystemAbort,ProviderFailure,AgentEnd }
+pub fn terminal_auth_failure_route(goal:Option<&Goal>,event:&AgentEndEvent)->Option<crate::continuation_recovery::ProviderAuthBlock> {
+    if goal.is_some_and(|goal|goal.status==GoalStatus::Active) { crate::terminal_provider_error::terminal_provider_auth_failure(event) } else { None }
+}
 pub async fn persist_policy_block(reference:&crate::types::GoalStoreRef,monitor:&mut crate::monitor_continuation::MonitorAwareGoalContinuation,now:u64)->Result<Goal,crate::errors::GoalError> {
     let blocked=crate::store::update_goal(reference,&crate::types::GoalUpdate { status:Some(GoalStatus::Blocked),reason:Some("provider policy rejection ended the turn".into()),..Default::default() },crate::types::GoalUpdateSource::Model,now).await?;
     monitor.sync_goal(Some(&blocked)); Ok(blocked)
 }
 pub fn goal_agent_end_route(goal:Option<&Goal>,event:&AgentEndEvent)->GoalAgentEndRoute {
     if goal.is_some_and(|goal|goal.status==GoalStatus::Active) && did_terminal_policy_rejection_end_turn(event) { return GoalAgentEndRoute::PolicyBlock; }
+    if terminal_auth_failure_route(goal,event).is_some() { return GoalAgentEndRoute::PolicyBlock; }
     if event.aborted && event.abort_source==Some(AbortSource::System) { return GoalAgentEndRoute::SystemAbort; }
     if crate::last_assistant_message::last_assistant_message(&event.messages).is_some_and(crate::continuation::is_malformed_tool_use_turn) || did_terminal_provider_error_end_turn(event) { return GoalAgentEndRoute::ProviderFailure; }
     GoalAgentEndRoute::AgentEnd
