@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::journal::cursor::{
     ReflectionSnapshot, ReflectionTranscriptState, count_completed_steps,
 };
+use crate::journal::cursor::REFLECTION_SNAPSHOT_MAX_BYTES;
 
 /// Reflection trigger types that initiate or queue background runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -30,6 +31,8 @@ pub enum DreamOrigin {
     Idle,
     #[serde(rename = "shutdown")]
     Shutdown,
+    #[serde(rename = "pressure")]
+    Pressure,
 }
 
 /// Final outcome of an integrated reflection run.
@@ -58,7 +61,12 @@ pub struct TriggerConfig {
     pub step_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_compaction: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_max_bytes: Option<u64>,
 }
+
+pub const REFLECTION_PENDING_MAX_CONVERSATIONS: usize = 32;
+pub const REFLECTION_PENDING_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// In-memory snapshot of a conversation journal for transition evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,7 +213,7 @@ pub fn evaluate_transitions(mut state: MachineState, event: ReflectionEvent) -> 
                 focus,
                 recent_n,
             );
-            EvaluationResult {
+                return EvaluationResult {
                 state,
                 action: EvaluationAction::Reserve(request),
             }
@@ -249,16 +257,30 @@ pub fn evaluate_transitions(mut state: MachineState, event: ReflectionEvent) -> 
                     None,
                     None,
                 );
-                EvaluationResult {
+                return EvaluationResult {
                     state,
                     action: EvaluationAction::Reserve(request),
                 }
-            } else {
-                EvaluationResult {
-                    state,
-                    action: EvaluationAction::None,
-                }
             }
+            let budget = state.config.snapshot_max_bytes.unwrap_or(REFLECTION_SNAPSHOT_MAX_BYTES as u64);
+            let pressure_ready = budget > 0
+                && state.journal.state.unreflected_bytes.is_some_and(|bytes| bytes >= budget)
+                && !contains_trigger(&state.reservation, ReflectionTrigger::StepCount);
+            if pressure_ready {
+                let mut request = make_request(
+                    &state.journal,
+                    ReflectionTrigger::Dream,
+                    vec![state.journal.conversation_id.clone()],
+                    None,
+                    None,
+                );
+                request.origin = Some(DreamOrigin::Pressure);
+                return EvaluationResult {
+                    state,
+                    action: EvaluationAction::Reserve(request),
+                };
+            }
+            EvaluationResult { state, action: EvaluationAction::None }
         }
     }
 }
@@ -300,8 +322,23 @@ pub fn reserve_transition(
         },
     };
 
-    state.pending = Some(pending);
+    state.pending = Some(cap_pending_run(pending));
     (state, "pending")
+}
+
+fn cap_pending_run(mut run: ReservedRun) -> ReservedRun {
+    let mut seen = std::collections::BTreeSet::new();
+    run.request.conversation_ids.retain(|id| seen.insert(id.clone()));
+    run.request.snapshots.retain(|captured| seen.contains(&captured.conversation_id));
+    while seen.len() > REFLECTION_PENDING_MAX_CONVERSATIONS
+        || serde_json::to_vec(&run).map_or(0, |bytes| bytes.len()) > REFLECTION_PENDING_MAX_BYTES
+    {
+        let Some(oldest) = run.request.conversation_ids.first().cloned() else { break };
+        seen.remove(&oldest);
+        run.request.conversation_ids.remove(0);
+        run.request.snapshots.retain(|captured| captured.conversation_id != oldest);
+    }
+    run
 }
 
 /// Finalizes an active reflection run, updating cursors and promoting pending runs.
@@ -316,7 +353,9 @@ pub fn complete_transition(
         return Err(format!("Reflection run is not active: {run_id}"));
     }
 
-    let active_run = state.active.take().unwrap();
+    let Some(active_run) = state.active.take() else {
+        return Err(format!("Reflection run is not active: {run_id}"));
+    };
     let succeeded = outcome == ReflectionOutcome::Merged || outcome == ReflectionOutcome::NoChanges;
     let finalize = if succeeded {
         active_run.request.snapshots.clone()
@@ -427,6 +466,7 @@ fn trigger_priority(request: &ReflectionRequest) -> f64 {
         ReflectionTrigger::Manual => 3.0,
         ReflectionTrigger::Dream => match request.origin.unwrap_or(DreamOrigin::Manual) {
             DreamOrigin::Idle => 1.5,
+            DreamOrigin::Pressure => 1.5,
             DreamOrigin::Shutdown => 2.5,
             DreamOrigin::Manual => 3.0,
         },

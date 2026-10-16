@@ -7,6 +7,17 @@ use crate::journal::entries::{
 use crate::journal::store::{TranscriptJournal, TranscriptJournalOptions};
 
 #[test]
+fn reflected_byte_offset_stops_at_the_selected_message() {
+    let entries = vec![
+        TranscriptEntry::Text(TextTranscriptEntry { kind: "assistant".to_string(), text: "one".to_string(), captured_at: "t".to_string(), source_line_id: "l1".to_string(), source_message_id: "m1".to_string() }),
+        TranscriptEntry::Text(TextTranscriptEntry { kind: "assistant".to_string(), text: "two".to_string(), captured_at: "t".to_string(), source_line_id: "l2".to_string(), source_message_id: "m2".to_string() }),
+    ];
+    let offset = reflected_through_byte_offset(&entries, "m1");
+    assert!(offset > 0);
+    assert!(offset < journal_byte_offset(&entries));
+}
+
+#[test]
 fn test_reflection_state_not_mutated_when_aborted_signal_on_snapshot_capture() {
     // given
     let temp_dir = tempfile::tempdir().unwrap();

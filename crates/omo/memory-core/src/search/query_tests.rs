@@ -65,6 +65,12 @@ fn test_match_score_when_one_term_then_score_is_first_index_plus_short_term_bonu
 }
 
 #[test]
+fn normalized_scoring_reuses_prepared_haystack() {
+    let query = parse_query("BETA");
+    assert_eq!(match_score_normalized("alpha beta", &query), Some(52.0));
+}
+
+#[test]
 fn test_match_score_when_two_terms_then_per_term_contributions_sum() {
     let text = "alpha beta gamma";
     let score = match_score(text, &parse_query("alpha gamma"));

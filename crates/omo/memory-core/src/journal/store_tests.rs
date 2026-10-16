@@ -18,6 +18,30 @@ fn create_journal(dir: &Path) -> TranscriptJournal {
 }
 
 #[test]
+fn tolerant_snapshot_skips_torn_rows_without_creating_missing_journal() {
+    let temp = tempfile::tempdir().unwrap();
+    let journal = create_journal(temp.path().join("absent" ).as_path());
+    assert!(journal.read_entries_snapshot().unwrap().is_empty());
+    assert!(!journal.transcript_path.exists());
+    std::fs::create_dir_all(temp.path().join("present")).unwrap();
+    let journal = create_journal(temp.path().join("present").as_path());
+    std::fs::write(&journal.transcript_path, "{torn\n").unwrap();
+    assert!(journal.read_entries_snapshot().unwrap().is_empty());
+}
+
+#[test]
+fn consecutive_reflection_failures_use_bounded_exponential_backoff() {
+    let temp = tempfile::tempdir().unwrap();
+    let journal = create_journal(temp.path());
+    journal.record_reflection_failure_at(0).unwrap();
+    let first = journal.get_state().unwrap();
+    assert_eq!(first.consecutive_failures, Some(1));
+    assert_eq!(first.next_eligible_at.as_deref(), Some("1970-01-01T00:00:05.000Z"));
+    journal.record_reflection_failure_at(0).unwrap();
+    assert_eq!(journal.get_state().unwrap().next_eligible_at.as_deref(), Some("1970-01-01T00:00:10.000Z"));
+}
+
+#[test]
 fn test_rows_are_idempotent_and_steps_stay_derived_when_three_completed_assistant_messages_reconciled_twice()
  {
     // given

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::journal::cursor::{
-    ReflectionSnapshot, ReflectionTranscriptState, capture_cursor_snapshot, count_completed_steps,
-    derive_state, derive_state_with_total, finalize_cursor, initial_reflection_state, parse_state,
+    ReflectionSnapshot, ReflectionTranscriptState, capture_cursor_snapshot_with_max_bytes, count_completed_steps,
+    derive_state, derive_state_with_total, finalize_cursor, initial_reflection_state, journal_byte_offset, parse_state,
 };
 use crate::journal::entries::{
     TranscriptEntry, TranscriptProjection, parse_transcript_entry, project_transcript_entries,
@@ -80,6 +80,7 @@ pub struct TranscriptJournalOptions {
     pub journal_dir: PathBuf,
     pub now: Option<Box<dyn Fn() -> String + Send + Sync>>,
     pub lock: Option<Arc<dyn JournalLock>>,
+    pub snapshot_max_bytes: Option<u64>,
 }
 
 impl TranscriptJournalOptions {
@@ -89,6 +90,7 @@ impl TranscriptJournalOptions {
             journal_dir: journal_dir.into(),
             now: None,
             lock: None,
+            snapshot_max_bytes: None,
         }
     }
 }
@@ -101,6 +103,7 @@ pub struct TranscriptJournal {
     journal_dir: PathBuf,
     now: Box<dyn Fn() -> String + Send + Sync>,
     lock: Arc<dyn JournalLock>,
+    snapshot_max_bytes: Option<u64>,
 }
 
 impl TranscriptJournal {
@@ -120,6 +123,7 @@ impl TranscriptJournal {
             journal_dir: options.journal_dir,
             now,
             lock,
+            snapshot_max_bytes: options.snapshot_max_bytes,
         }
     }
 
@@ -187,6 +191,15 @@ impl TranscriptJournal {
         }
     }
 
+    fn read_entries_and_raw_unlocked(&self) -> Result<(Vec<TranscriptEntry>, String), JournalError> {
+        let raw = self.read_raw_unlocked()?;
+        let entries = raw.lines().filter(|line| !line.trim().is_empty()).map(|line| {
+            let value = serde_json::from_str(line).map_err(|_| JournalError::InvalidTranscriptJournalRow)?;
+            parse_transcript_entry(value)
+        }).collect::<Result<Vec<_>, _>>()?;
+        Ok((entries, raw))
+    }
+
     /// Validate every row without building entries; returns the completed-step count.
     fn count_completed_rows_unlocked(&self) -> Result<usize, JournalError> {
         let raw = self.read_raw_unlocked()?;
@@ -215,7 +228,12 @@ impl TranscriptJournal {
         state: &ReflectionTranscriptState,
         total_completed_steps: usize,
     ) -> Result<(), JournalError> {
-        let derived = derive_state_with_total(state, total_completed_steps);
+        let mut derived = derive_state_with_total(state, total_completed_steps);
+        let (entries, raw) = self.read_entries_and_raw_unlocked()?;
+        derived.unreflected_bytes = Some((raw.len() as u64).saturating_sub(derived.reflected_through_byte_offset.unwrap_or(0)));
+        if derived.reflected_through_byte_offset.is_none() {
+            derived.reflected_through_byte_offset = derived.reflected_through_message_id.as_deref().map(|id| crate::journal::cursor::reflected_through_byte_offset(&entries, id));
+        }
         let temp_filename = format!(
             "{}.tmp-{}",
             self.state_path
@@ -304,6 +322,52 @@ impl TranscriptJournal {
         self.locked(None, || self.read_entries_unlocked())
     }
 
+    pub fn read_entries_snapshot(&self) -> Result<Vec<TranscriptEntry>, JournalError> {
+        let raw = match std::fs::read_to_string(&self.transcript_path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(JournalError::Io(error)),
+        };
+        Ok(raw.lines().filter_map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).ok()?;
+            let row = value.as_object()?;
+            if !matches!(row.get("kind").and_then(serde_json::Value::as_str), Some("user" | "assistant" | "reasoning" | "error" | "tool_call"))
+                || !row.get("captured_at").is_some_and(serde_json::Value::is_string)
+                || !row.get("source_line_id").is_some_and(serde_json::Value::is_string)
+                || !row.get("source_message_id").is_some_and(serde_json::Value::is_string) { return None; }
+            parse_transcript_entry(value).ok()
+        }).collect())
+    }
+
+    pub fn record_reflection_failure_at(&self, now_millis: i64) -> Result<(), JournalError> {
+        self.locked(None, || {
+            let entries = self.read_entries_unlocked()?;
+            let mut state = self.read_state_unlocked()?;
+            let failures = state.consecutive_failures.unwrap_or(0).saturating_add(1);
+            let exponent = failures.saturating_sub(1).min(6);
+            let delay_seconds = (5u64.saturating_mul(1u64 << exponent)).min(300);
+            let next = now_millis.saturating_add((delay_seconds * 1000) as i64);
+            state.consecutive_failures = Some(failures);
+            state.next_eligible_at = Some(crate::support::time::format_rfc3339_millis(next));
+            self.write_state_unlocked(&state, count_completed_steps(&entries))
+        })
+    }
+
+    pub fn backfill_reflection_byte_offset(&self, entries: &[TranscriptEntry]) -> Result<ReflectionTranscriptState, JournalError> {
+        self.locked(None, || {
+            let mut state = self.read_state_unlocked()?;
+            if state.reflected_through_byte_offset.is_none() {
+                state.reflected_through_byte_offset = Some(state.reflected_through_message_id.as_deref().map_or(0, |id| crate::journal::cursor::reflected_through_byte_offset(entries, id)));
+            }
+            self.write_state_unlocked(&state, count_completed_steps(entries))?;
+            self.read_state_unlocked()
+        })
+    }
+
+    pub fn record_reflection_failure(&self) -> Result<(), JournalError> {
+        self.record_reflection_failure_at(crate::support::time::now_millis())
+    }
+
     /// Retrieve the current reflection transcript state, recalculating step counters.
     pub fn get_state(&self) -> Result<ReflectionTranscriptState, JournalError> {
         self.locked(None, || {
@@ -334,7 +398,7 @@ impl TranscriptJournal {
             let entries = self.read_entries_unlocked()?;
             let current_state = self.read_state_unlocked()?;
             let state = derive_state(&current_state, &entries);
-            let snapshot = capture_cursor_snapshot(&entries, &state);
+            let snapshot = capture_cursor_snapshot_with_max_bytes(&entries, &state, self.snapshot_max_bytes);
             let Some(snapshot) = snapshot else {
                 return Ok(None);
             };
@@ -345,6 +409,9 @@ impl TranscriptJournal {
             }
             let mut updated_state = state;
             updated_state.last_reflection_started_at = Some((self.now)());
+            if current_state.reflected_through_byte_offset.is_none() {
+                updated_state.reflected_through_byte_offset = Some(current_state.reflected_through_message_id.as_deref().map_or(0, |id| crate::journal::cursor::reflected_through_byte_offset(&entries, id)));
+            }
             self.write_state_unlocked(&updated_state, count_completed_steps(&entries))?;
             Ok(Some(snapshot))
         })

@@ -64,6 +64,12 @@ fn given_the_own_pid_when_start_identity_is_queried_twice_then_the_value_is_stab
     assert_eq!(first, second);
 }
 
+#[test]
+fn incompatible_identity_schemes_do_not_conflict_or_prove_comparability() {
+    assert!(!start_identities_conflict("ps-lstart:date", "proc-start-epoch:123"));
+    assert!(!start_identities_comparable("ps-lstart:date", "proc-start-epoch:123"));
+}
+
 /// The Linux branch is the fork-free port: `/proc` is read in process, no child is ever spawned.
 #[cfg(target_os = "linux")]
 #[test]
