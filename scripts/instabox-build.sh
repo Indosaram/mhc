@@ -81,13 +81,15 @@ while IFS= read -r -d '' f; do
 done < <(git ls-files -z --others --exclude-standard)
 GIT_INDEX_FILE=$tmp_index git diff --cached --binary "$base" > "$tmp_index.patch"
 rm -f "$tmp_index"
-if [[ $(wc -c < "$tmp_index.patch") -gt 1000000 ]]; then
-  echo "local diff is $(wc -c < "$tmp_index.patch") bytes; oldbox42 exec --stdin is capped at 1 MB. Commit and push, then rerun." >&2
-  rm -f "$tmp_index.patch"
-  exit 1
-fi
 if [[ -s $tmp_index.patch ]]; then
-  oldbox42 exec "$machine" --stdin -- git -C /data/home/mhc apply --whitespace=nowarn < "$tmp_index.patch"
+  echo "   diff $(wc -c < "$tmp_index.patch" | tr -d ' ') bytes"
+  oldbox42 exec "$machine" -- rm -f /data/home/sync.patch
+  split -b 900000 "$tmp_index.patch" "$tmp_index.part."
+  for part in "$tmp_index".part.*; do
+    oldbox42 exec "$machine" --stdin -- 'cat >> /data/home/sync.patch' < "$part"
+  done
+  rm -f "$tmp_index".part.*
+  oldbox42 exec "$machine" -- git -C /data/home/mhc apply --whitespace=nowarn /data/home/sync.patch
 fi
 rm -f "$tmp_index.patch"
 
