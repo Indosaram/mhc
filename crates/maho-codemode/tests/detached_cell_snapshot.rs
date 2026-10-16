@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::json;
 
 fn cell() -> DetachedCellResultSource {
-    DetachedCellResultSource { cell_id:"B".into(),input:EvalToolInput { language:EvalLanguage::Js,code:"42".into(),summary:"test".into(),action:None,timeout:None,on_timeout:None,reset:None },started_at_ms:100.0,run_started_at_ms:None,detached:true,state:EvalDetachedCellState::Queued,queue_snapshot:None,state_retained:None,interrupt_note:None,live_result:None,terminal_result:None,hard_limited:false,hard_limit_seconds:Some(1800.0),run_budget_exhausted:false,run_budget_seconds:Some(300.0) }
+    DetachedCellResultSource { cell_id:"B".into(),input:EvalToolInput {language:EvalLanguage::Js,code:"42".into(),summary:"test".into(),action:None,timeout:None,on_timeout:None,reset:None,isolate:None},started_at_ms:100.0,run_started_at_ms:None,detached:true,state:EvalDetachedCellState::Queued,queue_snapshot:None,state_retained:None,interrupt_note:None,live_result:None,terminal_result:None,hard_limited:false,hard_limit_seconds:Some(1800.0),run_budget_exhausted:false,run_budget_seconds:Some(300.0) }
 }
 #[test] fn predecessor_order_excludes_target_and_later_cells() {
     let mut cell=cell();cell.queue_snapshot=Some(Arc::new(|| (Some("A".into()),vec!["X".into(),"B".into(),"C".into()])));

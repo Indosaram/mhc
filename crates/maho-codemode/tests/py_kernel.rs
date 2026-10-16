@@ -60,6 +60,7 @@ async fn cell_execution_delivers_interrupt_to_real_python_kernel() {
     let run=EvalKernel::run(kernel.as_ref(),EvalKernelRunInput {
         cell_id:"bound".into(),code:"import sys,json\nvalue=41\nsys.__stdout__.write(json.dumps({'type':'text','stream':'stdout','data':'started'})+'\\n')\nsys.__stdout__.flush()\nwhile True: pass".into(),timeout_ms:None,preludes:vec![],on_started:None,
         on_message:Some(Arc::new(move |message|{if message["data"]=="started" && let Some(sender)=started_tx.lock().unwrap().take(){sender.send(()).unwrap();}})),
+        resolve_at_start:None,bridge_cell_token:None,
     });
     let cancel=async {
         tokio::time::timeout(Duration::from_secs(5),started_rx).await.unwrap().unwrap();

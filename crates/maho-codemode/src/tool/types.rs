@@ -29,6 +29,8 @@ pub struct EvalToolInput {
     pub on_timeout: Option<TimeoutBehavior>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolate: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,6 +50,8 @@ pub struct EvalKernelRunInput {
     pub preludes: Vec<maho_tools::KernelPrelude>,
     pub on_started: Option<crate::kernels::shared::subprocess_run::KernelStartedCallback>,
     pub on_message: Option<crate::kernels::shared::subprocess_run::KernelMessageCallback>,
+    pub resolve_at_start: Option<Arc<dyn Fn() -> Result<(String, Option<String>), String> + Send + Sync>>,
+    pub bridge_cell_token: Option<String>,
 }
 pub struct KernelInterruptHandle {
     pub state_retained: EvalKernelFuture<'static, bool>,
@@ -62,6 +66,8 @@ pub trait EvalKernel: Send + Sync {
     fn deliver_tool_reply(&self, message: serde_json::Value) -> Result<(), String>;
     fn reset(&self) -> EvalKernelFuture<'_, ()>;
     fn close(&self) -> EvalKernelFuture<'_, ()>;
+    fn is_alive(&self) -> bool { true }
+    fn drain_pending(&self) -> Vec<EvalKernelRunInput> { Vec::new() }
 }
 
 impl EvalKernel for crate::kernels::py::kernel::PythonKernel {
@@ -110,6 +116,8 @@ impl EvalKernel for crate::kernels::js::context_manager::JavaScriptKernel {
     fn deliver_tool_reply(&self,message:serde_json::Value)->Result<(),String> {self.deliver_tool_reply(message)}
     fn reset(&self)->EvalKernelFuture<'_,()> {Box::pin(async move {self.reset().await.map_err(|error|error.to_string())})}
     fn close(&self)->EvalKernelFuture<'_,()> {Box::pin(async move {self.close().await.map_err(|error|error.to_string())})}
+    fn is_alive(&self) -> bool { self.is_alive() }
+    fn drain_pending(&self) -> Vec<EvalKernelRunInput> { self.drain_pending().into_iter().map(|input|EvalKernelRunInput {cell_id:input.cell_id,code:input.code,timeout_ms:input.timeout_ms,preludes:Vec::new(),on_started:None,on_message:None,resolve_at_start:None,bridge_cell_token:None}).collect() }
 }
 
 pub struct EvalDeadlineSeconds {

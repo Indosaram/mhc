@@ -87,7 +87,7 @@ async fn runtime_preparation_loads_project_settings_applies_language_overrides_a
     let session_file=root.path().join("session.jsonl");
     let event=serde_json::json!({"sessionId":"runtime-session"});
     let mut detector=InterpreterDetector::new("24.0.0".into(),false);
-    let runtime=prepare_runtime(RuntimePreparationOptions {cwd:&cwd,home_dir:&home,environment:&environment,event:&event,session_file:Some(&session_file),js_runtime:EvalRuntimeInfo{name:"bun".into(),version:"1.4.0".into(),path:Some("/usr/bin/bun".into())}},&mut detector).await.unwrap();
+    let runtime=prepare_runtime(RuntimePreparationOptions {cwd:&cwd,home_dir:&home,environment:&environment,event:&event,session_file:Some(&session_file),js_runtime:EvalRuntimeInfo{name:"bun".into(),version:"1.4.0".into(),path:Some("/usr/bin/bun".into()),isolation:None}},&mut detector).await.unwrap();
     assert_eq!(runtime.session_id,"runtime-session");
     assert_eq!(runtime.cwd,cwd);
     assert_eq!(runtime.parallel_pool_width,3);

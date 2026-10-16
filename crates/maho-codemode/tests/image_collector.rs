@@ -47,7 +47,7 @@ async fn truncation_metadata_distinguishes_columns_from_bytes() {
 async fn result_builder_finalizes_machine_details() {
     use maho_codemode::tool::{cell_runtime::{CellState, CellResultBuilder}, types::{EvalToolInput, EvalLanguage}};
     let state = CellState {
-        input:EvalToolInput {language:EvalLanguage::Py,code:"print(42)".into(),summary:"compute result".into(),action:None,timeout:None,on_timeout:None,reset:None},
+        input:EvalToolInput {language:EvalLanguage::Py,code:"print(42)".into(),summary:"compute result".into(),action:None,timeout:None,on_timeout:None,reset:None,isolate:None},
         runtime:None,started_at:0.0,run_started_at:Some(1.0),queued_behind:None,on_update:None,
         tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into(),
     };
@@ -70,7 +70,7 @@ async fn cell_handler_dispatches_native_tools_and_blocks_recursive_eval() {
             Box::pin(async move {if matches!(name,"inactive"|"task_output") {return Err(maho_ext_api::ExecuteToolError {code:if name=="task_output" {maho_ext_api::ExecuteToolErrorCode::Blocked} else {maho_ext_api::ExecuteToolErrorCode::InactiveTool},tool_name:name.into(),message:"failure fixture".into(),active_tools:vec!["echo".into()]});}assert_eq!(name,"echo");Ok(maho_ext_api::AgentToolResult::text("reply"))})
         }
     }
-    let state=CellState {input:EvalToolInput {language:EvalLanguage::Js,code:"tool.echo({})".into(),summary:"dispatch tool".into(),action:None,timeout:None,on_timeout:None,reset:None},runtime:None,started_at:0.0,run_started_at:None,queued_behind:None,on_update:None,tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into()};
+    let state=CellState {input:EvalToolInput {language:EvalLanguage::Js,code:"tool.echo({})".into(),summary:"dispatch tool".into(),action:None,timeout:None,on_timeout:None,reset:None,isolate:None},runtime:None,started_at:0.0,run_started_at:None,queued_behind:None,on_update:None,tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into()};
     let builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:None,head_bytes:20480,max_columns:768,provider:None,api:None,image_sdk:Arc::new(Sdk)});
     let (sender,mut replies)=tokio::sync::mpsc::unbounded_channel();
     let controller=maho_ai::utils::abort::AbortController::new();

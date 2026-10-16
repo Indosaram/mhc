@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use maho_tools::definition::{ToolContent,ToolDefinition,ToolError,ToolExecutionMode,ToolResult};
 use maho_ext_api::{AgentToolResult,ContentBlock};
-use super::{eval_tool_options::{CreateEvalToolOptions,EvalCellInvocation},eval_request::{parse_eval_request,normalize_eval_summary},types::{EvalToolRequest,EvalDeadlineSeconds,create_eval_input_schema},run_eval_cell::run_eval_cell,detached_eval_result::{create_detached_control_result,create_eval_list_result},detached_cell_manager::EvalDetachedCellManager};
+use super::{eval_tool_options::{CreateEvalToolOptions,EvalCellInvocation},eval_request::{parse_eval_request_with_sandbox,normalize_eval_summary},types::{EvalToolRequest,EvalDeadlineSeconds,create_eval_input_schema},run_eval_cell::run_eval_cell,detached_eval_result::{create_detached_control_result,create_eval_list_result},detached_cell_manager::EvalDetachedCellManager};
 
 fn tool_result(result:AgentToolResult)->ToolResult {
     ToolResult {content:result.content.into_iter().filter_map(|content|match content {
@@ -31,7 +31,7 @@ pub fn create_eval_tool(options:Arc<CreateEvalToolOptions>) -> Result<ToolDefini
         Box::pin(async move {
             // senpi `runEvalCell` throws `abortError(signal.reason)` for a pre-aborted call.
             if call.signal.is_aborted() {return Err(ToolError::Message(super::cell_execution::abort_error(maho_ai::utils::abort::AbortReason::dom_default()).message));}
-            let request=parse_eval_request(&call.params).map_err(|error|ToolError::Message(error.to_string()))?;
+            let request=parse_eval_request_with_sandbox(&call.params, false).map_err(|error|ToolError::Message(error.to_string()))?;
             let result=match request {
                 EvalToolRequest::List=>{
                     let (live,recent)=options.cell_manager.lock().expect("cell manager lock").list();
