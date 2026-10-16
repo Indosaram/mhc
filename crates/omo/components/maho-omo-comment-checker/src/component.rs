@@ -19,7 +19,6 @@ struct State {
     inert_for_session: bool,
     missing_binary_notice_logged: bool,
     reported: BTreeSet<PathBuf>,
-    ensuring_binary: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -31,6 +30,8 @@ pub struct CommentCheckerComponent {
 impl Extension for CommentCheckerComponent {
     fn register(&self, api: &mut ExtensionApi) {
         let state = Arc::new(Mutex::new(State::default()));
+        // Single-flight binary resolution (ensureBinary): held across awaits, so it lives outside the std Mutex.
+        let ensuring_binary = Arc::new(tokio::sync::Mutex::new(()));
         let turn_state = Arc::clone(&state);
         api.on(
             EventKind::TurnStart,
@@ -56,6 +57,7 @@ impl Extension for CommentCheckerComponent {
             EventKind::ToolResult,
             Arc::new(move |event, ctx| {
                 let state = Arc::clone(&state);
+                let ensuring_binary = Arc::clone(&ensuring_binary);
                 let package = package.clone();
                 let resolve = resolve.clone();
                 let download = download.clone();
@@ -96,7 +98,7 @@ impl Extension for CommentCheckerComponent {
                     let binary = match cached_binary {
                         Some(b) => b,
                         None => {
-                            let _ensuring = state.ensuring_binary.lock().await;
+                            let _ensuring = ensuring_binary.lock().await;
                             if let Some(binary) = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).binary.clone() {
                                 binary
                             } else {
