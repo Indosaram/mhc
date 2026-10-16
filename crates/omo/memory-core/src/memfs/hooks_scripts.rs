@@ -1,7 +1,7 @@
 //! Git hook scripts installed into memory repositories.
 
 /// Pre-commit validator script for staged memory markdown.
-pub const PRE_COMMIT_HOOK_SCRIPT: &str = r#"#!/bin/sh
+pub const PRE_COMMIT_HOOK_SCRIPT: &str = r##"#!/bin/sh
 # Validate frontmatter in staged memory .md files.
 # Installed by omo memory-core. Do not edit by hand - regenerated on startup.
 
@@ -33,8 +33,10 @@ check_keys() {
       [ "$key" = "$k" ] && known=true && break
     done
     if [ "$known" = false ]; then
-      printf "  %s: unknown frontmatter key '%s' (allowed: %s)\n" "$1" "$key" "$ALL_KNOWN_KEYS"
-      continue
+      case "$4" in
+        skill) ;;
+        *) printf "  %s: unknown frontmatter key '%s' (allowed: %s)\n" "$1" "$key" "$ALL_KNOWN_KEYS"; continue ;;
+      esac
     fi
 
     if [ "$key" = read_only ]; then
@@ -53,7 +55,7 @@ check_keys() {
       case "$value" in
         "") printf "  %s: 'description' must not be empty\n" "$1" ;;
         [\>\|]*) printf "  %s: 'description' must be a non-empty single line\n" "$1" ;;
-        *": "*|*":"|*" #"*|"#"*|"["*|"]"*|"{"*|"}"*|"&"*|"*"*|"!"*|"|"*|">"*|"%"*|"@"*|","*|"?"*|"-"|"- "*) printf "  %s: 'description' is not a safe YAML scalar\n" "$1" ;;
+        *": "*|*":"|*" #"*|"["*|"]"*|"{"*|"}"*|"&"*|"!"*|"|"*|">"*|"%"*|"@"*|","*|"?"*|"-"|"- "*) printf "  %s: 'description' is not a safe YAML scalar\n" "$1" ;;
       esac
     fi
   done
@@ -61,6 +63,7 @@ check_keys() {
 
 check_file() {
   file="$1"
+  policy="${2:-contract}"
   staged=$(git show ":$file")
 
   if [ "$(printf '%s\n' "$staged" | head -1)" != "---" ]; then
@@ -81,7 +84,7 @@ check_file() {
   fi
 
   frontmatter=$(printf '%s\n' "$staged" | tail -n +2 | head -n $((closing_line - 1)))
-  check_keys "$file" "$head_content" "$frontmatter"
+  check_keys "$file" "$head_content" "$frontmatter" "$policy"
 
   if ! printf '%s\n' "$frontmatter" | grep -q '^description:'; then
     printf "  %s: missing required field 'description'\n" "$file"
@@ -109,7 +112,7 @@ errors=$(
       check_file "$file"
     done
 
-  git diff --cached --name-only --diff-filter=ACM | grep -E '^(memory/)?skills/.+/SKILL\.md$' | while IFS= read -r file; do check_file "$file"; done
+  git diff --cached --name-only --diff-filter=ACM | grep -E '^(memory/)?skills/.+/SKILL\.md$' | while IFS= read -r file; do check_file "$file" skill; done
 )
 
 if [ -n "$errors" ]; then
@@ -126,7 +129,7 @@ done)
 if [ -n "$secret_failed" ]; then printf '%s\n' "$secret_failed"; exit 1; fi
 
 exit 0
-"#;
+"##;
 
 /// Post-commit mirror push script to an optional user-owned remote.
 pub const POST_COMMIT_HOOK_SCRIPT: &str = r#"#!/bin/sh

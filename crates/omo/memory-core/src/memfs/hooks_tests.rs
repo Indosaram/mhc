@@ -221,7 +221,7 @@ mod hook_behaviour {
                 ),
                 (
                     "skills/deploy/SKILL.md",
-                    "---\nname: deploy\nunknown_key: fine\n---\n\nsteps\n",
+                    "---\ndescription: Deploy skill\nname: deploy\nunknown_key: fine\n---\n\nsteps\n",
                 ),
                 ("README.md", "no frontmatter here\n"),
             ],

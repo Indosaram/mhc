@@ -213,7 +213,7 @@ pub fn evaluate_transitions(mut state: MachineState, event: ReflectionEvent) -> 
                 focus,
                 recent_n,
             );
-                return EvaluationResult {
+            EvaluationResult {
                 state,
                 action: EvaluationAction::Reserve(request),
             }
@@ -264,7 +264,7 @@ pub fn evaluate_transitions(mut state: MachineState, event: ReflectionEvent) -> 
             }
             let budget = state.config.snapshot_max_bytes.unwrap_or(REFLECTION_SNAPSHOT_MAX_BYTES as u64);
             let pressure_ready = budget > 0
-                && state.journal.state.unreflected_bytes.is_some_and(|bytes| bytes >= budget)
+                && state.journal.state.unreflected_bytes.is_some_and(|bytes| bytes as u64 >= budget)
                 && !contains_trigger(&state.reservation, ReflectionTrigger::StepCount);
             if pressure_ready {
                 let mut request = make_request(

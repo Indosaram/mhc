@@ -76,7 +76,6 @@ fn make_request(trigger: ReflectionTrigger, convo: &str) -> ReflectionRequest {
                 end_snapshot_line: 1,
                 backlog_remaining: None,
                 entries: Vec::new(),
-                end_byte_offset: None,
             },
         }],
         focus: None,

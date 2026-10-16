@@ -225,7 +225,7 @@ fn test_snapshot_respects_byte_budget_and_reflected_offset_tracks_message_group(
         "assistant", "x".repeat(100), "now", format!("line-{i}"), format!("message-{i}"),
     ))).collect();
     let state = initial_reflection_state();
-    let snapshot = capture_cursor_snapshot_with_max_bytes(&entries, &state, 1024).expect("snapshot exists");
+    let snapshot = capture_cursor_snapshot_with_max_bytes(&entries, &state, Some(1024)).expect("snapshot exists");
     let serialized_bytes: usize = snapshot.entries.iter().map(|entry| serde_json::to_vec(entry).expect("serialize").len() + 1).sum();
     assert!(serialized_bytes <= 1024);
     assert_eq!(reflected_through_byte_offset(&entries, &snapshot.end_message_id), serialized_bytes);

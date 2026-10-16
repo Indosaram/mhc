@@ -12,7 +12,7 @@ use crate::reflection::machine::DreamOrigin;
 
 #[test]
 fn pressure_dream_budget_rejects_committed_token_count_at_target() {
-    assert!(matches!(validate_dream_token_budget(DreamOrigin::Pressure, 99, 100), DreamTokenBudgetValidation::BudgetNotMet { .. }));
+    assert!(matches!(validate_dream_token_budget(DreamOrigin::Pressure, 100, 100), DreamTokenBudgetValidation::BudgetNotMet { .. }));
     assert!(matches!(validate_dream_token_budget(DreamOrigin::Idle, 1, 100), DreamTokenBudgetValidation::Valid { .. }));
 }
 use crate::reflection::worktree::create_reflection_worktree;
