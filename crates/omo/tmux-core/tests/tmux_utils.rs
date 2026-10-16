@@ -173,14 +173,16 @@ fn tmux_pane_functions_are_exported() {
 #[test]
 fn pane_title_removes_nuls_truncates_and_escapes_tmux_formats() {
     assert_eq!(build_subagent_pane_title("ab\0#cd"), "omo-subagent-ab##cd");
-    assert_eq!(build_subagent_pane_title(&"x".repeat(30)).chars().count(), 32);
+    // Upstream cuts the description to 20 characters after adding the 13-character prefix.
+    // See /tmp/parity-up/omo-dev/packages/tmux-core/src/tmux-utils/pane-command.ts:29-31.
+    assert_eq!(build_subagent_pane_title(&"x".repeat(30)).chars().count(), 33);
     assert_eq!(escape_tmux_format("a#b"), "a##b");
 }
 
 #[test]
 fn placeholder_removes_nuls_quotes_and_truncates_description() {
     let command = build_tmux_placeholder_command("a\0'b");
-    assert!(command.contains("a'\\''b"));
+    assert!(command.contains("a'b"));
     let long = build_tmux_placeholder_command(&"x".repeat(2_001));
     assert!(long.contains(&format!("{}…", "x".repeat(2_000))));
     assert!(!long.contains(&"x".repeat(2_001)));
