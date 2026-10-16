@@ -53,6 +53,15 @@ mod tests {
         assert!(env.is_empty());
     }
     #[tokio::test]
+    async fn foreign_package_directory_environment_is_removed_before_preflight() {
+        let launch = Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "[ -z \"$NPM_PACKAGE_DIR\" ] && [ \"$KEEP\" = yes ] && printf 'builtin/model\\n'".into()] };
+        let env = BTreeMap::from([("NPM_PACKAGE_DIR".into(), "/foreign/package".into()), ("KEEP".into(), "yes".into())]);
+        let input = MemoryLaunchPreflightInput { first: candidate("builtin/model"), rest: &[], launch: &launch, env: &env, env_flag: "SENPI_MEMORY_FACTS", config_sources: &[], surface_name: "facts", now_ms: 0 };
+        let result = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |error| panic!("{error}"), |_, _, _| std::future::ready(Ok(success()))).await.unwrap();
+        assert_eq!(result.candidate.model, "builtin/model");
+        assert_eq!(env["NPM_PACKAGE_DIR"], "/foreign/package");
+    }
+    #[tokio::test]
     async fn missing_catalog_models_retain_extension_enabled_reactive_attempt() {
         let launch = Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "printf 'other/model\\n'".into()] };
         let env = BTreeMap::new();
