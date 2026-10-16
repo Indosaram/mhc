@@ -7,7 +7,7 @@ fn model(api: &str, id: &str) -> Model {
 
 #[test]
 fn wire_family_uses_api_and_boundary_aware_id_not_provider() {
-    for api in ["openai-responses", "azure-openai-responses", "openai-codex-responses", "openai-completions"] {
+    for api in ["openai-responses", "azure-openai-responses", "openai-codex-responses"] {
         for id in ["gpt-6-sol", "codex/gpt-6-astra", "global.openai.gpt-6-astra", "gateway:GPT_6_ASTRA", "gpt5"] {
             assert_eq!(pick_variant(Some(&model(api, id))), AskUserVariant::Codex, "{api}/{id}");
         }
@@ -21,4 +21,14 @@ fn wire_family_uses_api_and_boundary_aware_id_not_provider() {
     assert_eq!(pick_variant(None), AskUserVariant::Claude);
     assert_eq!(tool_name(AskUserVariant::Codex), "request_user_input");
     assert_eq!(tool_name(AskUserVariant::Claude), "ask_user_question");
+}
+
+#[test]
+fn apply_patch_wire_family_includes_only_supported_gpt_apis() {
+    for api in ["openai-responses", "azure-openai-responses", "openai-codex-responses", "openai-completions"] {
+        assert_eq!(pick_variant(Some(&model(api, "gpt-6-astra"))), AskUserVariant::Codex);
+    }
+    for api in ["anthropic-messages", "openai-chat-completions", "custom"] {
+        assert_eq!(pick_variant(Some(&model(api, "gpt-6-astra"))), AskUserVariant::Claude);
+    }
 }
