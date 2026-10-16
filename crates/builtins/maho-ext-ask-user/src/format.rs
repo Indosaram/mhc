@@ -41,4 +41,17 @@ pub fn format_result_text(response:&QuestionResponse,questions:&[Question])->Str
         QuestionStatus::Unavailable=>"This session has no user attached (subagent or headless); decide on best judgment.".into(),
     }
 }
+pub fn format_required_no_answer(response:&QuestionResponse,questions:&[Question])->String{
+    let reason=match response.status{
+        QuestionStatus::TimedOut=>{let minutes=(response.auto_resolved_after_ms.unwrap_or(crate::schema::DEFAULT_ASK_USER_TIMEOUT_MS) as f64/60_000.0).round();format!("The user did not answer within {minutes} minutes. (사용자가 답변을 안하고 timeout 으로 종료됨)")},
+        QuestionStatus::Cancelled=>"The user dismissed the question.".into(),
+        QuestionStatus::OrphanedAfterRestart=>"The pending question could not be resumed after a restart.".into(),
+        _=>"This session has no user attached (subagent or headless).".into(),
+    };
+    let mut lines=vec![reason];
+    let selected=answered_lines(response,questions);
+    if !selected.is_empty(){lines.push(format!("Before going idle the user had selected (not an answer): {}",selected.join("; ")));}
+    lines.push("No answer: do not take the action it gates. Keep that action pending and end the turn.".into());
+    lines.join("\n")
+}
 pub fn format_user_message(response:&QuestionResponse,request_id:&str,questions:&[Question])->String{format!("[Answer to question {request_id}]\n{}",format_result_text(response,questions))}

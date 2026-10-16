@@ -73,6 +73,10 @@ pub fn codex_params() -> Value {
     "wait_for_answer": {
       "type": "boolean",
       "description": "Set true to pause here until the user answers; set false to keep working and receive the answer later as a user message."
+    },
+    "required": {
+      "type": "boolean",
+      "description": "Set true when the answer decides whether you take an action: with no answer, that action is not taken."
     }
   },
   "additionalProperties": false
@@ -143,6 +147,10 @@ pub fn claude_params() -> Value {
     "waitForAnswer": {
       "type": "boolean",
       "description": "Set true to pause here until the user answers; set false to keep working and receive the answer later as a user message."
+    },
+    "required": {
+      "type": "boolean",
+      "description": "Set true when the answer decides whether you take an action: with no answer, that action is not taken."
     }
   }
 })

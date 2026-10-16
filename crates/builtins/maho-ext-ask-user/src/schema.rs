@@ -8,6 +8,7 @@ pub enum AskUserVariant{Codex,Claude}
 fn text(value:&Value,key:&str)->String{value.get(key).and_then(Value::as_str).unwrap_or("").trim().into()}
 fn snake_case(id:&str)->bool{id.split('_').all(|part|!part.is_empty()&&part.bytes().all(|byte|byte.is_ascii_lowercase()||byte.is_ascii_digit()))&&id.as_bytes().first().is_some_and(u8::is_ascii_lowercase)}
 pub fn to_canonical(variant:AskUserVariant,args:&Value,request_id:String,timeout_ms:Option<u64>)->Result<QuestionRequest,String>{
+    if args.get("required").is_some_and(|required|!required.is_boolean()){return Err("required must be a boolean when present".into());}
     let wait_key=if variant==AskUserVariant::Codex{"wait_for_answer"}else{"waitForAnswer"};
     let wait_for_answer=args.get(wait_key).and_then(Value::as_bool).ok_or(WAIT_FLAG_STEER_TEXT)?;
     let max=if variant==AskUserVariant::Codex{3}else{4};
