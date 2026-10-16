@@ -75,6 +75,14 @@ impl OutputState {
 
 type ExitState=Arc<(Mutex<Option<Result<PtyExit,String>>>,Condvar)>;
 
+fn parser_snapshot(parser:&mut vt100::Parser)->Option<TerminalScreenSnapshot> {
+    let screen=parser.screen_mut();let (rows,cols)=screen.size();
+    let visible_grid=screen.rows(0,cols).collect();let cursor=screen.cursor_position();
+    screen.set_scrollback(usize::MAX);let count=screen.scrollback();let mut scrollback=Vec::with_capacity(count);
+    for offset in (1..=count).rev(){screen.set_scrollback(offset);scrollback.push(screen.rows(0,cols).next().unwrap_or_default());}
+    screen.set_scrollback(0);Some(TerminalScreenSnapshot {cols,rows,visible_grid,scrollback,cursor})
+}
+
 #[derive(Debug,PartialEq,Eq)]
 pub struct TerminalScreenSnapshot {
     pub cols:u16,
@@ -95,7 +103,8 @@ pub struct TerminalRuntimeSession {
     exit_thread:Option<std::thread::JoinHandle<()>>,
     exit_signal:tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>>,
     observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
-    screen:Arc<Mutex<vt100::Parser>>,
+    screen:Arc<Mutex<Option<vt100::Parser>>>,
+    final_screen:Arc<Mutex<Option<TerminalScreenSnapshot>>>,
     scrollback:usize,
 }
 
@@ -107,12 +116,12 @@ impl TerminalRuntimeSession {
         let output=Arc::new(Mutex::new(OutputState::default()));let sink=Arc::clone(&output);
         let observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>=Arc::new(Mutex::new(vec![]));
         let listeners=observers.clone();
-        let screen=Arc::new(Mutex::new(vt100::Parser::new(options.rows,options.cols,scrollback)));
+        let screen=Arc::new(Mutex::new(Some(vt100::Parser::new(options.rows,options.cols,scrollback))));
         let projection=screen.clone();
         let on_chunk=move |chunk:&[u8]| {
             if let Ok(mut state)=sink.lock() {
                 let decoded=state.ingest(chunk);
-                if let Ok(mut screen)=projection.lock() {screen.process(decoded.as_bytes());}
+                if let Ok(mut screen)=projection.lock() && let Some(screen)=screen.as_mut() {screen.process(decoded.as_bytes());}
                 if !decoded.is_empty() && let Ok(mut listeners)=listeners.lock() {
                     let mut decoded=decoded;let last=listeners.len();let mut index=0;
                     listeners.retain(|listener| {index+=1;let text=if index==last {std::mem::take(&mut decoded)} else {decoded.clone()};listener.send(text).is_ok()});
@@ -125,16 +134,22 @@ impl TerminalRuntimeSession {
             let mut session=PtySession::start(options,on_chunk)?;let waiter=session.wait_in_background()?;(TerminalSessionBackend::Native(session),waiter)
         };
         let kill_requested=Arc::new(AtomicBool::new(false));let exit_kill_requested=Arc::clone(&kill_requested);
+        let final_screen=Arc::new(Mutex::new(None));
         let exit:ExitState=Arc::new((Mutex::new(None),Condvar::new()));let settled=Arc::clone(&exit);
         let (exit_sender,exit_signal)=tokio::sync::watch::channel(None);
+        let release_signal=exit_signal.clone();let release_screen=screen.clone();let released_snapshot=final_screen.clone();
         let exit_thread=std::thread::spawn(move || {
             // session-exit.ts `normalizeTerminalExit`: any requested kill (SIGTERM included) marks the exit cancelled.
             let result=match waiter.join() {Ok(result)=>result.map(|mut exit|{exit.cancelled|=exit_kill_requested.load(Ordering::SeqCst);exit}).map_err(|e|e.to_string()),Err(_)=>Err("terminal exit waiter panicked".to_owned())};
+            if let Ok(mut guard)=release_screen.lock() && let Some(mut parser)=guard.take() {
+                let mut snapshot=parser_snapshot(&mut parser).unwrap_or(TerminalScreenSnapshot {cols:0,rows:0,visible_grid:vec![],scrollback:vec![],cursor:(0,0)});snapshot.scrollback.clear();
+                if let Ok(mut final_guard)=released_snapshot.lock(){*final_guard=Some(snapshot);}
+            }
             let (lock,signal)=&*settled;
             if let Ok(mut state)=lock.lock() {*state=Some(result.clone());signal.notify_all();}
             exit_sender.send_replace(Some(result));
         });
-        Ok(Self {command:command.to_owned(),session,kill_requested,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen,scrollback})
+        Ok(Self {command:command.to_owned(),session,kill_requested,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen,final_screen,scrollback})
     }
 
     pub fn backend(&self)->&'static str {match self.session {TerminalSessionBackend::Native(_)=>"native",TerminalSessionBackend::PipeFallback(_)=>"pipe-fallback"}}
@@ -168,33 +183,19 @@ impl TerminalRuntimeSession {
     pub fn write(&mut self,bytes:&[u8])->Result<(),RuntimeError> {match &mut self.session {TerminalSessionBackend::Native(session)=>session.write(bytes)?,TerminalSessionBackend::PipeFallback(session)=>session.write(bytes)?}Ok(())}
     pub fn snapshot(&self)->Result<TerminalScreenSnapshot,RuntimeError> {
         let mut parser=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
-        let screen=parser.screen_mut();let (rows,cols)=screen.size();
-        let visible_grid=screen.rows(0,cols).collect();let cursor=screen.cursor_position();
-        screen.set_scrollback(usize::MAX);let count=screen.scrollback();let mut scrollback=Vec::with_capacity(count);
-        for offset in (1..=count).rev() {screen.set_scrollback(offset);scrollback.push(screen.rows(0,cols).next().unwrap_or_default());}
-        screen.set_scrollback(0);
-        Ok(TerminalScreenSnapshot {cols,rows,visible_grid,scrollback,cursor})
+        if let Some(parser)=parser.as_mut(){return parser_snapshot(parser).ok_or(RuntimeError::Poisoned);}
+        Ok(self.final_screen.lock().map_err(|_|RuntimeError::Poisoned)?.clone().unwrap_or(TerminalScreenSnapshot {cols:0,rows:0,visible_grid:vec![],scrollback:vec![],cursor:(0,0)}))
     }
     pub fn resize(&self,cols:u16,rows:u16)->Result<(),RuntimeError> {
+        if self.exited()? {return Ok(());}
         // The PTY resize is best-effort and meaningless once the process is gone: upstream's
         // `resizeScreen` only touches the screen and its `bash_resize` returns early when
         // `runtime.exited`. Skipping it for a closed session keeps the screen projection resizable
         // instead of failing with "pty session is closed".
         // The pipe fallback rejects the resize with a note but the screen projection still resizes.
         let session_resize=if self.exited()? {Ok(())} else {match &self.session {TerminalSessionBackend::Native(session)=>session.resize(cols,rows),TerminalSessionBackend::PipeFallback(session)=>session.resize(cols,rows)}};
-        let retained=lossy_utf16(self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer.iter().copied());
         let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
-        if retained.is_empty() {
-            // Nothing retained to replay: resize the projection in place so its history survives an
-            // empty log buffer (upstream keeps the screen independent of the trimmed read buffer).
-            screen.screen_mut().set_size(rows,cols);
-        } else {
-            // Replay the retained output at the new geometry so wrapped lines reflow, matching the
-            // upstream screen's resize reflow.
-            let mut rebuilt=vt100::Parser::new(rows,cols,self.scrollback);
-            rebuilt.process(retained.as_bytes());
-            *screen=rebuilt;
-        }
+        if let Some(screen)=screen.as_mut(){screen.screen_mut().set_size(rows,cols);}
         session_resize?;Ok(())
     }
     /// session.ts `stop()`: the default SIGTERM (registry-session.ts `DEFAULT_SIGNAL`), letting the
@@ -247,19 +248,27 @@ mod tests {
     fn resize_updates_geometry_and_retains_prior_screen_content()->Result<(),RuntimeError> {
         let runtime=TerminalRuntimeSession::start("screen",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'one\r\ntwo\r\nthree'").size(20,2))?;
         runtime.wait(Duration::from_secs(5))?;
-        runtime.resize(40,6)?;let after=runtime.snapshot()?;
-        assert_eq!((after.cols,after.rows),(40,6));assert!(after.visible_grid.iter().any(|line|line.contains("three")));assert!(runtime.full_output()?.contains("one"));
+        let before=runtime.snapshot()?;runtime.resize(40,6)?;let after=runtime.snapshot()?;
+        assert_eq!(after,before);assert!(runtime.full_output()?.contains("one"));
         runtime.dispose()
     }
 
     #[test]
-    fn resize_replays_retained_history_at_the_new_geometry()->Result<(),RuntimeError> {
+    fn resize_preserves_operation_history_at_the_new_geometry()->Result<(),RuntimeError> {
         let runtime=TerminalRuntimeSession::start("wrap",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'").size(20,10))?;
         runtime.wait(Duration::from_secs(5))?;
         let before=runtime.snapshot()?;assert_eq!(before.cols,20);assert!(before.visible_grid.iter().filter(|line|line.contains('A')).count()>=3);
         runtime.resize(60,10)?;let after=runtime.snapshot()?;
-        assert_eq!(after.cols,60);assert!(after.visible_grid.iter().any(|line|line.trim_end().len()>=50&&line.contains('A')),"replayed rows: {after:?}");
+        assert_eq!(after.cols,60);assert!(after.visible_grid.iter().any(|line|line.contains('A')),"resized screen: {after:?}");
         runtime.dispose()
+    }
+
+    #[test]
+    fn exited_session_retains_final_screen_without_scrollback()->Result<(),RuntimeError> {
+        let runtime=TerminalRuntimeSession::start("screen",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'one\\r\\ntwo\\r\\nthree'").size(20,2))?;
+        runtime.wait(Duration::from_secs(5))?;let snapshot=runtime.snapshot()?;
+        assert!(snapshot.scrollback.is_empty());assert!(snapshot.visible_grid.iter().any(|line|line.contains("three")));
+        assert_eq!(runtime.snapshot()?,snapshot);runtime.dispose()
     }
 
     #[test]
