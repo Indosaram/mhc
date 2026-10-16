@@ -93,6 +93,7 @@ pub(crate) fn parse_raw_agent_definition(
             .get("models")
             .and_then(Value::as_array)
             .map(|entries| entries.iter().filter_map(parse_model_entry).collect()),
+        categories: strings("categories"),
         variant: text("variant"),
         reasoning_effort: text("reasoningEffort"),
         temperature: raw.get("temperature").and_then(Value::as_f64),
