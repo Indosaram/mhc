@@ -38,6 +38,7 @@ impl MemoryExtension {
 
 impl Extension for MemoryExtension {
     fn register(&self, api: &mut ExtensionApi) {
+        crate::native_badge::register_native_badge(api);
         let static_options = self.static_options.clone();
         let result = MemoryWiring::register_native(self.wiring.clone(), &self.component, api, self.wiring_options.clone(), |api| {
             register_memory_static(api, static_options);

@@ -13,6 +13,7 @@ pub struct MemoryPendingLedger {
 pub struct MemoryIdentityContext {
     pub identity: String,
     pub identity_paths: MemoryIdentityPaths,
+    pub durable_root: std::path::PathBuf,
     pub binding: MemorySessionBinding,
     pub ledger: std::sync::Arc<std::sync::Mutex<MemoryPendingLedger>>,
 }
@@ -21,8 +22,11 @@ impl MemoryIdentityContext {
     /// Pin `context.ts:34-36`: every bind gets one fresh ledger object that the trigger wiring and
     /// the RPC snapshot share; clones of this context share it too.
     pub fn new(identity: String, identity_paths: MemoryIdentityPaths, binding: MemorySessionBinding) -> Self {
-        Self { identity, identity_paths, binding, ledger: std::sync::Arc::new(std::sync::Mutex::new(MemoryPendingLedger::default())) }
+        let durable_root=identity_paths.root.clone();
+        Self { identity, identity_paths, durable_root, binding, ledger: std::sync::Arc::new(std::sync::Mutex::new(MemoryPendingLedger::default())) }
     }
+
+    pub fn with_durable_root(mut self, durable_root: std::path::PathBuf) -> Self { self.durable_root=durable_root; self }
 
     pub fn repo_path(&self) -> &Path { &self.identity_paths.repo }
 
