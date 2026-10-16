@@ -307,6 +307,7 @@ fn full_live_facts_follow_canonical_grammar() {
     let stats = StatusLineStats {
         runtime_ms: Some(1_000),
         turns: 3,
+        failed_turns: 0,
         tool_calls: 7,
         tokens_per_second: Some(62.0),
         ..StatusLineStats::default()
@@ -327,6 +328,7 @@ fn only_cost_sits_before_tps() {
     let stats = StatusLineStats {
         runtime_ms: Some(1_000),
         turns: 3,
+        failed_turns: 0,
         tool_calls: 7,
         tokens_per_second: Some(62.0),
         cost_usd: Some(0.4213),
@@ -349,6 +351,7 @@ fn cache_rate_without_cost_renders_no_spend() {
     let stats = StatusLineStats {
         runtime_ms: Some(0),
         turns: 1,
+        failed_turns: 0,
         tool_calls: 0,
         tokens_per_second: Some(8.0),
         cache_hit_rate_last: Some(0.5),
@@ -370,6 +373,7 @@ fn single_tool_call_is_singular() {
     let stats = StatusLineStats {
         runtime_ms: Some(0),
         turns: 1,
+        failed_turns: 0,
         tool_calls: 1,
         ..StatusLineStats::default()
     };

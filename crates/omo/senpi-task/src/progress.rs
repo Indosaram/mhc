@@ -186,6 +186,7 @@ impl<C: Fn() -> u64> ChildProgress<C> {
         });
         let line_stats = StatusLineStats {
             turns: stats.turns,
+            failed_turns: stats.failed_turns.unwrap_or_default(),
             tool_calls: stats.tool_calls,
             runtime_ms: Some(stats.runtime_ms),
             tokens_per_second: stats.tokens_per_second,

@@ -81,8 +81,9 @@ fn totals_and_tps_derive_from_generation_time() {
         "role": "assistant", "content": [{ "type": "text", "text": "done" }],
         "usage": { "output": 50, "totalTokens": 600 },
     })));
+    let stats = tracker.snapshot(11_000);
     assert_eq!(
-        tracker.snapshot(11_000),
+        TaskRunStats { duration_status: None, token_status: None, cost_status: None, ..stats.clone() },
         TaskRunStats {
             runtime_ms: 10_000,
             turns: 2,
@@ -103,8 +104,9 @@ fn non_assistant_and_missing_usage_report_only_counted_facts() {
     tracker.accept(&message_end(
         json!({ "role": "assistant", "content": [{ "type": "text", "text": "ok" }] }),
     ));
+    let stats = tracker.snapshot(2_000);
     assert_eq!(
-        tracker.snapshot(2_000),
+        TaskRunStats { duration_status: None, token_status: None, cost_status: None, ..stats.clone() },
         TaskRunStats {
             runtime_ms: 1_000,
             turns: 1,

@@ -118,7 +118,7 @@ fn human_description_leads_instead_of_id() {
     let details = progress.details();
     assert_eq!(
         details.progress.activity,
-        "Audit the waiting line · category:quick(kimi-coding/kimi-k3-unlocked:max) · turn 0 · running"
+        "Audit the waiting line · category:quick(kimi-coding/kimi-k3-unlocked:max) · starting"
     );
     assert_eq!(details.child_id, "st_00000009");
 }
@@ -155,7 +155,7 @@ fn fallback_events_update_model_and_count() {
     progress.accept(&fallback("anthropic-api/claude-haiku-4-5:medium"));
     assert_eq!(
         progress.details().progress.activity,
-        "st_00000004 · category:quick(anthropic-api/claude-haiku-4-5:medium) · fallback:2 · turn 0 · running"
+        "st_00000004 · category:quick(anthropic-api/claude-haiku-4-5:medium) · fallback:2 · starting"
     );
 }
 
@@ -177,7 +177,7 @@ fn no_events_yield_base_status() {
     let progress = create_child_progress("st_00000003", target, 1_000, || 1_000);
     assert_eq!(
         progress.details().progress.activity,
-        "st_00000003 · category:deep · turn 0 · running"
+        "st_00000003 · category:deep · starting"
     );
     assert_eq!(progress.content_text(), "");
 }
@@ -208,6 +208,7 @@ fn only_local_progress_shape_is_accepted() {
             current_tool: None,
             last_assistant_line: None,
             turns: 1.0,
+            failed_turns: None,
             tool_calls: Some(2.0),
             tokens: None,
             output_tokens: Some(10.0),
