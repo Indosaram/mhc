@@ -16,6 +16,12 @@ pub fn is_refusal_like_message(message: &Value) -> bool {
     message["errorMessage"].as_str().is_some_and(|text| REFUSAL_PATTERN.is_match(text))
 }
 pub fn is_fable_five_model(model: &Value) -> bool { model["id"] == FABLE_FIVE_MODEL_ID }
+/// Copy-only predicate (detection.ts `isFableFiveSelector`): true when the refusing model belongs to
+/// the family the architect category consults. Not an arming gate.
+pub fn is_fable_five_selector(selector: &str) -> bool {
+    let id = selector.rsplit_once('/').map_or(selector, |(_, id)| id);
+    id.starts_with(FABLE_FIVE_MODEL_ID)
+}
 pub fn is_model_select_event(payload: &Value) -> bool {
     payload["type"] == "model_select" && payload["source"].is_string() && payload["model"]["id"].is_string()
         && payload.get("previousModel").is_none_or(|model| model["id"].is_string())
