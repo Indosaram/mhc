@@ -9,8 +9,10 @@ pub const REPETITIVE_TURNS_HISTORY_CAPACITY: usize = 6;
 fn expression(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex { cell.get_or_init(|| match Regex::new(pattern) { Ok(regex) => regex, Err(error) => panic!("invalid static repetitive-turn expression: {error}") }) }
 fn whitespace(c: char) -> bool { matches!(c, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}') }
 pub fn normalize_turn_text(text: &str) -> String {
+    static HANDOFF_ASK: OnceLock<Regex> = OnceLock::new();
     static HEX: OnceLock<Regex> = OnceLock::new(); static DIGITS: OnceLock<Regex> = OnceLock::new();
-    let lowered = text.to_lowercase();
+    let without_handoff=expression(&HANDOFF_ASK,r"\bAsk:[\s\S]*?(?=\b(?:For you|You need|Now):)").replace_all(text," ");
+    let lowered = without_handoff.to_lowercase();
     let folded = expression(&HEX, r"(?i)(?-u:\b)[0-9a-f]{7,}(?-u:\b)").replace_all(&lowered, "#");
     let folded = expression(&DIGITS, r"[0-9][0-9.,:/-]*").replace_all(&folded, "#");
     folded.split(whitespace).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")

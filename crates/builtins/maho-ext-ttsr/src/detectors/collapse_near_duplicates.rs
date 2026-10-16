@@ -9,10 +9,11 @@ pub const NEAR_DUPLICATE_LOOKBACK: usize = 32;
 pub const NEAR_DUPLICATE_WINDOW: usize = 12;
 pub const NEAR_DUPLICATE_ECHO_THRESHOLD: usize = 8;
 pub const NEAR_DUPLICATE_TEXT_RETENTION_MAX: usize = 512;
+const CODE_LINE_ENDINGS: &[char] = &['{', '}', '[', ']', '(', ';', ',', '>'];
 struct ParagraphSignature { tokens: BTreeSet<String>, start_offset: usize, sample: String }
 struct WindowEntry { echoed: bool, start_offset: usize, anchor_start_offset: usize }
-pub struct NearDuplicateState { history: FixedRing<ParagraphSignature>, window: FixedRing<WindowEntry>, line_length: usize, line_word_chars: u32, line_has_content: bool, line_start_offset: usize, line_text: Vec<u16>, length: usize, word_chars: u32, start_offset: usize, retained: Vec<u16>, fenced: bool, inside_fence: bool }
-pub fn create_near_duplicate_state() -> NearDuplicateState { NearDuplicateState { history: FixedRing::new(NEAR_DUPLICATE_LOOKBACK), window: FixedRing::new(NEAR_DUPLICATE_WINDOW), line_length: 0, line_word_chars: 0, line_has_content: false, line_start_offset: 0, line_text: Vec::new(), length: 0, word_chars: 0, start_offset: 0, retained: Vec::new(), fenced: false, inside_fence: false } }
+pub struct NearDuplicateState { history: FixedRing<ParagraphSignature>, window: FixedRing<WindowEntry>, line_length: usize, line_word_chars: u32, line_has_content: bool, line_start_offset: usize, line_text: Vec<u16>, line_last_char: Option<char>, length: usize, word_chars: u32, start_offset: usize, retained: Vec<u16>, fenced: bool, inside_fence: bool }
+pub fn create_near_duplicate_state() -> NearDuplicateState { NearDuplicateState { history: FixedRing::new(NEAR_DUPLICATE_LOOKBACK), window: FixedRing::new(NEAR_DUPLICATE_WINDOW), line_length: 0, line_word_chars: 0, line_has_content: false, line_start_offset: 0, line_text: Vec::new(), line_last_char: None, length: 0, word_chars: 0, start_offset: 0, retained: Vec::new(), fenced: false, inside_fence: false } }
 fn complete_paragraph(state: &mut NearDuplicateState) -> Option<DetectorMatch> {
     let eligible = !state.fenced && state.length >= NEAR_DUPLICATE_MIN_CHARS && state.word_chars >= NEAR_DUPLICATE_MIN_WORD_CHARS;
     let text = std::mem::take(&mut state.retained); let start_offset = state.start_offset;
@@ -48,14 +49,18 @@ pub fn update_near_duplicates(state: &mut NearDuplicateState, entry: &ScalarEntr
             let trimmed = line.trim_start_matches(|c| matches!(c, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'));
             let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
             if state.inside_fence || fence { state.fenced = true; }
-            if state.retained.len() < NEAR_DUPLICATE_TEXT_RETENTION_MAX { state.retained.extend_from_slice(&state.line_text); state.retained.push(CharCode::LINE_FEED); }
+            let line=String::from_utf16_lossy(&state.line_text);
+            let indented=(line.starts_with("  ")||line.starts_with('\t')) && !regex::Regex::new(r"^(?: {2,}|\t)(?![ \t]*(?:[-*+]|\d+[.)])[ \t]").is_ok_and(|regex|regex.is_match(&line));
+            let code_shaped=indented||state.line_last_char.is_some_and(|character|CODE_LINE_ENDINGS.contains(&character));
+            if !state.fenced && code_shaped { state.length-=state.line_length+1; state.word_chars-=state.line_word_chars; if state.length==0 { state.start_offset=0; } }
+            else if state.retained.len() < NEAR_DUPLICATE_TEXT_RETENTION_MAX { state.retained.extend_from_slice(&state.line_text); state.retained.push(CharCode::LINE_FEED); }
             if fence { state.inside_fence = !state.inside_fence; }
             None
         } else if state.length > 0 { complete_paragraph(state) } else { None };
-        state.line_length = 0; state.line_word_chars = 0; state.line_has_content = false; state.line_start_offset = entry.start_offset + 1; state.line_text.clear(); return result;
+        state.line_length = 0; state.line_word_chars = 0; state.line_has_content = false; state.line_start_offset = entry.start_offset + 1; state.line_text.clear(); state.line_last_char=None; return result;
     }
     let code = match entry.value.as_slice() { [high, low, ..] if (0xd800..=0xdbff).contains(high) && (0xdc00..=0xdfff).contains(low) => 0x10000 + ((u32::from(*high) - 0xd800) << 10) + u32::from(*low) - 0xdc00, [code, ..] => u32::from(*code), [] => 0 };
-    if !u16::try_from(code).is_ok_and(is_ascii_whitespace) { state.line_has_content = true; }
+    if !u16::try_from(code).is_ok_and(is_ascii_whitespace) { state.line_has_content = true; state.line_last_char=char::from_u32(code); }
     if is_ascii_alphanumeric(code) || code > 0x7f && !is_box_drawing(code) { state.line_word_chars += 1; }
     state.line_length += entry.width;
     if state.line_text.len() < NEAR_DUPLICATE_TEXT_RETENTION_MAX { state.line_text.extend_from_slice(&entry.value); }
@@ -72,4 +77,5 @@ pub fn update_near_duplicates(state: &mut NearDuplicateState, entry: &ScalarEntr
     #[test] fn fence_state_survives_blank_lines() { let input = format!("```\n\n{}\n```\n\n", format!("{PARAGRAPH}\n\n").repeat(12)); let result = feed(&input); assert!(result.is_none()); }
     #[test] fn short_paragraphs_are_exempt() { let result = feed(&"short\n\n".repeat(20)); assert!(result.is_none()); }
     #[test] fn no_blank_separator_leaves_paragraph_open() { let result = feed(&format!("{PARAGRAPH}\n").repeat(20)); assert!(result.is_none()); }
+    #[test] fn code_shaped_lines_are_excluded_from_echo_signatures() { let line="  render_svg_element_with_different_content_and_attributes("; let input=format!("{line}\n\n").repeat(12); assert!(feed(&input).is_none()); }
 }
