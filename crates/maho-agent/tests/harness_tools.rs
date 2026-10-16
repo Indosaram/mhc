@@ -757,6 +757,11 @@ fn detects_gif_and_webp() {
         Some("image/gif")
     );
     assert_eq!(
+        detect_supported_image_mime_type(b"GIF87a"),
+        Some("image/gif")
+    );
+    assert_eq!(detect_supported_image_mime_type(b"GIFbad"), None);
+    assert_eq!(
         detect_supported_image_mime_type(b"RIFF1234WEBP"),
         Some("image/webp")
     );
