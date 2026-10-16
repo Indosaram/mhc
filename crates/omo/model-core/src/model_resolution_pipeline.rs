@@ -145,13 +145,20 @@ fn find_fallback_variant_for_model(
                 .providers
                 .iter()
                 .any(|candidate| candidate == provider)
-                && transform(provider, &entry.model) == model_id
+                && transform(provider, entry_model_id(provider, &entry.model)) == model_id
                 && entry
                     .variant
                     .as_deref()
                     .is_some_and(|variant| !variant.is_empty())
         })
         .and_then(|entry| entry.variant.clone())
+}
+
+fn entry_model_id<'a>(provider: &str, model: &'a str) -> &'a str {
+    model
+        .strip_prefix(provider)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(model)
 }
 
 fn provider_hint(model: &str) -> Option<Vec<String>> {
@@ -353,8 +360,9 @@ pub fn resolve_model_pipeline_with(
                             if !connected.contains(provider) {
                                 continue;
                             }
+                            let entry_model_id = entry_model_id(provider, &entry.model);
                             let transformed_model_id =
-                                (deps.transform_model_for_provider)(provider, &entry.model);
+                                (deps.transform_model_for_provider)(provider, entry_model_id);
                             log(
                                 "Model resolved via fallback chain (connected provider)",
                                 Some(json!({
@@ -382,10 +390,11 @@ pub fn resolve_model_pipeline_with(
         } else {
             for entry in fallback_chain {
                 for provider in &entry.providers {
+                    let entry_model_id = entry_model_id(provider, &entry.model);
                     let transformed_model_id =
-                        (deps.transform_model_for_provider)(provider, &entry.model);
-                    let mut candidate_model_ids = vec![entry.model.clone()];
-                    if transformed_model_id != entry.model {
+                        (deps.transform_model_for_provider)(provider, entry_model_id);
+                    let mut candidate_model_ids = vec![entry_model_id.to_string()];
+                    if transformed_model_id != entry_model_id {
                         candidate_model_ids.push(transformed_model_id);
                     }
                     let provider_scope = [provider.clone()];

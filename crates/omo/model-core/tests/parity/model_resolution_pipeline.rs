@@ -51,6 +51,27 @@ fn does_not_resolve_provider_fallback_entries_through_a_different_provider_with_
     assert_eq!(result.provenance, ModelResolutionProvenance::SystemDefault);
 }
 
+#[test]
+fn strips_matching_provider_prefix_before_transforming_fallback_model() {
+    let mut request = ModelResolutionRequest {
+        policy: ResolutionPolicy {
+            fallback_chain: Some(vec![entry(
+                &["openrouter"],
+                "openrouter/qwen3.5-plus",
+                None,
+            )]),
+            system_default_model: Some("other/default".to_string()),
+        },
+        ..Default::default()
+    };
+    request.constraints.available_models = set(&["openrouter/qwen3.5-plus"]);
+
+    let result = resolve_model_pipeline(&request).expect("resolved");
+
+    assert_eq!(result.model, "openrouter/qwen3.5-plus");
+    assert_eq!(result.provenance, ModelResolutionProvenance::ProviderFallback);
+}
+
 fn user_model_request(user_model: &str) -> ModelResolutionRequest {
     ModelResolutionRequest {
         intent: ResolutionIntent {
