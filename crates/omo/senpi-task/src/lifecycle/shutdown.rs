@@ -132,15 +132,30 @@ fn suspend_handle(
 
 fn dispose_all_on_shutdown(context: &LifecycleContext) -> Result<SuspendSummary, LifecycleError> {
     let entries = context.registry.entries();
+    let mut suspended_rpc = 0;
+    let mut disposed = 0;
     for handle in &entries {
+        if handle.kind() == ResidentKind::Rpc {
+            let Some(record) = context.store.load(handle.task_id())? else {
+                continue;
+            };
+            if record.host_pid != Some(context.host_pid) {
+                continue;
+            }
+            suspend_handle(context, handle, "session shutdown")?;
+            suspended_rpc += 1;
+            continue;
+        }
         destroy_resident_task(context, handle.task_id(), DestroyCause::Cancel, None)?;
+        disposed += 1;
     }
     utils::logger::log(
         "senpi-task session shutdown dispose-all (resume_children=false)",
         Some(&json!({ "total": entries.len() })),
     );
     Ok(SuspendSummary {
-        disposed: entries.len(),
+        suspended_rpc,
+        disposed,
         ..SuspendSummary::default()
     })
 }

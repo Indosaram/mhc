@@ -8,6 +8,17 @@ use crate::state::TaskRunStats;
 pub type DagRunId = String;
 pub type DagNodeId = String;
 
+/// A run or node id used as a single filesystem path segment.
+pub fn is_safe_dag_path_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && !value.contains('/')
+        && !value.contains('\\')
+        && !value.contains('\0')
+        && !value.contains(':')
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DagRunStatus {

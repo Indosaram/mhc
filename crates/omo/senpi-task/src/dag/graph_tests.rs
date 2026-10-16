@@ -305,6 +305,17 @@ fn given_a_deep_chain_when_compiled_then_transitive_descendants_are_counted_not_
     assert_eq!(compile(&chain).bottlenecks[0], bottleneck("a", 2));
 }
 
+#[test]
+fn given_unsafe_node_ids_when_compiled_then_rejected_without_a_graph() {
+    for id in ["", ".", "..", "x/y", "x\\y", "x:y", "x\0y"] {
+        let result = compile(&definition(vec![node(id, &[])]));
+
+        assert!(!result.ok, "unsafe id {id:?} compiled");
+        assert_eq!(codes(&result), vec![DagCompileErrorCode::InvalidNodeId]);
+        assert!(result.nodes.is_empty());
+    }
+}
+
 // compileDag validation
 
 #[test]
@@ -326,6 +337,18 @@ fn given_duplicate_node_ids_when_compiled_then_rejected_naming_the_duplicate_id_
     };
     assert_eq!((node_id.as_str(), at.as_str()), ("a", AT));
     assert!(message.contains('a'));
+}
+
+#[test]
+fn given_unsafe_node_ids_when_compiled_then_rejected_before_graph_creation() {
+    for id in ["", ".", "..", "a/b", "a\\b", "a:b", "a\0b"] {
+        let result = compile(&definition(vec![node(id, &[])]));
+
+        assert!(!result.ok, "unsafe id {id:?} unexpectedly compiled");
+        assert_eq!(codes(&result), vec![DagCompileErrorCode::InvalidNodeId]);
+        assert_eq!(result.errors[0].node_ids, ids(&[id]));
+        assert!(result.nodes.is_empty());
+    }
 }
 
 #[test]
