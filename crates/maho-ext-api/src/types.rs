@@ -356,9 +356,10 @@ pub enum EventKind {
     AgentStart, AgentEnd, AgentSettled, UiPromptStart, UiPromptEnd, TurnStart, TurnEnd, MessageStart,
     MessageUpdate, MessageEnd, ToolExecutionStart, ToolExecutionUpdate, ToolExecutionEnd, ModelSelect,
     SystemPromptChange, ThinkingLevelSelect, ToolCall, ToolResult, UserBash, Input, InputDisposition,
+    ProviderStreamEvent, AgentBeforeSettle, SessionControlWake, ToolActivated,
 }
 impl EventKind {
-    pub const ALL: [Self; 43] = [Self::ProjectTrust, Self::ResourcesDiscover, Self::SessionStart,
+    pub const ALL: [Self; 47] = [Self::ProjectTrust, Self::ResourcesDiscover, Self::SessionStart,
         Self::SessionInfoChanged, Self::SessionParked, Self::SessionResumed, Self::SessionBeforeSwitch,
         Self::SessionBeforeFork, Self::SessionBeforeReload, Self::SessionBeforeCompact, Self::SessionCompact,
         Self::SessionCompactFailed, Self::SessionShutdown, Self::SessionAbort, Self::SessionExtensionsRemoved,
@@ -367,7 +368,8 @@ impl EventKind {
         Self::AgentEnd, Self::AgentSettled, Self::UiPromptStart, Self::UiPromptEnd, Self::TurnStart, Self::TurnEnd,
         Self::MessageStart, Self::MessageUpdate, Self::MessageEnd, Self::ToolExecutionStart,
         Self::ToolExecutionUpdate, Self::ToolExecutionEnd, Self::ModelSelect, Self::SystemPromptChange,
-        Self::ThinkingLevelSelect, Self::ToolCall, Self::ToolResult, Self::UserBash, Self::Input, Self::InputDisposition];
+        Self::ThinkingLevelSelect, Self::ToolCall, Self::ToolResult, Self::UserBash, Self::Input, Self::InputDisposition,
+        Self::ProviderStreamEvent, Self::AgentBeforeSettle, Self::SessionControlWake, Self::ToolActivated];
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ProjectTrust => "project_trust", Self::ResourcesDiscover => "resources_discover",
@@ -388,6 +390,8 @@ impl EventKind {
             Self::ModelSelect => "model_select", Self::SystemPromptChange => "system_prompt_change",
             Self::ThinkingLevelSelect => "thinking_level_select", Self::ToolCall => "tool_call", Self::ToolResult => "tool_result",
             Self::UserBash => "user_bash", Self::Input => "input", Self::InputDisposition => "input_disposition",
+            Self::ProviderStreamEvent => "provider_stream_event", Self::AgentBeforeSettle => "agent_before_settle",
+            Self::SessionControlWake => "session_control_wake", Self::ToolActivated => "tool_activated",
         }
     }
     pub fn parse(name: &str) -> Option<Self> { Self::ALL.into_iter().find(|kind| kind.as_str() == name) }
@@ -1082,6 +1086,8 @@ pub enum InputSource { Interactive, Rpc, Extension }
 pub enum StreamingBehavior { Steer, FollowUp }
 #[derive(Clone, Debug)]
 pub struct InputEvent { pub input_id: String, pub text: String, pub images: Option<Vec<ImageContent>>, pub source: InputSource, pub streaming_behavior: Option<StreamingBehavior> }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExtensionHandlerOptions { pub preview_safe: bool, pub mutates_messages: Option<bool> }
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputEventResult { Continue, Transform { text: String, images: Option<Vec<ImageContent>> }, Handled }
 #[derive(Clone, Debug)]
@@ -1198,6 +1204,9 @@ pub enum ExtensionEvent {
     ModelSelect(ModelSelectEvent), SystemPromptChange { system_prompt: String, previous_system_prompt: String, system_prompt_name: Option<String>, model: Model, previous_model: Option<Model> },
     ThinkingLevelSelect { level: ModelThinkingLevel, previous_level: ModelThinkingLevel }, ToolCall(ToolCallEvent), ToolResult(ToolResultEvent),
     UserBash { command: String, exclude_from_context: bool, cwd: PathBuf }, Input(InputEvent), InputDisposition { input_id: String, disposition: InputDisposition },
+    ProviderStreamEvent { provider: String, api: String, model: String, data: JsonValue },
+    AgentBeforeSettle { entries: Vec<JsonValue>, should_continue: bool, context: JsonValue },
+    SessionControlWake { source: String, reason: String }, ToolActivated { tool_names: Vec<String> },
 }
 impl ExtensionEvent {
     pub const fn kind(&self) -> EventKind {
@@ -1222,6 +1231,8 @@ impl ExtensionEvent {
             Self::SystemPromptChange { .. } => EventKind::SystemPromptChange, Self::ThinkingLevelSelect { .. } => EventKind::ThinkingLevelSelect,
             Self::ToolCall(_) => EventKind::ToolCall, Self::ToolResult(_) => EventKind::ToolResult, Self::UserBash { .. } => EventKind::UserBash,
             Self::Input(_) => EventKind::Input, Self::InputDisposition { .. } => EventKind::InputDisposition,
+            Self::ProviderStreamEvent { .. } => EventKind::ProviderStreamEvent, Self::AgentBeforeSettle { .. } => EventKind::AgentBeforeSettle,
+            Self::SessionControlWake { .. } => EventKind::SessionControlWake, Self::ToolActivated { .. } => EventKind::ToolActivated,
         }
     }
 }
@@ -1632,7 +1643,7 @@ pub struct LoadedExtension {
     /// senpi `Extension.hidden` (extensions/types.ts:2573): omitted from the startup Extensions list.
     pub hidden: bool,
     pub source_info: SourceInfo, pub registration_cwd: PathBuf,
-    pub handlers: BTreeMap<EventKind, Vec<ExtensionHandler>>, pub tools: Vec<RegisteredTool>,
+    pub handlers: BTreeMap<EventKind, Vec<ExtensionHandler>>, pub handler_options: BTreeMap<EventKind, Vec<ExtensionHandlerOptions>>, pub tools: Vec<RegisteredTool>,
     pub commands: Vec<RegisteredCommand>, pub flags: Vec<ExtensionFlag>, pub message_renderers: BTreeMap<String, MessageRenderer>,
     pub entry_renderers: BTreeMap<String, EntryRenderer>, pub entry_renderer_options: BTreeMap<String, EntryRendererOptions>,
     pub mcp_servers: Vec<RegisteredMcpServerDeclaration>, pub removed_tool_hints: BTreeMap<String, String>, pub filesystem_policies: Vec<FilesystemPolicy>,
@@ -1649,7 +1660,7 @@ pub struct LoadedExtension {
 impl LoadedExtension {
     pub fn new(path: &str, cwd: PathBuf, source_info: SourceInfo) -> Self {
         Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, hidden: false, source_info, registration_cwd: cwd,
-            handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
+            handlers: BTreeMap::new(), handler_options: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
             shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), native_tool_search_injection_failure_sources: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new(), fast_mode_action: None }
     }
@@ -1970,9 +1981,13 @@ impl ExtensionApi {
         if let Err(error) = self.runtime.provide_eval_handle_host(host) { std::panic::panic_any(error); }
     }
     pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) {
+        self.on_with_options(event, handler, ExtensionHandlerOptions::default());
+    }
+    pub fn on_with_options(&mut self, event: EventKind, handler: ExtensionHandler, options: ExtensionHandlerOptions) {
         self.runtime.assert_active_or_panic();
         let handlers = self.registered.handlers.entry(event).or_default();
         handlers.push(handler);
+        self.registered.handler_options.entry(event).or_default().push(options);
         if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
             self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_handlers.insert((self.registered.identity.path.clone(), event), handlers.clone());
         }
