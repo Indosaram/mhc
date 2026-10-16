@@ -27,12 +27,12 @@ pub fn rendezvous_order(key:&str,accounts:&[AccountSlot]) -> Vec<AccountSlot> {
     ranked.sort_by_key(|entry| std::cmp::Reverse(entry.0));ranked.into_iter().map(|(_,account)| account.clone()).collect()
 }
 fn is_blocked(account:&AccountSlot,now:f64) -> bool {
-    account.block_reason.as_deref()==Some("auth_error") || account.blocked_until.is_some_and(|until| until>now)
+    account.blocked_until.is_some_and(|until| until>now)
 }
 pub fn clear_expired_blocks(accounts:&[AccountSlot],now:f64) -> Vec<AccountSlot> {
     accounts.iter().map(|account| {
         let mut account=account.clone();
-        if account.block_reason.as_deref()!=Some("auth_error") && account.blocked_until.is_some_and(|until| until<=now) {
+        if account.blocked_until.is_some_and(|until| until<=now) {
             account.blocked_until=None;account.block_reason=None;
         } account
     }).collect()
@@ -91,5 +91,15 @@ mod tests {
         assert_eq!(select_account(&pool,&Default::default(),1000.0).unwrap_err().soonest_unblock_at,Some(10000.0));
         for a in &mut pool { a.block_reason=Some("auth_error".into()); }
         assert_eq!(select_account(&pool,&Default::default(),1000000.0).unwrap_err().block_reason,Some("auth_error"));
+    }
+    #[test]
+    fn auth_blocks_expire_at_the_reprobe_time() {
+        let mut pool=accounts();
+        pool[0].blocked_until=Some(100.0);
+        pool[0].block_reason=Some("auth_error".into());
+        assert!(select_account(&pool,&AffinityOptions {pinned_account:Some("alpha"),..Default::default()},99.0).unwrap().name!="alpha");
+        assert_eq!(select_account(&pool,&AffinityOptions {pinned_account:Some("alpha"),..Default::default()},100.0).unwrap().name,"alpha");
+        let legacy=clear_expired_blocks(&[{let mut account=pool[0].clone();account.blocked_until=None;account}],0.0);
+        assert_eq!(legacy[0].block_reason,None);
     }
 }

@@ -14,8 +14,22 @@ pub async fn get_provider_accounts(store:&dyn CredentialStore,provider:&str,envi
     assert_managed_provider(provider)?;let credential=credential_from(store.read(provider,None).await?)?;
     Ok(list_accounts(&credential,Some(&|key|environment.get(key).cloned()))?.into_iter().map(|account| {
         let display_name=maho_ai::auth::pool::slots::account_display_name(account.display_name.as_deref());
-        ProviderAccountSummary {blocked:account.block_reason.as_deref()==Some("auth_error")||account.blocked_until.is_some_and(|until|until>now),pinned:credential.get_extra_str("pinned")==Some(&account.name),name:account.name,display_name,source:account.source}
+        ProviderAccountSummary {blocked:account.blocked_until.is_some_and(|until|until>now),pinned:credential.get_extra_str("pinned")==Some(&account.name),name:account.name,display_name,source:account.source}
     }).collect())
+}
+pub async fn unblock_provider_account(store:&dyn CredentialStore,provider:&str,name:&str,environment:Arc<BTreeMap<String,String>>)->anyhow::Result<bool> {
+    assert_managed_provider(provider)?;let name=name.to_owned();let lifted=Arc::new(std::sync::atomic::AtomicBool::new(false));let mutation_lifted=lifted.clone();
+    store.modify(provider,Box::new(move |current|Box::pin(async move {
+        let mut credential=credential_from(current.clone())?;
+        let account=list_accounts(&credential,Some(&|key|environment.get(key).cloned()))?.into_iter().find(|account|account.name==name).ok_or_else(||anyhow::anyhow!("Provider account not found: {name}"))?;
+        if account.blocked_until.is_none()||account.block_reason.as_deref()==Some("auth_error") {return Ok(current);}
+        mutation_lifted.store(true,std::sync::atomic::Ordering::SeqCst);
+        if let Some(states)=credential.extra.get_mut("slotState").and_then(serde_json::Value::as_object_mut)
+            && let Some(state)=states.get_mut(&name).and_then(serde_json::Value::as_object_mut) {state.remove("blockedUntil");state.remove("blockReason");}
+        if let Some(accounts)=credential.extra.get_mut("accounts").and_then(serde_json::Value::as_array_mut) {for slot in accounts {if slot["name"]==name&&let Some(slot)=slot.as_object_mut(){slot.remove("blockedUntil");slot.remove("blockReason");}}}
+        Ok(Some(Credential::OAuth(credential)))
+    })),None).await?;
+    let lifted=lifted.load(std::sync::atomic::Ordering::SeqCst);if lifted {crate::account_events::emit_provider_accounts_changed(provider);}Ok(lifted)
 }
 pub async fn pin_provider_account(store:&dyn CredentialStore,provider:&str,name:Option<&str>,environment:Arc<BTreeMap<String,String>>)->anyhow::Result<()> {
     pin_provider_account_in_runtime(store,provider,name,environment,None).await
