@@ -81,7 +81,7 @@ pub(super) fn queue_file_names(paths: &MemoryIdentityPaths) -> Vec<String> {
     let mut names = Vec::new();
     for entry in read_dir.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.ends_with(".json") && name != "consumed.json" {
+        if name.ends_with(".json") && name != "consumed.json" && name != "claims.json" {
             names.push(name);
         }
     }
@@ -346,4 +346,33 @@ fn test_given_the_abort_fires_after_the_publish_lands_when_the_cursor_advance_is
     assert_eq!(queue.list_pending().expect("list pending").len(), 1);
     let cursor = queue.read_cursor(CONVERSATION).expect("read cursor");
     assert_eq!(cursor.enqueued_through_message_id, None);
+}
+
+#[test]
+fn claims_reclaim_only_stale_claims_and_release_is_owner_checked() {
+    let (_dir, paths) = identity_fixture();
+    let tick = Arc::new(AtomicI64::new(0));
+    let clock = {
+        let tick = Arc::clone(&tick);
+        Arc::new(move || tick.load(Ordering::SeqCst)) as Arc<dyn Fn() -> i64 + Send + Sync>
+    };
+    let queue = FactsQueue::new(FactsQueueOptions {
+        identity_paths: paths,
+        now: Some(clock),
+        on_publish: None,
+    });
+    queue.enqueue(request(journal(1), None)).expect("enqueue");
+    let pending = queue.list_pending().expect("pending");
+
+    assert_eq!(queue.claim(&pending, "worker-a").expect("first claim").len(), 1);
+    assert!(queue.claim(&pending, "worker-b").expect("active claim").is_empty());
+    queue.release_claim(&pending, "worker-b").expect("wrong owner release");
+    assert!(queue.claim(&pending, "worker-c").expect("still claimed").is_empty());
+
+    tick.store(15 * 60_000 + 1, Ordering::SeqCst);
+    assert_eq!(queue.claim(&pending, "worker-c").expect("stale reclaim").len(), 1);
+    queue.release_claim(&pending, "worker-a").expect("stale owner release");
+    assert!(queue.claim(&pending, "worker-d").expect("owner retained").is_empty());
+    queue.release_claim(&pending, "worker-c").expect("current owner release");
+    assert_eq!(queue.claim(&pending, "worker-d").expect("reclaim released").len(), 1);
 }
