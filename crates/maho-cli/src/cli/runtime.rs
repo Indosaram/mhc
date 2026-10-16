@@ -101,7 +101,6 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             }
         }
         else if parsed.resume {
-            // senpi main.ts:515-531: the startup session picker; cancelling exits 0.
             match indicator.during_surface_write(|| super::session_picker::select_session(&cwd_text, session_dir.as_deref(), &startup_settings))? {
                 Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None)?,
                 None => {
