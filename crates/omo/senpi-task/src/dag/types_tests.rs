@@ -8,6 +8,16 @@ use super::*;
 use crate::tools::task::validation::TaskTargetErrorCode;
 
 #[test]
+fn given_path_segment_values_when_checked_then_only_safe_segments_are_accepted() {
+    for value in ["", ".", "..", "a/b", "a\\b", "a:b", "a\0b"] {
+        assert!(!is_safe_dag_path_segment(value), "accepted {value:?}");
+    }
+    for value in ["a", "...", "node-1"] {
+        assert!(is_safe_dag_path_segment(value), "rejected {value:?}");
+    }
+}
+
+#[test]
 fn given_the_journaled_payload_union_when_its_type_tags_are_enumerated_then_it_has_exactly_17_members_and_excludes_live_activity()
  {
     let mut tags = DAG_RUN_EVENT_TYPES.to_vec();

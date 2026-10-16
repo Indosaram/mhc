@@ -30,6 +30,7 @@ pub struct DagDefinition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DagCompileErrorCode {
+    InvalidNodeId,
     DuplicateNodeId,
     UnknownDependency,
     SelfDependency,
@@ -43,6 +44,7 @@ pub enum DagCompileErrorCode {
 impl DagCompileErrorCode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::InvalidNodeId => "invalid_node_id",
             Self::DuplicateNodeId => "duplicate_node_id",
             Self::UnknownDependency => "unknown_dependency",
             Self::SelfDependency => "self_dependency",
@@ -207,6 +209,14 @@ fn validate(
     let mut declaration_index = HashMap::new();
     let mut duplicates: Vec<DagNodeId> = Vec::new();
     for (index, input) in definition.nodes.iter().enumerate() {
+        if !crate::dag::types::is_safe_dag_path_segment(&input.id) {
+            errors.push(DagCompileError {
+                code: DagCompileErrorCode::InvalidNodeId,
+                message: format!("node id {:?} must not be empty, '.', or '..', and must not contain '/', '\\', ':', or a NUL byte", input.id),
+                node_ids: vec![input.id.clone()],
+            });
+            continue;
+        }
         if declaration_index.contains_key(&input.id) {
             if !duplicates.contains(&input.id) {
                 duplicates.push(input.id.clone());

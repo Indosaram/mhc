@@ -17,6 +17,17 @@ use crate::dag::store::{
     DagSettingsOverrides, DagStoreConfig, DagStoreError, DagStoreOptions, DagStorePaths,
     DagStoreTaskConfig, IsProcessAliveFn, RealDagFs, create_dag_file_store, resolve_dag_state_dir,
 };
+
+#[test]
+fn given_unsafe_result_ids_when_path_is_built_then_it_rejects_them() {
+    let paths = DagStorePaths::new(Path::new("/tmp/dag-state"));
+    for run_id in ["../escape", "run:stream", "run\\escape", "run\0id"] {
+        assert!(std::panic::catch_unwind(|| paths.result(run_id, "node")).is_err());
+    }
+    for node_id in ["../escape", "node:stream", "node\\escape", "node\0id"] {
+        assert!(std::panic::catch_unwind(|| paths.result("run", node_id)).is_err());
+    }
+}
 use crate::dag::types::{
     DagEventLane, DagNodeCounts, DagRunEvent, DagRunEventPayload, DagRunEventType, SchemaVersion1,
 };
