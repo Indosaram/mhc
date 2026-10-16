@@ -31,6 +31,13 @@ pub fn resolve_agent_home(
     home_dir.join(".senpi/agent")
 }
 
+pub fn resolve_agent_sessions_directory(
+    env: &BTreeMap<String, String>, home_dir: &Path, cwd: &Path,
+    exists: impl Fn(&Path) -> bool,
+) -> PathBuf {
+    resolve_agent_home(env, home_dir, cwd, exists).join("sessions")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,4 +61,8 @@ mod tests {
     #[test] fn legacy_directory_default() { assert_eq!(resolve(&[], |_| false), Path::new("/home/tester/.senpi/agent")); }
     #[test] fn canonical_wins_over_flat() { assert_eq!(resolve(&[], |p| p == Path::new("/home/tester/.omo/settings.json") || p == Path::new("/home/tester/.omo/agent/settings.json")), Path::new("/home/tester/.omo/agent")); }
     #[test] fn relative_override_normalized() { assert_eq!(resolve(&[("OMO_CODING_AGENT_DIR"," ../chosen/./agent ")], |_| false), Path::new("/chosen/agent")); }
+    #[test] fn sessions_directory_uses_resolved_agent_home() {
+        let env = [("OMO_CODING_AGENT_DIR".to_string(), "/explicit/agent".to_string())].into();
+        assert_eq!(resolve_agent_sessions_directory(&env, Path::new("/home/tester"), Path::new("/cwd"), |_| false), Path::new("/explicit/agent/sessions"));
+    }
 }
