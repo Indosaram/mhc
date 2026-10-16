@@ -50,6 +50,7 @@ fn to_item(value: &Value) -> SpawnItemInput {
         isolated: value.get("isolated").and_then(Value::as_bool),
         apply: value.get("apply").and_then(Value::as_bool),
         merge: merge_field(value),
+        run_in_background: value.get("run_in_background").and_then(Value::as_bool),
     }
 }
 
