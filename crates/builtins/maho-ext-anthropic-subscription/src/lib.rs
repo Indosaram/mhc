@@ -19,6 +19,7 @@ pub mod stream;
 pub mod bounded_queue;
 pub mod custom_tools_schema;
 pub mod content_blocks;
+pub mod cold_seed_images;
 pub mod errors;
 pub mod prompt_directive_dedupe;
 pub mod refusal;
