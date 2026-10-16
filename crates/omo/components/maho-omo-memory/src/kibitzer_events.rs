@@ -27,7 +27,7 @@
 
 use serde_json::Value;
 
-use crate::kibitzer_events_text::{DIGEST_TAIL_FRAGMENTS, FoldState, digest_line, escape_xml, fragment_of, truncate_head, utf16_len};
+use crate::kibitzer_events_text::{DIGEST_TAIL_FRAGMENTS, FoldState, digest_line, escape_xml, fragment_of, truncate_head, truncate_head_with_extra, utf16_head, utf16_len};
 use crate::kibitzer_prompt_blocks::KIBITZER_FIELD_CAPS;
 
 /// Re-exported so every importer reads them from the stream module (upstream `events.ts` re-exports
@@ -36,6 +36,10 @@ pub use crate::kibitzer_events_text::{KIBITZER_DIGEST_MAX_CHARS, redact_kibitzer
 
 /// `KIBITZER_EVENT_BUFFER_SIZE`: the newest events kept verbatim; every older one folds at capture.
 pub const KIBITZER_EVENT_BUFFER_SIZE: usize = 20;
+/// Inputs above this many bytes are cut to a raw window before redaction (see `bounded`).
+const PRE_BOUND_BYTES: usize = 64 * 1024;
+/// Extra UTF-16 units kept past the cap so a secret straddling the cut is still matched whole.
+const PRE_BOUND_SLACK_UNITS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KibitzerEventCaps { pub tool_args: usize, pub result_head: usize, pub assistant: usize, pub prompt: usize }
@@ -111,6 +115,16 @@ impl KibitzerEventStream {
     /// `redactKibitzerEventText` then the cap; `truncated` reports whether the cap cut the body, so
     /// redaction always precedes truncation and storage.
     fn bounded(&self, text: &str, cap: usize) -> (String, bool) {
+        // Very large inputs (a big tool result or `write` body) are cut to a raw window before the
+        // redaction passes, so only about `cap` units are scanned instead of the whole payload. The
+        // window keeps slack past the cap so a secret straddling the cut is still masked; the
+        // `[+N chars]` marker then counts the dropped raw units.
+        if text.len() > PRE_BOUND_BYTES {
+            let window = utf16_head(text, cap + PRE_BOUND_SLACK_UNITS);
+            let dropped = utf16_len(text) - utf16_len(&window);
+            let clean = redact_kibitzer_event_text(&window);
+            return (truncate_head_with_extra(&clean, cap, dropped), true);
+        }
         let clean = redact_kibitzer_event_text(text);
         let truncated = utf16_len(&clean) > cap;
         (truncate_head(&clean, cap), truncated)
@@ -220,4 +234,30 @@ pub(crate) fn newest_assistant_text(entries: &[Value]) -> Option<String> {
         if !text.trim().is_empty() { return Some(text); }
     }
     None
+}
+
+#[cfg(test)]
+mod pre_bound_tests {
+    use super::*;
+
+    #[test]
+    fn large_tool_results_are_bounded_before_redaction_and_still_redacted() {
+        let mut stream = create_kibitzer_event_stream(KibitzerEventCaps::default());
+        let cap = KibitzerEventCaps::default().result_head;
+        // Small input: unchanged path (redact, then truncate_head).
+        let small = format!("GITHUB_TOKEN=xyz {}", "a".repeat(cap * 2));
+        let (small_body, small_truncated) = stream.bounded(&small, cap);
+        assert_eq!(small_body, truncate_head(&redact_kibitzer_event_text(&small), cap));
+        assert!(small_truncated);
+        // Large input: secret at the head is still masked, body is capped, marker counts the whole input.
+        let large = format!("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ {}", "b".repeat(PRE_BOUND_BYTES * 2));
+        let (large_body, large_truncated) = stream.bounded(&large, cap);
+        assert!(large_truncated);
+        assert!(large_body.starts_with("[REDACTED]"), "{large_body}");
+        assert!(utf16_len(&large_body) <= cap, "{}", utf16_len(&large_body));
+        let dropped: usize = large_body.rsplit("[+").next().and_then(|rest| rest.trim_end_matches(" chars]").parse().ok()).unwrap_or_default();
+        let total = utf16_len(&redact_kibitzer_event_text(&large));
+        assert!(dropped + cap >= total && dropped + cap <= total + cap, "dropped {dropped} cap {cap} total {total}");
+        assert!(stream.on_tool_result("bash", &serde_json::Value::String(large), false, 1));
+    }
 }

@@ -61,6 +61,18 @@ pub fn truncate_head(text: &str, cap: usize) -> String {
     format!("{}{marker}", utf16_head(text, cap - marker_len))
 }
 
+/// [`truncate_head`] for a `text` that is already the head of a longer input: `extra` more units
+/// were dropped before it, so the marker counts them too. Always cuts (the full input exceeds `cap`).
+pub fn truncate_head_with_extra(text: &str, cap: usize, extra: usize) -> String {
+    let length = utf16_len(text) + extra;
+    let marker = format!(" [+{} chars]", length.saturating_sub(cap));
+    let marker_len = marker.len();
+    if cap <= marker_len {
+        return utf16_head(text, cap);
+    }
+    format!("{}{marker}", utf16_head(text, cap - marker_len))
+}
+
 /// One folded event as it appears in the digest: kind (and tool), error flag, clipped body.
 pub fn fragment_of(kind: &str, tool: Option<&str>, is_error: bool, body: &str) -> String {
     let label = match tool { Some(tool) => format!("{kind}({tool})"), None => kind.to_string() };
