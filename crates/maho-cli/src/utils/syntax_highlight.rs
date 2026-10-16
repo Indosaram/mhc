@@ -1,4 +1,11 @@
 use std::{collections::BTreeMap, sync::LazyLock};
+
+pub const EAGER_HIGHLIGHT_LANGUAGES: &[&str] = &[
+    "python", "java", "go", "javascript", "json", "cpp", "typescript", "php", "ruby", "c",
+    "csharp", "nix", "bash", "rust", "scala", "kotlin", "swift", "dart", "groovy", "perl",
+    "lua",
+];
+
 pub type HighlightFormatter = Box<dyn Fn(&str) -> String>;
 pub type HighlightTheme = BTreeMap<String, HighlightFormatter>;
 fn formatter<'a>(scopes: &[Option<String>], theme: &'a HighlightTheme) -> Option<&'a HighlightFormatter> {

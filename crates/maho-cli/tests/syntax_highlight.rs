@@ -1,4 +1,10 @@
 use maho_cli::utils::syntax_highlight::*;
+
+#[test]
+fn json_is_registered_as_an_eager_highlight_language() {
+    assert!(EAGER_HIGHLIGHT_LANGUAGES.contains(&"json"));
+}
+
 #[test]
 fn upstream_renderer_formats_keyword_scope() {
     let theme = HighlightTheme::from([("keyword".to_owned(), Box::new(|text: &str| format!("[keyword:{text}]")) as HighlightFormatter)]);
