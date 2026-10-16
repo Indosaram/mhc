@@ -306,6 +306,14 @@ pub fn try_with_local_journal_lock<T>(
     acquire_and_run(lock_path, task, cancel, 0)
 }
 
+pub fn with_journal_lock_without_wait<T>(
+    lock_path: &Path,
+    task: impl FnOnce() -> Result<T, JournalError>,
+    cancel: Option<&dyn Fn() -> bool>,
+) -> Result<T, JournalError> {
+    acquire_and_run(lock_path, task, cancel, 0)
+}
+
 /// Abstract lock contract for journal state operations.
 pub trait JournalLock: Send + Sync {
     /// Execute a task within the lock boundary.

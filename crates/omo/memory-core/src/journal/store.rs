@@ -13,9 +13,7 @@ use crate::journal::cursor::{
 use crate::journal::entries::{
     TranscriptEntry, TranscriptProjection, parse_transcript_entry, project_transcript_entries,
 };
-use crate::journal::lock::{
-    DefaultJournalLock, JournalLock, JournalLockTimeoutError, run_with_lock,
-};
+use crate::journal::lock::{DefaultJournalLock, JournalLock, JournalLockTimeoutError, run_with_lock};
 
 /// Typed errors produced by transcript journal operations.
 #[derive(Debug)]
