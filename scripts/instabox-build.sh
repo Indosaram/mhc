@@ -22,7 +22,7 @@ keys_file="$HOME/.config/instabox/keys.env"
 [[ -r $keys_file ]] || { echo "missing $keys_file" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$keys_file"
-key_var="INSTABOX_KEY_${key^^}"
+key_var="INSTABOX_KEY_$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
 export INSTABOX_API_KEY="${!key_var:?no key $key_var in $keys_file}"
 command -v instabox >/dev/null || { echo "instabox CLI missing: npm i -g instabox@latest" >&2; exit 2; }
 
