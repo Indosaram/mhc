@@ -437,6 +437,7 @@ impl Theme {
         let prefix = self.backgrounds.get(color).map(String::as_str).unwrap_or("\u{1b}[49m");
         format!("{prefix}{text}\u{1b}[49m")
     }
+    pub fn bold(&self, text: &str) -> String { format!("\u{1b}[1m{text}\u{1b}[22m") }
 }
 #[derive(Clone, Debug)]
 pub struct ScopedModel { pub model: Model, pub thinking_level: Option<ThinkingLevel>, pub service_tier: Option<ServiceTier> }
@@ -1069,7 +1070,7 @@ impl ToolContext for ExtensionContext {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct BuildSystemPromptOptions { pub cwd: PathBuf, pub custom_prompt: Option<String>, pub append_system_prompt: Option<String>, pub tools: Vec<String>, pub tool_snippets: BTreeMap<String, String>, pub prompt_guidelines: Vec<String>, pub skills: Vec<Skill>, pub context_files: Vec<ContextFile> }
+pub struct BuildSystemPromptOptions { pub cwd: PathBuf, pub custom_prompt: Option<String>, pub append_system_prompt: Option<String>, pub tools: Vec<String>, pub tool_snippets: BTreeMap<String, String>, pub prompt_guidelines: Vec<String>, pub skills: Vec<Skill>, pub context_files: Vec<ContextFile>, pub surface: PromptSurface }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextFile { pub path: String, pub content: String }
 #[derive(Clone, Debug, PartialEq)]
