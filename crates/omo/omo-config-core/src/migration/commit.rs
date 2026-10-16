@@ -120,14 +120,14 @@ fn writer_input(
     env: &MigrationEnvironment,
 ) -> Result<WriterInput, MigrationError> {
     let home_dir = resolve_home_dir(env);
-    let user_directory = to_posix_path(&posix_join(&[&home_dir, ".maho"]));
+    let user_directory = to_posix_path(&posix_join(&[&home_dir, ".omo"]));
     let normalized_target = to_posix_path(target_path);
     let dir_name = posix_dirname(&normalized_target);
     let file_name = normalized_target.rsplit('/').next().unwrap_or("");
 
     // maho: the planner canonicalizes the home directory (e.g. macOS /var -> /private/var) while
     // HOME may not be, so also accept a canonical match. With the COMP `.omo` home this case fell
-    // through to the project `.omo` matcher below; the `.maho` home has no such fallback.
+    // through to the project `.omo` matcher below; the `.omo` home has no such fallback.
     let is_user_directory = dir_name == user_directory
         || matches!(
             (std::fs::canonicalize(&dir_name), std::fs::canonicalize(&user_directory)),

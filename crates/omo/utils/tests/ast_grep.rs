@@ -808,7 +808,7 @@ fn tiers_codex_home_runtime() {
 fn tiers_home_runtime_slug_dir() {
     let dir = tempdir();
     let home = text(dir.path());
-    let runtime_path = working(&dir.path().join(".maho/runtime/ast-grep/darwin-arm64/sg"));
+    let runtime_path = working(&dir.path().join(".omo/runtime/ast-grep/darwin-arm64/sg"));
     let env = empty_env();
     let options = SgResolverOptions {
         arch: Some("arm64"),

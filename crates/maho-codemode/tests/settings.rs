@@ -3,8 +3,8 @@ use serde_json::json;
 use std::path::Path;
 
 async fn write_config(root: &Path, value: &str) {
-    tokio::fs::create_dir_all(root.join(".maho")).await.expect("create test config directory");
-    tokio::fs::write(root.join(".maho/codemode.json"), value).await.expect("write test config");
+    tokio::fs::create_dir_all(root.join(".omo")).await.expect("create test config directory");
+    tokio::fs::write(root.join(".omo/codemode.json"), value).await.expect("write test config");
 }
 
 async fn loaded(value: serde_json::Value) -> LoadedCodemodeSettings {
@@ -28,10 +28,10 @@ async fn project_precedes_global() {
     let project = root.path().join("project");
     let home = root.path().join("home");
     write_config(&project, r#"{"languages":{"py":false,"rb":true},"parallelPoolWidth":9,"maxDetachedCells":2}"#).await;
-    tokio::fs::create_dir_all(home.join(".maho/agent")).await.unwrap();
-    tokio::fs::write(home.join(".maho/agent/codemode.json"), r#"{"languages":{"js":false}}"#).await.unwrap();
+    tokio::fs::create_dir_all(home.join(".omo/agent")).await.unwrap();
+    tokio::fs::write(home.join(".omo/agent/codemode.json"), r#"{"languages":{"js":false}}"#).await.unwrap();
     let result = load_codemode_settings(&project, &home).await.unwrap();
-    assert_eq!(result.source, Some(project.join(".maho/codemode.json")));
+    assert_eq!(result.source, Some(project.join(".omo/codemode.json")));
     assert_eq!(result.settings.languages, Languages { py: false, js: true, rb: true, jl: false });
     assert!((result.settings.parallel_pool_width - 9.0).abs() < f64::EPSILON);
 }
@@ -39,8 +39,8 @@ async fn project_precedes_global() {
 #[tokio::test]
 async fn global_fallback() {
     let root = tempfile::tempdir().unwrap();
-    tokio::fs::create_dir_all(root.path().join(".maho/agent")).await.unwrap();
-    let file = root.path().join(".maho/agent/codemode.json");
+    tokio::fs::create_dir_all(root.path().join(".omo/agent")).await.unwrap();
+    let file = root.path().join(".omo/agent/codemode.json");
     tokio::fs::write(&file, r#"{"languages":{"js":false,"jl":true},"cellTimeoutSeconds":12}"#).await.unwrap();
     let result = load_codemode_settings(&root.path().join("missing"), root.path()).await.unwrap();
     assert_eq!(result.source, Some(file));

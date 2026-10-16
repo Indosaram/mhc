@@ -52,7 +52,7 @@ pub struct MemoryIdentityPaths {
 
 /// `~/.omo/memory` (Windows: `%USERPROFILE%\.omo\memory`).
 pub fn default_memory_root() -> PathBuf {
-    home_directory().join(".maho").join("memory")
+    home_directory().join(".omo").join("memory")
 }
 
 /// `OMO_MEMORY_HOME` when set and non-blank, resolved against `cwd`; otherwise

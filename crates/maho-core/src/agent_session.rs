@@ -686,6 +686,9 @@ pub struct AgentSessionInner {
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
     extension_runner: tokio::sync::Mutex<Option<ExtensionRunner>>,
+    /// Bumped each time a runner is installed, so a renderer snapshot keyed on it (with the
+    /// runtime's tool generation) is rebuilt only when the bound runner or its tools change.
+    extension_runner_epoch: AtomicU64,
     event_bus: EventBus,
     event_listeners: Arc<Mutex<Vec<(u64, AgentSessionEventListener)>>>,
     next_listener_id: Arc<AtomicU64>,
@@ -1922,6 +1925,7 @@ impl AgentSession {
             model_registry,
             state: Mutex::new(state),
             extension_runner: tokio::sync::Mutex::new(None),
+            extension_runner_epoch: AtomicU64::new(0),
             event_bus: EventBus::new(),
             event_listeners: Arc::new(Mutex::new(Vec::new())),
             next_listener_id: Arc::new(AtomicU64::new(0)),
@@ -4928,12 +4932,17 @@ impl AgentSession {
         }
     }
 
-    /// Cheap change token for [`Self::native_tool_renderers_snapshot`]: unchanged means every
-    /// snapshot taken since this value was read is still current. Read it before snapshotting.
-    pub fn native_tool_renderers_generation(&self) -> u64 { maho_ext_api::tool_renderer_generation() }
-
     pub async fn native_tool_renderers_snapshot<TState: 'static, TArgs: 'static>(&self) -> BTreeMap<String, Arc<maho_ext_api::ToolRenderers<TState, TArgs>>> {
         self.extension_runner.lock().await.as_ref().map(|runner| runner.native_tool_renderers_snapshot()).unwrap_or_default()
+    }
+
+    /// A cheap key that changes whenever [`Self::native_tool_renderers_snapshot`] could change: a
+    /// new runner was installed or its runtime's live tool registrations moved. `None` while no
+    /// runner is bound. Callers poll this every frame and rebuild the snapshot only on a change.
+    pub fn tool_renderers_revision(&self) -> Option<(u64, u64)> {
+        let epoch = self.extension_runner_epoch.load(Ordering::SeqCst);
+        let runner = self.extension_runner.try_lock().ok()?;
+        runner.as_ref().map(|runner| (epoch, runner.runtime.tool_generation()))
     }
 
     /// The object-safe erased renderer set for every registered tool, keyed by tool name, over the
@@ -6794,7 +6803,7 @@ impl AgentSession {
         self.state().extension_runner_snapshot = Some(runner.clone());
         self.state().extension_bound_ui = None;
         *self.extension_runner.lock().await = Some(runner);
-        maho_ext_api::bump_tool_renderer_generation();
+        self.extension_runner_epoch.fetch_add(1, Ordering::SeqCst);
         self.apply_extension_bindings().await;
         if self.state().uses_default_stream_function {
             self.install_default_stream_function();

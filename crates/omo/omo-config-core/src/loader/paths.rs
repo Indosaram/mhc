@@ -44,7 +44,7 @@ pub fn resolve_home_dir(env: &OmoConfigEnv) -> String {
 }
 
 pub fn resolve_user_omo_config_directory(env: &OmoConfigEnv) -> String {
-    posix_join(&[resolve_home_dir(env).as_str(), ".maho"])
+    posix_join(&[resolve_home_dir(env).as_str(), ".omo"])
 }
 
 pub fn resolve_user_omo_config_path(env: &OmoConfigEnv) -> String {

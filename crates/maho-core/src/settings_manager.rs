@@ -1592,7 +1592,7 @@ mod tests {
     fn prefers_jsonc_over_json_when_both_exist() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
-        let agent = home.join(".maho/agent");
+        let agent = home.join(".omo/agent");
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(&agent).expect("mkdir");
         std::fs::create_dir_all(&project).expect("mkdir");
@@ -1644,7 +1644,7 @@ mod tests {
         let project = tmp.path().join("proj");
         let nested = project.join("a/b");
         std::fs::create_dir_all(&nested).expect("mkdir");
-        std::fs::create_dir_all(project.join(".maho")).expect("mkdir");
+        std::fs::create_dir_all(project.join(".omo")).expect("mkdir");
         std::fs::create_dir_all(&home).expect("mkdir");
         let directory = get_settings_directory(
             &nested.to_string_lossy(),
@@ -1652,7 +1652,7 @@ mod tests {
             SettingsScope::Project,
             &home.to_string_lossy(),
         );
-        assert_eq!(directory, project.join(".maho").to_string_lossy());
+        assert_eq!(directory, project.join(".omo").to_string_lossy());
     }
 
     #[test]
@@ -1851,12 +1851,12 @@ mod tests {
     fn the_manager_merges_project_over_global_with_nested_objects() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
-        let agent = home.join(".maho/agent");
+        let agent = home.join(".omo/agent");
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(&agent).expect("mkdir");
-        std::fs::create_dir_all(project.join(".maho")).expect("mkdir");
+        std::fs::create_dir_all(project.join(".omo")).expect("mkdir");
         std::fs::write(agent.join("settings.json"), "{\"theme\":\"dark\",\"warnings\":{\"tips\":true,\"other\":1},\"onlyGlobal\":1}").expect("write");
-        std::fs::write(project.join(".maho/settings.json"), "{\"theme\":\"light\",\"warnings\":{\"tips\":false}}").expect("write");
+        std::fs::write(project.join(".omo/settings.json"), "{\"theme\":\"light\",\"warnings\":{\"tips\":false}}").expect("write");
 
         let manager = SettingsManager::create(
             &project.to_string_lossy(),
@@ -1876,12 +1876,12 @@ mod tests {
     fn an_untrusted_project_ignores_project_settings() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
-        let agent = home.join(".maho/agent");
+        let agent = home.join(".omo/agent");
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(&agent).expect("mkdir");
-        std::fs::create_dir_all(project.join(".maho")).expect("mkdir");
+        std::fs::create_dir_all(project.join(".omo")).expect("mkdir");
         std::fs::write(agent.join("settings.json"), "{\"theme\":\"dark\"}").expect("write");
-        std::fs::write(project.join(".maho/settings.json"), "{\"theme\":\"light\"}").expect("write");
+        std::fs::write(project.join(".omo/settings.json"), "{\"theme\":\"light\"}").expect("write");
 
         let manager = SettingsManager::create(
             &project.to_string_lossy(),
@@ -2008,12 +2008,12 @@ mod tests {
     fn set_project_trusted_loads_and_drops_the_project_scope() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
-        let agent = home.join(".maho/agent");
+        let agent = home.join(".omo/agent");
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(&agent).expect("mkdir");
-        std::fs::create_dir_all(project.join(".maho")).expect("mkdir");
+        std::fs::create_dir_all(project.join(".omo")).expect("mkdir");
         std::fs::write(agent.join("settings.json"), "{\"theme\":\"dark\"}").expect("write");
-        std::fs::write(project.join(".maho/settings.json"), "{\"theme\":\"light\"}").expect("write");
+        std::fs::write(project.join(".omo/settings.json"), "{\"theme\":\"light\"}").expect("write");
         let mut manager = SettingsManager::create(&project.to_string_lossy(), &agent.to_string_lossy(), &home.to_string_lossy(), false);
         assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
         manager.set_project_trusted(true);

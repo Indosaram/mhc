@@ -297,7 +297,7 @@ async fn test_given_host_already_loaded_user_skill_when_discover_then_yields() {
     write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "oauth", "refresh": "r" } }));
 
     let home_dir = tempfile::tempdir().expect("tempdir");
-    let omo_dir = home_dir.path().join(".maho");
+    let omo_dir = home_dir.path().join(".omo");
     fs::create_dir_all(&omo_dir).expect("create .omo");
     fs::write(omo_dir.join("omo.jsonc"), "{}").expect("write omo.jsonc");
 
@@ -356,7 +356,7 @@ async fn test_given_disabled_skills_names_x_search_when_discover_then_not_contri
     write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "oauth", "refresh": "r" } }));
 
     let home_dir = tempfile::tempdir().expect("tempdir");
-    let omo_dir = home_dir.path().join(".maho");
+    let omo_dir = home_dir.path().join(".omo");
     fs::create_dir_all(&omo_dir).expect("create .omo");
     fs::write(omo_dir.join("omo.jsonc"), json!({ "disabled_skills": ["x-search"] }).to_string()).expect("write omo.jsonc");
 
@@ -401,7 +401,7 @@ async fn test_given_no_same_name_skill_and_empty_denylist_when_discover_then_con
     write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "oauth", "refresh": "r" } }));
 
     let home_dir = tempfile::tempdir().expect("tempdir");
-    let omo_dir = home_dir.path().join(".maho");
+    let omo_dir = home_dir.path().join(".omo");
     fs::create_dir_all(&omo_dir).expect("create .omo");
     fs::write(omo_dir.join("omo.jsonc"), "{}").expect("write omo.jsonc");
 

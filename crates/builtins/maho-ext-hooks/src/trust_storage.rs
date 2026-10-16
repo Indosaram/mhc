@@ -15,7 +15,7 @@ impl InMemoryHookStateStorage {
 
 pub struct FileHookStateStorage {global_path:PathBuf,project_path:PathBuf}
 impl FileHookStateStorage {
-    pub fn new(agent_dir:&Path,cwd:&Path)->Self {Self {global_path:agent_dir.join("hooks-state.json"),project_path:cwd.join(".maho/hooks-state.json")}}
+    pub fn new(agent_dir:&Path,cwd:&Path)->Self {Self {global_path:agent_dir.join("hooks-state.json"),project_path:cwd.join(".omo/hooks-state.json")}}
     fn path(&self,scope:HookTrustStorageScope)->&Path {match scope {HookTrustStorageScope::Global=>&self.global_path,HookTrustStorageScope::Project=>&self.project_path}}
     pub async fn read_async(&self,scope:HookTrustStorageScope)->std::io::Result<HookTrustState> {
         match tokio::fs::read(self.path(scope)).await {Ok(bytes)=>Ok(read_hook_trust_state_json(Some(&String::from_utf8_lossy(&bytes)))),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(empty_hook_trust_state()),Err(error)=>Err(error)}

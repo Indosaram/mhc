@@ -201,8 +201,8 @@ fn configuration_carries_the_parsed_session_directory() {
 fn trust_fixture() -> (tempfile::TempDir, String, String) {
     let dir = tempfile::tempdir().expect("trust fixture");
     let project = dir.path().join("project");
-    std::fs::create_dir_all(project.join(".maho")).expect("project config dir");
-    std::fs::write(project.join(".maho/settings.json"), "{}").expect("project settings");
+    std::fs::create_dir_all(project.join(".omo")).expect("project config dir");
+    std::fs::write(project.join(".omo/settings.json"), "{}").expect("project settings");
     let agent = dir.path().join("agent");
     std::fs::create_dir_all(&agent).expect("agent dir");
     let project = project.to_string_lossy().into_owned();

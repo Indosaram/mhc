@@ -33,7 +33,7 @@ fn fixture_home(root: &Path) -> std::path::PathBuf {
 }
 
 fn write_disabled_skills(home: &Path, names: &[&str]) {
-    let dir = home.join(".maho");
+    let dir = home.join(".omo");
     std::fs::create_dir_all(&dir).expect("config dir");
     let list: Vec<String> = names.iter().map(|name| format!("\"{name}\"")).collect();
     std::fs::write(dir.join("omo.jsonc"), format!("{{\"disabled_skills\":[{}]}}", list.join(","))).expect("config file");

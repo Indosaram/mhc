@@ -32,8 +32,8 @@ fn resolve(name: &str, path: &Path, home: &Path, env: &BTreeMap<String, String>,
 fn given_disabled_skills_hides_the_name_when_resolved_then_the_skill_is_disabled() {
     let root = tempfile::tempdir().expect("temp");
     let home = root.path().join("home");
-    std::fs::create_dir_all(home.join(".maho")).expect("config dir");
-    std::fs::write(home.join(".maho/omo.jsonc"), "{\"disabled_skills\":[\"computer-use\"]}").expect("config");
+    std::fs::create_dir_all(home.join(".omo")).expect("config dir");
+    std::fs::write(home.join(".omo/omo.jsonc"), "{\"disabled_skills\":[\"computer-use\"]}").expect("config");
     let env = support::env_for_home(&home);
     let path = root.path().join("computer-use/SKILL.md");
 

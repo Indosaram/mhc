@@ -2355,7 +2355,7 @@ mod tests {
 
     #[test]
     fn default_session_dir_encodes_the_cwd() {
-        assert_eq!(get_default_session_dir_path("/home/indo/piratetalk", "/home/indo/.maho/agent"), "/home/indo/.maho/agent/sessions/--home-indo-piratetalk--");
+        assert_eq!(get_default_session_dir_path("/home/indo/piratetalk", "/home/indo/.omo/agent"), "/home/indo/.omo/agent/sessions/--home-indo-piratetalk--");
     }
 
     #[test]

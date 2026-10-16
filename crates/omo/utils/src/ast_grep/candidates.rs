@@ -75,7 +75,7 @@ pub fn plan_sg_candidates(options: &SgResolverOptions<'_>) -> SgCandidatePlan {
     }
     before_path.push(candidate(
         SgResolutionTier::OmoRuntime,
-        join(&home_dir, &[".maho", "runtime", "ast-grep", &slug, binary]),
+        join(&home_dir, &[".omo", "runtime", "ast-grep", &slug, binary]),
     ));
     let mut skill_dirs = Vec::new();
     if let Some(cache_dir) = env_value(options.env, AST_GREP_BIN_DIR_ENV_KEY) {

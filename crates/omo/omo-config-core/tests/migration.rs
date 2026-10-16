@@ -512,7 +512,7 @@ fn merge_commit_rejected_by_schema_leaves_source_and_target_untouched() {
         target_before
     );
     assert!(file_system.exists(fixture.source_path));
-    assert!(!file_system.exists("/home/alice/.maho/.migration-journal.json"));
+    assert!(!file_system.exists("/home/alice/.omo/.migration-journal.json"));
 }
 
 #[test]
@@ -587,7 +587,7 @@ fn in_place_crash_after_journal_resumes_cleanly() {
 fn batch_stale_live_owner_reclaimed_and_completed() {
     let file_system = MemoryMigrationFileSystem::new();
     let fixture = migration_fixture();
-    let lock_path = "/home/alice/.maho/.migration.lock";
+    let lock_path = "/home/alice/.omo/.migration.lock";
     file_system.mkdirs(&posix_dirname(lock_path)).unwrap();
     file_system
         .write(lock_path, &lease_content(99, 1, 0))
@@ -783,7 +783,7 @@ fn test_crash_recovery(boundary: MigrationBoundary) {
     assert_eq!(target["_migrations"], json!(["crash-safe"]));
     assert!(!file_system.exists(fixture.source_path));
     assert!(file_system.exists(&format!("{}.bak.crash-safe", fixture.source_path)));
-    assert!(!file_system.exists("/home/alice/.maho/.migration-journal.json"));
+    assert!(!file_system.exists("/home/alice/.omo/.migration-journal.json"));
 }
 
 #[test]
@@ -857,7 +857,7 @@ fn transaction_concurrent_callers_exclusive_lock_and_retry() {
 fn transaction_live_owner_fresh_lease_not_stolen() {
     let file_system = MemoryMigrationFileSystem::new();
     let fixture = migration_fixture();
-    let lock_path = "/home/alice/.maho/.migration.lock";
+    let lock_path = "/home/alice/.omo/.migration.lock";
     file_system.mkdirs(&posix_dirname(lock_path)).unwrap();
     let lock_content = lease_content(99, 2000, 0);
     file_system.write(lock_path, &lock_content).unwrap();
@@ -1015,8 +1015,8 @@ fn transaction_false_predicate_and_no_journal_does_not_write() {
         marked_fs.read(fixture.target_path).unwrap(),
         json!({ "_migrations": ["already-done"] }).to_string()
     );
-    assert!(!no_source_fs.exists("/home/alice/.maho/.migration-journal.json"));
-    assert!(!marked_fs.exists("/home/alice/.maho/.migration-journal.json"));
+    assert!(!no_source_fs.exists("/home/alice/.omo/.migration-journal.json"));
+    assert!(!marked_fs.exists("/home/alice/.omo/.migration-journal.json"));
 }
 
 /// Every harness block the schema accepts (canonical `[opencode]`, `[native]`, `[codex]` plus the legacy `[senpi]` spelling), listed explicitly so a dropped block shows up here.

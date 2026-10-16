@@ -96,7 +96,7 @@ impl<'a> Drop for MigrationLock<'a> {
 pub fn migration_lock_path(env: &MigrationEnvironment) -> String {
     to_posix_path(&posix_join(&[
         &resolve_home_dir(env),
-        ".maho",
+        ".omo",
         ".migration.lock",
     ]))
 }
@@ -219,7 +219,7 @@ pub fn acquire_migration_lock<'a>(
 ) -> Result<Option<MigrationLock<'a>>, MigrationError> {
     let lease_duration_ms = input.lease_duration_ms.unwrap_or(DEFAULT_LEASE_DURATION_MS);
     let path = migration_lock_path(input.env);
-    let dot_omo = to_posix_path(&posix_join(&[&resolve_home_dir(input.env), ".maho"]));
+    let dot_omo = to_posix_path(&posix_join(&[&resolve_home_dir(input.env), ".omo"]));
     input.file_system.mkdirs(&dot_omo)?;
 
     for _attempt in 0..3 {

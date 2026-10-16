@@ -315,7 +315,7 @@ pub fn resolve_codegraph_command(
             .clone()
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from(""));
-        let install_dir = home.join(".maho").join("codegraph");
+        let install_dir = home.join(".omo").join("codegraph");
         resolve_pinned_codegraph_bin(
             Some(&install_dir),
             &ResolvePinnedCodegraphBinOptions {

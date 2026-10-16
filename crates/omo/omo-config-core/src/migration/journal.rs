@@ -31,7 +31,7 @@ pub struct MigrationJournal {
 pub fn migration_journal_path(env: &MigrationEnvironment) -> String {
     to_posix_path(&posix_join(&[
         &resolve_home_dir(env),
-        ".maho",
+        ".omo",
         ".migration-journal.json",
     ]))
 }

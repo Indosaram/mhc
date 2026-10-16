@@ -31,7 +31,7 @@ pub struct TaskInputs {
 pub fn component_options(cwd: &Path, env: &std::collections::BTreeMap<String, String>) -> maho_omo::OmoComponentOptions {
     maho_omo::OmoComponentOptions {
         skills_root: maho_omo::builtin_skills_root(),
-        state_dir: cwd.join(".maho"),
+        state_dir: cwd.join(".omo"),
         facts_read_only_bootstrap: env.get("MAHO_FACTS_READ_ONLY_BOOTSTRAP").is_some_and(|value|value=="1")&&maho_core::lockfile_policy::facts_lock_broker_enabled(),
         env: env.clone(),
     }

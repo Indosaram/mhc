@@ -14,7 +14,7 @@ pub fn read_help_flags_cache(scope: &HelpFlagsScope, version: &str) -> Option<Ve
 }
 pub fn write_help_flags_cache(scope: &HelpFlagsScope, flags: &[Value], extension_paths: &[PathBuf], version: &str) {
     let write = || -> std::io::Result<()> {
-        let mut paths = BTreeSet::from([scope.agent_dir.join("settings.json"), scope.agent_dir.join("extensions"), scope.agent_dir.join("trust.json"), scope.cwd.join(".maho/settings.json"), scope.cwd.join(".maho/extensions")]);
+        let mut paths = BTreeSet::from([scope.agent_dir.join("settings.json"), scope.agent_dir.join("extensions"), scope.agent_dir.join("trust.json"), scope.cwd.join(".omo/settings.json"), scope.cwd.join(".omo/extensions")]);
         for path in extension_paths.iter().filter(|path| path.is_absolute()) { paths.insert(path.clone()); if let Some(parent) = path.parent() { paths.insert(parent.to_owned()); } }
         paths.extend(scope.cli_extension_paths.iter().filter(|p| p.is_absolute()).cloned());
         let mut scopes: BTreeMap<String, Value> = read_file(scope).and_then(|value| serde_json::from_value(value["scopes"].clone()).ok()).unwrap_or_default();

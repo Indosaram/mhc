@@ -214,11 +214,11 @@ impl GitExec for FixtureGitExec {
     }
 }
 
-/// Writes the ONE user-layer config file the loader reads: `<HOME>/.maho/omo.jsonc`. Recall settings live
+/// Writes the ONE user-layer config file the loader reads: `<HOME>/.omo/omo.jsonc`. Recall settings live
 /// under `memory.recall` (the `memory` block is what the consumer resolves, and the recall resolver reads
 /// `recall` from it); a top-level `recall` is not read.
 fn write_user_config(home: &Path) -> PathBuf {
-    let directory = home.join(".maho");
+    let directory = home.join(".omo");
     std::fs::create_dir_all(&directory).expect("user config directory");
     let path = directory.join("omo.jsonc");
     std::fs::write(

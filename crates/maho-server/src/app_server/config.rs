@@ -21,7 +21,7 @@ pub fn register_config_methods(registry: &mut MethodRegistry, agent_dir: String,
                 tokio::task::spawn_blocking(move || {
                     let settings = SettingsManager::create(&cwd, &agent_dir, &maho_core::config::home_dir(), true);
                     let user_source = json!({"type":"user","file":Path::new(&agent_dir).join("settings.json"),"profile":null});
-                    let project_source = json!({"type":"project","dotCodexFolder":Path::new(&cwd).join(".maho")});
+                    let project_source = json!({"type":"project","dotCodexFolder":Path::new(&cwd).join(".omo")});
                     let mut origins = json!({}); let mut user = json!({}); let mut project = json!({});
                     for (key, wire) in [("defaultModel","model"),("defaultProvider","model_provider"),("defaultThinkingLevel","model_reasoning_effort")] {
                         if let Some(value) = settings.get_global().get(key).filter(|value| value.is_string()) {

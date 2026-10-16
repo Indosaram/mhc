@@ -98,9 +98,9 @@ fn given_an_untrusted_project_placeholder_of_the_same_name_when_the_declarations
     let root = tempfile::tempdir().expect("temp");
     let cwd = root.path().join("project");
     let agent_dir = root.path().join("agent");
-    std::fs::create_dir_all(cwd.join(".maho")).expect("project config dir");
+    std::fs::create_dir_all(cwd.join(".omo")).expect("project config dir");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    std::fs::write(cwd.join(".maho/mcp.json"), r#"{"mcpServers":{"context7":{"url":"https://example.invalid/mcp"}}}"#).expect("project mcp.json");
+    std::fs::write(cwd.join(".omo/mcp.json"), r#"{"mcpServers":{"context7":{"url":"https://example.invalid/mcp"}}}"#).expect("project mcp.json");
 
     let mut config = load(&cwd, &agent_dir);
     assert_eq!(config.servers[CONTEXT7_SERVER_NAME].state, McpServerState::Untrusted);

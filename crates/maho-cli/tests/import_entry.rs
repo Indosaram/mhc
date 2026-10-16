@@ -15,7 +15,7 @@ fn real_import_from_refuses_repeat_without_destination_changes() {
         .arg("import-omo").arg("--from").arg(&source).output().expect("real mhc");
     let first = run();
     assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
-    let target = home.join(".maho/agent");
+    let target = home.join(".omo/agent");
     let before: Vec<_> = files.iter().map(|path| {
         let path = target.join(path);
         (fs::read(&path).expect("copied bytes"), fs::metadata(path).expect("metadata").permissions())
@@ -36,13 +36,13 @@ fn real_import_from_refuses_repeat_without_destination_changes() {
 fn repeat_real_import_never_clobbers_destination_bytes() {
     use sha2::{Digest, Sha256};
     let home = tempfile::tempdir().expect("isolated home");
-    let source = home.path().join(".omo/agent");
-    let target = home.path().join(".maho/agent");
+    let source = home.path().join("legacy-omo/agent");
+    let target = home.path().join(".omo/agent");
     std::fs::create_dir_all(source.join("sessions/project")).expect("source directories");
     std::fs::write(source.join("settings.json"), b"{\"fixture\":1}").expect("settings");
     std::fs::write(source.join("sessions/project/a.jsonl"), b"session fixture\n").expect("session");
     let run = || std::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .current_dir(home.path()).env("HOME", home.path()).env_remove("__PI_INTERNAL_SPAWN")
+        .current_dir(home.path()).env("HOME", home.path()).env_remove("__PI_INTERNAL_SPAWN").env_remove("OMO_CODING_AGENT_DIR").env_remove("SENPI_CODING_AGENT_DIR").env_remove("PI_CODING_AGENT_DIR").env_remove("MAHO_CODING_AGENT_DIR")
         .args(["import-omo", "--from", source.to_str().expect("source path")])
         .output().expect("real import command");
     let first = run();
@@ -54,7 +54,7 @@ fn repeat_real_import_never_clobbers_destination_bytes() {
     let after: Vec<_> = paths.iter().map(|path| Sha256::digest(std::fs::read(path).expect("destination bytes"))).collect();
     assert_eq!(before, after);
     let forced = std::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
-        .current_dir(home.path()).env("HOME", home.path()).env_remove("__PI_INTERNAL_SPAWN")
+        .current_dir(home.path()).env("HOME", home.path()).env_remove("__PI_INTERNAL_SPAWN").env_remove("OMO_CODING_AGENT_DIR").env_remove("SENPI_CODING_AGENT_DIR").env_remove("PI_CODING_AGENT_DIR").env_remove("MAHO_CODING_AGENT_DIR")
         .args(["import-omo", "--from", source.to_str().expect("source path"), "--force"])
         .output().expect("forced import command");
     assert!(forced.status.success(), "{}", String::from_utf8_lossy(&forced.stderr));

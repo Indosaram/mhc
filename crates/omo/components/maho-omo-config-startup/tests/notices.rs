@@ -30,7 +30,7 @@ fn config_with_diagnostics(config: Value, messages: &[&str]) -> SenpiOmoConfigRe
         .map(|message| {
             SenpiConfigDiagnostic::Config(OmoConfigDiagnostic {
                 kind: "parse",
-                path: "/home/alice/.maho/omo.jsonc".into(),
+                path: "/home/alice/.omo/omo.jsonc".into(),
                 message: (*message).into(),
                 issue_paths: Vec::new(),
             })

@@ -1,7 +1,7 @@
 use crate::types::{Rule, Ruleset};
 use std::{fs::{self, OpenOptions}, io::{self, Write}, path::{Path, PathBuf}};
 
-fn permissions_path(project: &Path) -> PathBuf { project.join(".maho/permissions-approved.jsonl") }
+fn permissions_path(project: &Path) -> PathBuf { project.join(".omo/permissions-approved.jsonl") }
 pub fn load_approved(project: &Path) -> io::Result<Ruleset> {
     let content = match fs::read_to_string(permissions_path(project)) {
         Ok(content) => content, Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()), Err(error) => return Err(error),
@@ -10,7 +10,7 @@ pub fn load_approved(project: &Path) -> io::Result<Ruleset> {
 }
 pub fn append_approved(project: &Path, rules: &[Rule]) -> io::Result<()> {
     if rules.is_empty() { return Ok(()); }
-    fs::create_dir_all(project.join(".maho"))?;
+    fs::create_dir_all(project.join(".omo"))?;
     let mut file = OpenOptions::new().append(true).create(true).open(permissions_path(project))?;
     for rule in rules { serde_json::to_writer(&mut file,rule)?; file.write_all(b"\n")?; }
     Ok(())

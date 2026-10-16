@@ -52,7 +52,7 @@ pub fn resolve_lsp_daemon_base_dir(options: &LspDaemonBaseDirOptions) -> PathBuf
         return absolute(Path::new(&dir));
     }
     resolve_home_dir(options.home_dir.as_deref(), |key| options.env_value(key))
-        .join(".maho")
+        .join(".omo")
         .join("lsp-daemon")
 }
 

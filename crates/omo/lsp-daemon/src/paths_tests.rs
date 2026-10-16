@@ -64,7 +64,7 @@ fn default_base_is_influenced_only_by_the_user_home() {
     ]);
     assert_eq!(
         daemon_base_dir(&env, &unix_platform("/Users/qa")),
-        Ok("/Users/qa/.maho/lsp-daemon".to_string())
+        Ok("/Users/qa/.omo/lsp-daemon".to_string())
     );
 }
 

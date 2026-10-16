@@ -6,9 +6,9 @@ fn resolve(config: Value, profile: Option<&str>) -> Result<maho_omo_config_resol
     let root = tempfile::tempdir()?;
     let home = root.path().join("home");
     let project = home.join("project");
-    std::fs::create_dir_all(home.join(".maho"))?;
+    std::fs::create_dir_all(home.join(".omo"))?;
     std::fs::create_dir_all(&project)?;
-    std::fs::write(home.join(".maho/omo.jsonc"), config.to_string())?;
+    std::fs::write(home.join(".omo/omo.jsonc"), config.to_string())?;
     let mut env = std::collections::BTreeMap::from([("HOME".into(), home.to_string_lossy().into_owned())]);
     if let Some(profile) = profile { env.insert("OMO_PROFILE".into(), profile.into()); }
     Ok(load_senpi_omo_config(LoadOmoConfigOptions { cwd: Some(project.to_string_lossy().into_owned()), env: Some(env), platform: Some("linux".into()), ..Default::default() }))
