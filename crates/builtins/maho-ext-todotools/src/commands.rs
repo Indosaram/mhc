@@ -1,6 +1,6 @@
-use crate::{todo_types::{TodoPhase,TodoStatus,TodoItem,DEFAULT_INIT_PHASE},markdown::phases_to_markdown};
+use crate::{todo_types::{TodoPhase,TodoStatus,TodoItem,TodoAsk,DEFAULT_INIT_PHASE},markdown::phases_to_markdown};
 use crate::{todo_types::{TodoOperation,TodoOpEntry},todo_operations::apply_ops_to_phases};
-pub struct TodoCommandMutation { pub phases:Vec<TodoPhase>,pub action:String,pub notification:String,pub removed:bool }
+pub struct TodoCommandMutation { pub phases:Vec<TodoPhase>,pub ask:Option<TodoAsk>,pub action:String,pub notification:String,pub removed:bool }
 pub const TODO_COMMAND_USAGE:&str="Usage: /todo <verb> [args]\n  /todo                              Show current todos\n  /todo edit                         Edit todos as Markdown in an overlay\n  /todo copy                         Copy todos as Markdown to clipboard\n  /todo export [<path>]              Write todos to file (default: TODO.md)\n  /todo import [<path>]              Replace todos from file (default: TODO.md)\n  /todo append [<phase>] <task...>   Append a task; phase fuzzy-matched or created\n  /todo start  <task>                Mark task in_progress (fuzzy match)\n  /todo done   [<task|phase>]        Mark task/phase/all completed\n  /todo drop   [<task|phase>]        Mark task/phase/all abandoned\n  /todo rm     [<task|phase>]        Remove task/phase/all";
 pub type CopyTodoMarkdown=std::sync::Arc<dyn Fn(String)->maho_ext_api::ExtensionFuture<'static,()>+Send+Sync>;
 pub fn register_todo_command(api:&mut maho_ext_api::ExtensionApi,actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn crate::tools_todo::TodoAccessors>,copy_markdown:CopyTodoMarkdown) {
@@ -8,27 +8,28 @@ pub fn register_todo_command(api:&mut maho_ext_api::ExtensionApi,actions:std::sy
         let actions=actions.clone(); let accessors=accessors.clone(); let copy_markdown=copy_markdown.clone();
         Box::pin(async move {
             use maho_ext_api::NotificationType::{Info,Warning,Error};
-            let current=accessors.get_current_phases();
+            let current=accessors.get_current_state();
+            let current_phases=current.phases;
             let Some((verb,rest))=split_command(args) else {
-                let text=if current.is_empty() { "No todos. Use /todo append <task> to start one.".to_owned() } else { phases_to_markdown(&current).trim_end().to_owned() };
+                let text=if current_phases.is_empty() { "No todos. Use /todo append <task> to start one.".to_owned() } else { format!("{}\n\n{}",crate::todo_format::format_ask_now_next_header(&current_phases,current.ask.as_ref()),phases_to_markdown(&current_phases).trim_end()) };
                 ctx.ui.notify(&text,Info);
                 return Ok(());
             };
             let mutation=match verb.as_str() {
                 "help"|"?"=>{ctx.ui.notify(TODO_COMMAND_USAGE,Info);return Ok(());},
                 "copy"=>{
-                    if current.is_empty() { ctx.ui.notify("No todos to copy.",Warning); }
-                    else { match copy_markdown(phases_to_markdown(&current)).await { Ok(())=>ctx.ui.notify("Copied todos as Markdown to clipboard.",Info),Err(error)=>ctx.ui.notify(&error.to_string(),Error) } }
+                    if current_phases.is_empty() { ctx.ui.notify("No todos to copy.",Warning); }
+                    else { match copy_markdown(phases_to_markdown(&current_phases)).await { Ok(())=>ctx.ui.notify("Copied todos as Markdown to clipboard.",Info),Err(error)=>ctx.ui.notify(&error.to_string(),Error) } }
                     return Ok(());
                 },
                 "export"=>{
-                    match export_to_file(&current,rest,&ctx.cwd).await { Ok(Some(path))=>ctx.ui.notify(&format!("Wrote todos to {}",path.display()),Info),Ok(None)=>ctx.ui.notify("No todos to export.",Warning),Err(error)=>ctx.ui.notify(&error,Error) }
+                    match export_to_file(&current_phases,rest,&ctx.cwd).await { Ok(Some(path))=>ctx.ui.notify(&format!("Wrote todos to {}",path.display()),Info),Ok(None)=>ctx.ui.notify("No todos to export.",Warning),Err(error)=>ctx.ui.notify(&error,Error) }
                     return Ok(());
                 },
-                "import"=>import_from_file(rest,&ctx.cwd).await.map(Some),
-                "edit"=>match edit_in_overlay(&current,ctx).await { Ok(mutation)=>Ok(mutation),Err(error)=>Err(error.to_string()) },
-                "append"=>append_command(&current,rest).map(|(phases,action,notification)|Some(TodoCommandMutation{phases,action,notification,removed:false})),
-                "start"|"done"|"drop"|"rm"=>status_command(&current,rest,match verb.as_str() {"start"=>TodoOperation::Start,"done"=>TodoOperation::Done,"drop"=>TodoOperation::Drop,_=>TodoOperation::Rm}).map(Some),
+                "import"=>import_from_file(rest,&ctx.cwd).await.map(|mut mutation|{mutation.ask=current.ask.clone();Some(mutation)}),
+                "edit"=>match edit_in_overlay(&current_phases,ctx).await { Ok(mutation)=>Ok(mutation.map(|mut mutation|{mutation.ask=current.ask.clone();mutation})),Err(error)=>Err(error.to_string()) },
+                "append"=>append_command(&current_phases,rest).map(|(phases,action,notification)|Some(TodoCommandMutation{phases,ask:if current_phases.iter().all(|phase|phase.tasks.is_empty()){None}else{current.ask.clone()},action,notification,removed:false})),
+                "start"|"done"|"drop"|"rm"=>status_command(&current_phases,rest,match verb.as_str() {"start"=>TodoOperation::Start,"done"=>TodoOperation::Done,"drop"=>TodoOperation::Drop,_=>TodoOperation::Rm}).map(|mut mutation|{mutation.ask=current.ask.clone();Some(mutation)}),
                 _=>{ctx.ui.notify(&format!("Unknown /todo verb \"{verb}\".\n{TODO_COMMAND_USAGE}"),Error);return Ok(());},
             };
             match mutation {
@@ -42,7 +43,8 @@ pub fn register_todo_command(api:&mut maho_ext_api::ExtensionApi,actions:std::sy
 }
 pub fn commit_command_mutation(ctx:&dyn maho_tools::definition::ToolContext,mutation:&TodoCommandMutation,actions:&dyn maho_ext_api::ExtensionActions,accessors:&dyn crate::tools_todo::TodoAccessors)->Result<(),maho_ext_api::ExtensionFailure> {
     accessors.set_current_phases(mutation.phases.clone());
-    actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::json!({"schema":"v2","phases":mutation.phases,"source":"user","action":mutation.action})))?;
+    accessors.set_current_ask(mutation.ask.clone());
+    actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::json!({"schema":"v2","phases":mutation.phases,"ask":mutation.ask,"source":"user","action":mutation.action})))?;
     accessors.sync_widget(ctx,&[])?;
     actions.send_message(maho_ext_api::CustomMessage{custom_type:"todotools.user-edit".into(),content:vec![maho_ext_api::ToolContent::text(build_user_edit_reminder(&mutation.action,&mutation.phases,mutation.removed))],display:false,details:None},maho_ext_api::SendMessageOptions{trigger_turn:false,deliver_as:Some(maho_ext_api::DeliverAs::NextTurn)})
 }
@@ -57,7 +59,7 @@ pub fn plan_overlay_edit(phases:&[TodoPhase],edited:Option<&str>)->Result<Option
     let parsed=crate::markdown::markdown_to_phases(edited);
     if !parsed.errors.is_empty() { return Err(format!("Could not parse Markdown:\n  {}",parsed.errors.join("\n  "))); }
     let count=parsed.phases.iter().map(|phase|phase.tasks.len()).sum::<usize>();
-    Ok(Some(TodoCommandMutation {notification:format!("Todos updated: {} phase(s), {count} task(s).",parsed.phases.len()),phases:parsed.phases,action:"/todo edit".into(),removed:false}))
+    Ok(Some(TodoCommandMutation {notification:format!("Todos updated: {} phase(s), {count} task(s).",parsed.phases.len()),phases:parsed.phases,ask:None,action:"/todo edit".into(),removed:false}))
 }
 pub async fn export_to_file(phases:&[TodoPhase],rest:&str,cwd:&std::path::Path)->Result<Option<std::path::PathBuf>,String> {
     if phases.is_empty() { return Ok(None); }
@@ -71,7 +73,7 @@ pub async fn import_from_file(rest:&str,cwd:&std::path::Path)->Result<TodoComman
     let parsed=crate::markdown::markdown_to_phases(&String::from_utf8_lossy(&bytes));
     if !parsed.errors.is_empty() { return Err(format!("Could not parse {}:\n  {}",source.display(),parsed.errors.join("\n  "))); }
     let tasks=parsed.phases.iter().map(|phase|phase.tasks.len()).sum::<usize>();
-    Ok(TodoCommandMutation{action:format!("/todo import {}",source.display()),notification:format!("Imported {} phase(s), {tasks} task(s) from {}.",parsed.phases.len(),source.display()),phases:parsed.phases,removed:false})
+    Ok(TodoCommandMutation{action:format!("/todo import {}",source.display()),notification:format!("Imported {} phase(s), {tasks} task(s) from {}.",parsed.phases.len(),source.display()),phases:parsed.phases,ask:None,removed:false})
 }
 fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 pub fn argument_completions(prefix:&str)->Option<Vec<&'static str>> {
@@ -96,7 +98,7 @@ pub fn status_command(phases:&[TodoPhase],rest:&str,op:TodoOperation)->Result<To
     else if let Some((p,t))=find_task_fuzzy(phases,trimmed) { (Some(phases[p].tasks[t].content.clone()),None,Some(phases[p].tasks[t].content.clone())) }
     else if op!=TodoOperation::Start { match find_phase_fuzzy(phases,trimmed) { Some(phase)=>(None,Some(phase.name.clone()),Some(phase.name.clone())),None=>return Err(format!("No task or phase matched \"{trimmed}\".")) } }
     else { return Err(format!("No task matched \"{rest}\". Use /todo to list current tasks.")); };
-    if op==TodoOperation::Rm && trimmed.is_empty() { return Ok(TodoCommandMutation{phases:vec![],action:"/todo rm (all)".into(),notification:"Cleared all todos.".into(),removed:true}); }
+    if op==TodoOperation::Rm && trimmed.is_empty() { return Ok(TodoCommandMutation{phases:vec![],ask:None,action:"/todo rm (all)".into(),notification:"Cleared all todos.".into(),removed:true}); }
     let is_phase=phase.is_some();
     let result=apply_ops_to_phases(phases,&[TodoOpEntry{op,list:None,task,phase,items:None}]);
     if !result.errors.is_empty() { return Err(result.errors.join("; ")); }
@@ -110,7 +112,7 @@ pub fn status_command(phases:&[TodoPhase],rest:&str,op:TodoOperation)->Result<To
         (_,Some(label),false)=>format!("Marked {target}: {label}"),
         _=>format!("Marked all tasks {target}."),
     };
-    Ok(TodoCommandMutation{phases:result.phases,action:format!("/todo {verb} {}",label.as_deref().unwrap_or("(all)")),notification,removed:op==TodoOperation::Rm})
+    Ok(TodoCommandMutation{phases:result.phases,ask:None,action:format!("/todo {verb} {}",label.as_deref().unwrap_or("(all)")),notification,removed:op==TodoOperation::Rm})
 }
 fn title_case_sentence(text:&str)->String {
     let text=text.trim_matches(js_whitespace); let mut chars=text.chars(); match chars.next() { Some(first) if first.len_utf16()==2=>text.into(),Some(first)=>format!("{}{}",first.to_uppercase(),chars.as_str()),None=>String::new() }

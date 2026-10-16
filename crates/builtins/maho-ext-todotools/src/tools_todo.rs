@@ -3,7 +3,10 @@
 use crate::todo_types::{TodoOpEntry,TodoOperation};
 pub trait TodoAccessors:Send+Sync {
     fn get_current_phases(&self)->Vec<crate::todo_types::TodoPhase>;
+    fn get_current_ask(&self)->Option<crate::todo_types::TodoAsk> { None }
+    fn get_current_state(&self)->crate::todo_types::TodoState { crate::todo_types::TodoState{phases:self.get_current_phases(),ask:self.get_current_ask()} }
     fn set_current_phases(&self,phases:Vec<crate::todo_types::TodoPhase>);
+    fn set_current_ask(&self,_ask:Option<crate::todo_types::TodoAsk>) {}
     fn sync_widget(&self,ctx:&dyn maho_tools::definition::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>;
 }
 pub fn register_todo_tool(api:&mut maho_ext_api::ExtensionApi,actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn TodoAccessors>) {
@@ -20,11 +23,12 @@ pub fn renderers()->maho_ext_api::ToolRenderers<(),serde_json::Value> {
             let fallback=result.content.iter().filter_map(|block|match block {maho_ext_api::ContentBlock::Text(text)=>Some(text.text.as_str()),_=>None}).collect::<Vec<_>>().join("\n");
             if ctx.is_error{return Box::new(Text::with_padding(theme.fg(ThemeColor::ToolOutput,&fallback),0,0));}
             let phases:Vec<crate::todo_types::TodoPhase>=result.details.get("phases").map(|value|serde_json::from_value(value.clone()).unwrap_or_else(|error|std::panic::panic_any(error))).unwrap_or_default();
+            let ask=result.details.get("ask").and_then(|value|serde_json::from_value::<crate::todo_types::TodoAsk>(value.clone()).ok());
             let completed:Vec<crate::todo_types::TodoCompletionTransition>=result.details.get("completedTasks").map(|value|serde_json::from_value(value.clone()).unwrap_or_else(|error|std::panic::panic_any(error))).unwrap_or_default();
             let operation=result.details.get("op").map(|value|serde_json::from_value(value.clone()).unwrap_or_else(|error|std::panic::panic_any(error)));
             let visible:Vec<_>=phases.into_iter().filter(|phase|!phase.tasks.is_empty()).collect();
             let touched=if options.expanded||visible.len()==1{None}else{compute_touched_phases(&ctx.args,operation,&visible,&completed)};
-            let mut rows=vec![];
+            let mut rows=ask.map(|value|vec![theme.fg(ThemeColor::Dim,&format!("Ask: {}",crate::todo_format::sanitize_todo_text(&value.text)))]).unwrap_or_default();
             for (index,phase) in visible.iter().enumerate(){
                 let heading=format!("{}. {}",phase_roman_numeral(index+1),crate::todo_format::sanitize_todo_text(&phase.name));
                 if touched.as_ref().is_some_and(|set|!set.contains(&phase.name)){let closed=phase.tasks.iter().filter(|task|matches!(task.status,crate::todo_types::TodoStatus::Completed|crate::todo_types::TodoStatus::Abandoned)).count();rows.push(theme.fg(ThemeColor::Dim,&format!("{heading} — {closed}/{} done",phase.tasks.len())));continue;}
@@ -44,11 +48,17 @@ pub fn create_todo_tool(actions:std::sync::Arc<dyn maho_ext_api::ExtensionAction
             let ctx=call.context.ok_or_else(||ToolError::Message("todo requires extension execution context".into()))?;
             let storage=if ctx.session_manager().session_file().is_some() { crate::todo_types::TodoStorage::Session } else { crate::todo_types::TodoStorage::Memory };
             let previous=accessors.get_current_phases();
-            let (text,details)=plan_execution(&call.params,&previous,storage).map_err(ToolError::Message)?;
+            let current_ask=accessors.get_current_ask();
+            let op=call.params.get("op").and_then(serde_json::Value::as_str);
+            let creates=op==Some("init")||op==Some("append")&&previous.iter().all(|phase|phase.tasks.is_empty());
+            let next_ask=if creates { crate::todo_storage::capture_list_ask(&ctx.session_manager().get_branch(),current_ask.as_ref()).or_else(||current_ask.clone()) } else { current_ask.clone() };
+            let (text,mut details)=plan_execution_with_ask(&call.params,&previous,next_ask.as_ref(),storage).map_err(ToolError::Message)?;
+            details.ask=next_ask;
             if details.op!=Some(TodoOperation::View) {
-                let entry=crate::todo_types::TodoStateEntry{schema:crate::todo_types::TodoStateSchema::V2,phases:details.phases.clone()};
+                let entry=crate::todo_types::TodoStateEntry{schema:crate::todo_types::TodoStateSchema::V2,phases:details.phases.clone(),ask:details.ask.clone()};
                 actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::to_value(entry)?)).map_err(|error|ToolError::Message(error.to_string()))?;
                 accessors.set_current_phases(details.phases.clone());
+                accessors.set_current_ask(details.ask.clone());
                 accessors.sync_widget(ctx,details.completed_tasks.as_deref().unwrap_or_default()).map_err(|error|ToolError::Message(error.to_string()))?;
             }
             Ok(ToolResult{content:vec![ToolContent::text(text)],details:Some(serde_json::to_value(details)?)})
@@ -86,7 +96,8 @@ pub fn compute_touched_phases(args:&serde_json::Value,operation:Option<TodoOpera
     }
     (!touched.is_empty()).then_some(touched)
 }
-pub fn plan_execution(raw:&serde_json::Value,previous:&[crate::todo_types::TodoPhase],storage:crate::todo_types::TodoStorage)->Result<(String,crate::todo_types::TodoToolDetails),String> {
+pub fn plan_execution(raw:&serde_json::Value,previous:&[crate::todo_types::TodoPhase],storage:crate::todo_types::TodoStorage)->Result<(String,crate::todo_types::TodoToolDetails),String> { plan_execution_with_ask(raw,previous,None,storage) }
+pub fn plan_execution_with_ask(raw:&serde_json::Value,previous:&[crate::todo_types::TodoPhase],ask:Option<&crate::todo_types::TodoAsk>,storage:crate::todo_types::TodoStorage)->Result<(String,crate::todo_types::TodoToolDetails),String> {
     let normalized=crate::normalize::normalize_todo_params(raw,previous);
     let entry=match (normalized.error,normalized.entry) { (Some(error),_)=>return Err(format!("{error}\n\n{}",crate::todo_format::format_summary(previous,&[],true))),(_,Some(entry))=>entry,_=>return Err(format!("Missing \"op\". Example: {{\"op\":\"init\",\"list\":[{{\"phase\":\"Setup\",\"items\":[\"...\"]}}]}}\n\n{}",crate::todo_format::format_summary(previous,&[],true))) };
     let mut corrections=normalized.corrections; let read_only=entry.op==TodoOperation::View;
@@ -94,8 +105,10 @@ pub fn plan_execution(raw:&serde_json::Value,previous:&[crate::todo_types::TodoP
     if !applied.errors.is_empty() { return Err(crate::todo_format::format_summary(previous,&applied.errors,read_only)); }
     let completed=if read_only { vec![] } else { crate::todo_query::get_completion_transitions(previous,&applied.phases) };
     let summary=crate::todo_format::format_summary(&applied.phases,&[],read_only);
+    let summary=format!("{}{}",crate::todo_format::format_ask_now_next_header(&applied.phases,ask),summary);
     let text=if corrections.is_empty() { summary } else { format!("{}\n\n{summary}",corrections.join("\n")) };
-    Ok((text,crate::todo_types::TodoToolDetails{op:Some(entry.op),phases:applied.phases,storage,corrections:if corrections.is_empty() { None } else { Some(corrections) },completed_tasks:if completed.is_empty() { None } else { Some(completed) }}))
+    let next_ask=ask.cloned();
+    Ok((text,crate::todo_types::TodoToolDetails{op:Some(entry.op),phases:applied.phases,ask:next_ask,storage,corrections:if corrections.is_empty() { None } else { Some(corrections) },completed_tasks:if completed.is_empty() { None } else { Some(completed) }}))
 }
 pub fn render_raw_call_label(params:&serde_json::Value)->Result<String,serde_json::Error> {
     if params.get("op").is_none() { return Ok("todo".into()); }
