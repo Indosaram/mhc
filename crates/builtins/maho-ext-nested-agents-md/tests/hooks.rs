@@ -123,7 +123,7 @@ async fn toggle_command_emits_widget_and_machine_debug_fields() {
  let command = &api.registered.commands.iter().find(|command| command.name == "nested-agents").unwrap().handler;
  command("", &ctx).await.unwrap(); command("", &ctx).await.unwrap();
  let output = captured.lock().unwrap().clone();
- assert_eq!(output[0], serde_json::json!({"widget":["Nested Context:", "  nested/AGENTS.md"]}));
+ assert_eq!(output[0], serde_json::json!({"widget":["\u{1b}[39mNested Context:\u{1b}[39m", "\u{1b}[39m  nested/AGENTS.md\u{1b}[39m"]}));
  assert_eq!(output[1]["type"], "nested-agents-md:debug");
  let data = &output[1]["data"];
  assert_eq!(data["sessionKey"], "__pi_nested_agents_md_singleton__");
