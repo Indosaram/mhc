@@ -2,6 +2,7 @@ use maho_ext_api::{Extension, ExtensionApi, McpLifecycle, McpServerDeclaration, 
 use std::{collections::BTreeMap, path::PathBuf};
 
 pub const PROJECT_CWD_ENV: &str = "OMO_AST_GREP_PROJECT_CWD";
+const BUN_BE_BUN_ENV: &str = "BUN_BE_BUN";
 
 /// The native runtime replaces the staged JavaScript CLI, retaining its MCP protocol.
 pub struct AstGrepComponentOptions {
@@ -48,9 +49,13 @@ impl Extension for AstGrepComponent {
                 transport: Some(McpTransport::Stdio),
                 command: Some(self.options.entry.to_string_lossy().into_owned()),
                 args: Some(vec!["mcp".into()]),
-                env: Some(BTreeMap::from([(PROJECT_CWD_ENV.into(), cwd)])),
+                env: Some(BTreeMap::from([
+                    (PROJECT_CWD_ENV.into(), cwd),
+                    (BUN_BE_BUN_ENV.into(), "1".into()),
+                ])),
                 enabled: Some(true),
-                lifecycle: Some(McpLifecycle::Eager),
+                lifecycle: Some(McpLifecycle::Lazy),
+                exposure: Some(maho_ext_api::McpExposure::Search),
                 ..Default::default()
             },
         );
@@ -105,7 +110,9 @@ mod tests {
             "/workspace/project"
         );
         assert_eq!(server.config.enabled, Some(true));
-        assert_eq!(server.config.lifecycle, Some(McpLifecycle::Eager));
+        assert_eq!(server.config.lifecycle, Some(McpLifecycle::Lazy));
+        assert_eq!(server.config.exposure, Some(maho_ext_api::McpExposure::Search));
+        assert_eq!(server.config.env.as_ref().unwrap()[BUN_BE_BUN_ENV], "1");
     }
 
     #[test]
