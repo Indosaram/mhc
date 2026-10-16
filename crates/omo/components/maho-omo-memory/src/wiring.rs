@@ -120,7 +120,7 @@ impl MemoryWiring{
         crate::policy_guard::register_memory_filesystem_policy(Some(api),Some(&input.identity)).map_err(|error|error.to_string())?;
         reconcile().await?;
         if !input.entries.is_empty(){self.runtime.journal_wiring_for(&input.identity).reconcile_session(Some(input.session_id),input.entries,warn).map_err(|error|error.to_string())?;}
-        self.runtime.facts_wiring_for(&input.identity,||facts).reconcile_extractor();
+        self.runtime.facts_wiring_for(&input.identity,||facts).reconcile_extractor_for(Some(input.session_id));
         self.reflection_live.bind(input.session_id,input.identity,api,input.now_ms,ui.map(|ui|ui as &mut dyn MemoryFooterUi),live.map(|live|live as &mut dyn crate::wiring_reflection_live::ReflectionBindLive))
     }
     pub fn flush_skills_usage(&mut self,now:&dyn Fn()->String,aborted:Option<&dyn Fn()->bool>,warn:&dyn Fn(&str)){
@@ -157,6 +157,8 @@ impl MemoryWiring{
     pub fn unbind(&mut self,session:&str){self.runtime.contexts.remove(session);self.reflection_live.unbind(session);}
     pub async fn on_session_shutdown(&mut self,reason:crate::shutdown_drain::ShutdownReason,session:&str,deadline:f64,now:&(dyn Fn()->f64+Sync),warn:&mut (dyn FnMut(&str,Option<&str>)+Send)){
         self.maintenance.dispose();self.maintenance.settled().await;self.shutdown(session);
+        let identity=self.runtime.resolve_context(session).map(|context|context.identity.clone());
+        if let Some(identity)=identity { if let Some(facts)=self.runtime.existing_facts_wiring(&identity){facts.cancel_active().await;} }
         let evaluators=std::mem::take(&mut self.evaluators);
         let evaluators={let mut drain=crate::shutdown_drain::create_shutdown_drain(MemoryShutdownSteps{wiring:self,now});for evaluator in evaluators{drain.register_evaluator(evaluator);}drain.run(reason,session,deadline,now,warn).await;std::mem::take(&mut drain.evaluators)};
         self.evaluators=evaluators;

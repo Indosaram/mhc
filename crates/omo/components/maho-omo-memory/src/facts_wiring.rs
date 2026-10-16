@@ -5,8 +5,8 @@ pub type FactsExtractorWork = std::pin::Pin<Box<dyn std::future::Future<Output =
 pub trait FactsExtractorPort: Send {
     fn launch_pending(&mut self, signal: Option<&FactsAbortSignal>) -> FactsExtractorWork;
     fn reconcile_pending(&mut self, signal: Option<&FactsAbortSignal>) -> FactsExtractorWork;
+    fn cancel_active(&mut self) -> FactsExtractorWork { Box::pin(std::future::ready(Ok(()))) }
 }
-
 pub struct MemoryFactsWiringOptions {
     pub identity: String,
     pub identity_paths: MemoryIdentityPaths,
@@ -17,11 +17,11 @@ pub struct MemoryFactsWiringOptions {
     pub warn: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
-pub struct MemoryFactsWiring { options: MemoryFactsWiringOptions, queue: FactsQueue, settles: usize }
+pub struct MemoryFactsWiring { options: MemoryFactsWiringOptions, queue: FactsQueue, settles: usize, settled_sessions: std::collections::BTreeSet<String> }
 
 pub fn create_memory_facts_wiring(options: MemoryFactsWiringOptions) -> MemoryFactsWiring {
     let queue = FactsQueue::new(FactsQueueOptions { identity_paths:options.identity_paths.clone(), now:options.now.clone(), on_publish:None });
-    MemoryFactsWiring { options, queue, settles:0 }
+    MemoryFactsWiring { options, queue, settles:0, settled_sessions:Default::default() }
 }
 
 fn disabled() -> FactsEnqueueResult { FactsEnqueueResult::NotEnqueued { reason:"no-new-entries".into() } }
@@ -46,10 +46,12 @@ impl MemoryFactsWiring {
         match enqueue() { Ok(result) => result, Err(error) => { (self.options.warn)(&format!("facts queue enqueue failed: {conversation}: {error}")); disabled() } }
     }
     pub fn on_settled(&mut self, conversation: &str) -> FactsEnqueueResult {
+        let pending = if self.settled_sessions.contains(conversation) { Vec::new() } else { self.reconcile_pending() };
         let result = self.enqueue_settled(conversation, None);
         if !(self.options.facts_enabled)() { return result; }
+        self.settled_sessions.insert(conversation.to_owned());
         self.settles += 1;
-        if self.settles >= (self.options.debounce_settles)().max(1) {
+        if !pending.is_empty() || self.settles >= (self.options.debounce_settles)().max(1) {
             self.settles = 0;
             self.fire(false);
         }
@@ -59,16 +61,27 @@ impl MemoryFactsWiring {
         if !(self.options.facts_enabled)() { return vec![]; }
         match self.queue.list_pending() { Ok(entries) => entries, Err(error) => { (self.options.warn)(&format!("facts queue reconcile failed: {error}")); vec![] } }
     }
-    pub fn reconcile_extractor(&mut self) {
+    pub fn reconcile_extractor(&mut self) { self.reconcile_extractor_for(None); }
+    pub fn reconcile_extractor_for(&mut self, conversation: Option<&str>) {
+        if let Some(conversation) = conversation { self.settled_sessions.remove(conversation); }
         if !(self.options.facts_enabled)() { return; }
         self.fire(true);
     }
+    pub fn launch_extractor(&mut self) { if (self.options.facts_enabled)() { self.fire(false); } }
+    pub async fn cancel_active(&mut self) { if let Some(extractor)=&mut self.options.extractor { extractor.cancel_active().await; } }
     pub async fn launch_if_threshold_met(&mut self, signal: Option<&FactsAbortSignal>) -> bool {
-        if signal.is_some_and(FactsAbortSignal::is_aborted) || !(self.options.facts_enabled)() || self.settles < (self.options.debounce_settles)().max(1) { return false; }
+        if signal.is_some_and(FactsAbortSignal::is_aborted) || !(self.options.facts_enabled)() { return false; }
         if signal.is_some_and(FactsAbortSignal::is_aborted) { return false; }
         let Some(extractor) = &mut self.options.extractor else { return false; };
         self.settles = 0;
         if signal.is_some_and(FactsAbortSignal::is_aborted) { return false; }
+        if let Err(error) = extractor.launch_pending(signal).await { (self.options.warn)(&format!("facts extractor launch failed: {error}")); }
+        true
+    }
+    pub async fn launch_pending_now(&mut self, signal: Option<&FactsAbortSignal>) -> bool {
+        if signal.is_some_and(FactsAbortSignal::is_aborted) || !(self.options.facts_enabled)() { return false; }
+        self.settles = 0;
+        let Some(extractor) = &mut self.options.extractor else { return false; };
         if let Err(error) = extractor.launch_pending(signal).await { (self.options.warn)(&format!("facts extractor launch failed: {error}")); }
         true
     }
@@ -134,6 +147,8 @@ mod tests {
         assert!(!error.is_empty());
     }
     #[tokio::test] async fn debounce_counts_settles_even_without_new_entries() { let root=tempfile::tempdir().unwrap(); let (mut wiring,calls)=fixture(root.path(),true,Rc::new(Cell::new(4))); for _ in 0..3 { assert!(!wiring.on_settled("conversation").is_enqueued()); } assert_eq!(calls.get(),0); wiring.on_settled("conversation"); assert_eq!(calls.get(),1); }
+    #[tokio::test] async fn repeated_session_admission_is_not_reconciled_again(){let root=tempfile::tempdir().unwrap();let (mut wiring,calls)=fixture(root.path(),true,Rc::new(Cell::new(4)));wiring.on_settled("same");assert_eq!(calls.get(),0);wiring.on_settled("same");assert_eq!(calls.get(),0);}
+    #[tokio::test] async fn existing_pending_work_bypasses_debounce(){let root=tempfile::tempdir().unwrap();let (mut wiring,calls)=fixture(root.path(),true,Rc::new(Cell::new(99)));let journal=TranscriptJournal::new(TranscriptJournalOptions::new(wiring.options.identity_paths.transcripts.join("old")));journal.append(&[memory_core::journal::entries::TranscriptEntry::Text(memory_core::journal::entries::TextTranscriptEntry::new("user","q","2026-01-01T00:00:00Z","u","m")),memory_core::journal::entries::TranscriptEntry::Text(memory_core::journal::entries::TextTranscriptEntry::new("assistant","a","2026-01-01T00:00:00Z","a","m"))]).unwrap();assert!(wiring.enqueue_settled("old",None).is_enqueued());wiring.on_settled("new");assert_eq!(calls.get(),1);}
     #[test] fn real_journal_delta_enqueues_once_and_consumes() {
         use memory_core::journal::entries::{TranscriptEntry, TextTranscriptEntry};
         let root=tempfile::tempdir().unwrap(); let (wiring,_)=fixture(root.path(),true,Rc::new(Cell::new(4)));
