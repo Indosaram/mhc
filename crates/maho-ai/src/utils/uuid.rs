@@ -123,7 +123,6 @@ fn with_generator<T>(f: impl FnOnce(&mut Generator) -> T) -> T {
 mod tests {
     use super::*;
 
-
     /// UUIDv7 regex: version nibble `7`, variant `8|9|a|b`.
     fn assert_matches_uuid_v7(id: &str) {
         let bytes = id.as_bytes();
