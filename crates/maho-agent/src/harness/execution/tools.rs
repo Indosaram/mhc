@@ -246,7 +246,7 @@ pub fn tool_result_from_message(message: &ToolResultMessage, terminate: bool) ->
         content: message.content.clone(),
         details: message.details.clone().unwrap_or(Value::Object(Map::new())),
         usage: message.usage,
-        added_tool_names: message.added_tool_names.clone(),
+        added_tool_names: None,
         terminate: if terminate { Some(true) } else { None },
         is_error: None,
     }
@@ -259,7 +259,7 @@ pub fn create_tool_result_message(call: &FinalizedToolCall) -> ToolResultMessage
         content: call.result.content.clone(),
         details: Some(call.result.details.clone()),
         usage: call.result.usage,
-        added_tool_names: call.result.added_tool_names.clone().filter(|names| !names.is_empty()),
+        added_tool_names: None,
         is_error: call.is_error,
         timestamp: now_ms(),
     }
