@@ -32,7 +32,7 @@ fn is_blocked(account:&AccountSlot,now:f64) -> bool {
 pub fn clear_expired_blocks(accounts:&[AccountSlot],now:f64) -> Vec<AccountSlot> {
     accounts.iter().map(|account| {
         let mut account=account.clone();
-        if account.blocked_until.is_some_and(|until| until<=now) {
+        if account.block_reason.is_some() && account.blocked_until.is_none_or(|until| until<=now) {
             account.blocked_until=None;account.block_reason=None;
         } account
     }).collect()
@@ -86,11 +86,12 @@ mod tests {
         assert_eq!(select_account(&pool,&AffinityOptions { session_id:Some("session-01"),..Default::default() },1000.0).unwrap().name,"charlie");
     }
     #[test]
-    fn typed_blocked_pool_auth_never_expires() {
+    fn expired_typed_auth_block_clears_at_reprobe() {
         let mut pool=accounts();for a in &mut pool { a.blocked_until=Some(10000.0); }
         assert_eq!(select_account(&pool,&Default::default(),1000.0).unwrap_err().soonest_unblock_at,Some(10000.0));
         for a in &mut pool { a.block_reason=Some("auth_error".into()); }
-        assert_eq!(select_account(&pool,&Default::default(),1000000.0).unwrap_err().block_reason,Some("auth_error"));
+        // Upstream affinity.ts clears auth blocks once blockedUntil reaches the re-probe time.
+        assert!(select_account(&pool,&Default::default(),10000.0).is_ok());
     }
     #[test]
     fn auth_blocks_expire_at_the_reprobe_time() {
@@ -99,7 +100,8 @@ mod tests {
         pool[0].block_reason=Some("auth_error".into());
         assert!(select_account(&pool,&AffinityOptions {pinned_account:Some("alpha"),..Default::default()},99.0).unwrap().name!="alpha");
         assert_eq!(select_account(&pool,&AffinityOptions {pinned_account:Some("alpha"),..Default::default()},100.0).unwrap().name,"alpha");
-        let legacy=clear_expired_blocks(&[{let mut account=pool[0].clone();account.blocked_until=None;account}],0.0);
+        let mut legacy_account=pool[0].clone();legacy_account.blocked_until=None;
+        let legacy=clear_expired_blocks(&[legacy_account],0.0);
         assert_eq!(legacy[0].block_reason,None);
     }
 }
