@@ -178,7 +178,12 @@ impl PendingMessageQueue {
         if self.messages.is_empty() {
             return Vec::new();
         }
-        vec![self.messages.remove(0)]
+        let end = if is_background_notice(&self.messages[0]) {
+            self.messages.iter().take_while(|message| is_background_notice(message)).count()
+        } else {
+            1
+        };
+        self.messages.drain(..end).collect()
     }
 
     fn prepend(&mut self, messages: Vec<AgentMessage>) {
@@ -191,6 +196,10 @@ impl PendingMessageQueue {
         self.messages.clear();
         self.clear_generation += 1;
     }
+}
+
+fn is_background_notice(message: &AgentMessage) -> bool {
+    !matches!(message.role(), "system" | "user" | "assistant" | "toolResult")
 }
 
 struct ActiveRun {

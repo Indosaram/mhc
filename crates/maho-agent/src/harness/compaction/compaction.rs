@@ -805,7 +805,26 @@ pub async fn generate_summary_with_request(
         ));
     }
 
+    if response.stop_reason == StopReason::Length {
+        return Err(CompactionError::new(
+            CompactionErrorCode::SummarizationFailed,
+            "Summarization hit the token limit; the summary is incomplete",
+        ));
+    }
+    if response.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_))) {
+        return Err(CompactionError::new(
+            CompactionErrorCode::SummarizationFailed,
+            "Summarization attempted to call a tool",
+        ));
+    }
+
     let text = content_text_for_summary(&response.content, "\n");
+    if text.trim().is_empty() {
+        return Err(CompactionError::new(
+            CompactionErrorCode::SummarizationFailed,
+            "Summarization produced no text",
+        ));
+    }
 
     Ok((text, response.usage))
 }
@@ -1163,5 +1182,25 @@ async fn generate_turn_prefix_summary(
         ));
     }
 
-    Ok((content_text_for_summary(&response.content, "\n"), response.usage))
+    if response.stop_reason == StopReason::Length {
+        return Err(CompactionError::new(
+            CompactionErrorCode::SummarizationFailed,
+            "Turn prefix summarization hit the token limit; the summary is incomplete",
+        ));
+    }
+    if response.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_))) {
+        return Err(CompactionError::new(
+            CompactionErrorCode::SummarizationFailed,
+            "Turn prefix summarization attempted to call a tool",
+        ));
+    }
+    let summary_text = content_text_for_summary(&response.content, "\n");
+    if summary_text.trim().is_empty() {
+        return Err(CompactionError::new(
+            CompactionErrorCode::SummarizationFailed,
+            "Turn prefix summarization produced no text",
+        ));
+    }
+
+    Ok((summary_text, response.usage))
 }
