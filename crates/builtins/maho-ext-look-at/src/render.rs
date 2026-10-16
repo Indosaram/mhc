@@ -35,7 +35,7 @@ pub fn renderers()->maho_ext_api::ToolRenderers<(),serde_json::Value> {
             if !model.is_empty(){rows.push(theme.fg(ThemeColor::Accent,&format!("[vision {model}]")));}
             if text.is_empty(){rows.push(theme.fg(if options.is_partial{ThemeColor::Warning}else{ThemeColor::Dim},if options.is_partial{"Analyzing media..."}else{"empty response"}));}
             else if options.expanded{rows.extend(text.split('\n').map(|line|theme.fg(ThemeColor::ToolOutput,line)));}
-            else {let preview=text.split('\n').map(|line|line.trim_matches(js_whitespace)).filter(|line|!line.is_empty()).take(4).collect::<Vec<_>>();if preview.is_empty(){rows.push(theme.fg(ThemeColor::Dim,"empty response"));}else{rows.extend(preview.iter().map(|line|theme.fg(ThemeColor::ToolOutput,&format!("  {}",truncate_to_width(line,120,"…",false)))));}}
+            else {let preview=text.split('\n').map(|line|line.trim_matches(js_whitespace)).filter(|line|!line.is_empty()).take(4).collect::<Vec<_>>();if preview.is_empty(){rows.push(theme.fg(ThemeColor::Dim,"empty response"));}else{rows.extend(preview.iter().map(|line|theme.fg(ThemeColor::ToolOutput,&format!("  {}",truncate_to_width(&truncate_utf16(line,120),120,"…",false)))));}}
             Box::new(Text::with_padding(rows.join("\n"),0,0))
         })),
     }
@@ -52,8 +52,18 @@ pub fn source_labels(args:&LookAtArgs)->Vec<String> {
 }
 pub fn goal_preview(goal:&str)->String {
     let goal=goal.split(js_whitespace).filter(|part|!part.is_empty()).collect::<Vec<_>>().join(" "); if goal.is_empty() { return "pending".into(); }
-    if goal.encode_utf16().count()<=110 { return goal; }
-    let mut units=0; let mut preview=String::new(); for character in goal.chars() { if units+character.len_utf16()>109 { break; } units+=character.len_utf16(); preview.push(character); } preview.push('…'); preview
+    truncate_utf16(&goal,110)
+}
+pub fn truncate_utf16(value:&str,max_units:usize)->String {
+    let total=value.encode_utf16().count();if total<=max_units { return value.into(); }
+    let limit=max_units.saturating_sub(1);
+    let mut units=0;let mut output=String::new();
+    for character in value.chars() {
+        let width=character.len_utf16();
+        if units+width>limit { break; }
+        units+=width;output.push(character);
+    }
+    output.push('…');output
 }
 pub fn text_content(content:&[serde_json::Value])->&str { content.iter().find(|block|block.get("type").and_then(serde_json::Value::as_str)==Some("text")).and_then(|block|block.get("text")).and_then(serde_json::Value::as_str).unwrap_or("") }
 #[cfg(test)]
@@ -78,6 +88,12 @@ mod tests {
     #[test] fn attachment_labels_and_posix_basename() { assert_eq!(path_label("[Image #2, attached]"),"Image #2"); assert_eq!(path_label("image://3"),"Image #3"); assert_eq!(path_label("/tmp/photo.png/"),"photo.png"); assert_eq!(path_label("\\tmp\\photo.png"),"\\tmp\\photo.png"); }
     #[test] fn labels_preserve_plural_then_singular_order() { let args=LookAtArgs{file_paths:Some(vec!["a".into()," ".into()]),file_path:Some("b".into()),image_data:Some("abc".into()),..Default::default()}; assert_eq!(source_labels(&args),["a","b","base64 input"]); }
     #[test] fn first_text_block_is_authoritative() { assert_eq!(text_content(&[serde_json::json!({"type":"text"}),serde_json::json!({"type":"text","text":"later"})]),""); }
+    #[test] fn utf16_truncation_matches_javascript_slice_boundaries() {
+        assert_eq!(truncate_utf16("a😀b",2),"a…");
+        assert_eq!(truncate_utf16("a😀b",4),"a😀b");
+        assert_eq!(truncate_utf16("😀ab",1),"…");
+        assert_eq!(truncate_utf16("plain",5),"plain");
+    }
 }
 
 #[cfg(test)]
