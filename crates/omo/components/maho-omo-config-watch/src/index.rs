@@ -54,7 +54,7 @@ pub struct ConfigWatchComponentOptions {
     pub logger:Option<Arc<dyn ComponentLogger>>,
 }
 
-struct Lifecycle { registration:Option<RegisteredConfigWatch>, fingerprint:String, retries:usize, warned_reload_required:bool }
+struct Lifecycle { registration:Option<RegisteredConfigWatch>, fingerprint:String, retries:usize, warned_reload_required:bool, emitting_registration:Option<RegisteredConfigWatch>, stood_down:bool }
 
 pub struct ConfigWatchComponent {
     pub options:ConfigWatchComponentOptions,
@@ -97,17 +97,29 @@ impl Extension for ConfigWatchComponent {
         let validator=Arc::new(Mutex::new(create_validator(&cwd)));
         *self.validator.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(Arc::clone(&validator));
         let events=api.events.clone();
-        let state=Arc::new(Mutex::new(Lifecycle{registration:None,fingerprint:String::new(),retries:0,warned_reload_required:false}));
+        let state=Arc::new(Mutex::new(Lifecycle{registration:None,fingerprint:String::new(),retries:0,warned_reload_required:false,emitting_registration:None,stood_down:false}));
         let resolved=resolve_with_warning(&cwd,&resolution,&log,&state);
         let registration=registration_typed(&resolved,&validator);
         state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registration=Some(registration.clone());
         let extension_path=api.registered.identity.path.clone();
 
-        let ready_events=events.clone();let ready_state=Arc::clone(&state);
+        let ready_events=events.clone();let ready_state=Arc::clone(&state);let ready_epoch=Arc::clone(&self.retry_epoch);
         let ready_path=extension_path.clone();
         let ready=events.on(CONFIG_WATCH_READY,Arc::new(move|_|{
-            let registration=ready_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registration.clone();
-            if let Some(registration)=registration { ready_events.publish_config_watch(&ready_path,registration); }
+            schedule_registration(ready_events.clone(),ready_path.clone(),Arc::clone(&ready_state),Arc::clone(&ready_epoch));
+        }));
+        let duplicate_log=Arc::clone(&log);let duplicate_state=Arc::clone(&state);let duplicate_path=extension_path.clone();let duplicate_subscriptions=Arc::clone(&self.subscriptions);
+        let duplicate=events.on_native::<(String,RegisteredConfigWatch)>(maho_ext_api::CONFIG_WATCH_REGISTER_CHANNEL,Arc::new(move|(owner,payload)|{
+            let should_stand_down={
+                let mut state=duplicate_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if owner==duplicate_path || payload.id!=OMO_REGISTRATION_ID { false }
+                else if state.emitting_registration.as_ref().is_some_and(|emitting|Arc::ptr_eq(&emitting.validate,&payload.validate)) { false }
+                else { state.stood_down=true; true }
+            };
+            if should_stand_down {
+                duplicate_log(ConfigWatchLogLevel::Warn,"omo config-watch superseded by another omo extension instance; standing down",Some(&serde_json::json!({"hint":"two omo extensions are loaded in this senpi process; remove one"})));
+                duplicate_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+            }
         }));
         let reloaded_log=Arc::clone(&log);
         let reloaded=events.on(CONFIG_WATCH_RELOADED,Arc::new(move|payload|{
@@ -141,7 +153,7 @@ impl Extension for ConfigWatchComponent {
             }
             schedule_registration(rejected_events.clone(),rejected_path.clone(),Arc::clone(&rejected_state),Arc::clone(&rejected_epoch));
         }));
-        self.subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend([ready,reloaded,rejected]);
+        self.subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend([ready,duplicate,reloaded,rejected]);
 
         let shutdown_subscriptions=Arc::clone(&self.subscriptions);let shutdown_epoch=Arc::clone(&self.retry_epoch);
         api.on(EventKind::SessionShutdown,Arc::new(move|_,_|{
@@ -154,7 +166,9 @@ impl Extension for ConfigWatchComponent {
         // `register_config_watch` emits both the callable-free JSON payload on
         // `config-watch:register` and the typed registration carrying `validate`, so the component
         // must not emit the JSON payload itself.
+        state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).emitting_registration=Some(registration.clone());
         api.register_config_watch(registration);
+        state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).emitting_registration=None;
     }
 }
 
@@ -195,14 +209,21 @@ fn registration_typed(resolved:&OmoConfigWatchTargetResolution,validator:&Arc<Mu
 }
 
 fn schedule_registration(events:EventBus,path:String,state:Arc<Mutex<Lifecycle>>,epoch:Arc<AtomicU64>) {
-    let Ok(handle)=tokio::runtime::Handle::try_current() else { return; };
     let scheduled=epoch.fetch_add(1,Ordering::SeqCst).wrapping_add(1);
-    handle.spawn(async move {
-        tokio::task::yield_now().await;
+    let callback=move || {
         if epoch.load(Ordering::SeqCst)!=scheduled { return; }
-        let registration=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registration.clone();
+        let registration={
+            let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.stood_down { return; }
+            let registration=state.registration.clone();
+            state.emitting_registration=registration.clone();
+            registration
+        };
         if let Some(registration)=registration { events.publish_config_watch(&path,registration); }
-    });
+        let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.emitting_registration=None;
+    };
+    if let Ok(handle)=tokio::runtime::Handle::try_current() { handle.spawn(async move { tokio::task::yield_now().await;callback(); }); }
 }
 
 struct ReloadedPayload { paths:Vec<String> }
