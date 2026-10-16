@@ -116,7 +116,7 @@ pub fn parse_model_pattern(pattern: &str, models: &[Model], allow_invalid_thinki
     if let Some(model) = try_match_model(pattern, models) { return ParsedModelResult { model: Some(model.clone()), ..Default::default() }; }
     let Some((prefix, suffix)) = pattern.rsplit_once(':') else { return ParsedModelResult::default(); };
     let thinking = ModelThinkingLevel::parse(suffix);
-    let tier = matches!(suffix, "auto" | "flex" | "priority");
+    let tier = matches!(suffix, "auto" | "flex" | "priority" | "ultrafast");
     if thinking.is_none() && !tier && !allow_invalid_thinking_level_fallback { return ParsedModelResult::default(); }
     let mut result = parse_model_pattern(prefix, models, allow_invalid_thinking_level_fallback);
     if result.model.is_none() { return result; }
@@ -156,7 +156,7 @@ pub fn resolve_model_scope_from_models(patterns:&[String],models:&[Model])->Reso
             let mut glob=pattern.as_str();
             while let Some((prefix,suffix))=glob.rsplit_once(':') {
                 if thinking.is_none()&&ModelThinkingLevel::parse(suffix).is_some(){thinking=ModelThinkingLevel::parse(suffix);}
-                else if tier.is_none()&&matches!(suffix,"auto"|"flex"|"priority"){tier=Some(suffix.to_owned());}else{break;}
+                else if tier.is_none()&&matches!(suffix,"auto"|"flex"|"priority"|"ultrafast"){tier=Some(suffix.to_owned());}else{break;}
                 glob=prefix;
             }
             if let Some(model)=find_exact_model_reference_match(glob,models){matches.push(ParsedModelResult{model:Some(model.clone()),thinking_level:thinking,service_tier:tier.clone(),..Default::default()});}
@@ -306,6 +306,8 @@ mod tests {
     }
     #[test]
     fn scope_first_pattern_owns_deduplicated_models(){let models=vec![model("p","sol"),model("q","sol")];let result=resolve_model_scope_from_models(&["p/*:high".into(),"*/sol".into()],&models);assert_eq!(result.scoped_models.len(),2);assert_eq!(result.pattern_resolutions[1].owned_ids,["q/sol"]);assert_eq!(result.scoped_models[0].thinking_level,Some(ModelThinkingLevel::High));}
+    #[test]
+    fn ultrafast_is_a_service_tier_suffix(){let parsed=parse_model_pattern("sol:ultrafast",&[model("p","sol")],false);assert_eq!(parsed.service_tier.as_deref(),Some("ultrafast"));}
     #[test]
     fn literal_colon_id_precedes_thinking_decorator(){let models=vec![model("p","sol:high")];let parsed=parse_model_pattern("sol:high",&models,true);assert_eq!(parsed.model.expect("model").id,"sol:high");assert_eq!(parsed.thinking_level,None);}
     #[test]
