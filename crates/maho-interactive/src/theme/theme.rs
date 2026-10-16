@@ -1,5 +1,6 @@
 //! Port of theme.ts color and palette primitives.
 use super::theme_json::{ColorValue, ThemeError, ThemeJson, validate_theme_json};
+use super::theme_json::ThemeAppearance;
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThemeColor {
@@ -283,6 +284,7 @@ impl TerminalTheme {
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub name: String,
+    pub appearance: Option<ThemeAppearance>,
     pub source_path: Option<std::path::PathBuf>,
     mode: ColorMode,
     colors: BTreeMap<String, ColorValue>,
@@ -295,7 +297,7 @@ fn resolve(
 ) -> Result<ColorValue, ThemeError> {
     match value {
         ColorValue::Index(_) => Ok(value.clone()),
-        ColorValue::Text(text) if text.is_empty() || text.starts_with('#') => Ok(value.clone()),
+        ColorValue::Text(text) if text.is_empty() || text.starts_with('#') || text.to_ascii_lowercase().starts_with("oklch(") || text.to_ascii_lowercase().starts_with("okhsl(") => Ok(value.clone()),
         ColorValue::Text(text) => {
             if !visited.insert(text.clone()) {
                 return Err(ThemeError::Invalid(format!(
@@ -396,7 +398,9 @@ impl Theme {
             if let ColorValue::Text(t) = &value
                 && !t.is_empty()
             {
-                hex_to_rgb(t)?;
+                if t.to_ascii_lowercase().starts_with("oklch(") || t.to_ascii_lowercase().starts_with("okhsl(") {
+                    parse_ok_color(t).ok_or_else(|| ThemeError::Invalid(format!("Invalid color: {t}")))?;
+                } else { hex_to_rgb(t)?; }
             }
             colors.insert(key.clone(), value);
         }
@@ -416,6 +420,7 @@ impl Theme {
         }
         Ok(Self {
             name: json.name,
+            appearance: json.appearance,
             source_path: None,
             mode,
             colors,
@@ -450,6 +455,10 @@ impl Theme {
         let prefix = if bg { 48 } else { 38 };
         match self.colors.get(key) {
             Some(ColorValue::Index(i)) => format!("\x1b[{prefix};5;{i}m"),
+            Some(ColorValue::Text(t)) if !t.is_empty() && (t.to_ascii_lowercase().starts_with("oklch(") || t.to_ascii_lowercase().starts_with("okhsl(")) => {
+                let Some(rgb) = parse_ok_color(t) else { return String::new(); };
+                match self.mode { ColorMode::Truecolor => format!("\x1b[{prefix};2;{};{};{}m",rgb[0],rgb[1],rgb[2]), ColorMode::Color256 => format!("\x1b[{prefix};5;{}m",rgb_to_256(rgb)) }
+            }
             Some(ColorValue::Text(t)) if !t.is_empty() => match hex_to_rgb(t) {
                 Ok(rgb) => match self.mode {
                     ColorMode::Truecolor => {
@@ -531,6 +540,22 @@ impl Theme {
     pub fn bash_mode_border_color(&self, text: &str) -> String {
         self.fg(ThemeColor::BashMode, text)
     }
+}
+fn parse_ok_color(text: &str) -> Option<[u8;3]> {
+    let inside = text.split_once('(')?.1.strip_suffix(')')?;
+    let fields: Vec<&str> = inside.split(|c: char| c.is_whitespace() || c == '/').filter(|s| !s.is_empty()).collect();
+    if fields.len() < 3 { return None; }
+    let a: f64 = fields[0].trim_end_matches('%').parse().ok()?;
+    let b: f64 = fields[1].parse().ok()?;
+    let c: f64 = fields[2].parse().ok()?;
+    let (l, chroma, hue) = if text.to_ascii_lowercase().starts_with("oklch") { (a, b, c.to_radians()) } else { (a / 100.0, b / 100.0, c.to_radians()) };
+    let aa = chroma * hue.cos(); let bb = chroma * hue.sin();
+    let ll = l + 0.3963377774*aa + 0.2158037573*bb;
+    let mm = l - 0.1055613458*aa - 0.0638541728*bb;
+    let ss = l - 0.0894841775*aa - 1.2914855480*bb;
+    let (ll,mm,ss)=(ll.powi(3),mm.powi(3),ss.powi(3));
+    let linear=[4.0767416621*ll-3.3077115913*mm+0.2309699292*ss,-1.2684380046*ll+2.6097574011*mm-0.3413193965*ss,-0.0041960863*ll-0.7034186147*mm+1.7076147010*ss];
+    Some(linear.map(|v| { let s=if v<=0.0031308 {12.92*v} else {1.055*v.powf(1.0/2.4)-0.055}; (s.clamp(0.0,1.0)*255.0).round() as u8 }))
 }
 fn style(t: &str, open: u8, close: u8) -> String {
     if t.is_empty() {
@@ -623,6 +648,16 @@ pub fn get_theme_export_colors(json: &ThemeJson) -> Result<BTreeMap<String, Stri
         }
     }
     Ok(colors)
+}
+#[cfg(test)]
+mod oklch_tests {
+    use super::*;
+    #[test]
+    fn parses_oklch_to_rgb() {
+        let rgb = parse_ok_color("oklch(0.5 0.1 30)").expect("valid OKLCH");
+        assert!(rgb[0] > rgb[1]);
+        assert!(rgb[0] > rgb[2]);
+    }
 }
 impl Theme {
     pub fn get_thinking_border_color(
