@@ -15,7 +15,7 @@ pub struct Args {
     pub system_prompt: Option<String>, pub append_system_prompt: Vec<String>, pub thinking: Option<String>,
     pub continue_session: bool, pub resume: bool, pub help: bool, pub version: bool, pub mode: Option<Mode>,
     pub name: Option<String>, pub no_session: bool, pub session: Option<String>, pub session_id: Option<String>,
-    pub fork: Option<String>, pub session_dir: Option<String>, pub models: Option<Vec<String>>,
+    pub fork: Option<String>, pub rebind: Option<String>, pub session_dir: Option<String>, pub models: Option<Vec<String>>,
     pub tools: Option<Vec<String>>, pub exclude_tools: Option<Vec<String>>, pub no_tools: bool,
     pub no_builtin_tools: bool, pub extensions: Vec<String>, pub no_extensions: bool, pub print: bool,
     pub export: Option<String>, pub no_skills: bool, pub skills: Vec<String>, pub prompt_templates: Vec<String>,
@@ -78,13 +78,13 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
             }
             "--listen" if result.mode == Some(Mode::Rpc) => if let Some(value) = next.filter(|v| !v.starts_with("--")) { result.listen = Some(value.to_owned()); result.multi_session = true; i += 1; } else { result.diagnostic(true, "--listen requires a value"); },
             "--list-models" => { let search = next.filter(|v| !v.starts_with('-') && !v.starts_with('@')); result.list_models = Some(search.unwrap_or("").to_owned()); if search.is_some() { i += 1; } }
-            "--provider" | "--model" | "--api-key" | "--system-prompt" | "--append-system-prompt" | "--mode" | "--session" | "--session-id" | "--fork" | "--session-dir" | "--models" | "--tools" | "-t" | "--exclude-tools" | "-xt" | "--thinking" | "--export" | "--extension" | "-e" | "--skill" | "--prompt-template" | "--theme" if next.is_some() => {
+            "--provider" | "--model" | "--api-key" | "--system-prompt" | "--append-system-prompt" | "--mode" | "--session" | "--session-id" | "--fork" | "--rebind" | "--session-dir" | "--models" | "--tools" | "-t" | "--exclude-tools" | "-xt" | "--thinking" | "--export" | "--extension" | "-e" | "--skill" | "--prompt-template" | "--theme" if next.is_some() => {
                 if let Some(value) = next { i += 1; match arg {
                     "--provider" => { if let Some(error) = maho_ai::legacy_provider_ids::legacy_provider_id_rejection(value) { return Err(error); } result.provider = Some(value.to_owned()); }
                     "--model" => result.model = Some(value.to_owned()), "--api-key" => result.api_key = Some(value.to_owned()),
                     "--system-prompt" => result.system_prompt = Some(value.to_owned()), "--append-system-prompt" => result.append_system_prompt.push(value.to_owned()),
                     "--mode" => result.mode = match value { "text" => Some(Mode::Text), "json" => Some(Mode::Json), "rpc" => Some(Mode::Rpc), _ => None },
-                    "--session" => result.session = Some(value.to_owned()), "--session-id" => result.session_id = Some(value.to_owned()), "--fork" => result.fork = Some(value.to_owned()), "--session-dir" => result.session_dir = Some(value.to_owned()),
+                    "--session" => result.session = Some(value.to_owned()), "--session-id" => result.session_id = Some(value.to_owned()), "--fork" => result.fork = Some(value.to_owned()), "--rebind" => result.rebind = Some(value.to_owned()), "--session-dir" => result.session_dir = Some(value.to_owned()),
                     "--models" => result.models = Some(value.split(',').map(|v| v.trim().to_owned()).collect()),
                     "--tools" | "-t" => result.tools = Some(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned).collect()),
                     "--exclude-tools" | "-xt" => result.exclude_tools = Some(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned).collect()),
