@@ -73,3 +73,10 @@ async fn explicit_stop_drops_entries_without_rendering() {
     tokio::time::advance(std::time::Duration::from_secs(5)).await;
     assert!(receive.try_recv().is_err());
 }
+
+#[test]
+fn stale_extension_context_signatures_match_upstream() {
+    assert!(is_stale_extension_context_error("This extension ctx is stale after session replacement or reload. details"));
+    assert!(is_stale_extension_context_error("stale extension generation after reload"));
+    assert!(!is_stale_extension_context_error("renderer failed"));
+}

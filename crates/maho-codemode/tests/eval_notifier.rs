@@ -1,7 +1,7 @@
 use maho_codemode::{extension::eval_notifier::*, tool::detached_cell_notification::EvalDetachedCellNotification};
 use maho_ext_api::{DeliverAs, ExtensionMode};
 
-fn cells() -> Vec<EvalDetachedCellNotification> { vec![EvalDetachedCellNotification { cell_id:"cell".into(),content:"notice".into() }] }
+fn cells() -> Vec<EvalDetachedCellNotification> { vec![EvalDetachedCellNotification { cell_id:"cell".into(),content:"notice".into(), images: vec![] }] }
 
 #[test]
 fn delivery_is_internal_and_steers_with_provenance() {
@@ -10,6 +10,14 @@ fn delivery_is_internal_and_steers_with_provenance() {
     assert!(!message.display);
     assert!(options.trigger_turn);
     assert_eq!(options.deliver_as,Some(DeliverAs::Steer));
+}
+
+#[test]
+fn image_content_is_forwarded_with_text_notification() {
+    use maho_codemode::tool::image_resize::EvalImageContent;
+    let cells = vec![EvalDetachedCellNotification { cell_id: "image-cell".into(), content: "rendered".into(), images: vec![EvalImageContent { data: "aGVsbG8=".into(), mime_type: "image/png".into() }] }];
+    let (message, _) = EvalNotifier::default().notification_message(&cells, EvalNotifyMode::Wake, Some((ExtensionMode::Tui, true))).expect("notification");
+    assert!(matches!(message.content.as_slice(), [maho_ext_api::ToolContent::Text { text, .. }, maho_ext_api::ToolContent::Image { data, mime_type }] if text == "rendered" && data == "aGVsbG8=" && mime_type == "image/png"));
 }
 
 #[test]
