@@ -19,9 +19,12 @@ pub fn build_search_request(config:&SearchProviderConfig,request:&SearchRequest)
     let (allowed,blocked)=resolve_domain_filters(config.allowed_domains.as_deref(),config.blocked_domains.as_deref(),request.allowed_domains.as_deref(),request.blocked_domains.as_deref());
     let ctx=BuildContext{query:&request.query,max_results:config.max_results.unwrap_or(request.max_results),api_key:config.api_key.as_deref(),base_url:config.base_url.as_deref(),allowed_domains:allowed.as_deref(),blocked_domains:blocked.as_deref()};
     let model=config.model.as_deref(); let size=config.search_context_size.map(|size|size.as_str());
-    Ok(match config.provider {
-        SearchProvider::Exa=>exa::build_request(&ctx),SearchProvider::Tavily=>tavily::build_request(&ctx),SearchProvider::Brave=>brave::build_request(&ctx)?,SearchProvider::DuckduckgoHtml=>duckduckgo_html::build_request(&ctx)?,SearchProvider::Deepseek=>deepseek::build_request(&ctx,model),SearchProvider::Serper=>serper::build_request(&ctx),SearchProvider::GoogleCse=>google_cse::build_request(&ctx,config.search_engine_id.as_deref())?,SearchProvider::Zai=>z_ai::build_request(&ctx,model,size),SearchProvider::Openai|SearchProvider::Codex=>openai_responses::build_request(&ctx,config.provider,model,config.codex_mode.map(|mode|mode.as_str()),size,config.user_location.as_ref()),SearchProvider::Anthropic=>anthropic::build_request(&ctx,model),SearchProvider::Perplexity=>perplexity::build_request(&ctx,model,size),SearchProvider::Xai=>xai::build_request(&ctx,model),SearchProvider::Kimi=>kimi::build_request(&ctx),
-    })
+    let mut built=match config.provider {
+    SearchProvider::Exa=>exa::build_request(&ctx),SearchProvider::Tavily=>tavily::build_request(&ctx),SearchProvider::Brave=>brave::build_request(&ctx)?,SearchProvider::DuckduckgoHtml=>duckduckgo_html::build_request(&ctx)?,SearchProvider::Deepseek=>deepseek::build_request(&ctx,model),SearchProvider::Serper=>serper::build_request(&ctx),SearchProvider::GoogleCse=>google_cse::build_request(&ctx,config.search_engine_id.as_deref())?,SearchProvider::Zai=>z_ai::build_request(&ctx,model,size),SearchProvider::Openai|SearchProvider::Codex=>openai_responses::build_request(&ctx,config.provider,model,config.codex_mode.map(|mode|mode.as_str()),size,config.user_location.as_ref()),SearchProvider::Anthropic=>anthropic::build_request(&ctx,model),SearchProvider::Perplexity=>perplexity::build_request(&ctx,model,size),SearchProvider::Xai=>xai::build_request(&ctx,model),SearchProvider::Kimi=>kimi::build_request(&ctx),
+    };
+    shared::with_auth_headers(config.headers.as_ref(),&mut built.headers);
+    built.body=if built.method=="GET" {None} else {Some(built.body)};
+    Ok(built)
 }
 pub fn normalize_search_response(provider:SearchProvider,payload:&Value)->Vec<SearchResultItem> {
     match provider {
