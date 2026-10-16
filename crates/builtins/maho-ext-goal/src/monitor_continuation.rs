@@ -41,7 +41,7 @@ pub fn publish_monitor_schedule(api:&maho_ext_api::ExtensionApi,schedule:&crate:
 }
 pub fn publish_monitor_resume(api:&maho_ext_api::ExtensionApi,due:&DueGoalContinuation,wake_sources:&BTreeMap<String,f64>)->Result<(),maho_ext_api::ExtensionFailure> {
     let Some(schedule)=&due.schedule else { return Ok(()); };
-    let mut data=serde_json::json!({"goalId":due.goal.id,"delayMs":schedule.delay_ms,"waitedMs":due.waited_ms,"iteration":schedule.iteration,"activeMonitorCount":wake_sources.values().sum::<f64>(),"wakeSources":wake_sources});
+    let mut data=serde_json::json!({"goalId":due.goal.id,"delayMs":schedule.delay_ms,"dueAtMs":schedule.due_at_ms,"waitedMs":due.waited_ms,"wakeCause":if due.drain_fire { "sources-drained" } else { "timer" },"iteration":schedule.iteration,"activeMonitorCount":wake_sources.values().sum::<f64>(),"wakeSources":wake_sources});
     if let Some(cache)=&schedule.cache { data["cache"]=serde_json::to_value(cache).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?; }
     api.events.emit(GOAL_CONTINUATION_RESUMED_EVENT,&data); data["phase"]="resumed".into(); api.append_entry(crate::cache_warm::GOAL_CACHE_WARMUP_ENTRY_TYPE,Some(data))
 }
@@ -95,7 +95,9 @@ impl MonitorAwareGoalContinuation {
     pub fn rearm_monitor_backstop(&mut self,goal:&crate::types::Goal,parked:Option<&crate::parked_wait::ParkedGoalWait>,now:f64,backstop_seconds:f64,question_idle_ms:f64,cache:Option<crate::cache_warm::GoalCacheWarmMetrics>)->Option<crate::cache_warm::GoalCacheWarmScheduleData> {
         if goal.status!=crate::types::GoalStatus::Active||!self.has_active_wake_sources()||self.armed_timer.is_some()||self.held_timer.is_some() { return None; }
         self.goal=Some(goal.clone());
-        let delay=parked.map(|wait|wait.delay_ms).or_else(||self.ask_user_wait_ms(now,question_idle_ms)).unwrap_or_else(||crate::cache_warm::resolve_goal_monitor_continuation_delay_ms(Some(backstop_seconds)));
+        let best_effort=cache.as_ref().is_some_and(|metrics|metrics.cache_lifetime.as_deref()==Some("best-effort"));
+        let backstop=crate::cache_warm::resolve_goal_backstop_seconds_for_cache(Some(backstop_seconds),best_effort).unwrap_or(backstop_seconds);
+        let delay=parked.map(|wait|wait.delay_ms).or_else(||self.ask_user_wait_ms(now,question_idle_ms)).unwrap_or_else(||crate::cache_warm::resolve_goal_monitor_continuation_delay_ms(Some(backstop)));
         let (scheduled_at,remaining,cache)=if let Some(wait)=parked { self.cache_warm_iteration=wait.iteration; (wait.due_at_ms-delay,(wait.due_at_ms-now).max(0.0),wait.cache.clone()) } else { self.cache_warm_iteration+=1.0; (now,delay,cache) };
         let schedule=crate::cache_warm::create_goal_cache_warm_schedule_data(goal.id.clone(),delay,scheduled_at,self.cache_warm_iteration,self.wake_sources.values().sum(),self.wake_sources.clone(),cache);
         self.scheduled_cache=Some(schedule.clone()); self.arm_timer(GoalWaitKind::Monitor,remaining,delay,false,now); Some(schedule)
@@ -233,7 +235,7 @@ impl MonitorAwareGoalContinuation {
     }
     #[test] fn restored_backstop_preserves_iteration_cache_and_original_due_time() {
         let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
-        let parked=crate::parked_wait::ParkedGoalWait { iteration:4.0,delay_ms:270_000.0,due_at_ms:300_000.0,cache:Some(crate::cache_warm::GoalCacheWarmMetrics { ttl_seconds:Some(300.0),cached_tokens:1000.0,estimated_saved_usd:None }) };
+        let parked=crate::parked_wait::ParkedGoalWait { iteration:4.0,delay_ms:270_000.0,due_at_ms:300_000.0,cache:Some(crate::cache_warm::GoalCacheWarmMetrics { ttl_seconds:Some(300.0),cache_lifetime:None,cached_tokens:1000.0,estimated_saved_usd:None }) };
         let mut monitor=MonitorAwareGoalContinuation::default(); monitor.wake_sources.insert("senpi-task".into(),1.0);
         let schedule=monitor.rearm_monitor_backstop(&goal,Some(&parked),200_000.0,270.0,30_000.0,None).unwrap();
         assert_eq!(schedule.iteration,4.0); assert_eq!(schedule.due_at_ms,300_000.0); assert_eq!(schedule.cache,parked.cache); assert_eq!(monitor.armed_timer.unwrap().due_at_ms,300_000.0);
