@@ -22,7 +22,7 @@ use crate::tools::task::types::{
     ResolvedSpawnItem, SpawnTarget, TaskSkillSummary, TaskToolDetails, TaskToolMode,
 };
 use crate::tools::task::validation::{
-    BatchShape, SpawnParamsInput, TargetInput, TaskTargetSelection, resolve_spawn_items,
+    BatchShape, SpawnParamsInput, TargetInput, TaskTargetSelection, resolve_run_in_background, resolve_spawn_items,
     validate_batch_shape, validate_task_target,
 };
 
@@ -78,6 +78,11 @@ impl TaskExecute<'_> {
             return Ok(invalid_arguments(&error.message));
         }
 
+        let run_in_background = match resolve_run_in_background(params) {
+            Ok(value) => value,
+            Err(error) => return Ok(invalid_arguments(&error.message)),
+        };
+
         let items = match resolve_spawn_items(params) {
             Ok(items) => items,
             Err(error) => {
@@ -123,7 +128,7 @@ impl TaskExecute<'_> {
             return run_spawn(
                 self.deps,
                 RunSpawnInput {
-                    params: single_spawn_params(first, params.run_in_background),
+                    params: single_spawn_params(first, run_in_background),
                     signal,
                     on_update,
                     ctx,
@@ -134,7 +139,6 @@ impl TaskExecute<'_> {
 
         let deps = self.deps;
         let parent_session_id = ctx.session_id.clone();
-        let run_in_background = params.run_in_background;
         let skill_summaries: Mutex<HashMap<usize, TaskSkillSummary>> = Mutex::default();
         let start_item = |item: &ResolvedSpawnItem| -> Result<StartResult, String> {
             let mut item_params: SingleSpawnParams = single_spawn_params(item, run_in_background);
@@ -207,7 +211,7 @@ impl TaskExecute<'_> {
             items: &items,
             signal,
             ctx,
-            run_in_background: params.run_in_background == Some(true),
+            run_in_background: run_in_background == Some(true),
             start_item: start_item_static,
             skill_summary_for: Some(skill_summary_static),
             options: self.options.clone(),
