@@ -31,6 +31,38 @@ fn shortest<'a>(candidates: impl Iterator<Item = &'a String>) -> Option<&'a Stri
     })
 }
 
+fn model_id(model: &str) -> &str {
+    model.split_once('/').map_or(model, |(_, model_id)| model_id)
+}
+
+fn provider_rank(model: &str, providers: Option<&[String]>) -> usize {
+    providers
+        .filter(|providers| !providers.is_empty())
+        .map_or(0, |providers| {
+            providers
+                .iter()
+                .position(|provider| model.split('/').next() == Some(provider.as_str()))
+                .unwrap_or(usize::MAX)
+        })
+}
+
+fn closest<'a>(
+    candidates: impl Iterator<Item = &'a String>,
+    providers: Option<&[String]>,
+) -> Option<&'a String> {
+    candidates.reduce(|best, current| {
+        let best_rank = provider_rank(best, providers);
+        let current_rank = provider_rank(current, providers);
+        if current_rank < best_rank
+            || (current_rank == best_rank && model_id(current).len() < model_id(best).len())
+        {
+            current
+        } else {
+            best
+        }
+    })
+}
+
 /// Exact match, then exact model-id match, then the shortest substring match.
 #[must_use]
 pub fn fuzzy_match_model(
@@ -67,11 +99,11 @@ pub fn fuzzy_match_model(
         let model_id = model.split_once('/').map_or("", |(_, model_id)| model_id);
         normalize_model_name(model_id) == target_normalized
     });
-    if let Some(found) = shortest(exact_model_id_matches) {
+    if let Some(found) = closest(exact_model_id_matches, providers) {
         return Some(found.clone());
     }
 
-    shortest(matches.into_iter()).cloned()
+    closest(matches.into_iter(), providers).cloned()
 }
 
 #[must_use]
