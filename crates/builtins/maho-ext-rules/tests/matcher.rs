@@ -29,6 +29,7 @@ fn native_matcher_matches_source_generated_corpus() {
     let corpus: serde_json::Value = serde_json::from_str(&text).unwrap();
     let cases = corpus["cases"].as_array().unwrap();
     assert!(!cases.is_empty(), "source-generated corpus must not be empty");
+    let mut cache = MatcherCache::default();
     for case in cases {
         let pattern = case["pattern"].as_str().unwrap();
         let path = case["path"].as_str().unwrap();
@@ -36,7 +37,7 @@ fn native_matcher_matches_source_generated_corpus() {
         let exclusion = case["exclusion"].as_bool().unwrap_or(false);
         let globs = if exclusion { vec!["**".to_string(), pattern.to_string()] } else { vec![pattern.to_string()] };
         let frontmatter = RuleFrontmatter { globs, ..Default::default() };
-        let result = MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: path, scope_relative: None, basename: path }).unwrap();
+        let result = cache.match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: path, scope_relative: None, basename: path }).unwrap();
         assert_eq!(result.matched, expected, "{pattern}: {path}");
     }
 }
