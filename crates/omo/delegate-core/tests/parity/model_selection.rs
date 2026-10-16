@@ -185,6 +185,7 @@ fn fallback_model_through_unlisted_provider_keeps_cross_provider_matching() {
         &DelegateModelResolutionInput {
             available_models: models(&["custom-provider/gpt-5.5"]),
             fallback_chain: Some(vec![fallback_entry.clone()]),
+            allow_unlisted_providers: true,
             ..Default::default()
         },
         &no_cache_deps(),
@@ -194,6 +195,20 @@ fn fallback_model_through_unlisted_provider_keeps_cross_provider_matching() {
         result,
         chain_match("custom-provider/gpt-5.5", "high", fallback_entry)
     );
+}
+
+#[test]
+fn fallback_chain_does_not_match_unlisted_provider_by_default() {
+    let result = resolve_model_for_delegate_task(
+        &DelegateModelResolutionInput {
+            available_models: models(&["custom-provider/gpt-5.5"]),
+            fallback_chain: Some(vec![entry(&["openai"], "gpt-5.5", Some("high"))]),
+            ..Default::default()
+        },
+        &no_cache_deps(),
+    );
+
+    assert_eq!(result, None);
 }
 
 #[test]
