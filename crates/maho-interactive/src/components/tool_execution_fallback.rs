@@ -118,7 +118,50 @@ fn render_json_view(value: &Value, theme: &Theme) -> String {
 }
 
 pub fn create_tool_call_fallback(tool_name: &str, theme: &Theme) -> Rc<RefCell<dyn Component>> {
-    Rc::new(RefCell::new(Text::with_padding(theme.fg(ThemeColor::ToolTitle, &theme.bold(tool_name)), 0, 0)))
+    create_tool_call_fallback_with_args(tool_name, &Value::Null, false, theme)
+}
+
+pub fn create_tool_call_fallback_with_args(tool_name: &str, args: &Value, expanded: bool, theme: &Theme) -> Rc<RefCell<dyn Component>> {
+    let title = theme.fg(ThemeColor::ToolTitle, &theme.bold(&sanitize_fallback_string(tool_name, FALLBACK_STRING_MAX_LENGTH)));
+    let serialized = serde_json::to_string_pretty(&sanitize_call_args(args)).unwrap_or_default();
+    let bounded = if serialized.chars().count() > FALLBACK_JSON_MAX_LENGTH {
+        format!("{}...", serialized.chars().take(FALLBACK_JSON_MAX_LENGTH - 3).collect::<String>())
+    } else { serialized };
+    let content = if expanded {
+        bounded
+    } else {
+        match args {
+            Value::Object(map) => map.iter().map(|(key, value)| format!("{key}={}", value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string()))).collect::<Vec<_>>().join(" "),
+            other => other.to_string(),
+        }
+    };
+    let text = if content.is_empty() { title } else { format!("{title} {content}") };
+    Rc::new(RefCell::new(Text::with_padding(text, 0, 0)))
+}
+
+fn sanitize_call_args(value: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(sanitize_fallback_string(text, FALLBACK_STRING_MAX_LENGTH)),
+        Value::Array(values) => Value::Array(values.iter().map(sanitize_call_args).collect()),
+        Value::Object(values) => Value::Object(values.iter().map(|(key, value)| (key.clone(), sanitize_call_args(value))).collect()),
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_call_shows_sanitized_args_and_expands_json() {
+        let theme = Theme::default();
+        let args = serde_json::json!({"query": "find\u{001b}[31m red\nfiles"});
+        let compact = format_tool_execution_fallback("search", &args, None, false, &theme);
+        assert!(compact.contains("find red files"));
+        assert!(!compact.contains('\u{001b}'));
+        let expanded = serde_json::to_string_pretty(&sanitize_call_args(&args)).expect("JSON serialization");
+        assert!(expanded.contains("find red files"));
+    }
 }
 
 pub fn create_tool_result_fallback(

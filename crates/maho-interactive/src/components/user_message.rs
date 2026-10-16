@@ -5,13 +5,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use maho_tui::components::box_::Box as TuiBox;
 use maho_tui::components::markdown::{DefaultTextStyle, MarkdownOptions, MarkdownTheme};
 use maho_tui::tui::{Component, Container};
 use std::sync::Arc;
 
 use super::markdown_transform::{create_markdown_transform, MessageType, TransformedMarkdown};
-use crate::theme::{Theme, ThemeBg, ThemeColor};
+use crate::theme::{Theme, ThemeColor};
 
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
 const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
@@ -24,6 +23,7 @@ pub struct UserMessageComponent {
     markdown_theme: MarkdownTheme,
     output_pad: usize,
     markdown_transformers: Vec<super::markdown_transform::MarkdownTransformer>,
+    render_revision: u64,
 }
 
 impl UserMessageComponent {
@@ -41,6 +41,7 @@ impl UserMessageComponent {
             markdown_theme,
             output_pad,
             markdown_transformers,
+            render_revision: 0,
         };
         component.rebuild();
         component
@@ -52,17 +53,15 @@ impl UserMessageComponent {
     }
 
     fn rebuild(&mut self) {
+        self.render_revision = self.render_revision.wrapping_add(1);
         self.content.clear();
-        let mut content_box = TuiBox::with_padding(self.output_pad, 1);
-        let bg = self.theme.clone();
-        content_box.set_bg_fn(Some(Rc::new(move |text| bg.bg(ThemeBg::UserMessageBg, text))));
         let fg = self.theme.clone();
         let transform = Rc::new(create_markdown_transform(
             MessageType::User,
             false,
             self.markdown_transformers.clone(),
         ));
-        content_box.add_child(Rc::new(RefCell::new(TransformedMarkdown::new(
+        self.content.add_child(Rc::new(RefCell::new(TransformedMarkdown::new(
             &self.text,
             0,
             0,
@@ -78,7 +77,6 @@ impl UserMessageComponent {
             },
             transform,
         ))));
-        self.content.add_child(Rc::new(RefCell::new(content_box)));
     }
 }
 
@@ -100,6 +98,8 @@ impl Component for UserMessageComponent {
         }
         lines
     }
+
+    pub fn render_revision(&self) -> u64 { self.render_revision }
 
     fn invalidate(&mut self) {
         self.content.invalidate();

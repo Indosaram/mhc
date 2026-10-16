@@ -8,6 +8,7 @@ pub struct CompactionQueuedMessage {
     pub mode: StreamingBehavior,
     pub enqueue_order: Option<u64>,
     pub pending_echo_id: Option<String>,
+    pub unknown_command_as_text: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

@@ -37,14 +37,17 @@ pub struct CustomEntryComponent {
     theme: Theme,
     content: Container,
     has_content: bool,
+    unknown_command_as_text: bool,
 }
 impl CustomEntryComponent {
     pub fn new(entry: Value, renderer: EntryRenderer, theme: Theme) -> Self {
-        let mut component = Self { custom_entry: entry, renderer, theme, expanded: false, content: Container::new(), has_content: false };
+        let mut component = Self { custom_entry: entry, renderer, theme, expanded: false, content: Container::new(), has_content: false, unknown_command_as_text: false };
         component.rebuild();
         component
     }
     pub fn has_content(&self) -> bool { self.has_content }
+    pub fn set_unknown_command_as_text(&mut self, value: bool) { self.unknown_command_as_text = value; }
+    pub fn unknown_command_as_text(&self) -> bool { self.unknown_command_as_text }
     pub fn set_expanded(&mut self, expanded: bool) {
         if self.expanded != expanded { self.expanded = expanded; self.rebuild(); }
     }

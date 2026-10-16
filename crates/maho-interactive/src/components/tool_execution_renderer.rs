@@ -9,7 +9,7 @@ use maho_tui::tui::{Component, Container};
 use serde_json::Value;
 
 use super::tool_execution_fallback::{
-    create_tool_call_fallback, create_tool_result_fallback, format_tool_execution_fallback,
+    create_tool_call_fallback_with_args, create_tool_result_fallback, format_tool_execution_fallback,
 };
 use super::tool_execution_types::ToolExecutionRenderState;
 use super::tool_renderer_boundary::ToolRendererBoundary;
@@ -211,7 +211,7 @@ impl ToolExecutionRenderer {
     }
 
     fn render_call(&mut self) -> Option<Rc<RefCell<dyn Component>>> {
-        let fallback = create_tool_call_fallback(&self.identity.tool_name, &self.theme);
+        let fallback = create_tool_call_fallback_with_args(&self.identity.tool_name, &self.state.args, self.state.expanded, &self.theme);
         let Some(renderer) = self.get_call_renderer() else {
             return Some(fallback);
         };
