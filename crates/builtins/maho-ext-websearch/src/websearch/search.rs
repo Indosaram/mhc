@@ -43,14 +43,14 @@ fn error_detail(payload:&Value,body:&str)->String {
 }
 pub async fn perform_provider_search(config:&SearchProviderEntry,request:&SearchRequest,signal:Option<&AbortSignal>)->Result<SearchDetails,ToolError> {
     let started=Instant::now();
-    let built=build_search_request(&config.config,request).map_err(|error|ToolError::Message(error.to_string()))?;
+        let built=build_search_request(&config.config,request).map_err(|error|ToolError::Message(error.to_string()))?;
     let signal=signal.cloned().unwrap_or_default(); signal.check()?;
     let timeout_ms=config.config.timeout_ms.unwrap_or(60_000.).trunc().max(1.) as u64;
     let future=async {
         let client=reqwest::Client::new();
         let mut outgoing=if built.method=="GET" { client.get(&built.url) } else { client.post(&built.url) };
         for (key,value) in built.headers { outgoing=outgoing.header(key,value); }
-        if !built.body.is_null() { outgoing=outgoing.body(built.body.to_string()); }
+        if let Some(body)=built.body { outgoing=outgoing.body(body.to_string()); }
         let response=outgoing.send().await.map_err(|error|error.to_string())?;
         let status=response.status(); let text=response.text().await.map_err(|error|error.to_string())?;
         Ok::<_,String>((status,text))
