@@ -7,14 +7,15 @@ pub fn content_to_text(content:&[Value],custom:&BTreeMap<String,String>)->String
 fn push_text(blocks:&mut Vec<Value>,text:impl Into<String>) {blocks.push(json!({"type":"text","text":text.into()}));}
 pub fn build_prompt_blocks(messages:&[Value],custom:&BTreeMap<String,String>,tool_watch_note:Option<&str>)->Vec<Value> {
     let mut blocks=Vec::new();let final_user=messages.last().filter(|m|m["role"]=="user");let history=if final_user.is_some() {&messages[..messages.len()-1]}else {messages};
+    let replayed_images=crate::cold_seed_images::replay_history_images(history,custom,final_user.is_none()&&history.last().is_some_and(|m|m["role"]=="toolResult"));
     if !history.is_empty() {
         push_text(&mut blocks,"<conversation_history>\n");let mut previous=false;
-        for message in history {
+        for (message_index,message) in history.iter().enumerate() {
             let role=message["role"].as_str().expect("message role");if role=="configurationUpdate" {continue;}
             let label=match role {"user"=>"USER:".into(),"assistant"=>"ASSISTANT:".into(),_=>format!("TOOL RESULT (historical {}, id={}):",map_pi_tool_name(message["toolName"].as_str().expect("tool name"),custom),message["toolCallId"].as_str().expect("tool id"))};
             push_text(&mut blocks,format!("{}{label}\n",if previous {"\n\n"}else {""}));previous=true;
             if role=="assistant" {let text=content_to_text(message["content"].as_array().expect("assistant content"),custom);if !text.is_empty() {push_text(&mut blocks,text);}}
-            else if !append_sdk_content_blocks(&mut blocks,&message["content"]) {push_text(&mut blocks,"(see attached image)");}
+            else if !append_sdk_content_blocks(&mut blocks,replayed_images.get(&message_index).unwrap_or(&message["content"])) {push_text(&mut blocks,"(see attached image)");}
         }push_text(&mut blocks,"\n</conversation_history>");
     }
     if let Some(note)=tool_watch_note.map(str::trim).filter(|s|!s.is_empty()) {push_text(&mut blocks,"<recovered_tool_results>\n");push_text(&mut blocks,note);push_text(&mut blocks,"\n</recovered_tool_results>");}
