@@ -84,6 +84,7 @@ pub async fn run_openai_responses_v2_compaction(options: ResponsesV2Options<'_>)
         stream: maho_ai::types::StreamOptions {
             request: maho_ai::types::ProviderRequestOptions {
                 api_key: options.api_key,
+                max_retries: (options.model.api == "openai-codex-responses").then_some(0),
                 signal: Some(options.signal),
                 headers: Some(with_remote_compaction_v2_header(&options.headers).into_iter().map(|(key, value)| (key, Some(value))).collect()),
                 on_payload: Some(std::sync::Arc::new(move |payload, _, _| rewrite_v2_payload(payload, &input))),
@@ -106,7 +107,7 @@ pub async fn run_openai_responses_v2_compaction(options: ResponsesV2Options<'_>)
 pub async fn attempt_openai_responses_v2_compaction(
     mut options: ResponsesV2Options<'_>,
     request_id: &str,
-    timeout: std::time::Duration,
+    deadline: tokio::time::Instant,
     emit: &(dyn Fn(Value) + Sync),
 ) -> Result<Option<maho_ext_api::CompactionResult>, maho_ai::utils::event_stream::StreamError> {
     let signal = options.signal.clone();
@@ -119,14 +120,15 @@ pub async fn attempt_openai_responses_v2_compaction(
         emit(event);
     };
     event("remote_started", serde_json::json!({"inputItemCount":options.request.input_item_count}));
-    let result = crate::openai_remote_timeout::run_with_remote_timeout(
+    let timeout_tokens = crate::overflow_retry::estimate_total_tokens(&options.request.body["input"].as_array().cloned().unwrap_or_default());
+    let result = crate::openai_remote_timeout::run_with_remote_deadline_report(
         &signal,
-        timeout,
+        deadline,
         |linked| {
             options.signal = linked;
             run_openai_responses_v2_compaction(options)
         },
-        || event("remote_fallback", serde_json::json!({"reason":"remote-compaction-timeout"})),
+        |waited| event("remote_fallback", serde_json::json!({"reason":"remote-compaction-timeout","timeout":{"waitedMs":waited.as_millis(),"tokens":timeout_tokens,"next":"local-summary"}})),
         || maho_ai::utils::event_stream::StreamError::new("aborted"),
     ).await;
     match result {
@@ -143,5 +145,38 @@ pub async fn attempt_openai_responses_v2_compaction(
             event("remote_fallback", serde_json::json!({"reason":"responses-v2-error"}));
             Ok(None)
         }
+    }
+}
+
+pub const OPENAI_REMOTE_COMPACTION_FLOOR: std::time::Duration = std::time::Duration::from_secs(15);
+pub const CHATGPT_SUBSCRIPTION_REMOTE_COMPACTION_FLOOR: std::time::Duration = std::time::Duration::from_secs(90);
+
+pub fn openai_remote_compaction_timeout(model: &Model, tokens: f64, max_duration: std::time::Duration) -> std::time::Duration {
+    let floor = if model.api == "openai-codex-responses" {
+        CHATGPT_SUBSCRIPTION_REMOTE_COMPACTION_FLOOR
+    } else {
+        OPENAI_REMOTE_COMPACTION_FLOOR
+    };
+    let per_token = maho_core::compaction::stream_watchdog::SUMMARIZATION_MAX_DURATION_PER_TOKEN_MS;
+    let scaled = if tokens.is_finite() && tokens > 0.0 {
+        std::time::Duration::from_secs_f64(tokens * per_token / 1000.0)
+    } else { std::time::Duration::ZERO };
+    max_duration.min(floor.max(scaled))
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    fn model(api: &str) -> Model {
+        serde_json::from_value(serde_json::json!({"id":"m","name":"m","provider":"openai","api":api,"baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":8000})).expect("model fixture")
+    }
+
+    #[test]
+    fn remote_timeout_scales_and_respects_route_floor_and_cap() {
+        let cap = std::time::Duration::from_secs(240);
+        assert_eq!(openai_remote_compaction_timeout(&model("openai-responses"), 1.0, cap), std::time::Duration::from_secs(15));
+        assert_eq!(openai_remote_compaction_timeout(&model("openai-codex-responses"), 1.0, cap), std::time::Duration::from_secs(90));
+        assert_eq!(openai_remote_compaction_timeout(&model("openai-responses"), 120_000.0, cap), cap);
     }
 }
