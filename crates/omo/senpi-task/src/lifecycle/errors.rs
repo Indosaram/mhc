@@ -1,11 +1,12 @@
 use crate::host::HostError;
+use crate::state::TaskStatus;
 use crate::store::StoreError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResidentSummary {
     pub task_id: String,
     pub name: String,
-    pub status: String,
+    pub status: TaskStatus,
 }
 
 /// The residency cap is full and no terminal idle child can be evicted.
@@ -26,7 +27,7 @@ fn named_residents(residents: &[ResidentSummary]) -> String {
     }
     residents
         .iter()
-        .map(|resident| format!("{}({})", resident.name, resident.status))
+        .map(|resident| format!("{}({})", resident.name, resident.status.as_str()))
         .collect::<Vec<_>>()
         .join(", ")
 }

@@ -65,8 +65,6 @@ pub fn fold_send_outcome(
     let node_id = node.id.clone();
     let run_id = record.run_id.clone();
     match outcome {
-        // steering gap: delivery_uncertain, admission_refused, cwd_unavailable,
-        // config_generation_mismatch, and capacity_deferred belong to the steering port.
         SendOutcome::Queued { queue_position, .. } => Ok(DagNodeSendResult { node_id, task_id: task_id.into(), delivery: DagNodeDeliveryResult::Queued, queue_position: Some(queue_position), settled: None }),
         SendOutcome::Steered { .. } => {
             control_journal(options, record.clone(), BTreeMap::new()).and_then(|journal| journal.append(DagRunEventPayload::NodeSteered {
