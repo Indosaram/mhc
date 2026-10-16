@@ -762,6 +762,12 @@ fn detects_gif_and_webp() {
     );
 }
 #[test]
+fn rejects_gif_without_a_supported_version_signature() {
+    assert_eq!(detect_supported_image_mime_type(b"GIF"), None);
+    assert_eq!(detect_supported_image_mime_type(b"GIF90a"), None);
+    assert_eq!(detect_supported_image_mime_type(b"GIF87a"), Some("image/gif"));
+}
+#[test]
 fn validates_bmp_header() {
     let mut bmp = tiny_bmp();
     assert_eq!(detect_supported_image_mime_type(&bmp), Some("image/bmp"));
