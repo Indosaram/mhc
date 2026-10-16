@@ -1,4 +1,4 @@
-//! Read-only native diagnostics corresponding to the three portable `omo doctor` checks.
+//! Read-only native diagnostics for configuration, trust, task categories, and package integrity.
 
 use std::{collections::{BTreeMap, HashMap}, path::Path};
 

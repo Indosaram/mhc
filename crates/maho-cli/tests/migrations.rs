@@ -39,3 +39,32 @@ fn brand_copy_preserves_symbolic_links_instead_of_dereferencing() {
     assert_eq!(fs::canonicalize(new.join("linked")).expect("target"), fs::canonicalize(root.path().join("external")).expect("source path"));
     assert_eq!(fs::read_to_string(root.path().join("external")).expect("source"), "external fixture");
 }
+
+#[test]
+fn brand_copy_skips_desktop_reserved_directories_case_insensitively() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let old = root.path().join("old");
+    let new = root.path().join("new");
+    fs::create_dir_all(old.join("Desktop.init-test")).expect("desktop init dir");
+    fs::create_dir_all(old.join("desktop")).expect("desktop dir");
+    fs::write(old.join("Desktop.init-test/state"), "desktop").expect("desktop content");
+    fs::write(old.join("desktop/state"), "desktop").expect("desktop content");
+    maho_cli::brand_dir_migration::migrate_engine_state_to_brand_dir(&old, &new).expect("migrate");
+    assert!(!new.join("Desktop.init-test").exists());
+    assert!(!new.join("desktop").exists());
+}
+
+#[test]
+fn legacy_merge_copies_without_removing_and_skips_regenerable_entries() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let old = root.path().join("old");
+    let new = root.path().join("new");
+    fs::create_dir_all(old.join("cache")).expect("cache");
+    fs::create_dir_all(old.join("nested")).expect("nested");
+    fs::write(old.join("cache/item"), "cache").expect("cache item");
+    fs::write(old.join("nested/settings.json"), "legacy").expect("nested settings");
+    maho_cli::legacy_senpi_dir_migration::migrate_path_preserving_existing(&old, &new, "test").expect("migrate");
+    assert!(old.join("nested/settings.json").exists());
+    assert_eq!(fs::read(new.join("nested/settings.json")).expect("copied setting"), b"legacy");
+    assert!(!new.join("cache").exists());
+}
