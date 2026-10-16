@@ -109,39 +109,49 @@ fn tools_array_shape_bang_prefix_denies() {
 // ---- agents/interaction-policy.test.ts ----
 
 #[test]
-fn interaction_policy_momus_is_one_shot_plan_review() {
+fn interaction_policy_plan_reviewer_is_one_shot_plan_review() {
     let (name, policy) = AGENT_INTERACTION_POLICIES[0];
-    assert_eq!(name, "momus");
+    assert_eq!(name, "plan-reviewer");
     assert!(policy.one_shot);
     assert_eq!(policy.prompt_contract, "plan-review");
 }
 
 #[test]
-fn interaction_policy_only_momus_present() {
+fn interaction_policy_only_plan_reviewer_present() {
     let keys: Vec<&str> = AGENT_INTERACTION_POLICIES
         .iter()
         .map(|(name, _)| *name)
         .collect();
-    assert_eq!(keys, vec!["momus"]);
+    assert_eq!(keys, vec!["plan-reviewer"]);
+    assert!(interaction_policy_for_agent(" plan-reviewer ").is_some());
     assert!(!keys.contains(&"metis"));
 }
 
 #[test]
-fn one_shot_names_contain_exactly_momus() {
+fn one_shot_names_contain_exactly_plan_reviewer() {
     let names = one_shot_agent_names();
-    assert!(names.contains("momus"));
-    for absent in ["metis", "explore", "librarian"] {
+    assert!(names.contains("plan-reviewer"));
+    for absent in ["momus", "metis", "explore", "librarian"] {
         assert!(!names.contains(absent));
     }
     assert_eq!(names.len(), 1);
 }
 
 #[test]
-fn interaction_policy_lookup_momus() {
-    let policy = interaction_policy_for_agent("momus").expect("policy");
+fn interaction_policy_lookup_plan_reviewer() {
+    let policy = interaction_policy_for_agent(" plan-reviewer ").expect("policy");
     assert!(policy.one_shot);
     assert_eq!(policy.prompt_contract, "plan-review");
     assert!(!policy.send_denial_reminder.is_empty());
+}
+
+#[test]
+fn builtin_agents_route_x_search_by_role() {
+    let explore = builtin_agent("explore").expect("explore");
+    let librarian = builtin_agent("librarian").expect("librarian");
+    assert!(explore.tools.as_ref().unwrap().iter().any(|rule| rule.pattern == "x_search" && !rule.allow));
+    assert!(librarian.tools.as_ref().unwrap().iter().any(|rule| rule.pattern == "x_search" && rule.allow));
+    assert!(librarian.prompt.as_deref().unwrap().contains("call x_search"));
 }
 
 #[test]
@@ -151,12 +161,12 @@ fn interaction_policy_lookup_unknown_is_none() {
 }
 
 #[test]
-fn interaction_policy_lookup_metis_is_none() {
-    assert_eq!(interaction_policy_for_agent("metis"), None);
+fn interaction_policy_lookup_momus_is_none() {
+    assert_eq!(interaction_policy_for_agent("momus"), None);
 }
 
 #[test]
-fn momus_denial_reminder_wrapped_in_sentinel_tags() {
+fn plan_reviewer_denial_reminder_wrapped_in_sentinel_tags() {
     let reminder = AGENT_INTERACTION_POLICIES[0].1.send_denial_reminder;
     assert!(!reminder.is_empty());
     assert!(reminder.starts_with("<system-reminder>"));
@@ -199,15 +209,15 @@ fn deny_message(verdict: InvocationGuardVerdict) -> String {
 }
 
 #[test]
-fn invocation_conditions_metis_and_momus_are_plan_gated() {
+fn invocation_conditions_plan_agents_are_gated() {
     let gated = plan_gated_agent_names();
-    assert!(gated.contains("metis") && gated.contains("momus"));
+    assert!(gated.contains("plan-consultant") && gated.contains("plan-reviewer"));
     assert!(!gated.contains("explore") && !gated.contains("librarian"));
-    for name in ["metis", "momus"] {
+    for name in ["plan-consultant", "plan-reviewer"] {
         let condition = invocation_condition_for_agent(name).expect("condition");
         assert_eq!(condition.requires_skills, ["ulw-plan"]);
         assert!(condition.requires_plan_artifact);
-        assert_eq!(condition.forbids_skills, ["start-work"]);
+        assert_eq!(condition.forbids_skills, ["ulw-execute"]);
     }
     assert_eq!(AGENT_INVOCATION_CONDITIONS.len(), 2);
 }
@@ -227,15 +237,15 @@ fn guard_allows_non_gated_agent() {
 }
 
 #[test]
-fn guard_denies_momus_in_empty_session_naming_ulw_plan() {
-    let message = deny_message(evaluate_invocation_guard("momus", &StateOf::default()));
-    assert!(message.contains("momus"));
+fn guard_denies_plan_reviewer_in_empty_session_naming_ulw_plan() {
+    let message = deny_message(evaluate_invocation_guard("plan-reviewer", &StateOf::default()));
+    assert!(message.contains("plan-reviewer"));
     assert!(message.contains("ulw-plan"));
 }
 
 #[test]
-fn guard_denies_metis_in_empty_session_naming_ulw_plan() {
-    let message = deny_message(evaluate_invocation_guard("metis", &StateOf::default()));
+fn guard_denies_plan_consultant_in_empty_session_naming_ulw_plan() {
+    let message = deny_message(evaluate_invocation_guard("plan-consultant", &StateOf::default()));
     assert!(message.contains("ulw-plan"));
 }
 
@@ -247,7 +257,7 @@ fn guard_denies_model_invocation_without_user_request() {
         ..StateOf::default()
     };
     assert!(matches!(
-        evaluate_invocation_guard("momus", &state),
+        evaluate_invocation_guard("plan-reviewer", &state),
         InvocationGuardVerdict::Deny { .. }
     ));
 }
@@ -258,7 +268,7 @@ fn guard_denies_user_request_without_artifact() {
         requested: vec!["ulw-plan"],
         ..StateOf::default()
     };
-    assert!(deny_message(evaluate_invocation_guard("momus", &state)).contains(".omo/plans"));
+    assert!(deny_message(evaluate_invocation_guard("plan-reviewer", &state)).contains(".omo/plans"));
 }
 
 #[test]
@@ -269,29 +279,29 @@ fn guard_allows_user_request_with_artifact() {
         ..StateOf::default()
     };
     assert_eq!(
-        evaluate_invocation_guard("momus", &state),
+        evaluate_invocation_guard("plan-reviewer", &state),
         InvocationGuardVerdict::Allow
     );
 }
 
 #[test]
-fn guard_denies_after_start_work() {
+fn guard_denies_after_ulw_execute() {
     let state = StateOf {
         requested: vec!["ulw-plan"],
         artifact: true,
-        invoked: vec!["start-work"],
+        invoked: vec!["ulw-execute"],
         ..StateOf::default()
     };
-    assert!(deny_message(evaluate_invocation_guard("momus", &state)).contains("start-work"));
+    assert!(deny_message(evaluate_invocation_guard("plan-reviewer", &state)).contains("ulw-execute"));
 }
 
 #[test]
 fn guard_forbidden_denial_precedes_missing_requirement() {
     let state = StateOf {
-        invoked: vec!["start-work"],
+        invoked: vec!["ulw-execute"],
         ..StateOf::default()
     };
-    assert!(deny_message(evaluate_invocation_guard("momus", &state)).contains("start-work"));
+    assert!(deny_message(evaluate_invocation_guard("plan-reviewer", &state)).contains("ulw-execute"));
 }
 
 #[test]
@@ -328,7 +338,7 @@ fn guard_missing_user_request_names_user_driven_unlock() {
         artifact: true,
         ..StateOf::default()
     };
-    let message = deny_message(evaluate_invocation_guard("momus", &state));
+    let message = deny_message(evaluate_invocation_guard("plan-reviewer", &state));
     assert!(message.contains("/skill:ulw-plan"));
     assert!(message.to_lowercase().contains("ask the user"));
 }
@@ -339,25 +349,25 @@ fn guard_missing_artifact_names_plan_file_requirement() {
         requested: vec!["ulw-plan"],
         ..StateOf::default()
     };
-    assert!(deny_message(evaluate_invocation_guard("metis", &state)).contains(".omo/plans"));
+    assert!(deny_message(evaluate_invocation_guard("plan-consultant", &state)).contains(".omo/plans"));
 }
 
 #[test]
 fn guard_terminal_denial_does_not_advertise_unlock() {
     let state = StateOf {
-        invoked: vec!["start-work"],
+        invoked: vec!["ulw-execute"],
         requested: vec!["ulw-plan"],
         artifact: true,
         ..StateOf::default()
     };
-    let message = deny_message(evaluate_invocation_guard("momus", &state));
-    assert!(message.contains("start-work"));
+    let message = deny_message(evaluate_invocation_guard("plan-reviewer", &state));
+    assert!(message.contains("ulw-execute"));
     assert!(!message.contains("/skill:ulw-plan"));
 }
 
 // ---- agents/builtin/builtin-agents.test.ts ----
 
-const CURATED_AGENT_NAMES: [&str; 4] = ["explore", "librarian", "metis", "momus"];
+const CURATED_AGENT_NAMES: [&str; 4] = ["explore", "librarian", "plan-consultant", "plan-reviewer"];
 
 #[test]
 fn builtin_defaults_are_the_four_curated_agents() {
@@ -398,7 +408,7 @@ fn builtin_definitions_are_in_process_subagents() {
 }
 
 #[test]
-fn builtin_definitions_carry_the_nine_literal_allow_rules() {
+fn builtin_definitions_carry_role_specific_x_search_rules() {
     let mut expected = vec![
         "read",
         "find",
@@ -413,11 +423,17 @@ fn builtin_definitions_carry_the_nine_literal_allow_rules() {
     expected.sort_unstable();
     for definition in BUILTIN_AGENT_DEFAULTS.iter() {
         let rules = definition.tools.as_deref().unwrap_or_default();
-        assert_eq!(rules.len(), 9);
+        assert_eq!(rules.len(), if definition.name == "explore" || definition.name == "librarian" { 10 } else { 9 });
         let mut patterns: Vec<&str> = rules.iter().map(|rule| rule.pattern.as_str()).collect();
         patterns.sort_unstable();
         assert_eq!(patterns, expected);
-        assert!(rules.iter().all(|rule| rule.allow));
+        assert!(rules.iter().filter(|rule| rule.pattern != "x_search").all(|rule| rule.allow));
+        if definition.name == "explore" {
+            assert_eq!(rules.iter().find(|rule| rule.pattern == "x_search").map(|rule| rule.allow), Some(false));
+        }
+        if definition.name == "librarian" {
+            assert_eq!(rules.iter().find(|rule| rule.pattern == "x_search").map(|rule| rule.allow), Some(true));
+        }
     }
 }
 
@@ -467,71 +483,43 @@ fn fallback_chain_lengths_match_transcription() {
         .collect();
     assert_eq!(
         lengths,
-        vec![("explore", 9), ("librarian", 9), ("metis", 5), ("momus", 7)]
+        vec![("explore", 6), ("librarian", 6), ("plan-consultant", 3), ("plan-reviewer", 8)]
     );
 }
 
 #[test]
 fn fallback_chain_table_is_pinned() {
     let fast = vec![
-        entry(&["openai"], "gpt-5.6-luna-fast", Some("low")),
-        entry(&["deepseek"], "deepseek-v4-flash", Some("max")),
-        entry(
-            &["opencode-go", "bailian-coding-plan"],
-            "qwen3.5-plus",
-            None,
-        ),
-        entry(&["vercel"], "minimax-m2.7-highspeed", None),
-        entry(&["opencode-go", "vercel"], "minimax-m3", None),
-        entry(
-            &["minimax-coding-plan", "minimax-cn-coding-plan"],
-            "MiniMax-M3",
-            None,
-        ),
-        entry(&["opencode-go", "vercel"], "minimax-m2.7", None),
-        entry(
-            &["anthropic", "github-copilot", "vercel"],
-            "claude-haiku-4-5",
-            None,
-        ),
-        entry(&["openai", "vercel"], "gpt-5.4-nano", None),
+        entry(&["kimi-coding", "kimi-for-coding"], "kimi-for-coding-highspeed", Some("off")),
+        entry(&["chatgpt-subscription", "openai"], "gpt-6-luna-fast", Some("low")),
+        entry(&["anthropic-subscription", "anthropic", "github-copilot"], "claude-haiku-5-5", Some("medium")),
+        entry(&["deepseek"], "deepseek-flash", Some("max")),
+        entry(&["opencode-go", "bailian-coding-plan"], "qwen3.7-plus", None),
+        entry(&["opencode-go"], "minimax-m2.7", None),
     ];
-    let claude = ["anthropic", "github-copilot", "opencode", "vercel"];
+    let claude = ["anthropic-subscription", "anthropic", "github-copilot", "opencode"];
     let expected = vec![
         ("explore", fast.clone()),
         ("librarian", fast),
         (
-            "metis",
+            "plan-consultant",
             vec![
-                entry(&claude, "claude-sonnet-4-6", None),
-                entry(&claude, "claude-opus-5", Some("max")),
-                entry(
-                    &["openai", "github-copilot", "opencode", "vercel"],
-                    "gpt-5.6-sol",
-                    Some("medium"),
-                ),
-                entry(&["opencode-go", "vercel"], "glm-5.2", None),
-                entry(&["kimi-for-coding"], "kimi-k3", None),
+                entry(&claude, "claude-fable-5-1", Some("max")),
+                entry(&claude, "claude-opus-5-5", Some("max")),
+                entry(&["opencode-go", "kimi-for-coding", "moonshotai", "opencode"], "kimi-k3", Some("max")),
             ],
         ),
         (
-            "momus",
+            "plan-reviewer",
             vec![
-                entry(&["openai", "vercel"], "gpt-5.6-terra", Some("high")),
-                entry(&["github-copilot"], "gpt-5.6-terra", Some("high")),
-                entry(
-                    &["openai", "opencode", "vercel"],
-                    "gpt-5.6-sol",
-                    Some("xhigh"),
-                ),
-                entry(&["github-copilot"], "gpt-5.6-sol", Some("high")),
-                entry(&claude, "claude-opus-5", Some("max")),
-                entry(
-                    &["google", "github-copilot", "opencode", "vercel"],
-                    "gemini-3.1-pro",
-                    Some("high"),
-                ),
-                entry(&["opencode-go", "vercel"], "glm-5.2", None),
+                entry(&["chatgpt-subscription", "openai"], "gpt-6-astra", Some("xhigh")),
+                entry(&["github-copilot"], "gpt-6-astra", Some("high")),
+                entry(&["chatgpt-subscription", "openai", "opencode"], "gpt-6-astra", Some("high")),
+                entry(&["github-copilot"], "gpt-6-astra", Some("high")),
+                entry(&claude, "claude-opus-5-5", Some("max")),
+                entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("high")),
+                entry(&["google", "github-copilot", "opencode"], "gemini-3.1-pro", Some("high")),
+                entry(&["opencode-go"], "glm-5.2", None),
             ],
         ),
     ];
@@ -559,8 +547,8 @@ fn explore_and_librarian_place_max_deepseek_after_luna() {
         assert_eq!(
             chain[0..2].to_vec(),
             vec![
-                entry(&["openai"], "gpt-5.6-luna-fast", Some("low")),
-                entry(&["deepseek"], "deepseek-v4-flash", Some("max")),
+                entry(&["kimi-coding", "kimi-for-coding"], "kimi-for-coding-highspeed", Some("off")),
+                entry(&["chatgpt-subscription", "openai"], "gpt-6-luna-fast", Some("low")),
             ],
             "{agent}"
         );

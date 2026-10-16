@@ -10,7 +10,7 @@ use chrono::Datelike;
 use super::types::{AgentDefinition, AgentToolRule};
 use crate::delegate_adapter::DelegateFallbackEntry;
 
-pub(crate) use prompts::MOMUS_SEND_DENIAL_REMINDER;
+pub(crate) const PLAN_REVIEWER_SEND_DENIAL_REMINDER: &str = prompts::PLAN_REVIEWER_SEND_DENIAL_REMINDER;
 
 const READ_ONLY_TOOLS: [&str; 9] = [
     "read",
@@ -25,17 +25,18 @@ const READ_ONLY_TOOLS: [&str; 9] = [
 ];
 
 fn builtin(name: &str, description: &str, prompt: String) -> AgentDefinition {
+    let mut tools: Vec<_> = READ_ONLY_TOOLS.iter().map(|tool| AgentToolRule::new(tool, true)).collect();
+    if name == "librarian" {
+        tools.push(AgentToolRule::new("x_search", true));
+    } else if name == "explore" {
+        tools.push(AgentToolRule::new("x_search", false));
+    }
     AgentDefinition {
         description: Some(description.to_string()),
         prompt: Some(prompt),
         mode: Some("subagent".to_string()),
         execution_mode: Some("in-process".to_string()),
-        tools: Some(
-            READ_ONLY_TOOLS
-                .iter()
-                .map(|tool| AgentToolRule::new(tool, true))
-                .collect(),
-        ),
+        tools: Some(tools),
         ..AgentDefinition::named(name)
     }
 }
@@ -59,12 +60,12 @@ pub static BUILTIN_AGENT_DEFAULTS: LazyLock<Vec<AgentDefinition>> = LazyLock::ne
             ),
         ),
         builtin(
-            "metis",
+            "plan-consultant",
             prompts::METIS_DESCRIPTION,
             prompts::METIS_PROMPT.to_string(),
         ),
         builtin(
-            "momus",
+            "plan-reviewer",
             prompts::MOMUS_DESCRIPTION,
             prompts::MOMUS_PROMPT.to_string(),
         ),
@@ -91,69 +92,53 @@ fn entry(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFall
 
 fn fast_search_chain() -> Vec<DelegateFallbackEntry> {
     vec![
-        entry(&["openai"], "gpt-5.6-luna-fast", Some("low")),
-        entry(&["deepseek"], "deepseek-v4-flash", Some("max")),
-        entry(
-            &["opencode-go", "bailian-coding-plan"],
-            "qwen3.5-plus",
-            None,
-        ),
-        entry(&["vercel"], "minimax-m2.7-highspeed", None),
-        entry(&["opencode-go", "vercel"], "minimax-m3", None),
-        entry(
-            &["minimax-coding-plan", "minimax-cn-coding-plan"],
-            "MiniMax-M3",
-            None,
-        ),
-        entry(&["opencode-go", "vercel"], "minimax-m2.7", None),
-        entry(
-            &["anthropic", "github-copilot", "vercel"],
-            "claude-haiku-4-5",
-            None,
-        ),
-        entry(&["openai", "vercel"], "gpt-5.4-nano", None),
+        entry(&["kimi-coding", "kimi-for-coding"], "kimi-for-coding-highspeed", Some("off")),
+        entry(&["chatgpt-subscription", "openai"], "gpt-6-luna-fast", Some("low")),
+        entry(&["anthropic-subscription", "anthropic", "github-copilot"], "claude-haiku-5-5", Some("medium")),
+        entry(&["deepseek"], "deepseek-flash", Some("max")),
+        entry(&["opencode-go", "bailian-coding-plan"], "qwen3.7-plus", None),
+        entry(&["opencode-go"], "minimax-m2.7", None),
     ]
 }
 
 /// Hand transcription of model-core's agent requirements, keyed by builtin agent name.
 pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallbackEntry>)>> =
     LazyLock::new(|| {
-        let claude = ["anthropic", "github-copilot", "opencode", "vercel"];
+        let claude = ["anthropic-subscription", "anthropic", "github-copilot", "opencode"];
         vec![
             ("explore", fast_search_chain()),
             ("librarian", fast_search_chain()),
             (
-                "metis",
+                "plan-consultant",
                 vec![
-                    entry(&claude, "claude-sonnet-4-6", None),
-                    entry(&claude, "claude-opus-5", Some("max")),
-                    entry(
-                        &["openai", "github-copilot", "opencode", "vercel"],
-                        "gpt-5.6-sol",
-                        Some("medium"),
-                    ),
-                    entry(&["opencode-go", "vercel"], "glm-5.2", None),
-                    entry(&["kimi-for-coding"], "kimi-k3", None),
+                    entry(&claude, "claude-fable-5-1", Some("max")),
+                    entry(&claude, "claude-opus-5-5", Some("max")),
+                    entry(&["opencode-go", "kimi-for-coding", "moonshotai", "opencode"], "kimi-k3", Some("max")),
                 ],
             ),
             (
-                "momus",
+                "plan-reviewer",
                 vec![
-                    entry(&["openai", "vercel"], "gpt-5.6-terra", Some("high")),
-                    entry(&["github-copilot"], "gpt-5.6-terra", Some("high")),
+                    entry(&["chatgpt-subscription", "openai"], "gpt-6-astra", Some("xhigh")),
+                    entry(&["github-copilot"], "gpt-6-astra", Some("high")),
                     entry(
-                        &["openai", "opencode", "vercel"],
-                        "gpt-5.6-sol",
-                        Some("xhigh"),
+                        &["chatgpt-subscription", "openai", "opencode"],
+                        "gpt-6-astra",
+                        Some("high"),
                     ),
-                    entry(&["github-copilot"], "gpt-5.6-sol", Some("high")),
-                    entry(&claude, "claude-opus-5", Some("max")),
+                    entry(&["github-copilot"], "gpt-6-astra", Some("high")),
+                    entry(&claude, "claude-opus-5-5", Some("max")),
                     entry(
-                        &["google", "github-copilot", "opencode", "vercel"],
+                        &["google", "google-vertex", "opencode"],
+                        "gemini-4-argon",
+                        Some("high"),
+                    ),
+                    entry(
+                        &["google", "github-copilot", "opencode"],
                         "gemini-3.1-pro",
                         Some("high"),
                     ),
-                    entry(&["opencode-go", "vercel"], "glm-5.2", None),
+                    entry(&["opencode-go"], "glm-5.2", None),
                 ],
             ),
         ]

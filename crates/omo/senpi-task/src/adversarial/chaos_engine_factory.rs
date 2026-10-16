@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::host::HostError;
 use crate::lifecycle::port::{ResidencyRegistry, ResidentHandle, ResidentKind};
+use crate::lifecycle::host_session::NoHostEndpoint;
 use crate::lifecycle::{
     AdmissionResult, DestroyCause, LifecycleDeps, TaskLifecycle, TaskSettings, create_task_lifecycle,
 };
@@ -167,6 +168,7 @@ pub fn build_chaos_engines(input: BuildChaosEnginesInput) -> Vec<ChaosEngine> {
         let reattach_registry = Arc::clone(&registry);
         let lifecycle = Arc::new(create_task_lifecycle(LifecycleDeps {
             host_pid: Some(host_pid),
+            host_endpoint: Some(Arc::new(NoHostEndpoint)),
             orphan_kill_delay_ms: Some(0),
             signaller: Some(Arc::clone(&input.processes) as Arc<dyn crate::lifecycle::ProcessSignaller>),
             respawn: Some(Arc::new(move |record: &crate::state::TaskRecord, session_path: Option<&std::path::Path>| {
