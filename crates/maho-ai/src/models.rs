@@ -423,6 +423,20 @@ pub trait Provider: Send + Sync {
         context: &Context,
         options: Option<SimpleStreamOptions>,
     ) -> AssistantMessageEventStream;
+    fn generate_images<'a>(
+        &'a self,
+        model: &'a crate::types::ImagesModel,
+        context: &'a crate::types::ImagesContext,
+        options: Option<crate::types::ImagesOptions>,
+    ) -> BoxFuture<'a, Result<crate::types::AssistantImages, String>>;
+    fn classify<'a>(
+        &'a self,
+        _model: &'a crate::types::ClassifierModel,
+        _context: &'a crate::types::ClassifierContext,
+        _options: Option<crate::types::ClassifierOptions>,
+    ) -> BoxFuture<'a, crate::types::ClassifierResult> {
+        Box::pin(async { Err("Provider does not support classification".to_owned()) })
+    }
     fn fetch_deferred(
         &self,
         _model: &Model,
@@ -490,6 +504,13 @@ impl CreatedProvider {
 
     fn no_api(&self, model: &Model) -> AssistantMessageEventStream {
         error_stream(model, &format!("Provider {} has no API implementation for \"{}\"", self.input.id, model.api))
+    }
+
+    fn image_api(&self, api: &str) -> Option<&Arc<dyn ProviderStreams>> {
+        match &self.input.api {
+            ProviderApi::Single(streams) => Some(streams),
+            ProviderApi::ByApi(by_api) => by_api.get(api),
+        }
     }
 }
 
@@ -616,6 +637,18 @@ impl Provider for CreatedProvider {
         match self.api_for(model) {
             Some(streams) => streams.stream_simple(model, context, options),
             None => self.no_api(model),
+        }
+    }
+
+    fn generate_images<'a>(
+        &'a self,
+        model: &'a crate::types::ImagesModel,
+        context: &'a crate::types::ImagesContext,
+        options: Option<crate::types::ImagesOptions>,
+    ) -> BoxFuture<'a, Result<crate::types::AssistantImages, String>> {
+        match self.image_api(&model.api) {
+            Some(streams) => streams.generate_images(model, context, options),
+            None => Box::pin(async move { Err(format!("Provider {} has no image API implementation for \"{}\"", self.input.id, model.api)) }),
         }
     }
 
@@ -1061,6 +1094,18 @@ impl Models {
         outer
     }
 
+    fn generate_images<'a>(
+        &'a self,
+        model: &'a crate::types::ImagesModel,
+        context: &'a crate::types::ImagesContext,
+        options: Option<crate::types::ImagesOptions>,
+    ) -> BoxFuture<'a, Result<crate::types::AssistantImages, String>> {
+        match self.api_for_model_id(&model.id) {
+            Some(streams) => streams.generate_images(model, context, options),
+            None => Box::pin(async { Err(format!("Provider {} has no image API implementation", self.input.id)) }),
+        }
+    }
+
     pub fn stream(
         &self,
         model: &Model,
@@ -1142,6 +1187,16 @@ impl Models {
                 )
             })
         })
+    }
+
+    pub async fn generate_images(
+        &self,
+        model: &crate::types::ImagesModel,
+        context: &crate::types::ImagesContext,
+        options: Option<crate::types::ImagesOptions>,
+    ) -> Result<crate::types::AssistantImages, String> {
+        let provider = self.get_provider(&model.provider).ok_or_else(|| format!("Unknown provider: {}", model.provider))?;
+        provider.generate_images(model, context, options).await
     }
 
     /// Pinned `Models.cancelDeferred(model, handle, options)`: resolve the provider, throw

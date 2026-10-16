@@ -391,6 +391,7 @@ pub enum ServiceTierPreference {
     Auto,
     Flex,
     Priority,
+    Ultrafast,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,6 +464,14 @@ pub trait ProviderStreams: Send + Sync {
         context: &Context,
         options: Option<SimpleStreamOptions>,
     ) -> AssistantMessageEventStream;
+    fn generate_images<'a>(
+        &'a self,
+        _model: &'a ImagesModel,
+        _context: &'a ImagesContext,
+        _options: Option<ImagesOptions>,
+    ) -> BoxFuture<'a, Result<AssistantImages, String>> {
+        Box::pin(async { Err("API does not support image generation".to_owned()) })
+    }
     fn fetch_deferred(
         &self,
         _model: &Model,
