@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap,path::Path};
+use std::{collections::BTreeMap,path::Path,sync::Arc};
 use crate::{accounts::{AccountSlot,AccountSource,env_slot_token},auth_environment::{has_request_oauth_token,merge_request_auth_environment,strip_managed_auth_environment},settings::ProviderSettings};
 pub const EXPIRING_WITHIN_MS:f64=5.0*60000.0;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -15,6 +15,10 @@ impl ManagedPool {
             Err(error)=>Err(error),
         };
         match update {Ok(updated)=>{*selected=updated;Ok(())},Err(error)=>{let detail=error.to_string();let classification=crate::errors::classify_sdk_error(&serde_json::json!(detail));anyhow::bail!("{}: {detail}",if classification.kind==crate::errors::SdkErrorKind::Other&&classification.retryable {"server_error"}else {"authentication_failed"});}}
+    }
+    pub async fn refresh_for_attempt(&self,store:&dyn maho_ai::auth::types::CredentialStore,selected:&mut AccountSlot,now:f64,signal:maho_ai::utils::abort::AbortSignal,refresh:Arc<dyn maho_ai::auth::types::OAuthAuth>)->anyhow::Result<()> {
+        let access=selected.access.clone();let refresh_token=selected.refresh.clone();let expires=selected.expires;
+        self.refresh_selected(store,selected,now,signal,move |_,signal|async move {refresh.refresh(&maho_ai::auth::types::OAuthCredential::new(access,refresh_token,expires),&signal).await}).await
     }
 }
 pub async fn managed_pool(store:&dyn maho_ai::auth::types::CredentialStore,settings:&ProviderSettings,host:&BTreeMap<String,String>,request:Option<&BTreeMap<String,String>>)->anyhow::Result<Option<ManagedPool>> {
