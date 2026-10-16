@@ -250,6 +250,14 @@ fn truncates_head_on_utf8_byte_limits_without_partial_lines() {
 }
 
 #[test]
+fn classifies_trailing_newline_byte_overflow_as_bytes_not_lines() {
+    let result = truncate_head("a\n", TruncationOptions { max_bytes: Some(1), max_lines: Some(10) });
+    assert!(result.truncated);
+    assert_eq!(result.content, "a");
+    assert_eq!(result.truncated_by, Some(TruncatedBy::Bytes));
+}
+
+#[test]
 fn reports_head_truncation_when_the_first_line_exceeds_the_byte_limit() {
     let result = truncate_head("éé\nabc", TruncationOptions { max_bytes: Some(3), max_lines: Some(10) });
     assert_eq!(result.content, "");

@@ -6,7 +6,7 @@ pub fn detect_supported_image_mime_type(buffer: &[u8]) -> Option<&'static str> {
     if buffer.starts_with(PNG_SIGNATURE) {
         return (is_png(buffer) && !is_animated_png(buffer)).then_some("image/png");
     }
-    if buffer.starts_with(b"GIF") {
+    if buffer.starts_with(b"GIF87a") || buffer.starts_with(b"GIF89a") {
         return Some("image/gif");
     }
     if buffer.starts_with(b"RIFF") && starts_with_ascii(buffer, 8, b"WEBP") {

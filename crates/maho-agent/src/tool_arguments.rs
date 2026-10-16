@@ -23,10 +23,22 @@ pub fn prepare_agent_tool_call_arguments(tool: &AgentTool, tool_call: &AgentTool
         Some(shim) => {
             let prepared = prepare_tool_arguments(Some(shim), Value::Object(tool_call.arguments.clone()));
             let mut tool_call = tool_call.clone();
-            if let Value::Object(arguments) = prepared {
-                tool_call.arguments = arguments;
-            }
+            tool_call.arguments = prepared.as_object().cloned().unwrap_or_default();
             tool_call
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_tool_arguments;
+    use crate::types::ToolArgumentShim;
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+
+    #[test]
+    fn preserves_prepared_non_object_values_until_call_shape_conversion() {
+        let shim: ToolArgumentShim = Arc::new(|_| json!("normalized"));
+        assert_eq!(prepare_tool_arguments(Some(&shim), json!({"input": true})), Value::String("normalized".into()));
     }
 }

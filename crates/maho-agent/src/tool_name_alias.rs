@@ -100,3 +100,20 @@ pub fn with_tool_name_correction(
     content.extend(result.content);
     AgentToolResult { content, ..result }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_tool_name_alias;
+
+    #[test]
+    fn resolves_mixed_case_namespaced_forms_and_refuses_ambiguity() {
+        assert_eq!(
+            resolve_tool_name_alias("mcp__gateway__Read-File", ["read_file".into()]),
+            Some("read_file".into())
+        );
+        assert_eq!(
+            resolve_tool_name_alias("mcp__gateway__READ", ["read".into(), "Read".into()]),
+            None
+        );
+    }
+}

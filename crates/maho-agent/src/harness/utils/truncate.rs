@@ -126,10 +126,13 @@ pub fn truncate_head(content: &str, options: TruncationOptions) -> TruncationRes
         output_bytes_count += line_bytes;
     }
 
-    if output_lines_arr.len() as u64 >= max_lines && output_bytes_count <= max_bytes {
-        truncated_by = TruncatedBy::Lines;
+    if truncated_by != TruncatedBy::Bytes {
+        truncated_by = if (output_lines_arr.len() as u64) < total_lines {
+            TruncatedBy::Lines
+        } else {
+            TruncatedBy::Bytes
+        };
     }
-
     let output_content = output_lines_arr.join("\n");
     let final_output_bytes = utf8_byte_length(&output_content);
 
