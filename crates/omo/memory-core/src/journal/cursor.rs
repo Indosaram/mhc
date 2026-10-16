@@ -7,6 +7,23 @@ use crate::journal::store::JournalError;
 
 /// Schema version for reflection transcript state.
 pub const REFLECTION_STATE_SCHEMA_VERSION: &str = "v3_assistant_steps";
+pub const REFLECTION_SNAPSHOT_MAX_BYTES: usize = 131_072;
+
+fn entry_bytes(entry: &TranscriptEntry) -> usize {
+    serde_json::to_vec(entry).map_or(0, |json| json.len() + 1)
+}
+
+pub fn reflected_through_byte_offset(entries: &[TranscriptEntry], message_id: &str) -> usize {
+    let mut offset = 0;
+    let mut reflected = 0;
+    for entry in entries {
+        offset += entry_bytes(entry);
+        if entry.source_message_id() == message_id {
+            reflected = offset;
+        }
+    }
+    reflected
+}
 
 /// Persisted state for reflection progress through a transcript.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +31,10 @@ pub struct ReflectionTranscriptState {
     pub schema_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reflected_through_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflected_through_byte_offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreflected_bytes: Option<usize>,
     pub total_completed_steps: usize,
     pub reflected_completed_steps: usize,
     pub steps_since_last_successful_reflection: usize,
@@ -25,6 +46,16 @@ pub struct ReflectionTranscriptState {
     pub pending_compaction: Option<bool>,
 }
 
+fn reflected_cursor_index(entries: &[TranscriptEntry], message_id: &str) -> Option<usize> {
+    entries
+        .iter()
+        .rposition(|entry| entry.source_message_id() == message_id)
+}
+
+fn serialized_bytes(entries: &[TranscriptEntry]) -> usize {
+    entries.iter().map(entry_bytes).sum()
+}
+
 /// A captured snapshot of transcript entries ready for reflection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReflectionSnapshot {
@@ -33,6 +64,8 @@ pub struct ReflectionSnapshot {
     pub start_line: usize,
     pub end_snapshot_line: usize,
     pub entries: Vec<TranscriptEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backlog_remaining: Option<usize>,
 }
 
 /// Check whether an entry is a canonical user or assistant message with content.
@@ -70,7 +103,18 @@ pub fn derive_state(
     state: &ReflectionTranscriptState,
     entries: &[TranscriptEntry],
 ) -> ReflectionTranscriptState {
-    derive_state_with_total(state, count_completed_steps(entries))
+    derive_state_with_entries(state, entries)
+}
+
+fn derive_state_with_entries(
+    state: &ReflectionTranscriptState,
+    entries: &[TranscriptEntry],
+) -> ReflectionTranscriptState {
+    let mut derived = derive_state_with_total(state, count_completed_steps(entries));
+    let anchor = state.reflected_through_message_id.as_deref()
+        .and_then(|message_id| reflected_cursor_index(entries, message_id));
+    derived.unreflected_bytes = Some(serialized_bytes(&entries[anchor.map_or(0, |index| index + 1)..]));
+    derived
 }
 
 /// [`derive_state`] for an already-counted number of completed steps.
@@ -84,6 +128,8 @@ pub(crate) fn derive_state_with_total(
     ReflectionTranscriptState {
         schema_version: REFLECTION_STATE_SCHEMA_VERSION.to_string(),
         reflected_through_message_id: state.reflected_through_message_id.clone(),
+        reflected_through_byte_offset: state.reflected_through_byte_offset,
+        unreflected_bytes: state.unreflected_bytes,
         total_completed_steps,
         reflected_completed_steps,
         steps_since_last_successful_reflection,
@@ -98,12 +144,18 @@ pub fn capture_cursor_snapshot(
     entries: &[TranscriptEntry],
     state: &ReflectionTranscriptState,
 ) -> Option<ReflectionSnapshot> {
-    let anchor_index = match &state.reflected_through_message_id {
-        Some(msg_id) => entries
-            .iter()
-            .position(|e| is_canonical_entry(e) && e.source_message_id() == msg_id),
-        None => None,
-    };
+    capture_cursor_snapshot_limit(entries, state, REFLECTION_SNAPSHOT_MAX_BYTES)
+}
+
+fn capture_cursor_snapshot_limit(
+    entries: &[TranscriptEntry],
+    state: &ReflectionTranscriptState,
+    max_bytes: usize,
+) -> Option<ReflectionSnapshot> {
+    let anchor_index = state
+        .reflected_through_message_id
+        .as_deref()
+        .and_then(|message_id| reflected_cursor_index(entries, message_id));
 
     let search_start = match anchor_index {
         Some(idx) => idx + 1,
@@ -115,17 +167,41 @@ pub fn capture_cursor_snapshot(
         .position(is_canonical_entry)
         .map(|rel| search_start + rel)?;
 
-    let mut end_index = None;
-    for (rel, entry) in entries[start_index..].iter().enumerate().rev() {
-        if is_canonical_entry(entry) {
-            end_index = Some(start_index + rel);
-            break;
-        }
-    }
-    let end_index = end_index?;
-
     let start = &entries[start_index];
-    let end = &entries[end_index];
+    let mut bytes = serialized_bytes(&entries[search_start..start_index]);
+    let mut end_id: Option<String> = None;
+    let mut end_line = 0;
+    let mut exhausted = false;
+    let mut index = start_index;
+    while index < entries.len() {
+        bytes += entry_bytes(&entries[index]);
+        if is_canonical_entry(&entries[index]) {
+            let id = entries[index].source_message_id();
+            let mut group_end = index;
+            let mut group_bytes = bytes;
+            while group_end + 1 < entries.len()
+                && entries[group_end + 1].source_message_id() == id
+            {
+                group_end += 1;
+                group_bytes += entry_bytes(&entries[group_end]);
+            }
+            if group_bytes > max_bytes && end_id.is_some() {
+                exhausted = true;
+                break;
+            }
+            end_id = Some(id.to_string());
+            end_line = group_end + 1;
+            bytes = group_bytes;
+            index = group_end;
+            if group_bytes >= max_bytes { exhausted = true; break; }
+        }
+        index += 1;
+    }
+    let end_message_id = end_id?;
+    if !exhausted && bytes <= max_bytes {
+        end_line = entries.len();
+    }
+    let end = entries.get(end_line.saturating_sub(1))?;
     if !is_canonical_entry(start) || !is_canonical_entry(end) {
         return None;
     }
@@ -133,11 +209,20 @@ pub fn capture_cursor_snapshot(
     let slice_start = search_start;
     Some(ReflectionSnapshot {
         start_message_id: start.source_message_id().to_string(),
-        end_message_id: end.source_message_id().to_string(),
+        end_message_id,
         start_line: slice_start,
-        end_snapshot_line: entries.len(),
-        entries: entries[slice_start..].to_vec(),
+        end_snapshot_line: end_line,
+        entries: entries[slice_start..end_line].to_vec(),
+        backlog_remaining: (entries.len() > end_line).then_some(entries.len() - end_line),
     })
+}
+
+pub fn capture_cursor_snapshot_with_max_bytes(
+    entries: &[TranscriptEntry],
+    state: &ReflectionTranscriptState,
+    max_bytes: usize,
+) -> Option<ReflectionSnapshot> {
+    capture_cursor_snapshot_limit(entries, state, max_bytes)
 }
 
 /// Finalize a reflection run, updating the cursor on success.
@@ -156,9 +241,12 @@ pub fn finalize_cursor(
     let snapshot_entries = &entries[..end_line];
     let mut updated = state.clone();
     updated.reflected_through_message_id = Some(snapshot.end_message_id.clone());
+    updated.reflected_through_byte_offset =
+        Some(reflected_through_byte_offset(entries, &snapshot.end_message_id));
+    updated.unreflected_bytes = Some(serialized_bytes(&entries[end_line..]));
     updated.reflected_completed_steps = count_completed_steps(snapshot_entries);
     updated.last_reflection_succeeded_at = Some(succeeded_at.to_string());
-    derive_state(&updated, entries)
+    derive_state_with_entries(&updated, entries)
 }
 
 /// Construct the initial empty reflection state.
@@ -166,6 +254,8 @@ pub fn initial_reflection_state() -> ReflectionTranscriptState {
     ReflectionTranscriptState {
         schema_version: REFLECTION_STATE_SCHEMA_VERSION.to_string(),
         reflected_through_message_id: None,
+        reflected_through_byte_offset: None,
+        unreflected_bytes: None,
         total_completed_steps: 0,
         reflected_completed_steps: 0,
         steps_since_last_successful_reflection: 0,
@@ -220,10 +310,14 @@ pub fn parse_state(raw: &str) -> Result<ReflectionTranscriptState, JournalError>
         .map(String::from);
 
     let pending_compaction = obj.get("pending_compaction").and_then(|v| v.as_bool());
+    let reflected_through_byte_offset = obj.get("reflected_through_byte_offset").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let unreflected_bytes = obj.get("unreflected_bytes").and_then(|v| v.as_u64()).map(|v| v as usize);
 
     Ok(ReflectionTranscriptState {
         schema_version: REFLECTION_STATE_SCHEMA_VERSION.to_string(),
         reflected_through_message_id,
+        reflected_through_byte_offset,
+        unreflected_bytes,
         total_completed_steps,
         reflected_completed_steps,
         steps_since_last_successful_reflection,

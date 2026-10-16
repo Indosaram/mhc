@@ -8,7 +8,7 @@ use crate::support::time::{format_rfc3339_millis, parse_rfc3339};
 pub const FACTS_FAILURES_VERSION: u32 = 1;
 
 /// Canonical failure reason list.
-pub const FACTS_FAILURE_REASONS: [&str; 11] = [
+pub const FACTS_FAILURE_REASONS: [&str; 12] = [
     "quick_category_unavailable",
     "sandbox_unavailable",
     "child_exit",
@@ -19,6 +19,7 @@ pub const FACTS_FAILURE_REASONS: [&str; 11] = [
     "unknown_liveness",
     "payload_envelope_oversize",
     "payload_entry_oversize",
+    "secret_like_content",
     "other",
 ];
 
@@ -36,6 +37,7 @@ pub enum FactsFailureReason {
     UnknownLiveness,
     PayloadEnvelopeOversize,
     PayloadEntryOversize,
+    SecretLikeContent,
     Other,
 }
 
@@ -53,6 +55,7 @@ impl FactsFailureReason {
             Self::UnknownLiveness => "unknown_liveness",
             Self::PayloadEnvelopeOversize => "payload_envelope_oversize",
             Self::PayloadEntryOversize => "payload_entry_oversize",
+            Self::SecretLikeContent => "secret_like_content",
             Self::Other => "other",
         }
     }
@@ -345,6 +348,7 @@ fn parse_record(val: &serde_json::Value) -> Result<FactsFailureRecord, FactsFail
         "unknown_liveness" => FactsFailureReason::UnknownLiveness,
         "payload_envelope_oversize" => FactsFailureReason::PayloadEnvelopeOversize,
         "payload_entry_oversize" => FactsFailureReason::PayloadEntryOversize,
+        "secret_like_content" => FactsFailureReason::SecretLikeContent,
         "other" => FactsFailureReason::Other,
         other => {
             return Err(FactsFailuresCorruptError::new(format!(

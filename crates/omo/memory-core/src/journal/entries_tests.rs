@@ -100,3 +100,17 @@ fn test_has_no_canonical_assistant_row_when_tool_only_assistant_message_projecte
         })]
     );
 }
+
+#[test]
+fn test_tool_result_projection_keeps_head_and_tail_within_limit() {
+    let result = "x".repeat(5000);
+    let entries = project_transcript_entries(&TranscriptProjection::Assistant {
+        message_id: "msg-result".to_string(), text_blocks: Vec::new(), reasoning_blocks: Vec::new(),
+        tool_calls: vec![ProjectedToolCall { call_id: "call".to_string(), name: None, args_text: None, result_text: Some(result), result_ok: None }],
+    }, "now");
+    let TranscriptEntry::ToolCall(call) = &entries[0] else { panic!("expected tool call") };
+    let stored = call.result_text.as_deref().unwrap_or_default();
+    assert!(stored.starts_with(&"x".repeat(3072)));
+    assert!(stored.ends_with(&"x".repeat(1024)));
+    assert!(stored.contains("truncated 904 chars"));
+}
