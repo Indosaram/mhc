@@ -326,6 +326,10 @@ pub trait OAuthAuth: Send + Sync {
         None
     }
 
+    fn rejected_token_statuses(&self) -> &[u16] {
+        &[]
+    }
+
     async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential>;
 
     /// Exchange the refresh token. Network call; errors on failure (invalid_grant etc.).

@@ -11,6 +11,11 @@ use std::path::Path;
 pub const ANTHROPIC_AUTH_TOKEN_ENV: &str = "ANTHROPIC_AUTH_TOKEN";
 pub const ANTHROPIC_OAUTH_TOKEN_ENV: &str = "ANTHROPIC_OAUTH_TOKEN";
 pub const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+pub const ANTHROPIC_FEDERATION_RULE_ID_ENV: &str = "ANTHROPIC_FEDERATION_RULE_ID";
+pub const ANTHROPIC_ORGANIZATION_ID_ENV: &str = "ANTHROPIC_ORGANIZATION_ID";
+pub const ANTHROPIC_SERVICE_ACCOUNT_ID_ENV: &str = "ANTHROPIC_SERVICE_ACCOUNT_ID";
+pub const ANTHROPIC_IDENTITY_TOKEN_FILE_ENV: &str = "ANTHROPIC_IDENTITY_TOKEN_FILE";
+pub const ANTHROPIC_WORKSPACE_ID_ENV: &str = "ANTHROPIC_WORKSPACE_ID";
 
 /// Resolves one env var name to a non-empty value.
 pub type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -32,6 +37,7 @@ const ENV_MAP: &[(&str, &str)] = &[
     ("cerebras", "CEREBRAS_API_KEY"),
     ("venice", "VENICE_API_KEY"),
     ("xai", "XAI_API_KEY"),
+    ("typesafe", "TYPESAFE_API_KEY"),
     ("radius", "RADIUS_API_KEY"),
     ("openrouter", "OPENROUTER_API_KEY"),
     ("vercel-ai-gateway", "AI_GATEWAY_API_KEY"),
@@ -48,6 +54,7 @@ const ENV_MAP: &[(&str, &str)] = &[
     ("together", "TOGETHER_API_KEY"),
     ("baseten", "BASETEN_API_KEY"),
     ("bai", "BAI_API_KEY"),
+    ("meta", "META_API_KEY"),
     ("opencode", "OPENCODE_API_KEY"),
     ("opencode-go", "OPENCODE_API_KEY"),
     ("kimi-coding", "KIMI_API_KEY"),
@@ -195,6 +202,18 @@ mod tests {
         let map = env(&[("BAI_API_KEY", "bai-key")]);
         assert_eq!(keys("bai", &map), Some(vec!["BAI_API_KEY".into()]));
         assert_eq!(api_key("bai", &map).as_deref(), Some("bai-key"));
+    }
+
+    #[test]
+    fn resolves_typesafe_and_meta_provider_keys() {
+        for (provider, variable, value) in [
+            ("typesafe", "TYPESAFE_API_KEY", "typesafe-key"),
+            ("meta", "META_API_KEY", "meta-key"),
+        ] {
+            let map = env(&[(variable, value)]);
+            assert_eq!(keys(provider, &map), Some(vec![variable.into()]));
+            assert_eq!(api_key(provider, &map).as_deref(), Some(value));
+        }
     }
 
     #[test]
