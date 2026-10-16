@@ -85,7 +85,6 @@ pub mod kibitzer_sidecar_wake;
 pub mod reflection_settings;
 pub mod trigger_wiring;
 pub mod session_model_resolver;
-pub mod model_registry_resolver;
 pub mod memory_child_model_chain;
 pub mod session_context_resolver;
 pub mod shutdown_drain;
