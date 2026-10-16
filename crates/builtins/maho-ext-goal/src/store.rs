@@ -10,7 +10,7 @@ pub async fn write_goal(reference: &GoalStoreRef, goal: Option<&Goal>) -> Result
     serialize_by_key(&goal_file_path(reference).to_string_lossy(), async { write_goal_file(reference, goal) }).await
 }
 fn fresh_goal(reference: &GoalStoreRef, objective: String, status: GoalStatus, token_budget: Option<u64>, now: u64) -> Goal {
-    Goal { id: uuid::Uuid::new_v4().to_string(), thread_id: reference.thread_id.clone(), objective, status, token_budget, tokens_used: 0, time_used_seconds: 0.0, consecutive_continuations: Some(0), unattended_continuations: Some(0), last_continuation_signature: None, created_at: now, updated_at: now, last_started_at: (status == GoalStatus::Active).then_some(now), blocked_reason: None, blocked_at: None, completed_at: (status == GoalStatus::Complete).then_some(now) }
+    Goal { id: uuid::Uuid::new_v4().to_string(), thread_id: reference.thread_id.clone(), objective, status, token_budget, tokens_used: 0, time_used_seconds: 0.0, consecutive_continuations: Some(0), unattended_continuations: Some(0), last_continuation_signature: None, continuation_stopped_at:None, created_at: now, updated_at: now, last_started_at: (status == GoalStatus::Active).then_some(now), blocked_reason: None, blocked_at: None, completed_at: (status == GoalStatus::Complete).then_some(now) }
 }
 pub async fn create_goal(reference: &GoalStoreRef, objective: &str, token_budget: Option<f64>, now: u64) -> Result<Goal, GoalError> {
     serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
@@ -42,7 +42,8 @@ pub async fn update_goal(reference: &GoalStoreRef, update: &GoalUpdate, source: 
             let mut current = current;
             current.objective = objective;
             let mut next = transition_goal_status(&current, requested_status.unwrap_or(current.status), source, update.reason.as_deref(), now)?;
-            if next.status != previous_status { next.consecutive_continuations = Some(0); next.unattended_continuations = Some(0); next.last_continuation_signature = None; }
+            if next.status != previous_status { next.consecutive_continuations = Some(0); next.unattended_continuations = Some(0); next.last_continuation_signature = None; next.continuation_stopped_at = None; }
+            if source==GoalUpdateSource::User && requested_status==Some(GoalStatus::Active) { next.consecutive_continuations=Some(0); next.unattended_continuations=Some(0); next.last_continuation_signature=None; next.continuation_stopped_at=None; next.last_started_at.get_or_insert(now); }
             next.token_budget = token_budget;
             next
         };
@@ -68,7 +69,7 @@ pub async fn account_goal_usage(reference: &GoalStoreRef, usage: &TokenUsageSnap
         let Some(mut goal) = read_goal_file(reference)? else { return Ok(None); };
         let can_account = match mode { GoalAccountingMode::Active => goal.status == GoalStatus::Active, GoalAccountingMode::ActiveOrBlocked => matches!(goal.status, GoalStatus::Active | GoalStatus::Blocked), GoalAccountingMode::ActiveOrComplete => matches!(goal.status, GoalStatus::Active | GoalStatus::Complete) };
         if expected_goal_id.is_some_and(|id| id != goal.id) || !can_account { return Ok(Some(goal)); }
-        goal.tokens_used = goal.tokens_used.saturating_add(usage.input).saturating_add(usage.output);
+        goal.tokens_used = goal.tokens_used.saturating_add(usage.input).saturating_add(usage.output).min(9_007_199_254_740_991);
         goal.time_used_seconds += elapsed_seconds.trunc().max(0.0);
         goal.updated_at = now.max(goal.updated_at.saturating_add(1));
         write_goal_file(reference, Some(&goal))?;
@@ -82,6 +83,7 @@ pub async fn record_continuation_delivered(reference: &GoalStoreRef, signature: 
         goal.consecutive_continuations = Some(goal.consecutive_continuations.unwrap_or(0).saturating_add(1));
         goal.unattended_continuations = Some(goal.unattended_continuations.unwrap_or(0).saturating_add(u64::from(count_unattended)));
         goal.last_continuation_signature = Some(signature.into());
+        goal.continuation_stopped_at = None;
         write_goal_file(reference, Some(&goal))?;
         Ok(Some(goal))
     }).await
@@ -92,8 +94,19 @@ pub async fn reset_continuation_streak(reference: &GoalStoreRef, unattended: boo
         goal.consecutive_continuations = Some(0);
         if unattended { goal.unattended_continuations = Some(0); }
         goal.last_continuation_signature = None;
+        goal.continuation_stopped_at = None;
         write_goal_file(reference, Some(&goal))?;
         Ok(Some(goal))
+    }).await
+}
+pub async fn record_goal_continuation_stopped(reference:&GoalStoreRef,expected:&Goal,at:u64)->Result<Option<Goal>,GoalError> {
+    serialize_by_key(&goal_file_path(reference).to_string_lossy(),async {
+        let Some(mut goal)=read_goal_file(reference)? else { return Ok(None); };
+        if goal.id!=expected.id||goal.status!=GoalStatus::Active||goal.continuation_stopped_at.is_some()||goal.last_continuation_signature!=expected.last_continuation_signature||goal.consecutive_continuations!=expected.consecutive_continuations { return Ok(None); }
+        if let Some(started)=goal.last_started_at { goal.time_used_seconds+=(at/1000).saturating_sub(started) as f64; }
+        goal.updated_at=goal.updated_at.saturating_add(1).max(at/1000);
+        goal.last_started_at=None; goal.continuation_stopped_at=Some(at);
+        write_goal_file(reference,Some(&goal))?; Ok(Some(goal))
     }).await
 }
 #[cfg(test)] mod tests {
@@ -166,6 +179,22 @@ pub async fn reset_continuation_streak(reference: &GoalStoreRef, unattended: boo
     #[tokio::test] async fn upstream_absent_goal_streak_helpers_return_none() {
         let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir);
         assert!(record_continuation_delivered(&reference,"signature",None,true).await.unwrap().is_none()); assert!(reset_continuation_streak(&reference,true).await.unwrap().is_none());
+    }
+    #[tokio::test] async fn stopped_continuation_is_durable_cleared_on_delivery_and_resume() {
+        let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); let goal=create_goal(&reference,"work",None,1).await.unwrap();
+        let stopped=record_goal_continuation_stopped(&reference,&goal,5000).await.unwrap().unwrap(); assert_eq!(stopped.continuation_stopped_at,Some(5000)); assert_eq!(stopped.last_started_at,None);
+        assert!(record_goal_continuation_stopped(&reference,&stopped,6000).await.unwrap().is_none());
+        let delivered=record_continuation_delivered(&reference,"next",Some(&goal.id),true).await.unwrap().unwrap(); assert_eq!(delivered.continuation_stopped_at,None);
+        let _stopped=record_goal_continuation_stopped(&reference,&delivered,7000).await.unwrap().unwrap();
+        let resumed=update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Active),..Default::default() },GoalUpdateSource::User,8).await.unwrap(); assert_eq!(resumed.continuation_stopped_at,None); assert!(resumed.last_started_at.is_some());
+        assert_eq!(read_goal(&reference).unwrap(),Some(resumed));
+    }
+    #[tokio::test] async fn token_accounting_saturates_at_javascript_safe_integer_boundary() {
+        let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); let mut goal=create_goal(&reference,"work",None,1).await.unwrap();
+        goal.tokens_used=9_007_199_254_740_990; write_goal(&reference,Some(&goal)).await.unwrap();
+        let usage=TokenUsageSnapshot { input:3,output:0,cache_read:0,cache_write:0,total_tokens:3 };
+        let updated=account_goal_usage(&reference,&usage,0.0,GoalAccountingMode::Active,None,2).await.unwrap().unwrap(); assert_eq!(updated.tokens_used,9_007_199_254_740_991);
+        let parsed=read_goal(&reference).unwrap().unwrap(); assert_eq!(parsed.tokens_used,9_007_199_254_740_991);
     }
     #[tokio::test] async fn create_persists_active_goal_without_budget() { let dir = tempfile::tempdir().unwrap(); let reference = reference(&dir); let result = create_goal(&reference, "  Ship it  ", None, 1).await.unwrap(); assert_eq!(result.status, GoalStatus::Active); assert_eq!(result.objective, "Ship it"); assert_eq!(result.token_budget, None); assert_eq!(read_goal(&reference).unwrap(), Some(result)); }
     #[tokio::test] async fn second_create_preserves_unfinished_goal() { let dir = tempfile::tempdir().unwrap(); let reference = reference(&dir); let first = create_goal(&reference, "Original", None, 1).await.unwrap(); let result = create_goal(&reference, "Replacement", None, 2).await; assert!(matches!(result, Err(GoalError::AlreadyExists(_)))); assert_eq!(read_goal(&reference).unwrap().unwrap().id, first.id); }

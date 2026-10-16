@@ -44,9 +44,9 @@ pub fn format_goal_for_tool(goal:Option<&Goal>)->Result<String,crate::errors::Go
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct GoalToolRenderDetails { pub goal:Option<GoalToolSnapshot>,pub notice:Option<String> }
-pub fn goal_tool_snapshot(goal:&Goal)->GoalToolSnapshot { GoalToolSnapshot { thread_id:goal.thread_id.clone(),objective:goal.objective.clone(),status:goal.status,tokens_used:goal.tokens_used as f64,time_used_seconds:goal.time_used_seconds,created_at:goal.created_at as f64,updated_at:goal.updated_at as f64,blocked_reason:goal.blocked_reason.clone(),blocked_at:goal.blocked_at.map(|value|value as f64) } }
+pub fn goal_tool_snapshot(goal:&Goal)->GoalToolSnapshot { GoalToolSnapshot { thread_id:goal.thread_id.clone(),objective:goal.objective.clone(),status:if goal.status==GoalStatus::Active&&goal.continuation_stopped_at.is_some() { GoalStatus::Paused } else { goal.status },continuation_stopped_at:goal.continuation_stopped_at.map(|value|value as f64),tokens_used:goal.tokens_used as f64,time_used_seconds:goal.time_used_seconds,created_at:goal.created_at as f64,updated_at:goal.updated_at as f64,blocked_reason:goal.blocked_reason.clone(),blocked_at:goal.blocked_at.map(|value|value as f64) } }
 pub fn goal_tool_render_details(goal:Option<&Goal>,notice:Option<&str>)->GoalToolRenderDetails { GoalToolRenderDetails { goal:goal.map(goal_tool_snapshot),notice:notice.map(str::to_owned) } }
-pub fn goal_tool_response(goal:Option<&Goal>)->GoalToolResponse { GoalToolResponse { goal:goal.map(goal_tool_snapshot) } }
+pub fn goal_tool_response(goal:Option<&Goal>)->GoalToolResponse { let continuation=goal.filter(|goal|goal.status==GoalStatus::Active).and_then(|goal|goal.continuation_stopped_at.map(|_|crate::types::GoalToolContinuation { status:"stale_stopped".into(),message:"The goal stopped because progress was stale. It resumes when the user sends a message or runs /goal resume.".into() })); GoalToolResponse { goal:goal.map(goal_tool_snapshot),continuation } }
 pub fn format_goal_tool_response(goal:Option<&Goal>,notice:Option<&str>)->Result<String,serde_json::Error> { let response=maho_ai::utils::js::json_stringify_pretty(&serde_json::to_value(goal_tool_response(goal))?); Ok(notice.map_or_else(||response.clone(),|notice|format!("{response}\n{notice}"))) }
 #[cfg(test)] mod tests {
     use super::*;
@@ -60,6 +60,10 @@ pub fn format_goal_tool_response(goal:Option<&Goal>,notice:Option<&str>)->Result
     #[test] fn upstream_snapshot_response_contains_only_public_goal_fields() {
         let goal:Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"thread-1","objective":"Ship the feature","status":"active","tokensUsed":10,"timeUsedSeconds":65,"createdAt":1,"updatedAt":1,"tokenBudget":100})).unwrap();
         let response=serde_json::to_value(goal_tool_response(Some(&goal))).unwrap(); assert_eq!(response["goal"]["threadId"],"thread-1"); assert_eq!(response["goal"]["tokensUsed"],10.0); assert!(response["goal"].get("id").is_none()); assert!(response["goal"].get("tokenBudget").is_none());
+    }
+    #[test] fn stopped_active_goal_is_reported_and_rendered_as_paused() {
+        let goal:Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0,"continuationStoppedAt":10})).unwrap();
+        let response=serde_json::to_value(goal_tool_response(Some(&goal))).unwrap(); assert_eq!(response["goal"]["status"],"paused"); assert_eq!(response["goal"]["continuationStoppedAt"].as_f64(),Some(10.0)); assert_eq!(response["continuation"]["status"],"stale_stopped");
     }
     #[test] fn one_decimal_uses_exact_binary_value_and_ties_away_from_zero() {
         for (value,expected) in [(1.25,"1.3"),(-1.25,"-1.3"),(1.15,"1.1"),(2.55,"2.5"),(0.0,"0"),(-0.0,"0"),(1e21,"1e+21")] { assert_eq!(one_decimal(value),expected,"{value}"); }
