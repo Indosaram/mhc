@@ -410,7 +410,7 @@ pub fn write_prepared_target<'a>(
         let options = writer_input(target_path, env)?;
         write_omo_migration_target_with_options(
             MigrationTargetWriterInput {
-                backup_path: Some(backup_path.to_string()),
+                backup_path: Some(backup_path),
                 edits: &prepared.edits,
                 env,
                 file_system,
