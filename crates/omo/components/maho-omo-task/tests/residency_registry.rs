@@ -18,6 +18,13 @@ impl ManagedRunner for Runner { fn start(&self,spec:&ManagedStartSpec)->ManagedR
     for terminable in [true,false] {
         let root=tempfile::tempdir().expect("root"); let store=TaskRecordStore::new(&StateDirConfig { project_dir:root.path().into(),task_state_dir:None }); let slot=Arc::new(Mutex::new(None)); let runner=Arc::new(Runner { terminable,child:slot.clone() }); let manager=create_task_manager(TaskManagerOptions::new(store,ManagedRunners { in_process:runner.clone(),process:runner },Arc::new(|_| Ok(ResolvedChildPlan { model:"faux/faux".into(),..Default::default() })),root.path().to_string_lossy()));
         let StartResult::Started(task)=manager.start(&ManagerStartSpec { parent_session_id:"parent".into(),prompt:"work".into(),run_in_background:true,..Default::default() }) else { panic!("start") }; let current=manager.clone(); let registry=ManagerResidencyRegistry { get_manager:Arc::new(move || current.clone()) }; let resident=registry.get(&task.task_id).expect("resident"); assert_eq!(resident.kind(),ResidentKind::Rpc); assert_eq!(registry.entries().len(),1); let child=slot.lock().expect("child").clone().expect("child");
-        assert_eq!(resident.terminate().is_ok(),terminable); assert_eq!(child.terminated.load(Ordering::SeqCst),usize::from(terminable)); assert_eq!(child.aborted.load(Ordering::SeqCst),0); child.settle(); manager.wait_for(&task.task_id,None,Some(Duration::from_secs(10))).expect("settled manager"); registry.forget(&task.task_id); assert!(registry.entries().is_empty());
+        assert_eq!(resident.terminate().is_ok(),terminable); assert_eq!(child.terminated.load(Ordering::SeqCst),usize::from(terminable)); assert_eq!(child.aborted.load(Ordering::SeqCst),0);
+        assert!(registry.try_begin_send(&task.task_id));
+        assert!(registry.has_pending_sends(&task.task_id));
+        assert!(!registry.try_begin_send(&task.task_id),"a task holds at most one send lease");
+        assert!(manager.has_in_flight_sends(&task.task_id));
+        registry.end_send(&task.task_id);
+        assert!(!registry.has_pending_sends(&task.task_id));
+        child.settle(); manager.wait_for(&task.task_id,None,Some(Duration::from_secs(10))).expect("settled manager"); registry.forget(&task.task_id); assert!(registry.entries().is_empty());
     }
 }
