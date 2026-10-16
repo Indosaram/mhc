@@ -56,6 +56,7 @@ pub struct SpawnItemInput {
     pub isolated: Option<bool>,
     pub apply: Option<bool>,
     pub merge: Option<IsolationMergeMode>,
+    pub run_in_background: Option<bool>,
 }
 
 /// The spawn-shaped subset of the task tool params.

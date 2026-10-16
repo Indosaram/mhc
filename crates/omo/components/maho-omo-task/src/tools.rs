@@ -34,10 +34,11 @@ struct SpawnItem {
     task_summary: Option<String>, description: Option<String>, name: Option<String>, load_skills: Option<Vec<String>>,
     tools: Option<Vec<String>>,
     isolated: Option<bool>, apply: Option<bool>, merge: Option<senpi_task::state::IsolationMergeMode>,
+    run_in_background: Option<bool>,
 }
 impl From<SpawnInput> for SpawnParamsInput {
     fn from(input: SpawnInput) -> Self {
-        Self { prompt: input.prompt, category: input.category, subagent_type: input.subagent_type, model: input.model, task_summary: input.task_summary, description: input.description, name: input.name, load_skills: input.load_skills, tools: input.tools, isolated: input.isolated, apply: input.apply, merge: input.merge, run_in_background: input.run_in_background, tasks: input.tasks.map(|items| items.into_iter().map(|item| SpawnItemInput { prompt: item.prompt, category: item.category, subagent_type: item.subagent_type, model: item.model, task_summary: item.task_summary, description: item.description, name: item.name, load_skills: item.load_skills, tools: item.tools, isolated: item.isolated, apply: item.apply, merge: item.merge }).collect()) }
+        Self { prompt: input.prompt, category: input.category, subagent_type: input.subagent_type, model: input.model, task_summary: input.task_summary, description: input.description, name: input.name, load_skills: input.load_skills, tools: input.tools, isolated: input.isolated, apply: input.apply, merge: input.merge, run_in_background: input.run_in_background, tasks: input.tasks.map(|items| items.into_iter().map(|item| SpawnItemInput { prompt: item.prompt, category: item.category, subagent_type: item.subagent_type, model: item.model, task_summary: item.task_summary, description: item.description, name: item.name, load_skills: item.load_skills, tools: item.tools, isolated: item.isolated, apply: item.apply, merge: item.merge, run_in_background: item.run_in_background }).collect()) }
     }
 }
 pub fn register_task_tools(api: &mut ExtensionApi, deps: TaskToolsDeps) {
