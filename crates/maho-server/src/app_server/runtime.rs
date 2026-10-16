@@ -281,8 +281,7 @@ impl AppServerRuntime {
                     }
                     if let Some(lifecycle)=lifecycle_slot.get() {lifecycle.clear_idle_timer(&entry.id);}
                     if method != "thread/read" { entry.subscribers.insert(context.connection.id.clone()); }
-                    let mut log = turn_log.lock().await;
-                    let wire = build_wire_thread(&entry, &mut log, method == "thread/resume" || params["includeTurns"] == true, &version).await.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
+                    let wire = build_wire_thread(&entry, &turn_log, method == "thread/resume" || params["includeTurns"] == true, &version).await.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
                     if method == "thread/read" { return Ok(json!({"thread":wire})); }
                     let model = entry.session.model();
                     let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority" });
@@ -344,8 +343,7 @@ impl AppServerRuntime {
                     let mut entry = entry.lock().await;
                     if let Some(lifecycle)=lifecycle_slot.get() {lifecycle.clear_idle_timer(&entry.id);}
                     entry.subscribers.insert(context.connection.id.clone());
-                    let mut log = turn_log.lock().await;
-                    let mut wire = build_wire_thread(&entry, &mut log, true, &version).await.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
+                    let mut wire = build_wire_thread(&entry, &turn_log, true, &version).await.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
                     wire["forkedFromId"] = json!(source);
                     let model = entry.session.model();
                     let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority" });

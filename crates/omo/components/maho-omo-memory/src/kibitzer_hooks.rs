@@ -113,6 +113,7 @@ pub struct ToolBranchView {
 
 /// A session's cached [`BranchSummary`] of every branch entry before the leaf, plus the leaf and
 /// branch length it was taken at. The leaf is re-read and re-folded by the next hook.
+#[derive(Clone)]
 struct CachedBranch {
     leaf_id: String,
     len: usize,
@@ -130,7 +131,9 @@ pub struct ToolBranchTailCache {
 
 impl ToolBranchTailCache {
     pub fn tail(&self, session_id: &str, session_manager: &dyn maho_ext_api::SessionManager) -> ToolBranchView {
-        let cached = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        // Cloned, not removed: an overlapping hook for the same session still finds the entry
+        // and extends it instead of falling back to the full scan.
+        let cached = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id).cloned();
         let (next, window) = cached.and_then(|cached| Self::extend(cached, session_manager)).unwrap_or_else(|| Self::full(session_manager));
         let view = ToolBranchView { len: next.len, summary: next.summary.view(next.len.saturating_sub(1), window.last()), window };
         if !next.leaf_id.is_empty() {
@@ -385,5 +388,46 @@ mod tests {
             }
         }
         assert!(user_texts(&branch.data()).len() < RECALL_TEXT_WINDOW);
+    }
+
+    /// A branch whose next `get_branch_tail` first runs a nested `tail()` for the same session,
+    /// i.e. a second hook overlapping the first while the first is reading the branch.
+    struct Overlapping { branch: Branch, cache: Arc<ToolBranchTailCache>, armed: std::sync::atomic::AtomicBool, nested: Mutex<Option<ToolBranchView>> }
+    impl maho_ext_api::ToolSessionManager for Overlapping {
+        fn session_id(&self) -> &str { "session" }
+        fn session_file(&self) -> Option<&std::path::Path> { None }
+    }
+    impl maho_ext_api::SessionManager for Overlapping {
+        fn get_entries(&self) -> Vec<maho_ext_api::SessionEntry> { self.branch.get_branch() }
+        fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> { self.branch.get_branch() }
+        fn get_branch_tail(&self, min_entries: usize, satisfied: &mut dyn FnMut(&Value) -> bool) -> (usize, Vec<maho_ext_api::SessionEntry>) {
+            if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let view = self.cache.tail("session", self);
+                *self.nested.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(view);
+            }
+            self.branch.get_branch_tail(min_entries, satisfied)
+        }
+        fn get_leaf_id(&self) -> Option<String> { None }
+        fn get_session_name(&self) -> Option<String> { None }
+    }
+
+    #[test]
+    fn overlapping_tail_calls_on_one_session_never_fall_back_to_the_full_scan() {
+        let session = Overlapping { branch: Branch::new(), cache: Arc::new(ToolBranchTailCache::default()), armed: false.into(), nested: Mutex::new(None) };
+        session.branch.push(json!({"id": "u0", "type": "message", "message": {"role": "user", "content": "only prompt"}}));
+        for next in 0..200 {
+            session.branch.push(json!({"id": format!("t{next}"), "type": "message", "message": {"role": "toolResult", "content": format!("out {next}")}}));
+        }
+        assert_matches_full_branch(&session.cache.tail("session", &session), &session.branch, 0);
+        session.branch.push(json!({"id": "a1", "type": "message", "message": {"role": "assistant", "content": "note"}}));
+        session.branch.take_reads();
+        session.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let outer = session.cache.tail("session", &session);
+        let nested = session.nested.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let Some(nested) = nested else { panic!("the nested hook did not run") };
+        assert_matches_full_branch(&nested, &session.branch, 1);
+        assert_matches_full_branch(&outer, &session.branch, 2);
+        // Both overlapping hooks extend the cached entry: each reads only the mention window.
+        assert_eq!(session.branch.take_reads(), vec![RECALL_PATH_ENTRY_WINDOW, RECALL_PATH_ENTRY_WINDOW]);
     }
 }

@@ -63,7 +63,7 @@ pub fn turns_from_session_entries(entries: &[Value],fallback: &str) -> Vec<Logge
     }
     turns
 }
-pub async fn build_wire_thread(entry: &ThreadEntry, log: &mut TurnLog, include_turns: bool, version: &str) -> Result<Value, MetadataStateError> {
+pub async fn build_wire_thread(entry: &ThreadEntry, log: &tokio::sync::Mutex<TurnLog>, include_turns: bool, version: &str) -> Result<Value, MetadataStateError> {
     let model = entry.session.model();
     let path = entry.session.session_file();
     let git_info = match &path {
@@ -71,8 +71,16 @@ pub async fn build_wire_thread(entry: &ThreadEntry, log: &mut TurnLog, include_t
         None => None,
     };
     let turns = if include_turns {
-        let logged = log.turns(&entry.id);
-        if logged.is_empty() {entry.session.with_session_manager(|manager|turns_from_session_entries(&manager.entries(),&entry.created_at)).iter().map(logged_turn_to_wire_turn).collect::<Vec<_>>()} else {logged.iter().map(logged_turn_to_wire_turn).collect::<Vec<_>>()}
+        // The TurnLog lock covers only the probe; the session-entry rebuild is synchronous and runs
+        // off the async worker so it stalls neither the worker nor other threads' TurnLog writers.
+        let logged = {let log = log.lock().await;let logged = log.turns(&entry.id);(!logged.is_empty()).then(||logged.iter().map(logged_turn_to_wire_turn).collect::<Vec<_>>())};
+        match logged {
+            Some(turns) => turns,
+            None => {
+                let (session,created_at) = (entry.session.clone(),entry.created_at.clone());
+                tokio::task::spawn_blocking(move || session.with_session_manager(|manager|turns_from_session_entries(&manager.entries(),&created_at)).iter().map(logged_turn_to_wire_turn).collect::<Vec<_>>()).await.map_err(|error|MetadataStateError::State {path:entry.id.clone(),message:error.to_string()})?
+            }
+        }
     } else { Vec::new() };
     Ok(json!({"id":entry.id,"sessionId":entry.session.session_id(),"forkedFromId":null,"parentThreadId":null,"preview":entry.preview().unwrap_or_default(),"ephemeral":false,"modelProvider":model.provider,"createdAt":iso_seconds(&entry.created_at),"updatedAt":iso_seconds(&entry.updated_at),"recencyAt":iso_seconds(&entry.updated_at),"status":if entry.active_turn.is_some() {json!({"type":"active","activeFlags":[]})} else {json!({"type":"idle"})},"path":path,"cwd":entry.cwd,"cliVersion":version,"source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":git_info,"name":entry.session.session_name(),"turns":turns}))
 }

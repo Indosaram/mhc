@@ -38,6 +38,7 @@ impl CellResultBuilder {
     pub fn coalesce_updates(&mut self) {self.coalesce_updates=true;}
     pub fn request_update(&mut self) {if self.coalesce_updates {self.update_pending=true;} else {self.emit_update(false);}}
     pub fn flush_update(&mut self) {if self.update_pending {self.emit_update(false);}}
+    pub fn update_pending(&self) -> bool {self.update_pending}
 
     pub async fn push(&mut self, text: &str) -> Result<(), String> {
         self.output.push(text).await?;
@@ -160,7 +161,8 @@ mod tests {
         builder.coalesce_updates();
         builder.push("a\n").await.unwrap();builder.push("b\n").await.unwrap();builder.set_phase("p".into());
         assert_eq!(updates.lock().unwrap().len(),1);
-        builder.flush_update();builder.flush_update();
+        assert!(builder.update_pending());
+        builder.flush_update();assert!(!builder.update_pending());builder.flush_update();
         assert_eq!(updates.lock().unwrap().as_slice(),["","a\nb\n"]);
         builder.push("c\n").await.unwrap();
         builder.finalize(&serde_json::json!({"type":"result","ok":true,"durationMs":1})).await.unwrap();

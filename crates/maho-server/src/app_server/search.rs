@@ -76,7 +76,7 @@ pub async fn register_search_handler(core: &Arc<RwLock<ServerCore>>,threads: Arc
             let mut data = Vec::new();
             for record in records.iter().skip(window["start"].as_u64().unwrap_or_default() as usize).take(window["end"].as_u64().unwrap_or_default() as usize-window["start"].as_u64().unwrap_or_default() as usize) {
                 let id = record.thread()["id"].as_str().unwrap_or_default();
-                let mut thread = if let Ok(entry) = threads.get_loaded_thread(id).await {let entry = entry.lock().await;let mut log = log.lock().await;build_wire_thread(&entry,&mut log,false,&version).await} else {build_disk_wire_thread(record.thread(),&version).await}.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+                let mut thread = if let Ok(entry) = threads.get_loaded_thread(id).await {let entry = entry.lock().await;build_wire_thread(&entry,&log,false,&version).await} else {build_disk_wire_thread(record.thread(),&version).await}.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
                 thread["recencyAt"] = json!(chrono::DateTime::parse_from_rfc3339(record.recency_at()).map_or(0.0,|time|time.timestamp_millis() as f64/1000.0));
                 data.push(json!({"thread":thread,"snippet":literal_snippet(record.searchable_text(),&params.search_term)}));
             }
