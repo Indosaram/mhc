@@ -22,7 +22,7 @@ keys_file="$HOME/.config/instabox/keys.env"
 [[ -r $keys_file ]] || { echo "missing $keys_file" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$keys_file"
-key_var="INSTABOX_KEY_${key^^}"
+key_var="INSTABOX_KEY_$(printf %s "$key" | tr "[:lower:]" "[:upper:]")"  # bash 3.2 (macOS) has no ${var^^}
 export INSTABOX_API_KEY="${!key_var:?no key $key_var in $keys_file}"
 command -v instabox >/dev/null || { echo "instabox CLI missing: npm i -g instabox@latest" >&2; exit 2; }
 
@@ -35,6 +35,9 @@ git fetch -q origin main
 base=$(git merge-base HEAD origin/main)
 
 box() { instabox exec "$machine" --timeout 600 --stdin -- bash; }
+
+# Boxes auto-pause after 30 min idle; start one before the first exec.
+instabox start "$machine" >/dev/null 2>&1 || true
 
 echo "== bootstrap $machine (rustup 1.95.0, protoc, clone at $base)"
 box <<EOF
@@ -73,12 +76,19 @@ echo "== sync local changes (commits after origin/main + uncommitted + untracked
 tmp_index=$(mktemp)
 cp "$(git rev-parse --git-path index)" "$tmp_index"
 GIT_INDEX_FILE=$tmp_index git add -A
-GIT_INDEX_FILE=$tmp_index git diff --cached --binary "$base" > "$tmp_index.patch"
+GIT_INDEX_FILE=$tmp_index git diff --cached --binary "$base" | gzip -9 > "$tmp_index.patch.gz"
 rm -f "$tmp_index"
-if [[ -s $tmp_index.patch ]]; then
-  instabox exec "$machine" --stdin -- git -C /data/home/mhc apply --whitespace=nowarn < "$tmp_index.patch"
+# `instabox exec --stdin` caps input at 1 MiB, so ship the gzipped patch in base64 chunks.
+instabox exec "$machine" -- rm -f /data/home/sync.patch.gz
+if [[ -s $tmp_index.patch.gz ]]; then
+  split -b 700000 "$tmp_index.patch.gz" "$tmp_index.part."
+  for part in "$tmp_index".part.*; do
+    base64 -w0 "$part" | instabox exec "$machine" --timeout 600 --stdin -- 'base64 -d >> /data/home/sync.patch.gz'
+  done
+  rm -f "$tmp_index".part.*
+  instabox exec "$machine" --timeout 600 -- 'gunzip -c /data/home/sync.patch.gz | git -C /data/home/mhc apply --whitespace=nowarn'
 fi
-rm -f "$tmp_index.patch"
+rm -f "$tmp_index.patch.gz"
 
 printf -v cmd '%q ' cargo "${cargo_args[@]}"
 echo "== run on $machine: $cmd"

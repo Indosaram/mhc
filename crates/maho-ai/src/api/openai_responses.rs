@@ -646,17 +646,20 @@ pub struct CachedWebSocketConnection {
     /// The live transport behind `socket` when the entry was opened by [`connect_web_socket`].
     transport: Option<Arc<TungsteniteWebSocket>>,
     busy: AtomicBool,
+    /// The armed idle-expiry timer; re-arming aborts the previous one so each release leaves at
+    /// most one timer task per entry.
+    idle_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl CachedWebSocketConnection {
     /// A freshly acquired connection is busy until its holder releases it.
     pub fn new(socket: Arc<dyn CachedWebSocket>) -> Self {
-        Self { socket, transport: None, busy: AtomicBool::new(true) }
+        Self { socket, transport: None, busy: AtomicBool::new(true), idle_task: Mutex::new(None) }
     }
 
     /// A freshly connected transport, busy until its holder releases it.
     pub fn from_transport(socket: Arc<TungsteniteWebSocket>) -> Self {
-        Self { socket: socket.clone(), transport: Some(socket), busy: AtomicBool::new(true) }
+        Self { socket: socket.clone(), transport: Some(socket), busy: AtomicBool::new(true), idle_task: Mutex::new(None) }
     }
 
     pub fn busy(&self) -> bool {
@@ -700,7 +703,8 @@ fn remove_websocket_session_entry(session_id: &str, entry: &Arc<CachedWebSocketC
 /// while a dead one is dropped immediately because nothing can release it.
 pub fn schedule_session_websocket_expiry(session_id: &str, entry: Arc<CachedWebSocketConnection>) {
     let session_id = session_id.to_owned();
-    tokio::spawn(async move {
+    let armed = entry.clone();
+    let task = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(SESSION_WEBSOCKET_CACHE_TTL_MS)).await;
             if entry.busy() {
@@ -716,6 +720,8 @@ pub fn schedule_session_websocket_expiry(session_id: &str, entry: Arc<CachedWebS
             return;
         }
     });
+    let previous = armed.idle_task.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(task);
+    if let Some(previous) = previous { previous.abort(); }
 }
 
 /// WHATWG `readyState` values the native socket reports.

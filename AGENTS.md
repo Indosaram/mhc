@@ -59,10 +59,10 @@ scripts/instabox-build.sh -- check --workspace              # any cargo args aft
 scripts/instabox-build.sh -m bong-h-2 -k h -- clippy -p maho-ai --all-targets -- -D warnings
 ```
 
-- Run it from the checkout/worktree whose code should be built. It resets the box clone to `merge-base HEAD origin/main`, then applies local commits after that, staged/unstaged edits and untracked files as one binary diff. Nothing is pushed.
+- Run it from the checkout/worktree whose code should be built. It resets the box clone to `merge-base HEAD origin/main`, then applies local commits after that, staged/unstaged edits and untracked files as one binary diff. Nothing is pushed. The diff is gzipped and shipped in base64 chunks, because `instabox exec --stdin` caps input at 1 MiB.
 - Machines: `bong-g-1..5` use key `g`, `bong-h-1..5` use key `h` (`-m`, `-k`; default `bong-g-1`/`g`). Each box is 4 vCPU / 8 GB, Debian 13; repo at `/data/home/mhc`, log at `/data/home/instabox-run.log`. Give parallel jobs different machines.
 - Keys live only in `~/.config/instabox/keys.env` (`INSTABOX_KEY_G`, `INSTABOX_KEY_H`). Never write a key into the repo; it is public. Ad-hoc commands: `INSTABOX_API_KEY=$INSTABOX_KEY_G instabox exec <machine> -- <cmd>` (`instabox ls`, `resume`, `ssh`, `files`).
-- Boxes auto-pause after 30 min idle; `exec` resumes them. First run on a fresh box installs rustup 1.95.0 into `~/.rustup` (`/opt/rust` is root-owned) and protoc 29.3 into `~/protoc` (needed by `maho-ai` build.rs; no apt/sudo).
+- Boxes auto-pause after 30 min idle; the script runs `instabox start <machine>` first (a bare `exec` against a paused box fails with "sandbox is paused"). First run on a fresh box installs rustup 1.95.0 into `~/.rustup` (`/opt/rust` is root-owned) and protoc 29.3 into `~/protoc` (needed by `maho-ai` build.rs; no apt/sudo).
 - `/data` is only 20 GB: a default debug build (full debuginfo + incremental) fills it. The script writes a box-side `~/.cargo/config.toml` (line-tables-only debuginfo, no debuginfo for deps, incremental off) and wipes `target/` when less than ~6 GB is free.
 - The script blocks until cargo finishes and exits non-zero on failure; run it in the background and wait on its completion. Cargo runs under `setsid nohup` on the box because `instabox exec` kills its children on return; `exec --timeout` is capped at 600 s.
 - Missing CLI: `npm i -g instabox@latest` (binary lands in `~/.local/bin/instabox`).
