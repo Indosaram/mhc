@@ -11,8 +11,14 @@ pub fn compile_rule_condition(condition:&str)->CompiledCondition {
     }
     match regress::Regex::from_unicode(pattern.encode_utf16().map(u32::from),flags.as_str()) {
         Ok(regex)=>CompiledCondition { regex:Some(regex),flags,warning:None },
-        Err(error)=>CompiledCondition { regex:None,flags,warning:Some(format!("invalid condition \"{condition}\": {error}")) },
+        Err(error)=>CompiledCondition { regex:None,flags,warning:Some(format!("invalid condition \"{condition}\": {}",javascript_regex_error(&error.to_string()))) },
     }
+}
+fn javascript_regex_error(error:&str)->String {
+    if error.contains("unclosed group") || error.contains("unterminated group") { return "Invalid regular expression: /(?:/: Unterminated group".into(); }
+    if error.contains("unclosed character class") { return "Invalid regular expression: /(?:/: Unterminated character class".into(); }
+    if error.contains("nothing to repeat") || error.contains("quantifier") { return "Invalid regular expression: /(?:/: Nothing to repeat".into(); }
+    error.into()
 }
 #[cfg(test)] mod tests {
     use super::*;
@@ -22,6 +28,7 @@ pub fn compile_rule_condition(condition:&str)->CompiledCondition {
     #[test] fn combined_flags_enable_multiline_case_matching() { let result=compile_rule_condition("(?im)^fail"); assert_eq!(result.flags,"im"); assert!(result.regex.unwrap().find("ok\nFAIL here").is_some()); }
     #[test] fn unsupported_inline_flags_are_rejected() { let result=compile_rule_condition("(?x)broken"); assert!(result.regex.is_none()); assert!(result.warning.is_some()); }
     #[test] fn malformed_expression_is_rejected() { let result=compile_rule_condition("(unclosed"); assert!(result.regex.is_none()); assert!(result.warning.is_some()); }
+    #[test] fn malformed_group_diagnostic_uses_javascript_wording() { assert_eq!(compile_rule_condition("(unclosed").warning.as_deref(),Some("invalid condition \"(unclosed\": Invalid regular expression: /(?:/: Unterminated group")); }
     #[test] fn ecmascript_condition_matrix_matches_nonunicode_javascript() {
         for (pattern,text,expected) in [(r"^\w+$","é",false),(r"^\d+$","١",false),(r"^\s$","\u{feff}",true),(r"^\s$","\u{0085}",false),("^.$","😀",false),("^..$","😀",true),(r"^\q$","q",true),(r"^(a|(b))\2$","a",true),(r"(?<=a)b","ab",true)] {
             let regex=compile_rule_condition(pattern).regex.unwrap(); let units=text.encode_utf16().collect::<Vec<_>>(); assert_eq!(regex.find_from_ucs2(&units,0).next().is_some(),expected,"{pattern} against {text}");
