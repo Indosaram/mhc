@@ -12,7 +12,7 @@ pub mod send;
 pub use ack::ack_messages;
 pub use consumed_ledger::is_message_consumed;
 pub use consumer_lease::{InboxConsumerLeaseOptions, with_inbox_consumer_lease};
-pub use inbox::list_unread_messages;
+pub use inbox::{list_unread_messages, read_unread_message_by_id};
 pub use pending_delivery_recovery::{find_delivered_message_ids, requeue_pending_live_deliveries};
 pub use poll::{InjectionResult, build_envelope, poll_and_build_injection};
 pub use reservation::{
