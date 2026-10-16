@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 #[test]
 fn search_cursor_scopes_query_and_reverses_from_inclusive_anchor() {
-    let records = (0..3).map(|id|SearchSessionRecord {thread:json!({"id":id.to_string(),"createdAt":"2020-01-01T00:00:00.000Z"}),recency_at:"2020-01-01T00:00:00.000Z".into(),searchable_text:"Hello".into()}).collect::<Vec<_>>();
+    let records = (0..3).map(|id|SearchSessionRecord {thread:json!({"id":id.to_string(),"createdAt":"2020-01-01T00:00:00.000Z"}),recency_at:"2020-01-01T00:00:00.000Z".into(),searchable_text:"Hello".into(),searchable_lower:None}).collect::<Vec<_>>();
     let mut params = parse_search_params(&json!({"searchTerm":"hello","sourceKinds":["appServer"],"sortDirection":"asc","limit":1})).unwrap();
     let page = search_window(&mut records.clone(),&params,&BTreeSet::new()).unwrap();
     params.cursor = page["nextCursor"].as_str().map(str::to_owned);
@@ -18,7 +18,7 @@ fn search_cursor_scopes_query_and_reverses_from_inclusive_anchor() {
 
 #[test]
 fn search_orders_by_parsed_dates_including_non_rfc3339_forms() {
-    let record = |id:&str,created:&str| SearchSessionRecord {thread:json!({"id":id,"createdAt":created,"updatedAt":created}),recency_at:created.into(),searchable_text:"Hello".into()};
+    let record = |id:&str,created:&str| SearchSessionRecord {thread:json!({"id":id,"createdAt":created,"updatedAt":created}),recency_at:created.into(),searchable_text:"Hello".into(),searchable_lower:None};
     let mut records = vec![record("b","2020-01-01"),record("a","2019-12-31T23:59:59.000Z")];
     let params = parse_search_params(&json!({"searchTerm":"hello","sourceKinds":["appServer"],"sortKey":"created_at","sortDirection":"asc"})).unwrap();
     let window = search_window(&mut records,&params,&BTreeSet::new()).unwrap();
