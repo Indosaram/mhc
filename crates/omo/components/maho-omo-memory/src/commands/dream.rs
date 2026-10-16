@@ -217,7 +217,21 @@ fn dream_rejection(rejection: &str) -> String {
     match rejection {
         "no_unreflected_content" => "dream found no unreflected content to process".to_owned(),
         "no_session" => "dreaming is not available without a bound memory session".to_owned(),
+        "parked" => "automatic memory reflection is paused after repeated failures; run /reflect to retry now".to_owned(),
         other => format!("dream request was not started: {other}"),
+    }
+}
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::dream_rejection;
+
+    #[test]
+    fn parked_auto_reflection_explains_manual_retry() {
+        assert_eq!(
+            dream_rejection("parked"),
+            "automatic memory reflection is paused after repeated failures; run /reflect to retry now"
+        );
     }
 }
 

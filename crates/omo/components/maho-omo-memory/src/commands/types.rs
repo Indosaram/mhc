@@ -146,7 +146,7 @@ impl CommandResponse {
 
 /// Notify (when a UI is present) and return the same text for headless consumers.
 pub fn respond(ctx: &CommandContext, text: impl Into<String>, level: NotifyLevel) -> CommandResponse {
-    let text = text.into();
+    let text = memory_core::sync::redact::redact_secret_like_material(&text.into());
     ctx.ui.notify(&text, level);
     CommandResponse { text, level }
 }

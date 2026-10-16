@@ -9,15 +9,15 @@ pub trait DreamTriggerSession{
     fn launch(&mut self,run:ReservedRun)->Result<(),Self::Error>;
 }
 #[derive(Default)]pub struct ManualDreamRequest{pub focus:Option<String>,pub conversation_ids:Option<Vec<String>>,pub target_doc:Option<String>,pub deadline_at:Option<f64>}
-#[derive(Debug,PartialEq,Eq)]pub enum DreamFireRejection{Gate(DreamGateRejection),Aborted,NoUnreflectedContent}
+#[derive(Debug,PartialEq,Eq)]pub enum DreamFireRejection{Gate(DreamGateRejection),Aborted,NoUnreflectedContent,Parked}
 #[derive(Debug,PartialEq,Eq)]pub enum DreamFireOutcome{Fired{run_id:String,status:String},Rejected(DreamFireRejection)}
 pub fn fire_dream<S:DreamTriggerSession>(session:&mut S,origin:DreamOrigin,settings:&DreamTriggerSettings,request:&ManualDreamRequest,now:&dyn Fn()->f64,aborted:&dyn Fn()->bool,warn:&mut dyn FnMut(&S::Error))->Result<DreamFireOutcome,S::Error>{
     let stopped=||aborted()||request.deadline_at.is_some_and(|deadline|now()>=deadline);
     let paths=session.paths();let options=DreamSelectorOptions{transcripts_dir:&paths.transcripts,current_conversation_id:Some(session.conversation_id()),auto_select_max:settings.auto_select_max,auto_select_max_bytes:settings.auto_select_max_chars,now_ms:now()};
-    let decision=evaluate_dream_gates(origin,settings,now(),||read_last_dream_at_ms(&paths.runtime).map_err(S::Error::from),||compute_unreflected_volume(&options).map_err(S::Error::from))?;
+    let decision=evaluate_dream_gates(origin,settings,now(),||read_last_dream_at_ms(&paths.runtime).map_err(S::Error::from),||if origin==DreamOrigin::Pressure{Ok(0)}else{compute_unreflected_volume(&options).map_err(S::Error::from)})?;
     if let Err(rejection)=decision{return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Gate(rejection)));}
     if stopped(){return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted));}
-    let selected=match &request.conversation_ids{Some(ids)=>ids.clone(),None=>select_dream_conversations(&options,request.focus.as_deref()).map_err(S::Error::from)?.conversation_ids};
+    let selected=if origin==DreamOrigin::Pressure{Vec::new()}else{match &request.conversation_ids{Some(ids)=>ids.clone(),None=>select_dream_conversations(&options,request.focus.as_deref()).map_err(S::Error::from)?.conversation_ids}};
     if stopped(){return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted));}
     let mut conversation_ids=vec![];let mut snapshots=vec![];
     for conversation in selected{
@@ -26,10 +26,11 @@ pub fn fire_dream<S:DreamTriggerSession>(session:&mut S,origin:DreamOrigin,setti
         if stopped(){return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted));}
         if let Some(snapshot)=snapshot{conversation_ids.push(conversation.clone());snapshots.push(CapturedConversation{conversation_id:conversation,snapshot});}
     }
-    if conversation_ids.is_empty(){return Ok(DreamFireOutcome::Rejected(DreamFireRejection::NoUnreflectedContent));}
+    if origin!=DreamOrigin::Pressure&&conversation_ids.is_empty(){return Ok(DreamFireOutcome::Rejected(DreamFireRejection::NoUnreflectedContent));}
     if stopped(){return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted));}
     let result=match session.try_reserve(ReflectionRequest{trigger:ReflectionTrigger::Dream,origin:Some(origin),conversation_ids,snapshots,focus:request.focus.clone(),recent_n:None,target_doc:request.target_doc.clone()}){Ok(result)=>result,Err(_) if stopped()=>return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted)),Err(error)=>return Err(error)};
     if stopped(){return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Aborted));}
+    if result.status=="parked"{return Ok(DreamFireOutcome::Rejected(DreamFireRejection::Parked));}
     let run_id=result.run.run_id.clone();if result.status=="active"&&let Err(error)=session.launch(result.run){warn(&error);}
     Ok(DreamFireOutcome::Fired{run_id,status:result.status})
 }
