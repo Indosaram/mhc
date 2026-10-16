@@ -1,3 +1,6 @@
+//! The builtin agent tools - `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls` -
+//! with their output truncation, diffing, filesystem policy and managed helper-binary resolution.
+
 pub mod ansi;
 pub mod bounded_realpath;
 pub mod bash;
