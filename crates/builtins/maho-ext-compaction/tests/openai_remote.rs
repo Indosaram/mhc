@@ -37,7 +37,7 @@ async fn websocket_compaction_keeps_leading_prompt_and_retains_user_input_only()
     assert_eq!(details["responseId"],"response-42");
     let events = std::sync::Mutex::new(Vec::new());
     let result = run_remote_compaction(RemoteCompactionOptions {
-        model:&model,request:&request,request_id:"route",first_kept_entry_id:"anchor",system_prompt:"system",session_id:"session",api_key:Some("faux".into()),headers:Default::default(),extra_body:None,origin:json!({}),signal:&controller.signal(),timeout:std::time::Duration::from_secs(5),now_ms:42,client:&reqwest::Client::new(),runner:&runner,provider_request:None,
+        model:&model,request:&request,request_id:"route",first_kept_entry_id:"anchor",system_prompt:"system",session_id:"session",api_key:Some("faux".into()),headers:Default::default(),extra_body:None,origin:json!({}),signal:&controller.signal(),timeout:std::time::Duration::from_secs(5),deadline:maho_ext_compaction::openai_remote_timeout::RemoteCompactionDeadline::new(std::time::Duration::from_secs(5)),now_ms:42,client:&reqwest::Client::new(),runner:&runner,provider_request:None,
     },&|event|events.lock().unwrap().push(event)).await.unwrap().unwrap();
     assert_eq!(result.details.unwrap()["transport"],"websocket");
     let events = events.lock().unwrap();

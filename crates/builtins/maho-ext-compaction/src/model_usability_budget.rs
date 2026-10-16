@@ -43,11 +43,12 @@ fn safety_margin(model: &Model) -> (&'static str, f64) {
 pub fn project_model_usability_budget(input: ModelUsabilityBudgetInput<'_>) -> ModelUsabilityBudgetProjection {
     let window = input.model.context_window as f64;
     let live = input.live_context_tokens.unwrap_or(0.0);
-    let mut context = Context {system_prompt:Some(input.system_prompt.into()),messages:Vec::new(),tools:Some(Vec::new())};
+    let normalized_prompt = input.system_prompt.trim();
+    let mut context = Context {system_prompt:Some(normalized_prompt.into()),messages:Vec::new(),tools:Some(Vec::new())};
     let system = estimate_context_tokens(&context).tokens as f64;
     context.tools = Some(input.tools.to_vec());
     let tools = estimate_context_tokens(&context).tokens as f64 - system;
-    let output = if input.model.max_tokens > 0 && window > 0.0 { (input.model.max_tokens as f64).min((window * 0.5).floor()) } else { 0.0 };
+    let output = if window > 0.0 { window - crate::extension_wiring::get_prompt_context_window(window, Some(input.model.max_tokens as f64)) } else { 0.0 };
     let geometry = resolve_compaction_geometry(window,input.compaction,None);
     let reserve = if input.compaction.enabled {geometry.reserve_tokens} else {0.0};
     let include_lead = input.include_speculation_lead != Some(false);
@@ -80,3 +81,21 @@ impl std::fmt::Display for ModelUsabilityBudgetError {
     }
 }
 impl std::error::Error for ModelUsabilityBudgetError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn trims_system_prompt_before_budget_estimation() {
+        let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"openai","api":"openai-responses","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":10000})).expect("model fixture");
+        let settings = maho_core::compaction::settings::default_compaction_settings();
+        let projection = project_model_usability_budget(ModelUsabilityBudgetInput {
+            model: &model, system_prompt: " prompt ", tools: &[], live_context_tokens: None,
+            compaction: &settings, include_speculation_lead: Some(false), admission: None,
+        });
+        let expected = estimate_context_tokens(&Context { system_prompt: Some("prompt".into()), messages: Vec::new(), tools: Some(Vec::new()) }).tokens as f64;
+        assert_eq!(projection.system_prompt_tokens, expected);
+    }
+}

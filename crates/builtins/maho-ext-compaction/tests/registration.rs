@@ -889,7 +889,7 @@ fn lane_context(global_settings: Option<&str>) -> (tempfile::TempDir, ExtensionC
 
 #[test]
 fn live_lane_policy_stands_down_for_resident_sdk_lane() {
-    let (_temp, ctx) = lane_context(None);
+    let (_temp, ctx) = lane_context(Some(r#"{"anthropicSubscriptionProvider":{"compactionOwner":"sdk"}}"#));
     assert!(maho_ext_compaction::lane_policy::live_disables_senpi_compaction(&std::sync::Mutex::default(), &ctx));
 }
 
