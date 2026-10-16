@@ -53,6 +53,7 @@ fn setup_store(temp: &TempDir) -> ReflectionReservationStore {
         config: TriggerConfig {
             step_count: Some(5),
             on_compaction: Some(true),
+            snapshot_max_bytes: None,
         },
         get_journal,
         create_run_id: None,

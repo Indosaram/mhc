@@ -11,6 +11,7 @@ use super::query::{SearchDocument, SearchToolCall};
 
 const ARCHIVED_SUFFIX: &str = ".archived";
 const SESSION_SUFFIX: &str = ".jsonl";
+const EXCLUDED_CUSTOM_TYPES: &[&str] = &["omo-kibitzer:recall", "omo-memorian:recall", "omo-memory:notice"];
 
 /// Predicate deciding whether a candidate session is hidden.
 pub type IsHiddenFn = Box<dyn Fn(&SenpiHiddenCandidate) -> bool + Send + Sync>;
@@ -197,6 +198,7 @@ fn to_document(
     let id = entry.get("id")?.as_str()?.to_string();
     let message = entry.get("message")?.as_object()?;
     let role = message.get("role")?.as_str()?.to_string();
+    if role == "custom" && message.get("customType").and_then(|value| value.as_str()).is_some_and(|kind| EXCLUDED_CUSTOM_TYPES.contains(&kind)) { return None; }
 
     let mapped = map_content(message.get("content").unwrap_or(&serde_json::Value::Null));
     let tool_name = message.get("toolName").and_then(|v| v.as_str());

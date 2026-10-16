@@ -210,7 +210,7 @@ pub fn match_score(text: &str, query: &ParsedQuery) -> Option<f64> {
 }
 
 /// [`match_score`] over a haystack already passed through [`normalize_text`] (which is idempotent).
-pub(crate) fn match_score_normalized(haystack: &str, query: &ParsedQuery) -> Option<f64> {
+pub fn match_score_normalized(haystack: &str, query: &ParsedQuery) -> Option<f64> {
     if haystack.is_empty() {
         return None;
     }

@@ -21,6 +21,7 @@ const SECRET_PATTERN_SOURCES: [(&str, &str); 5] = [
     (r"\bsk-(?:proj-)?[-_A-Za-z0-9]+\b", ""),
     (r"\b(?:ghp|github_pat|glpat|xox[baprs])-[-_A-Za-z0-9]+\b", ""),
 ];
+const SPLIT_CREDENTIAL_ASSIGNMENT: &str = r#"(?:a\s*u\s*t\s*h\s*o\s*r\s*i\s*z\s*a\s*t\s*i\s*o\s*n|p\s*a\s*s\s*s\s*w\s*(?:o\s*r\s*)?d|s\s*e\s*c\s*r\s*e\s*t|t\s*o\s*k\s*e\s*n|a\s*p\s*i\s*[_-]?\s*k\s*e\s*y)\s*[:=]\s*\S{6,256}"#;
 
 /// Compiled once. Upstream keeps a non-global and a global copy of every pattern
 /// only because a JavaScript `RegExp` carries `lastIndex` state; `regress`
@@ -33,6 +34,13 @@ static SECRET_PATTERNS: LazyLock<Vec<regress::Regex>> = LazyLock::new(|| {
                 .expect("static regex literals are valid")
         })
         .collect()
+});
+static SPLIT_CREDENTIAL_PATTERN: LazyLock<regress::Regex> = LazyLock::new(|| {
+    regress::Regex::from_unicode(
+        SPLIT_CREDENTIAL_ASSIGNMENT.encode_utf16().map(u32::from),
+        "i",
+    )
+    .expect("static split credential regex is valid")
 });
 
 /// True when `value` holds secret-like material (upstream `containsSecretLikeMaterial`).
@@ -75,35 +83,113 @@ fn normalized_secret_detect(value: &str) -> bool {
 }
 
 fn normalized_secret_spans(value: &str) -> Vec<(usize, usize)> {
-    let mut shadow = String::new();
-    let mut byte_map = Vec::new();
-    let mut dropped = false;
-    for (index, character) in value.char_indices() {
-        let control = character.is_control() && character != '\n' && character != '\t';
-        let format = matches!(character as u32, 0x00AD | 0x061C | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF);
-        if character == '\u{00A0}' {
-            shadow.push(' ');
-            byte_map.push(index);
-            dropped = false;
-        } else if control || format {
-            dropped = true;
-        } else {
-            if dropped && !shadow.is_empty() { shadow.push(' '); byte_map.push(index); }
-            dropped = false;
-            shadow.push(character);
-            byte_map.extend(std::iter::repeat_n(index, character.len_utf16()));
+    let joined = normalize_secret_shadow(value, true);
+    let separated = normalize_secret_shadow(value, false);
+    let mut spans = secret_spans(&joined);
+    let separated_spans = secret_spans(&separated);
+    for candidate in separated_spans {
+        if !spans
+            .iter()
+            .any(|matched| matched.0 <= candidate.0 && matched.1 >= candidate.1)
+        {
+            spans.push(candidate);
         }
     }
-    let units: Vec<u16> = shadow.encode_utf16().collect();
-    let mut spans = Vec::new();
-    for pattern in SECRET_PATTERNS.iter() {
-        for matched in pattern.find_from_ucs2(&units, 0) {
-            let range = matched.range();
-            if let (Some(start), Some(last)) = (byte_map.get(range.start), byte_map.get(range.end.saturating_sub(1))) {
-                spans.push((*start, last + shadow[*last..].chars().next().map_or(0, char::len_utf8)));
+    for matched in SPLIT_CREDENTIAL_PATTERN.find_from_ucs2(&joined.units, 0) {
+        if let Some(span) = joined.original_span(matched.range().start, matched.range().end) {
+            spans.push(span);
+        }
+    }
+    merge_spans(spans)
+}
+
+struct SecretShadow {
+    units: Vec<u16>,
+    byte_starts: Vec<usize>,
+    byte_ends: Vec<usize>,
+    seams: Vec<usize>,
+}
+
+impl SecretShadow {
+    fn original_span(&self, start: usize, end: usize) -> Option<(usize, usize)> {
+        Some((
+            *self.byte_starts.get(start)?,
+            *self.byte_ends.get(end.checked_sub(1)?)?,
+        ))
+    }
+}
+
+fn normalize_secret_shadow(value: &str, drop_format: bool) -> SecretShadow {
+    let mut shadow = String::new();
+    let mut byte_starts = Vec::new();
+    let mut byte_ends = Vec::new();
+    let mut seams = Vec::new();
+    let mut dropped = false;
+    for (index, character) in value.char_indices() {
+        let control = (character as u32) < 0x20 && character != '\n' && character != '\t';
+        let format = matches!(character as u32, 0x00AD | 0x061C | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF);
+        let end = index + character.len_utf8();
+        if character == '\u{00A0}' {
+            shadow.push(' ');
+            byte_starts.push(index);
+            byte_ends.push(end);
+            dropped = false;
+        } else if (control || format) && drop_format {
+            dropped = true;
+        } else if control || format {
+            shadow.push(' ');
+            byte_starts.push(index);
+            byte_ends.push(end);
+            dropped = false;
+        } else {
+            if dropped {
+                seams.push(shadow.encode_utf16().count());
+                dropped = false;
+            }
+            shadow.push(character);
+            for _ in 0..character.len_utf16() {
+                byte_starts.push(index);
+                byte_ends.push(end);
             }
         }
     }
+    SecretShadow { units: shadow.encode_utf16().collect(), byte_starts, byte_ends, seams }
+}
+
+fn secret_spans(shadow: &SecretShadow) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    for pattern in SECRET_PATTERNS.iter() {
+        for matched in pattern.find_from_ucs2(&shadow.units, 0) {
+            let range = matched.range();
+            if let Some(span) = shadow.original_span(range.start, range.end) {
+                spans.push(span);
+            }
+        }
+        for &seam in &shadow.seams {
+            let Some(previous) = seam.checked_sub(1).and_then(|index| shadow.units.get(index)) else { continue };
+            let Some(current) = shadow.units.get(seam) else { continue };
+            if is_ascii_word_unit(*previous) == is_ascii_word_unit(*current) { continue; }
+            let begin = seam.saturating_sub(12);
+            for matched in pattern.find_from_ucs2(&shadow.units, begin) {
+                let range = matched.range();
+                if range.start > seam || range.end < seam { continue; }
+                if let Some(span) = shadow.original_span(range.start, range.end) {
+                    spans.push(span);
+                }
+            }
+        }
+    }
+    spans
+}
+
+fn is_ascii_word_unit(unit: u16) -> bool {
+    (unit >= b'a' as u16 && unit <= b'z' as u16)
+        || (unit >= b'A' as u16 && unit <= b'Z' as u16)
+        || (unit >= b'0' as u16 && unit <= b'9' as u16)
+        || unit == b'_' as u16
+}
+
+fn merge_spans(mut spans: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     spans.sort_unstable();
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for span in spans {
