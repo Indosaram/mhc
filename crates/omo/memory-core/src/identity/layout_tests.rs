@@ -28,6 +28,8 @@ fn all_paths(paths: &MemoryIdentityPaths) -> Vec<PathBuf> {
         paths.notices.clone(),
         paths.tool_receipts.clone(),
         paths.recall.clone(),
+        paths.memory_usage.clone(),
+        paths.memory_maintenance.clone(),
     ]
 }
 
@@ -110,6 +112,8 @@ fn test_build_identity_paths_when_root_and_id_given_then_layout_shape_is_produce
     assert_eq!(paths.recall, runtime.join("recall"));
     assert_eq!(paths.recall_ledger, runtime.join("recall").join("ledger"));
     assert_eq!(paths.recall_pending, runtime.join("recall").join("pending"));
+    assert_eq!(paths.memory_usage, runtime.join("memory-usage"));
+    assert_eq!(paths.memory_maintenance, runtime.join("memory-maintenance"));
 }
 
 #[test]

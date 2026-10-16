@@ -186,6 +186,14 @@ fn test_oversized_single_entry_parks_immediately() {
 }
 
 #[test]
+fn test_secret_like_content_parks_immediately() {
+    let records = apply_streak(1, FactsFailureReason::SecretLikeContent);
+    assert_eq!(records[0].state, FactsFailureState::Parked);
+    assert_eq!(records[0].next_eligible_at, None);
+    assert_eq!(records[0].parked_at.as_deref(), Some(T0));
+}
+
+#[test]
 fn test_replayed_failure_id_leaves_record_unchanged() {
     // given
     let first = apply_failure(&ApplyFailureInput {

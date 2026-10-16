@@ -198,6 +198,21 @@ fn test_parked_record_with_null_next_eligible_at() {
 }
 
 #[test]
+fn test_secret_like_content_is_a_known_failure_reason() {
+    let raw = serde_json::json!({
+        "version": FACTS_FAILURES_VERSION,
+        "updatedAt": T0,
+        "entries": [serde_json::json!({
+            "conversationId":"conversation-alpha", "end_message_id":"m2", "end_snapshot_line":4,
+            "state":"parked", "streak":1, "firstFailureAt":T0, "lastFailureAt":T0,
+            "lastReason":"secret_like_content", "lastFailureId":"run-a",
+            "nextEligibleAt":null, "parkedAt":T0
+        })]
+    }).to_string();
+    assert_eq!(parse_failures_file(&raw).unwrap().entries[0].last_reason, FactsFailureReason::SecretLikeContent);
+}
+
+#[test]
 fn test_render_sorts_records_and_appends_newline() {
     // given
     let entries = vec![

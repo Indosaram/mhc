@@ -171,6 +171,7 @@ fn next_record(
         .unwrap_or(false);
     let parks = was_parked
         || input.reason == FactsFailureReason::PayloadEntryOversize
+        || input.reason == FactsFailureReason::SecretLikeContent
         || streak >= PARK_AT_STREAK;
 
     let now_millis = parse_rfc3339(&input.now).unwrap_or(0);
