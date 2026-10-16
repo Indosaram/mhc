@@ -47,7 +47,7 @@ impl MemoryComponent{
                 let adopted=match adoption{crate::identity_adoption::IdentityAdoption::Resolved(value)|crate::identity_adoption::IdentityAdoption::Rebound(value)=>value,crate::identity_adoption::IdentityAdoption::Conflict=>{context.ui.notify("memory identity conflict: session binding cannot be reproduced; restart or fork the session",NotificationType::Error);return Ok(None);}};
                 let one_shot=!context.has_ui||context.session_manager.get_session_dir().is_none();
                 let memory_root=memory_core::identity::layout::resolve_memory_root(&this.options.env,&session_cwd);
-                let run_token=format!("{:x}-{}-{:x}",((this.options.now)() as u64).max(1),std::process::id(),memory_core::support::random::random_uuid().replace('-',""));
+                let run_token=format!("{:x}-{}-{}",((this.options.now)() as u64).max(1),std::process::id(),memory_core::support::random::random_uuid().replace('-',""));
                 let run_paths=crate::transient_identity::resolve_identity_run_paths(&adopted.id,adopted.paths.clone(),&memory_root,one_shot,Some(&run_token));
                 let binding=create_memory_binding(&adopted.id,&run_paths.paths.repo.to_string_lossy(),(this.options.now)());let value=serde_json::json!({"identity":binding.identity,"repoPathHash":binding.repo_path_hash,"boundAt":binding.bound_at});
                 let bound=MemoryIdentityContext::new(adopted.id,run_paths.paths,binding).with_durable_root(run_paths.durable_root);

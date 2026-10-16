@@ -15,7 +15,7 @@ pub fn resolve_native_badge_text(package_dir: Option<&std::path::Path>) -> &'sta
     }
 }
 
-pub fn publish_native_badge(ui:&dyn maho_ext_api::ExtensionUi,package_dir:Option<&std::path::Path>){let _=ui.set_status(NATIVE_BADGE_STATUS_KEY,Some(resolve_native_badge_text(package_dir).to_owned()));}
+pub fn publish_native_badge(ui:&dyn maho_ext_api::ExtensionUi,package_dir:Option<&std::path::Path>){let _=ui.set_status(NATIVE_BADGE_STATUS_KEY,Some(resolve_native_badge_text(package_dir)));}
 pub fn clear_native_badge(ui:&dyn maho_ext_api::ExtensionUi){let _=ui.set_status(NATIVE_BADGE_STATUS_KEY,None);}
 pub fn register_native_badge(api:&mut maho_ext_api::ExtensionApi){let package_dir=package_dir_from_env(&std::env::vars().collect());let settled_dir=package_dir.clone();api.on(maho_ext_api::EventKind::SessionStart,std::sync::Arc::new(move|_,ctx|{publish_native_badge(ctx.ui.as_ref(),package_dir.as_deref());Box::pin(async{Ok(maho_ext_api::EventResult::None)})}));api.on(maho_ext_api::EventKind::AgentSettled,std::sync::Arc::new(move|_,ctx|{publish_native_badge(ctx.ui.as_ref(),settled_dir.as_deref());Box::pin(async{Ok(maho_ext_api::EventResult::None)})}));}
 
