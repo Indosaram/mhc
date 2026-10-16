@@ -26,7 +26,8 @@ fn public_tool_guards_and_default_profile_preserve_contract_values() {
 #[test]
 fn every_event_kind_roundtrips_without_duplicate_names() {
     let names: std::collections::BTreeSet<_> = EventKind::ALL.iter().map(|kind| kind.as_str()).collect();
-    assert_eq!(names.len(), 43);
+    // senpi types.ts adds provider_stream_event, agent_before_settle, session_control_wake, tool_activated.
+    assert_eq!(names.len(), 47);
     for kind in EventKind::ALL { assert_eq!(EventKind::parse(kind.as_str()), Some(kind)); }
     assert_eq!(EventKind::parse("missing"), None);
 }
