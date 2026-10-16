@@ -9,6 +9,7 @@ use crate::cmux_detect::is_cmux_compat_environment;
 use crate::env_source::{EnvSource, ProcessEnv};
 use crate::runner::{RunTmuxOptions, TmuxCommandResult, run_tmux_command};
 use crate::tmux_utils::environment::is_inside_tmux_environment;
+use crate::tmux_utils::pane_command::build_subagent_pane_title;
 use crate::tmux_utils::server_health::{IsServerRunningOptions, is_server_running};
 
 pub type LogFn = Arc<dyn Fn(&str, Option<Value>) + Send + Sync>;
@@ -88,10 +89,7 @@ impl TmuxDeps {
         pane_id: &str,
         description: &str,
     ) {
-        let title = format!(
-            "omo-subagent-{}",
-            description.chars().take(20).collect::<String>()
-        );
+        let title = build_subagent_pane_title(description);
         let result = self.run(
             tmux,
             &strings(&["select-pane", "-t", pane_id, "-T", &title]),
