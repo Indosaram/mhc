@@ -1,7 +1,6 @@
-use std::sync::{Arc,atomic::{AtomicU64,Ordering}};
+use std::sync::Arc;
 use memory_core::{identity::resolve::{MemoryIdentity,sanitize_to_slug},journal::store::{TranscriptJournal,TranscriptJournalOptions},reflection::{ReflectionReservationStore,ReflectionReservationStoreOptions}};
 use crate::context::MemoryIdentityContext;
-static RUN_COUNTER:AtomicU64=AtomicU64::new(0);
 #[derive(Default)]pub struct IdentitySandbox{built:Option<crate::sandbox::SandboxTransform>}
 pub struct IdentitySandboxInput<'a>{pub identity:&'a MemoryIdentityContext,pub policy:crate::sandbox::SandboxPolicy,pub agent_dir:&'a std::path::Path,pub platform:&'a str}
 impl IdentitySandbox{
@@ -50,7 +49,7 @@ pub fn create_identity_reservation_store(context:&MemoryIdentityContext,settings
     Ok(Arc::new(ReflectionReservationStore::new(ReflectionReservationStoreOptions{
         identity:as_memory_identity(context),config,
         get_journal:Arc::new(move |conversation|Ok(TranscriptJournal::new(TranscriptJournalOptions::new(transcripts.join(conversation))))),
-        create_run_id:Some(Arc::new(||format!("reflection-run-{}",RUN_COUNTER.fetch_add(1,Ordering::Relaxed)+1))),
+        create_run_id:Some(crate::reflection_run_id::create_reflection_run_id_factory(context.identity_paths.reflection.clone(),context.identity_paths.reflection_sessions.clone(),context.identity_paths.worktrees.clone())),
         now_iso:None,launcher_identity:None,
     })))
 }
