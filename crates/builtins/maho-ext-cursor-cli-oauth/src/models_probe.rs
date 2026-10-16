@@ -35,7 +35,8 @@ pub async fn run_models_probe(executable:&Path,stdout_path:&Path,timeout_ms:u64,
             }
         }
         Err(_) => {
-            child.kill().await.map_err(ModelProbeError::Io)?;
+            child.start_kill().map_err(ModelProbeError::Io)?;
+            child.wait().await.map_err(ModelProbeError::Io)?;
             Err(ModelProbeError::Timeout { timeout_ms })
         }
     }
