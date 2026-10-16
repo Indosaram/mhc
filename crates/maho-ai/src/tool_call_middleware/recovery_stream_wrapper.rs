@@ -95,7 +95,7 @@ pub fn wrap_stream_with_invoke_recovery(
                     } else {
                         current_projection.sync($source);
                         current_native.reserve_visible_ids($source);
-                        current_native.synchronize_lower($source, $content_index)
+                        current_native.synchronize_lower(&mut current_projection.message, $source, $content_index)
                     }
                 } else {
                     false
@@ -108,7 +108,7 @@ pub fn wrap_stream_with_invoke_recovery(
                 Ok(Some(event)) => match event {
                     AssistantMessageEvent::Start { partial } => {
                         let new_projection = StreamMessageProjection::new(outer_for_task.clone(), partial.clone(), StreamMessageProjectionOptions { preserve_source_metadata: true });
-                        let mut new_native = RecoveryNativeProjection::new(outer_for_task.clone(), new_projection.message.clone(), protocol);
+                        let mut new_native = RecoveryNativeProjection::new(outer_for_task.clone(), protocol);
                         new_native.reserve_visible_ids(&partial);
                         outer_for_task.push(AssistantMessageEvent::Start { partial: new_projection.message.clone() });
                         projection = Some(new_projection);
@@ -191,8 +191,8 @@ pub fn wrap_stream_with_invoke_recovery(
                         if !prepare_content_event!(&partial, content_index) {
                             terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
                         }
-                        let Some(current_native) = &mut native_projection else { return };
-                        match current_native.project_native_start(&partial, content_index) {
+                        let (Some(current_projection), Some(current_native)) = (&mut projection, &mut native_projection) else { return };
+                        match current_native.project_native_start(&mut current_projection.message, &partial, content_index) {
                             ProjectNativeStartResult::Projected => {}
                             ProjectNativeStartResult::Collision => terminate_for_failure!(&partial, RecoveryStreamFailure::Collision),
                             ProjectNativeStartResult::Invalid => terminate_for_failure!(&partial, RecoveryStreamFailure::InvalidNativeEventOrder),
@@ -207,8 +207,8 @@ pub fn wrap_stream_with_invoke_recovery(
                         if !prepare_content_event!(&partial, content_index) {
                             terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
                         }
-                        let Some(current_native) = &mut native_projection else { continue };
-                        if !current_native.project_native_delta(&partial, content_index, &delta) {
+                        let (Some(current_projection), Some(current_native)) = (&mut projection, &mut native_projection) else { continue };
+                        if !current_native.project_native_delta(&mut current_projection.message, &partial, content_index, &delta) {
                             terminate_for_failure!(&partial, RecoveryStreamFailure::InvalidNativeEventOrder);
                         }
                     }
@@ -219,8 +219,8 @@ pub fn wrap_stream_with_invoke_recovery(
                         if !prepare_content_event!(&partial, content_index) {
                             terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
                         }
-                        let Some(current_native) = &mut native_projection else { continue };
-                        if !current_native.project_native_end(content_index, tool_call) {
+                        let (Some(current_projection), Some(current_native)) = (&mut projection, &mut native_projection) else { continue };
+                        if !current_native.project_native_end(&mut current_projection.message, content_index, tool_call) {
                             terminate_for_failure!(&partial, RecoveryStreamFailure::InvalidNativeEventOrder);
                         }
                         content_lifecycle.end(content_index, RecoveryContentKind::ToolCall);
@@ -285,8 +285,7 @@ fn synchronize_terminal(
         *projection = Some(StreamMessageProjection::new(outer_stream.clone(), source.clone(), StreamMessageProjectionOptions { preserve_source_metadata: true }));
     }
     if native_projection.is_none() {
-        let message = projection.as_ref().expect("projection just initialized").message.clone();
-        *native_projection = Some(RecoveryNativeProjection::new(outer_stream.clone(), message, protocol));
+        *native_projection = Some(RecoveryNativeProjection::new(outer_stream.clone(), protocol));
     }
     let current_projection = projection.as_mut().expect("projection just initialized");
     let current_native = native_projection.as_mut().expect("native_projection just initialized");
@@ -295,7 +294,7 @@ fn synchronize_terminal(
     if let Some(mut current_text) = text_projection.take() {
         *saw_tool_call = current_text.finish(current_projection, current_native) || *saw_tool_call;
     }
-    if current_native.synchronize_remaining(source) {
+    if current_native.synchronize_remaining(&mut current_projection.message, source) {
         true
     } else {
         terminate_recovery_stream_for_failure(outer_stream, current_projection, TerminateRecoveryStreamOptions { source, failure: RecoveryStreamFailure::Collision, protocol });
@@ -332,6 +331,61 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn native_tool_calls_survive_into_the_terminal_message() {
+        // senpi shares `projection.message` with the native projection, so a provider-native
+        // tool call is part of the message the terminal finalizes. Without that, a Claude model on
+        // openai-completions ended every tool turn as `toolUse` with no tool call.
+        use crate::types::ThinkingContent;
+        let thinking = || ContentBlock::Thinking(ThinkingContent { thinking: "plan".into(), ..ThinkingContent::default() });
+        let text = || ContentBlock::Text(TextContent { text: "Reading it.".into(), ..TextContent::default() });
+        for prefix in [vec![], vec![text()], vec![thinking()], vec![thinking(), text()]] {
+            let inner = AssistantMessageEventStream::assistant();
+            let outer = wrap_stream_with_invoke_recovery(inner.clone(), vec![tool("read")], InvokeRecoveryOptions::default());
+            inner.push(AssistantMessageEvent::Start { partial: message(vec![], StopReason::Pending) });
+            let mut content = Vec::new();
+            for block in &prefix {
+                content.push(block.clone());
+                let index = content.len() - 1;
+                let partial = message(content.clone(), StopReason::Pending);
+                match block {
+                    ContentBlock::Thinking(_) => {
+                        inner.push(AssistantMessageEvent::ThinkingStart { content_index: index, partial: partial.clone() });
+                        inner.push(AssistantMessageEvent::ThinkingDelta { content_index: index, delta: "plan".into(), partial: partial.clone() });
+                        inner.push(AssistantMessageEvent::ThinkingEnd { content_index: index, content: "plan".into(), partial });
+                    }
+                    _ => {
+                        inner.push(AssistantMessageEvent::TextStart { content_index: index, partial: partial.clone() });
+                        inner.push(AssistantMessageEvent::TextDelta { content_index: index, delta: "Reading it.".into(), partial: partial.clone() });
+                        inner.push(AssistantMessageEvent::TextEnd { content_index: index, content: "Reading it.".into(), partial });
+                    }
+                }
+            }
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("path".into(), json!("hello.txt"));
+            let call = ToolCall { id: "call_1".into(), name: "read".into(), arguments, incomplete: None, error_message: None, thought_signature: None, namespace: None };
+            content.push(ContentBlock::ToolCall(call.clone()));
+            let index = content.len() - 1;
+            let partial = message(content.clone(), StopReason::Pending);
+            inner.push(AssistantMessageEvent::ToolcallStart { content_index: index, partial: partial.clone() });
+            inner.push(AssistantMessageEvent::ToolcallDelta { content_index: index, delta: r#"{"path":"hello.txt"}"#.into(), partial: partial.clone() });
+            inner.push(AssistantMessageEvent::ToolcallEnd { content_index: index, tool_call: call.clone(), partial });
+            inner.push(AssistantMessageEvent::Done { reason: DoneReason::ToolUse, message: message(content.clone(), StopReason::ToolUse) });
+            inner.end(None);
+
+            let mut terminal = None;
+            while let Ok(Some(event)) = outer.next().await {
+                if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+                    terminal = Some(event);
+                    break;
+                }
+            }
+            let Some(AssistantMessageEvent::Done { reason, message: result }) = terminal else { panic!("expected done for prefix {prefix:?}") };
+            assert_eq!(reason, DoneReason::ToolUse);
+            assert_eq!(result.content, content, "prefix {prefix:?}");
         }
     }
 
