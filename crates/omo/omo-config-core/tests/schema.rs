@@ -238,6 +238,34 @@ fn agent_plain_string_models_still_parse_unchanged() {
 }
 
 #[test]
+fn agent_permission_and_prompt_append_are_accepted() {
+    let value = parsed(
+        &omo_config_core::omo_agent_def_schema(),
+        json!({ "permission": { "edit": "ask", "bash": { "git status": "allow" }, "custom": "deny" }, "prompt_append": "extra" }),
+    );
+    assert_eq!(value["permission"]["edit"], json!("ask"));
+    assert_eq!(value["permission"]["bash"]["git status"], json!("allow"));
+    assert_eq!(value["prompt_append"], json!("extra"));
+}
+
+#[test]
+fn memory_facts_accepts_optional_nonempty_model_in_full_and_layer_schemas() {
+    let input = json!({ "model": "openai/gpt-5" });
+    assert_eq!(parsed(&omo_config_core::omo_memory_facts_schema(), input.clone())["model"], input["model"]);
+    assert_eq!(parsed(&omo_config_core::omo_memory_facts_layer_schema(), input.clone()), input);
+}
+
+#[test]
+fn task_host_runner_options_are_accepted_with_upstream_defaults() {
+    let value = parsed(&omo_config_core::omo_task_settings_schema(), json!({}));
+    assert_eq!(value["process_runner"], json!("host"));
+    assert_eq!(value["host_engine_policy"], json!("upgrade"));
+    assert_eq!(value["host_shard_prewarm"], json!("first-turn"));
+    let partial = json!({ "process_runner": "child-process", "host_idle_exit_ms": 9000, "host_shard_prewarm": "off" });
+    assert_eq!(parsed(&omo_config_core::omo_task_settings_layer_schema(), partial.clone()), partial);
+}
+
+#[test]
 fn agent_harness_native_reasoning_preset_passes_through() {
     let node = omo_config_core::omo_agent_def_schema();
     let value = parsed(
@@ -320,7 +348,7 @@ fn config_schema_normalizes_defaults_and_deprecated_category_keys() {
     });
     let value = parsed(&omo_config_core::omo_config_schema(), config);
     assert_eq!(value["git_master"]["include_co_authored_by"], json!(false));
-    assert_eq!(value["task"]["default_execution_mode"], json!("in-process"));
+    assert_eq!(value["task"]["default_execution_mode"], json!("auto"));
     assert_eq!(value["task"]["default_concurrency"], json!(5));
     assert_eq!(value["task"]["residency_max_children"], json!(8));
     assert_eq!(value["categories"]["deep"]["max_tokens"], json!(12000));

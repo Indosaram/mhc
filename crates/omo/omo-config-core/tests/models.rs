@@ -128,3 +128,24 @@ fn find_model_catalog_cycles_reports_every_member_of_a_cycle_sorted() {
         vec!["b".to_string(), "c".to_string()]
     );
 }
+
+#[test]
+fn resolve_model_references_expands_profiles_and_reports_shadowing_and_splicing() {
+    let result = resolve_model_references(&view(json!({
+        "models": {
+            "shared": { "model": "openai/gpt-5", "reasoning": "high" },
+            "clash": { "model": "anthropic/claude" },
+        },
+        "model_profiles": {
+            "daily": { "models": ["shared"] },
+            "clash": { "models": ["openai/gpt-4"] },
+        },
+        "agents": { "worker": { "models": ["daily"] } },
+        "categories": { "quick": { "models": ["daily"] } },
+    })));
+    assert_eq!(result.view["model_profiles"]["daily"]["models"], json!([{ "model": "openai/gpt-5", "reasoning": "high" }]));
+    assert_eq!(result.diagnostics.len(), 3);
+    assert!(result.diagnostics.iter().any(|item| item.path == "model_profiles.clash"));
+    assert!(result.diagnostics.iter().any(|item| item.path == "agents.worker.models.0"));
+    assert!(result.diagnostics.iter().any(|item| item.path == "categories.quick.models.0"));
+}
