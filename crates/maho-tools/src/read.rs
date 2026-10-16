@@ -41,13 +41,28 @@ impl ReadFolder for SelectedReadFolder {
 #[derive(Clone)]
 pub struct ReadToolOptions {
     pub folder: Option<Arc<dyn ReadFolder>>, pub auto_resize_images: Option<bool>,
+    pub resize_options: Option<maho_ai::types::ModelImageResizeOptions>,
     pub operations: Option<Arc<dyn ReadOperations>>, pub filesystem_policy: Option<FilesystemPolicyChecker>,
 }
 impl Default for ReadToolOptions {
-    fn default() -> Self { Self { folder: Some(Arc::new(SelectedReadFolder)), auto_resize_images: None, operations: None, filesystem_policy: None } }
+    fn default() -> Self { Self { folder: Some(Arc::new(SelectedReadFolder)), auto_resize_images: None, resize_options: None, operations: None, filesystem_policy: None } }
 }
 #[derive(Deserialize)]
 pub struct ReadToolInput { pub path: String, pub offset: Option<usize>, pub limit: Option<usize> }
+#[cfg(test)]
+mod image_resize_tests {
+    use super::*;
+    #[test]
+    fn model_resize_profile_controls_output_dimensions() {
+        let image = image::DynamicImage::new_rgb8(120, 60);
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut encoded, image::ImageFormat::Png).expect("encode fixture");
+        let (content, _) = process_image(encoded.into_inner(), "image/png".into(), true, Some(maho_ai::types::ModelImageResizeOptions { max_width: 40, max_height: 40, max_bytes: None })).expect("resize image");
+        let ToolContent::Image { data, .. } = content.get(1).expect("resized image attachment") else { panic!("resized image attachment expected"); };
+        let decoded = image::load_from_memory(&base64::engine::general_purpose::STANDARD.decode(data).expect("decode base64")).expect("decode image");
+        assert_eq!((decoded.width(), decoded.height()), (40, 20));
+    }
+}
 pub fn detect_supported_image_mime_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[255,216,255]) { return if bytes.get(3) == Some(&247) { None } else { Some("image/jpeg") }; }
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -73,7 +88,7 @@ pub fn detect_supported_image_mime_type(bytes: &[u8]) -> Option<&'static str> {
     }
     None
 }
-fn process_image(bytes: Vec<u8>, mime: String, resize: bool) -> Result<(Vec<ToolContent>, String), ToolError> {
+fn process_image(bytes: Vec<u8>, mime: String, resize: bool, resize_options: Option<maho_ai::types::ModelImageResizeOptions>) -> Result<(Vec<ToolContent>, String), ToolError> {
     let mut bytes = bytes; let mut mime = mime.split(';').next().unwrap_or(&mime).trim().to_lowercase(); let mut hints = Vec::new();
     if !["image/png","image/jpeg","image/jpg","image/gif","image/webp"].contains(&mime.as_str()) {
         let converted = image::load_from_memory(&bytes).and_then(|image| {
@@ -94,10 +109,14 @@ fn process_image(bytes: Vec<u8>, mime: String, resize: bool) -> Result<(Vec<Tool
         })();
         let decoded = match decoded { Ok(image) => image, Err(_) => return Ok((Vec::new(), "[Image omitted: could not be resized below the inline image size limit.]".into())) };
         let (width,height) = (decoded.width(),decoded.height());
-        if width > 2000 || height > 2000 || bytes.len().div_ceil(3)*4 >= 4_718_592 {
+        let max_width = resize_options.as_ref().map_or(2000, |options| options.max_width);
+        let max_height = resize_options.as_ref().map_or(2000, |options| options.max_height);
+        let max_bytes = resize_options.as_ref().and_then(|options| options.max_bytes).unwrap_or(4_718_592);
+        let original_size_limit = resize_options.as_ref().and_then(|options| options.max_bytes).map_or(4_718_592, |bytes| bytes.div_ceil(3)*4);
+        if width > max_width || height > max_height || bytes.len().div_ceil(3)*4 >= original_size_limit {
             let (mut w,mut h) = (width,height);
-            if w > 2000 { h = ((u64::from(h)*2000 + u64::from(w)/2)/u64::from(w)) as u32; w = 2000; }
-            if h > 2000 { w = ((u64::from(w)*2000 + u64::from(h)/2)/u64::from(h)) as u32; h = 2000; }
+            if w > max_width { h = ((u64::from(h)*u64::from(max_width) + u64::from(w)/2)/u64::from(w)) as u32; w = max_width; }
+            if h > max_height { w = ((u64::from(w)*u64::from(max_height) + u64::from(h)/2)/u64::from(h)) as u32; h = max_height; }
             loop {
                 let resized = decoded.resize_exact(w.max(1),h.max(1),image::imageops::FilterType::Lanczos3);
                 let mut out = std::io::Cursor::new(Vec::new());
@@ -107,7 +126,7 @@ fn process_image(bytes: Vec<u8>, mime: String, resize: bool) -> Result<(Vec<Tool
                     let mut data = Vec::new(); image::codecs::jpeg::JpegEncoder::new_with_quality(&mut data, quality).encode_image(&resized.to_rgb8()).map_err(|e| ToolError::Message(e.to_string()))?;
                     candidates.push((data,"image/jpeg"));
                 }
-                if let Some((data,kind)) = candidates.into_iter().find(|(data,_)| data.len().div_ceil(3)*4 < 4_718_592) {
+                if let Some((data,kind)) = candidates.into_iter().find(|(data,_)| data.len().div_ceil(3)*4 < original_size_limit) {
                     bytes = data; mime = kind.into(); hints.push(format!("[Image: original {width}x{height}, displayed at {w}x{h}. Multiply coordinates by {:.2} to map to original image.]", f64::from(width)/f64::from(w))); break;
                 }
                 if w == 1 && h == 1 { return Ok((Vec::new(), "[Image omitted: could not be resized below the inline image size limit.]".into())); }
@@ -133,7 +152,8 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
                 let mime = ops.detect_image_mime_type(&path).await?; let buffer = ops.read_file(&path).await?;
                 if let Some(mime) = mime {
                     let original_mime = mime.clone(); let resize = options.auto_resize_images.unwrap_or(true);
-                    let (mut images, mut note) = tokio::task::spawn_blocking(move || process_image(buffer, mime, resize)).await.map_err(|e| ToolError::Message(e.to_string()))??;
+                    let resize_options = call.context.and_then(ToolContext::model).and_then(|model| model.input_limits.as_ref()).and_then(|limits| limits.images.as_ref()).and_then(|images| images.resize.as_ref()).or(options.resize_options.as_ref()).cloned();
+                    let (mut images, mut note) = tokio::task::spawn_blocking(move || process_image(buffer, mime, resize, resize_options)).await.map_err(|e| ToolError::Message(e.to_string()))??;
                     if images.is_empty() { note = format!("Read image file [{original_mime}]\n{note}"); }
                     if call.context.and_then(ToolContext::model).is_some_and(|m| !m.input.contains(&maho_ai::types::InputModality::Image)) { note.push_str("\n[Current model does not support images. The image will be omitted from this request.]"); }
                     let mut content = vec![ToolContent::text(note)]; content.append(&mut images); return Ok(ToolResult { content, details: None });
