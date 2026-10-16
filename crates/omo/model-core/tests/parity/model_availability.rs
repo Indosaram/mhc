@@ -29,3 +29,32 @@ fn gpt_dash_and_dot_variants_normalize_symmetrically() {
     );
     assert_eq!(result.as_deref(), Some("openai/gpt-5-4"));
 }
+
+#[test]
+fn exact_model_id_matches_follow_provider_preference_before_model_id_length() {
+    let available = set(&[
+        "opencode/claude-opus-5",
+        "anthropic-subscription/claude-opus-5",
+    ]);
+    assert_eq!(
+        fuzzy_match_model(
+            "claude-opus-5",
+            &available,
+            Some(&strings(&["anthropic-subscription", "opencode"])),
+        )
+        .as_deref(),
+        Some("anthropic-subscription/claude-opus-5")
+    );
+}
+
+#[test]
+fn substring_ties_compare_model_id_length_not_full_provider_model_length() {
+    let available = set(&[
+        "opencode/claude-opus-5-2025",
+        "anthropic-subscription/claude-opus-5",
+    ]);
+    assert_eq!(
+        fuzzy_match_model("claude-opus", &available, None).as_deref(),
+        Some("anthropic-subscription/claude-opus-5")
+    );
+}
