@@ -45,7 +45,8 @@ pub fn truncate_preview(text:&str)->String {
     } else { lines.iter().take(8).copied().chain(std::iter::once("…")).chain(lines.iter().skip(lines.len().saturating_sub(7)).copied()).collect::<Vec<_>>().join("\n") };
     if preview.encode_utf16().count()<=PATCH_PREVIEW_MAX_CHARS { return preview; }
     let mut units=0; let mut end=0; for (index,c) in preview.char_indices() { if units+c.len_utf16()>PATCH_PREVIEW_MAX_CHARS-1 { break; } units+=c.len_utf16(); end=index+c.len_utf8(); }
-    format!("{}…",preview[..end].trim_end_matches(js_whitespace))
+    let prefix=preview[..end].trim_end_matches(js_whitespace);
+    format!("{prefix}{}…",if prefix.encode_utf16().count()+1<PATCH_PREVIEW_MAX_CHARS { " " } else { "" })
 }
 pub fn display_path(file_path:&str,cwd:&str)->String {
     let path=std::path::Path::new(file_path); if !path.is_absolute() { return file_path.into(); }
@@ -63,6 +64,35 @@ pub fn format_patch_preview(preview:&ApplyPatchPreview,cwd:&str,expanded:bool)->
     else { lines.push(format!("• Edited {} files (+{} -{})",preview.files.len(),preview.added,preview.removed)); for file in &preview.files { lines.push(format!("  └ {} {}",file_path(file,cwd),summary(file))); if expanded && !file.diff.is_empty() { lines.extend(truncate_preview(&file.diff).split('\n').map(|line|format!("    {line}"))); } } }
     lines.join("\n")
 }
+pub fn render_patch_line(line:&str,theme:&dyn crate::types::ApplyPatchTheme)->String {
+    let trimmed=line.trim_start();
+    if trimmed.starts_with('+') { theme.fg(crate::types::ApplyPatchThemeColor::ToolDiffAdded,line) }
+    else if trimmed.starts_with('-') { theme.fg(crate::types::ApplyPatchThemeColor::ToolDiffRemoved,line) }
+    else if trimmed.starts_with('•') { theme.fg(crate::types::ApplyPatchThemeColor::ToolTitle,&theme.bold(line)) }
+    else if trimmed.starts_with('└') { theme.fg(crate::types::ApplyPatchThemeColor::Accent,line) }
+    else { theme.fg(crate::types::ApplyPatchThemeColor::ToolDiffContext,line) }
+}
+pub fn render_patch_preview(preview:&ApplyPatchPreview,cwd:&str,theme:&dyn crate::types::ApplyPatchTheme,expanded:bool)->String {
+    if expanded {
+        let mut rendered=Vec::new();
+        if preview.files.len()>1 { rendered.push(format!("• Edited {} files (+{} -{})",preview.files.len(),preview.added,preview.removed)); }
+        for file in &preview.files {
+            let path=file_path(file,cwd);
+            let summary=summary(file);
+            if preview.files.len()==1 {
+                let operation=match file.operation { ApplyPatchOperation::Add=>"Added",ApplyPatchOperation::Delete=>"Deleted",ApplyPatchOperation::Update=>"Edited" };
+                rendered.push(format!("• {operation} {path} {summary}"));
+            } else { rendered.push(format!("  └ {path} {summary}")); }
+            if !file.diff.is_empty() { rendered.extend(truncate_preview(&file.diff).split('\n').map(|line|render_patch_line(line,theme))); }
+        }
+        return rendered.join("\n");
+    }
+    format_patch_preview(preview,cwd,false).split('\n').map(|line|render_patch_line(line,theme)).collect::<Vec<_>>().join("\n")
+}
+pub fn format_pending_patch_paths(patch_text:&str)->String {
+    let paths=crate::text::extract_patched_paths(patch_text);
+    if paths.is_empty() { "Applying patch...".into() } else { format!("Applying patch...\n{}",paths.iter().map(|path|format!("• {path}")).collect::<Vec<_>>().join("\n")) }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +106,18 @@ mod tests {
     #[test] fn absolute_dot_segments_are_normalized_only_inside_cwd() { assert_eq!(display_path("/root/other/../src/a","/root"),"src/a"); assert_eq!(display_path("/root/../elsewhere/a","/root"),"/root/../elsewhere/a"); }
     #[test] fn changed_hunk_is_kept_in_line_window() { let lines=(1..=40).map(|i|format!("{}{:2} line",if i==30 { '+' } else { ' ' },i)).collect::<Vec<_>>().join("\n"); let preview=truncate_preview(&lines); assert!(preview.contains("+30 line")); assert_eq!(preview.lines().count(),16); assert!(preview.starts_with('…')); }
     #[test] fn plain_text_uses_head_and_tail() { let lines=(0..20).map(|i|i.to_string()).collect::<Vec<_>>().join("\n"); let preview=truncate_preview(&lines); assert_eq!(preview.lines().count(),16); assert!(preview.contains("7\n…\n13")); }
-    #[test] fn character_limit_counts_utf16() { let preview=truncate_preview(&"a".repeat(5000)); assert_eq!(preview.encode_utf16().count(),4000); assert!(preview.ends_with('…')); }
+    #[test] fn character_limit_counts_javascript_utf16_units() { let preview=truncate_preview(&"😀".repeat(3000)); assert_eq!(preview.encode_utf16().count(),4000); assert!(preview.ends_with('…')); }
     #[test] fn path_inside_cwd_becomes_relative() { assert_eq!(display_path("/root/src/a","/root"),"src/a"); assert_eq!(display_path("/other/a","/root"),"/other/a"); assert_eq!(display_path("/root","/root"),"."); }
+    struct PlainTheme;
+    impl crate::types::ApplyPatchTheme for PlainTheme {
+        fn fg(&self,_:crate::types::ApplyPatchThemeColor,text:&str)->String { text.into() }
+        fn bg(&self,_:crate::types::ApplyPatchThemeBg,text:&str)->String { text.into() }
+        fn bold(&self,text:&str)->String { text.into() }
+        fn inverse(&self,text:&str)->String { text.into() }
+    }
+    #[test] fn themed_preview_colors_added_and_removed_lines() {
+        let preview=ApplyPatchPreview{files:vec![ApplyPatchPreviewFile{file_path:"a".into(),move_path:None,operation:ApplyPatchOperation::Update,binary:None,diff:"-1 old\n+1 new".into(),patch:None,added:1,removed:1}],added:1,removed:1};
+        assert_eq!(render_patch_preview(&preview,"/root",&PlainTheme,true),"• Edited a (+1 -1)\n-1 old\n+1 new");
+        assert!(format_pending_patch_paths("*** Begin Patch\n*** Add File: a\n").contains("• a"));
+    }
 }

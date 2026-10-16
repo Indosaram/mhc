@@ -34,10 +34,10 @@ async fn apply_single_hunk(cwd:&Path,hunk:&ParsedPatch)->Result<(String,String,u
     let path=resolve_patch_path(cwd,Path::new(file));
     let move_path=if let ParsedPatch::Update{move_path:Some(destination),..}=hunk { if destination.is_empty() { None } else { Some(resolve_patch_path(cwd,Path::new(destination))) } } else { None };
     let mut paths=vec![path.clone()]; if let Some(destination)=&move_path { paths.push(destination.clone()); }
-    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error));
     // localeCompare can equate distinct spellings; break only those ties to keep
     // opposite-direction moves on the same global acquisition order.
-    paths.sort_by(|left,right|collator.compare(&left.to_string_lossy(),&right.to_string_lossy()).then_with(||left.cmp(right))); paths.dedup();
+    paths.sort_by(|left,right|crate::patch_diff::locale_compare(&left.to_string_lossy(),&right.to_string_lossy()).then_with(||left.cmp(right)));
+    paths.dedup_by(|left,right|crate::patch_diff::locale_compare(&left.to_string_lossy(),&right.to_string_lossy())==std::cmp::Ordering::Equal);
     let mut guards=Vec::new(); for path in paths { guards.push(maho_tools::file_mutation_queue::lock_file_mutation(&path).await.map_err(|error|MutationError::from(error.to_string()))?); }
     let source=read_patch_file_snapshot(&path).await?;
     match hunk {
@@ -108,6 +108,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test] async fn directory_symlink_can_target_outside_workspace() { let workspace=tempfile::tempdir().unwrap(); let outside=tempfile::tempdir().unwrap(); std::os::unix::fs::symlink(outside.path(),workspace.path().join("link")).unwrap(); apply_patch(workspace.path(),"*** Begin Patch\n*** Add File: link/outside.txt\n+outside\n*** End Patch").await.unwrap(); assert_eq!(tokio::fs::read_to_string(outside.path().join("outside.txt")).await.unwrap(),"outside\n"); }
     #[tokio::test] async fn directory_failure_is_not_a_context_reread_candidate() { let directory=tempfile::tempdir().unwrap(); tokio::fs::create_dir(directory.path().join("folder")).await.unwrap(); let result=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Delete File: folder\n*** End Patch").await.unwrap(); assert_eq!(result.failures[0].code.as_deref(),Some("EISDIR")); assert!(result.recovery_instructions.must_read_files.is_empty()); }
+    #[tokio::test] async fn missing_update_uses_node_enoent_message_shape() { let directory=tempfile::tempdir().unwrap(); let result=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Update File: missing\n@@\n-old\n+new\n*** End Patch").await.unwrap(); assert_eq!(result.failures[0].code.as_deref(),Some("ENOENT")); assert!(result.failures[0].message.starts_with("ENOENT: no such file or directory, open '")); }
     #[tokio::test] async fn progress_errors_do_not_interrupt_mutations() {
         let directory=tempfile::tempdir().unwrap(); tokio::fs::write(directory.path().join("first.txt"),"one\n").await.unwrap(); tokio::fs::write(directory.path().join("second.txt"),"two\n").await.unwrap();
         let callback=|_|Box::pin(async { Err("render failed".into()) }) as std::pin::Pin<Box<dyn std::future::Future<Output=Result<(),String>>+Send>>;
