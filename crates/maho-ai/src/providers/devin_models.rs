@@ -36,10 +36,20 @@ fn devin_model(id: &str, name: &str, context_window: u64) -> Model {
 pub fn devin_models() -> Vec<Model> {
     vec![
         devin_model("swe-2-high", "SWE-2 (high)", SWE_2_CONTEXT_WINDOW),
+        devin_model("swe-2-medium", "SWE-2 (medium)", SWE_2_CONTEXT_WINDOW),
         devin_model("swe-2-max", "SWE-2 (max)", SWE_2_CONTEXT_WINDOW),
-        devin_model("swe-2-low", "SWE-2 (low)", SWE_2_CONTEXT_WINDOW),
-        devin_model("swe-2-high-lite", "SWE-2 (high, lite)", SWE_2_CONTEXT_WINDOW),
         devin_model("swe-1-6", "SWE-1.6", SWE_1_6_CONTEXT_WINDOW),
         devin_model("swe-1-6-fast", "SWE-1.6 Fast", SWE_1_6_CONTEXT_WINDOW),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::devin_models;
+
+    #[test]
+    fn seeds_only_supported_swe_2_lanes() {
+        let ids: Vec<_> = devin_models().into_iter().map(|model| model.id).collect();
+        assert_eq!(ids, ["swe-2-high", "swe-2-medium", "swe-2-max", "swe-1-6", "swe-1-6-fast"]);
+    }
 }
