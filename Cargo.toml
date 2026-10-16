@@ -74,6 +74,7 @@ members = [
     "crates/omo/mcp-stdio-core",
     "crates/omo/boulder-state",
     "crates/omo/model-core",
+    "crates/omo/prompts-core",
     "crates/omo/memory-core",
     "crates/omo/utils",
     "crates/omo/omo-config-core",
@@ -153,6 +154,7 @@ publish = false
 maho-mcp-stdio-core = { path = "crates/omo/mcp-stdio-core" }
 maho-boulder-state = { path = "crates/omo/boulder-state" }
 maho-model-core = { path = "crates/omo/model-core" }
+maho-prompts-core = { path = "crates/omo/prompts-core" }
 maho-memory-core = { path = "crates/omo/memory-core" }
 maho-utils = { path = "crates/omo/utils" }
 maho-omo-config-core = { path = "crates/omo/omo-config-core" }
