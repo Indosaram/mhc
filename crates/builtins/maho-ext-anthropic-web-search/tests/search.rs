@@ -41,6 +41,18 @@ fn compat_opt_in() { let m=model("anthropic-messages","https://api.kimi.com",Som
 fn disabled() { let m=model("anthropic-messages","https://api.anthropic.com",None); let p=json!({"tools":[{"name":"web_search"}]}); assert_eq!(apply(&m,&p,false),p); }
 
 #[test]
+fn failure_fallback_marker_strips_server_search_and_marker() {
+    let model = model("anthropic-messages", "https://api.anthropic.com", None);
+    let payload = json!({"tools":[{"type":"web_search_20250305","name":"web_search"},{"name":"other"}]});
+    let marked = mark_server_search_fallback(&payload);
+    assert!(is_server_search_fallback(&marked));
+    let result = add_anthropic_web_search_to_payload(Some(&model), &marked, &SearchOptions { enabled: true, ..Default::default() });
+    assert_eq!(result["tools"], json!([{"name":"other"}]));
+    assert!(result.get(SERVER_SEARCH_FALLBACK_KEY).is_none());
+}
+
+
+#[test]
 fn default_on() { assert!(parse_enabled(None)); }
 
 #[test]
