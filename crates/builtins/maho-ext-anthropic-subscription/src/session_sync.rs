@@ -23,9 +23,13 @@ fn write_stable(value: &Value, out: &mut Vec<u8>) {
         _ => serde_json::to_writer(&mut *out, value).expect("JSON value"),
     }
 }
-pub fn session_sync_digest(value: &Value) -> String {
-    let mut bytes = Vec::new(); write_stable(value, &mut bytes);
+fn js_stable_digest(value: &Value) -> String {
+    let mut bytes = Vec::new();
+    write_stable(value, &mut bytes);
     format!("{:x}", Sha256::digest(bytes))
+}
+pub fn session_sync_digest(value: &Value) -> String {
+    js_stable_digest(value)
 }
 pub fn is_transmitted_message(message: &Value) -> bool {
     match message["role"].as_str() {
@@ -41,9 +45,30 @@ pub fn sent_message_hashes(messages: &[Value]) -> Vec<String> {
     messages.iter().filter(|message| is_transmitted_message(message)).map(|message| {
         let mut projected = Map::new();
         let keys: &[&str] = if message["role"] == "user" { &["role", "content"] } else { &["role", "toolCallId", "toolName", "content"] };
-        for key in keys { if let Some(value) = message.get(*key) { projected.insert((*key).into(), value.clone()); } }
+        for key in keys { if let Some(value) = message.get(*key) { projected.insert((*key).into(), if *key == "content" { image_neutral_content(value) } else { value.clone() }); } }
         session_sync_digest(&Value::Object(projected))
     }).collect()
+}
+fn image_neutral_content(content: &Value) -> Value {
+    let Some(blocks) = content.as_array() else { return content.clone(); };
+    let mut normalized = Vec::new();
+    let mut image_ids = Vec::new();
+    for block in blocks {
+        if block["type"] == "image" {
+            let id = format!("{:x}",Sha256::digest(block["data"].as_str().unwrap_or_default().as_bytes()));
+            image_ids.push(id[..12].to_owned());
+            normalized.push(json!({"type":"image","id":id[..12].to_owned()}));
+        } else if block["type"] == "text" && block["text"].as_str().is_some_and(|text|text.starts_with("[Image elided:")) {
+            if let Some((_, suffix)) = block["text"].as_str().and_then(|text|text.split_once(" (image id: ").or_else(||text.split_once(" (image ids: "))) {
+                for id in suffix.trim_end_matches(')').split(", ") {
+                    image_ids.push(id.to_owned());
+                    normalized.push(json!({"type":"image","id":id}));
+                }
+            }
+        } else { normalized.push(block.clone()); }
+    }
+    if image_ids.is_empty() { return content.clone(); }
+    Value::Array(normalized)
 }
 pub fn sent_hash_prefix_digest(hashes: &[String], count: usize) -> String { session_sync_digest(&json!(&hashes[..count.min(hashes.len())])) }
 pub fn build_delta_prompt_blocks(messages: &[Value], custom: &BTreeMap<String, String>) -> Vec<Value> {
@@ -59,14 +84,9 @@ pub fn build_delta_prompt_blocks(messages: &[Value], custom: &BTreeMap<String, S
     }
     blocks
 }
-static GENERATED_DATE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\nCurrent date: [0-9]{4}-[0-9]{2}-[0-9]{2}\nCurrent working directory: ").expect("date pattern"));
 pub struct ConfigFingerprint { pub system_prompt_hash: String, pub toolset_hash: String }
 pub fn config_fingerprint(options: &Value, context: &Value, auth_lane: &str, account_name: &str) -> ConfigFingerprint {
-    let mut prompt = options.get("systemPrompt").cloned().unwrap_or(Value::Null);
-    if let Some(text) = prompt.as_str() {
-        let generated = &*GENERATED_DATE;
-        prompt = json!(generated.replacen(text, 1, "\nCurrent date: <session-date>\nCurrent working directory: ").as_ref());
-    }
+    let prompt = options.get("systemPrompt").cloned().unwrap_or(Value::Null);
     let mut tools = Map::new();
     tools.insert("tools".into(), options.get("tools").cloned().unwrap_or_else(|| json!([])));
     let mut reasoning = Map::new();
@@ -78,7 +98,7 @@ pub fn config_fingerprint(options: &Value, context: &Value, auth_lane: &str, acc
         Value::Object(projection)
     }).collect();
     tools.insert("contextTools".into(), json!(context_tools));
-    for key in ["cwd", "permissionMode", "settingSources", "extraArgs", "pathToClaudeCodeExecutable", "includePartialMessages"] {
+    for key in ["cwd", "permissionMode", "settingSources", "settings", "extraArgs", "pathToClaudeCodeExecutable", "includePartialMessages", "longContextRefused"] {
         if let Some(value) = options.get(key) { tools.insert(key.into(), value.clone()); }
     }
     tools.insert("authLane".into(), json!(auth_lane)); tools.insert("accountName".into(), json!(account_name));
@@ -101,16 +121,23 @@ mod tests {
         two["toolCallId"] = json!("b"); assert_ne!(sent_message_hashes(&[one]), sent_message_hashes(&[two]));
     }
     #[test]
+    fn image_elision_preserves_sent_message_hash() {
+        let image = json!({"role":"user","content":[{"type":"text","text":"before"},{"type":"image","data":"image-data"},{"type":"text","text":"after"}]});
+        let id = format!("{:x}",Sha256::digest(b"image-data"));
+        let elided = json!({"role":"user","content":[{"type":"text","text":"before"},{"type":"text","text":format!("[Image elided: an older image was removed to keep the request within the provider's size limit.] (image id: {})",&id[..12])},{"type":"text","text":"after"}]});
+        assert_eq!(sent_message_hashes(&[image]), sent_message_hashes(&[elided]));
+    }
+    #[test]
     fn delta_preserves_empty_text_images_and_raw_string_blocks() {
         let blocks = build_delta_prompt_blocks(&[json!({"role":"user","content":""}),json!({"role":"toolResult","toolCallId":"c","toolName":"edit","content":["raw",{"type":"image","mimeType":"image/png","data":"aW1hZ2U="}]})], &BTreeMap::new());
         assert_eq!(blocks[0], json!({"type":"text","text":""})); assert_eq!(blocks[3]["text"], "raw"); assert_eq!(blocks[4]["source"]["media_type"], "image/png");
     }
     #[test]
-    fn date_normalization_preserves_cwd_and_extension_appends() {
+    fn system_prompt_fingerprint_preserves_verbatim_content() {
         let options = json!({"systemPrompt":"prefix\nCurrent date: 2026-10-01\nCurrent working directory: /repo\nappend"});
         let mut tomorrow = options.clone(); tomorrow["systemPrompt"] = json!("prefix\nCurrent date: 2026-10-02\nCurrent working directory: /repo\nappend");
         let fingerprint = |value: &Value| config_fingerprint(value, &json!({}), "ambient", "default");
-        assert_eq!(fingerprint(&options).system_prompt_hash, fingerprint(&tomorrow).system_prompt_hash);
+        assert_ne!(fingerprint(&options).system_prompt_hash, fingerprint(&tomorrow).system_prompt_hash);
         tomorrow["systemPrompt"] = json!("prefix\nCurrent date: 2026-10-02\nCurrent working directory: /other\nappend");
         assert_ne!(fingerprint(&options).system_prompt_hash, fingerprint(&tomorrow).system_prompt_hash);
     }
@@ -120,5 +147,14 @@ mod tests {
         let baseline = config_fingerprint(&json!({}), &json!({}), "ambient", "a");
         let changed = config_fingerprint(&json!({"effort":null}), &json!({}), "ambient", "a");
         assert_ne!(baseline.toolset_hash, changed.toolset_hash);
+        assert_ne!(session_sync_digest(&json!({"a":null})), session_sync_digest(&json!({})));
+    }
+    #[test]
+    fn fingerprints_include_compaction_settings_and_long_context_state() {
+        let baseline = config_fingerprint(&json!({}), &json!({}), "ambient", "a");
+        let compact = config_fingerprint(&json!({"settings":{"autoCompactEnabled":false}}), &json!({}), "ambient", "a");
+        let long_context = config_fingerprint(&json!({"longContextRefused":true}), &json!({}), "ambient", "a");
+        assert_ne!(baseline.toolset_hash, compact.toolset_hash);
+        assert_ne!(baseline.toolset_hash, long_context.toolset_hash);
     }
 }

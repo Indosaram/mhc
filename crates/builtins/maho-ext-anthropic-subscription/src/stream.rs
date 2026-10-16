@@ -39,6 +39,7 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
         let (mut pool, pool_error) = match pool { Ok(pool) => (pool, None), Err(error) => (None, Some(error)) };
         let mut pool_error = pool_error;
         let mut attempt = 0;
+        let mut retry_account = None;
         let mut started = false;
         let outcome = loop {
         let mut query = None;
@@ -51,10 +52,13 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
                 Some(pool) => {
                     let session = options.as_ref().and_then(|options| options.stream.request.affinity_session_id.as_deref().or(options.stream.session_id.as_deref()));
                     let cli_pin = crate::account_command::session_pin(session);
-                    let mut slot = crate::affinity::select_account(&pool.accounts, &crate::affinity::AffinityOptions { session_id: session, pinned_account: cli_pin.as_deref().or(pool.pinned_account.as_deref()), ..Default::default() }, (deps.now)() as f64)?;
+                    let mut slot = if let Some(name) = retry_account.take() {
+                        pool.accounts.iter().find(|slot| slot.name == name).cloned().ok_or_else(|| anyhow::anyhow!("retry account disappeared"))?
+                    } else {
+                        crate::affinity::select_account(&pool.accounts, &crate::affinity::AffinityOptions { session_id: session, pinned_account: cli_pin.as_deref().or(pool.pinned_account.as_deref()), ..Default::default() }, (deps.now)() as f64)?
+                    };
                     selected = Some(slot.clone());
-                    let refresh = deps.refresh.clone(); let access = slot.access.clone(); let expires = slot.expires;
-                    pool.refresh_selected(deps.store.as_ref(), &mut slot, (deps.now)() as f64, signal.clone().unwrap_or_else(|| maho_ai::utils::abort::AbortController::new().signal()), move |token, signal| async move { refresh.refresh(&maho_ai::auth::types::OAuthCredential::new(access, token, expires), &signal).await }).await?;
+                    pool.refresh_for_attempt(deps.store.as_ref(), &mut slot, (deps.now)() as f64, signal.clone().unwrap_or_else(|| maho_ai::utils::abort::AbortController::new().signal()), deps.refresh.clone()).await?;
                     (pool.lane, crate::auth_lane::prepared_environment(&pool.environment, pool.lane, &slot, &deps.agent_dir, (deps.now)() as u64)?, slot.name)
                 },
                 None => (crate::auth_lane::TokenInjection::Ambient, crate::auth_lane::ambient_environment(&deps.environment, request), "ambient".into()),
@@ -158,17 +162,28 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
         let original = json!({"message":error.to_string()});
         let classification = crate::errors::classify_sdk_error(&original);
         if !classification.retryable { break Err(crate::failover::ClassifiedSdkError {classification,original,suppress_turn_retry:visible}.into()); }
-        let blocked = crate::failover::blocked_account(&slot, classification, (deps.now)() as f64, attempt, crate::failover::DEFAULT_RATE_LIMIT_BLOCK_MS, &original);
-        if let Err(error) = crate::failover::persist_block(deps.store.as_ref(), crate::auth_lane::PROVIDER_ID, blocked.clone()).await { break Err(error); }
-        for account in &mut pool.accounts { if account.name == blocked.name { *account = blocked.clone(); } }
+        let retryable_kind = matches!(classification.kind, crate::errors::SdkErrorKind::Other | crate::errors::SdkErrorKind::Overloaded);
+        let retried = retryable_kind && attempt == 0 && !visible;
+        let blocked = if retried { slot.clone() } else { crate::failover::blocked_account(&slot, classification, (deps.now)() as f64, attempt, crate::failover::DEFAULT_RATE_LIMIT_BLOCK_MS, &original) };
+        if !retried {
+            if let Err(error) = crate::failover::persist_block(deps.store.as_ref(), crate::auth_lane::PROVIDER_ID, blocked.clone()).await { break Err(error); }
+            for account in &mut pool.accounts { if account.name == blocked.name { *account = blocked.clone(); } }
+        }
         crate::account_events::emit_provider_accounts_changed(crate::auth_lane::PROVIDER_ID);
         if visible { break Err(crate::failover::ClassifiedSdkError { classification, original, suppress_turn_retry:true }.into()); }
+        if retried {
+            retry_account = Some(slot.name.clone());
+            attempt += 1;
+            continue;
+        }
+        let previous_name = slot.name.clone();
         attempt += 1;
         if attempt as usize >= pool.accounts.len() { break Err(error); }
         let session = options.as_ref().and_then(|options| options.stream.request.affinity_session_id.as_deref().or(options.stream.session_id.as_deref()));
         let cli_pin = crate::account_command::session_pin(session);
         let next = match crate::affinity::select_account(&pool.accounts, &crate::affinity::AffinityOptions { session_id:session, pinned_account:cli_pin.as_deref().or(pool.pinned_account.as_deref()), ..Default::default() }, (deps.now)() as f64) { Ok(next) => next, Err(error) => break Err(error.into()) };
-        crate::account_events::emit_provider_account_failover(crate::auth_lane::PROVIDER_ID, &slot.name, &next.name, classification.kind);
+        retry_account = Some(next.name.clone());
+        crate::account_events::emit_provider_account_failover(crate::auth_lane::PROVIDER_ID, &previous_name, &next.name, classification.kind);
         };
         match outcome {
             Ok(()) => events.push(Event::Done { reason: match mapper.output.stop_reason { StopReason::ToolUse => DoneReason::ToolUse, StopReason::Length => DoneReason::Length, _ => DoneReason::Stop }, message: mapper.output }),
