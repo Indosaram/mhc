@@ -1,11 +1,18 @@
 use maho_ai::{model::Model,types::ThinkingLevel};
 
 pub const RECOMMENDED_DEFAULT_MODELS: &[(&str,ThinkingLevel)] = &[
-    ("kimi-k3",ThinkingLevel::Max),("gpt-6-astra",ThinkingLevel::High),
-    ("gpt-6-sol",ThinkingLevel::Medium),("gpt-5.6-sol",ThinkingLevel::Medium),
-    ("claude-fable-5-1",ThinkingLevel::High),("claude-opus-5-5",ThinkingLevel::Max),
-    ("glm-5.2",ThinkingLevel::Max),
+    ("claude-opus-5-5",ThinkingLevel::Medium),("claude-fable-5-1",ThinkingLevel::Xhigh),
+    ("kimi-k3",ThinkingLevel::Max),("gpt-6-astra",ThinkingLevel::Xhigh),
+    ("gpt-6.1-sol",ThinkingLevel::Medium),("glm-5.3",ThinkingLevel::Max),
 ];
+const CLAUDE_PROVIDERS:&[&str]=&["anthropic-subscription","anthropic","anthropic-api","github-copilot","opencode"];
+const KIMI_PROVIDERS:&[&str]=&["kimi-coding","kimi-for-coding","moonshotai","opencode-go"];
+const GPT_PROVIDERS:&[&str]=&["chatgpt-subscription","openai","github-copilot","opencode"];
+const GLM_PROVIDERS:&[&str]=&["zai-coding-plan","opencode-go"];
+fn ranked_providers(model_id:&str)->&'static[&'static str]{match model_id{
+    "claude-opus-5-5"|"claude-fable-5-1"=>CLAUDE_PROVIDERS,"kimi-k3"=>KIMI_PROVIDERS,
+    "gpt-6-astra"|"gpt-6.1-sol"=>GPT_PROVIDERS,"glm-5.3"=>GLM_PROVIDERS,_=>&[]
+}}
 pub fn canonical_model_id(id:&str)->String{
     let mut id=id.to_lowercase();
     while let Some(suffix)=["-ultrafast","-unlocked","-256k","-fast"].iter().find(|suffix|id.ends_with(**suffix)){
@@ -28,11 +35,14 @@ pub fn is_recommended(model:Option<&Model>,recommendations:&[Recommendation])->b
 }
 pub fn find_available_recommendation<'a>(recommendations:&'a [Recommendation],available:&'a [Model],has_auth:impl Fn(&Model)->bool)->Option<(&'a Recommendation,&'a Model)>{
     for recommendation in recommendations{
-        if let Some(model)=available.iter().find(|model|has_auth(model)&&canonical_model_id(&model.id)==recommendation.model_id){return Some((recommendation,model));}
+        let candidates=available.iter().filter(|model|has_auth(model)&&canonical_model_id(&model.id)==recommendation.model_id).collect::<Vec<_>>();
+        let providers=ranked_providers(&recommendation.model_id);
+        let model=if providers.is_empty(){candidates.first().copied()}else{providers.iter().find_map(|provider|candidates.iter().find(|model|model.provider==*provider).copied())};
+        if let Some(model)=model{return Some((recommendation,model));}
     }
     None
 }
-pub fn can_auto_switch(mode:&str,provenance:Option<&str>)->bool{mode!="app-server"&&matches!(provenance,Some("provider-default"|"first-available"))}
+pub fn can_auto_switch(_mode:&str,provenance:Option<&str>)->bool{matches!(provenance,Some("provider-default"|"first-available"))}
 
 use maho_ext_api::{Extension,ExtensionApi,ExtensionContext,ExtensionEvent,EventKind,EventResult,FlagType,FlagValue,ExtensionMode,ModelSelectSource,NotificationType,ExtensionFailure};
 use std::sync::{Arc,Mutex};
@@ -58,7 +68,7 @@ impl Extension for RecommendedModels{
                     guard.disabled=runtime.get_flag("no-recommended-models")==Some(FlagValue::Boolean(true))||settings.get().get("warnings").and_then(|value|value.get("offRecommendedModel")).and_then(|value|value.as_bool())==Some(true);
                     let configured=settings.get().get("recommendedModels").and_then(|value|value.as_array()).map(|ids|ids.iter().filter_map(|id|id.as_str().map(str::to_owned)).collect::<Vec<_>>());
                     guard.recommendations=recommendations_for(configured.as_deref());
-                    guard.can_switch=ctx.mode!=ExtensionMode::AppServer&&matches!(event.initial_model_provenance.as_deref(),Some("provider-default"|"first-available"));
+                    guard.can_switch=can_auto_switch(if ctx.mode==ExtensionMode::AppServer{"app-server"}else{"other"},event.initial_model_provenance.as_deref());
                     if guard.disabled||!guard.can_switch||is_recommended(ctx.model.as_ref(),&guard.recommendations){return Ok(EventResult::None);}
                     let available=ctx.model_registry.get_available();
                     let target=find_available_recommendation(&guard.recommendations,&available,|model|ctx.model_registry.has_configured_auth(model)).map(|(recommendation,model)|(recommendation.clone(),model.clone()));
