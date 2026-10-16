@@ -2,7 +2,7 @@
 //! `facts-queue` lock; the enqueue watermark is monotonic so a late-finishing older batch
 //! can never republish a range overlapping a retained newer entry.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -279,6 +279,65 @@ impl FactsQueue {
         })
     }
 
+    /// Claim pending entries for one worker, reclaiming claims older than fifteen minutes.
+    pub fn claim(
+        &self,
+        entries: &[FactsQueueEntry],
+        claim_id: &str,
+    ) -> Result<Vec<FactsQueueEntry>, FactsQueueError> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.locked(|| {
+            let pending = self.list_pending_unlocked()?;
+            let mut claims = self.read_claims_unlocked()?;
+            let requested: HashSet<String> = entries.iter().map(entry_key).collect();
+            let reclaim_before = (self.now)() - 15 * 60_000;
+            let claimed: Vec<_> = pending
+                .into_iter()
+                .filter(|pending| {
+                    let key = entry_key(&pending.entry);
+                    requested.contains(&key)
+                        && claims.get(&key).is_none_or(|claim| claim.claimed_at < reclaim_before)
+                })
+                .collect();
+            for pending in &claimed {
+                let claimed_at_millis = (self.now)();
+                claims.insert(
+                    entry_key(&pending.entry),
+                    PersistedClaim {
+                        claim_id: claim_id.to_string(),
+                        claimed_at: claimed_at_millis,
+                        claimed_at_iso: format_rfc3339_millis(claimed_at_millis),
+                    },
+                );
+            }
+            self.write_claims(&claims)?;
+            Ok(claimed.into_iter().map(|pending| pending.entry).collect())
+        })
+    }
+
+    /// Release only claims still owned by `claim_id`.
+    pub fn release_claim(
+        &self,
+        entries: &[FactsQueueEntry],
+        claim_id: &str,
+    ) -> Result<(), FactsQueueError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        self.locked(|| {
+            let mut claims = self.read_claims_unlocked()?;
+            for entry in entries {
+                let key = entry_key(entry);
+                if claims.get(&key).is_some_and(|claim| claim.claim_id == claim_id) {
+                    claims.remove(&key);
+                }
+            }
+            self.write_claims(&claims)
+        })
+    }
+
     /// Terminal success only: deletes the batch's files and advances the consumed watermark.
     pub fn mark_consumed(&self, entries: &[FactsQueueEntry]) -> Result<(), FactsQueueError> {
         if entries.is_empty() {
@@ -286,7 +345,7 @@ impl FactsQueue {
         }
         self.locked(|| {
             let pending = self.list_pending_unlocked()?;
-            let mut consumed_keys = std::collections::HashSet::new();
+            let mut consumed_keys = HashSet::new();
             for entry in entries {
                 consumed_keys.insert(format!(
                     "{}\0{}",
@@ -302,6 +361,10 @@ impl FactsQueue {
                     let _ = fs::remove_file(&candidate.file_path);
                 }
             }
+            let consumed_keys: HashSet<String> = entries.iter().map(entry_key).collect();
+            let mut claims = self.read_claims_unlocked()?;
+            claims.retain(|key, _| !consumed_keys.contains(key));
+            self.write_claims(&claims)?;
             self.advance_consumed(entries)?;
             Ok(())
         })
@@ -405,7 +468,11 @@ impl FactsQueue {
 
         let mut entries = Vec::new();
         for name in names {
-            if !name.ends_with(".json") || name == "consumed.json" || name == "failures.json" {
+            if !name.ends_with(".json")
+                || name == "consumed.json"
+                || name == "failures.json"
+                || name == "claims.json"
+            {
                 continue;
             }
             let file_path = self.layout.queue_dir.join(&name);
@@ -442,6 +509,65 @@ impl FactsQueue {
             }),
             Err(err) => Err(FactsQueueError::Io(err)),
         }
+    }
+
+    fn read_claims_unlocked(&self) -> Result<BTreeMap<String, PersistedClaim>, FactsQueueError> {
+        let path = self.layout.queue_dir.join("claims.json");
+        let raw = match fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(err) => return Err(FactsQueueError::Io(err)),
+        };
+        let Ok(values) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&raw) else {
+            return Ok(BTreeMap::new());
+        };
+        Ok(values
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let claim_id = value.get("claimId")?.as_str()?;
+                let claimed_at_iso = value.get("claimedAt")?.as_str()?;
+                let claimed_at = time::OffsetDateTime::parse(
+                    claimed_at_iso,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .ok()?
+                .unix_timestamp_nanos()
+                .checked_div(1_000_000)?;
+                let claimed_at = i64::try_from(claimed_at).ok()?;
+                (!claim_id.is_empty()).then(|| {
+                    (
+                        key,
+                        PersistedClaim {
+                            claim_id: claim_id.to_string(),
+                            claimed_at,
+                            claimed_at_iso: claimed_at_iso.to_string(),
+                        },
+                    )
+                })
+            })
+            .collect())
+    }
+
+    fn write_claims(
+        &self,
+        claims: &BTreeMap<String, PersistedClaim>,
+    ) -> Result<(), FactsQueueError> {
+        let payload: BTreeMap<_, _> = claims
+            .iter()
+            .map(|(key, claim)| {
+                (
+                    key,
+                    serde_json::json!({"claimId": claim.claim_id, "claimedAt": claim.claimed_at_iso}),
+                )
+            })
+            .collect();
+        let target = self.layout.queue_dir.join("claims.json");
+        let temporary = PathBuf::from(format!("{}.tmp", target.display()));
+        let mut json = serde_json::to_string_pretty(&payload)?;
+        json.push('\n');
+        write_file_0600(&temporary, json.as_bytes())?;
+        fs::rename(temporary, target)?;
+        Ok(())
     }
 
     fn advance_enqueued(
@@ -518,6 +644,17 @@ impl FactsQueue {
         fs::rename(&temporary, &target)?;
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct PersistedClaim {
+    claim_id: String,
+    claimed_at: i64,
+    claimed_at_iso: String,
+}
+
+fn entry_key(entry: &FactsQueueEntry) -> String {
+    format!("{}\0{}", entry.conversation_id, entry.range.end_message_id)
 }
 
 fn write_file_0600(path: &Path, content: &[u8]) -> io::Result<()> {
