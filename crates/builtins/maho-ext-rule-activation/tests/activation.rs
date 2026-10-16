@@ -49,6 +49,20 @@ fn collapsed_render_hides_rule_paths() {
  assert!(!result.render(80).join("\n").contains(".omo/rules/r.md"));
 }
 #[test]
+fn renderer_applies_theme_colors_to_notice_content() {
+ let mut theme = Theme::default();
+ theme.colors.insert(ThemeColor::ToolTitle.into(), "\u{1b}[31m".into());
+ theme.colors.insert(ThemeColor::Warning.into(), "\u{1b}[33m".into());
+ theme.colors.insert(ThemeColor::ToolOutput.into(), "\u{1b}[32m".into());
+ theme.colors.insert(ThemeColor::Dim.into(), "\u{1b}[90m".into());
+ let data = entry(json!({"kind":"project-rules","targetPath":"src/a.rs","rules":["AGENTS.md"]}));
+ let mut rendered = render_rule_activation_entry(&data, &EntryRenderOptions { expanded: true }, &theme).unwrap();
+ let text = rendered.render(120).join("\n");
+ assert!(text.contains("\u{1b}[31m"));
+ assert!(text.contains("\u{1b}[32m"));
+ assert!(text.contains("\u{1b}[90m"));
+}
+#[test]
 fn registered_renderer_matches_pinned_plain_theme_reference() {
  let mut api = maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("activation", "/tmp".into(), maho_ext_api::SourceInfo::default()), maho_ext_api::ExtensionSessionProfile::default(), maho_ext_api::EventBus::default(), maho_ext_api::ExtensionRuntime::default());
  maho_ext_rule_activation::index::register_rule_activation_renderer(&mut api);
