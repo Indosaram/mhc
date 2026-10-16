@@ -21,6 +21,15 @@ pub async fn read_text()->Option<String> {
     maho_tui::native_platform::get_native_clipboard()?.get_text().ok().flatten().filter(|text|!text.is_empty())
 }
 
+fn is_remote_session() -> bool {
+    ["SSH_CONNECTION", "SSH_CLIENT", "MOSH_CONNECTION"].iter().any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()))
+}
+fn encode_osc52(text: &str) -> Result<String, String> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    if encoded.len() > 100_000 { return Err("Clipboard unavailable: text exceeds the OSC 52 size limit".into()); }
+    Ok(format!("\x1b]52;c;{encoded}\x07"))
+}
+
 pub async fn copy(text: &str) -> Result<Option<String>, String> {
     let mut copied = false;
     if !cfg!(target_os="linux") && let Some(clipboard) = maho_tui::native_platform::get_native_clipboard() {
@@ -45,12 +54,34 @@ pub async fn copy(text: &str) -> Result<Option<String>, String> {
             if tokio::time::timeout(std::time::Duration::from_secs(5),transfer).await.unwrap_or(false) { copied=true; break; }
         }
     }
-    let remote = ["SSH_CONNECTION","SSH_CLIENT","MOSH_CONNECTION"].iter().any(|key|std::env::var(key).is_ok_and(|value|!value.is_empty()));
-    if remote || !copied {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(text);
-        if encoded.len() <= 100_000 { return Ok(Some(format!("\x1b]52;c;{encoded}\x07"))); }
+    let headless = cfg!(target_os="linux") && std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("TERMUX_VERSION").is_none();
+    let use_wsl_osc52 = cfg!(target_os="linux") && std::env::var_os("WSL_INTEROP").is_some() && std::env::var_os("WT_SESSION").is_some();
+    if !copied && use_wsl_osc52 {
+        return encode_osc52(text).map(Some);
     }
-    if copied { Ok(None) } else { Err("Failed to copy to clipboard".into()) }
+    if !copied && (is_remote_session() || headless) {
+        return encode_osc52(text).map(Some);
+    }
+    if copied { return Ok(None); }
+    if cfg!(target_os="linux") {
+        if std::env::var_os("TERMUX_VERSION").is_some() { return Err("Clipboard unavailable: install the Termux:API app and `termux-api` package".into()); }
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() { return Err("Clipboard unavailable: install `wl-clipboard` (`wl-copy`) or check Wayland access".into()); }
+        if std::env::var_os("DISPLAY").is_some() { return Err("Clipboard unavailable: install `xclip` or `xsel`, or check X11 access".into()); }
+    }
+    Err("Clipboard unavailable".into())
+}
+
+#[cfg(test)]
+mod clipboard_fallback_tests {
+    use super::*;
+    #[test]
+    fn osc52_enforces_encoded_size_limit() {
+        let encoded = encode_osc52("hello").expect("small clipboard text");
+        assert!(encoded.starts_with("\x1b]52;c;"));
+        assert!(encoded.ends_with('\u{7}'));
+        let large = "x".repeat(75_001);
+        assert!(encode_osc52(&large).is_err());
+    }
 }
 
 // ---- senpi `utils/clipboard-image.ts` --------------------------------------------------------
