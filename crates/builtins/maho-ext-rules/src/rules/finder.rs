@@ -1,6 +1,20 @@
 use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}};
 use super::{constants::*, scanner::{ScannedFile, scan_rule_files}, types::RuleCandidate};
 
+const HEPHAESTUS_BUNDLED_RULE_PREFIX: &str = "bundled-rules/hephaestus/";
+const HEPHAESTUS_DEFAULT_VARIANT_FILE: &str = "gpt-5.5.md";
+const HEPHAESTUS_MODEL_VARIANT_FILES: &[(&str, &str)] = &[("gpt-5.6", "gpt-5.6.md"), ("gpt-6", "gpt-6.md")];
+
+pub fn hephaestus_variant_file_for_model(model: Option<&str>) -> &'static str {
+    let model = model.unwrap_or_default().to_ascii_lowercase();
+    HEPHAESTUS_MODEL_VARIANT_FILES.iter().find(|(family, _)| model.contains(family)).map_or(HEPHAESTUS_DEFAULT_VARIANT_FILE, |(_, file)| file)
+}
+
+pub fn is_hephaestus_candidate_enabled(relative_path: &str, model: Option<&str>) -> bool {
+    !relative_path.starts_with(HEPHAESTUS_BUNDLED_RULE_PREFIX)
+        || relative_path == format!("{HEPHAESTUS_BUNDLED_RULE_PREFIX}{}", hephaestus_variant_file_for_model(model))
+}
+
 #[derive(Default)]
 pub struct RuleDiscoveryCache {
     pub scanned_rule_files: BTreeMap<PathBuf, Vec<ScannedFile>>,
