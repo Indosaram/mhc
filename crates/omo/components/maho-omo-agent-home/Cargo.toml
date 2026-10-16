@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "LicenseRef-SUL-1.0"
+description = "Native installer support for the maho agent plugin"
+
+[dependencies]
+sha2.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
