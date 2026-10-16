@@ -39,3 +39,4 @@ pub(crate) fn engaged_emergency_prune(messages: &[Value], window: u64, latch: Op
     if estimate_total_tokens(&pruned) <= target { return Some(EmergencyPruneResult { messages: pruned, needs_aggressive_compaction: false }); }
     Some(EmergencyPruneResult { messages: prune_old_messages_to_budget(&pruned, target), needs_aggressive_compaction: true })
 }
+
