@@ -19,7 +19,7 @@ fn parse_parked_wait(data: &Value, goal_id: &str) -> Option<ParkedGoalWait> {
     let delay_ms = number(data,"delayMs")?;
     if delay_ms <= 0.0 { return None; }
     let due_at_ms = number(data,"dueAtMs")?;
-    let cache = data.get("cache").and_then(|cache| Some(GoalCacheWarmMetrics { cached_tokens: number(cache,"cachedTokens")?, ttl_seconds: number(cache,"ttlSeconds"), estimated_saved_usd: number(cache,"estimatedSavedUsd") }));
+    let cache = data.get("cache").and_then(|cache| Some(GoalCacheWarmMetrics { cached_tokens: number(cache,"cachedTokens")?, ttl_seconds: number(cache,"ttlSeconds"), cache_lifetime: cache.get("cacheLifetime").and_then(Value::as_str).map(str::to_owned), estimated_saved_usd: number(cache,"estimatedSavedUsd") }));
     Some(ParkedGoalWait { iteration, delay_ms, due_at_ms, cache })
 }
 #[cfg(test)] mod tests {
