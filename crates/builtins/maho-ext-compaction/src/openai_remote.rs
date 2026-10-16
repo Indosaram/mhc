@@ -33,8 +33,14 @@ pub async fn run_remote_compaction(options: RemoteCompactionOptions<'_>, emit: &
         origin: options.origin.clone(), system_prompt: options.system_prompt.into(), session_id: options.session_id.into(),
         api_key: options.api_key.clone(), headers: options.headers.clone(), extra_body: options.extra_body.clone(), signal, runner: options.runner,
     };
-    if options.model.api == "openai-responses" && v2::supports_openai_responses_remote_compaction_v2(options.model)
-        && let Some(result) = v2::attempt_openai_responses_v2_compaction(stream_options(options.signal.clone()), options.request_id, options.timeout, emit).await.map_err(|error|error.to_string())? { return Ok(Some(result)); }
+    let compaction_timeout = v2::openai_remote_compaction_timeout(options.model, crate::overflow_retry::estimate_total_tokens(&options.request.body["input"].as_array().cloned().unwrap_or_default()) as f64, options.timeout);
+    let deadline = tokio::time::Instant::now() + compaction_timeout;
+    if (options.model.api == "openai-responses" && v2::supports_openai_responses_remote_compaction_v2(options.model))
+        || options.model.api == "openai-codex-responses" {
+        let result = v2::attempt_openai_responses_v2_compaction(stream_options(options.signal.clone()), options.request_id, deadline, emit).await.map_err(|error|error.to_string())?;
+        if result.is_some() { return Ok(result); }
+        if options.model.api == "openai-codex-responses" { return Ok(None); }
+    }
     let event = |action: &str, transport: &str, fields: Value| {
         let mut event = json!({"version":1,"action":action,"route":"builtin.compaction.openai_remote","requestId":options.request_id,"modelId":options.model.id,"transport":transport});
         if let Some(fields) = fields.as_object() { for (key,value) in fields {event[key]=value.clone();} }
@@ -42,7 +48,7 @@ pub async fn run_remote_compaction(options: RemoteCompactionOptions<'_>, emit: &
     };
     if v2::supports_openai_responses_websocket(options.model) {
         event("remote_started","websocket",json!({"inputItemCount":options.request.input_item_count}));
-        let result = crate::openai_remote_timeout::run_with_remote_timeout(options.signal,options.timeout,
+        let result = crate::openai_remote_timeout::run_with_remote_deadline(options.signal,deadline,
             |signal|run_openai_responses_stream_compaction(stream_options(signal),options.now_ms),
             ||event("remote_fallback","websocket",json!({"reason":"remote-compaction-timeout"})),
             ||maho_ai::utils::event_stream::StreamError::new("aborted")).await;
@@ -67,7 +73,7 @@ pub async fn run_remote_compaction(options: RemoteCompactionOptions<'_>, emit: &
     let request = OpenAiRemoteCompactionRequest {body,input_item_count:options.request.input_item_count,tokens_before:options.request.tokens_before};
     let headers = options.headers.iter().map(|(key,value)|Ok((reqwest::header::HeaderName::from_bytes(key.as_bytes()).map_err(|error|error.to_string())?,reqwest::header::HeaderValue::from_str(value).map_err(|error|error.to_string())?)))
         .collect::<Result<reqwest::header::HeaderMap, String>>()?;
-    crate::openai_remote_timeout::run_with_remote_timeout(options.signal,options.timeout, |signal|async move {
+    crate::openai_remote_timeout::run_with_remote_deadline(options.signal,deadline, |signal|async move {
         run_openai_compact_endpoint_compaction(CompactEndpointOptions {client:options.client,headers,model:options.model,request:&request,request_id:options.request_id,signal:&signal,first_kept_entry_id:options.first_kept_entry_id,now_ms:options.now_ms,origin:options.origin.clone()},emit).await
     },||event("remote_fallback","compact-endpoint",json!({"reason":"remote-compaction-timeout"})),||"aborted".to_owned()).await.map(Option::flatten)
 }
