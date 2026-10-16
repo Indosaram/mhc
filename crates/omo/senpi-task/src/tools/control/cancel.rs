@@ -19,6 +19,22 @@ pub const TASK_CANCEL_TOOL_LABEL: &str = "Task Cancel";
 
 const MISSING_TARGET_REASON: &str = "Provide task_id or name to identify the child task.";
 
+pub fn with_dropped_steering_notice(message: &str, count: usize) -> String {
+    if count == 0 {
+        return message.to_string();
+    }
+    let notice = format!(
+        "{count} queued message{} not delivered. Resend {} to a new task.",
+        if count == 1 { " was" } else { "s were" },
+        if count == 1 { "it" } else { "them" },
+    );
+    if message.ends_with(&notice) {
+        message.to_string()
+    } else {
+        format!("{message}\n{notice}")
+    }
+}
+
 pub const TASK_CANCEL_DESCRIPTION: &str = concat!(
     "Cancel a running child task and release its resources; the cancelled status is preserved so task_output can still report the outcome.",
     " ",
@@ -82,12 +98,13 @@ pub fn run_task_cancel(manager: &dyn CancelManager, params: &TaskCancelInput) ->
                 .get_status(&task_id)
                 .or_else(|| TaskStatus::parse("cancelled"))
                 .unwrap_or(previous_status);
-            tool_result(
-                &format!(
+            let message = format!(
                     "Cancelled {task_id} (was {}, now {}).",
                     previous_status.as_str(),
                     status.as_str()
-                ),
+                );
+            tool_result(
+                &message,
                 CancelResultDetails::Cancelled {
                     task_id,
                     previous_status,
