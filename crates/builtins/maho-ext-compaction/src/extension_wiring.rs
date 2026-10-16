@@ -193,6 +193,7 @@ pub async fn generate_core_route_compaction(
         let service_tier = context.service_tier.map(|tier|match tier {maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"})
             .or_else(||auth.service_tier.map(|tier|match tier {maho_ai::types::ServiceTierPreference::Auto=>"auto",maho_ai::types::ServiceTierPreference::Flex=>"flex",maho_ai::types::ServiceTierPreference::Priority=>"priority"}));
         let key = auth.auth.api_key;
+        let remote_deadline = crate::openai_remote_timeout::RemoteCompactionDeadline::new(std::time::Duration::from_millis(crate::openai_remote::openai_remote_compaction_timeout_ms(&model, event.preparation.tokens_before)));
         let branch = crate::speculative::branch_values(context);
         let messages = maho_core::session_manager::build_session_context(&branch, None).messages;
         let messages = messages.into_iter().map(serde_json::from_value).collect::<Result<Vec<maho_ext_api::AgentMessage>,_>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
@@ -216,7 +217,7 @@ pub async fn generate_core_route_compaction(
                     result = crate::openai_remote::run_remote_compaction(crate::openai_remote::RemoteCompactionOptions {
                         model:&request_model,request:&request,request_id:&event.request_id,first_kept_entry_id:&event.preparation.first_kept_entry_id,
                         system_prompt:&system_prompt,session_id,api_key:key,headers,extra_body:auth.extra_body,origin:serde_json::json!({"endpoint":origin.endpoint,"trustDomain":origin.trust_domain,"authTenantFingerprint":origin.auth_tenant_fingerprint}),
-                        signal:&signal,timeout:std::time::Duration::from_secs(15),now_ms:chrono::Utc::now().timestamp_millis() as u64,client:&client,runner:&runner,provider_request:Some(&prepared),
+                        signal:&signal,timeout:remote_deadline.next_attempt(),deadline:remote_deadline.clone(),now_ms:chrono::Utc::now().timestamp_millis() as u64,client:&client,runner:&runner,provider_request:Some(&prepared),
                     },&emit) => result,
                 };
                 if event.signal.is_aborted() {return Ok(EventResult::None);}

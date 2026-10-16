@@ -59,3 +59,37 @@ pub async fn run_with_remote_deadline_report<T, E, F: Future<Output = Result<T, 
         }
     }
 }
+
+pub struct RemoteCompactionDeadline {
+    deadline: tokio::time::Instant,
+    attempt_budget: Duration,
+}
+
+impl Clone for RemoteCompactionDeadline {
+    fn clone(&self) -> Self { Self { deadline: self.deadline, attempt_budget: self.attempt_budget } }
+}
+
+impl RemoteCompactionDeadline {
+    pub fn new(attempt_budget: Duration) -> Self {
+        Self { deadline: tokio::time::Instant::now() + attempt_budget, attempt_budget }
+    }
+
+    pub fn remaining(&self) -> Duration { self.deadline.saturating_duration_since(tokio::time::Instant::now()) }
+
+    pub fn next_attempt(&self) -> Duration { self.attempt_budget.min(self.remaining()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn deadline_budget_is_bounded_by_the_configured_duration() {
+        let deadline = RemoteCompactionDeadline::new(Duration::from_millis(20));
+        assert!(deadline.next_attempt() <= Duration::from_millis(20));
+        tokio::time::timeout(Duration::from_secs(1), tokio::time::sleep(Duration::from_millis(25)))
+            .await
+            .expect("bounded test timer");
+        assert_eq!(deadline.next_attempt(), Duration::ZERO);
+    }
+}
