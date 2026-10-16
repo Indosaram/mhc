@@ -30,14 +30,15 @@ fn empty() -> Value {
 }
 
 pub fn parse_frontmatter(content: &str, mode: FrontmatterMode) -> FrontmatterResult {
+    let normalized = content.strip_prefix('\u{feff}').unwrap_or(content);
     match mode {
-        FrontmatterMode::Rule => return parse_rule_frontmatter(content),
+        FrontmatterMode::Rule => return parse_rule_frontmatter(normalized),
         FrontmatterMode::Default => {}
     }
-    let Some(captures) = FRONTMATTER.captures(content) else {
+    let Some(captures) = FRONTMATTER.captures(normalized) else {
         return FrontmatterResult {
             data: empty(),
-            body: content.to_string(),
+            body: normalized.to_string(),
             had_frontmatter: false,
             parse_error: false,
         };

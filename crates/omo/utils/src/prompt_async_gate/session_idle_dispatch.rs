@@ -13,7 +13,9 @@ use super::reservations::{
     finish_prompt_reservation, get_active_reservation, next_reservation_token,
     set_prompt_reservation,
 };
-use super::timing::{Clock, get_prompt_gate_messages_fetch_timeout_ms, with_dispatch_timeout};
+use super::timing::{
+    Clock, get_prompt_gate_messages_fetch_timeout_ms, with_dispatch_timeout,
+};
 use super::types::{
     InternalPromptDispatchResult, PromptAsyncReservation, PromptGateClient, PromptSessionName,
 };
@@ -168,6 +170,7 @@ where
             return InternalPromptDispatchResult::Active;
         }
     }
+
 
     log(
         &format!(
