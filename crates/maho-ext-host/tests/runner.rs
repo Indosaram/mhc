@@ -98,6 +98,25 @@ fn extension(path: &str, kind: EventKind, handler: ExtensionHandler) -> LoadedEx
     let mut ext = LoadedExtension::new(path, "/tmp".into(), SourceInfo { path: path.into(), source: "inline".into(), ..Default::default() });
     ext.handlers.insert(kind, vec![handler]); ext
 }
+#[test]
+fn new_runtime_event_names_round_trip() {
+    for (kind, name) in [
+        (EventKind::ProviderStreamEvent, "provider_stream_event"),
+        (EventKind::AgentBeforeSettle, "agent_before_settle"),
+        (EventKind::SessionControlWake, "session_control_wake"),
+        (EventKind::ToolActivated, "tool_activated"),
+    ] {
+        assert_eq!(EventKind::parse(name), Some(kind));
+        assert!(EventKind::ALL.contains(&kind));
+    }
+}
+#[test]
+fn preview_unsafe_handlers_are_reported_by_extension_path() {
+    let mut safe = extension("safe", EventKind::BeforeAgentStart, none());
+    safe.handler_options.insert(EventKind::BeforeAgentStart, vec![ExtensionHandlerOptions { preview_safe: true, mutates_messages: None }]);
+    let unsafe_ext = extension("unsafe", EventKind::BeforeAgentStart, none());
+    assert_eq!(runner(vec![safe, unsafe_ext]).preview_unsafe_before_agent_start_paths(), vec!["unsafe"]);
+}
 fn runner(extensions: Vec<LoadedExtension>) -> ExtensionRunner { ExtensionRunner::new(extensions, ExtensionRuntime::default(), EventBus::default(), context()) }
 fn before() -> BeforeAgentStartEvent { BeforeAgentStartEvent { prompt: "hello".into(), images: None, system_prompt: "base".into(), system_prompt_options: BuildSystemPromptOptions::default() } }
 fn input() -> InputEvent { InputEvent { input_id: "id".into(), text: "X".into(), images: None, source: InputSource::Interactive, streaming_behavior: None } }
