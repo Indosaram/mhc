@@ -260,6 +260,11 @@ pub fn execute_plan(input: ExecutePlanInput<'_, '_>) -> Result<MigrationRunResul
     diagnostics.extend(prepared.diagnostics.clone());
 
     let moves = backup_moves(&existing_sources, &plan.id, file_system, &protected_paths)?;
+    let planned_backup = if replace_target {
+        None
+    } else {
+        moves.iter().find(|movement| movement.from == plan.target_path).map(|movement| movement.to.clone())
+    };
     let preview = MigrationPreview {
         backup_moves: moves.clone(),
         target_path: plan.target_path.clone(),
@@ -307,6 +312,7 @@ pub fn execute_plan(input: ExecutePlanInput<'_, '_>) -> Result<MigrationRunResul
         &prepared,
         &plan.target_path,
         input.write_target,
+        planned_backup.as_deref(),
     )?;
     if let Some(on_boundary) = input.on_boundary {
         on_boundary(MigrationBoundary::TargetWritten)?;

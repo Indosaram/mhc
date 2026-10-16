@@ -58,6 +58,27 @@ fn write_backup(
     }
 }
 
+fn write_planned_backup(
+    planned_path: &str,
+    content: &str,
+    file_system: &dyn OmoConfigWriteFileSystem,
+) -> Result<String, OmoConfigWriteError> {
+    if file_system.exists(planned_path)
+        && file_system.read(planned_path).is_ok_and(|existing| existing == content)
+    {
+        return Ok(planned_path.to_string());
+    }
+    let mut attempt = 0usize;
+    loop {
+        let candidate = backup_candidate(planned_path, attempt);
+        match file_system.write_exclusive(&candidate, content) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind == FsErrorKind::Exists => attempt += 1,
+            Err(error) => return Err(OmoConfigWriteError::new(planned_path, "backup", error.message)),
+        }
+    }
+}
+
 fn resolve_write_path(
     options: &UpdateOmoConfigOptions<'_>,
     file_system: &dyn OmoConfigWriteFileSystem,
@@ -201,7 +222,10 @@ pub fn update_omo_config(
     if existed {
         assert_config_path_is_safe(&path, file_system)?;
         let timestamp = backup_suffix(&options.timestamp.clone().unwrap_or_else(default_timestamp));
-        backup_path = Some(write_backup(&path, &content, file_system, &timestamp)?);
+        backup_path = Some(match options.backup_path.as_deref() {
+            Some(planned_path) => write_planned_backup(planned_path, &content, file_system)?,
+            None => write_backup(&path, &content, file_system, &timestamp)?,
+        });
     }
 
     let mut next_content = content;

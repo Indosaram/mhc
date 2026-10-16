@@ -155,6 +155,7 @@ pub struct UpdateOmoConfigOptions<'a> {
     pub project_dir: Option<String>,
     pub scope: &'a str,
     pub target_path: Option<String>,
+    pub backup_path: Option<String>,
     pub timestamp: Option<String>,
 }
 

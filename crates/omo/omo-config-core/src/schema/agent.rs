@@ -11,6 +11,18 @@ pub fn omo_agent_model_entry_schema() -> Node {
     union(vec![string(), omo_fallback_model_object_schema()])
 }
 
+fn permission_value_schema() -> Node {
+    enumeration(&["ask", "allow", "deny"])
+}
+
+fn bash_permission_schema() -> Node {
+    union(vec![permission_value_schema(), record(permission_value_schema())])
+}
+
+fn agent_permission_schema() -> Node {
+    record(union(vec![permission_value_schema(), record(permission_value_schema())]))
+}
+
 fn omo_agent_def_input_spec() -> ObjectSpec {
     ObjectSpec {
         fields: vec![
@@ -30,6 +42,8 @@ fn omo_agent_def_input_spec() -> ObjectSpec {
             optional("max_turns", nonnegative_integer()),
             optional("temperature", number_between(0.0, 2.0)),
             optional("disable", boolean()),
+            optional("permission", agent_permission_schema()),
+            optional("prompt_append", string()),
         ],
         strict: true,
         preprocess: Some(normalize_legacy_model_fields as PreprocessFn),
