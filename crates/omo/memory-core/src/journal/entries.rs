@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Maximum characters retained for tool arguments in journal entries.
 pub const TOOL_ARGS_TRUNCATE_LIMIT: usize = 300;
+pub const TOOL_RESULT_TRUNCATE_LIMIT: usize = 4096;
 
 /// Redacted reasoning placeholder.
 pub const REDACTED_REASONING_TEXT: &str = "[REDACTED REASONING]";
@@ -243,6 +244,17 @@ fn truncate_str(s: &str, limit: usize) -> &str {
     }
 }
 
+fn truncate_tool_result(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= TOOL_RESULT_TRUNCATE_LIMIT { return s.to_string(); }
+    let head_len = TOOL_RESULT_TRUNCATE_LIMIT * 3 / 4;
+    let tail_len = TOOL_RESULT_TRUNCATE_LIMIT - head_len;
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    format!("{head}\n…[truncated {} chars]…\n{tail}", chars.len() - TOOL_RESULT_TRUNCATE_LIMIT)
+}
+
+
 /// Project a single transcript message into normalized journal entries.
 pub fn project_transcript_entries(
     message: &TranscriptProjection,
@@ -321,7 +333,7 @@ pub fn project_transcript_entries(
                     kind: "tool_call".to_string(),
                     name: tool_call.name.clone(),
                     args_text,
-                    result_text: tool_call.result_text.clone(),
+                    result_text: tool_call.result_text.as_deref().map(truncate_tool_result),
                     result_ok: tool_call.result_ok,
                     captured_at: captured_at.to_string(),
                     source_line_id: format!("{message_id}:tool:{}", tool_call.call_id),
