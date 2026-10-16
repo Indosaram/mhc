@@ -262,6 +262,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                 let result = (|| {
                     let maho_ext_api::ExtensionEvent::Context { messages, entry_ids } = event else { return Ok(maho_ext_api::EventResult::None); };
                     let lane_owns_compaction = lane_policy::live_disables_senpi_compaction(&context_lane, context);
+                    let append_only_transcript = lane_policy::live_has_append_only_transcript(context);
                     let usage = context.get_context_usage()?;
                     let settings = extension_wiring::live_settings(context)?;
                     let window = usage.as_ref().map_or_else(||context.model.as_ref().map_or(200_000, |model|model.context_window), |usage|usage.context_window);

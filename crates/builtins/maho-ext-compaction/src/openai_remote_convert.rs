@@ -38,6 +38,7 @@ fn convert_message(message:&Value,index:usize,image_capable:bool)->Vec<Value> {
             } else {json!(if !text.is_empty() {text} else if !images.is_empty() {"(see attached image)".into()} else {"(no tool output)".into()})};
             vec![json!({"type":"function_call_output","call_id":message["toolCallId"].as_str().unwrap_or_default().split('|').next().unwrap_or_default(),"output":output})]
         }
+        Some("system") | Some("configurationUpdate")=>Vec::new(),
         _=>Vec::new(),
     }
 }
@@ -52,4 +53,18 @@ pub fn convert_branch_entries(entries:&[Value],image_capable:bool)->Vec<Value> {
         pending.extend(session_entry_to_context_messages(entry));
     }
     flush(&mut pending,&mut items,&mut index);items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn system_and_configuration_messages_are_not_remote_input() {
+        assert!(convert_pending_messages(&[
+            json!({"role":"system","content":"private prompt","timestamp":0}),
+            json!({"role":"configurationUpdate","timestamp":0}),
+        ], false).is_empty());
+    }
 }

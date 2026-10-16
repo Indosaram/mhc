@@ -3,7 +3,7 @@ use std::{fs::{self, OpenOptions}, io::Write, path::{Path, PathBuf}};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use serde_json::{Map, Value, json};
 
-const ALLOWED_KEYS: &[&str] = &["origin", "reason", "route", "variant", "generation", "requestId", "tokens", "tokensBefore", "savedTokens", "savingsRatio", "contextWindow", "threshold", "remainingSec", "count", "durationMs"];
+const ALLOWED_KEYS: &[&str] = &["origin", "reason", "route", "variant", "generation", "requestId", "sessionId", "tokens", "tokensBefore", "savedTokens", "savingsRatio", "contextWindow", "threshold", "remainingSec", "count", "durationMs"];
 const EVENTS: &[&str] = &["speculative_started", "speculative_applied", "speculative_stale", "speculative_invalidated", "idle_trigger", "idle_applied", "blocking_started", "warm_consumed", "core_route_generated", "skip_cap", "skip_breaker", "skip_cursor_mid_turn", "threshold_trigger", "hard_limit_trigger", "grace_deferred", "breaker_deterministic_fallback", "emergency_prune", "ineffective_counted", "summary_failed", "remote_aborted", "blocking_aborted"];
 
 /// Object references retain JavaScript identity, including shared and cyclic values.
@@ -118,5 +118,20 @@ impl CompactionLogger {
         let data = data.iter().filter(|(key, _)|ALLOWED_KEYS.contains(&key.as_str()))
             .filter_map(|(key, index)|safe_graph_value(values, *index).map(|value|(key.clone(),value))).collect();
         self.log(level, event, Some(&data), sink);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn session_id_is_an_allowed_log_field() {
+        let data = json!({"sessionId":"session-1","unlisted":"secret"});
+        let line = format_line("now", "info", "idle_trigger", data.as_object());
+        let value: Value = serde_json::from_str(&line).expect("log line is JSON");
+        assert_eq!(value["sessionId"], "session-1");
+        assert!(value.get("unlisted").is_none());
     }
 }
