@@ -50,6 +50,7 @@ fn to_item(value: &Value) -> SpawnItemInput {
         isolated: value.get("isolated").and_then(Value::as_bool),
         apply: value.get("apply").and_then(Value::as_bool),
         merge: merge_field(value),
+        run_in_background: value.get("run_in_background").and_then(Value::as_bool),
     }
 }
 
@@ -340,4 +341,7 @@ fn batch_background_flags_and_kernel_tools_survive_normalization() {
     assert_eq!(prepared["run_in_background"], json!(true));
     assert_eq!(prepared["tasks"][0]["run_in_background"], json!(false));
     assert_eq!(prepared["tasks"][1]["run_in_background"], json!(true));
+    let resolved = resolve_spawn_items(&to_params(&prepared)).expect("resolved items");
+    assert_eq!(resolved[0].run_in_background, Some(false));
+    assert_eq!(resolved[1].run_in_background, Some(true));
 }

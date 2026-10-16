@@ -2,7 +2,7 @@
 
 use team_core::types::TeamSpec;
 
-use crate::agents::curated_readonly_agent_names;
+use crate::agents::{canonical_agent_name, curated_readonly_agent_names, ulw_reviewer_agent_names};
 use crate::team::errors::{SenpiTeamSpecError, SenpiTeamSpecErrorCode};
 
 pub type MemberPredicate = Box<dyn Fn(&str) -> bool + Send + Sync>;
@@ -51,8 +51,9 @@ pub fn validate_senpi_team_members(spec: &TeamSpec, ports: &SenpiTeamMemberPorts
             continue;
         }
 
-        let subagent_type = member.subagent_type.as_deref().unwrap_or_default();
-        if curated.contains(subagent_type) {
+        let subagent_type = member.subagent_type.as_deref().unwrap_or_default().trim();
+        let canonical = canonical_agent_name(subagent_type);
+        if curated.contains(canonical.as_str()) {
             return Err(SenpiTeamSpecError::new(
                 format!(
                     "curated read-only agent \"{subagent_type}\" cannot be a team member; delegate via the task tool instead"
@@ -62,7 +63,15 @@ pub fn validate_senpi_team_members(spec: &TeamSpec, ports: &SenpiTeamMemberPorts
             ));
         }
 
-        if !(ports.is_known_agent)(subagent_type) {
+        if ulw_reviewer_agent_names().contains(canonical.as_str()) {
+            return Err(SenpiTeamSpecError::new(
+                format!("ulw reviewer agent \"{subagent_type}\" cannot be a team member; process-mode members drop reviewer instructions and tool allowlists, so delegate via the task tool instead"),
+                SenpiTeamSpecErrorCode::UnknownSubagentType,
+                &spec.name,
+            ));
+        }
+
+        if !(ports.is_known_agent)(canonical.as_str()) {
             let available = available_hint("agents", ports.agent_names.as_ref());
             return Err(SenpiTeamSpecError::new(
                 format!(
