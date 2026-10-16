@@ -72,3 +72,18 @@ exec /bin/sleep 300"#);
     tokio::time::timeout(Duration::from_secs(10),handle.events.recv()).await.unwrap().unwrap().unwrap(); handle.abort();
     assert!(matches!(tokio::time::timeout(Duration::from_secs(10),handle.completed).await.unwrap().unwrap().unwrap(),TransportOutcome::Aborted));
 }
+
+#[tokio::test]
+async fn abort_reaps_descendant_after_group_leader_exits() {
+    let root=tempfile::tempdir().unwrap();
+    let binary=executable(root.path(),r#"/bin/sleep 300 &
+child=$!
+printf '%s\n' '{"type":"thinking","subtype":"delta","text":"ready"}'
+wait "$child""#);
+    let mut handle=start(root.path(),&binary,"slow");
+    let ready=tokio::time::timeout(Duration::from_secs(10),handle.events.recv()).await.unwrap().unwrap().unwrap();
+    assert_eq!(ready["text"],"ready");
+    handle.abort();
+    assert!(matches!(tokio::time::timeout(Duration::from_secs(10),handle.completed).await.unwrap().unwrap().unwrap(),TransportOutcome::Aborted));
+    assert!(nix::sys::signal::kill(nix::unistd::Pid::from_raw(i32::try_from(handle.pid).unwrap()),None).is_err());
+}
