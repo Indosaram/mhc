@@ -1,5 +1,17 @@
 mod support;
 use maho_ext_api::*;
+#[tokio::test] async fn apply_patch_checks_each_changed_file() -> Result<(), Box<dyn std::error::Error>> {
+ use std::sync::{Arc,Mutex};
+ let hooks=Arc::new(Mutex::new(Vec::new())); let observed=hooks.clone();
+ let mut api=ExtensionApi::new(LoadedExtension::new("checker","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+ maho_omo_comment_checker::component::CommentCheckerComponent{options:maho_omo_comment_checker::types::CommentCheckerComponentOptions{resolve_binary:Some(Arc::new(||Some("/checker".into()))),run_comment_checker:Some(Arc::new(move|input|{observed.lock().expect("hooks").push(input.hook_input.tool_input.file_path.clone());Box::pin(async{Ok(comment_checker_core::CheckResult{has_comments:true,message:"comment".into(),failure:None})})})),..Default::default()},..Default::default()}.register(&mut api);
+ let mut ctx=support::context(); ctx.cwd="/workspace".into();
+ let mut event=ExtensionEvent::ToolResult(ToolResultEvent{tool_name:"apply_patch".into(),tool_call_id:"id".into(),input:serde_json::json!({"patchText":"*** Begin Patch\n*** Update File: a.rs\n@@\n-old\n+new\n*** Update File: b.rs\n@@\n-before\n+after\n*** End Patch"}),content:vec![],details:None,is_error:false,usage:None});
+ let result=api.registered.handlers[&EventKind::ToolResult][0](&mut event,&ctx).await?;
+ assert!(matches!(result,EventResult::ToolResult(_)));
+ assert_eq!(*hooks.lock().expect("hooks"),vec![Some("/workspace/a.rs".into()),Some("/workspace/b.rs".into())]);
+ Ok(())
+}
 #[tokio::test] async fn injected_hook_preserves_metadata_status_and_original_content()->Result<(),Box<dyn std::error::Error>> {
  use std::sync::{Arc,Mutex};let hooks=Arc::new(Mutex::new(Vec::new()));let captured=hooks.clone();let statuses=Arc::new(Mutex::new(Vec::new()));let observed=statuses.clone();
  let mut api=ExtensionApi::new(LoadedExtension::new("checker","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());maho_omo_comment_checker::component::CommentCheckerComponent{options:maho_omo_comment_checker::types::CommentCheckerComponentOptions{resolve_binary:Some(Arc::new(||Some("/checker".into()))),run_comment_checker:Some(Arc::new(move|input|{captured.lock().expect("hooks").push(input);Box::pin(async{Ok(comment_checker_core::CheckResult{has_comments:true,message:"issue\r\n".into(),failure:None})})})),download_binary:None},..Default::default()}.register(&mut api);

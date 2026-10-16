@@ -10,6 +10,11 @@ use comment_checker_core::{
 };
 
 use crate::constants::{COMMENT_CHECKER_CACHE_DIR_NAME, COMMENT_CHECKER_ENV_KEY};
+use crate::utils::is_missing_module_value;
+
+pub fn is_missing_module_error(value: &serde_json::Value) -> bool {
+    is_missing_module_value(value)
+}
 
 pub fn resolve_senpi_comment_checker_binary(
     env: &BTreeMap<String, String>,
