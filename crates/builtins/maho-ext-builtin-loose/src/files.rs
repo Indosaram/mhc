@@ -86,11 +86,15 @@ impl Component for FilePicker{
 pub(crate) async fn open_code(sender:&ExtensionApi,ctx:&ExtensionContext,path:&str)->Result<(),ExtensionFailure>{
     let (command,args)=if cfg!(windows){
         if crate::diff::windows_unsafe_cmd_path(path){ctx.ui.notify(&format!("Refusing to open {path}: path contains Windows cmd metacharacters (& | < > ^ % or newline)."),NotificationType::Error);return Ok(());}
-        ("cmd",vec!["/d".into(),"/s".into(),"/c".into(),format!("code -g {}",crate::diff::quote_cmd_arg(path))])
+        ("cmd",vec!["/d".into(),"/s".into(),"/c".into(),crate::diff::windows_code_command_line(path)])
     }else{("code",vec!["-g".into(),path.into()])};
     let result=sender.exec(command,&args,ExecOptions{cwd:Some(ctx.cwd.clone()),..Default::default()}).await?;
     if result.code!=0{ctx.ui.notify(&format!("Failed to open {path} (exit {}){}",result.code,if result.stderr.trim().is_empty(){String::new()}else{format!(": {}",result.stderr.trim())}),NotificationType::Error);}
+    if let Some(warning)=successful_open_stderr_warning(path,result.code,&result.stderr){ctx.ui.notify(&warning,NotificationType::Warning);}
     Ok(())
+}
+pub fn successful_open_stderr_warning(path:&str,code:i32,stderr:&str)->Option<String>{
+    (code==0&&!stderr.trim().is_empty()).then(||format!("code reported a problem opening {path}: {}",stderr.trim()))
 }
 pub struct Files{pub render_binding:RenderBinding}
 impl Extension for Files{

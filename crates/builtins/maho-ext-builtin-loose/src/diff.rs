@@ -15,6 +15,17 @@ pub fn parse_status(stdout: &str) -> Vec<FileInfo> {
 }
 pub fn windows_unsafe_cmd_path(path: &str) -> bool { path.contains(['&','|','<','>','^','%','\r','\n']) }
 pub fn quote_cmd_arg(value: &str) -> String { format!("\"{}\"", value.replace('"', "\"\"")) }
+pub fn windows_code_command_line(path: &str) -> String { format!("code {}", quote_cmd_arg(path)) }
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+    #[test]
+    fn windows_code_open_uses_plain_file_argument() {
+        assert_eq!(windows_code_command_line(r"C:\work\file.rs"), r#"code "C:\work\file.rs""#);
+        assert!(!windows_code_command_line(r"C:\work\file.rs").contains("-g"));
+    }
+}
 
 use maho_ext_api::*;
 use std::sync::{Arc,Mutex};
