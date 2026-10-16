@@ -36,7 +36,12 @@ fn positional(result: &mut Args, value: &str) {
     if let Some(file) = value.strip_prefix('@') { result.file_args.push(file.to_owned()); } else { result.messages.push(value.to_owned()); }
 }
 pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, String> {
-    let mut result = Args::default(); let mut i = 0;
+    let mut result = Args::default();
+    if args.first().is_some_and(|arg| arg == "app-server") {
+        result.diagnostic(true, format!("The app-server command has been removed. Use \"{} --mode rpc\" for process integration.", maho_core::config::app_name()));
+        return Ok(result);
+    }
+    let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str(); let next = args.get(i + 1).map(String::as_str);
         match arg {
@@ -78,12 +83,11 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
             }
             "--listen" if result.mode == Some(Mode::Rpc) => if let Some(value) = next.filter(|v| !v.starts_with("--")) { result.listen = Some(value.to_owned()); result.multi_session = true; i += 1; } else { result.diagnostic(true, "--listen requires a value"); },
             "--list-models" => { let search = next.filter(|v| !v.starts_with('-') && !v.starts_with('@')); result.list_models = Some(search.unwrap_or("").to_owned()); if search.is_some() { i += 1; } }
-            "--provider" | "--model" | "--api-key" | "--system-prompt" | "--append-system-prompt" | "--mode" | "--session" | "--session-id" | "--fork" | "--session-dir" | "--models" | "--tools" | "-t" | "--exclude-tools" | "-xt" | "--thinking" | "--export" | "--extension" | "-e" | "--skill" | "--prompt-template" | "--theme" if next.is_some() => {
+            "--provider" | "--model" | "--api-key" | "--system-prompt" | "--append-system-prompt" | "--session" | "--session-id" | "--fork" | "--session-dir" | "--models" | "--tools" | "-t" | "--exclude-tools" | "-xt" | "--thinking" | "--export" | "--extension" | "-e" | "--skill" | "--prompt-template" | "--theme" if next.is_some() => {
                 if let Some(value) = next { i += 1; match arg {
                     "--provider" => { if let Some(error) = maho_ai::legacy_provider_ids::legacy_provider_id_rejection(value) { return Err(error); } result.provider = Some(value.to_owned()); }
                     "--model" => result.model = Some(value.to_owned()), "--api-key" => result.api_key = Some(value.to_owned()),
                     "--system-prompt" => result.system_prompt = Some(value.to_owned()), "--append-system-prompt" => result.append_system_prompt.push(value.to_owned()),
-                    "--mode" => result.mode = match value { "text" => Some(Mode::Text), "json" => Some(Mode::Json), "rpc" => Some(Mode::Rpc), _ => None },
                     "--session" => result.session = Some(value.to_owned()), "--session-id" => result.session_id = Some(value.to_owned()), "--fork" => result.fork = Some(value.to_owned()), "--session-dir" => result.session_dir = Some(value.to_owned()),
                     "--models" => result.models = Some(value.split(',').map(|v| v.trim().to_owned()).collect()),
                     "--tools" | "-t" => result.tools = Some(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned).collect()),
@@ -93,6 +97,14 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
                     "--skill" => result.skills.push(value.to_owned()), "--prompt-template" => result.prompt_templates.push(value.to_owned()), "--theme" => result.themes.push(value.to_owned()), _ => unreachable!(),
                 } }
             }
+            "--mode" => match next {
+                None => result.diagnostic(true, "--mode requires text, json, or rpc"),
+                Some(value) if value.starts_with('-') => result.diagnostic(true, "--mode requires text, json, or rpc"),
+                Some("text") => { result.mode = Some(Mode::Text); i += 1; },
+                Some("json") => { result.mode = Some(Mode::Json); i += 1; },
+                Some("rpc") => { result.mode = Some(Mode::Rpc); i += 1; },
+                Some(value) => { i += 1; result.diagnostic(true, format!("Invalid mode \"{value}\". Valid values: text, json, rpc")); },
+            },
             _ if arg.starts_with('@') => positional(&mut result, arg),
             _ if arg.starts_with("--") => {
                 let name = &arg[2..];
@@ -110,7 +122,6 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
 pub fn help_text(grok_neo_enabled: bool, extension_flags: &str) -> String {
     include_str!("help.txt").replace("{grok_neo}", if grok_neo_enabled { "  --grok-neo                     Launch the experimental grok interactive chrome\n" } else { "" }).replace("{extension_flags}", extension_flags)
 }
-/// senpi `printHelp`'s "Extension CLI Flags:" section; empty when no extension registered a flag.
 pub fn extension_flags_text(flags: &[serde_json::Value]) -> String {
     if flags.is_empty() { return String::new(); }
     let lines = flags.iter().map(|flag| {
@@ -119,5 +130,5 @@ pub fn extension_flags_text(flags: &[serde_json::Value]) -> String {
         let description = flag["description"].as_str().map_or_else(|| format!("Registered by {}", flag["extensionPath"].as_str().unwrap_or_default()), str::to_owned);
         format!("{:<30}{description}", format!("  --{name}{value}"))
     }).collect::<Vec<_>>().join("\n");
-    format!("\nExtension CLI Flags:\n{lines}\n")
+    format!("\n{lines}\n")
 }
