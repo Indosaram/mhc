@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 use maho_ext_api::{ExtensionApi, NotificationType, ExtensionFailure};
-use crate::account_management::{get_provider_accounts, pin_provider_account_in_runtime, remove_provider_account_in_runtime, ANTHROPIC_SUBSCRIPTION_PROVIDER_ID as PROVIDER};
+use crate::account_management::{get_provider_accounts, pin_provider_account_in_runtime, remove_provider_account_in_runtime, unblock_provider_account, ANTHROPIC_SUBSCRIPTION_PROVIDER_ID as PROVIDER};
 static SESSION_PINS: std::sync::LazyLock<std::sync::Mutex<BTreeMap<String, String>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(BTreeMap::new()));
 pub fn session_pin(session: Option<&str>) -> Option<String> { SESSION_PINS.lock().expect("session pins").get(session?).cloned() }
 
@@ -73,14 +73,15 @@ pub fn register(api: &mut ExtensionApi, oauth: Arc<crate::oauth_login::Anthropic
                     [] | ["list"] => {
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as f64;
                         let accounts = get_provider_accounts(store.as_ref(), PROVIDER, &environment, now).await?;
-                        let message = if accounts.is_empty() { "No Anthropic Subscription accounts configured.".into() } else { accounts.into_iter().map(|account| format!("{}{}{}", account.name, if account.pinned { " (pinned)" } else { "" }, if account.blocked { " (blocked)" } else { "" })).collect::<Vec<_>>().join("\n") };
+                        let message = if accounts.is_empty() { "Anthropic Subscription accounts:\n  (none)\nPinned account: none\nAffinity pick: none".into() } else { let selected=accounts.iter().find(|account| account.pinned).map(|account|account.name.clone()).unwrap_or_else(||"none".into()); let mut lines=vec!["Anthropic Subscription accounts:".to_owned()]; lines.extend(accounts.into_iter().map(|account|format!("  {} | {} | {}{}",account.display_name.as_deref().unwrap_or(&account.name),match account.source {crate::accounts::AccountSource::Env=>"env",crate::accounts::AccountSource::Login=>"login",crate::accounts::AccountSource::Import=>"import"},if account.blocked {"blocked"} else {"available"},if account.pinned {" | pinned"} else {""}))); lines.push(format!("Pinned account: {selected}")); lines.push("Affinity pick: unavailable - no affinity context".into());lines.join("\n") };
                         runtime.assert_active()?;
                         ctx.ui.notify(&message, NotificationType::Info);
                     },
                     ["pin", "unpin"] | ["unpin"] => pin_provider_account_in_runtime(store.as_ref(), PROVIDER, None, environment, Some(runtime.clone())).await?,
                     ["pin", name] => pin_provider_account_in_runtime(store.as_ref(), PROVIDER, Some(name), environment, Some(runtime.clone())).await?,
                     ["remove", name] => remove_provider_account_in_runtime(store.as_ref(), PROVIDER, name, environment, Some(runtime.clone())).await?,
-                    _ => ctx.ui.notify("Usage: /claude-account [remove <id> | pin <id> | unpin]", NotificationType::Warning),
+                    ["unblock", name] => { let lifted=unblock_provider_account(store.as_ref(),PROVIDER,name,environment.clone()).await?;runtime.assert_active()?;ctx.ui.notify(&if lifted {format!("Unblocked Anthropic Subscription account: {name}. The next turn may use it.")}else {format!("Anthropic Subscription account '{name}' has no usage block to lift.")},NotificationType::Info); }
+                    _ => ctx.ui.notify("Usage: /claude-account [remove <id> | pin <id> | unpin | unblock <id>]", NotificationType::Warning),
                 }
                 Ok(())
             }.await;
