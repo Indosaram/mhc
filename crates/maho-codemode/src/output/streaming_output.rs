@@ -79,6 +79,17 @@ impl OutputSink {
         Ok(())
     }
 
+    pub async fn push_unclamped(&mut self, chunk: &str) -> std::io::Result<()> {
+        if chunk.is_empty() { return Ok(()); }
+        self.emit_preview(chunk, 0);
+        self.total_bytes += chunk.len();
+        self.total_newlines += chunk.bytes().filter(|byte| *byte == b'\n').count();
+        self.saw_data = true;
+        self.mirror_raw(chunk, false).await?;
+        self.retain(chunk);
+        Ok(())
+    }
+
     fn emit_preview(&mut self, chunk: &str, now_ms: u64) {
         let Some(callback) = &self.options.on_chunk else { return; };
         if now_ms.saturating_sub(self.last_chunk_time) >= self.options.chunk_throttle_ms {

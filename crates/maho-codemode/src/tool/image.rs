@@ -8,6 +8,19 @@ pub const MAX_DISPLAY_IMAGES_PER_CELL: usize = 8;
 pub const MAX_DISPLAY_IMAGE_BYTES_PER_CELL: usize = 24 * 1024 * 1024;
 pub const MAX_JSON_OUTPUTS_PER_CELL: usize = 64;
 
+#[cfg(test)]
+mod image_validation_tests {
+    use super::*;
+
+    #[test]
+    fn validates_payload_signatures_and_overrides_declared_mime() {
+        assert_eq!(validate_display_image("iVBORw0KGgoAAAANSUhEUg==").map(|(_, mime)| mime), Some("image/png".into()));
+        assert_eq!(validate_display_image("/9j/4AAQSkZJRg==").map(|(_, mime)| mime), Some("image/jpeg".into()));
+        assert!(validate_display_image("AAAA").is_some_and(|(_, mime)| mime.is_empty()));
+        assert!(validate_display_image("not base64").is_none());
+    }
+}
+
 pub struct EvalOutputOptions {
     pub artifact_path: Option<PathBuf>,
     pub head_bytes: usize,
@@ -55,9 +68,17 @@ impl EvalOutputCollector {
 
     pub async fn display(&mut self, mime_type: &str, data_base64: &str) -> Result<(), String> {
         if mime_type.starts_with("image/") {
-            if self.display_images.len() >= MAX_DISPLAY_IMAGES_PER_CELL || self.display_image_bytes + data_base64.len() > MAX_DISPLAY_IMAGE_BYTES_PER_CELL { self.display_images_elided += 1; return Ok(()); }
-            self.display_images.push(EvalImageContent {data:data_base64.into(),mime_type:mime_type.into()});
-            self.display_image_bytes += data_base64.len();
+            let Some((data, detected_mime)) = validate_display_image(data_base64) else {
+                self.push("[display: image dropped — the image data is not valid base64 (truncated or corrupted?)]\n").await?;
+                return Ok(());
+            };
+            if detected_mime.is_empty() {
+                self.push("[display: image dropped — the image data is not a PNG, JPEG, GIF, or WebP image]\n").await?;
+                return Ok(());
+            }
+            if self.display_images.len() >= MAX_DISPLAY_IMAGES_PER_CELL || self.display_image_bytes + data.len() > MAX_DISPLAY_IMAGE_BYTES_PER_CELL { self.display_images_elided += 1; return Ok(()); }
+            self.display_images.push(EvalImageContent {data,mime_type:detected_mime});
+            self.display_image_bytes += self.display_images.last().map_or(0, |image| image.data.len());
             return Ok(());
         }
         let data = base64::engine::general_purpose::STANDARD.decode(data_base64).map_err(|error|error.to_string())?;
@@ -66,7 +87,7 @@ impl EvalOutputCollector {
             if self.json_outputs.len() >= MAX_JSON_OUTPUTS_PER_CELL { self.json_outputs_elided += 1; return Ok(()); }
             let value:Value = serde_json::from_str(&text).map_err(|error|format!("Invalid {mime_type} display payload: {error}"))?;
             let pretty = serde_json::to_string_pretty(&value).map_err(|error|error.to_string())?;
-            self.json_outputs.push(value);
+            self.json_outputs.push(sanitize_display_json(&value));
             let units = pretty.encode_utf16().count();
             let pretty = if units > 8000 {
                 let prefix:Vec<_> = pretty.encode_utf16().take(8000).collect();
@@ -78,6 +99,11 @@ impl EvalOutputCollector {
             self.push(&if text.ends_with('\n') {text.into_owned()} else {format!("{text}\n")}).await?;
         }
         Ok(())
+    }
+
+    pub async fn push_value(&mut self, text: &str) -> Result<(), String> {
+        self.aggregate.append(text);
+        self.sink.push_unclamped(text).await.map_err(|error|error.to_string())
     }
 
     pub async fn flush(&mut self) -> Result<(), String> { self.sink.dump(None).await.map(|_|()).map_err(|error|error.to_string()) }
@@ -110,6 +136,36 @@ impl EvalOutputCollector {
         let meta = truncation_meta_from_summary(&summary,self.options.max_columns);
         Ok(EvalOutputResult {output:summary.output.trim_end().into(),images:self.images.clone(),json_outputs:self.json_outputs.clone(),has_markdown:self.has_markdown,truncated:summary.truncated,notice:summary.artifact_id.as_ref().map(|path|crate::output::output_meta::artifact_notice(&path.to_string_lossy())),meta})
     }
+}
+
+fn validate_display_image(encoded: &str) -> Option<(String, String)> {
+    let data = encoded.chars().filter(|character| !character.is_whitespace()).collect::<String>();
+    if data.is_empty() || data.len() % 4 != 0 || !data.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')) {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(&data).ok()?;
+    let detected = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {"image/png"}
+        else if bytes.starts_with(&[0xff,0xd8,0xff]) && bytes.get(3) != Some(&0xf7) {"image/jpeg"}
+        else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {"image/gif"}
+        else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {"image/webp"}
+        else { return Some((String::new(), String::new())); };
+    Some((data, detected.into()))
+}
+
+fn sanitize_display_json(value: &Value) -> Value {
+    const MAX_DEPTH: usize = 8;
+    const MAX_ITEMS: usize = 256;
+    const MAX_STRING: usize = 4000;
+    fn bound(value: &Value, depth: usize) -> Value {
+        if depth >= MAX_DEPTH { return Value::String("[…depth capped…]".into()); }
+        match value {
+            Value::String(text) if text.len() > MAX_STRING => Value::String(format!("{}…", &text[..text.floor_char_boundary(MAX_STRING)])),
+            Value::Array(items) => Value::Array(items.iter().take(MAX_ITEMS).map(|item| bound(item, depth + 1)).collect()),
+            Value::Object(items) => Value::Object(items.iter().take(MAX_ITEMS).map(|(key, item)| (key.clone(), bound(item, depth + 1))).collect()),
+            _ => value.clone(),
+        }
+    }
+    bound(value, 0)
 }
 
 fn truncation_meta_from_summary(summary: &crate::output::streaming_output::OutputSummary, max_columns: usize) -> Option<Value> {

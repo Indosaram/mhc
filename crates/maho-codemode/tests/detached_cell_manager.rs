@@ -3,7 +3,7 @@ use maho_ext_api::AgentToolResult;
 use maho_codemode::tool::{detached_cell_manager::*, detached_cell_contract::EvalDetachedCellState, types::{EvalToolInput, EvalLanguage}};
 
 fn input(language: EvalLanguage) -> EvalToolInput {
-    EvalToolInput { language, code:"print(42)".into(), summary:"compute result".into(), action:None, timeout:None, on_timeout:None, reset:None }
+    EvalToolInput { language, code:"print(42)".into(), summary:"compute result".into(), action:None, timeout:None, on_timeout:None, reset:None, isolate:None }
 }
 
 #[tokio::test]
