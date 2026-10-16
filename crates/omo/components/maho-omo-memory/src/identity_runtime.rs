@@ -2,6 +2,7 @@ use std::sync::Arc;
 use memory_core::{identity::resolve::{MemoryIdentity,sanitize_to_slug},journal::store::{TranscriptJournal,TranscriptJournalOptions},reflection::{ReflectionReservationStore,ReflectionReservationStoreOptions}};
 use crate::context::MemoryIdentityContext;
 #[derive(Default)]pub struct IdentitySandbox{built:Option<crate::sandbox::SandboxTransform>}
+pub use maho_omo_agent_home::resolve_agent_home::AGENT_DIR_ENV_NAMES;
 pub struct IdentitySandboxInput<'a>{pub identity:&'a MemoryIdentityContext,pub policy:crate::sandbox::SandboxPolicy,pub agent_dir:&'a std::path::Path,pub platform:&'a str}
 impl IdentitySandbox{
     pub fn apply(&mut self,input:IdentitySandboxInput<'_>,mut args:crate::worker::spawn_types::ReflectionSpawnArgs,which:&dyn Fn(&str)->Option<String>,warn:impl FnOnce(&str))->Result<crate::worker::spawn_types::ReflectionSpawnArgs,String>{
@@ -14,7 +15,9 @@ impl IdentitySandbox{
             self.built=Some(transform);
         }
         let transformed=self.built.as_ref().ok_or("Missing identity sandbox")?.apply(crate::sandbox_contracts::SandboxSpawnArgs{command:args.command,args:args.args,cwd:args.cwd,env:args.env});
-        args.command=transformed.command;args.args=transformed.args;args.cwd=transformed.cwd;args.env=transformed.env;Ok(args)
+        args.command=transformed.command;args.args=transformed.args;args.cwd=transformed.cwd;args.env=transformed.env;
+        for name in AGENT_DIR_ENV_NAMES { args.env.insert(name.into(),agent_dir.to_string_lossy().into_owned()); }
+        Ok(args)
     }
 }
 
@@ -127,4 +130,5 @@ impl crate::worker::runner_types::ReflectionReservationPort for ReflectionReserv
     #[test]fn native_store_reserves_manual_run_and_adapts_state(){let root=tempfile::tempdir().unwrap();let context=MemoryIdentityContext::new("agent".into(),memory_core::identity::layout::build_identity_paths(root.path(),"agent"),crate::binding::MemorySessionBinding{identity:"agent".into(),repo_path_hash:"hash".into(),bound_at:0.0});let settings=crate::reflection_settings::resolve_memory_settings(None).unwrap();let store=create_identity_reservation_store(&context,&settings).unwrap();let result=store.evaluate("session",memory_core::reflection::ReflectionEvent::Manual{focus:None,recent_n:None,conversation_ids:None}).unwrap().unwrap();assert_eq!(result.status,"active");assert!(result.run.run_id.starts_with("reflection-run-"));let state=crate::worker::runner_types::ReflectionReservationPort::read_state(store.as_ref()).unwrap();assert_eq!(state.active.unwrap().run_id,result.run.run_id);}
     #[test]fn identity_preserves_paths_and_normalizes_slug(){let root=tempfile::tempdir().unwrap();let context=MemoryIdentityContext::new("Agent One".into(),memory_core::identity::layout::build_identity_paths(root.path(),"Agent One"),crate::binding::MemorySessionBinding{identity:"Agent One".into(),repo_path_hash:"hash".into(),bound_at:0.0});let identity=as_memory_identity(&context);assert_eq!(identity.id,"Agent One");assert_eq!(identity.safe_slug,sanitize_to_slug("Agent One"));assert_eq!(identity.paths.repo,context.identity_paths.repo);}
     #[test]fn invalid_trigger_settings_fail_before_store_construction(){let root=tempfile::tempdir().unwrap();let context=MemoryIdentityContext::new("agent".into(),memory_core::identity::layout::build_identity_paths(root.path(),"agent"),crate::binding::MemorySessionBinding{identity:"agent".into(),repo_path_hash:"hash".into(),bound_at:0.0});assert!(create_identity_reservation_store(&context,&serde_json::Value::Null).is_err());}
+    #[test]fn sandbox_pins_all_agent_directory_environment_aliases(){let root=tempfile::tempdir().unwrap();let context=MemoryIdentityContext::new("agent".into(),memory_core::identity::layout::build_identity_paths(root.path(),"agent"),crate::binding::MemorySessionBinding{identity:"agent".into(),repo_path_hash:"hash".into(),bound_at:0.0});let mut sandbox=IdentitySandbox::default();let args=crate::worker::spawn_types::ReflectionSpawnArgs{command:"child".into(),args:vec![],cwd:root.path().into(),env:std::collections::BTreeMap::from([("MAHO_CODING_AGENT_DIR".into(),"/inherited/maho".into()),("PI_CODING_AGENT_DIR".into(),"/inherited/pi".into())]),run_id:"run".into()};let result=sandbox.apply(IdentitySandboxInput{identity:&context,policy:Default::default(),agent_dir:std::path::Path::new("/granted/agent"),platform:"linux"},args,&|_|None,|_|{}).unwrap();for name in maho_omo_agent_home::resolve_agent_home::AGENT_DIR_ENV_NAMES{assert_eq!(result.env.get(name).map(String::as_str),Some("/granted/agent"));}}
 }
