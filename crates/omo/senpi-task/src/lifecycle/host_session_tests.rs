@@ -12,6 +12,8 @@ fn identity(session_path: &str) -> HostSessionIdentity {
         session_path: session_path.to_string(),
         instance_id: "inst-1".to_string(),
         daemon_pid: Some(4242),
+        effect_seq: None,
+        adopted_entry_id: None,
     }
 }
 

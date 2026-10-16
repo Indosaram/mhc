@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use serde_json::{Map, Value};
 
 use crate::shared::ManagedChildEvent;
-use crate::state::TaskRunStats;
+use crate::state::{CostReportStatus, DurationSourceStatus, TaskRunStats, TokenCoverageStatus};
 
 /// Accumulates run facts. A generation window opens at the last boundary (spawn, assistant
 /// `message_start`, `tool_execution_end`, previous `message_end`) and closes on an assistant
@@ -14,8 +14,13 @@ pub struct RunStatsTracker<C: Fn() -> u64> {
     started_at: u64,
     now: C,
     turns: u64,
+    failed_turns: u64,
     tool_calls: u64,
     output_tokens: f64,
+    input_tokens: f64,
+    cache_read_tokens_total: f64,
+    cache_write_tokens_total: f64,
+    turns_reporting_usage: u64,
     total_tokens: f64,
     generation_ms: u64,
     collapsed_windows: u64,
@@ -34,8 +39,13 @@ pub fn create_run_stats_tracker<C: Fn() -> u64>(started_at: u64, now: C) -> RunS
         started_at,
         now,
         turns: 0,
+        failed_turns: 0,
         tool_calls: 0,
         output_tokens: 0.0,
+        input_tokens: 0.0,
+        cache_read_tokens_total: 0.0,
+        cache_write_tokens_total: 0.0,
+        turns_reporting_usage: 0,
         total_tokens: 0.0,
         generation_ms: 0,
         collapsed_windows: 0,
@@ -114,6 +124,11 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
                 let Some(message) = assistant_message(event.message.as_ref()) else {
                     return false;
                 };
+                if matches!(message.get("stopReason").and_then(Value::as_str), Some("error" | "aborted")) {
+                    self.failed_turns += 1;
+                    self.window_start = (self.now)();
+                    return true;
+                }
                 self.close_window(message);
                 true
             }
@@ -130,10 +145,14 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
         self.generation_ms += window;
         self.window_start = timestamp;
         let usage = read_usage(message);
+        if message.get("usage").and_then(Value::as_object).is_some_and(|usage| !usage.is_empty()) {
+            self.turns_reporting_usage += 1;
+        }
         if window == 0 && usage.output.unwrap_or(0.0) > 0.0 {
             self.collapsed_windows += 1;
         }
         self.output_tokens += usage.output.unwrap_or(0.0);
+        self.input_tokens += usage.input.unwrap_or(0.0);
         self.total_tokens += usage.total.unwrap_or(0.0);
         if let Some(cost) = usage.cost {
             self.cost_usd += cost;
@@ -146,6 +165,8 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
             self.latest_cache_hit_rate = Some(rate);
         }
         self.cache_read_tokens += request_cache_read;
+        self.cache_read_tokens_total += request_cache_read;
+        self.cache_write_tokens_total += usage.cache_write.unwrap_or(0.0);
         self.cacheable_tokens += request_cacheable;
     }
 
@@ -165,7 +186,11 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
         TaskRunStats {
             runtime_ms,
             turns: self.turns,
+            failed_turns: (self.failed_turns > 0).then_some(self.failed_turns),
             tool_calls: self.tool_calls,
+            input_tokens: positive(self.input_tokens),
+            cache_read_tokens: positive(self.cache_read_tokens_total),
+            cache_write_tokens: positive(self.cache_write_tokens_total),
             output_tokens: positive(self.output_tokens),
             total_tokens: positive(self.total_tokens),
             generation_ms: (self.generation_ms > 0).then_some(self.generation_ms),
@@ -177,6 +202,9 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
                 self.cache_read_tokens,
                 self.cacheable_tokens,
             ),
+            duration_status: Some(DurationSourceStatus::Monotonic),
+            token_status: Some(if self.turns_reporting_usage == 0 { TokenCoverageStatus::Unavailable } else if self.turns_reporting_usage == self.turns { TokenCoverageStatus::Complete } else { TokenCoverageStatus::Partial }),
+            cost_status: Some(if self.saw_cost && self.cost_usd.is_finite() { CostReportStatus::Reported } else if self.saw_cost { CostReportStatus::Invalid } else { CostReportStatus::Unavailable }),
         }
     }
 }

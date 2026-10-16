@@ -27,6 +27,7 @@ pub struct StatusTargetInput<'a> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatusLineStats {
     pub turns: u64,
+    pub failed_turns: u64,
     pub tool_calls: u64,
     pub runtime_ms: Option<u64>,
     pub tokens_per_second: Option<f64>,
@@ -57,13 +58,16 @@ pub fn task_identity_label(input: &TaskIdentityInput<'_>) -> String {
     }
 }
 
-// WHO it runs as: one routing identity, shared by category- and agent-routed tasks. Category wins
-// when both are present (a record never carries both, but a defensive caller might).
+// WHO it runs as: when both are supplied, retain asked-for agent and routed category.
 pub fn format_target_identity(category: Option<&str>, agent_type: Option<&str>) -> Option<String> {
-    if let Some(category) = optional_renderer_text(category) {
-        return Some(format!("category:{category}"));
+    let category = optional_renderer_text(category);
+    let agent = optional_renderer_text(agent_type);
+    match (agent, category) {
+        (Some(agent), Some(category)) => Some(format!("agent:{agent}→category:{category}")),
+        (Some(agent), None) => Some(format!("agent:{agent}")),
+        (None, Some(category)) => Some(format!("category:{category}")),
+        (None, None) => None,
     }
-    optional_renderer_text(agent_type).map(|agent_type| format!("agent:{agent_type}"))
 }
 
 // WHO it runs as plus WHICH model it resolved to, in the single canonical grammar:
@@ -95,16 +99,13 @@ pub fn format_status_target(input: &StatusTargetInput<'_>) -> Option<String> {
 //   <identity> · <target (model)> · turn N (M tools) · <verb> · $C · T tok/s
 pub fn compose_status_line(input: &StatusLineInput<'_>) -> String {
     let stats = input.stats;
+    let turn = stats.filter(|stats| stats.turns > 0 || stats.tool_calls > 0).map(|stats| format!("turn {}{}", stats.turns, tool_count_suffix(stats.tool_calls)));
+    let failed = stats.filter(|stats| stats.failed_turns > 0).map(|stats| format!("failed {}", stats.failed_turns));
     let tokens = [
         Some(input.identity.to_string()),
         input.target.map(str::to_string),
-        stats.map(|stats| {
-            format!(
-                "turn {}{}",
-                stats.turns,
-                tool_count_suffix(stats.tool_calls)
-            )
-        }),
+        turn,
+        failed,
         input.verb.map(str::to_string),
         stats.and_then(|stats| format_live_spend(stats.cost_usd)),
         stats

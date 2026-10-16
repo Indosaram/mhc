@@ -161,6 +161,47 @@ fn record_absent_pending_steering_stays_absent() {
     assert!(json.get("pending_steering").is_none());
 }
 
+#[test]
+fn record_creation_initializes_run_epoch_and_keeps_team_metadata() {
+    let record = create_task_record(TaskRecordInput {
+        team_run_id: Some("team-run".into()),
+        team_name: Some("review".into()),
+        team_member_name: Some("worker".into()),
+        team_role: Some("member".into()),
+        task_seq: Some(7),
+        config_generation: Some(3),
+        background_mode: Some(BackgroundMode::Background),
+        ..base_input()
+    }, None).expect("record");
+    assert_eq!(record.run_start_epoch, 0);
+    assert_eq!(record.team_run_id.as_deref(), Some("team-run"));
+    assert_eq!(record.team_name.as_deref(), Some("review"));
+    assert_eq!(record.team_member_name.as_deref(), Some("worker"));
+    assert_eq!(record.team_role.as_deref(), Some("member"));
+    assert_eq!(record.task_seq, Some(7));
+    assert_eq!(record.config_generation, Some(3));
+    assert_eq!(record.background_mode, Some(BackgroundMode::Background));
+}
+
+#[test]
+fn state_contract_records_round_trip_optional_runtime_metadata() {
+    let mut value = serde_json::to_value(pending_record()).expect("serialize");
+    value["effective_model"] = json!({
+        "provider": "openai", "model_id": "gpt-5.6-sol", "display": "GPT 5.6",
+        "source": "cycle", "switched_by_operator": true,
+    });
+    value["suspension_reason"] = json!("host_draining");
+    value["awaiting_input"] = json!({ "reason": "resumed_turn_aborted", "since": "now" });
+    value["failure_kind"] = json!("host_unavailable");
+    value["failure_reason"] = json!("daemon offline");
+    let parsed = parse_task_record(&value, "/tmp/runtime-fields.json", &mut Vec::new()).expect("parse");
+    assert_eq!(parsed.suspension_reason, Some(SuspensionReason::HostDraining));
+    assert_eq!(parsed.awaiting_input.as_ref().map(|input| input.reason), Some(AwaitingInputReason::ResumedTurnAborted));
+    assert_eq!(parsed.failure_kind.as_deref(), Some("host_unavailable"));
+    assert_eq!(parsed.failure_reason.as_deref(), Some("daemon offline"));
+    assert_eq!(serde_json::to_value(parsed).expect("serialize") ["effective_model"]["switched_by_operator"], json!(true));
+}
+
 // ---- state/id.test.ts ----
 
 #[test]
@@ -887,6 +928,56 @@ fn model_suspended_residencies_are_not_continuable() {
             );
         }
     }
+}
+
+#[test]
+fn model_rpc_detached_terminal_process_task_is_revivable() {
+    assert_eq!(
+        messageability_with_runner(
+            TaskStatus::Completed,
+            ResidencyState::RpcDetached,
+            Some("process"),
+            Some(RunnerKind::ChildProcess),
+            None,
+            false,
+        ),
+        Messageability::Revive
+    );
+}
+
+#[test]
+fn model_rpc_detached_running_host_session_requires_reachable_daemon() {
+    let identity = HostSessionIdentity {
+        socket: "/tmp/host.sock".into(),
+        routing_id: "route".into(),
+        session_path: "/tmp/session.jsonl".into(),
+        instance_id: "instance".into(),
+        daemon_pid: None,
+        effect_seq: None,
+        adopted_entry_id: None,
+    };
+    assert_eq!(
+        messageability_with_runner(
+            TaskStatus::Running,
+            ResidencyState::RpcDetached,
+            Some("process"),
+            Some(RunnerKind::HostSession),
+            Some(&identity),
+            true,
+        ),
+        Messageability::Revive
+    );
+    assert_eq!(
+        messageability_with_runner(
+            TaskStatus::Running,
+            ResidencyState::RpcDetached,
+            Some("process"),
+            Some(RunnerKind::HostSession),
+            Some(&identity),
+            false,
+        ),
+        Messageability::NotContinuable
+    );
 }
 
 #[test]
