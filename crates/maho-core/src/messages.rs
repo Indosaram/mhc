@@ -5,6 +5,7 @@
 //! The typed maho_ai::types::Message conversion happens at the provider boundary.
 
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 pub const COMPACTION_SUMMARY_PREFIX: &str = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 pub const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>";
@@ -227,6 +228,37 @@ pub fn dedupe_consecutive_placeholder(content: &[Value], placeholder: &str) -> V
     out
 }
 
+const IMAGE_ID_LENGTH: usize = 12;
+
+fn image_content_id(data: &str) -> String {
+    hex::encode(Sha256::digest(data.as_bytes()))[..IMAGE_ID_LENGTH].to_owned()
+}
+
+fn elision_placeholder(ids: &[String]) -> Value {
+    let label = if ids.len() == 1 { "id" } else { "ids" };
+    text_block(format!("{IMAGE_ELISION_PLACEHOLDER} (image {label}: {})", ids.join(", ")))
+}
+
+pub fn replace_elided_images(content: &[Value], is_elided: impl Fn(usize) -> bool) -> Vec<Value> {
+    let mut replaced = Vec::with_capacity(content.len());
+    let mut pending = Vec::new();
+    for (index, block) in content.iter().enumerate() {
+        if block_is_image(block) && is_elided(index) {
+            if let Some(data) = block.get("data").and_then(Value::as_str) {
+                pending.push(image_content_id(data));
+            }
+            continue;
+        }
+        if !pending.is_empty() {
+            replaced.push(elision_placeholder(&pending));
+            pending.clear();
+        }
+        replaced.push(block.clone());
+    }
+    if !pending.is_empty() { replaced.push(elision_placeholder(&pending)); }
+    replaced
+}
+
 fn block_is_image(block: &Value) -> bool {
     block.get("type").and_then(Value::as_str) == Some("image")
 }
@@ -306,17 +338,7 @@ pub fn elide_old_images(messages: &[Value], options: &ElideOldImagesOptions) -> 
             if !content.iter().enumerate().any(|(block_index, _)| to_elide.contains(&(message_index, block_index))) {
                 return message.clone();
             }
-            let replaced: Vec<Value> = content
-                .iter()
-                .enumerate()
-                .map(|(block_index, block)| {
-                    if to_elide.contains(&(message_index, block_index)) {
-                        text_block(IMAGE_ELISION_PLACEHOLDER.to_owned())
-                    } else {
-                        block.clone()
-                    }
-                })
-                .collect();
+            let replaced = replace_elided_images(content, |block_index| to_elide.contains(&(message_index, block_index)));
             let mut updated = message.clone();
             updated["content"] = Value::Array(dedupe_consecutive_placeholder(&replaced, IMAGE_ELISION_PLACEHOLDER));
             updated
@@ -440,6 +462,21 @@ mod tests {
         assert!(!is_context_excluded_custom_message(GOAL_CONTINUATION_MESSAGE_TYPE));
         let kept = vec![json!({ "role": "user", "content": "x", "timestamp": 1 })];
         assert_eq!(filter_context_excluded_messages(kept.clone()), kept);
+    }
+
+    #[test]
+    fn elided_images_are_grouped_with_content_identity() {
+        let content = vec![
+            json!({"type":"image","data":"first"}),
+            json!({"type":"image","data":"second"}),
+            json!({"type":"text","text":"keep"}),
+            json!({"type":"image","data":"third"}),
+        ];
+        let replaced = replace_elided_images(&content, |index| index != 2);
+        assert_eq!(replaced.len(), 3);
+        assert_eq!(replaced[0]["text"], format!("{IMAGE_ELISION_PLACEHOLDER} (image ids: {})", [image_content_id("first"), image_content_id("second")].join(", ")));
+        assert_eq!(replaced[1]["text"], "keep");
+        assert_eq!(replaced[2]["text"], format!("{IMAGE_ELISION_PLACEHOLDER} (image id: {})", image_content_id("third")));
     }
 
     #[test]

@@ -1,8 +1,39 @@
 use indexmap::IndexMap;
-use maho_ai::types::{CacheRetention, InputModality, ModelCost, ServiceTierPreference, ThinkingLevelMap};
+use maho_ai::types::{CacheRetention, InputModality, ModelCost, ModelThinkingLevel, ServiceTierPreference, ThinkingLevelMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPromptCache {
+    pub short: Option<std::num::NonZeroU64>,
+    pub long: Option<std::num::NonZeroU64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelImageResize {
+    pub max_width: Option<u32>,
+    pub max_height: Option<u32>,
+    pub max_bytes: Option<u32>,
+    pub jpeg_quality: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelImageInputLimits {
+    pub resize: Option<ModelImageResize>,
+    pub max_per_message: Option<u32>,
+    pub max_per_request: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelInputLimits {
+    pub max_request_bytes: Option<u32>,
+    pub images: Option<ModelImageInputLimits>,
+}
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -48,7 +79,9 @@ pub struct ModelsJsonModel {
     pub base_url: Option<String>,
     pub reasoning: Option<bool>,
     pub thinking_level_map: Option<ThinkingLevelMap>,
+    pub default_thinking_level: Option<ModelThinkingLevel>,
     pub input: Option<Vec<InputModality>>,
+    pub input_limits: Option<ModelInputLimits>,
     pub cost: Option<ModelCost>,
     pub context_window: Option<f64>,
     pub max_tokens: Option<f64>,
@@ -56,6 +89,7 @@ pub struct ModelsJsonModel {
     pub extra_body: Option<Map<String, Value>>,
     pub sampling_params: Option<Map<String, Value>>,
     pub cache_retention: Option<CacheRetention>,
+    pub prompt_cache: Option<ModelPromptCache>,
     pub compat: Option<Map<String, Value>>,
 }
 
@@ -83,6 +117,8 @@ pub struct ModelsJsonModelOverride {
     pub thinking_level_map: Option<ThinkingLevelMap>,
     pub thinking_level_map_mode: Option<ThinkingLevelMapMode>,
     pub input: Option<Vec<InputModality>>,
+    pub input_limits: Option<ModelInputLimits>,
+    pub default_thinking_level: Option<ModelThinkingLevel>,
     pub cost: Option<PartialModelCost>,
     pub context_window: Option<f64>,
     pub max_tokens: Option<f64>,
@@ -90,6 +126,7 @@ pub struct ModelsJsonModelOverride {
     pub extra_body: Option<Map<String, Value>>,
     pub sampling_params: Option<Map<String, Value>>,
     pub cache_retention: Option<CacheRetention>,
+    pub prompt_cache: Option<ModelPromptCache>,
     pub compat: Option<Map<String, Value>>,
 }
 
@@ -160,13 +197,42 @@ pub fn validate_models_config(value: Value) -> Result<ModelsJson, ModelsConfigVa
                 ("api", model.api.as_deref()), ("baseUrl", model.base_url.as_deref())] {
                 nonempty(value, format!("{path}.models.{index}.{name}"))?;
             }
+            validate_image_limits(model.input_limits.as_ref(), &format!("{path}.models.{index}.inputLimits"))?;
+            validate_prompt_cache(model.prompt_cache.as_ref(), &format!("{path}.models.{index}.promptCache"))?;
         }
         for (id, model) in provider.model_overrides.iter().flatten() {
             nonempty(model.name.as_deref(), format!("{path}.modelOverrides.{id}.name"))?;
             nonempty(model.prompt_preset.as_deref(), format!("{path}.modelOverrides.{id}.promptPreset"))?;
+            validate_image_limits(model.input_limits.as_ref(), &format!("{path}.modelOverrides.{id}.inputLimits"))?;
+            validate_prompt_cache(model.prompt_cache.as_ref(), &format!("{path}.modelOverrides.{id}.promptCache"))?;
         }
     }
     Ok(config)
+}
+
+fn validate_prompt_cache(cache: Option<&ModelPromptCache>, path: &str) -> Result<(), ModelsConfigValidationError> {
+    if cache.is_some_and(|cache| [cache.short, cache.long].into_iter().flatten().any(|value| value.get() == 0)) {
+        return Err(ModelsConfigValidationError::Constraint { path: path.to_owned(), message: "Expected number greater than 0" });
+    }
+    Ok(())
+}
+
+fn validate_image_limits(limits: Option<&ModelInputLimits>, path: &str) -> Result<(), ModelsConfigValidationError> {
+    let valid = limits.is_none_or(|limits| {
+        limits.max_request_bytes.is_none_or(|value| value > 0)
+            && limits.images.as_ref().is_none_or(|images| {
+                images.max_per_message.is_none_or(|value| value > 0)
+                    && images.max_per_request.is_none_or(|value| value > 0)
+                    && images.resize.as_ref().is_none_or(|resize| {
+                        resize.max_width.is_none_or(|value| value > 0)
+                            && resize.max_height.is_none_or(|value| value > 0)
+                            && resize.max_bytes.is_none_or(|value| value > 0)
+                            && resize.jpeg_quality.is_none_or(|value| (1..=100).contains(&value))
+                    })
+            })
+    });
+    if !valid { return Err(ModelsConfigValidationError::Constraint { path: path.to_owned(), message: "Image and request limits must be positive; jpegQuality must be between 1 and 100" }); }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -192,4 +258,21 @@ mod tests {
     fn unknown_slot_key_is_rejected() { assert!(validate_models_config(json!({"providers":{"openai":{"credentials":{"slots":{"work":{"apiKey":"test"}}}}}})).is_err()); }
     #[test]
     fn empty_slot_reference_is_rejected() { assert!(validate_models_config(json!({"providers":{"openai":{"credentials":{"slots":{"work":{"env":""}}}}}})).is_err()); }
+
+    #[test]
+    fn prompt_cache_and_image_input_limits_are_parsed_and_validated() {
+        let config = validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","promptCache":{"short":300,"long":3600},"inputLimits":{"maxRequestBytes":100000,"images":{"maxPerMessage":4,"resize":{"maxWidth":1024,"jpegQuality":80}}}}]}}})).expect("valid config");
+        let model = &config.providers["openai"].models.as_ref().expect("models")[0];
+        assert_eq!(model.prompt_cache.as_ref().and_then(|value| value.short).map(std::num::NonZeroU64::get), Some(300));
+        assert_eq!(model.input_limits.as_ref().and_then(|value| value.images.as_ref()).and_then(|value| value.resize.as_ref()).and_then(|value| value.jpeg_quality), Some(80));
+        assert!(validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","promptCache":{"short":0}}]}}})).is_err());
+        assert!(validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","inputLimits":{"images":{"resize":{"jpegQuality":101}}}}]}}})).is_err());
+    }
+
+    #[test]
+    fn model_thinking_levels_accept_only_the_supported_vocabulary() {
+        let config = validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","defaultThinkingLevel":"xhigh"}]}}})).expect("valid level");
+        assert_eq!(config.providers["openai"].models.as_ref().expect("models")[0].default_thinking_level, Some(ModelThinkingLevel::Xhigh));
+        assert!(validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","defaultThinkingLevel":"extra-high"}]}}})).is_err());
+    }
 }
