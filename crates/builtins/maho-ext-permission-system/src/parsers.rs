@@ -19,6 +19,10 @@ fn external(mut requests:Vec<PermissionRequest>,paths:&[String],location:(&Path,
     if !paths.is_empty(){requests.push(request("external_directory",paths.clone(),paths.iter().map(|path|external_dir::to_parent_directory_pattern(path,directory)).collect()));}
     requests
 }
+fn fallback_for_tool(name:&str,input:&Value)->Vec<PermissionRequest>{
+    let Some((key,arg))=["path","file_path","command","url","input","pattern","filePath"].iter().find_map(|key|input.get(key).and_then(Value::as_str).map(|arg|(*key,arg)))else{return fallback(name)};
+    vec![request(name,vec![arg.into()],vec![arg.into()])]
+}
 impl ParserRegistry {
     pub fn register(&mut self,name:&str,parser:ToolPermissionParser){self.parsers.insert(name.into(),parser);}
     pub fn set_definition_resolver(&mut self, resolver: ToolDefinitionResolver) { self.definition_resolver = Some(resolver); }
@@ -31,7 +35,7 @@ impl ParserRegistry {
             && let Some(custom) = &definition.permission_parser {
                     return custom(input, location.0);
         }
-        fallback(name)
+        fallback_for_tool(name,input)
     }
 }
 pub fn create_builtin_parser_registry()->ParserRegistry{
@@ -66,12 +70,17 @@ pub fn create_builtin_parser_registry()->ParserRegistry{
             external(requests,&paths,(cwd,home),false)
         }));
     }
+    registry.register("read",Arc::new(|input,cwd,home|{
+        let Some(path)=string(input,&["path","file_path"]).filter(|path|!path.is_empty())else{return fallback("read")};
+        let targets=vec![path.to_owned()];
+        external(vec![request("read",targets.clone(),targets.clone())],&targets,(cwd,home),false)
+    }));
     registry.register("grep",Arc::new(|input,cwd,home|{
         let path=string(input,&["path"]);let Some(pattern)=path.or_else(||string(input,&["pattern"])).filter(|pattern|!pattern.is_empty())else{return fallback("grep")};
         let requests=vec![request("grep",vec![pattern.into()],vec!["*".into()])];
         path.filter(|path|!path.is_empty()).map_or(requests.clone(),|path|external(requests,&[path.into()],(cwd,home),true))
     }));
-    for name in ["find","ls"]{registry.register(name,Arc::new(|input,cwd,home|{
+    for name in ["find","glob","ls"]{registry.register(name,Arc::new(|input,cwd,home|{
         let path=string(input,&["path"]).unwrap_or(".");let paths=vec![path.into()];external(vec![request("list",paths.clone(),paths.clone())],&paths,(cwd,home),true)
     }));}
     registry

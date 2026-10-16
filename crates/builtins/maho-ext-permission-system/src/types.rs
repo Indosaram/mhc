@@ -46,7 +46,11 @@ pub struct ReplyInput {
     pub reply: Reply,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub always: Option<Vec<String>>,
 }
+impl Request { pub fn new(id: String, session_id: String, permission: String, patterns: Vec<String>, always: Vec<String>, metadata: Map<String, Value>) -> Self { Self { id, session_id, permission, patterns, always, metadata, tool: None } } }
+impl Default for ReplyInput { fn default() -> Self { Self { request_id: String::new(), reply: Reply::Reject, message: None, always: None } } }
 #[derive(Debug, thiserror::Error)]
 pub enum PermissionError {
     #[error("The user rejected permission to use this specific tool call.")]
