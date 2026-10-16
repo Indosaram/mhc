@@ -38,6 +38,7 @@ pub fn list_accounts(credential:&OAuthCredential,env:Option<&EnvironmentReader<'
             slots.push(slot);
         }
     }
+    slots.sort_by(|left,right| left.name.to_lowercase().cmp(&right.name.to_lowercase()).then_with(||left.name.cmp(&right.name)));
     Ok(slots)
 }
 pub fn assert_valid_account_name(name:&str) -> anyhow::Result<()> {
