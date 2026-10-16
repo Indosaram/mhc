@@ -14,6 +14,14 @@ fn shell_quote_for_nested_command(value: &str) -> String {
         .replace('"', "\\\"")
 }
 
+fn double_quote_shell_argument(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('$', "\\$")
+        .replace('`', "\\`")
+        .replace('"', "\\\"")
+}
+
 fn current_dir() -> String {
     std::env::current_dir()
         .map(|path| path.to_string_lossy().into_owned())
@@ -60,10 +68,10 @@ pub fn build_tmux_placeholder_command(description: &str) -> String {
     } else {
         clean
     };
-    let banner = shell_quote_for_nested_command(&format!("OMO subagent pane ready: {shown}"));
-    let hint = shell_quote_for_nested_command("Focus this pane to attach.");
+    let banner = double_quote_shell_argument(&format!("OMO subagent pane ready: {shown}"));
+    let hint = double_quote_shell_argument("Focus this pane to attach.");
     format!(
-        r#"{TMUX_COMMAND_SHELL} -c "printf '%s\n%s\n' {banner} {hint}; while :; do sleep 86400; done""#
+        r#"{TMUX_COMMAND_SHELL} -c "printf '%s\n%s\n' \"{banner}\" \"{hint}\"; while :; do sleep 86400; done""#
     )
 }
 
