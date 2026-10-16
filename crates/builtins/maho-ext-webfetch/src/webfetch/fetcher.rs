@@ -34,7 +34,7 @@ pub fn parse_content_length(value:&str)->Option<usize> {
     let value=value.trim_start_matches(|character:char|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}'));
     let (negative,digits)=if let Some(rest)=value.strip_prefix('-') { (true,rest) } else { (false,value.strip_prefix('+').unwrap_or(value)) };
     let count=digits.bytes().take_while(u8::is_ascii_digit).count(); if count==0 { return None; }
-    let parsed=digits[..count].parse::<f64>().ok()?; if !parsed.is_finite() || (negative && parsed!=0.) { return None; } Some(parsed as usize)
+    let parsed=digits[..count].parse::<f64>().ok()?; if !parsed.is_finite() || (negative && parsed!=0.) { return None; } Some(parsed.min(usize::MAX as f64) as usize)
 }
 pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchError> {
     validate_url(options.url)?;
@@ -59,7 +59,13 @@ pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchErr
                         .header("Sec-Fetch-Site","none").header("Sec-Fetch-User","?1")
                         .header("Upgrade-Insecure-Requests","1");
                 }
-                let response=req.send().await.map_err(transport_error)?;
+                let response=match req.send().await {
+                    Ok(response)=>response,
+                    Err(error)=>{
+                        if signal.is_aborted() { return Err(WebfetchError::Abort("Request aborted".into())); }
+                        return Err(transport_error(error));
+                    }
+                };
                 let status=response.status();
                 let status_text=response.extensions().get::<hyper::ext::ReasonPhrase>().map_or_else(||status.canonical_reason().unwrap_or("").to_owned(),|reason|reason.as_bytes().iter().map(|byte|char::from(*byte)).collect());
                 if status.as_u16()==403 && user_agent==BROWSER_USER_AGENT && response.headers().get("cf-mitigated").is_some_and(|v|v=="challenge") {
@@ -102,6 +108,7 @@ pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchErr
 mod tests {
     use super::*;
     #[test] fn content_length_uses_decimal_prefix_and_accepts_negative_zero() { assert_eq!(parse_content_length("\u{feff}+12bytes"),Some(12)); assert_eq!(parse_content_length("1e6"),Some(1)); assert_eq!(parse_content_length("0x10"),Some(0)); assert_eq!(parse_content_length("-0"),Some(0)); assert_eq!(parse_content_length("-1"),None); assert_eq!(parse_content_length("garbage"),None); }
+    #[test] fn content_length_overflow_saturates_like_javascript_number_conversion() { assert_eq!(parse_content_length("999999999999999999999999999999999999999"),Some(usize::MAX)); }
     #[test] fn first_error_path_rejects_non_http_url() { assert!(matches!(validate_url("file:///tmp/file"),Err(WebfetchError::InvalidUrl(_)))); }
     #[test] fn malformed_http_url_is_rejected() { assert!(matches!(validate_url("http://"),Err(WebfetchError::InvalidUrl(_)))); }
     #[test] fn timeout_clamps_rounds_and_defaults() { for value in [None,Some(0.0),Some(-1.0),Some(f64::NAN),Some(f64::INFINITY)] { assert_eq!(clamp_timeout(value),30); } assert_eq!(clamp_timeout(Some(1.1)),2); assert_eq!(clamp_timeout(Some(200.0)),120); }
@@ -177,6 +184,22 @@ mod tests {
         let client=fetch_url(FetchOptions{url:&url,format:WebfetchFormat::Text,timeout_seconds:Some(5.0),signal:None,on_progress:None});
         let (result,())=tokio::join!(client,server);
         let result=result.unwrap(); assert_eq!(result.status,403); assert_eq!(result.body,b"forbidden");
+    }
+    #[tokio::test]
+    async fn cloudflare_retry_is_limited_to_one_attempt() {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+        let server=async {
+            for attempt in 0..2 {
+                let (mut socket,_)=listener.accept().await.unwrap();let mut buffer=[0;4096];let mut request=vec![];
+                loop {let n=socket.read(&mut buffer).await.unwrap();assert!(n>0);request.extend_from_slice(&buffer[..n]);if request.windows(4).any(|w|w==b"\r\n\r\n"){break;}}
+                let agent=String::from_utf8_lossy(&request).to_lowercase();
+                assert!(agent.contains(if attempt==0{"user-agent: mozilla/5.0"}else{"user-agent: pi-webfetch"}));
+                socket.write_all(b"HTTP/1.1 403 Forbidden\r\ncf-mitigated: challenge\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            }
+        };
+        let url=format!("http://{address}/");let client=fetch_url(FetchOptions{url:&url,format:WebfetchFormat::Text,timeout_seconds:Some(5.0),signal:None,on_progress:None});
+        let (result,())=tokio::join!(client,server);assert_eq!(result.unwrap().status,403);
     }
     #[tokio::test]
     async fn abort_during_challenge_retry_is_honored() {

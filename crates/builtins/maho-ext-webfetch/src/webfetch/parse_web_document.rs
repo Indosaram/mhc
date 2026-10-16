@@ -138,6 +138,11 @@ mod tests {
     #[test] fn inert_stack_parser_does_not_reconstruct_misnested_formatting() {
         let web=parse_web_document("<b>first<i>second</b>third</i>","https://example.test/");assert_eq!(web.document.select("body").inner_html().as_ref(),"<b>first<i>second</i></b>third");
     }
+    #[test] fn malformed_table_rows_keep_cell_content_and_close_rows() {
+        let web=parse_web_document("<table><tr><td>one<tr><td>two</table>","https://example.test/");
+        assert_eq!(web.document.select("table").text().as_ref(),"onetwo");
+        assert_eq!(web.document.select("td").nodes().len(),2);
+    }
     #[test] fn inert_stack_parser_relocates_only_leading_metadata() {
         let web=parse_web_document("<title>Leading</title><p>body</p><title>Trailing</title>","https://example.test/");assert_eq!(web.document.select("head title").text().as_ref(),"Leading");assert_eq!(web.document.select("body title").text().as_ref(),"Trailing");
     }
