@@ -101,7 +101,7 @@ async fn cancelled_invocation_cleanup_preserves_readmitted_same_id_http_context(
     let seen=Arc::new(Mutex::new(Vec::new()));let observed=seen.clone();
     let session=CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {session_id:"ownership".into(),cwd:root.path().into(),settings:Default::default(),availability:[EvalLanguage::Py,EvalLanguage::Js,EvalLanguage::Rb,EvalLanguage::Jl].map(|language|(language,maho_codemode::interpreters::detect::LanguageAvailability {enabled:false,detected:maho_codemode::interpreters::detect::InterpreterDetection::Unavailable})),local_roots:None,artifacts_dir:None,session_env:None,executor:Arc::new(Fixture),list_tools:None,complete:Arc::new(move |request| {observed.lock().unwrap().push(request.context.map(|ctx|ctx.cwd));Box::pin(async {Ok(json!({}))})}),python_startup_timeout:None}).await.unwrap();
     let mut cells=EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
-    let input=||EvalToolInput {language:EvalLanguage::Py,code:String::new(),summary:"ownership".into(),action:None,timeout:None,on_timeout:None,reset:None};
+    let input=||EvalToolInput {language:EvalLanguage::Py,code:String::new(),summary:"ownership".into(),action:None,timeout:None,on_timeout:None,reset:None,isolate:None};
     let old=cells.create("same-id".into(),input()).unwrap();
     let context=|cwd:&str|EvalInvocationContext {model:None,cwd:cwd.into(),thinking_level:None,goal_store_file:None};
     let clear_old=session.set_invocation_context("same-id",context("/A")).unwrap();

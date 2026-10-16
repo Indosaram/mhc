@@ -17,7 +17,14 @@ pub async fn build_detached_cell_notification(snapshot: &EvalDetachedCellSnapsho
         else { match snapshot.state { EvalDetachedCellState::Completed => "completed", EvalDetachedCellState::Cancelled => "cancelled", _ => "failed" }.into() };
     let text = snapshot.result.content.iter().filter_map(|part| match part { ContentBlock::Text(text) => Some(text.text.as_str()), _ => None }).collect::<Vec<_>>().join("\n");
     let text = if text.is_empty() { snapshot.output_tail.as_str() } else { text.as_str() };
-    let note = if snapshot.state != EvalDetachedCellState::Cancelled { "Kernel state updated - variables are available to the next eval cell.".into() }
+    let note = if snapshot.state != EvalDetachedCellState::Cancelled {
+        match snapshot.result.details.get("kernelState").and_then(serde_json::Value::as_str) {
+            Some("lost") => "The kernel died while this cell ran - every global is lost; the next eval cell runs on a fresh kernel.".into(),
+            Some("restarted") => "The kernel was restarted before this cell ran - globals from earlier cells are gone; this cell's variables are available to the next eval cell.".into(),
+            Some("not-run") => "This cell never ran and changed no kernel state.".into(),
+            _ => memory_state_note(snapshot.result.details.get("memory")),
+        }
+    }
         else {
             let note = interruption_state_note(snapshot.language, snapshot.state_retained).unwrap_or_else(|| unknown_interruption_state_note(snapshot.language));
             if let Some(extra) = &snapshot.interrupt_note { format!("{note} {}", extra.trim()) } else { note }
@@ -42,4 +49,24 @@ pub async fn build_detached_cell_notification(snapshot: &EvalDetachedCellSnapsho
         format!("{header}\nBuffered output tail:\n{}\n{note}</system-reminder>\n[…notification tail capped…]{spill_notice}", &text[start..])
     } else { body };
     EvalDetachedCellNotification { cell_id: snapshot.cell_id.clone(), content }
+}
+
+fn memory_state_note(memory: Option<&serde_json::Value>) -> String {
+    if memory.is_some_and(|state| state["overCeiling"] == true) {
+        "Kernel memory is over its ceiling - the kernel restarts before the next eval cell and every global is lost.".into()
+    } else if memory.is_some_and(|state| state["recycled"] == true) {
+        "The kernel was restarted before this cell ran - globals from earlier cells are gone; this cell's variables are available to the next eval cell.".into()
+    } else { "Kernel state updated - variables are available to the next eval cell.".into() }
+}
+
+#[cfg(test)]
+mod memory_note_tests {
+    use super::*;
+
+    #[test]
+    fn reports_kernel_and_memory_lifecycle_states() {
+        assert!(memory_state_note(Some(&serde_json::json!({"overCeiling":true}))).contains("every global is lost"));
+        assert!(memory_state_note(Some(&serde_json::json!({"recycled":true}))).contains("restarted before this cell ran"));
+        assert!(memory_state_note(None).contains("Kernel state updated"));
+    }
 }

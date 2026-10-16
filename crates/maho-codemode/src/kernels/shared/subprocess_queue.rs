@@ -45,6 +45,8 @@ impl SubprocessRunQueue {
         (self.active.as_ref().map(|run| run.input.cell_id.clone()), self.queue.iter().map(|run| run.input.cell_id.clone()).collect())
     }
 
+    pub fn drain(&mut self) -> Vec<PendingRun> { self.queue.drain(..).collect() }
+
     pub fn settle_all(&mut self, error: &str, now_ms: f64) {
         let runs = self.active.take().into_iter().chain(self.queue.drain(..));
         for mut run in runs {

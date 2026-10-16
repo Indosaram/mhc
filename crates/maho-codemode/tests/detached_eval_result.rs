@@ -41,7 +41,7 @@ fn empty_list_has_control_metadata() {
 async fn list_preview_preserves_javascript_whitespace_boundaries() {
     use maho_codemode::tool::{detached_cell_manager::{EvalDetachedCellManager,DetachedCellManagerOptions},types::{EvalToolInput,EvalLanguage}};
     let mut manager=EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
-    let cell=manager.create("preview".into(),EvalToolInput {language:EvalLanguage::Js,code:"42".into(),summary:"unused".into(),action:None,timeout:None,on_timeout:None,reset:None}).unwrap();
+    let cell=manager.create("preview".into(),EvalToolInput {language:EvalLanguage::Js,code:"42".into(),summary:"unused".into(),action:None,timeout:None,on_timeout:None,reset:None,isolate:None}).unwrap();
     manager.mark_running(&cell);
     let mut result=AgentToolResult::text("");
     result.details=json!({"summary":"\u{feff}  alpha\u{0085}beta\t ","durationMs":0,"cells":[]});
