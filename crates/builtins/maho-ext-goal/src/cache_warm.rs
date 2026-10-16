@@ -4,16 +4,20 @@ use std::collections::BTreeMap;
 pub const GOAL_CACHE_WARMUP_ENTRY_TYPE: &str = "goal-cache-warmup";
 pub const GOAL_MONITOR_CONTINUATION_FALLBACK_DELAY_MS: f64 = 240_000.0;
 pub const GOAL_MONITOR_BACKSTOP_DEFAULT_DELAY_MS: f64 = 270_000.0;
+pub const GOAL_MONITOR_BEST_EFFORT_BACKSTOP_SECONDS: f64 = 3570.0;
 pub fn resolve_goal_monitor_continuation_delay_ms(seconds: Option<f64>) -> f64 { seconds.filter(|s| s.is_finite() && *s > 0.0).map_or(GOAL_MONITOR_BACKSTOP_DEFAULT_DELAY_MS, |s| s * 1000.0).clamp(1000.0, 3_600_000.0) }
+pub fn resolve_goal_backstop_seconds_for_cache(seconds:Option<f64>,best_effort:bool)->Option<f64> {
+    if best_effort && (seconds.is_none_or(|value|value*1000.0==GOAL_MONITOR_BACKSTOP_DEFAULT_DELAY_MS)) { Some(GOAL_MONITOR_BEST_EFFORT_BACKSTOP_SECONDS) } else { seconds }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct GoalCacheWarmMetrics { #[serde(skip_serializing_if="Option::is_none")] pub ttl_seconds: Option<f64>, pub cached_tokens: f64, #[serde(skip_serializing_if="Option::is_none")] pub estimated_saved_usd: Option<f64> }
+pub struct GoalCacheWarmMetrics { #[serde(skip_serializing_if="Option::is_none")] pub ttl_seconds: Option<f64>, #[serde(skip_serializing_if="Option::is_none")] pub cache_lifetime: Option<String>, pub cached_tokens: f64, #[serde(skip_serializing_if="Option::is_none")] pub estimated_saved_usd: Option<f64> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="lowercase")]
 pub enum GoalCacheWarmupPhase { Scheduled, Resumed }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct GoalCacheWarmupEntryData { pub phase: GoalCacheWarmupPhase, pub goal_id: String, #[serde(skip_serializing_if="Option::is_none")] pub iteration: Option<f64>, pub delay_ms: f64, #[serde(skip_serializing_if="Option::is_none")] pub due_at_ms: Option<f64>, #[serde(skip_serializing_if="Option::is_none")] pub waited_ms: Option<f64>, pub active_monitor_count: f64, #[serde(skip_serializing_if="Option::is_none")] pub wake_sources: Option<BTreeMap<String, f64>>, #[serde(skip_serializing_if="Option::is_none")] pub cache: Option<GoalCacheWarmMetrics> }
+pub struct GoalCacheWarmupEntryData { pub phase: GoalCacheWarmupPhase, pub goal_id: String, #[serde(skip_serializing_if="Option::is_none")] pub iteration: Option<f64>, pub delay_ms: f64, #[serde(skip_serializing_if="Option::is_none")] pub due_at_ms: Option<f64>, #[serde(skip_serializing_if="Option::is_none")] pub waited_ms: Option<f64>, #[serde(skip_serializing_if="Option::is_none")] pub wake_cause: Option<String>, pub active_monitor_count: f64, #[serde(skip_serializing_if="Option::is_none")] pub wake_sources: Option<BTreeMap<String, f64>>, #[serde(skip_serializing_if="Option::is_none")] pub cache: Option<GoalCacheWarmMetrics> }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct GoalCacheWarmScheduleData { pub goal_id: String, pub delay_ms: f64, pub due_at_ms: f64, pub iteration: f64, pub active_monitor_count: f64, pub wake_sources: BTreeMap<String, f64>, #[serde(skip_serializing_if="Option::is_none")] pub cache: Option<GoalCacheWarmMetrics> }
@@ -21,10 +25,13 @@ pub fn create_goal_cache_warm_schedule_data(goal_id: String, delay_ms: f64, sche
 fn clamp_tokens(value: f64) -> f64 { if value.is_finite() && value > 0.0 { value.trunc() } else { 0.0 } }
 pub fn estimate_cache_warm_metrics(model: Option<&Model>, env: &ProviderEnv, usage: Option<(f64, f64)>) -> Option<GoalCacheWarmMetrics> {
     let cached_tokens = usage.map_or(0.0, |(read, write)| clamp_tokens(read) + clamp_tokens(write));
+    if model.is_some_and(|model| matches!(model.provider.as_str(),"deepseek"|"kimi-coding"|"zai"|"zai-coding-cn")) {
+        return (cached_tokens>0.0).then_some(GoalCacheWarmMetrics { ttl_seconds:None,cache_lifetime:Some("best-effort".into()),cached_tokens,estimated_saved_usd:None });
+    }
     let ttl_seconds = model.and_then(|model| resolve_prompt_cache_ttl_seconds(model, Some(env))).map(|seconds| f64::from(u32::try_from(seconds).unwrap_or(u32::MAX)));
     if ttl_seconds.is_none() && cached_tokens == 0.0 { return None; }
     let estimated_saved_usd = model.filter(|_| cached_tokens > 0.0).map(|model| (model.cost.input - model.cost.cache_read).max(0.0) * cached_tokens / 1_000_000.0);
-    Some(GoalCacheWarmMetrics { ttl_seconds, cached_tokens, estimated_saved_usd })
+    Some(GoalCacheWarmMetrics { ttl_seconds, cache_lifetime:None, cached_tokens, estimated_saved_usd })
 }
 pub fn format_wake_duration(ms: f64) -> String {
     let number=maho_ai::utils::js::number_to_string;

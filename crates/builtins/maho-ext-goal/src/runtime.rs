@@ -107,7 +107,10 @@ impl GoalRuntime {
                     self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.after_system_abort(context,goal.as_ref(),&ended,now,backstop_seconds,question_idle_ms);
                 }
                 if route==crate::agent_end_continuation::GoalAgentEndRoute::PolicyBlock {
-                    goal=Some(crate::store::update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Blocked),reason:Some("provider policy rejection ended the turn".into()),..Default::default() },GoalUpdateSource::Model,seconds).await.map_err(failure)?);
+                    let auth=crate::agent_end_continuation::terminal_auth_failure_route(goal.as_ref(),&ended);
+                    let reason=auth.as_ref().map(crate::continuation_recovery::provider_auth_blocked_reason).unwrap_or_else(||"provider policy rejection ended the turn".into());
+                    goal=Some(crate::store::update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Blocked),reason:Some(reason),..Default::default() },GoalUpdateSource::Model,seconds).await.map_err(failure)?);
+                    if let Some(auth)=auth && context.has_ui { context.ui.notify(&crate::continuation_recovery::provider_auth_recovery_hint(&auth),maho_ext_api::NotificationType::Warning); }
                     state.accounting.clear();
                 }
             },
@@ -317,6 +320,19 @@ fn goal_unused_by_event(event:&ExtensionEvent)->bool {
         let mut message=assistant_usage(10,5); if let maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant))=&mut message { assistant.api="openai-codex-responses".into(); assistant.stop_reason=maho_ai::types::StopReason::Error; assistant.error_message=Some("Codex error: This request was blocked by our safety systems. Reason: rejected".into()); }
         let goal=runtime.event(&ExtensionEvent::AgentEnd { messages:vec![message],aborted:Some(false),abort_source:None,will_retry:Some(false) },&context).await.unwrap().unwrap();
         assert_eq!(goal.status,GoalStatus::Blocked); assert_eq!(goal.tokens_used,15); assert_eq!(goal.blocked_reason.as_deref(),Some("provider policy rejection ended the turn")); assert_eq!(crate::store::read_goal(&reference).unwrap(),Some(goal)); assert!(!runtime.state.lock().await.ticker.running());
+    }
+    #[tokio::test] async fn owning_agent_end_blocks_terminal_auth_and_accepted_input_resumes_it() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||0.0)); let context=crate::test_context::context();
+        runtime.create(&context,"work").await.unwrap(); runtime.event(&ExtensionEvent::AgentStart,&context).await.unwrap();
+        let mut assistant=maho_ai::providers::faux::faux_assistant_message("",Default::default()); assistant.stop_reason=maho_ai::types::StopReason::Error; assistant.provider="anthropic".into(); assistant.model="claude-test".into(); assistant.error_message=Some("401 Unauthorized".into());
+        let message=maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(assistant)));
+        let blocked=runtime.event(&ExtensionEvent::AgentEnd { messages:vec![message],aborted:Some(false),abort_source:None,will_retry:Some(false) },&context).await.unwrap().unwrap();
+        assert_eq!(blocked.status,GoalStatus::Blocked); assert_eq!(blocked.blocked_reason.as_deref(),Some("provider rejected the request: HTTP 401 authentication failed for anthropic/claude-test"));
+        let input=maho_ext_api::InputEvent { input_id:"auth-fix".into(),text:"I fixed the API key".into(),source:maho_ext_api::InputSource::Interactive,images:None,streaming_behavior:None };
+        runtime.event(&ExtensionEvent::Input(input),&context).await.unwrap();
+        let resumed=runtime.event(&ExtensionEvent::InputDisposition { input_id:"auth-fix".into(),disposition:maho_ext_api::InputDisposition::Started },&context).await.unwrap().unwrap();
+        assert_eq!(resumed.status,GoalStatus::Active);
     }
     #[tokio::test] async fn store_change_never_refreshes_a_busy_context() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
