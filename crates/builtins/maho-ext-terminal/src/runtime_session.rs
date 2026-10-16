@@ -120,7 +120,7 @@ impl TerminalRuntimeSession {
         let projection=screen.clone();
         let on_chunk=move |chunk:&[u8]| {
             if let Ok(mut state)=sink.lock() {
-                let decoded=state.ingest(chunk);
+                let decoded=crate::screen_text::sanitize_string(&state.ingest(chunk));
                 if let Ok(mut screen)=projection.lock() && let Some(screen)=screen.as_mut() {screen.process(decoded.as_bytes());}
                 if !decoded.is_empty() && let Ok(mut listeners)=listeners.lock() {
                     let mut decoded=decoded;let last=listeners.len();let mut index=0;
@@ -194,8 +194,20 @@ impl TerminalRuntimeSession {
         // instead of failing with "pty session is closed".
         // The pipe fallback rejects the resize with a note but the screen projection still resizes.
         let session_resize=if self.exited()? {Ok(())} else {match &self.session {TerminalSessionBackend::Native(session)=>session.resize(cols,rows),TerminalSessionBackend::PipeFallback(session)=>session.resize(cols,rows)}};
+        let retained=lossy_utf16(self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer.iter().copied());
+        let replay_limit=crate::screen_text::normalize_replay_history_length(
+            usize::from(cols),usize::from(rows),self.scrollback);
+        let retained=if retained.encode_utf16().count()>replay_limit {crate::screen_text::sanitized_tail(&retained,replay_limit)} else {retained};
         let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
-        if let Some(screen)=screen.as_mut(){screen.screen_mut().set_size(rows,cols);}
+        if let Some(screen)=screen.as_mut(){
+            if retained.is_empty() {
+                screen.screen_mut().set_size(rows,cols);
+            } else {
+                let mut rebuilt=vt100::Parser::new(rows,cols,self.scrollback);
+                rebuilt.process(retained.as_bytes());
+                *screen=rebuilt;
+            }
+        }
         session_resize?;Ok(())
     }
     /// session.ts `stop()`: the default SIGTERM (registry-session.ts `DEFAULT_SIGNAL`), letting the
