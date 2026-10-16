@@ -90,3 +90,24 @@ async fn given_changed_closed_files_when_synchronized_then_sends_bounded_changed
     assert_eq!(change_types(&notifications[0]), vec![json!(2); 128]);
     assert_eq!(change_types(&notifications[1]), vec![json!(2)]);
 }
+
+#[tokio::test]
+async fn given_publish_arrives_before_wait_registration_when_waiting_then_returns_immediately() {
+    let (documents, _) = recording_state();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("file.ts");
+    std::fs::write(&path, "const value = 1;").expect("write file");
+    let path = path.to_string_lossy().into_owned();
+    documents.open_file(&path).await.expect("open document");
+    let snapshot = documents
+        .capture_diagnostic_snapshot(&path)
+        .expect("snapshot");
+    documents.record_published_diagnostics(&snapshot.uri, Vec::new(), Some(1.0));
+
+    tokio::time::timeout(
+        Duration::from_millis(50),
+        documents.wait_for_diagnostics_activity(&snapshot, 10_000.0),
+    )
+    .await
+    .expect("publish activity should already have resolved the wait");
+}
