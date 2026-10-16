@@ -61,7 +61,7 @@ async fn v2_timeout_emits_both_upstream_fallback_events() {
     let runner: maho_ext_compaction::openai_remote_dependencies::OpenAiResponsesStreamRunner = std::sync::Arc::new(|_, _, _| maho_ai::utils::event_stream::create_assistant_message_event_stream());
     let controller = maho_ai::utils::abort::AbortController::new();
     let events = std::sync::Mutex::new(Vec::new());
-    let result = attempt_openai_responses_v2_compaction(ResponsesV2Options { model: &model, request: &request, first_kept_entry_id: "anchor", origin: json!({}), system_prompt: String::new(), session_id: "session".into(), api_key: None, headers: BTreeMap::new(), extra_body: None, signal: controller.signal(), runner: &runner }, "request", std::time::Duration::from_secs(1), &|event| events.lock().unwrap().push(event)).await.unwrap();
+    let result = attempt_openai_responses_v2_compaction(ResponsesV2Options { model: &model, request: &request, first_kept_entry_id: "anchor", origin: json!({}), system_prompt: String::new(), session_id: "session".into(), api_key: None, headers: BTreeMap::new(), extra_body: None, signal: controller.signal(), runner: &runner }, "request", tokio::time::Instant::now() + std::time::Duration::from_secs(1), &|event| events.lock().unwrap().push(event)).await.unwrap();
     assert!(result.is_none());
     let events = events.lock().unwrap();
     assert_eq!(events.len(), 3);

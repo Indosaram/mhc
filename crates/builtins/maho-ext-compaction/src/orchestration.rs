@@ -55,7 +55,7 @@ pub(crate) fn admit_owned_context_tool_results(mut output: Vec<Value>, window: u
             continue;
         }
         let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else { continue; };
-        let text_tokens: Vec<_> = content.iter().map(|part| if part.get("type").and_then(Value::as_str) == Some("text") { estimate_tokens(&json!({"role":"user","content":part["text"]})) } else { 0 }).collect();
+        let text_tokens: Vec<_> = content.iter().map(|part| if part.get("type").and_then(Value::as_str) == Some("text") { estimate_tokens(&json!({"role":"user","content":part["text"],"timestamp":0})) } else { 0 }).collect();
         let total = text_tokens.iter().sum::<u64>();
         let cap = resolve_tool_result_admission_cap_tokens(window);
         if total <= cap { continue; }
