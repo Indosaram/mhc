@@ -64,6 +64,23 @@ fn given_child_beyond_max_depth_when_started_then_depth_denied_and_zero_records(
 }
 
 #[test]
+fn given_team_member_with_parent_kernel_tools_when_started_then_refused_before_record_creation() {
+    let harness = default_manager();
+    let result = harness.manager.start(&ManagerStartSpec {
+        team_role: Some("member".to_string()),
+        kernel_tools: Some(vec!["parent_tool".to_string()]),
+        ..base_spec()
+    });
+
+    let StartResult::PlanUnresolved(error) = result else {
+        panic!("expected plan_unresolved");
+    };
+    assert_eq!(error.code, crate::manager::types::PlanResolutionCode::InvalidTarget);
+    assert!(error.message.contains("cannot reach a parent JavaScript kernel"));
+    assert!(harness.store.list().expect("list").records.is_empty());
+}
+
+#[test]
 fn given_full_model_slot_when_further_task_starts_then_queues_fifo_and_starts_when_slot_frees() {
     let harness = make_manager(HarnessOptions {
         config: Some(config(1, 1)),

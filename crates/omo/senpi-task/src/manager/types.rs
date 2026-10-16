@@ -102,6 +102,10 @@ pub struct ManagerStartSpec {
     pub member_scoped_tools: Option<Vec<ChildToolRef>>,
     pub extensions: Option<Vec<String>>,
     pub member_env: Option<BTreeMap<String, String>>,
+    /// Named-team role; member launches cannot inherit parent-kernel tools.
+    pub team_role: Option<String>,
+    /// Parent-kernel tools are valid only for same-process lead launches.
+    pub kernel_tools: Option<Vec<String>>,
     /// Per-spawn isolation override (TS spec.isolated); `None` falls back to the config block.
     pub isolated: Option<bool>,
     /// Per-spawn merge strategy (TS spec.merge).
