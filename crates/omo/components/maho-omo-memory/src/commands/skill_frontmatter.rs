@@ -22,6 +22,12 @@ pub struct SkillNameFrontmatterContentRepairResult {
     pub reason: Option<String>,
 }
 
+pub struct SkillFrontmatterFieldWriteResult {
+    pub content: String,
+    pub changed: bool,
+    pub reason: Option<String>,
+}
+
 struct FrontmatterMatch {
     opening_len: usize,
     frontmatter_end: usize,
@@ -89,6 +95,45 @@ fn format_yaml_scalar(value: &str) -> String {
     } else {
         serde_json::to_string(value).unwrap_or_else(|_| value.to_owned())
     }
+}
+
+pub fn set_skill_frontmatter_field(content: &str, field: &str, value: &str) -> SkillFrontmatterFieldWriteResult {
+    if field.trim().is_empty() {
+        return SkillFrontmatterFieldWriteResult { content: content.to_owned(), changed: false, reason: Some("field name is empty".to_owned()) };
+    }
+    let Some(found) = frontmatter_match(content) else {
+        return SkillFrontmatterFieldWriteResult { content: content.to_owned(), changed: false, reason: Some("missing YAML frontmatter".to_owned()) };
+    };
+    let opening = &content[..found.opening_len];
+    let frontmatter = &content[found.opening_len..found.frontmatter_end];
+    let closing_end = found.frontmatter_end + found.closing_len;
+    let closing = &content[found.frontmatter_end..closing_end];
+    let newline = if opening.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = frontmatter.replace("\r\n", "\n").split('\n').map(str::to_owned).collect();
+    let key = format!("{field}:");
+    let index = lines.iter().position(|line| {
+        let trimmed = line.trim_start();
+        trimmed.strip_prefix(&key).is_some_and(|_| true)
+            || trimmed.strip_prefix(field).is_some_and(|rest| rest.trim_start().starts_with(':'))
+    });
+    if let Some(index) = index {
+        let trimmed = lines[index].trim_start();
+        let current = trimmed.strip_prefix(field).unwrap_or("").trim_start().strip_prefix(':').unwrap_or("").trim();
+        let unquoted = current.strip_prefix('"').and_then(|v| v.strip_suffix('"'))
+            .or_else(|| current.strip_prefix('\'').and_then(|v| v.strip_suffix('\''))).unwrap_or(current);
+        if unquoted == value {
+            return SkillFrontmatterFieldWriteResult { content: content.to_owned(), changed: false, reason: None };
+        }
+        lines[index] = format!("{field}: {}", format_yaml_scalar(value));
+        let mut end = index + 1;
+        while end < lines.len() && lines[end].chars().next().is_some_and(char::is_whitespace) && !lines[end].trim().is_empty() { end += 1; }
+        lines.drain(index + 1..end);
+    } else {
+        lines.push(format!("{field}: {}", format_yaml_scalar(value)));
+    }
+    let next = format!("{opening}{}{closing}{}", lines.join(newline), &content[closing_end..]);
+    let changed = next != content;
+    SkillFrontmatterFieldWriteResult { content: next, changed, reason: None }
 }
 
 pub fn repair_skill_name_frontmatter_content(
@@ -310,6 +355,16 @@ mod tests {
         let result = repair_skill_name_frontmatter_content("# just markdown\n", "commit");
         assert!(!result.changed);
         assert_eq!(result.reason.as_deref(), Some("missing YAML frontmatter"));
+    }
+
+    #[test]
+    fn field_setter_preserves_body_bytes_and_replaces_folded_value() {
+        let content = "---\r\ndescription: >\r\n  old value\r\nname: skill\r\n---\r\nbody\r\n\xff";
+        let result = set_skill_frontmatter_field(content, "description", "new value");
+        assert!(result.changed);
+        assert!(result.content.ends_with("body\r\n\xff"));
+        assert!(result.content.contains("description: \"new value\"\r\nname: skill"));
+        assert!(!set_skill_frontmatter_field(&result.content, "description", "new value").changed);
     }
 
     #[test]

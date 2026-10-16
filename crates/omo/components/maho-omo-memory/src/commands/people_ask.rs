@@ -135,6 +135,10 @@ pub fn create_people_ask_runner(options: PeopleAskOptions) -> PeopleAskRunner {
             }
             args.push(build_ask_prompt(&request));
 
+            let env = env
+                .into_iter()
+                .filter(|(name, _)| !matches!(name.as_str(), "OMO_PACKAGE_DIR" | "SENPI_PACKAGE_DIR" | "PI_PACKAGE_DIR"))
+                .collect();
             run_child(&launcher.command, &args, &env, deadline_ms).await
         })
     })
