@@ -52,6 +52,7 @@ pub fn resume_migration_journal(
             &prepared,
             &journal.target_path,
             input.write_target,
+            journal.backup_moves.iter().find(|movement| movement.from == journal.target_path).map(|movement| movement.to.as_str()),
         )?;
     }
 

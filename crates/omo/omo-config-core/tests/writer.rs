@@ -133,6 +133,31 @@ fn a_pinned_timestamp_still_yields_distinct_backup_paths() {
 }
 
 #[test]
+fn planned_backup_is_reused_only_when_its_contents_match() {
+    let (_root, home, project) = fixture();
+    let config_path = format!("{project}/.omo/omo.jsonc");
+    let original = "{\"task\":{\"default_concurrency\":5}}\n";
+    write_file(&config_path, original);
+    let env = env_of(&[("HOME", &home)]);
+    let planned = format!("{config_path}.bak.migration");
+    write_file(&planned, original);
+
+    let mut options = project_options(&project, &env);
+    options.target_path = Some(config_path.clone());
+    options.backup_path = Some(planned.clone());
+    options.edits = vec![edit(&["task", "default_concurrency"], json!(4))];
+    let result = update_omo_config(&options).expect("reuse matching backup");
+    assert_eq!(result.backup_path, Some(planned.clone()));
+
+    write_file(&config_path, original);
+    write_file(&planned, "different bytes");
+    let result = update_omo_config(&options).expect("preserve conflicting planned backup");
+    assert_eq!(result.backup_path, Some(format!("{planned}.1")));
+    assert_eq!(std::fs::read_to_string(&planned).expect("planned"), "different bytes");
+    assert_eq!(std::fs::read_to_string(format!("{planned}.1")).expect("fallback"), original);
+}
+
+#[test]
 fn editing_a_missing_user_config_creates_it_with_the_header() {
     let (_root, home, _project) = fixture();
     let config_path = format!("{home}/.omo/omo.jsonc");

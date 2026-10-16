@@ -300,6 +300,7 @@ impl MigrationError {
 }
 
 pub struct MigrationTargetWriterInput<'a> {
+    pub backup_path: Option<&'a str>,
     pub edits: &'a [OmoConfigEdit],
     pub env: &'a MigrationEnvironment,
     pub file_system: &'a dyn MigrationFileSystem,

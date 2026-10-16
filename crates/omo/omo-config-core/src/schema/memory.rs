@@ -196,6 +196,7 @@ pub fn omo_memory_facts_layer_schema() -> Node {
     strict_object(vec![
         optional_field("enabled", boolean()),
         optional_field("debounce_settles", integer().with_min(1.0)),
+        optional_field("model", non_empty_string()),
     ])
 }
 
@@ -203,6 +204,7 @@ pub fn omo_memory_facts_schema() -> Node {
     strict_object(vec![
         defaulted("enabled", boolean(), default_true),
         defaulted("debounce_settles", integer().with_min(1.0), || json!(4)),
+        optional("model", non_empty_string()),
     ])
 }
 
