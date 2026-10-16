@@ -78,3 +78,17 @@ pub struct ApplyPatchToolDetails {
     #[serde(skip_serializing_if="Option::is_none")]
     pub result:Option<ApplyPatchResult>,
 }
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ApplyPatchThemeColor { Accent,Error,Muted,ToolDiffAdded,ToolDiffContext,ToolDiffRemoved,ToolOutput,ToolTitle }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ApplyPatchThemeBg { ToolErrorBg,ToolPendingBg,ToolSuccessBg }
+pub trait ApplyPatchTheme {
+    fn fg(&self,name:ApplyPatchThemeColor,text:&str)->String;
+    fn bg(&self,name:ApplyPatchThemeBg,text:&str)->String;
+    fn bold(&self,text:&str)->String;
+    fn inverse(&self,text:&str)->String;
+}
+pub type ApplyPatchExtensionApi=maho_ext_api::ExtensionApi;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct FreeformToolFormat { pub kind:&'static str,pub syntax:&'static str,pub definition:&'static str }

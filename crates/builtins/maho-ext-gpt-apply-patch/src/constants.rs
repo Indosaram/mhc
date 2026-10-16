@@ -1,6 +1,7 @@
 use serde_json::{Value,json};
 pub fn apply_patch_params()->Value { json!({"type":"object","properties":{"input":{"type":"string","description":"The entire contents of the apply_patch command"}},"required":["input"]}) }
 pub const APPLY_PATCH_FREEFORM_DESCRIPTION:&str="Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.";
+pub const APPLY_PATCH_JSON_DESCRIPTION:&str="Use the `apply_patch` tool to edit files by passing the entire patch as the `input` string argument.";
 pub const APPLY_PATCH_LARK_GRAMMAR:&str=r#"start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
@@ -89,4 +90,4 @@ It is important to remember:
 - You must prefix new lines with `+` even when creating a new file
 - File references can only be relative, NEVER ABSOLUTE.
 ";
-pub fn apply_patch_json_description()->String { format!("Use the `apply_patch` tool to edit files by passing the entire patch as the `input` string argument.\n{CODEX_APPLY_PATCH_DESCRIPTION}") }
+pub fn apply_patch_json_description()->String { format!("{}\n{CODEX_APPLY_PATCH_DESCRIPTION}",APPLY_PATCH_JSON_DESCRIPTION) }

@@ -73,6 +73,7 @@ mod tests {
         }
     }
     #[test] fn retention_is_bounded_by_utf8_bytes() { assert!(retained_patch(Some(&"a".repeat(16*1024))).is_some()); assert!(retained_patch(Some(&"é".repeat(8193))).is_none()); assert!(retained_patch(None).is_none()); }
+    #[test] fn retained_patch_allows_multibyte_string_at_byte_limit() { assert!(retained_patch(Some(&"é".repeat(8192))).is_some()); }
     #[tokio::test] async fn upstream_partial_and_complete_failures_keep_structured_recovery() {
         for partial in [false,true] {
             let directory=tempfile::tempdir().unwrap();let context=Context(directory.path().into());let path=directory.path().join("existing.txt");tokio::fs::write(&path,b"actual\n").await.unwrap();
