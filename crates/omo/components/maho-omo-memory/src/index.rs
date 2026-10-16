@@ -20,6 +20,11 @@ impl MemoryComponent{
     pub fn register(self:&Arc<Self>,api:&mut ExtensionApi,hooks:MemoryComponentHooks,register_static:impl FnOnce(&mut ExtensionApi))->Result<bool,String>{
         let boot=self.settings()?;if !self.enabled(&boot){return Ok(false);}
         if !crate::capabilities::has_memory_capabilities(api){return Ok(false);}
+        crate::native_badge::register_native_badge(api);
+        let sweep_root=memory_core::identity::layout::resolve_memory_root(&self.options.env,&self.options.cwd);
+        let sweep_now=chrono::Utc::now().timestamp_millis();
+        let _=crate::transient_identity::sweep_transient_run_roots(&sweep_root,sweep_now,24*60*60*1000);
+        let _=crate::transient_identity::sweep_abandoned_identity_roots(&sweep_root,sweep_now,7*24*60*60*1000);
         register_static(api);
         let this=self.clone();let subscription=Arc::new(Mutex::new(Some(api.events.on("config-watch:reloaded",Arc::new(move |payload|{
             if payload["registrationId"]!="omo"{return;}
@@ -34,12 +39,18 @@ impl MemoryComponent{
                 if let Some(previous)=sessions.get_mut(id){this.release(previous);}
                 sessions.insert(id.into(),MemorySessionState{enabled,context:None,memory_status_attempted:false,restart_notified:false,ui:Some(context.ui.clone())});
                 if !enabled{return Ok(None);}
-                let identity=memory_core::identity::resolve::resolve_memory_identity(settings["agent"].as_str(),&this.options.cwd,&this.options.env).map_err(|error|error.to_string())?;
+                let session_cwd=context.cwd.clone();
+                let identity=memory_core::identity::resolve::resolve_memory_identity(settings["agent"].as_str(),&session_cwd,&this.options.env).map_err(|error|error.to_string())?;
                 let entries=context.session_manager.get_entries();
-                let previous=entries.iter().rev().find_map(|entry|{let data=&entry.data;if entry.kind=="custom"&&data["customType"]==MEMORY_BINDING_CUSTOM_TYPE{data["data"]["identity"].as_str()}else{None}});
-                if let Some(previous)=previous&&previous!=identity.id{context.ui.notify(&format!("memory identity conflict: session is bound to {previous}, but config resolved {}; restart with the original identity or fork a new session",identity.id),NotificationType::Error);return Ok(None);}
-                let binding=create_memory_binding(&identity.id,&identity.paths.repo.to_string_lossy(),(this.options.now)());let value=serde_json::json!({"identity":binding.identity,"repoPathHash":binding.repo_path_hash,"boundAt":binding.bound_at});
-                let bound=MemoryIdentityContext::new(identity.id,identity.paths,binding);
+                let recorded=entries.iter().rev().find_map(|entry|{let data=&entry.data;if entry.kind!="custom"||data["customType"]!=MEMORY_BINDING_CUSTOM_TYPE{return None;}Some(crate::binding::MemorySessionBinding{identity:data["data"]["identity"].as_str()?.into(),repo_path_hash:data["data"]["repoPathHash"].as_str()?.into(),bound_at:data["data"]["boundAt"].as_f64()?})});
+                let adoption=crate::identity_adoption::adopt_session_identity(recorded.as_ref(),crate::identity_adoption::BoundIdentity{id:identity.id,paths:identity.paths.clone()},identity.paths.root.ancestors().nth(2).unwrap_or(&identity.paths.root),settings["agent"].as_str(),false);
+                let adopted=match adoption{crate::identity_adoption::IdentityAdoption::Resolved(value)|crate::identity_adoption::IdentityAdoption::Rebound(value)=>value,crate::identity_adoption::IdentityAdoption::Conflict=>{context.ui.notify("memory identity conflict: session binding cannot be reproduced; restart or fork the session",NotificationType::Error);return Ok(None);}};
+                let one_shot=!context.has_ui||context.session_manager.get_session_dir().is_none();
+                let memory_root=memory_core::identity::layout::resolve_memory_root(&this.options.env,&session_cwd);
+                let run_token=format!("{:x}-{}-{:x}",((this.options.now)() as u64).max(1),std::process::id(),memory_core::support::random::random_uuid().replace('-',""));
+                let run_paths=crate::transient_identity::resolve_identity_run_paths(&adopted.id,adopted.paths.clone(),&memory_root,one_shot,Some(&run_token));
+                let binding=create_memory_binding(&adopted.id,&run_paths.paths.repo.to_string_lossy(),(this.options.now)());let value=serde_json::json!({"identity":binding.identity,"repoPathHash":binding.repo_path_hash,"boundAt":binding.bound_at});
+                let bound=MemoryIdentityContext::new(adopted.id,run_paths.paths,binding).with_durable_root(run_paths.durable_root);
                 let state=sessions.get_mut(id).ok_or("Inserted memory session is missing")?;state.context=Some(bound.clone());this.supervisor.acquire();drop(sessions);
                 handle.append_entry(MEMORY_BINDING_CUSTOM_TYPE,Some(value)).map_err(|error|error.to_string())?;
                 Ok::<_,String>(Some((id.to_owned(),bound)))
@@ -57,6 +68,7 @@ impl MemoryComponent{
             let deadline=crate::shutdown_drain::shutdown_deadline_at(||(this.options.now)());let this=this.clone();let shutdown=hooks.shutdown.clone();let clear=hooks.clear_status.clone();let subscription=subscription.clone();
             Box::pin(async move{
                 let result=shutdown(event,context,deadline).await;
+                if let Some(state)=this.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(context.session_manager.session_id())&&let Some(identity)=&state.context&&identity.identity_paths.root!=identity.durable_root{let _=crate::transient_identity::finalize_identity_run(&crate::transient_identity::IdentityRunPaths{paths:identity.identity_paths.clone(),durable_root:identity.durable_root.clone(),transient_run_root:crate::transient_identity::transient_run_root_from_identity(&identity.identity_paths.root)});}
                 clear(context);if let Some(mut state)=this.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(context.session_manager.session_id()){this.release(&mut state);}
                 drop(subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take());
                 result.map(|_|EventResult::None).map_err(ExtensionFailure::new)
