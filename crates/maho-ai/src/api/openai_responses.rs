@@ -165,7 +165,7 @@ fn is_open_ai_web_search_preview_tool(value: &Value) -> bool {
     value.as_object().is_some_and(|object| {
         matches!(
             object.get("type").and_then(Value::as_str),
-            Some("web_search_preview") | Some("web_search_preview_2025_03_11")
+            Some("web_search_preview") | Some("web_search_preview_2025_03_11") | Some("web_search")
         )
     })
 }
