@@ -192,6 +192,64 @@ fn resolve_category_definition(
     Value::Object(resolved)
 }
 
+fn resolve_model_profile(
+    definition: &Value,
+    catalog: Option<&Map<String, Value>>,
+    cycle_names: &HashSet<String>,
+) -> Value {
+    let Value::Object(map) = definition else {
+        return definition.clone();
+    };
+    let mut resolved = map.clone();
+    if let Some(Value::Array(models)) = map.get("models") {
+        resolved.insert(
+            "models".into(),
+            Value::Array(
+                models
+                    .iter()
+                    .map(|entry| resolve_model_entry(entry, catalog, cycle_names))
+                    .collect(),
+            ),
+        );
+    }
+    Value::Object(resolved)
+}
+
+fn profile_diagnostics(view: &Value) -> Vec<ModelReferenceDiagnostic> {
+    let profiles = view.get("model_profiles").and_then(Value::as_object);
+    let catalog = view.get("models").and_then(Value::as_object);
+    let mut diagnostics = Vec::new();
+    let profile_names: HashSet<&str> = profiles
+        .into_iter()
+        .flat_map(Map::keys)
+        .map(String::as_str)
+        .collect();
+    if let (Some(profiles), Some(catalog)) = (profiles, catalog) {
+        for name in profiles.keys().filter(|name| catalog.contains_key(*name)) {
+            diagnostics.push(ModelReferenceDiagnostic {
+                kind: "validation",
+                message: format!("Model profile \"{name}\" shadows a model catalog entry of the same name"),
+                path: format!("model_profiles.{name}"),
+            });
+        }
+    }
+    for section in ["agents", "categories"] {
+        let Some(definitions) = view.get(section).and_then(Value::as_object) else { continue };
+        for (name, definition) in definitions {
+            let Some(models) = definition.get("models").and_then(Value::as_array) else { continue };
+            for (index, entry) in models.iter().enumerate() {
+                let Some(profile) = entry.as_str().filter(|entry| profile_names.contains(entry)) else { continue };
+                diagnostics.push(ModelReferenceDiagnostic {
+                    kind: "validation",
+                    message: format!("\"{profile}\" is a model profile; splicing a profile into a category chain is not supported yet"),
+                    path: format!("{section}.{name}.models.{index}"),
+                });
+            }
+        }
+    }
+    diagnostics
+}
+
 fn cycle_diagnostics(catalog: Option<&Map<String, Value>>) -> Vec<ModelReferenceDiagnostic> {
     let Some(catalog) = catalog else {
         return Vec::new();
@@ -221,7 +279,8 @@ fn cycle_diagnostics(catalog: Option<&Map<String, Value>>) -> Vec<ModelReference
 
 pub fn resolve_model_references(view: &Value) -> ResolveModelReferencesResult {
     let catalog = view.get("models").and_then(Value::as_object);
-    let diagnostics = cycle_diagnostics(catalog);
+    let mut diagnostics = cycle_diagnostics(catalog);
+    diagnostics.extend(profile_diagnostics(view));
     let cycle_names: HashSet<String> = diagnostics
         .iter()
         .filter_map(|diagnostic| diagnostic.path.split('.').nth(1).map(str::to_string))
@@ -253,6 +312,16 @@ pub fn resolve_model_references(view: &Value) -> ResolveModelReferencesResult {
             })
             .collect();
         resolved_view.insert("categories".into(), Value::Object(resolved_categories));
+    }
+
+    if let Some(Value::Object(profiles)) = view.get("model_profiles") {
+        let resolved_profiles = profiles
+            .iter()
+            .map(|(name, definition)| {
+                (name.clone(), resolve_model_profile(definition, catalog, &cycle_names))
+            })
+            .collect();
+        resolved_view.insert("model_profiles".into(), Value::Object(resolved_profiles));
     }
 
     ResolveModelReferencesResult {

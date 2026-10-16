@@ -34,7 +34,7 @@ fn default_isolation() -> Value {
 }
 
 fn default_execution_mode() -> Value {
-    json!("in-process")
+    json!("auto")
 }
 
 fn default_concurrency() -> Value {
@@ -199,9 +199,13 @@ pub fn omo_task_settings_schema() -> Node {
         ),
         defaulted(
             "default_execution_mode",
-            enumeration(&["in-process", "process"]),
+            enumeration(&["auto", "in-process", "process"]),
             default_execution_mode,
         ),
+        defaulted("process_runner", enumeration(&["host", "child-process"]), || json!("host")),
+        defaulted("host_engine_policy", enumeration(&["upgrade", "fallback"]), || json!("upgrade")),
+        optional("host_idle_exit_ms", positive_integer()),
+        defaulted("host_shard_prewarm", enumeration(&["off", "first-turn", "session-start"]), || json!("first-turn")),
         defaulted(
             "default_concurrency",
             positive_integer(),
@@ -264,8 +268,12 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("isolation", omo_task_isolation_layer_schema()),
         optional(
             "default_execution_mode",
-            enumeration(&["in-process", "process"]),
+            enumeration(&["auto", "in-process", "process"]),
         ),
+        optional("process_runner", enumeration(&["host", "child-process"])),
+        optional("host_engine_policy", enumeration(&["upgrade", "fallback"])),
+        optional("host_idle_exit_ms", positive_integer()),
+        optional("host_shard_prewarm", enumeration(&["off", "first-turn", "session-start"])),
         optional("default_concurrency", positive_integer()),
         optional("provider_concurrency", record(positive_integer())),
         optional("model_concurrency", record(positive_integer())),

@@ -162,6 +162,13 @@ pub fn write_omo_migration_target(
     input: MigrationTargetWriterInput<'_>,
 ) -> Result<(), MigrationError> {
     let options = writer_input(input.target_path, input.env)?;
+    write_omo_migration_target_with_options(input, options)
+}
+
+fn write_omo_migration_target_with_options(
+    input: MigrationTargetWriterInput<'_>,
+    options: WriterInput,
+) -> Result<(), MigrationError> {
     let update_opts = UpdateOmoConfigOptions {
         edits: input.edits.to_vec(),
         env: Some(input.env.clone()),
@@ -170,6 +177,7 @@ pub fn write_omo_migration_target(
         project_dir: options.project_dir,
         scope: options.scope,
         target_path: Some(input.target_path.to_string()),
+        backup_path: input.backup_path.map(str::to_string),
         timestamp: None,
     };
     let result = update_omo_config(&update_opts)
@@ -389,11 +397,28 @@ pub fn write_prepared_target<'a>(
     prepared: &'a PreparedTargetWrite,
     target_path: &'a str,
     write_target: &MigrationTargetWriter<'a>,
+    backup_path: Option<&str>,
 ) -> Result<(), MigrationError> {
-    write_target(MigrationTargetWriterInput {
+    let input = MigrationTargetWriterInput {
+        backup_path,
         edits: &prepared.edits,
         env,
         file_system,
         target_path,
-    })
+    };
+    if let Some(backup_path) = backup_path {
+        let options = writer_input(target_path, env)?;
+        write_omo_migration_target_with_options(
+            MigrationTargetWriterInput {
+                backup_path: Some(backup_path.to_string()),
+                edits: &prepared.edits,
+                env,
+                file_system,
+                target_path,
+            },
+            options,
+        )
+    } else {
+        write_target(input)
+    }
 }
