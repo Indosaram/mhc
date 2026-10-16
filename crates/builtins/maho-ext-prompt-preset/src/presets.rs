@@ -66,7 +66,7 @@ pub fn resolve_preset_name(model: ModelMetadata<'_>, setting: PromptPresetName) 
  if id.contains("gpt-5.4") { return Some(PromptPresetName::Gpt54); }
  if id.contains("gpt-5.3") { return Some(PromptPresetName::Gpt53Codex); }
  if id.contains("gpt-5.2") { return Some(PromptPresetName::Gpt52); }
- if model_signal(model, &[r"(?:^|[/@:._-])swe-2-(?:high|max|low|high-lite)(?:$|[/@:._-])"]) || model_signal(model, &[r"(?:^|[/@._-])kimi-k3(?:$|[/@._:-])"]) || id == "k3" || model.name.is_some_and(|name| normalized(name) == "k3") { return Some(PromptPresetName::KimiK3); }
+  if model_signal(model, &[r"(?:^|[/@:._-])swe-2(?:-(?:high|max|low|high-lite))?(?:$|[/@:._-])"]) || model_signal(model, &[r"(?:^|[/@._-])kimi-k3(?:$|[/@._:-])"]) || id == "k3" || model.name.is_some_and(|name| normalized(name) == "k3") { return Some(PromptPresetName::KimiK3); }
  if model_signal(model, &[r"(?:^|[/@._-])kimi-k2(?:[._-]|p)8(?:$|[/@._:-])"]) || id == "kimi-for-coding" || model.name.is_some_and(|name| normalized(name) == "kimi-for-coding") { return Some(PromptPresetName::KimiK28); }
  if model_signal(model, &[r"(?:^|[/@._-])kimi-k2(?:[._-]|p)7(?:$|[/@._:-])"]) || id == "kimi-for-coding-highspeed" || model.name.is_some_and(|name| normalized(name) == "kimi-for-coding-highspeed") { return Some(PromptPresetName::KimiK27); }
  if model_signal(model, &[r"(?:^|[/@._-])kimi-k2(?:[._-]|p)6(?:$|[/@._:-])"]) { return Some(PromptPresetName::KimiK26); }
