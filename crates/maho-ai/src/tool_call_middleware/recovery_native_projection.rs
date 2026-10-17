@@ -29,9 +29,14 @@ fn clone_content_block(block: &ContentBlock) -> ContentBlock {
     block.clone()
 }
 
+/// Maintains source-index order and native/recovered ID ownership for recovery streams.
+///
+/// senpi constructs this with `projection.message` and mutates that same object, so every block
+/// it projects lands in the message the terminal finalizes. Rust cannot alias that, so the
+/// projection holds no message of its own: each call that reads or writes content takes the
+/// owning `StreamMessageProjection.message` by reference.
 pub struct RecoveryNativeProjection {
     stream: AssistantMessageEventStream,
-    message: AssistantMessage,
     ranges_by_inner_index: HashMap<usize, ContentRange>,
     native_lifecycle_by_inner_index: HashMap<usize, NativeLifecycle>,
     reserved_ids: HashSet<String>,
@@ -43,10 +48,9 @@ pub struct RecoveryNativeProjection {
 }
 
 impl RecoveryNativeProjection {
-    pub fn new(stream: AssistantMessageEventStream, message: AssistantMessage, protocol: ToolCallFormat) -> Self {
+    pub fn new(stream: AssistantMessageEventStream, protocol: ToolCallFormat) -> Self {
         Self {
             stream,
-            message,
             ranges_by_inner_index: HashMap::new(),
             native_lifecycle_by_inner_index: HashMap::new(),
             reserved_ids: HashSet::new(),
@@ -66,33 +70,33 @@ impl RecoveryNativeProjection {
         }
     }
 
-    pub fn synchronize_lower(&mut self, source: &AssistantMessage, content_index: usize) -> bool {
+    pub fn synchronize_lower(&mut self, message: &mut AssistantMessage, source: &AssistantMessage, content_index: usize) -> bool {
         let bound = content_index.min(source.content.len());
         for inner_index in 0..bound {
             if self.ranges_by_inner_index.contains_key(&inner_index) {
                 continue;
             }
-            if !self.append_unannounced(source, inner_index) {
+            if !self.append_unannounced(message, source, inner_index) {
                 return false;
             }
         }
         true
     }
 
-    pub fn synchronize_remaining(&mut self, source: &AssistantMessage) -> bool {
+    pub fn synchronize_remaining(&mut self, message: &mut AssistantMessage, source: &AssistantMessage) -> bool {
         for inner_index in 0..source.content.len() {
             if self.ranges_by_inner_index.contains_key(&inner_index) {
                 continue;
             }
-            if !self.append_unannounced(source, inner_index) {
+            if !self.append_unannounced(message, source, inner_index) {
                 return false;
             }
         }
         true
     }
 
-    pub fn start_text(&mut self, inner_index: usize, outer_index: usize) -> bool {
-        let end = self.message.content.len();
+    pub fn start_text(&mut self, message: &AssistantMessage, inner_index: usize, outer_index: usize) -> bool {
+        let end = message.content.len();
         self.record_range(inner_index, ContentRange { start: outer_index, end })
     }
 
@@ -100,14 +104,14 @@ impl RecoveryNativeProjection {
         self.record_range(inner_index, ContentRange { start: outer_index, end: outer_index + 1 })
     }
 
-    pub fn extend_text(&mut self, inner_index: usize) {
-        let new_end = self.message.content.len();
+    pub fn extend_text(&mut self, message: &AssistantMessage, inner_index: usize) {
+        let new_end = message.content.len();
         if let Some(range) = self.ranges_by_inner_index.get_mut(&inner_index) {
             range.end = new_end;
         }
     }
 
-    pub fn project_native_start(&mut self, source: &AssistantMessage, inner_index: usize) -> ProjectNativeStartResult {
+    pub fn project_native_start(&mut self, message: &mut AssistantMessage, source: &AssistantMessage, inner_index: usize) -> ProjectNativeStartResult {
         if self.native_lifecycle_by_inner_index.contains_key(&inner_index) || self.ranges_by_inner_index.contains_key(&inner_index) {
             return ProjectNativeStartResult::Invalid;
         }
@@ -120,17 +124,17 @@ impl RecoveryNativeProjection {
             return ProjectNativeStartResult::Collision;
         }
         self.reserved_ids.insert(tool_call.id.clone());
-        let outer_index = self.message.content.len();
-        self.message.content.push(clone_content_block(block));
+        let outer_index = message.content.len();
+        message.content.push(clone_content_block(block));
         if !self.record_range(inner_index, ContentRange { start: outer_index, end: outer_index + 1 }) {
             return ProjectNativeStartResult::Invalid;
         }
         self.native_lifecycle_by_inner_index.insert(inner_index, NativeLifecycle::Started);
-        self.stream.push(AssistantMessageEvent::ToolcallStart { content_index: outer_index, partial: self.message.clone() });
+        self.stream.push(AssistantMessageEvent::ToolcallStart { content_index: outer_index, partial: message.clone() });
         ProjectNativeStartResult::Projected
     }
 
-    pub fn project_native_delta(&mut self, source: &AssistantMessage, inner_index: usize, delta: &str) -> bool {
+    pub fn project_native_delta(&mut self, message: &mut AssistantMessage, source: &AssistantMessage, inner_index: usize, delta: &str) -> bool {
         if self.native_lifecycle_by_inner_index.get(&inner_index) != Some(&NativeLifecycle::Started) {
             return false;
         }
@@ -139,19 +143,21 @@ impl RecoveryNativeProjection {
         if !matches!(block, ContentBlock::ToolCall(_)) {
             return false;
         }
-        self.message.content[outer_index] = clone_content_block(block);
-        self.stream.push(AssistantMessageEvent::ToolcallDelta { content_index: outer_index, delta: delta.to_string(), partial: self.message.clone() });
+        let Some(slot) = message.content.get_mut(outer_index) else { return false };
+        *slot = clone_content_block(block);
+        self.stream.push(AssistantMessageEvent::ToolcallDelta { content_index: outer_index, delta: delta.to_string(), partial: message.clone() });
         true
     }
 
-    pub fn project_native_end(&mut self, inner_index: usize, tool_call: ToolCall) -> bool {
+    pub fn project_native_end(&mut self, message: &mut AssistantMessage, inner_index: usize, tool_call: ToolCall) -> bool {
         if self.native_lifecycle_by_inner_index.get(&inner_index) != Some(&NativeLifecycle::Started) {
             return false;
         }
         let Some(outer_index) = self.ranges_by_inner_index.get(&inner_index).map(|range| range.start) else { return false };
-        self.message.content[outer_index] = ContentBlock::ToolCall(tool_call.clone());
+        let Some(slot) = message.content.get_mut(outer_index) else { return false };
+        *slot = ContentBlock::ToolCall(tool_call.clone());
         self.native_lifecycle_by_inner_index.insert(inner_index, NativeLifecycle::Ended);
-        self.stream.push(AssistantMessageEvent::ToolcallEnd { content_index: outer_index, tool_call, partial: self.message.clone() });
+        self.stream.push(AssistantMessageEvent::ToolcallEnd { content_index: outer_index, tool_call, partial: message.clone() });
         true
     }
 
@@ -173,7 +179,7 @@ impl RecoveryNativeProjection {
             .collect()
     }
 
-    fn append_unannounced(&mut self, source: &AssistantMessage, inner_index: usize) -> bool {
+    fn append_unannounced(&mut self, message: &mut AssistantMessage, source: &AssistantMessage, inner_index: usize) -> bool {
         let Some(block) = source.content.get(inner_index) else { return false };
         if inner_index as i64 <= self.highest_projected_inner_index {
             return false;
@@ -183,8 +189,8 @@ impl RecoveryNativeProjection {
         {
             return false;
         }
-        let outer_index = self.message.content.len();
-        self.message.content.push(clone_content_block(block));
+        let outer_index = message.content.len();
+        message.content.push(clone_content_block(block));
         self.record_range(inner_index, ContentRange { start: outer_index, end: outer_index + 1 })
     }
 
@@ -248,15 +254,17 @@ mod tests {
     fn project_native_start_projects_and_flags_collisions() {
         let stream = AssistantMessageEventStream::assistant();
         let source = message(vec![ContentBlock::ToolCall(tool_call("id-1"))]);
-        let mut projection = RecoveryNativeProjection::new(stream, message(vec![]), ToolCallFormat::Antml);
-        assert!(matches!(projection.project_native_start(&source, 0), ProjectNativeStartResult::Projected));
-        assert!(matches!(projection.project_native_start(&source, 0), ProjectNativeStartResult::Invalid));
+        let mut outer = message(vec![]);
+        let mut projection = RecoveryNativeProjection::new(stream, ToolCallFormat::Antml);
+        assert!(matches!(projection.project_native_start(&mut outer, &source, 0), ProjectNativeStartResult::Projected));
+        assert!(matches!(projection.project_native_start(&mut outer, &source, 0), ProjectNativeStartResult::Invalid));
+        assert!(matches!(outer.content.as_slice(), [ContentBlock::ToolCall(call)] if call.id == "id-1"));
     }
 
     #[test]
     fn assign_recovered_ids_reuses_the_start_id_for_the_matching_end() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = RecoveryNativeProjection::new(stream, message(vec![]), ToolCallFormat::Antml);
+        let mut projection = RecoveryNativeProjection::new(stream, ToolCallFormat::Antml);
         let events = vec![
             StreamParserEvent::ToolcallStart { index: 0, name: "t".into(), id: "placeholder".into() },
             StreamParserEvent::ToolcallEnd { index: 0, name: "t".into(), id: "placeholder".into(), arguments: Map::new(), incomplete: false, error_message: None },
@@ -272,8 +280,9 @@ mod tests {
     fn synchronize_remaining_appends_every_unannounced_block_in_order() {
         let stream = AssistantMessageEventStream::assistant();
         let source = message(vec![ContentBlock::Text(TextContent { text: "hi".into(), audience: None, text_signature: None })]);
-        let mut projection = RecoveryNativeProjection::new(stream, message(vec![]), ToolCallFormat::Antml);
-        assert!(projection.synchronize_remaining(&source));
-        assert_eq!(projection.message.content.len(), 1);
+        let mut outer = message(vec![]);
+        let mut projection = RecoveryNativeProjection::new(stream, ToolCallFormat::Antml);
+        assert!(projection.synchronize_remaining(&mut outer, &source));
+        assert_eq!(outer.content.len(), 1);
     }
 }
