@@ -611,7 +611,6 @@ pub struct AgentSessionInner {
     binding_readiness: Mutex<Option<BindingPromptReadiness>>,
     retry_fallback: tokio::sync::Mutex<Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>>,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
-    settling_with_background_work: std::sync::atomic::AtomicBool,
     /// senpi `_isAgentRunActive`: set right before the agent run starts, cleared when it settles.
     agent_run_active: std::sync::atomic::AtomicBool,
     /// senpi `_runtimeMessagesTokenized`: the idle release tokenized the agent's runtime messages
@@ -657,14 +656,6 @@ pub type HtmlThemeResolver = Arc<dyn Fn(Option<&str>) -> Result<(maho_ext_api::T
 struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>, crate::retry_fallback::log::FallbackLogger);
 
 struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
-
-/// Restores the ctx idle gate's settling flag on every exit path, matching senpi's `finally` in
-/// `_emitAgentSettled` (`agent-session.ts:1905`) so a dropped or cancelled settlement future
-/// cannot leave the session permanently reported as settling.
-struct SettlingBackgroundWorkGuard<'a>(&'a std::sync::atomic::AtomicBool);
-impl Drop for SettlingBackgroundWorkGuard<'_> {
-    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
-}
 
 struct ExtensionSessionManagerView {
     session: std::sync::Weak<AgentSessionInner>,
@@ -987,7 +978,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_scoped_models(&self) -> Vec<maho_ext_api::ScopedModel> { self.session().map_or_else(|_| Vec::new(), |session| session.scoped_models().into_iter().map(|model|
         maho_ext_api::ScopedModel { model: model.model, thinking_level: model.thinking_level, service_tier: model.service_tier }).collect()) }
     fn get_agent_dir(&self) -> std::path::PathBuf { self.session().map_or_else(|_| Default::default(), |session| session.agent_dir().into()) }
-    fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.agent_run_active.load(Ordering::SeqCst) && !session.settling_with_background_work.load(Ordering::SeqCst)) }
+    fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.agent_run_active.load(Ordering::SeqCst)) }
     fn is_project_trusted(&self) -> bool { self.session().is_ok_and(|session| session.with_settings_manager(|manager| manager.is_project_trusted())) }
     fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { EXTENSION_EVENT_SIGNAL.try_with(Clone::clone).ok().or_else(|| self.session().ok()?.state().extension_event_signal.clone()) }
     fn get_compaction_preparation(&self) -> Option<maho_ext_api::CompactionPreparationDetails> { EXTENSION_COMPACTION_PREPARATION.try_with(Clone::clone).ok() }
@@ -1842,7 +1833,6 @@ impl AgentSession {
             binding_readiness: Mutex::new(None),
             retry_fallback: tokio::sync::Mutex::new(None),
             work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
-            settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
             agent_run_active: std::sync::atomic::AtomicBool::new(false),
             runtime_messages_tokenized: std::sync::atomic::AtomicBool::new(false),
             wake_source_subscription: Mutex::new(None),
@@ -6840,11 +6830,6 @@ impl AgentSession {
         let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
         let epoch = self.settlement_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         lock(&self.settled_delivery).begin(generation);
-        // Match senpi's _settlingWithBackgroundWork (agent-session.ts:1896/1905): the ctx idle gate
-        // reports busy for the agent_settled window only while background wake sources are active,
-        // and the flag is restored on every exit path via the guard, as senpi does in its `finally`.
-        self.settling_with_background_work.store(self.state().wake_sources.has_active(), Ordering::SeqCst);
-        let settling = SettlingBackgroundWorkGuard(&self.settling_with_background_work);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
         self.emit(AgentSessionEvent::AgentSettled);
         // senpi emits agent_settled first, then delivers a late User join as session_abort. The take
@@ -6856,7 +6841,6 @@ impl AgentSession {
             self.emit(AgentSessionEvent::SessionAbort);
         }
         let batch = lock(&self.settled_delivery).finish(self.user_abort_generation.load(Ordering::SeqCst));
-        drop(settling);
         for action in batch.actions { action(); }
         let session = self.clone();
         tokio::spawn(async move {
@@ -13518,6 +13502,46 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
             .await.expect("bounded prompt").expect("prompt");
         assert_eq!(*lock(&observed), Some(500));
+    }
+
+    /// senpi `settled-idle-with-background-wake-source.test.ts`: a live wake source (monitor,
+    /// background task, DAG run) is not a running turn, so settlement-time `ctx.is_idle()` readers
+    /// (config-reload flush, loop deferred-tick drain) must not be told the session is busy.
+    #[tokio::test]
+    async fn agent_settled_reports_idle_with_and_without_a_live_wake_source() {
+        let session = retry_session(vec![
+            maho_ai::providers::faux::faux_assistant_message("one", Default::default()),
+            maho_ai::providers::faux::faux_assistant_message("two", Default::default()),
+        ], 0);
+        let readings = Arc::new(Mutex::new(Vec::new()));
+        let opened = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let publisher = session.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:settled-idle>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::AgentStart, vec![Arc::new(move |_, _| {
+            if !opened.swap(true, Ordering::SeqCst) {
+                let events = publisher.state().extension_events.clone().expect("runner bus");
+                events.emit("wake_source_state", &serde_json::json!({"source":"test-monitor","activeCount":1,"channels":[]}));
+            }
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        let observed = readings.clone();
+        extension.handlers.insert(maho_ext_api::EventKind::AgentSettled, vec![Arc::new(move |_, context| {
+            lock(&observed).push(context.is_idle());
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let settled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = settled.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AgentSettled) { counted.fetch_add(1, Ordering::SeqCst); }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("turn one", Default::default()))
+            .await.expect("bounded first prompt").expect("first prompt");
+        assert!(session.state().wake_sources.has_active(), "the first turn left its wake source live");
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("turn two", Default::default()))
+            .await.expect("bounded second prompt").expect("second prompt");
+        assert_eq!(settled.load(Ordering::SeqCst), 2);
+        assert_eq!(*lock(&readings), [true, true]);
     }
 
     #[tokio::test]
