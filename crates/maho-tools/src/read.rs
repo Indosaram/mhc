@@ -1,4 +1,4 @@
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::json;
@@ -11,14 +11,48 @@ pub trait ReadOperations: Send + Sync {
 }
 pub struct LocalReadOperations;
 impl ReadOperations for LocalReadOperations {
-    fn read_file<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<u8>> { Box::pin(async move { Ok(tokio::fs::read(path).await.map_err(|e| node_fs_error(e, "open", path))?) }) }
-    fn access<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()> { Box::pin(async move { tokio::fs::File::open(path).await.map_err(|e| node_fs_error(e, "access", path))?; Ok(()) }) }
+    fn read_file<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<u8>> { Box::pin(async move { reject_dataless(path).await?; Ok(tokio::fs::read(path).await.map_err(|e| node_fs_error(e, "open", path))?) }) }
+    fn access<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()> { Box::pin(async move { reject_dataless(path).await?; tokio::fs::File::open(path).await.map_err(|e| node_fs_error(e, "access", path))?; Ok(()) }) }
     fn detect_image_mime_type<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Option<String>> { Box::pin(async move {
         use tokio::io::AsyncReadExt;
+        reject_dataless(path).await?;
         let mut file = tokio::fs::File::open(path).await.map_err(|e| node_fs_error(e, "open", path))?; let mut bytes = vec![0;4100];
         let count = file.read(&mut bytes).await?; bytes.truncate(count);
         Ok(detect_supported_image_mime_type(&bytes).map(str::to_owned))
     }) }
+}
+const SF_DATALESS: u32 = 0x4000_0000;
+pub fn flags_are_dataless(flags: u32) -> bool { flags & SF_DATALESS != 0 }
+#[cfg(target_os = "macos")]
+async fn reject_dataless(path: &Path) -> Result<(), ToolError> {
+    use std::os::macos::fs::MetadataExt;
+    let metadata = tokio::fs::symlink_metadata(path).await.map_err(|error| node_fs_error(error, "access", path))?;
+    if flags_are_dataless(metadata.st_flags()) { return Err(ToolError::Message("File contents are not downloaded from iCloud; download the file before reading it.".into())); }
+    Ok(())
+}
+#[cfg(not(target_os = "macos"))]
+async fn reject_dataless(_path: &Path) -> Result<(), ToolError> { Ok(()) }
+
+#[derive(Clone)]
+pub struct ReadExecutionPolicy { deadline: Duration, capacity: Arc<tokio::sync::Semaphore> }
+impl ReadExecutionPolicy {
+    pub fn new(deadline: Duration, maximum_concurrent: usize) -> Self { Self { deadline, capacity: Arc::new(tokio::sync::Semaphore::new(maximum_concurrent)) } }
+    pub fn with_deadline(&self, deadline: Duration) -> Self { Self { deadline, capacity: Arc::clone(&self.capacity) } }
+    async fn run<T: Send + 'static>(&self, signal: &AbortSignal, operation: impl std::future::Future<Output = Result<T, ToolError>> + Send + 'static) -> Result<T, ToolError> {
+        let capacity = Arc::clone(&self.capacity);
+        let mut task = tokio::spawn(async move {
+            let _permit = capacity.acquire_owned().await.map_err(|error| ToolError::Message(error.to_string()))?;
+            operation.await
+        });
+        tokio::select! {
+            result = &mut task => result.map_err(|error| ToolError::Message(error.to_string()))?,
+            () = signal.cancelled() => Err(ToolError::Aborted),
+            () = tokio::time::sleep(self.deadline) => Err(ToolError::Message("File read timed out".into())),
+        }
+    }
+}
+impl Default for ReadExecutionPolicy {
+    fn default() -> Self { Self::new(Duration::from_secs(60), 8) }
 }
 pub struct ReadSummaryInput<'a> { pub path: &'a Path, pub text: &'a str, pub offset: Option<usize>, pub limit: Option<usize>, pub truncated: bool }
 pub trait ReadFolder: Send + Sync {
@@ -43,9 +77,10 @@ pub struct ReadToolOptions {
     pub folder: Option<Arc<dyn ReadFolder>>, pub auto_resize_images: Option<bool>,
     pub resize_options: Option<maho_ai::types::ModelImageResizeOptions>,
     pub operations: Option<Arc<dyn ReadOperations>>, pub filesystem_policy: Option<FilesystemPolicyChecker>,
+    pub execution_policy: Option<ReadExecutionPolicy>,
 }
 impl Default for ReadToolOptions {
-    fn default() -> Self { Self { folder: Some(Arc::new(SelectedReadFolder)), auto_resize_images: None, resize_options: None, operations: None, filesystem_policy: None } }
+    fn default() -> Self { Self { folder: Some(Arc::new(SelectedReadFolder)), auto_resize_images: None, resize_options: None, operations: None, filesystem_policy: None, execution_policy: None } }
 }
 #[derive(Deserialize)]
 pub struct ReadToolInput { pub path: String, pub offset: Option<usize>, pub limit: Option<usize> }
@@ -124,8 +159,10 @@ fn process_image(bytes: Vec<u8>, mime: String, resize: bool, resize_options: Opt
 }
 pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> ToolDefinition {
     let ops = options.operations.clone().unwrap_or_else(|| Arc::new(LocalReadOperations));
+    let execution_policy = options.execution_policy.clone().unwrap_or_default();
     let execute: ToolExecutor = Arc::new(move |call| {
         let cwd = cwd.clone(); let options = options.clone(); let ops = Arc::clone(&ops);
+        let execution_policy = execution_policy.clone();
         Box::pin(async move {
             let input: ReadToolInput = serde_json::from_value(call.params)?;
             if input.path.to_ascii_lowercase().starts_with("local://") { return Err(ToolError::Message("local:// URIs resolve only inside eval cells via the kernel read()/write() helpers; the read tool takes filesystem paths. Re-read this with the eval read() helper, or retry with the plain absolute file path.".into())); }
@@ -133,8 +170,15 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
             let work = async {
                 let path = crate::path_utils::resolve_read_path_async(&input.path, call.context.map_or(cwd.as_path(), ToolContext::cwd)).await;
                 check_filesystem_policy(options.filesystem_policy.as_ref(), &path, FilesystemOperation::Read, "read").await?;
-                ops.access(&path).await?;
-                let mime = ops.detect_image_mime_type(&path).await?; let buffer = ops.read_file(&path).await?;
+                let (mime, buffer) = execution_policy.run(&call.signal, {
+                    let ops = Arc::clone(&ops);
+                    let path = path.clone();
+                    async move {
+                        ops.access(&path).await?;
+                        let mime = ops.detect_image_mime_type(&path).await?; let buffer = ops.read_file(&path).await?;
+                        Ok((mime, buffer))
+                    }
+                }).await?;
                 if let Some(mime) = mime {
                     let original_mime = mime.clone(); let resize = options.auto_resize_images.unwrap_or(true);
                     let resize_options = call.context.and_then(ToolContext::model).and_then(|model| model.input_limits.as_ref()).and_then(|limits| limits.images.as_ref()).and_then(|images| images.resize.as_ref()).or(options.resize_options.as_ref()).cloned();
