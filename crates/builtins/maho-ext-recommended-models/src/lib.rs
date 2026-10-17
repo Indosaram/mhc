@@ -1,10 +1,9 @@
 use maho_ai::{model::Model,types::ThinkingLevel};
 
 pub const RECOMMENDED_DEFAULT_MODELS: &[(&str,ThinkingLevel)] = &[
-    ("kimi-k3",ThinkingLevel::Max),("gpt-6-astra",ThinkingLevel::High),
-    ("gpt-6-sol",ThinkingLevel::Medium),("gpt-5.6-sol",ThinkingLevel::Medium),
-    ("claude-fable-5-1",ThinkingLevel::High),("claude-opus-5-5",ThinkingLevel::Max),
-    ("glm-5.2",ThinkingLevel::Max),
+    ("claude-opus-5-5",ThinkingLevel::Medium),("claude-fable-5-1",ThinkingLevel::Xhigh),
+    ("kimi-k3",ThinkingLevel::Max),("gpt-6-astra",ThinkingLevel::Xhigh),
+    ("gpt-6-sol",ThinkingLevel::Medium),("glm-5.3",ThinkingLevel::Max),
 ];
 pub fn canonical_model_id(id:&str)->String{
     let mut id=id.to_lowercase();
