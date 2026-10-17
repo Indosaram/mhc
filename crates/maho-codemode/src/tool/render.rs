@@ -49,9 +49,9 @@ fn bold(theme: Option<&Theme>, text: &str) -> String {
     if theme.is_none() {return text.to_owned();}
     format!("\x1b[1m{}\x1b[22m",text.replace("\x1b[22m","\x1b[1m"))
 }
-fn language(language: EvalLanguage) -> &'static str {match language {EvalLanguage::Js=>"js",EvalLanguage::Py=>"py",EvalLanguage::Jl=>"jl",EvalLanguage::Rb=>"rb"}}
-fn language_for_highlighter(language: EvalLanguage) -> &'static str {match language {EvalLanguage::Py=>"python",EvalLanguage::Js=>"javascript",EvalLanguage::Rb=>"ruby",EvalLanguage::Jl=>"julia"}}
-fn parse_language(value: &Value) -> EvalLanguage {match value.as_str() {Some("py")=>EvalLanguage::Py,Some("jl")=>EvalLanguage::Jl,Some("rb")=>EvalLanguage::Rb,_=>EvalLanguage::Js}}
+fn language(language: EvalLanguage) -> &'static str {match language {EvalLanguage::Js=>"js"}}
+fn language_for_highlighter(language: EvalLanguage) -> &'static str {match language {EvalLanguage::Js=>"javascript"}}
+fn parse_language(_: &Value) -> EvalLanguage {EvalLanguage::Js}
 fn highlighted_code(code: &str, language: EvalLanguage, theme: Option<&Theme>) -> String {
     let display=if code.trim().is_empty() {"...".to_owned()} else {display_code(code,language)};
     match theme.and_then(native_theme) {

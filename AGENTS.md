@@ -50,6 +50,20 @@ cargo nextest run -p <crate>
 cargo clippy -p <crate> --all-targets -- -D warnings
 ```
 
+## REMOTE BUILD ON GITHUB ACTIONS
+The repo is public, so GitHub-hosted runners are unmetered. `.github/workflows/ci.yml` runs `cargo clippy --workspace --all-targets -D warnings`, builds `maho-cli`, and runs the whole nextest suite in 6 crate shards in parallel (`scripts/ci-shard.py` puts every workspace member in exactly one shard, balanced by test-file count), each on a fresh VM. Nothing is shared with other sessions.
+
+```bash
+scripts/gh-verify.sh             # push HEAD + local changes to verify/<user>-<ts>, wait, print per-job result
+scripts/gh-verify.sh --keep      # keep the verify/* branch afterwards
+scripts/gh-verify.sh --no-wait   # print the run URL and return
+```
+
+- It snapshots HEAD plus staged, unstaged and untracked files into one commit with a temporary index; the local branch and working tree are untouched. It exits non-zero when any job fails and prints the failed step logs.
+- Pushes use the repo owner's gh token (`gh auth token --user Indosaram`), never the globally active gh account.
+- Tests that compare against upstream read a pinned senpi checkout at `~/code/senpi`. CI clones `code-yeongyu/senpi` at `SENPI_PIN` (must match `tools/golden/pin.mjs`) and runs `bun install`.
+- CI cannot reach the mahoquot gateway (tailnet only), so live model QA still runs locally.
+
 ## REMOTE BUILD ON INSTABOX
 When the user says "instabox에서 빌드" / "build on instabox" (or asks for check/clippy/test there), run cargo on an instabox sandbox instead of this machine:
 

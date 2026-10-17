@@ -13,7 +13,7 @@ async fn timestamp_ties_and_detach_callbacks_preserve_distinct_insertion_orders(
     let ids=(0..32).map(|index|format!("cell-{index:02}")).collect::<Vec<_>>();
     let mut cells=Vec::new();
     for id in &ids {
-        let cell=manager.create(id.clone(),input(EvalLanguage::Py)).unwrap();
+        let cell=manager.create(id.clone(),input(EvalLanguage::Js)).unwrap();
         manager.bind_kernel(&cell,Arc::new(||AgentToolResult::text("")),Arc::new(||(None,vec![])));
         cells.push(cell);
     }
@@ -31,11 +31,11 @@ async fn settlement_removes_live_cell_and_notifies_once() {
     let notifications = Arc::new(Mutex::new(Vec::new()));
     let target = notifications.clone();
     let mut manager = EvalDetachedCellManager::new(DetachedCellManagerOptions { notifier:Some(Arc::new(move |batch| { target.lock().expect("notifications").extend(batch); Ok(()) })), ..Default::default() });
-    let cell = manager.create("cell".into(), input(EvalLanguage::Py)).unwrap();
+    let cell = manager.create("cell".into(), input(EvalLanguage::Js)).unwrap();
     manager.bind_kernel(&cell, Arc::new(||AgentToolResult::text("42")), Arc::new(||(None, vec![])));
     assert!(manager.detach(&cell));
     assert!(!manager.detach(&cell));
-    assert!(manager.create("cell".into(), input(EvalLanguage::Py)).is_err());
+    assert!(manager.create("cell".into(), input(EvalLanguage::Js)).is_err());
     let mut terminal = manager.terminal_signal("cell").unwrap();
     manager.mark_running(&cell);
     assert!(manager.complete(&cell, AgentToolResult::text("42")));
@@ -45,28 +45,28 @@ async fn settlement_removes_live_cell_and_notifies_once() {
     assert_eq!(manager.peek("cell").unwrap().state, EvalDetachedCellState::Completed);
     manager.flush_notifications().await.unwrap();
     assert_eq!(notifications.lock().unwrap().len(), 1);
-    assert!(manager.create("cell".into(), input(EvalLanguage::Py)).is_ok());
+    assert!(manager.create("cell".into(), input(EvalLanguage::Js)).is_ok());
 }
 
 #[tokio::test]
 async fn capacity_and_live_language_filters_are_shared() {
     let mut manager = EvalDetachedCellManager::new(DetachedCellManagerOptions {max_detached_cells:1,..Default::default()});
-    let python = manager.create("python".into(), input(EvalLanguage::Py)).unwrap();
-    let javascript = manager.create("javascript".into(), input(EvalLanguage::Js)).unwrap();
-    for cell in [&python, &javascript] { manager.bind_kernel(cell, Arc::new(||AgentToolResult::text("")), Arc::new(||(None, vec![]))); }
-    assert!(manager.detach(&python));
-    assert!(!manager.detach(&javascript));
-    assert_eq!(manager.live_cells(Some(EvalLanguage::Js), None).len(), 1);
-    assert_eq!(manager.live_cells(None, Some("python")).len(), 1);
-    assert!(manager.fail_with_code(&python, "failure", Some("eval_kernel_busy_reset_refused")));
-    let failed = manager.peek("python").unwrap();
+    let first = manager.create("first".into(), input(EvalLanguage::Js)).unwrap();
+    let second = manager.create("second".into(), input(EvalLanguage::Js)).unwrap();
+    for cell in [&first, &second] { manager.bind_kernel(cell, Arc::new(||AgentToolResult::text("")), Arc::new(||(None, vec![]))); }
+    assert!(manager.detach(&first));
+    assert!(!manager.detach(&second));
+    assert_eq!(manager.live_cells(Some(EvalLanguage::Js), None).len(), 2);
+    assert_eq!(manager.live_cells(None, Some("first")).len(), 1);
+    assert!(manager.fail_with_code(&first, "failure", Some("eval_kernel_busy_reset_refused")));
+    let failed = manager.peek("first").unwrap();
     assert_eq!(failed.state, EvalDetachedCellState::Failed);
     assert_eq!(failed.result.details["isError"], true);
     assert_eq!(failed.result.details["code"], "eval_kernel_busy_reset_refused");
-    assert!(manager.detach(&javascript));
-    assert!(manager.cancel_without_interrupt(&javascript));
+    assert!(manager.detach(&second));
+    assert!(manager.cancel_without_interrupt(&second));
     manager.flush_notifications().await.unwrap();
-    assert_eq!(manager.peek("javascript").unwrap().state, EvalDetachedCellState::Cancelled);
+    assert_eq!(manager.peek("second").unwrap().state, EvalDetachedCellState::Cancelled);
 }
 
 #[tokio::test]
@@ -106,7 +106,7 @@ async fn disposal_dequeues_before_interrupt_and_flushes_notifications() {
 #[tokio::test]
 async fn deadline_killed_cell_settles_cancelled_not_failed() {
     let mut manager = EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
-    let cell = manager.create("killed".into(), input(EvalLanguage::Py)).unwrap();
+    let cell = manager.create("killed".into(), input(EvalLanguage::Js)).unwrap();
     manager.bind_kernel(&cell, Arc::new(||AgentToolResult::text("")), Arc::new(||(None, vec![])));
     manager.mark_running(&cell);
     cell.lock().unwrap().record_deadline_expiry(maho_codemode::tool::cell_deadlines::CellDeadlineKind::HardLimit);

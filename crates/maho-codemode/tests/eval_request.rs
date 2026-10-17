@@ -13,11 +13,11 @@ fn summary_rejects_blank() { for value in ["", "  "] { assert!(normalize_eval_su
 #[test]
 fn summary_preserves_long_values() { let text = "s".repeat(300); assert_eq!(normalize_eval_summary(&json!(text)), Some(text)); }
 #[test]
-fn run_requires_summary() { assert!(parse_eval_request(&json!({"language":"py","code":"print(1)"})).is_err()); }
+fn run_requires_summary() { assert!(parse_eval_request(&json!({"language":"js","code":"print(1)"})).is_err()); }
 #[test]
-fn run_rejects_invalid_summary() { for value in [json!(""), json!("   "), json!(42)] { assert!(parse_eval_request(&json!({"language":"py","code":"print(1)","summary":value})).is_err()); } }
+fn run_rejects_invalid_summary() { for value in [json!(""), json!("   "), json!(42)] { assert!(parse_eval_request(&json!({"language":"js","code":"print(1)","summary":value})).is_err()); } }
 #[test]
-fn explicit_run_requires_summary() { assert!(parse_eval_request(&json!({"action":"run","language":"py","code":"print(1)"})).is_err()); }
+fn explicit_run_requires_summary() { assert!(parse_eval_request(&json!({"action":"run","language":"js","code":"print(1)"})).is_err()); }
 #[test]
 fn control_ignores_summary() {
     assert_eq!(parse_eval_request(&json!({"action":"peek","cell_id":"c","summary":42})).unwrap(), EvalToolRequest::Peek { cell_id: "c".into() });
@@ -25,7 +25,7 @@ fn control_ignores_summary() {
 }
 #[test]
 fn legacy_title_dropped() {
-    let EvalToolRequest::Run(input) = parse_eval_request(&json!({"language":"py","code":"print(1)","summary":"kept","title":"old"})).unwrap() else { panic!("expected run"); };
+    let EvalToolRequest::Run(input) = parse_eval_request(&json!({"language":"js","code":"print(1)","summary":"kept","title":"old"})).unwrap() else { panic!("expected run"); };
     assert!(serde_json::to_value(input).unwrap().get("title").is_none());
 }
 #[test]

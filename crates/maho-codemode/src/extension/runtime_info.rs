@@ -1,4 +1,4 @@
-use crate::{interpreters::detect::InterpreterDetection, tool::types::{EvalLanguage, EvalRuntimeInfo}};
+use crate::tool::types::EvalRuntimeInfo;
 
 pub fn js_runtime_info(node_version: &str, bun_version: Option<&str>, exec_path: &str) -> EvalRuntimeInfo {
     match bun_version.filter(|version| !version.is_empty()) {
@@ -29,15 +29,4 @@ pub fn probe_js_runtime_info(environment: &std::collections::HashMap<String, Str
             js_runtime_info(&version, None, &path)
         }
     }
-}
-
-pub fn runtimes_from_availability(availability: &[(EvalLanguage, InterpreterDetection)], js: EvalRuntimeInfo) -> Vec<(EvalLanguage, EvalRuntimeInfo)> {
-    let mut runtimes = vec![(EvalLanguage::Js, js)];
-    for language in [EvalLanguage::Py, EvalLanguage::Rb, EvalLanguage::Jl] {
-        if let Some((_, InterpreterDetection::Detected { path, version, resolved_path })) = availability.iter().find(|(candidate, _)| *candidate == language) {
-            let name = match language { EvalLanguage::Py => "python", EvalLanguage::Rb => "ruby", EvalLanguage::Jl => "julia", EvalLanguage::Js => unreachable!() };
-            runtimes.push((language, EvalRuntimeInfo { name: name.into(), version: version.clone(), path: Some(resolved_path.as_ref().map_or_else(|| path.clone(), |path| path.to_string_lossy().into_owned())), isolation: None }));
-        }
-    }
-    runtimes
 }

@@ -24,19 +24,16 @@ GPT eval: batch a step's independent tool calls in one cell with `tool.<name>(ar
 Host: {{hostLine}} — cells execute here. Size `parallel(thunks)` pools to its cores; `tool.<name>()` shell commands must fit this platform, even when the code you are writing targets another machine.
 {{/if}}
 
-`language`: {{#if py}}`"py"` IPython kernel{{/if}}{{#ifAll py js}}, {{/ifAll}}{{#if js}}`"js"` persistent JavaScript VM{{/if}}{{#if rb}}{{#ifAny py js}}, {{/ifAny}}`"rb"` persistent Ruby kernel{{/if}}{{#if jl}}{{#ifAny py js rb}}, {{/ifAny}}`"jl"` persistent Julia kernel{{/if}}.
+`language`: `"js"` persistent JavaScript VM.
 
-A cell that outlives the foreground window detaches and keeps running; further cells on the same language queue behind it in submission order on the same kernel (state is shared, execution is serial) while other languages run at once, up to {{maxDetachedCells}} background cells per session; each detached cell completes as one notification. Do not re-run a detached or queued cell; read, cancel or enumerate them with `eval({ action: "peek" | "stop", cell_id })` / `eval({ action: "list" })`; list shows live and recently settled cells across languages without consuming notifications. Its own execution time is capped at {{runBudgetSeconds}}s — queue time and time inside host tool calls are not charged; the hard limit stays wall-clock from submission; raise `timeout` only for a declared long run — and a killed js cell that cannot settle restarts its kernel with every global lost.
+A cell that outlives the foreground window detaches and keeps running; further cells queue behind it in submission order on the same kernel (state is shared, execution is serial), up to {{maxDetachedCells}} background cells per session; each detached cell completes as one notification. Do not re-run a detached or queued cell; read, cancel or enumerate them with `eval({ action: "peek" | "stop", cell_id })` / `eval({ action: "list" })`; list shows live and recently settled cells without consuming notifications. Its own execution time is capped at {{runBudgetSeconds}}s — queue time and time inside host tool calls are not charged; the hard limit stays wall-clock from submission; raise `timeout` only for a declared long run — and a killed js cell that cannot settle restarts its kernel with every global lost.
 
-{{#if py}}Python runs on a live event loop: use top-level `await`; `asyncio.run(…)` raises.{{/if}}
 {{#if js}}{{#if jsBun}}JS runs in-process on Bun {{jsVersion}}: top-level `await`/`return` work; `Bun.*` builtins available, including `new Bun.WebView()` — a headless browser (navigate/click/evaluate/screenshot) to reach for before `curl` or a browser CLI when a page needs JS, a login, or a screenshot. Shell out through `Bun.$` or `Bun.spawn`, never `Bun.spawnSync`: a synchronous child blocks the worker and cannot be interrupted.{{#if bunSkillPath}} MUST READ the bun-1-4 skill at {{bunSkillPath}} before your first js cell — its builtins replace the npm packages you would otherwise install.{{/if}}{{else}}JS runs under Node.js worker: top-level `await`/`return` work; `fetch`/`Buffer` available.{{/if}}{{/if}}
-{{#if rb}}Ruby: synchronous; helper options are keyword args{{#if spawns}} (e.g. `output("id", limit: 2)`){{/if}}; the last expression auto-displays unless it is `nil`, an assignment, or a definition (like IRB).{{/if}}
-{{#if jl}}Julia: synchronous; helper options are standard keyword args{{#if spawns}} (e.g. `output("id", limit=2)`){{/if}}; the last expression auto-displays unless it is an assignment or a definition (like the Julia REPL).{{/if}}
 On error, fix and re-run only the failing step; a normal error keeps state, while a timeout or stop message says whether the kernel restarted.
 </instruction>
 
 <prelude>
-{{#ifAll py js}}Same helpers + arg order, both runtimes. Python: sync, options = trailing kwargs. JS: async/`await`able, options = ONE trailing object literal, never positional (extras throw).{{else}}{{#if py}}Sync; options = trailing kwargs.{{/if}}{{#if js}}Async/`await`able; options = ONE trailing object literal, never positional (extras throw).{{/if}}{{/ifAll}}{{#if rb}} Ruby: sync, options = trailing keyword args.{{/if}}{{#if jl}} Julia: sync, options = trailing keyword args.{{/if}}
+Async/`await`able; options = ONE trailing object literal, never positional (extras throw).
 ```
 display(value) → None
     Cell output. Images reach you only through display: pass a figure, image bytes, a tool result, or its `images[i]`.
@@ -74,6 +71,6 @@ phase(title) → None
 </prelude>
 {{#if spawns}}
 <workflow>
-Multi-agent work is an acyclic graph in code: one `agent(…)` node per step with its handle option ({{#if py}}`handle=True`{{/if}}{{#ifAll py js}} / {{/ifAll}}{{#if js}}`{ handle: true }`{{/if}}{{#if jl}}{{#ifAny py js}} / {{/ifAny}}`handle=true`{{/if}}), `parallel(thunks)` for independent nodes, `pipeline(items, *stages)` for staged waves. Pass an upstream node's `handle` or `output` (or a `write("local://…")` URI for bulk text) into dependents instead of re-inlining transcripts, and wrap risky nodes in try/except so a failure aborts only its subtree.
+Multi-agent work is an acyclic graph in code: one `agent(…)` node per step with its handle option (`{ handle: true }`), `parallel(thunks)` for independent nodes, `pipeline(items, *stages)` for staged waves. Pass an upstream node's `handle` or `output` (or a `write("local://…")` URI for bulk text) into dependents instead of re-inlining transcripts, and wrap risky nodes in try/except so a failure aborts only its subtree.
 </workflow>
 {{/if}}

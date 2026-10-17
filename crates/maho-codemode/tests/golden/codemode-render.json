@@ -3,13 +3,13 @@
     "kind": "call",
     "width": 20,
     "args": {
-      "language": "py",
+      "language": "js",
       "summary": "compute a value",
       "code": "print(41)\n42"
     },
     "context": {
       "args": {
-        "language": "py",
+        "language": "js",
         "summary": "compute a value",
         "code": "print(41)\n42"
       },
@@ -19,7 +19,7 @@
       "now": 2000
     },
     "lines": [
-      "eval py",
+      "eval js",
       "compute a value",
       "print(41)",
       "42"
@@ -29,13 +29,13 @@
     "kind": "result",
     "width": 20,
     "args": {
-      "language": "py",
+      "language": "js",
       "summary": "compute a value",
       "code": "print(41)\n42"
     },
     "context": {
       "args": {
-        "language": "py",
+        "language": "js",
         "summary": "compute a value",
         "code": "print(41)\n42"
       },
@@ -52,12 +52,12 @@
         }
       ],
       "details": {
-        "language": "py",
+        "language": "js",
         "summary": "compute a value",
         "cells": [
           {
             "index": 0,
-            "language": "py",
+            "language": "js",
             "code": "print(41)\n42",
             "summary": "compute a value",
             "output": "41\n42",
@@ -68,7 +68,7 @@
       }
     },
     "lines": [
-      "╭─ eval py done ✓ ·",
+      "╭─ eval js done ✓ ·",
       "│  1s",
       "│ compute a value",
       "│ print(41)",
@@ -83,13 +83,13 @@
     "kind": "call",
     "width": 80,
     "args": {
-      "language": "py",
+      "language": "js",
       "summary": "compute a value",
       "code": "print(41)\n42"
     },
     "context": {
       "args": {
-        "language": "py",
+        "language": "js",
         "summary": "compute a value",
         "code": "print(41)\n42"
       },
@@ -99,7 +99,7 @@
       "now": 2000
     },
     "lines": [
-      "eval py",
+      "eval js",
       "compute a value",
       "print(41)",
       "42"
@@ -109,13 +109,13 @@
     "kind": "result",
     "width": 80,
     "args": {
-      "language": "py",
+      "language": "js",
       "summary": "compute a value",
       "code": "print(41)\n42"
     },
     "context": {
       "args": {
-        "language": "py",
+        "language": "js",
         "summary": "compute a value",
         "code": "print(41)\n42"
       },
@@ -132,12 +132,12 @@
         }
       ],
       "details": {
-        "language": "py",
+        "language": "js",
         "summary": "compute a value",
         "cells": [
           {
             "index": 0,
-            "language": "py",
+            "language": "js",
             "code": "print(41)\n42",
             "summary": "compute a value",
             "output": "41\n42",
@@ -148,7 +148,7 @@
       }
     },
     "lines": [
-      "╭─ eval py done ✓ · 1s",
+      "╭─ eval js done ✓ · 1s",
       "│ compute a value",
       "│ print(41)",
       "│ 42",

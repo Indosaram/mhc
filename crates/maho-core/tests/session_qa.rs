@@ -10,6 +10,10 @@ fn sessions_root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".omo/agent/sessions"))
 }
 
+/// A real mhc v3 session (QA run, user name anonymized) for hosts that have no live sessions,
+/// such as CI runners.
+const COMMITTED_SESSION: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/omo-session-v3.jsonl");
+
 /// The newest real session file under the omo sessions root, whatever cwd directory it lives in.
 fn newest_real_session() -> Option<PathBuf> {
     let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
@@ -57,7 +61,7 @@ fn round_trips_doubles_exactly_like_json_parse_and_json_stringify() {
 
 #[test]
 fn round_trips_a_real_omo_session_byte_for_byte() {
-    let source = newest_real_session().expect("a real omo session under ~/.omo/agent/sessions");
+    let source = newest_real_session().unwrap_or_else(|| PathBuf::from(COMMITTED_SESSION));
     let tmp = tempfile::tempdir().expect("tempdir");
     let copy = tmp.path().join(source.file_name().expect("file name"));
     std::fs::copy(&source, &copy).expect("copy");

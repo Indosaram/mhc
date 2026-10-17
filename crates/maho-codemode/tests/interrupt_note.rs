@@ -2,14 +2,14 @@ use maho_codemode::tool::{interrupt_note::*, eval_kernel_reset_refused_error::*,
 
 #[test]
 fn reset_refusal_has_machine_code() {
-    let error = EvalKernelResetRefusedError::new(EvalLanguage::Py, &["cell-1".into()]);
+    let error = EvalKernelResetRefusedError::new(EvalLanguage::Js, &["cell-1".into()]);
     assert_eq!(error.code, "eval_kernel_busy_reset_refused");
     assert_eq!(error.name, "EvalKernelResetRefusedError");
 }
 
 #[test]
 fn absent_interrupt_does_not_invent_state() {
-    assert!(interruption_state_note(EvalLanguage::Py, None).is_none());
+    assert!(interruption_state_note(EvalLanguage::Js, None).is_none());
 }
 
 #[tokio::test(start_paused = true)]

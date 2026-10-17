@@ -23,7 +23,7 @@ fn aggregates_pending_calls_and_preserves_first_tool_order() {
 #[test]
 fn errors_are_bounded_and_state_error_has_precedence() {
     let error="x".repeat(600);
-    let payload=build_eval_execution_event_payload(BuildEvalExecutionEventOptions{cell_id:"cell",language:EvalLanguage::Py,started_at:20.0,completed_at:10.0,queued_ms:0.0,detached:false,metrics:&[],tool_calls:&[],state_error:Some(&error),outcome:EvalExecutionSettleOutcome::Error("other")});
+    let payload=build_eval_execution_event_payload(BuildEvalExecutionEventOptions{cell_id:"cell",language:EvalLanguage::Js,started_at:20.0,completed_at:10.0,queued_ms:0.0,detached:false,metrics:&[],tool_calls:&[],state_error:Some(&error),outcome:EvalExecutionSettleOutcome::Error("other")});
     assert_eq!(payload["ok"],false);
     assert_eq!(payload["durationMs"],0.0);
     assert_eq!(payload["error"].as_str().unwrap().chars().count(),513);
