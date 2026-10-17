@@ -5225,6 +5225,7 @@ dependencies = [
  "maho-interactive",
  "maho-rpc",
  "maho-test-support",
+ "maho-tools",
  "maho-tui",
  "rand 0.9.3",
  "rusqlite",

@@ -94,6 +94,8 @@ struct PendingSessionConstruction {
     runtime: tokio::runtime::Handle,
 }
 
+static READ_EXECUTION_POLICY: std::sync::LazyLock<maho_tools::read::ReadExecutionPolicy> = std::sync::LazyLock::new(maho_tools::read::ReadExecutionPolicy::default);
+
 impl Drop for PendingSessionConstruction {
     fn drop(&mut self) {
         if let Some(session) = self.session.take() {
@@ -123,7 +125,7 @@ pub fn built_in_tools_options(
     });
     let shell_env: maho_tools::bash::ShellEnvProvider = Arc::new(crate::utils::shell::get_shell_env);
     maho_tools::index::ToolsOptions {
-        read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), auto_resize_images: Some(settings.get_image_auto_resize()), ..Default::default() },
+        read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), auto_resize_images: Some(settings.get_image_auto_resize()), execution_policy: Some(READ_EXECUTION_POLICY.clone()), ..Default::default() },
         bash: maho_tools::bash::BashToolOptions { command_prefix: settings.get_string("shellCommandPrefix"),
             shell_path: settings.get_shell_path(), shell_env: Some(shell_env.clone()), ..Default::default() },
         powershell: maho_tools::bash::BashToolOptions { shell_env: Some(shell_env), ..Default::default() },

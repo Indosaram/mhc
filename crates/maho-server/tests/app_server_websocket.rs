@@ -1,11 +1,22 @@
 use maho_server::app_server::{connection::TransportKind, server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::serve_websocket};
 use futures_util::{SinkExt, StreamExt};
+use maho_tools::{definition::{AbortSignal, ToolCall, ToolError, ToolFuture}, read::{ReadExecutionPolicy, ReadOperations, ReadToolOptions, create_read_tool_definition}};
 use serde_json::json;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tokio_tungstenite::{client_async, tungstenite::{Message, client::IntoClientRequest}};
 
 fn core() -> Arc<RwLock<ServerCore>> { Arc::new(RwLock::new(ServerCore::new("/tmp/home".into(), "1".into(), "Linux".into(), "test".into(), "x64".into(), "linux".into()))) }
+struct GatedRead { entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>, released: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>> }
+impl ReadOperations for GatedRead {
+    fn read_file<'a>(&'a self, _path: &'a Path) -> ToolFuture<'a, Vec<u8>> { Box::pin(async move {
+        if let Some(entered) = self.entered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { let _ = entered.send(()); }
+        let released = self.released.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().ok_or_else(|| ToolError::Message("read gate already consumed".into()))?;
+        released.await.map_err(|error| ToolError::Message(error.to_string()))?;
+        Ok(b"ready".to_vec())
+    }) }
+    fn access<'a>(&'a self, _path: &'a Path) -> ToolFuture<'a, ()> { Box::pin(async { Ok(()) }) }
+}
 #[tokio::test]
 async fn websocket_real_handshake_and_text_initialize_remove_connection_on_close() {
     let core = core();
@@ -137,5 +148,28 @@ async fn readiness_keeps_http_connection_for_pipelined_requests_and_consumes_bod
         assert_eq!(response.matches("connection: close").count(), 1);
     };
     tokio::time::timeout(std::time::Duration::from_secs(3),scenario).await.unwrap();
+    listener.close().await.unwrap();
+}
+#[tokio::test]
+async fn readyz_responds_while_the_production_read_policy_has_a_blocked_read() {
+    use maho_server::app_server::websocket::start_websocket_listener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = start_websocket_listener("127.0.0.1", 0, ResolvedWebSocketListenerAuth::Off, core(), None).await.unwrap();
+    let (entered_send, entered) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let operations = Arc::new(GatedRead { entered: std::sync::Mutex::new(Some(entered_send)), released: std::sync::Mutex::new(Some(released)) });
+    let tool = create_read_tool_definition(std::env::temp_dir(), ReadToolOptions { operations: Some(operations), folder: None, execution_policy: Some(ReadExecutionPolicy::new(Duration::from_secs(60), 1)), ..Default::default() });
+    let read = tokio::spawn(async move { (tool.execute)(ToolCall { id: "blocked-read", params: json!({"path":"fixture.txt"}), signal: AbortSignal::default(), on_update: None, context: None }).await });
+    tokio::time::timeout(Duration::from_secs(3), entered).await.expect("read enters before readiness request").expect("read gate remains alive");
+
+    let mut stream = tokio::net::TcpStream::connect(listener.address).await.unwrap();
+    stream.write_all(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut response)).await.expect("readyz responds while read is blocked").unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    assert_eq!(response.split_once("\r\n\r\n").unwrap().1, "ok\n");
+
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), read).await.expect("read settles after release").unwrap().unwrap();
     listener.close().await.unwrap();
 }
