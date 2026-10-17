@@ -13,7 +13,8 @@ pub use builtins::{
 pub use fallback_chains::{CATEGORY_FALLBACK_CHAINS, category_fallback_chain};
 pub use resolver::{
     CategoryModelSelection, CategoryResolutionResult, ModelUnavailable, ResolveCategoryOptions,
-    ResolvedChildSpec, resolve_available_category_names, resolve_category,
+    ResolvedChildSpec, builtin_category_chain_candidates, resolve_available_category_names,
+    resolve_category,
 };
 
 #[cfg(test)]

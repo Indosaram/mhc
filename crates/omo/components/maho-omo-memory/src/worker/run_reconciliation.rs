@@ -9,7 +9,7 @@ pub trait ReflectionRecoveryPort {
     fn wait_outcome<'a>(&'a self,path:&'a Path,deadline:f64)->ReconcileFuture<'a>;
     fn wait_until(&self,deadline:f64)->ReconcileFuture<'_>;
     fn signal_group(&self,pid:u64,signal:&str)->Result<(),String>;
-    fn fail(&self,dir:&Path,ledger:&ReservationRunLedger,timed_out:bool)->Result<Option<ReservationRunResult>,String>;
+    fn fail(&self,dir:&Path,ledger:&ReservationRunLedger,timed_out:bool,recover_worktree_tip:bool)->Result<Option<ReservationRunResult>,String>;
     fn abandon(&self,dir:&Path,ledger:&ReservationRunLedger)->Result<Option<ReservationRunResult>,String>;
 }
 pub type RecoveryTerminalGate<'a>=dyn Fn(&Path,&str,&mut dyn FnMut()->Result<Option<ReservationRunResult>,String>)->Result<Option<ReservationRunResult>,String>+'a;
@@ -22,7 +22,7 @@ impl ReflectionRecoveryPort for NativeReflectionRecovery<'_> {
     fn wait_outcome<'a>(&'a self,path:&'a Path,deadline:f64)->ReconcileFuture<'a>{Box::pin(async move{super::run_sentinel::wait_for_run_sentinel(path,deadline,||(self.context.now_ms)() as f64,None).await;Ok(())})}
     fn wait_until(&self,deadline:f64)->ReconcileFuture<'_>{Box::pin(async move{super::run_liveness::wait_until(deadline,||(self.context.now_ms)() as f64).await;Ok(())})}
     fn signal_group(&self,pid:u64,signal:&str)->Result<(),String>{super::supervisor_process_identity::signal_supervisor_process_group(u32::try_from(pid).map_err(|error|error.to_string())?,signal,&Default::default()).map_err(|error|error.to_string())}
-    fn fail(&self,dir:&Path,ledger:&ReservationRunLedger,timed_out:bool)->Result<Option<ReservationRunResult>,String>{super::run_finalization::fail_reservation_run(self.context,dir,ledger,timed_out,None,|operation|(self.terminal_gate)(dir,ledger.run_id(),operation))}
+    fn fail(&self,dir:&Path,ledger:&ReservationRunLedger,timed_out:bool,recover_worktree_tip:bool)->Result<Option<ReservationRunResult>,String>{super::run_finalization::fail_reservation_run(self.context,dir,ledger,timed_out,None,recover_worktree_tip,|operation|(self.terminal_gate)(dir,ledger.run_id(),operation))}
     fn abandon(&self,dir:&Path,ledger:&ReservationRunLedger)->Result<Option<ReservationRunResult>,String>{super::run_finalization::abandon_reservation_run(self.context,dir,ledger,|pid,start|self.classify(pid,start),|operation|(self.terminal_gate)(dir,ledger.run_id(),operation))}
 }
 fn matching(path:&Path,ledger:&ReservationRunLedger)->Result<bool,String> {
@@ -50,17 +50,17 @@ pub async fn reconcile_run(context:&RunFinalizationContext<'_>,dir:&Path,ledger:
         }
     }else{ledger};
     let mut child=classify(&ledger,"childPid","childProcessStart");
-    match child {RunProcessVerdict::Unknown=>return recovery.abandon(dir,&ledger),RunProcessVerdict::Dead|RunProcessVerdict::Absent=>return recovery.fail(dir,&ledger,false),RunProcessVerdict::Alive=>{}}
+    match child {RunProcessVerdict::Unknown=>return recovery.abandon(dir,&ledger),RunProcessVerdict::Dead|RunProcessVerdict::Absent=>return recovery.fail(dir,&ledger,false,true),RunProcessVerdict::Alive=>{}}
     recovery.wait_until(ledger.value()["hardDeadlineAt"].as_f64().ok_or("Missing hardDeadlineAt")?).await?;
     child=classify(&ledger,"childPid","childProcessStart");
-    if child==RunProcessVerdict::Dead{return recovery.fail(dir,&ledger,false);}
+    if child==RunProcessVerdict::Dead{return recovery.fail(dir,&ledger,false,true);}
     if child==RunProcessVerdict::Unknown{return recovery.abandon(dir,&ledger);}
     if let Some(pid)=ledger.value()["childPid"].as_u64(){recovery.signal_group(pid,"SIGTERM")?;}
     recovery.wait_until(ledger.value()["deadlineAt"].as_f64().ok_or("Missing deadlineAt")?).await?;
     child=classify(&ledger,"childPid","childProcessStart");
     if child==RunProcessVerdict::Unknown{return recovery.abandon(dir,&ledger);}
     if child==RunProcessVerdict::Alive&&let Some(pid)=ledger.value()["childPid"].as_u64(){recovery.signal_group(pid,"SIGKILL")?;child=classify(&ledger,"childPid","childProcessStart");}
-    if child==RunProcessVerdict::Dead{recovery.fail(dir,&ledger,true)}else{Ok(None)}
+    if child==RunProcessVerdict::Dead{recovery.fail(dir,&ledger,true,false)}else{Ok(None)}
 }
 pub async fn reconcile_reflection_runs(context:&RunFinalizationContext<'_>,recovery:&dyn ReflectionRecoveryPort)->Result<Vec<(String,String)>,String> {
     reconcile_reflection_runs_with_logger(context,recovery,None).await
@@ -216,7 +216,7 @@ mod tests {
         fn wait_outcome<'a>(&'a self,_:&'a Path,deadline:f64)->ReconcileFuture<'a>{self.calls.borrow_mut().push(format!("outcome:{deadline}"));Box::pin(async{Ok(())})}
         fn wait_until(&self,deadline:f64)->ReconcileFuture<'_>{self.calls.borrow_mut().push(format!("wait:{deadline}"));Box::pin(async{Ok(())})}
         fn signal_group(&self,pid:u64,signal:&str)->Result<(),String>{self.calls.borrow_mut().push(format!("signal:{pid}:{signal}"));Ok(())}
-        fn fail(&self,_:&Path,_:&ReservationRunLedger,timed_out:bool)->Result<Option<ReservationRunResult>,String>{self.calls.borrow_mut().push(format!("fail:{timed_out}"));Ok(None)}
+        fn fail(&self,_:&Path,_:&ReservationRunLedger,timed_out:bool,_:bool)->Result<Option<ReservationRunResult>,String>{self.calls.borrow_mut().push(format!("fail:{timed_out}"));Ok(None)}
         fn abandon(&self,_:&Path,_:&ReservationRunLedger)->Result<Option<ReservationRunResult>,String>{self.calls.borrow_mut().push("abandon".into());Ok(None)}
     }
     fn ledger(root:&Path)->ReservationRunLedger {

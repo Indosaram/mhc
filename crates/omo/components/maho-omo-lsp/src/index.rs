@@ -111,7 +111,7 @@ impl LspComponent {
 }
 fn daemon_agent_result(result:lsp_daemon::daemon_client::ToolExecutionResult)->Result<maho_ext_api::AgentToolResult,ExtensionFailure> {
     let content=result.content.into_iter().map(serde_json::from_value::<maho_ext_api::ContentBlock>).collect::<Result<Vec<_>,_>>().map_err(|error|ExtensionFailure::new(error.to_string()))?;
-    Ok(maho_ext_api::AgentToolResult {content,details:result.details.unwrap_or(serde_json::Value::Null),is_error:Some(result.is_error),usage:None,added_tool_names:None,terminate:None})
+    Ok(maho_ext_api::AgentToolResult {content,details:result.details.unwrap_or(serde_json::Value::Null),is_error:Some(result.is_error),structured_content: None, usage:None,added_tool_names:None,terminate:None})
 }
 #[cfg(test)]
 mod tests {

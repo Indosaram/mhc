@@ -8,15 +8,35 @@ fn checkpoint(path: &Path, decision: &DurableFinalizationDecision) -> Result<(),
     if decision.outcome == "merged" {
         fields.insert("finalizePhase".into(), "integrated".into());
         if let Some(sha) = &decision.integration_sha { fields.insert("integrationSha".into(), sha.clone().into()); }
-    } else {
-        if let Some(reason) = &decision.reason { fields.insert("finalizeReason".into(), reason.clone().into()); }
-        if let Some(detail) = &decision.detail { fields.insert("finalizeDetail".into(), detail.clone().into()); }
     }
+    if let Some(reason) = &decision.reason { fields.insert("finalizeReason".into(), reason.clone().into()); }
+    if let Some(detail) = &decision.detail { fields.insert("finalizeDetail".into(), detail.clone().into()); }
     update_run_ledger(path, &fields).map_err(|error| error.to_string())
 }
 
+/// Cleanup is bookkeeping that runs after the decision is durable: a leftover worktree or branch
+/// settles the run on its real outcome, the ledger records the leftover, and the orphan sweep reclaims it.
+pub fn cleanup_and_record(worktree: &memory_core::reflection::worktree::ReflectionWorktree, run_dir: &Path) -> Result<(), String> {
+    let receipt = cleanup_reflection_worktree(worktree);
+    if receipt.worktree_removed && receipt.branch_removed { return Ok(()); }
+    update_run_ledger(&run_dir.join("ledger.json"), &serde_json::Map::from_iter([("cleanupIncomplete".into(), true.into())])).map_err(|error| error.to_string())
+}
+
+fn validate_integrated_dream_budget(identity: &MemoryIdentity, ledger: &ReservationRunLedger, decision: &mut DurableFinalizationDecision) -> Result<(), String> {
+    let value = ledger.value();
+    let (Some("dream"), Some(origin), Some(target)) = (value["kind"].as_str(), value.get("origin").filter(|origin| origin.is_string()), value["systemTokenTarget"].as_u64()) else { return Ok(()); };
+    let origin: memory_core::reflection::DreamOrigin = serde_json::from_value(origin.clone()).map_err(|error| error.to_string())?;
+    let target = usize::try_from(target).map_err(|error| error.to_string())?;
+    let estimate = crate::commands::tokens::estimate_system_tokens(&identity.paths.repo);
+    match memory_core::reflection::completion_validation::validate_dream_token_budget(origin, estimate.total_tokens, target) {
+        memory_core::reflection::completion_validation::DreamTokenBudgetValidation::BudgetNotMet { detail, .. } => { decision.reason = Some("budget_not_met".into()); decision.detail = Some(detail); }
+        memory_core::reflection::completion_validation::DreamTokenBudgetValidation::Valid { total_tokens, target_tokens } => { decision.detail = Some(format!("Committed system/ estimate is {total_tokens} tokens; dream target is below {target_tokens} tokens")); }
+    }
+    Ok(())
+}
+
 fn decision(outcome: &str, reason: Option<&str>, detail: Option<String>, integration_sha: Option<String>) -> DurableFinalizationDecision {
-    DurableFinalizationDecision { outcome: outcome.into(), reason: reason.map(str::to_owned), detail, integration_sha }
+    DurableFinalizationDecision { outcome: outcome.into(), reason: reason.map(str::to_owned), detail, integration_sha, recovered_from_worktree: false }
 }
 
 pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, input: &ReservationRunLedger, child: &RunOutcome) -> Result<DurableFinalizationDecision, String> {
@@ -24,10 +44,7 @@ pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, 
     let mut ledger = parse_reservation_run_ledger(read_run_json(&path).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
     if ledger.run_id() != input.run_id() || child.run_id != ledger.run_id() { return Err("Finalization run id changed".into()); }
     let worktree = worktree_from_ledger(&identity.paths.repo, &identity.id, &ledger).map_err(|error| error.to_string())?;
-    let cleanup = || {
-        let receipt = cleanup_reflection_worktree(&worktree);
-        if receipt.worktree_removed && receipt.branch_removed { Ok(()) } else { Err(format!("Reflection cleanup incomplete for {}", ledger.run_id())) }
-    };
+    let cleanup = || cleanup_and_record(&worktree, run_dir);
     if child.timed_out || child.child_exit.code != Some(0) || child.child_exit.signal.is_some() {
         let detail = read_run_text_tail(&run_dir.join("child-stderr.log"), 64 * 1024).map_err(|error| error.to_string())?;
         let result = decision(if child.timed_out { "timed_out" } else { "failed" }, Some(if child.timed_out { "deadline_exceeded" } else { "child_exit" }), (!detail.trim().is_empty()).then(|| detail.trim().to_owned()), None);
@@ -66,11 +83,11 @@ pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, 
     let Some(validated) = validated else {
         if ledger.value()["mergePolicy"] == "auto" && let LegacyAutoRunReceiptProbe::AlreadyRecorded { integration_sha } = probe_legacy_auto_run_receipt(&worktree, ledger.run_id()) {
             let result = decision("merged", None, None, integration_sha); checkpoint(&path, &result)?;
-            let receipt = cleanup_reflection_worktree(&worktree); if !receipt.worktree_removed || !receipt.branch_removed { return Err(format!("Reflection cleanup incomplete for {}", ledger.run_id())); }
+            cleanup()?;
             return Ok(result);
         }
         let result = decision("failed", Some("missing_validated_tip"), None, None); checkpoint(&path, &result)?;
-        let receipt = cleanup_reflection_worktree(&worktree); if !receipt.worktree_removed || !receipt.branch_removed { return Err(format!("Reflection cleanup incomplete for {}", ledger.run_id())); }
+        cleanup()?;
         return Ok(result);
     };
     let result = if Some(validated.tip_sha.as_str()) == ledger.value()["baseSha"].as_str() {
@@ -84,12 +101,14 @@ pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, 
                 let engine = crate::engine_session::prepare_memory_engine_session(&identity.id, &identity.paths, Default::default()).map_err(|error| error.to_string())?;
                 let integrated = integrate_validated_reflection(&worktree, IntegrateValidatedReflectionInput { mode, run_id: ledger.run_id().into(), summary: format!("{} {}", ledger.value()["trigger"].as_str().ok_or("Missing trigger")?, ledger.run_id()), validated }, |operation| engine.lock.run("memory-write", operation).map_err(|error| error.to_string()));
                 let outcome = serde_json::to_value(integrated.outcome).map_err(|error| error.to_string())?;
-                decision(outcome.as_str().ok_or("Invalid integration outcome")?, None, integrated.detail, integrated.integration_sha)
+                let mut merged = decision(outcome.as_str().ok_or("Invalid integration outcome")?, None, integrated.detail, integrated.integration_sha);
+                if merged.outcome == "merged" { validate_integrated_dream_budget(identity, &ledger, &mut merged)?; }
+                merged
             }
         }
     };
     checkpoint(&path, &result)?;
-    let receipt = cleanup_reflection_worktree(&worktree); if !receipt.worktree_removed || !receipt.branch_removed { return Err(format!("Reflection cleanup incomplete for {}", ledger.run_id())); }
+    cleanup()?;
     Ok(result)
 }
 
@@ -105,7 +124,7 @@ mod tests {
         let value = serde_json::json!({"version":1,"runId":"run","kind":"reflection","trigger":"manual","startedAt":"now","hardDeadlineAt":100,"terminationGraceMs":5,"deadlineAt":105,"mergePolicy":"auto","worktreeDir":worktree.dir,"worktreeBranch":worktree.branch,"baseSha":worktree.base_commit_sha,"gitFilePath":worktree.git_file_path,"gitFileSnapshot":worktree.git_file_snapshot,"commonConfigPath":worktree.common_config_path,"commonConfigSnapshot":worktree.common_config_snapshot});
         let dir = root.join("run"); std::fs::create_dir_all(&dir).unwrap();
         write_run_json_atomic(&dir.join("ledger.json"), &value, 0o600).unwrap();
-        (identity, parse_reservation_run_ledger(value).unwrap(), RunOutcome { version:1, run_id:"run".into(), attempt:None, finished_at:"now".into(), child_exit:ChildExit { code:Some(0), signal:None }, timed_out:false }, worktree)
+        (identity, parse_reservation_run_ledger(value).unwrap(), RunOutcome { version:1, run_id:"run".into(), attempt:None, finished_at:"now".into(), child_exit:ChildExit { code:Some(0), signal:None }, timed_out:false, recovered_from_worktree:None }, worktree)
     }
     #[test] fn unchanged_tip_is_checkpointed_before_cleanup() {
         let root = tempfile::tempdir().unwrap(); let (identity, ledger, child, worktree) = fixture(root.path());

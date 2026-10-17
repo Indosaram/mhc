@@ -1,8 +1,10 @@
 use std::{collections::BTreeMap, io::Write, path::Path, process::Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
-use super::{run_artifacts::{ChildExit, RunLaunchManifest, RunOutcome, read_run_json, unlink_run_artifact, update_run_ledger}, supervisor_process_identity::{SupervisorRuntimePlatform, get_supervisor_process_start, get_supervisor_runtime_platform, parse_supervisor_child_exit, read_supervisor_clock_now, schedule_supervisor_deadline, terminate_supervisor_child_hard, signal_supervisor_process_group}};
+use super::{run_artifacts::{CHILD_EXIT_FILENAME, ChildExit, RunChildExit, RunLaunchManifest, RunOutcome, read_run_json, unlink_run_artifact, update_run_ledger, write_run_json_atomic}, supervisor_process_identity::{SupervisorRuntimePlatform, get_supervisor_process_start, get_supervisor_runtime_platform, parse_supervisor_child_exit, read_supervisor_clock_now, schedule_supervisor_deadline, terminate_supervisor_child_hard, signal_supervisor_process_group}};
 
 fn wall_now() -> f64 { chrono::Utc::now().timestamp_millis() as f64 }
+/// A clock the bootstrap cannot read counts as past the deadline, so recovery stays closed.
+fn reached_deadline(now: f64, hard_deadline_at: f64) -> bool { !now.is_finite() || now >= hard_deadline_at }
 fn runtime_platform(env: &BTreeMap<String, String>) -> SupervisorRuntimePlatform {
     get_supervisor_runtime_platform(env, if cfg!(windows) { "win32" } else { "posix" })
 }
@@ -60,6 +62,10 @@ pub async fn run_child_bootstrap(run_dir: &Path) -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(std::fs::File::create(&manifest.stdout_path).map_err(|error| error.to_string())?)
         .stderr(std::fs::File::create(&manifest.stderr_path).map_err(|error| error.to_string())?);
+    // The bootstrap runs without a console on Windows, so a console-subsystem child would allocate
+    // a fresh visible one for the whole run unless it is created hidden.
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => {
@@ -71,7 +77,11 @@ pub async fn run_child_bootstrap(run_dir: &Path) -> Result<(), String> {
     let own_pid = std::process::id();
     let term_env = env.clone();
     let (graceful_sent, mut graceful_received) = tokio::sync::oneshot::channel();
+    let deadline_fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let term_fired = deadline_fired.clone();
+    let kill_fired = deadline_fired.clone();
     let mut cancel_term = schedule_supervisor_deadline(manifest.hard_deadline_at, &env, wall_now, move || {
+        term_fired.store(true, std::sync::atomic::Ordering::SeqCst);
         if runtime_platform(&term_env) == SupervisorRuntimePlatform::Posix {
             if let Err(error) = signal_supervisor_process_group(own_pid, "SIGTERM", &term_env) { maho_ext_api::diagnostic(&error.to_string()); }
         } else if graceful_sent.send(()).is_err() {
@@ -80,6 +90,7 @@ pub async fn run_child_bootstrap(run_dir: &Path) -> Result<(), String> {
     }).map_err(|error| error.to_string())?;
     let kill_env = env.clone();
     let mut cancel_kill = schedule_supervisor_deadline(manifest.hard_deadline_at + manifest.termination_grace_ms, &env, wall_now, move || {
+        kill_fired.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Err(error) = terminate_supervisor_child_hard(runtime_platform(&kill_env), Some(own_pid), false, &kill_env) { maho_ext_api::diagnostic(&error.to_string()); }
     }).map_err(|error| error.to_string())?;
     let status = loop {
@@ -97,9 +108,19 @@ pub async fn run_child_bootstrap(run_dir: &Path) -> Result<(), String> {
             }
         }
     };
+    let deadline_expired = deadline_fired.load(std::sync::atomic::Ordering::SeqCst);
     cancel_term.cancel();
     cancel_kill.cancel();
     let status = exit_status(status?);
+    // Durable before it is reported: a supervisor that dies after this point loses the pipe message,
+    // and recovery may only trust a tip whose child is recorded as having finished cleanly in time.
+    let child_exit = RunChildExit {
+        version: 1, run_id: manifest.run_id.clone(), attempt: manifest.attempt,
+        code: status.code, signal: status.signal.clone(),
+        finished_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        timed_out: deadline_expired || reached_deadline(read_supervisor_clock_now(&env, wall_now), manifest.hard_deadline_at),
+    };
+    write_run_json_atomic(&run_dir.join(CHILD_EXIT_FILENAME), &child_exit, 0o600).map_err(|error| error.to_string())?;
     write_bootstrap_status(&serde_json::json!({"code":status.code,"signal":status.signal})).map_err(|error| error.to_string())
 }
 
@@ -143,6 +164,8 @@ pub async fn run_supervisor(
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(unix)]
     command.process_group(0);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
     let mut bootstrap = command.spawn().map_err(|error| error.to_string())?;
     let pid = bootstrap.id().ok_or("child bootstrap did not receive a pid")?;
     let mut containment = ContainedBootstrap { pid: Some(pid), env: env.clone() };
@@ -212,6 +235,7 @@ pub async fn run_supervisor(
         version: 1, run_id: manifest.run_id.clone(), attempt: Some(manifest.attempt),
         finished_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true), child_exit,
         timed_out: timed_out.load(std::sync::atomic::Ordering::SeqCst) || (clock_now.is_finite() && clock_now >= manifest.hard_deadline_at),
+        recovered_from_worktree: None,
     };
     super::run_outcome_publication::publish_run_outcome(run_dir, &manifest, &outcome, gate)?;
     unlink_run_artifact(&launch_path).map_err(|error| error.to_string())
@@ -248,6 +272,13 @@ mod tests {
         write_run_json_atomic(&root.join("launch.json"), &manifest, 0o600).unwrap_or_else(|error|panic!("launch fixture: {error}"));
         write_run_json_atomic(&root.join("ledger.json"), &serde_json::json!({"version":1,"runId":"run"}), 0o600).unwrap_or_else(|error|panic!("ledger fixture: {error}"));
         manifest
+    }
+
+    #[test]
+    fn unreadable_or_expired_clock_counts_as_past_the_deadline() {
+        assert!(reached_deadline(f64::NAN, 10.0));
+        assert!(reached_deadline(10.0, 10.0));
+        assert!(!reached_deadline(9.0, 10.0));
     }
 
     #[tokio::test]

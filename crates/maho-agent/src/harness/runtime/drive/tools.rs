@@ -391,7 +391,7 @@ fn outcome_from_finalized(finalized: FinalizedToolCall) -> ToolOutcome {
 fn outcome_from_immediate(outcome: ImmediateToolOutcome) -> ToolOutcome {
     outcome_from_finalized(FinalizedToolCall {
         tool_call: outcome.tool_call,
-        result: outcome.result,
+        result: *outcome.result,
         is_error: outcome.is_error,
         terminate: outcome.terminate,
     })

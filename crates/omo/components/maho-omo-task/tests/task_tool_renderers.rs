@@ -11,7 +11,7 @@ fn session(renderers: ToolRenderers<(), JsonValue>, args: JsonValue) -> ToolRend
     ToolRendererSession { renderers: Arc::new(renderers), context }.into_slots()
 }
 fn result(text: &str, details: JsonValue) -> AgentToolResult {
-    AgentToolResult { content: vec![ContentBlock::Text(maho_ai::types::TextContent { text: text.into(), audience: None, text_signature: None })], details, usage: None, added_tool_names: None, terminate: None, is_error: None }
+    AgentToolResult { content: vec![ContentBlock::Text(maho_ai::types::TextContent { text: text.into(), audience: None, text_signature: None })], details, structured_content: None, usage: None, added_tool_names: None, terminate: None, is_error: None }
 }
 
 #[test]

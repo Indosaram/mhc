@@ -104,5 +104,5 @@ pub async fn execute_image(tool_call_id:&str,args:&Value,signal:Option<maho_ai::
     summary.push("The saved file is the deliverable; refer to it by path instead of re-embedding image data.".into());
     let summary=summary.join("\n");
     let mut content=vec![maho_ai::types::ContentBlock::Text(maho_ai::types::TextContent{text:summary,..Default::default()})];content.extend(generated.into_iter().map(|image|maho_ai::types::ContentBlock::Image(maho_ai::types::ImageContent{data:image.data,mime_type:image.mime_type})));
-    Ok(AgentToolResult{content,details,usage:images.usage,added_tool_names:None,terminate:None,is_error:None})
+    Ok(AgentToolResult{content,details,structured_content: None, usage:images.usage,added_tool_names:None,terminate:None,is_error:None})
 }

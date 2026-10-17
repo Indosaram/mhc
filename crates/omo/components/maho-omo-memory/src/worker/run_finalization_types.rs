@@ -26,4 +26,6 @@ pub struct DurableFinalizationDecision {
     pub reason: Option<String>,
     pub detail: Option<String>,
     pub integration_sha: Option<String>,
+    /// Published from a validated worktree tip after the supervisor died, not from a recorded child exit.
+    pub recovered_from_worktree: bool,
 }

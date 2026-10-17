@@ -27,6 +27,18 @@ pub struct RunOutcome {
     pub version: u32, pub run_id: String,
     #[serde(skip_serializing_if = "Option::is_none")] pub attempt: Option<u32>,
     pub finished_at: String, pub child_exit: ChildExit, pub timed_out: bool,
+    /// Published by recovery from a validated worktree tip, not by a supervisor that saw the child exit.
+    #[serde(skip_serializing_if = "Option::is_none")] pub recovered_from_worktree: Option<bool>,
+}
+pub const CHILD_EXIT_FILENAME: &str = "child-exit.json";
+/// Written by the child bootstrap the moment the model child exits, before it reports to the supervisor.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunChildExit {
+    pub version: u32, pub run_id: String, pub attempt: u32,
+    pub code: Option<i32>, pub signal: Option<String>, pub finished_at: String,
+    /// The bootstrap's clock had reached the hard deadline, so its own enforcement may have ended the child.
+    pub timed_out: bool,
 }
 pub fn run_outcome_matches_ledger(attempt: Option<u32>, outcome: &RunOutcome) -> bool { attempt == outcome.attempt }
 #[derive(Debug)]
@@ -38,17 +50,23 @@ impl std::error::Error for ArtifactError {}
 impl From<std::io::Error> for ArtifactError { fn from(error: std::io::Error) -> Self { Self::Io(error) } }
 impl From<serde_json::Error> for ArtifactError { fn from(error: serde_json::Error) -> Self { Self::Json(error) } }
 pub fn read_run_json<T: DeserializeOwned>(path: &Path) -> Result<T, ArtifactError> { Ok(serde_json::from_slice(&std::fs::read(path)?)?) }
+fn write_and_sync<T: Serialize>(file: &mut File, value: &T) -> Result<(), ArtifactError> {
+    file.write_all(serde_json::to_string_pretty(value)?.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
+}
 pub fn write_run_json_atomic<T: Serialize>(path: &Path, value: &T, mode: u32) -> Result<(), ArtifactError> {
     let mut options = OpenOptions::new(); options.write(true).create_new(true);
     #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(mode); }
     #[cfg(not(unix))] let _ = mode;
     let temporary = path.with_file_name(format!("{}.tmp-{}-{}", path.file_name().unwrap_or_default().to_string_lossy(), std::process::id(), memory_core::support::random::random_uuid()));
     let mut file = options.open(&temporary)?;
-    file.write_all(serde_json::to_string_pretty(value)?.as_bytes())?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
+    let written = write_and_sync(&mut file, value);
     drop(file);
-    std::fs::rename(&temporary, path)?;
+    let renamed = written.and_then(|()| std::fs::rename(&temporary, path).map_err(ArtifactError::from));
+    if renamed.is_err() { let _ = unlink_run_artifact(&temporary); }
+    renamed?;
     match File::open(path.parent().unwrap_or(Path::new("."))).and_then(|directory|directory.sync_all()){
         Ok(())=>{},
         #[cfg(windows)]
@@ -93,6 +111,15 @@ mod tests {
     fn tail_is_bounded_and_missing_is_empty() {
         let root = tempfile::tempdir().unwrap(); let path = root.path().join("stdout.log"); assert_eq!(read_run_text_tail(&path, 3).unwrap(), "");
         std::fs::write(&path, "abcdef").unwrap(); assert_eq!(read_run_text_tail(&path, 3).unwrap(), "[truncated to last 3 bytes]\ndef"); assert!(read_run_text_tail(&path, 0).is_err());
+    }
+    #[test]
+    fn outcome_recovery_marker_is_optional_and_round_trips() {
+        let outcome = RunOutcome { version: 1, run_id: "run".into(), attempt: Some(1), finished_at: "now".into(), child_exit: ChildExit { code: Some(0), signal: None }, timed_out: false, recovered_from_worktree: Some(true) };
+        let value = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(value["recoveredFromWorktree"], true);
+        assert_eq!(serde_json::from_value::<RunOutcome>(value).unwrap().recovered_from_worktree, Some(true));
+        let plain = RunOutcome { recovered_from_worktree: None, ..outcome };
+        assert!(serde_json::to_value(&plain).unwrap().get("recoveredFromWorktree").is_none());
     }
     #[test]
     fn prelaunch_rejects_corruption() { assert!(parse_run_prelaunch_artifact(serde_json::json!({"version": 2})).is_err()); }

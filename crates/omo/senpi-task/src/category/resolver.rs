@@ -16,7 +16,7 @@ use crate::host::{
 };
 use crate::model_chain::{
     BuildModelChainOptions, ChainRungCandidateOptions, ModelChainCandidate,
-    build_runtime_model_chain, chain_rung_candidates,
+    available_chain_candidates, build_runtime_model_chain, chain_rung_candidates,
 };
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 
@@ -332,6 +332,23 @@ fn merge_config(builtin: Option<Value>, user: Option<&Value>) -> Value {
         }
     }
     Value::Object(merged)
+}
+
+/// The builtin fallback chain of a category, resolved against the models the registry reports as
+/// available, in chain order. `resolve_category` leaves a user-forced model's chain untouched; a
+/// background child that must not die with its one refused pin appends these rungs itself.
+pub fn builtin_category_chain_candidates(
+    category_name: &str,
+    registry: &dyn SenpiModelRegistry,
+) -> Result<Vec<ModelChainCandidate>, HostError> {
+    let Some(chain) = category_fallback_chain(&omo_config_core::canonical_category_name(category_name)) else {
+        return Ok(Vec::new());
+    };
+    let available: BTreeSet<String> = parse_available_models(&registry.get_available()?)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    Ok(available_chain_candidates(chain, &available))
 }
 
 pub fn resolve_category(
