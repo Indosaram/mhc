@@ -19,7 +19,7 @@ crates/
 ├── maho-interactive/    # Terminal UI, streaming reveal pacing, theme engine
 ├── maho-rpc/            # Headless JSONL RPC protocol and print mode
 ├── maho-server/         # Daemon RPC server, Codex app-server, SQLite storage, protocol frames
-├── maho-codemode/       # eval kernels (js/py) and the code-mode tool host
+├── maho-codemode/       # eval kernel (bun/js only) and the code-mode tool host
 ├── maho-ext-api/        # Static extension contracts
 ├── maho-ext-host/       # Extension host runtime
 ├── maho-test-support/   # Shared test helpers (faux provider sessions)
