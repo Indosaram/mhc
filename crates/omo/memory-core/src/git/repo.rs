@@ -9,10 +9,12 @@ use super::config_lock::{with_git_lock_retry, with_serialized_git_config_mutatio
 use super::errors::GitError;
 use super::exec::{GitExec, GitExecOptions, GitExecResult, system_git_exec};
 use super::path_state::GitPathStateStore;
+use super::pending_rollback::settle_pending_rollback;
 use super::porcelain::describe_dirty_markdown_encoding_issues;
 use super::repo_arguments::{
     author_flags, command_error, normalize_pathspecs, normalize_seed_path,
 };
+use super::repo_lock_sweep::with_stranded_git_lock_recovery;
 use super::repo_log::{parse_log_output, parse_nul_paths};
 use super::repo_status::assert_no_unrelated_changes;
 use super::repo_tree::{parse_cat_file_batch, parse_ls_tree_blobs, parse_ls_tree_sized};
@@ -118,13 +120,17 @@ impl GitMemoryRepo {
             }
         }
 
-        with_git_lock_retry(|| {
-            let mut argv = vec!["commit".to_string(), "--allow-empty".to_string()];
-            argv.extend(author_flags(&author));
-            argv.push("-m".to_string());
-            argv.push(EMPTY_INITIAL_COMMIT.to_string());
-            self.git(&argv)
-        })?;
+        with_stranded_git_lock_recovery(
+            &self.dir,
+            || {
+                let mut argv = vec!["commit".to_string(), "--allow-empty".to_string()];
+                argv.extend(author_flags(&author));
+                argv.push("-m".to_string());
+                argv.push(EMPTY_INITIAL_COMMIT.to_string());
+                self.git(&argv)
+            },
+            None,
+        )?;
 
         self.require_head()
     }
@@ -133,6 +139,7 @@ impl GitMemoryRepo {
         if let Some(installer) = &self.hook_installer {
             installer(&self.dir)?;
         }
+        settle_pending_rollback(self)?;
         let porcelain = self.status(&[] as &[&str])?;
         if porcelain.trim().is_empty() {
             return Ok(());
@@ -157,6 +164,7 @@ impl GitMemoryRepo {
             return Err(GitError::NoEffectiveChanges { paths: normalized });
         }
 
+        settle_pending_rollback(self)?;
         assert_no_unrelated_changes(&self.dir, &normalized, || self.status(&[] as &[&str]))?;
         self.stage(&normalized)?;
         self.commit_prepared(paths, reason, author)
@@ -176,11 +184,109 @@ impl GitMemoryRepo {
             return Err(GitError::NoEffectiveChanges { paths: normalized });
         }
 
+        settle_pending_rollback(self)?;
         assert_no_unrelated_changes(&self.dir, &normalized, || self.status(&[] as &[&str]))?;
         if !self.has_path_changes(&normalized)? {
             return Err(GitError::NoEffectiveChanges { paths: normalized });
         }
         self.commit_staged(reason, author)
+    }
+
+    pub fn restore_paths(&self, paths: &[impl AsRef<str>]) -> Result<(), GitError> {
+        let normalized = normalize_pathspecs(paths);
+        if normalized.is_empty() {
+            return Ok(());
+        }
+        let at_head: std::collections::BTreeSet<String> =
+            self.ls_tree(Some("HEAD"), None)?.into_iter().collect();
+        let tracked: Vec<String> = normalized
+            .iter()
+            .filter(|path| at_head.contains(*path))
+            .cloned()
+            .collect();
+        let untracked: Vec<String> = normalized
+            .iter()
+            .filter(|path| !at_head.contains(*path))
+            .cloned()
+            .collect();
+        if !tracked.is_empty() {
+            with_stranded_git_lock_recovery(
+                &self.dir,
+                || {
+                    let mut argv = vec![
+                        "restore".to_string(),
+                        "--source=HEAD".to_string(),
+                        "--staged".to_string(),
+                        "--worktree".to_string(),
+                        "--".to_string(),
+                    ];
+                    argv.extend(tracked.clone());
+                    self.git(&argv)
+                },
+                None,
+            )?;
+        }
+        for path in untracked {
+            with_stranded_git_lock_recovery(
+                &self.dir,
+                || {
+                    let argv = vec![
+                        "rm".to_string(),
+                        "-q".to_string(),
+                        "--cached".to_string(),
+                        "--ignore-unmatch".to_string(),
+                        "--".to_string(),
+                        path.clone(),
+                    ];
+                    self.git(&argv)
+                },
+                None,
+            )?;
+            match crate::fs::remove_file(&self.dir.join(&path)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(GitError::Io(error)),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn unstage(&self, tracked: &[String], untracked: &[String]) -> Result<(), GitError> {
+        if !tracked.is_empty() {
+            with_stranded_git_lock_recovery(
+                &self.dir,
+                || {
+                    let mut argv = vec![
+                        "restore".to_string(),
+                        "--source=HEAD".to_string(),
+                        "--staged".to_string(),
+                        "--".to_string(),
+                    ];
+                    argv.extend_from_slice(tracked);
+                    self.git(&argv)
+                },
+                None,
+            )?;
+        }
+        if !untracked.is_empty() {
+            with_stranded_git_lock_recovery(
+                &self.dir,
+                || {
+                    let mut argv = vec![
+                        "rm".to_string(),
+                        "-q".to_string(),
+                        "--cached".to_string(),
+                        "-f".to_string(),
+                        "--ignore-unmatch".to_string(),
+                        "--".to_string(),
+                    ];
+                    argv.extend_from_slice(untracked);
+                    self.git(&argv)
+                },
+                None,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn status(&self, paths: &[impl AsRef<str>]) -> Result<String, GitError> {
@@ -422,7 +528,7 @@ impl GitMemoryRepo {
         }
         argv.push(ref_name.to_string());
 
-        with_git_lock_retry(|| self.git(&argv))?;
+        with_stranded_git_lock_recovery(&self.dir, || self.git(&argv), None)?;
         self.require_head()
     }
 
@@ -487,11 +593,15 @@ impl GitMemoryRepo {
     }
 
     fn stage(&self, paths: &[String]) -> Result<(), GitError> {
-        with_git_lock_retry(|| {
-            let mut argv = vec!["add".to_string(), "-A".to_string(), "--".to_string()];
-            argv.extend_from_slice(paths);
-            self.git(&argv)
-        })?;
+        with_stranded_git_lock_recovery(
+            &self.dir,
+            || {
+                let mut argv = vec!["add".to_string(), "-A".to_string(), "--".to_string()];
+                argv.extend_from_slice(paths);
+                self.git(&argv)
+            },
+            None,
+        )?;
         Ok(())
     }
 
@@ -505,13 +615,17 @@ impl GitMemoryRepo {
         reason: &str,
         author: &GitCommitAuthor,
     ) -> Result<GitCommitResult, GitError> {
-        with_git_lock_retry(|| {
-            let mut argv = vec!["commit".to_string()];
-            argv.extend(author_flags(author));
-            argv.push("-m".to_string());
-            argv.push(reason.to_string());
-            self.git(&argv)
-        })?;
+        with_stranded_git_lock_recovery(
+            &self.dir,
+            || {
+                let mut argv = vec!["commit".to_string()];
+                argv.extend(author_flags(author));
+                argv.push("-m".to_string());
+                argv.push(reason.to_string());
+                self.git(&argv)
+            },
+            None,
+        )?;
         Ok(GitCommitResult {
             committed: true,
             sha: self.require_head()?,

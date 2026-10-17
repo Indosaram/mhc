@@ -5,6 +5,7 @@ pub mod leaked_arguments;
 pub mod memory;
 pub mod memory_apply_patch;
 pub mod patch_parser;
+pub mod rollback_behind_lock;
 pub mod soul;
 pub mod tool_errors;
 
@@ -13,6 +14,7 @@ pub use leaked_arguments::*;
 pub use memory::*;
 pub use memory_apply_patch::*;
 pub use patch_parser::*;
+pub use rollback_behind_lock::*;
 pub use soul::*;
 pub use tool_errors::*;
 
@@ -51,3 +53,7 @@ mod memory_apply_patch_provenance_tests;
 #[cfg(test)]
 #[path = "soul_edit_tests.rs"]
 mod soul_edit_tests;
+
+#[cfg(test)]
+#[path = "commit_write_stranded_lock_tests.rs"]
+mod commit_write_stranded_lock_tests;

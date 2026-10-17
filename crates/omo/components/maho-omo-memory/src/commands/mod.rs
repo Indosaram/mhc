@@ -15,6 +15,7 @@ pub mod memfs_extra;
 pub mod memfs_shared;
 pub mod memory;
 pub mod memory_repository;
+pub mod memory_unlock;
 pub mod people;
 pub mod people_ask;
 pub mod people_query;

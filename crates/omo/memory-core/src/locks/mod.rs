@@ -5,6 +5,7 @@ pub mod candidate_sweep;
 pub mod domains;
 pub mod lock_record;
 pub mod process_identity;
+pub mod proven_dead_takeovers;
 pub mod recall_wake_domain;
 
 pub use acquire::{
@@ -27,6 +28,9 @@ pub use lock_record::{
 pub use process_identity::{
     ProcessLiveness, get_pid_liveness, get_process_start_identity, start_identities_comparable,
     start_identities_conflict,
+};
+pub use proven_dead_takeovers::{
+    forget_proven_dead_takeover, proven_dead_takeover_for, record_proven_dead_takeover,
 };
 pub use recall_wake_domain::{
     RECALL_WAKE_DEFAULT_SLOTS, RecallWakeBusyError, RecallWakeError, RecallWakeLease,

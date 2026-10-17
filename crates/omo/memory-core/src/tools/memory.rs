@@ -17,6 +17,7 @@ use super::memfs::{
 };
 use crate::memfs::validate_repository_path_with_field;
 use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
+use super::rollback_behind_lock::undo_behind_kept_lock;
 use super::tool_errors::MemoryToolError;
 
 /// Supported CRUD commands for the memory tool.
@@ -80,6 +81,8 @@ pub struct MemoryToolProvenanceInput {
 pub struct MemoryToolCommit {
     pub sha: String,
     pub committed_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected_paths: Vec<String>,
 }
 
 /// Provenance metadata tracking author attribution and transaction details.
@@ -168,6 +171,8 @@ fn run_memory_tool_inner(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| err("'command' must be a non-empty string"))?;
+
+    repo.clean_check().map_err(|e| err(e.to_string()))?;
 
     let root = &repo.dir;
     let mut affected_relative_paths: Vec<String> = Vec::new();
@@ -371,6 +376,14 @@ fn run_memory_tool_inner(
         Err(GitError::NoEffectiveChanges { .. }) => {
             return Err(err(format!("{command_str} made no effective changes")));
         }
+        Err(GitError::StrandedGitLock(kept)) => {
+            return Err(undo_behind_kept_lock(
+                repo,
+                &affected_relative_paths,
+                &kept,
+                "memory",
+            ));
+        }
         Err(err_val) => return Err(err(err_val.to_string())),
     };
 
@@ -400,6 +413,7 @@ fn run_memory_tool_inner(
         commit: Some(MemoryToolCommit {
             sha: commit_info.sha.clone(),
             committed_at: timestamp.clone(),
+            affected_paths: affected_relative_paths,
         }),
         provenance: MemoryToolProvenance {
             agent_id: author.agent_id.clone(),

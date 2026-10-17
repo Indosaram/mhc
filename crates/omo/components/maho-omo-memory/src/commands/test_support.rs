@@ -46,6 +46,7 @@ pub struct FakeCommandUi {
     pub confirms: Mutex<Vec<(String, String)>>,
     pub selects: Mutex<Vec<(String, Vec<String>)>>,
     confirm_result: AtomicBool,
+    on_confirm: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     select_result: Mutex<Option<String>>,
 }
 
@@ -56,12 +57,27 @@ impl FakeCommandUi {
             confirms: Mutex::new(Vec::new()),
             selects: Mutex::new(Vec::new()),
             confirm_result: AtomicBool::new(confirm_result),
+            on_confirm: Mutex::new(None),
             select_result: Mutex::new(None),
         }
     }
 
     pub fn set_confirm_result(&self, value: bool) {
         self.confirm_result.store(value, Ordering::SeqCst);
+    }
+
+    pub fn set_on_confirm(&self, callback: impl FnOnce() + Send + 'static) {
+        *self
+            .on_confirm
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Box::new(callback));
+    }
+
+    pub fn confirms(&self) -> Vec<(String, String)> {
+        self.confirms
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn set_select_result(&self, value: Option<String>) {
@@ -99,6 +115,14 @@ impl MemoryCommandUi for FakeCommandUi {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push((title.to_owned(), message.to_owned()));
+        if let Some(callback) = self
+            .on_confirm
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            callback();
+        }
         let result = self.confirm_result.load(Ordering::SeqCst);
         Box::pin(async move { result })
     }

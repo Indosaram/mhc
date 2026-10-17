@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use super::lock_record::{LockRecord, parse_lock_record};
 use super::candidate_sweep::{CandidateSweepOptions, sweep_stale_lock_candidates};
 use super::process_identity::{ProcessLiveness, get_pid_liveness, get_process_start_identity};
+use super::proven_dead_takeovers::{forget_proven_dead_takeover, record_proven_dead_takeover};
 
 /// Error raised when an exclusive lock is currently held by another owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,7 +255,10 @@ fn recover_dead_owner(
             return Ok(false);
         }
         match std::fs::remove_file(lock_path) {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                record_proven_dead_takeover(lock_path, current_record.clone(), &contender.nonce);
+                Ok(true)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
             Err(e) => Err(e),
         }
@@ -292,34 +296,67 @@ pub fn acquire_lock(
     }
 
 
+    let mut recovered_dead_owner = false;
+
     loop {
         if options.cancellation.map(|f| f()).unwrap_or(false) {
+            forget_proven_dead_takeover(lock_path, &record.nonce);
             return Err(AcquireLockError::Aborted);
         }
 
-        if publish_exclusive(lock_path, record)? {
-            return Ok(());
+        match publish_exclusive(lock_path, record) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                if recovered_dead_owner {
+                    forget_proven_dead_takeover(lock_path, &record.nonce);
+                    recovered_dead_owner = false;
+                }
+            }
+            Err(err) => {
+                forget_proven_dead_takeover(lock_path, &record.nonce);
+                return Err(AcquireLockError::Io(err));
+            }
         }
 
         if options.cancellation.map(|f| f()).unwrap_or(false) {
+            forget_proven_dead_takeover(lock_path, &record.nonce);
             return Err(AcquireLockError::Aborted);
         }
 
-        let owner = match read_owner(lock_path)? {
-            Some(o) => o,
-            None => continue,
+        let owner = match read_owner(lock_path) {
+            Ok(Some(o)) => o,
+            Ok(None) => continue,
+            Err(err) => {
+                forget_proven_dead_takeover(lock_path, &record.nonce);
+                return Err(AcquireLockError::Io(err));
+            }
         };
 
-        if recover_dead_owner(lock_path, &owner, record)? {
-            continue;
+        if recovered_dead_owner {
+            forget_proven_dead_takeover(lock_path, &record.nonce);
+            recovered_dead_owner = false;
+        }
+
+        match recover_dead_owner(lock_path, &owner, record) {
+            Ok(true) => {
+                recovered_dead_owner = true;
+                continue;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                forget_proven_dead_takeover(lock_path, &record.nonce);
+                return Err(AcquireLockError::Io(err));
+            }
         }
 
         if options.cancellation.map(|f| f()).unwrap_or(false) {
+            forget_proven_dead_takeover(lock_path, &record.nonce);
             return Err(AcquireLockError::Aborted);
         }
 
         let now = crate::support::time::now_millis();
         if now >= deadline {
+            forget_proven_dead_takeover(lock_path, &record.nonce);
             return Err(AcquireLockError::Contention(Box::new(
                 LockContentionError::new(lock_path.to_path_buf(), owner.record),
             )));
@@ -333,6 +370,7 @@ pub fn acquire_lock(
             let start = Instant::now();
             while start.elapsed() < sleep_dur {
                 if cancel() {
+                    forget_proven_dead_takeover(lock_path, &record.nonce);
                     return Err(AcquireLockError::Aborted);
                 }
                 let step = Duration::from_millis(5).min(sleep_dur - start.elapsed());
@@ -369,6 +407,7 @@ pub fn release_lock<N: LockNonce + ?Sized>(
     lock_path: &Path,
     nonce_source: &N,
 ) -> Result<bool, std::io::Error> {
+    forget_proven_dead_takeover(lock_path, nonce_source.nonce());
     let owner = match read_owner(lock_path)? {
         Some(o) => o,
         None => return Ok(false),

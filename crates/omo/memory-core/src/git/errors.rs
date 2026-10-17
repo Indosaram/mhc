@@ -26,6 +26,8 @@ pub enum GitError {
     InvalidPath(String),
     PathState(String),
     LockExhausted(String),
+    StrandedGitLock(super::repo_lock_sweep::StrandedGitLockError),
+    PendingRollbackEditsKept(super::pending_rollback::PendingRollbackEditsKeptError),
     Io(std::io::Error),
     Other(String),
 }
@@ -85,6 +87,8 @@ impl fmt::Display for GitError {
             Self::InvalidPath(msg) => write!(f, "{msg}"),
             Self::PathState(msg) => write!(f, "{msg}"),
             Self::LockExhausted(msg) => write!(f, "{msg}"),
+            Self::StrandedGitLock(err) => write!(f, "{err}"),
+            Self::PendingRollbackEditsKept(err) => write!(f, "{err}"),
             Self::Io(err) => write!(f, "git I/O error: {err}"),
             Self::Other(msg) => write!(f, "{msg}"),
         }
@@ -94,6 +98,8 @@ impl fmt::Display for GitError {
 impl std::error::Error for GitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::StrandedGitLock(err) => Some(err),
+            Self::PendingRollbackEditsKept(err) => Some(err),
             Self::Io(err) => Some(err),
             _ => None,
         }

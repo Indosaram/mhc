@@ -18,6 +18,7 @@ use super::memfs::{
 };
 use super::memory::{MemoryToolCommit, MemoryToolLock, MemoryToolProvenanceInput, memory_commit_message};
 use super::patch_parser::{PatchOperation, apply_memory_patch_hunk, parse_memory_patch};
+use super::rollback_behind_lock::undo_behind_kept_lock;
 use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
 use super::tool_errors::MemoryToolError;
 
@@ -73,6 +74,14 @@ pub fn run_memory_apply_patch(
                 "made no effective changes; nothing was committed. The patched content matched what was already on disk.",
             ));
         }
+        Err(GitError::StrandedGitLock(kept)) => {
+            return Err(undo_behind_kept_lock(
+                repo,
+                &affected_paths,
+                &kept,
+                "memory_apply_patch",
+            ));
+        }
         Err(err_val) => return Err(err(err_val.to_string())),
     };
 
@@ -101,6 +110,7 @@ pub fn run_memory_apply_patch(
         commit: Some(MemoryToolCommit {
             sha: commit_info.sha,
             committed_at: now_iso(),
+            affected_paths,
         }),
     })
 }

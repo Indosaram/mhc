@@ -6,10 +6,12 @@ use std::sync::Arc;
 use maho_ext_api::ExtensionApi;
 use memory_core::memfs::parse_memory_file;
 
+use super::args::{ParseCommandArgsOptions, parse_command_args_full};
+pub use super::memory_unlock::run_memory_unlock;
 use super::repo::{has_git_repo, open_repo, short_sha};
 use super::types::{
-    command_context_from, finish, require_identity, respond, CommandContext, CommandResponse,
-    MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    CommandContext, CommandResponse, MemoryCommandDeps, MemoryCommandIdentity, NotifyLevel,
+    command_context_from, finish, require_identity, respond,
 };
 
 fn is_system_markdown(path: &str) -> bool {
@@ -68,12 +70,27 @@ fn render_name_section(title: &str, paths: &[String]) -> Vec<String> {
 pub async fn handle_memory(
     deps: &MemoryCommandDeps,
     ctx: &CommandContext,
-    _args: &str,
+    args: &str,
 ) -> CommandResponse {
     let identity = match require_identity(deps, ctx) {
         Ok(identity) => identity,
         Err(error) => return respond(ctx, error, NotifyLevel::Error),
     };
+
+    let parsed = parse_command_args_full(args, ParseCommandArgsOptions { booleans: &["force"] });
+    if parsed.positionals.first().map(String::as_str) == Some("unlock") {
+        let raw_path = parsed.positionals[1..].join(" ");
+        return run_memory_unlock(ctx, &identity, &raw_path, parsed.flag_is_true("force")).await;
+    }
+    if let Some(subcommand) = parsed.positionals.first() {
+        return respond(
+            ctx,
+            format!(
+                "unknown /memory subcommand \"{subcommand}\"; use /memory or /memory unlock <lock path>"
+            ),
+            NotifyLevel::Error,
+        );
+    }
 
     if !has_git_repo(&identity) {
         return respond(
@@ -165,10 +182,10 @@ pub fn register_memory_command(api: &mut ExtensionApi, deps: Arc<MemoryCommandDe
     api.register_command(
         "memory",
         Some(
-            "View committed memory: HEAD, system bodies, external names, and uncommitted changes."
+            "View committed memory: HEAD, system bodies, external names, and uncommitted changes; unlock re-checks and removes a stranded git lock."
                 .to_owned(),
         ),
-        Some(String::new()),
+        Some("[unlock <lock path> [--force]]".to_owned()),
         Arc::new(move |args, context| {
             let deps = deps.clone();
             let context = command_context_from(context);
@@ -267,6 +284,35 @@ mod tests {
         let response = handle_memory(&fake.deps, &context.ctx, "").await;
 
         assert!(response.text.contains("not bound"));
+        assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
+    }
+
+    #[tokio::test]
+    async fn given_an_unknown_subcommand_when_invoked_then_an_actionable_error_is_returned() {
+        let (_root, identity) = temp_identity();
+        seeded_repo(&identity, seeds());
+        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let response = handle_memory(&fake.deps, &context.ctx, "foo").await;
+
+        assert_eq!(
+            response.text,
+            "unknown /memory subcommand \"foo\"; use /memory or /memory unlock <lock path>"
+        );
+        assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
+    }
+
+    #[tokio::test]
+    async fn given_unlock_without_a_path_when_invoked_then_usage_is_returned() {
+        let (_root, identity) = temp_identity();
+        seeded_repo(&identity, seeds());
+        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let response = handle_memory(&fake.deps, &context.ctx, "unlock").await;
+
+        assert_eq!(response.text, "usage: /memory unlock <lock path> [--force]");
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
     }
 }
