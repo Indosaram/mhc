@@ -35,3 +35,21 @@ fn replacement_resets_dictionary() {
     assert_eq!(encoded["ops"][3], json!(["s", ["key"], 3]));
     assert_eq!(decoder.update(&encoded).unwrap(), update);
 }
+
+#[test]
+fn reset_rebuilds_dictionary_and_requires_root_replacements() {
+    let mut encoder = ServiceStateEncoder::default();
+    let mut decoder = ServiceStateDecoder::default();
+    let initial = json!({"serviceId":"test","mode":"singleton","instances":[{"members":[{"name":"state","kind":"state","sequence":0,"ops":[["r",{}],["s",["key"],1]]}]}]});
+    decoder
+        .snapshot(&encoder.snapshot(&initial).unwrap())
+        .unwrap();
+
+    let reset = json!({"type":"reset","snapshot":{"serviceId":"test","mode":"singleton","instances":[{"members":[{"name":"state","kind":"state","sequence":4,"ops":[["r",{"key":2}]]}]}]}});
+    let encoded = encoder.update(&reset).unwrap();
+    assert_eq!(decoder.update(&encoded).unwrap(), reset);
+
+    let incremental_reset = json!({"type":"reset","snapshot":{"serviceId":"test","mode":"singleton","instances":[{"members":[{"name":"state","kind":"state","sequence":5,"ops":[["s",["key"],3]]}]}]}});
+    assert!(encoder.update(&incremental_reset).is_err());
+    assert!(decoder.update(&incremental_reset).is_err());
+}

@@ -286,7 +286,7 @@ fn run() -> Result<(), String> {
         _ => {},
     }
     let parsed = maho_cli::cli::args::parse_args(&argv, grok)?;
-    if parsed.version { println!("{}", maho_core::config::display_version(env!("CARGO_PKG_VERSION"))); return Ok(()); }
+    if parsed.version { println!("{}", maho_core::config::display_version(option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")))); return Ok(()); }
     for diagnostic in &parsed.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }
     if parsed.diagnostics.iter().any(|d| d.error) { return Err("Invalid CLI arguments".to_owned()); }
     maho_core::timings::time("parseArgs", maho_core::timings::TimingLabel::Main);

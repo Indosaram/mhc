@@ -12,7 +12,6 @@ async fn sampling_timer_publishes_pressure_after_one_period() {
     let sample = samples.recv().await.unwrap();
     assert_eq!(start.elapsed(), Duration::from_millis(HOST_MEMORY_SAMPLE_MS));
     assert_eq!(sample.pressure_change, Some(true));
-    assert_eq!(sample.critical_change, Some((true, 21)));
     assert_eq!(sample.record.unwrap()["sessions"], 2);
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());

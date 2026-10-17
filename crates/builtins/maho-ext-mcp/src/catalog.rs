@@ -22,7 +22,8 @@ pub async fn collect_client_pages(client:&McpClient,method:&str,key:&str,timeout
     collect_all_pages(|cursor|async move {
         let params=cursor.map_or_else(||json!({}),|cursor|json!({"cursor":cursor}));
         let response=client.request(method,params,timeout).await?;
-        Ok(McpListPage {items:response.get(key).and_then(Value::as_array).cloned(),next_cursor:response.get("nextCursor").and_then(Value::as_str).map(str::to_owned),..Default::default()})
+        let next_cursor=response.get("nextCursor").filter(|cursor|!cursor.is_null()).and_then(Value::as_str).map(str::to_owned);
+        Ok(McpListPage {items:response.get(key).and_then(Value::as_array).cloned(),next_cursor,..Default::default()})
     }).await
 }
 pub async fn collect_tool_catalog(server:&str,client:Arc<McpClient>,timeout:Duration)->Result<Vec<McpToolCatalogEntry>,McpError> {
@@ -34,4 +35,13 @@ pub fn cached_tools_to_catalog_entries(server:&str,tools:&[Value],client:Arc<Mcp
 }
 pub fn cached_mcp_catalog_entries(server:&str,catalog:&crate::catalog_cache::McpCachedServerCatalog,runtime:Arc<McpCatalogRuntime>,timeout:Duration,ensure_connected:McpCatalogCallback)->Vec<McpToolCatalogEntry> {
     catalog.tools.iter().map(|tool|McpToolCatalogEntry {server:server.into(),tool:tool.get("name").and_then(Value::as_str).unwrap_or("").into(),schema:tool.get("inputSchema").cloned().unwrap_or(Value::Null),description:tool.get("description").and_then(Value::as_str).map(str::to_owned),annotations:tool.get("annotations").cloned(),request_timeout:timeout,client:None,runtime:Some(runtime.clone()),connection:None,ensure_connected:Some(ensure_connected.clone()),ensure_fresh:None,agent_dir:None,artifacts:None,output_guard:None}).collect()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn null_next_cursor_is_not_exposed_to_pagination() {
+        let response=json!({"tools":[],"nextCursor":null});
+        assert_eq!(response.get("nextCursor").filter(|cursor|!cursor.is_null()).and_then(Value::as_str),None);
+    }
 }

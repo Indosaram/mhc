@@ -1,6 +1,6 @@
 use maho_core::engine_build_identity::EngineBuildIdentity;
 use serde::Serialize;
-pub use crate::host_protocol_info::{HostProtocolInfo, RpcLaunchProfile, parse_host_protocol_info};
+pub use crate::host_protocol_info::{HostLifecycle, HostProtocolInfo, RpcLaunchProfile, parse_host_protocol_info};
 
 pub const HOST_PROTOCOL_VERSION: u32 = 1;
 pub const GENERATION_HANDOFF_CAPABILITY: &str = "generation_handoff";
@@ -33,7 +33,7 @@ pub enum HostDecision {
 pub enum StartReason { NoHost, RestartOwnHost }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum RefuseReason { Protocol, Capability }
+pub enum RefuseReason { Protocol, Capability, HostStopping }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FallbackReason { Capability, EngineMismatch }
@@ -45,10 +45,10 @@ pub enum ReuseReason { Compatible, HandoffUnsupported, Win32AttachOnly }
 pub enum HandoffReason { NewerEngine, Profile }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostRefusalReason { Protocol, Capability, ForeignWriter, LegacyHost, HostBusy }
+pub enum HostRefusalReason { Protocol, Capability, ForeignWriter, LegacyHost, HostBusy, HostStopping, HostStalled }
 impl HostRefusalReason {
     pub const fn as_str(self) -> &'static str {
-        match self { Self::Protocol => "protocol", Self::Capability => "capability", Self::ForeignWriter => "foreign_writer", Self::LegacyHost => "legacy_host", Self::HostBusy => "host_busy" }
+        match self { Self::Protocol => "protocol", Self::Capability => "capability", Self::ForeignWriter => "foreign_writer", Self::LegacyHost => "legacy_host", Self::HostBusy => "host_busy", Self::HostStopping => "host_stopping", Self::HostStalled => "host_stalled" }
     }
 }
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +69,8 @@ impl HostEnsureRefusedError {
             HostRefusalReason::ForeignWriter => "its pidfile was written by another process, so this one may not signal it; stop that host explicitly instead".into(),
             HostRefusalReason::LegacyHost => "a host from before the per-socket daemon directory is still running on this endpoint; it is never signalled, and no second host is started beside it".into(),
             HostRefusalReason::HostBusy => "its socket accepts connections but did not answer inside the probe budget: a live host under load, which is never ended to make room for a replacement".into(),
+            HostRefusalReason::HostStopping => "this generation is stopping; wait for its exit before launching a successor".into(),
+            HostRefusalReason::HostStalled => "nothing reaches its socket, but its process is alive and its own loop-lag watchdog measured a recent stall: a stalled host is still serving its sessions, so it is neither stopped nor replaced".into(),
         };
         Self { socket: socket.into(), reason, detail }
     }
@@ -100,6 +102,7 @@ fn same_release(client: &HostDecisionClient, host: &HostProtocolInfo) -> bool {
 }
 pub fn decide_host_action(client: &HostDecisionClient, host: Option<&HostProtocolInfo>, policy: HostDecisionPolicy) -> HostDecision {
     let Some(host) = host else { return HostDecision::Start { reason: if client.started_by_us { StartReason::RestartOwnHost } else { StartReason::NoHost }, upgradeable: false }; };
+    if host.lifecycle == Some(HostLifecycle::Stopping) { return HostDecision::Refuse { reason: RefuseReason::HostStopping, upgradeable: false }; }
     if host.protocol_version.total_cmp(&f64::from(client.protocol_version)).is_ne() { return HostDecision::Refuse { reason: RefuseReason::Protocol, upgradeable: false }; }
     if !client.required_capabilities.iter().all(|capability| host.capabilities.contains(capability)) {
         return if policy == HostDecisionPolicy::Fallback { HostDecision::Fallback { reason: FallbackReason::Capability, upgradeable: false } } else { HostDecision::Refuse { reason: RefuseReason::Capability, upgradeable: false } };
@@ -122,10 +125,11 @@ mod tests {
     use crate::host_protocol_info::{RpcLaunchProfileCore, SessionRuntimeKind};
     fn profile(extensions: &[&str]) -> RpcLaunchProfile { RpcLaunchProfile { profile_id: extensions.join(","), core: RpcLaunchProfileCore { extensions: extensions.iter().map(|v| (*v).into()).collect(), multi_session: true, session_runtime: SessionRuntimeKind::InProcess } } }
     fn client() -> HostDecisionClient { HostDecisionClient { protocol_version: 1, required_capabilities: REQUIRED_HOST_CAPABILITIES.iter().map(|v| (*v).into()).collect(), identity: engine_build_identity_from(&EngineBuildInput { version: "2026.9.17".into(), ..Default::default() }), launch_profile: Some(profile(&["/plugin"])), started_by_us: false, platform: "linux".into() } }
-    fn host() -> HostProtocolInfo { HostProtocolInfo { protocol_version: 1.0, server_version: "deliberately different".into(), capabilities: REQUIRED_HOST_CAPABILITIES.iter().chain([GENERATION_HANDOFF_CAPABILITY].iter()).map(|v| (*v).into()).collect(), instance_id: None, generation: None, engine_version: Some("2026.9.16-3".into()), engine_ordinal: Some([2026.0,9.0,16.0,3.0,0.0]), launch_profile: Some(profile(&["/plugin"])) } }
+    fn host() -> HostProtocolInfo { HostProtocolInfo { lifecycle:None,protocol_version: 1.0, server_version: "deliberately different".into(), capabilities: REQUIRED_HOST_CAPABILITIES.iter().chain([GENERATION_HANDOFF_CAPABILITY].iter()).map(|v| (*v).into()).collect(), instance_id: None, generation: None, engine_version: Some("2026.9.16-3".into()), engine_ordinal: Some([2026.0,9.0,16.0,3.0,0.0]), launch_profile: Some(profile(&["/plugin"])),memory_pressure:None,handover:None } }
     #[test] fn no_host_starts() { assert!(matches!(decide_host_action(&client(),None,HostDecisionPolicy::Never),HostDecision::Start { reason:StartReason::NoHost,.. })); }
     #[test] fn own_dead_host_starts_with_own_reason() { let mut c=client();c.started_by_us=true;assert!(matches!(decide_host_action(&c,None,HostDecisionPolicy::Never),HostDecision::Start { reason:StartReason::RestartOwnHost,.. })); }
     #[test] fn protocol_mismatch_refuses() { let mut h=host();h.protocol_version=2.0;assert!(matches!(decide_host_action(&client(),Some(&h),HostDecisionPolicy::Upgrade),HostDecision::Refuse { reason:RefuseReason::Protocol,.. })); }
+    #[test] fn stopping_host_refuses_before_compatibility_checks() { let mut h=host();h.lifecycle=Some(HostLifecycle::Stopping);h.protocol_version=99.0;assert!(matches!(decide_host_action(&client(),Some(&h),HostDecisionPolicy::Upgrade),HostDecision::Refuse { reason:RefuseReason::HostStopping,.. })); }
     #[test] fn missing_capability_never_refuses() { let mut h=host();h.capabilities.clear();assert!(matches!(decide_host_action(&client(),Some(&h),HostDecisionPolicy::Never),HostDecision::Refuse { reason:RefuseReason::Capability,.. })); }
     #[test] fn missing_capability_falls_back() { let mut h=host();h.capabilities.clear();assert!(matches!(decide_host_action(&client(),Some(&h),HostDecisionPolicy::Fallback),HostDecision::Fallback { reason:FallbackReason::Capability,.. })); }
     #[test] fn missing_capability_upgrade_refuses() { let mut h=host();h.capabilities.clear();assert!(matches!(decide_host_action(&client(),Some(&h),HostDecisionPolicy::Upgrade),HostDecision::Refuse { reason:RefuseReason::Capability,.. })); }
