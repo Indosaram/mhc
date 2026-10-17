@@ -110,7 +110,7 @@ fn given_a_dag_route_when_kinds_are_enumerated_then_category_xor_agent_holds_and
         category: "quick".to_string(),
     };
     let agent = DagRoute::Agent {
-        agent: "momus".to_string(),
+        agent: "plan-reviewer".to_string(),
         model: Some("openai/gpt-5".to_string()),
     };
 
@@ -120,7 +120,7 @@ fn given_a_dag_route_when_kinds_are_enumerated_then_category_xor_agent_holds_and
     );
     assert_eq!(
         serde_json::to_value(&agent).expect("json"),
-        json!({ "kind": "agent", "agent": "momus", "model": "openai/gpt-5" })
+        json!({ "kind": "agent", "agent": "plan-reviewer", "model": "openai/gpt-5" })
     );
     assert!(!DAG_ROUTE_KINDS.contains(&"model"));
     assert!(serde_json::from_value::<DagRoute>(json!({ "kind": "model", "model": "x" })).is_err());
@@ -131,14 +131,14 @@ fn given_node_level_user_input_when_field_names_are_checked_then_they_mirror_the
  {
     let by_category = DagNodeTarget::Category("quick".to_string());
     let by_subagent = DagNodeTarget::SubagentType {
-        subagent_type: "momus".to_string(),
+        subagent_type: "plan-reviewer".to_string(),
         model: Some("openai/gpt-5".to_string()),
     };
     let code: DagNodeTargetErrorCode = TaskTargetErrorCode::CategoryWithModel;
 
     assert_eq!(by_category, DagNodeTarget::Category("quick".to_string()));
     assert!(
-        matches!(by_subagent, DagNodeTarget::SubagentType { ref subagent_type, .. } if subagent_type == "momus")
+        matches!(by_subagent, DagNodeTarget::SubagentType { ref subagent_type, .. } if subagent_type == "plan-reviewer")
     );
     assert_eq!(code.as_str(), "category_with_model");
 }

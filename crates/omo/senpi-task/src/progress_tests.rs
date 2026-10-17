@@ -127,7 +127,7 @@ fn human_description_leads_instead_of_id() {
 #[test]
 fn running_tool_is_named_and_counts_pluralize() {
     let target = ChildProgressTarget {
-        agent_type: Some("momus".to_string()),
+        agent_type: Some("plan-reviewer".to_string()),
         ..ChildProgressTarget::default()
     };
     let mut progress = create_child_progress("st_00000002", target, 1_000, || 2_000);
@@ -143,7 +143,7 @@ fn running_tool_is_named_and_counts_pluralize() {
     let details = progress.details();
     assert_eq!(
         details.progress.activity,
-        "st_00000002 · agent:momus · turn 1 (2 tools) · running grep TODO"
+        "st_00000002 · agent:plan-reviewer · turn 1 (2 tools) · running grep TODO"
     );
     assert_eq!(details.current_tool.as_deref(), Some("grep TODO"));
     assert_eq!(details.tool_calls, Some(2.0));

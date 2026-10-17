@@ -146,7 +146,7 @@ fn given_unknown_task_id_when_continued_then_not_continuable() {
 fn given_momus_child_started_through_manager_when_sent_then_outcome_is_one_shot_agent() {
     let harness = default_manager();
     let task = started(harness.manager.start(&ManagerStartSpec {
-        subagent_type: Some("momus".to_string()),
+        subagent_type: Some("plan-reviewer".to_string()),
         ..base_spec()
     }));
     let fake = harness.in_process.wait_handle(&task.task_id);
@@ -165,8 +165,8 @@ fn given_momus_child_started_through_manager_when_sent_then_outcome_is_one_shot_
         panic!("expected one-shot agent, got {outcome:?}");
     };
     assert_eq!(task_id, task.task_id);
-    assert_eq!(agent, "momus");
-    let policy = interaction_policy_for_agent("momus").expect("momus policy");
+    assert_eq!(agent, "plan-reviewer");
+    let policy = interaction_policy_for_agent("plan-reviewer").expect("plan-reviewer policy");
     assert_eq!(message, policy.send_denial_reminder);
     assert!(fake.follow_up_calls().is_empty());
     assert!(fake.steer_calls().is_empty());

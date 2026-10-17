@@ -57,7 +57,7 @@ fn given_both_category_and_subagent_type_when_executed_then_it_returns_the_xor_e
 
     let input = SpawnParamsInput {
         category: Some("quick".to_string()),
-        subagent_type: Some("momus".to_string()),
+        subagent_type: Some("plan-reviewer".to_string()),
         ..params("p")
     };
     let result = execute

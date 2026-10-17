@@ -122,7 +122,7 @@ fn given_an_unknown_subagent_type_when_validated_then_it_throws_a_typed_diagnost
 #[test]
 fn given_a_curated_read_only_agent_when_validated_then_it_is_rejected_before_the_known_agent_check() {
     let spec = spec(
-        &json!({ "members": [{ "kind": "agent", "subagent_type": "momus" }] }),
+        &json!({ "members": [{ "kind": "agent", "subagent_type": "plan-reviewer" }] }),
         "curated-agent-team",
     );
 
@@ -131,7 +131,7 @@ fn given_a_curated_read_only_agent_when_validated_then_it_is_rejected_before_the
     assert_eq!(error.code, SenpiTeamSpecErrorCode::UnknownSubagentType);
     assert_eq!(
         error.message,
-        "curated read-only agent \"momus\" cannot be a team member; delegate via the task tool instead"
+        "curated read-only agent \"plan-reviewer\" cannot be a team member; delegate via the task tool instead"
     );
 }
 

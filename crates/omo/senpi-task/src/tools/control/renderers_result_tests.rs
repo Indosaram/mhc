@@ -133,10 +133,10 @@ fn given_the_one_shot_agent_task_send_result_mapping_when_rendering_then_the_exa
     assert_send_case(
         SendResultDetails::OneShotAgent {
             task_id: "st_1".to_string(),
-            agent: "momus".to_string(),
+            agent: "plan-reviewer".to_string(),
             message: "reminder".to_string(),
         },
-        "[error]task_send denied st_1 one-shot:momus[/error]",
+        "[error]task_send denied st_1 one-shot:plan-reviewer[/error]",
     );
 }
 

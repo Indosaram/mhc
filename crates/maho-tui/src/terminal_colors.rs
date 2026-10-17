@@ -95,7 +95,6 @@ pub fn parse_osc11_background_color(data: &str) -> Option<RgbColor> {
     let rgb_value = RGB_PREFIX.replace(value, "");
     let mut parts = rgb_value.split('/');
     let (red, green, blue) = (parts.next()?, parts.next()?, parts.next()?);
-    if parts.next().is_some() { return None; }
     Some(RgbColor {
         r: parse_osc_hex_channel(red)?,
         g: parse_osc_hex_channel(green)?,
@@ -110,18 +109,24 @@ pub fn parse_osc_color_response(data: &str) -> Option<OscColorResponse> {
         Some("11") => OscColorTarget::Background,
         _ => OscColorTarget::Palette(captures.get(2)?.as_str().parse().ok()?),
     };
-    let value = captures.get(3)?.as_str().trim();
-    let rgb = if let Some(hex) = value.strip_prefix('#') {
-        if HEX6.is_match(hex) { Some(hex_to_rgb(value)) }
-        else if HEX12.is_match(hex) { Some(RgbColor { r: parse_osc_hex_channel(&hex[0..4])?, g: parse_osc_hex_channel(&hex[4..8])?, b: parse_osc_hex_channel(&hex[8..12])? }) }
-        else { None }
-    } else {
-        let rgb_value = RGB_PREFIX.replace(value, "");
-        let mut parts = rgb_value.split('/');
-        let (r, g, b) = (parts.next()?, parts.next()?, parts.next()?);
-        if parts.next().is_some() { None } else { Some(RgbColor { r: parse_osc_hex_channel(r)?, g: parse_osc_hex_channel(g)?, b: parse_osc_hex_channel(b)? }) }
-    };
+    let rgb = parse_osc_color_value(captures.get(3)?.as_str());
     Some(OscColorResponse { target, rgb })
+}
+
+/// senpi \`parseOscColorValue\`: a value that does not parse yields \`None\`, never a rejected reply.
+fn parse_osc_color_value(raw_value: &str) -> Option<RgbColor> {
+    let value = raw_value.trim();
+    if let Some(hex) = value.strip_prefix('#') {
+        if HEX6.is_match(hex) { return Some(hex_to_rgb(value)); }
+        if HEX12.is_match(hex) {
+            return Some(RgbColor { r: parse_osc_hex_channel(&hex[0..4])?, g: parse_osc_hex_channel(&hex[4..8])?, b: parse_osc_hex_channel(&hex[8..12])? });
+        }
+        return None;
+    }
+    let rgb_value = RGB_PREFIX.replace(value, "");
+    let mut parts = rgb_value.split('/');
+    let (r, g, b) = (parts.next()?, parts.next()?, parts.next()?);
+    Some(RgbColor { r: parse_osc_hex_channel(r)?, g: parse_osc_hex_channel(g)?, b: parse_osc_hex_channel(b)? })
 }
 
 pub fn is_terminal_color_da1(data: &str) -> bool {
@@ -227,7 +232,7 @@ mod tests {
         assert_eq!(parse_osc_color_response("\x1b]10;#123456\x07"), Some(OscColorResponse { target: OscColorTarget::Foreground, rgb: Some(rgb(0x12, 0x34, 0x56)) }));
         assert_eq!(parse_osc_color_response("\x1b]11;rgb:ffff/0000/8000\x1b\\"), Some(OscColorResponse { target: OscColorTarget::Background, rgb: Some(rgb(255, 0, 128)) }));
         assert_eq!(parse_osc_color_response("\x1b]4;256;#abcdef\x07"), Some(OscColorResponse { target: OscColorTarget::Palette(256), rgb: Some(rgb(0xab, 0xcd, 0xef)) }));
-        assert_eq!(parse_osc_color_response("\x1b]4;1;rgb:ff/00/00/ff\x07"), None);
+        assert_eq!(parse_osc_color_response("\x1b]4;1;rgb:ff/00/00/ff\x07"), Some(OscColorResponse { target: OscColorTarget::Palette(1), rgb: Some(rgb(255, 0, 0)) }));
     }
 
     #[test]

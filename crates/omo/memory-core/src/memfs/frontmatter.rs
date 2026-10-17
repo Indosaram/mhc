@@ -94,11 +94,11 @@ pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterE
         let value = line[idx + 1..].trim();
 
         if key == "description" {
-            description = Some(value.to_string());
+            description = Some(super::frontmatter_scalar::decode_scalar_source(value));
         } else if key == "read_only" {
             read_only = Some(value.to_string());
         } else if key == "kind" {
-            kind = Some(value.to_string());
+            kind = Some(super::frontmatter_scalar::decode_scalar_source(value));
         } else if key == "aliases" {
             aliases = Some(parse_aliases(value, line)?);
         }
@@ -141,7 +141,7 @@ pub fn render_memory_file(
     lines.push("---".to_string());
     lines.push(format!(
         "description: {}",
-        sanitize_frontmatter_value(description)
+        super::frontmatter_scalar::render_string_scalar(&sanitize_frontmatter_value(description))
     ));
 
     if let Some(read_only) = &frontmatter.read_only {
@@ -149,7 +149,7 @@ pub fn render_memory_file(
     }
 
     if let Some(kind) = &frontmatter.kind {
-        lines.push(format!("kind: {}", sanitize_frontmatter_value(kind)));
+        lines.push(format!("kind: {}", super::frontmatter_scalar::render_string_scalar(&sanitize_frontmatter_value(kind))));
     }
 
     if let Some(aliases) = &frontmatter.aliases {

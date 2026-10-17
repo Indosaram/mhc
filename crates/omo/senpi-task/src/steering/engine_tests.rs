@@ -863,13 +863,13 @@ fn malformed_persisted_entry_is_dropped_and_the_rest_deliver_in_order() {
 }
 
 fn momus_reminder() -> &'static str {
-    interaction_policy_for_agent("momus")
-        .expect("momus policy")
+    interaction_policy_for_agent("plan-reviewer")
+        .expect("plan-reviewer policy")
         .send_denial_reminder
 }
 
 fn seed_momus(h: &Harness) -> TaskRecord {
-    h.seed(|input| input.agent_type = Some("momus".to_string()))
+    h.seed(|input| input.agent_type = Some("plan-reviewer".to_string()))
 }
 
 #[test]
@@ -884,7 +884,7 @@ fn running_momus_child_refuses_send_with_registry_reminder() {
         outcome,
         SendOutcome::OneShotAgent {
             task_id: record.task_id.clone(),
-            agent: "momus".to_string(),
+            agent: "plan-reviewer".to_string(),
             message: momus_reminder().to_string(),
         }
     );

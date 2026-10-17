@@ -135,10 +135,10 @@ fn category_with_resolved_model_is_qualified() {
 fn agent_type_alone_shares_category_grammar() {
     assert_eq!(
         target(StatusTargetInput {
-            agent_type: Some("momus"),
+            agent_type: Some("plan-reviewer"),
             ..StatusTargetInput::default()
         }),
-        Some("agent:momus".to_string())
+        Some("agent:plan-reviewer".to_string())
     );
 }
 
@@ -155,11 +155,11 @@ fn agent_type_with_resolved_model_is_qualified_like_category() {
     };
     assert_eq!(
         target(StatusTargetInput {
-            agent_type: Some("momus"),
+            agent_type: Some("plan-reviewer"),
             resolved_model: Some(&model),
             ..StatusTargetInput::default()
         }),
-        Some("agent:momus(openai/gpt-5.6-sol-fast:high)".to_string())
+        Some("agent:plan-reviewer(openai/gpt-5.6-sol-fast:high)".to_string())
     );
 }
 

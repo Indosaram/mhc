@@ -654,7 +654,7 @@ fn retry_settings_for_spec(
 fn given_a_builtin_category_resolving_to_a_chain_rung_when_the_child_session_is_created_then_the_remaining_chain_rungs_land_in_retry_fallback_chains()
  {
     let models = registry(vec![
-        model("quotio-openai", "gpt-5.6-luna-fast"),
+        model("openai-codex", "gpt-5.6-luna-fast"),
         model("opencode-go", "minimax-m3"),
     ]);
     let resolution = resolve_category(
@@ -669,7 +669,7 @@ fn given_a_builtin_category_resolving_to_a_chain_rung_when_the_child_session_is_
         other => panic!("Expected resolved category, got {}", other.kind()),
     };
     let selected_model = format!("{}/{}", spec.provider, spec.model_id);
-    assert_eq!(selected_model, "quotio-openai/gpt-5.6-luna-fast");
+    assert_eq!(selected_model, "openai-codex/gpt-5.6-luna-fast");
     let settings = retry_settings_for_spec(Some(&selected_model), spec.fallback_models.clone());
     assert!(settings.model_fallback);
     assert_eq!(

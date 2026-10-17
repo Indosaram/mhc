@@ -604,12 +604,12 @@ fn should_group_fast_unbracketed_multiline_input_as_paste() {
 #[test]
 fn should_hold_trailing_newline_after_fast_text_for_fragment_continuation() {
     let mut h = H::new(StdinBufferOptions { burst_window_ms: Some(20), ..Default::default() });
-    h.input("first");
+    h.input("a");
     h.advance(5);
-    h.input("\n");
-    assert!(h.data.is_empty());
+    h.input("b\n");
+    assert_eq!(h.data, ["a", "b"]);
     h.advance(20);
-    assert_eq!(h.data, ["\n"]);
+    assert_eq!(h.data, ["a", "b", "\n"]);
 }
 
 

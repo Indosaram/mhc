@@ -89,12 +89,12 @@ fn given_no_source_at_all_when_resolved_then_it_falls_back_to_in_process() {
 #[test]
 fn given_a_one_shot_agent_send_outcome_when_adapted_then_it_is_not_continuable_with_the_registry_reminder_as_the_reason()
  {
-    let reminder = interaction_policy_for_agent("momus")
-        .expect("momus policy")
+    let reminder = interaction_policy_for_agent("plan-reviewer")
+        .expect("plan-reviewer policy")
         .send_denial_reminder;
     let result = to_continue_result(SendOutcome::OneShotAgent {
         task_id: "st_00000001".to_string(),
-        agent: "momus".to_string(),
+        agent: "plan-reviewer".to_string(),
         message: reminder.to_string(),
     });
     assert_eq!(

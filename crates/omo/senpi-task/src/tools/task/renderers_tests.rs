@@ -409,7 +409,7 @@ fn legacy_explicit_model_result_uses_raw_model_without_empty_labels() {
         task_id: "st_0000000d".to_string(),
         status: "completed".to_string(),
         mode: TaskToolMode::Spawn,
-        subagent_type: Some("momus".to_string()),
+        subagent_type: Some("plan-reviewer".to_string()),
         model: Some("openai/manual".to_string()),
         run_in_background: Some(false),
         ..Default::default()
@@ -417,7 +417,7 @@ fn legacy_explicit_model_result_uses_raw_model_without_empty_labels() {
     .join(" ");
 
     // then
-    assert!(row.contains("agent:momus(openai/manual)"), "{row}");
+    assert!(row.contains("agent:plan-reviewer(openai/manual)"), "{row}");
     assert!(row.contains("foreground"), "{row}");
     assert!(!row.contains("prompt:"), "{row}");
     assert!(!row.contains("reason:"), "{row}");

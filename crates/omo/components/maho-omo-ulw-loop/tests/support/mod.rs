@@ -64,3 +64,12 @@ pub fn context_with_logger(logger: Arc<RecordingLogger>) -> ExtensionContext {
 }
 
 
+
+/// A run whose last assistant message stopped normally: the only shape `readAgentEndOutcome` lets continue.
+pub fn finished_turn() -> Vec<AgentMessage> {
+    vec![serde_json::from_value(serde_json::json!({
+        "role": "assistant", "content": [{"type": "text", "text": "done"}], "api": "faux", "provider": "faux", "model": "faux",
+        "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+        "stopReason": "stop", "timestamp": 0
+    })).expect("finished assistant message")]
+}

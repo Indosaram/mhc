@@ -88,7 +88,7 @@ fn input()->CreateTeamTaskServiceInput { CreateTeamTaskServiceInput { subject:"w
     let inbox=senpi_task::team::storage::resolve_team_member_inbox_dir(&f.state_dir,&f.run,"beta").expect("inbox"); assert!(inbox.join("77777777-7777-4777-8777-777777777777.json").exists());
 }
 #[test] fn curated_read_only_agent_rejected_before_member_launch() {
-    let f=fixture(); assert!(f.service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"curated-team","members":[{"name":"momus","kind":"subagent_type","subagent_type":"momus","prompt":"review"}]})) }).is_err()); assert_eq!(f.service.list_teams().expect("teams").len(),1);
+    let f=fixture(); assert!(f.service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"curated-team","members":[{"name":"plan-reviewer","kind":"subagent_type","subagent_type":"plan-reviewer","prompt":"review"}]})) }).is_err()); assert_eq!(f.service.list_teams().expect("teams").len(),1);
 }
 #[test] fn shutdown_request_rejection_and_approval_persist_through_service() {
     let f=fixture(); let requested=f.service.request_shutdown(&f.run,"beta").expect("request");

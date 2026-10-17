@@ -573,7 +573,7 @@ fn given_a_stored_key_with_a_mismatched_fingerprint_when_started_then_reuse_is_r
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
     }).expect("start");
-    let key = store.read_key(PARENT_SESSION_ID, "build").expect("read key").expect("key");
+    let key = store.read_key(PARENT_SESSION_ID, "release-plan").expect("read key").expect("key");
     store.write_key(&crate::dag::store::DagKeyRecord {
         schema_version: crate::dag::types::SchemaVersion1,
         parent_session_id: key.parent_session_id,

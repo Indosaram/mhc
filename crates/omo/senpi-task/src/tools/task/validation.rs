@@ -144,7 +144,7 @@ pub const BOTH_TARGETS_MESSAGE: &str =
 
 pub const CATEGORY_WITH_MODEL_MESSAGE: &str = "Provide EITHER category OR model, never both. A category-routed task always takes its model from the omo.json category config; a call-site model override would silently bypass that routing. Remove model and retry, or use subagent_type for an explicit-model spawn, or configure categories.<name>.models in omo.json.";
 
-pub const NO_TARGET_MESSAGE: &str = "You MUST provide EITHER category OR subagent_type. Omitting BOTH will FAIL. Example: task(category=\"quick\", prompt=\"...\") or task(subagent_type=\"momus\", prompt=\"...\").";
+pub const NO_TARGET_MESSAGE: &str = "You MUST provide EITHER category OR subagent_type. Omitting BOTH will FAIL. Example: task(category=\"quick\", prompt=\"...\") or task(subagent_type=\"plan-reviewer\", prompt=\"...\").";
 
 const PROMPT_AND_TASKS_MESSAGE: &str =
     "Provide EITHER prompt OR tasks, not both. Remove one and retry.";

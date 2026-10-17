@@ -302,8 +302,8 @@ fn steered_outcome() -> SendOutcome {
 }
 
 fn momus_reminder() -> String {
-    interaction_policy_for_agent("momus")
-        .expect("momus policy")
+    interaction_policy_for_agent("plan-reviewer")
+        .expect("plan-reviewer policy")
         .send_denial_reminder
         .to_string()
 }
@@ -464,7 +464,7 @@ fn given_a_running_momus_child_when_task_send_targets_it_then_the_send_is_refuse
  {
     // given
     let manager = FakeManager::new();
-    let task_id = manager.start("p1", None, Some("momus"));
+    let task_id = manager.start("p1", None, Some("plan-reviewer"));
 
     // when
     let result = send(manager.as_ref(), &input(&task_id, Some("please reconsider"), None), "p1");
@@ -480,7 +480,7 @@ fn given_a_running_momus_child_when_task_send_targets_it_then_the_send_is_refuse
         panic!("expected one_shot_agent");
     };
     assert_eq!(refused_id, &task_id);
-    assert_eq!(agent, "momus");
+    assert_eq!(agent, "plan-reviewer");
     let text = text_of(&result);
     assert_eq!(text, momus_reminder());
     assert!(text.contains("<system-reminder>"));
@@ -494,7 +494,7 @@ fn given_a_completed_resident_momus_child_when_task_send_targets_it_then_the_sen
  {
     // given
     let manager = FakeManager::new();
-    let task_id = manager.start("p1", None, Some("momus"));
+    let task_id = manager.start("p1", None, Some("plan-reviewer"));
     manager.set_status(&task_id, FakeStatus::Completed);
     assert_eq!(manager.task(&task_id).status, FakeStatus::Completed);
 
