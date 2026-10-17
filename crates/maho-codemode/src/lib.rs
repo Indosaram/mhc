@@ -1,4 +1,4 @@
-//! Code mode: the persistent `eval` tool. Hosts the js and py kernels (`kernels`, `interpreters`),
+//! Code mode: the persistent `eval` tool. Hosts the bun/js kernel (`kernels`, `interpreters`),
 //! the bridge that exposes session tools inside a cell (`bridge`, `host_sdk`), and the settings
 //! loaded from `.omo/codemode.json` / `~/.omo/agent/codemode.json` (`config`).
 
