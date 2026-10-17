@@ -60,7 +60,8 @@ In one sentence: **the full OmO-on-senpi experience as a single native program, 
 ## 🚀 Install
 
 There are no prebuilt releases yet; build from source. Requirements: Rust 1.95 (selected
-automatically by `rust-toolchain.toml`), [Bun](https://bun.sh), and an oh-my-openagent checkout at
+automatically by `rust-toolchain.toml`), `protoc` (used by the `maho-ai` build script),
+[Bun](https://bun.sh), and an oh-my-openagent checkout at
 the commit in [PINS.md](PINS.md) (used to stage the builtin skills).
 
 ```bash
@@ -118,11 +119,16 @@ mhc --tools read,grep,find,ls -p "Review src/"   # read-only mode
 mhc --help                                       # all options
 ```
 
-Configuration lives in `~/.omo/agent` (override with `MAHO_CODING_AGENT_DIR`). Already using OmO?
+Configuration lives in `~/.omo/agent` and `~/.omo/omo.jsonc`, the same files OmO on senpi uses, so
+an existing OmO setup (providers, `models.json`, auth, agents and categories) is picked up as-is.
+Provider login also works from inside the TUI with `/login`. To keep a separate directory instead,
+set `MAHO_CODING_AGENT_DIR` and copy an OmO setup into it:
 
 ```bash
-mhc import-omo        # import settings, models, keybindings, auth and sessions from ~/.omo/agent
+MAHO_CODING_AGENT_DIR=~/.maho/agent mhc import-omo   # settings, models, keybindings, auth, sessions
 ```
+
+More: [CLI reference](docs/cli.md) · [Configuration and environment variables](docs/configuration.md)
 
 ## 🗂 Repository layout
 
@@ -140,11 +146,12 @@ mhc import-omo        # import settings, models, keybindings, auth and sessions 
 ## 🚧 Status
 
 Under active development; parity with upstream is not complete yet. Upstream revisions are pinned in
-[PINS.md](PINS.md), and each crate's port mapping is recorded under `parity.d/`.
+[PINS.md](PINS.md), and each crate's port mapping is recorded under `parity.d/`
+(format: [tools/PARITY-FORMAT.md](tools/PARITY-FORMAT.md)).
 
 ## 🤝 Contributing
 
-Read [AGENTS.md](AGENTS.md) first. The core rules:
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) first. The core rules:
 
 - senpi is the only upstream; port file-for-file, keep names and order, and match the pinned behavior exactly.
 - Golden fixtures are generated from upstream by `tools/golden`, never written by hand.

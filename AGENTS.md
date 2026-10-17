@@ -1,35 +1,56 @@
 # AGENTS.md
 
-**Generated:** 2026-10-13
-**Commit:** 04a9b789
-**Branch:** preserve/main-uncommitted-before-latest-omo
+**Generated:** 2026-10-16
+**Commit:** fca04b8a3
+**Branch:** main
 
 ## OVERVIEW
-Rust native port of senpi + oh-my-openagent (maho). File-for-file translation preserving senpi ANSI terminal component model, differential renderer, and agent runtime.
+Rust native port of senpi + oh-my-openagent (maho). File-for-file translation preserving senpi ANSI terminal component model, differential renderer, and agent runtime. Config is shared with omo on disk (`~/.omo/agent`, `~/.omo/omo.jsonc`); env vars keep the `MAHO_` prefix (`crates/maho-core/src/brand.rs` `standalone_brand_profile`). User docs: `README.md` (zh), `README.en.md`, `docs/` (cli, configuration, parity), `CONTRIBUTING.md`.
 
 ## STRUCTURE
 ```
 crates/
-├── maho-cli/            # CLI binary entry point, command dispatch, config migration
+├── maho-cli/            # mhc binary: CLI routing, subcommands (install/auth/doctor/host/app-server/import-omo), migrations
+├── maho-core/           # senpi coding-agent core: sessions, settings, auth, model runtime, brand/config paths
 ├── maho-agent/          # Core agent loop, execution harness, state machine
-├── maho-ai/             # Multi-provider LLM abstraction layer & model clients
-├── maho-interactive/    # Terminal UI, streaming reveal pacing, theme engine
-├── maho-server/         # Daemon RPC server, SQLite storage, protocol frames
+├── maho-ai/             # Multi-provider LLM abstraction layer & model clients (build.rs needs protoc)
+├── maho-tools/          # Builtin tools: read/bash/edit/write/grep/find/ls
 ├── maho-tui/            # Keyboard input, fuzzy search, terminal mux primitives
-├── omo/senpi-task/      # Multi-agent DAG workflow runner, supervisor, category dispatch
-├── omo/memory-core/     # Git-backed persistent memory filesystem, identity profiles
-└── builtins/            # Builtin tool definitions, execution sandboxes
+├── maho-interactive/    # Terminal UI, streaming reveal pacing, theme engine
+├── maho-rpc/            # Headless JSONL RPC protocol and print mode
+├── maho-server/         # Daemon RPC server, Codex app-server, SQLite storage, protocol frames
+├── maho-codemode/       # eval kernel (bun/js only) and the code-mode tool host
+├── maho-ext-api/        # Static extension contracts
+├── maho-ext-host/       # Extension host runtime
+├── maho-test-support/   # Shared test helpers (faux provider sessions)
+├── builtins/            # 42 builtin extensions (maho-ext-*)
+├── extensions/          # 14 native ports of user extensions (see PINS.md)
+├── vendor/              # maho-grep, maho-pty
+└── omo/                 # oh-my-openagent port (SUL-1.0)
+    ├── maho-omo/        # omo composition root: registers the components
+    ├── components/      # 30 omo feature components (maho-omo-*: task, memory, lsp, ultrawork, ...)
+    ├── senpi-task/      # Multi-agent DAG workflow runner, supervisor, category dispatch
+    ├── memory-core/     # Git-backed persistent memory filesystem, identity profiles
+    ├── omo-config-core/ # omo.json(c) schema, loader, migrations
+    ├── senpi-desktop-*/ # computer-use engine and platform backends
+    └── ...              # *-core libraries, boulder-state, get-worker, utils; sibling binaries lsp-daemon, ast-grep-mcp, git-bash-mcp
+tools/                   # parity audit, golden fixtures, packaging, QA drivers (bun)
+assets/                  # omo-latest skill overlay, omo.schema.json, readme images
 ```
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| CLI commands & flags | `crates/maho-cli/` | Entry point, CLI routing, migrations |
+| CLI commands & flags | `crates/maho-cli/` | `src/main.rs` dispatch, `src/cli/help.txt` |
+| Config paths, settings, auth | `crates/maho-core/` | `config.rs`, `brand.rs`, `settings_manager.rs`, `auth_storage.rs` |
+| omo config (agents/categories) | `crates/omo/omo-config-core/` | `loader/paths.rs` resolves `~/.omo/omo.jsonc` + project `.omo/` |
 | Agent loop & harness | `crates/maho-agent/` | Event stream parsing, tool execution |
 | Provider integrations | `crates/maho-ai/` | Anthropic, OpenAI, Bedrock, Gemini |
 | Terminal presentation | `crates/maho-interactive/` | ANSI differential renderer, streaming widgets |
 | Background tasks & DAG | `crates/omo/senpi-task/` | Task supervisor, dependency scheduling |
 | Memory & identity | `crates/omo/memory-core/` | Markdown block store, git auto-commit |
+| Parity ledgers & goldens | `crates/*/parity.d/`, `tools/` | `docs/parity.md`, `tools/PARITY-FORMAT.md` |
+| Packaging | `tools/package-native.mjs` | `--skill-source latest` uses `assets/omo-latest` |
 
 ## PORT RULES & CONVENTIONS
 - senpi is upstream. Port file-for-file: one TS file maps to one Rust module, keeping names and order.
