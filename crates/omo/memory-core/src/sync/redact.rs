@@ -14,12 +14,15 @@ const MASK: &str = "***";
 const SECRET_PATTERN_SOURCES: [(&str, &str); 5] = [
     (r"\bAKIA[0-9A-Z]{16}\b", ""),
     (
-        r"\b(?:bearer|token|api[_-]?key|secret|password|passwd|pwd)\s*[=:]\s*\S{1,256}",
+        r#"\b(?:bearer|token|api[_-]?key|secret|password|passwd|pwd)\s*[=:]\s*[^\s"'<>,}\])]{1,256}"#,
         "i",
     ),
-    (r"\bAuthorization\s*:\s*Bearer\s+\S{1,256}", "i"),
+    (
+        r#"\bAuthorization\s*:\s*Bearer\s+[^\s"'<>,}\])]{1,256}"#,
+        "i",
+    ),
     (r"\bsk-(?:proj-)?[-_A-Za-z0-9]+\b", ""),
-    (r"\b(?:ghp|github_pat|glpat|xox[baprs])-[-_A-Za-z0-9]+\b", ""),
+    (r"\b(?:ghp|github_pat|glpat|xox[baprs])[-_][-_A-Za-z0-9]+\b", ""),
 ];
 
 /// Compiled once. Upstream keeps a non-global and a global copy of every pattern

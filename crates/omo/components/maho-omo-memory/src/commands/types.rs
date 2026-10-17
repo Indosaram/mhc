@@ -12,6 +12,7 @@ use memory_core::{
     git::exec::GitExec,
     identity::layout::MemoryIdentityPaths,
     reflection::ReflectionEvent,
+    sync::redact::redact_secret_like_material,
 };
 
 use crate::context::MemoryIdentityContext;
@@ -147,8 +148,9 @@ impl CommandResponse {
 /// Notify (when a UI is present) and return the same text for headless consumers.
 pub fn respond(ctx: &CommandContext, text: impl Into<String>, level: NotifyLevel) -> CommandResponse {
     let text = text.into();
-    ctx.ui.notify(&text, level);
-    CommandResponse { text, level }
+    let safe = redact_secret_like_material(&text);
+    ctx.ui.notify(&safe, level);
+    CommandResponse { text: safe, level }
 }
 
 /// Build the command context slice from the live extension context.
@@ -362,5 +364,44 @@ pub fn default_is_process_alive(pid: u32) -> bool {
     {
         let _ = pid;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::test_support::{fake_command_context, FakeContextOptions};
+
+    #[test]
+    fn given_text_carrying_a_credential_assignment_when_responded_then_the_notification_and_the_returned_text_are_masked() {
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let returned = respond(
+            &context.ctx,
+            "lock at /x pid 1 token=abc123456",
+            NotifyLevel::Info,
+        );
+
+        assert!(!returned.text.contains("abc123456"));
+        assert!(returned.text.contains("***"));
+        assert_eq!(
+            context.ui.notifications(),
+            vec![(returned.text.clone(), NotifyLevel::Info)]
+        );
+    }
+
+    #[test]
+    fn given_structured_text_carrying_a_credential_assignment_when_responded_then_the_result_still_parses_and_only_the_credential_is_masked() {
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let returned = respond(
+            &context.ctx,
+            serde_json::json!({ "detail": "token=abc123456", "n": 3 }).to_string(),
+            NotifyLevel::Info,
+        );
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&returned.text).expect("redacted JSON remains valid");
+        assert_eq!(parsed, serde_json::json!({ "detail": "***", "n": 3 }));
     }
 }
