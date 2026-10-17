@@ -100,14 +100,16 @@ pub(crate) struct FakeHandle {
 impl FakeHandle {
     pub fn new(task_id: &str, pid: Option<i64>) -> Arc<Self> {
         let (sender, receiver) = channel();
-        Arc::new(Self {
+        let handle = Arc::new(Self {
             task_id: task_id.to_string(),
             pid,
             state: Arc::default(),
             detach_done: Arc::new(Condvar::new()),
             outcomes: Mutex::new(receiver),
             settle: Mutex::new(sender),
-        })
+        });
+        crate::manager::outcome::test_barrier::register(handle.ptr());
+        handle
     }
 
     /// The data pointer the chaos barrier keys on: its settle/consume accounting is per handle.
