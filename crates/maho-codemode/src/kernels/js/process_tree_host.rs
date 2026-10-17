@@ -1,5 +1,48 @@
 use std::{collections::{HashMap, HashSet, VecDeque}, process::Stdio, time::Duration};
 
+#[derive(Clone)]
+struct WindowsProcessRow { pid: u32, parent_pid: u32, created_at: u64, name: String }
+
+fn parse_windows_rows(stdout: &str) -> Vec<WindowsProcessRow> {
+    stdout.lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        let pid=fields.next()?.parse().ok()?;
+        let parent_pid=fields.next()?.parse().ok()?;
+        let created_at=fields.next()?.parse().ok()?;
+        let name=fields.collect::<Vec<_>>().join(" ");
+        (pid > 0).then_some(WindowsProcessRow { pid, parent_pid, created_at, name })
+    }).collect()
+}
+
+fn windows_tree_kill_pids(rows: &[WindowsProcessRow], root_pid: u32, self_pid: u32) -> Vec<u32> {
+    let by_pid=rows.iter().map(|row|(row.pid,row)).collect::<HashMap<_,_>>();
+    if !by_pid.contains_key(&root_pid) { return Vec::new(); }
+    let mut tree=HashSet::from([root_pid]);
+    loop {
+        let mut changed=false;
+        for row in rows {
+            if tree.contains(&row.pid) { continue; }
+            if let Some(parent)=by_pid.get(&row.parent_pid) && tree.contains(&row.parent_pid) && row.created_at >= parent.created_at {
+                changed |= tree.insert(row.pid);
+            }
+        }
+        if !changed { break; }
+    }
+    let protected=["system","smss.exe","csrss.exe","wininit.exe","winlogon.exe","services.exe","lsass.exe","lsaiso.exe","svchost.exe"];
+    let mut ancestors=HashSet::from([self_pid]);
+    let mut cursor=by_pid.get(&self_pid).copied();
+    while let Some(current)=cursor {
+        let Some(parent)=by_pid.get(&current.parent_pid).copied() else { break; };
+        if ancestors.contains(&parent.pid) || parent.created_at > current.created_at { break; }
+        ancestors.insert(parent.pid);
+        cursor=Some(parent);
+    }
+    let refused=tree.iter().any(|pid|by_pid.get(pid).is_some_and(|row|protected.contains(&row.name.to_lowercase().as_str())) || ancestors.contains(pid));
+    if !refused { return tree.into_iter().collect(); }
+    let root_refused=by_pid.get(&root_pid).is_some_and(|row|protected.contains(&row.name.to_lowercase().as_str())) || ancestors.contains(&root_pid);
+    if root_refused { Vec::new() } else { vec![root_pid] }
+}
+
 pub struct TerminateProcessTreesOptions {
     pub grace_ms: u64,
     pub kill_wait_ms: Option<u64>,
@@ -29,7 +72,8 @@ async fn bounded_process_output(command: &mut tokio::process::Command, max_bytes
     let Ok(mut child)=command.stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn() else {return String::new();};
     let Some(stdout)=child.stdout.take() else {return String::new();};
     let mut output=Vec::new();
-    if let Err(error)=AsyncReadExt::take(stdout,max_bytes+1).read_to_end(&mut output).await {maho_ext_api::diagnostic(&format!("process table output read failed: {error}"));}
+    let read=AsyncReadExt::take(stdout,max_bytes+1).read_to_end(&mut output);
+    if tokio::time::timeout(Duration::from_secs(5),read).await.is_err() {let _=child.start_kill();return String::new();}
     if output.len() as u64>max_bytes {
         output.truncate(max_bytes as usize);
         if let Err(error)=child.start_kill() {maho_ext_api::diagnostic(&format!("process table capture retirement failed: {error}"));}
@@ -99,7 +143,21 @@ pub async fn terminate_process_trees(roots: &[u32], options: TerminateProcessTre
     for pid in roots { if is_process_alive(*pid).await { live.push(*pid); } }
     if live.is_empty() { return; }
     if cfg!(windows) {
-        for pid in live { let _ = tokio::process::Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().await; }
+        let stdout=bounded_process_output(tokio::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command","Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { $created = if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }; \"{0} {1} {2} {3}\" -f $_.ProcessId, $_.ParentProcessId, $created, $_.Name }"]),16*1024*1024).await;
+        let rows=if stdout.is_empty() {None} else {Some(parse_windows_rows(&stdout))};
+        for root in live {
+            let args=match &rows {
+                None=>vec!["/F".to_owned(),"/T".into(),"/PID".into(),root.to_string()],
+                Some(rows)=>{
+                    let pids=windows_tree_kill_pids(rows,root,std::process::id());
+                    if pids.is_empty() {continue;}
+                    vec!["/F".into()].into_iter().chain(pids.into_iter().flat_map(|pid|["/PID".to_owned(),pid.to_string()])).collect()
+                },
+            };
+            if args.len()>1 {
+                let _=tokio::time::timeout(Duration::from_secs(5),tokio::process::Command::new("taskkill").args(&args).stdout(Stdio::null()).stderr(Stdio::null()).status()).await;
+            }
+        }
         return;
     }
     let table = read_process_table().await;

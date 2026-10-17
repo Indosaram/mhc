@@ -1,9 +1,11 @@
 ---
 name: bun-1-4
-description: "MUST READ before your first js eval cell: this session's eval js kernel runs Bun 1.4+ (this skill is present only when it does). Also read before any bun -e, script, server, CLI, test, bundle, or package-management work. Bun 1.4 ships builtins that replace 15+ npm deps — check here BEFORE installing sharp, puppeteer/playwright (scraping), marked, node-cron, node-pty, concurrently, serve-static, tar, json5, fast-xml-parser, string-width. Triggers: eval js, bun, Bun.serve, bun test, bun build, bun install, bun run, image resize, headless browser, markdown render, cron, PTY."
+description: "Use when choosing a Bun builtin, considering a dependency, or using bun CLI, tests, builds, servers, scripts, or package-management. The eval JavaScript kernel runs Bun 1.4+, so use eval-first for ordinary JavaScript work. Triggers: eval js, bun, Bun.serve, bun test, bun build, bun install, bun run, image resize, headless browser, markdown render, cron, PTY."
 ---
 
 # Bun 1.4 — Use the Builtins First
+
+The `eval` JavaScript kernel is already running Bun. For ordinary JavaScript work, use `eval` directly; use this guide when choosing a Bun builtin, using a Bun CLI surface, or considering a new dependency.
 
 Bun 1.4 (2026) ships builtins that replace most utility npm packages. **Before adding a dependency or writing a workaround, check the capability map below — if Bun ships it, use the builtin.** This skill is loaded because this session's `eval` js kernel runs Bun >= 1.4; on other machines or pinned projects, confirm with `bun --version` ([v1.3.x]/[v1.4.0] tags in the references give exact minimums). Release post: <https://bun.com/blog/bun-v1.4>
 
@@ -37,7 +39,7 @@ Free wins (no code change): 2x lower CPU, 13-48% less server memory, 2-2.5x fast
 
 ## Operating rules
 
-1. **Eval-first.** The `eval` js kernel runs on Bun (that is why this skill is present): call `Bun.*` APIs directly inside js cells. Reach for `bash` or a spawned `bun <file>` / `bun -e` only for CLI surfaces (`bun test`, `bun build`, `bun pm`) or work that needs a separate process.
+1. **Eval-first.** The `eval` js kernel runs on Bun: call `Bun.*` APIs directly inside js cells. Read this skill when choosing a Bun builtin, before adding a dependency, or before CLI work that requires a separate process (`bun test`, `bun build`, `bun pm`).
 2. **Builtin-first.** The Replaces column above is a ban list for new dependencies, in production code, test helpers, and one-off scripts alike.
 3. **Read the matching reference before using an unfamiliar API** — signatures and caveats (e.g. `Bun.markdown` HTML is unsanitized, HTTP/3 is experimental) live there, not here.
 4. **Upgrading a project to 1.4 or debugging behavior that changed?** Read [breaking-changes](references/breaking-changes.md) first — YAML/TOML strictness, `.xml`/`.css` import semantics, `Bun.$` globbing, fetch header combining, and WebSocket close timing all changed.

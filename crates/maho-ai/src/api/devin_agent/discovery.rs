@@ -113,6 +113,7 @@ fn to_model(config: &ClientModelConfig, uid: &str, base_url: &str, is_router: bo
         // request-side thinking field, so the effort baked into the lane uid is the only control and
         // a generic level is never forwarded.
         reasoning: false,
+        default_thinking_level: None,
         thinking_level_map: None,
         input: if supports_images {
             vec![crate::types::InputModality::Text, crate::types::InputModality::Image]
@@ -129,6 +130,7 @@ fn to_model(config: &ClientModelConfig, uid: &str, base_url: &str, is_router: bo
         service_tier: None,
         recover_text_tool_calls: None,
         compat,
+        input_limits: None,
     }
 }
 

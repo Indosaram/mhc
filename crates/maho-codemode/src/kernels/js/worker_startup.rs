@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use crate::{bridge::protocol::BridgeConnectionConfig, kernels::shared::{runtime_asset::{CodemodeRuntimeAssetMissingError, require_codemode_runtime_asset}, subprocess_process::ProcessError}};
+use crate::{bridge::protocol::{BridgeConnectionConfig, KernelMemoryThresholds}, kernels::shared::{runtime_asset::{CodemodeRuntimeAssetMissingError, require_codemode_runtime_asset}, subprocess_process::ProcessError}};
 use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, inline_worker::create_inline_worker};
 
 pub fn resolve_js_worker_entry_path(local_path: Option<&Path>) -> Result<PathBuf, CodemodeRuntimeAssetMissingError> {
@@ -25,6 +25,7 @@ pub struct WorkerStartupOptions<'a> {
     pub foreign_language_names: &'a [String],
     pub session_env: Option<&'a crate::kernels::session_env::SessionEnvironment>,
     pub worker_entry: Option<&'a Path>,
+    pub memory: Option<&'a KernelMemoryThresholds>,
 }
 
 pub async fn start_worker_with_inline_fallback(options: &WorkerStartupOptions<'_>, signal: &maho_ai::utils::abort::AbortSignal) -> Result<WorkerHost, ProcessError> {

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { killWindowsTree, listWindowsRows } from "./windows-tree-kill.js";
 
 // Plain JS (with process-tree.d.ts) because the worker runtime imports it and
 // worker files cannot import TypeScript; the host imports the same module so a
@@ -84,7 +85,8 @@ export async function terminateProcessTrees(roots, options) {
 	const liveRoots = roots.filter(isProcessAlive);
 	if (liveRoots.length === 0) return;
 	if (process.platform === "win32") {
-		for (const pid of liveRoots) await taskkillTree(pid);
+		const listing = listWindowsRows();
+		for (const pid of liveRoots) await killWindowsTree(pid, listing);
 		return;
 	}
 	const table = await readProcessTable();
@@ -96,6 +98,31 @@ export async function terminateProcessTrees(roots, options) {
 	if (survivors.length === 0) return;
 	for (const pid of survivors) signalProcess(pid, "SIGKILL");
 	await waitForExit(survivors, options.killWaitMs ?? options.graceMs, options.settled);
+}
+
+export async function terminateProcessGroups(groups, options) {
+	if (process.platform === "win32") return;
+	const candidates = groups.filter(group => Number.isInteger(group.pgid) && group.pgid > 1 && groupHasMembers(group.pgid) && !(group.leaderExited && isProcessAlive(group.pgid)));
+	if (candidates.length === 0) return;
+	const ownGroup = Number((await ps(["-o", "pgid=", "-p", String(process.pid)])).trim());
+	if (!Number.isInteger(ownGroup) || ownGroup < 1) return;
+	let remaining = candidates.filter(group => group.pgid !== ownGroup && groupHasMembers(group.pgid));
+	for (const group of remaining) signalGroup(group.pgid, "SIGTERM");
+	const deadline = Date.now() + options.graceMs;
+	while (remaining.length && Date.now() < deadline) {
+		await sleep(EXIT_POLL_MS);
+		remaining = remaining.filter(group => groupHasMembers(group.pgid) && !(group.leaderExited && isProcessAlive(group.pgid)));
+	}
+	for (const group of remaining) signalGroup(group.pgid, "SIGKILL");
+}
+
+function groupHasMembers(pgid) {
+	try { process.kill(-pgid, 0); return true; }
+	catch (error) { return isRecord(error) && error.code === "EPERM"; }
+}
+
+function signalGroup(pgid, signal) {
+	try { process.kill(-pgid, signal); } catch {}
 }
 
 // `kill(pid, 0)` still succeeds for a zombie, and a child whose owning worker is
@@ -137,12 +164,6 @@ function ps(args) {
 		execFile("ps", args, { maxBuffer: PS_MAX_BUFFER, windowsHide: true }, (_error, output) =>
 			resolve(typeof output === "string" ? output : String(output ?? "")),
 		);
-	});
-}
-
-function taskkillTree(pid) {
-	return new Promise((resolve) => {
-		execFile("taskkill", ["/T", "/F", "/PID", String(pid)], { windowsHide: true }, () => resolve());
 	});
 }
 

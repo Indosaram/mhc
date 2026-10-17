@@ -112,7 +112,9 @@ impl CodemodeSessionManager {
         let width=self.options.settings.parallel_pool_width;
         let catalog=self.options.list_tools.clone();
         let names=Arc::new(move || {let host=catalog.as_ref().map(|catalog|catalog()).transpose()?.unwrap_or_default().into_iter().map(|tool|tool.name).collect();Ok((host,vec![]))});
-        let kernel=Arc::new(crate::kernels::js::context_manager::JavaScriptKernel::start_with_signal(&self.options.cwd,&self.options.session_id,if width.is_finite() {width.trunc().max(1.0) as u64} else {1},self.options.session_env.clone(),BridgeConnectionConfig {port:self.bridge.port,token:self.bridge.token.clone(),local_roots:roots,artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()),parallel_pool_width:None},names,self.javascript_shutdown.clone()).await.map_err(|error|error.to_string())?);
+        let settings=&self.options.settings;
+        let memory=crate::bridge::protocol::KernelMemoryThresholds {gc_watermark_bytes:settings.memory_gc_watermark_bytes as u64,notice_bytes:settings.memory_notice_bytes as u64,ceiling_bytes:settings.memory_ceiling_bytes as u64};
+        let kernel=Arc::new(crate::kernels::js::context_manager::JavaScriptKernel::start_with_memory(&self.options.cwd,&self.options.session_id,if width.is_finite() {width.trunc().max(1.0) as u64} else {1},self.options.session_env.clone(),BridgeConnectionConfig {port:self.bridge.port,token:self.bridge.token.clone(),local_roots:roots,artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()),parallel_pool_width:None},names,self.javascript_shutdown.clone(),memory).await.map_err(|error|error.to_string())?);
         if self.disposed.load(Ordering::SeqCst) {kernel.close().await.map_err(|error|error.to_string())?;return Err("codemode session manager is disposed".into());}
         *javascript=Some(kernel.clone());Ok(kernel)
     }

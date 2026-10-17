@@ -171,6 +171,7 @@ impl OpenAiCompletionsError {
     fn as_thrown(&self) -> ThrownProviderError {
         ThrownProviderError::Error(Box::new(SdkErrorShape {
             message: self.message.clone(),
+            headers: self.headers.as_deref().cloned(),
             status: self.status.map(|status| json!(status)),
             error: self.body.clone().map(crate::utils::error_body::SdkFieldValue::Plain),
             ..SdkErrorShape::default()

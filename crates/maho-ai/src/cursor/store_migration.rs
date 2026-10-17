@@ -100,6 +100,7 @@ fn entry_to_model(entry: &CursorCatalogEntry, max_tokens_by_id: &BTreeMap<String
         provider: "cursor".to_owned(),
         base_url: "https://api2.cursor.sh".to_owned(),
         reasoning: entry.reasoning,
+        default_thinking_level: None,
         thinking_level_map: entry.thinking_level_map.clone(),
         input: entry.input.iter().filter_map(|modality| to_modality(modality)).collect(),
         cost: ModelCost::default(),
@@ -115,6 +116,7 @@ fn entry_to_model(entry: &CursorCatalogEntry, max_tokens_by_id: &BTreeMap<String
         service_tier: None,
         recover_text_tool_calls: None,
         compat: Some(compat_value(&compat)),
+        input_limits: None,
     }
 }
 
@@ -340,6 +342,7 @@ mod tests {
             provider: "cursor".to_owned(),
             base_url: "https://api2.cursor.sh".to_owned(),
             reasoning: source.as_ref().is_some_and(|entry| entry.reasoning),
+            default_thinking_level: None,
             thinking_level_map: None,
             input: source
                 .as_ref()
@@ -355,6 +358,7 @@ mod tests {
             service_tier: None,
             recover_text_tool_calls: None,
             compat: None,
+            input_limits: None,
         }
     }
 

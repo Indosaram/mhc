@@ -140,6 +140,7 @@ mod tests {
             provider: "faux".into(),
             base_url: "http://localhost:0".into(),
             reasoning: false,
+            default_thinking_level: None,
             thinking_level_map: None,
             input: vec![InputModality::Text, InputModality::Image],
             cost: ModelCost::default(),
@@ -152,6 +153,7 @@ mod tests {
             service_tier: None,
             recover_text_tool_calls: None,
             compat: None,
+            input_limits: None,
         }
     }
 

@@ -93,7 +93,7 @@ fn native_registration_replay_and_live_publication_use_consumer_admission() {
     let events = EventBus::default();
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let _subscription = events.on(CONFIG_WATCH_REJECTED, Arc::new(move |payload| sender.send(payload.clone()).unwrap()));
-    let registration = RegisteredConfigWatch { id: "replay".into(), display_name: "replay".into(), targets: vec![ConfigWatchTargetSpec { path: agent_dir.join("auth.json"), kind: ConfigWatchTargetKind::File, filter_globs: vec![] }], validate: Arc::new(|_| ConfigWatchValidation::Ok) };
+    let registration = RegisteredConfigWatch { id: "replay".into(), display_name: "replay".into(), targets: vec![ConfigWatchTargetSpec { path: agent_dir.join("auth.json"), kind: ConfigWatchTargetKind::File, filter_globs: vec![] }], validate: Arc::new(|_| Box::pin(async { Ok(ConfigWatchValidation::Ok) })) };
     events.publish_config_watch("owner", registration.clone());
     let mut api = ExtensionApi::new(LoadedExtension::new("config-reload", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), events.clone(), ExtensionRuntime::default());
     maho_ext_config_reload::ConfigReload.register(&mut api);
@@ -174,11 +174,7 @@ async fn external_handoff_change_is_rejected_under_its_registration_id() {
                 id: "external-config".into(),
                 display_name: "external config".into(),
                 targets: vec![ConfigWatchTargetSpec { path: watched.clone(), kind: maho_ext_api::ConfigWatchTargetKind::File, filter_globs: vec![] }],
-                validate: Arc::new(move |paths| {
-                    if paths.iter().any(|path| path == &before_reload_path) {
-                        ConfigWatchValidation::Rejected { errors: vec!["external config rejected".into()] }
-                    } else { ConfigWatchValidation::Ok }
-                }),
+                validate: Arc::new(move |paths| { let rejected=paths.iter().any(|path| path == &before_reload_path); Box::pin(async move { Ok(if rejected { ConfigWatchValidation::Rejected { errors: vec!["external config rejected".into()] } } else { ConfigWatchValidation::Ok }) }) }),
             };
             struct ConfigWatchOwner(RegisteredConfigWatch);
             impl Extension for ConfigWatchOwner {
@@ -408,6 +404,63 @@ async fn external_bus_registration_rebuilds_watches_and_delivers_its_group() {
     }
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
     (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx).await.unwrap();
+}
+
+
+#[tokio::test]
+async fn watcher_awaits_registered_validator_and_cancellation_discards_its_result() {
+    use maho_ext_config_reload::protocol::*;
+    let root=tempfile::tempdir().unwrap();
+    let external=tempfile::tempdir().unwrap();
+    let path=external.path().join("fixture.json");
+    std::fs::write(&path,"{}").unwrap();
+    let events=EventBus::default();
+    let (ready_tx,mut ready_rx)=tokio::sync::mpsc::unbounded_channel();
+    let (changed_tx,mut changed_rx)=tokio::sync::mpsc::unbounded_channel();
+    let (rejected_tx,mut rejected_rx)=tokio::sync::mpsc::unbounded_channel();
+    let _ready=events.on(CONFIG_WATCH_READY,Arc::new(move |value|{let _=ready_tx.send(value.clone());}));
+    let _changed=events.on(CONFIG_WATCH_CHANGED,Arc::new(move |value|{let _=changed_tx.send(value.clone());}));
+    let _rejected=events.on(CONFIG_WATCH_REJECTED,Arc::new(move |value|{let _=rejected_tx.send(value.clone());}));
+    let mut api=ExtensionApi::new(LoadedExtension::new("config-reload",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),events.clone(),ExtensionRuntime::default());
+    maho_ext_config_reload::ConfigReload.register(&mut api);
+    let mut ctx=context(root.path());ctx.mode=ExtensionMode::Tui;ctx.is_idle_fn=Arc::new(||false);
+    let mut start=ExtensionEvent::SessionStart(SessionStartEvent{reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
+    let _=tokio::time::timeout(std::time::Duration::from_secs(5),ready_rx.recv()).await.unwrap().unwrap();
+    let (entered_tx,entered_rx)=tokio::sync::oneshot::channel();
+    let entered_tx=Arc::new(std::sync::Mutex::new(Some(entered_tx)));
+    let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();
+    let release_rx=Arc::new(tokio::sync::Mutex::new(Some(release_rx)));
+    let (dropped_tx,dropped_rx)=tokio::sync::oneshot::channel::<()>();
+    struct SignalOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+    impl Drop for SignalOnDrop { fn drop(&mut self) { if let Some(sender)=self.0.take() { let _=sender.send(()); } } }
+    let entered=Arc::clone(&entered_tx);let release=Arc::clone(&release_rx);let dropped=Arc::new(std::sync::Mutex::new(Some(dropped_tx)));
+    events.publish_config_watch("fixture",RegisteredConfigWatch{
+        id:"async-fixture".into(),display_name:"async fixture".into(),
+        targets:vec![ConfigWatchTargetSpec{path:path.clone(),kind:ConfigWatchTargetKind::File,filter_globs:vec![]}],
+        validate:Arc::new(move |_|{
+            let entered=entered.lock().unwrap().take();let release=Arc::clone(&release);let dropped=dropped.lock().unwrap().take();
+            Box::pin(async move{
+                let _drop_guard=SignalOnDrop(dropped);
+                if let Some(entered)=entered{let _=entered.send(());}
+                let receiver=release.lock().await.take().expect("single validator invocation");
+                let _=receiver.await;
+                Ok(ConfigWatchValidation::Rejected{errors:vec!["late rejection".into()]})
+            })
+        }),
+    });
+    let _=tokio::time::timeout(std::time::Duration::from_secs(5),ready_rx.recv()).await.unwrap().unwrap();
+    let staged=tempfile::NamedTempFile::new_in(external.path()).unwrap();
+    std::fs::write(staged.path(),r#"{"changed":true}"#).unwrap();std::fs::rename(staged.path(),&path).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5),entered_rx).await.unwrap().unwrap();
+    assert!(changed_rx.try_recv().is_err());assert!(rejected_rx.try_recv().is_err());
+    let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent{reason:SessionReason::Quit,target_session_file:None,signal:None});
+    let shutdown_future=(api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx);
+    tokio::pin!(shutdown_future);
+    tokio::time::timeout(std::time::Duration::from_secs(5),&mut shutdown_future).await.expect("shutdown joined cancelled watcher").unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5),dropped_rx).await.expect("validator future dropped").unwrap();
+    drop(release_tx);
+    assert!(changed_rx.try_recv().is_err());assert!(rejected_rx.try_recv().is_err());
 }
 
 #[tokio::test]

@@ -856,6 +856,15 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
             self.accounts_changed(provider); Ok(())
         })
     }
+    fn reset_credential_account<'a>(&'a self, provider: &'a str, name: &'a str) -> maho_ext_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.assert_account_active()?;
+            self.registry.reset_credential_account_guarded(provider, name, &self.agent_dir,
+                &|| self.assert_account_active().map_err(|error| error.message)).await.map_err(maho_ext_api::ExtensionFailure::new)?;
+            self.assert_account_active()?;
+            self.accounts_changed(provider); Ok(())
+        })
+    }
     fn remove_credential_account<'a>(&'a self, provider: &'a str, name: &'a str) -> maho_ext_api::ExtensionFuture<'a, ()> {
         Box::pin(async move {
             self.assert_account_active()?;
@@ -4849,9 +4858,13 @@ impl AgentSession {
     /// senpi `DefaultResourceLoader.reload()` for skills, prompt templates and hook sources: package
     /// and auto-discovered resources plus the stored CLI inputs, loaded into this session.
     pub async fn load_resources(&self) -> Result<(), String> {
+        self.load_resources_with_refresh(false).await
+    }
+
+    async fn load_resources_with_refresh(&self, refresh: bool) -> Result<(), String> {
         let inputs = self.resource_loader_inputs();
         let settings = self.with_settings_manager(crate::resource_loader::snapshot_settings);
-        let loaded = crate::resource_loader::load_resources(&self.cwd(), &self.agent_dir(), settings, &inputs).await?;
+        let loaded = crate::resource_loader::load_resources_with_refresh(&self.cwd(), &self.agent_dir(), settings, &inputs, refresh).await?;
         {
             let mut state = self.state();
             state.loaded_context_files = None;
@@ -5153,7 +5166,7 @@ impl AgentSession {
         // reloading a clone re-reads models.json for the session's live catalog.
         self.model_runtime().clone().reload_config().await;
         self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
-        self.load_resources().await?;
+        self.load_resources_with_refresh(true).await?;
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
         self.renew_extension_runtime(maho_ext_api::SessionReason::Reload).await?;
@@ -6839,8 +6852,8 @@ impl AgentSession {
                 let transformed = match runner.as_mut() {
                     Some(runner) => {
                         let entry_ids = session.session_context_entry_ids(&messages);
-                        match runner.emit_context(&messages, &entry_ids, None).await {
-                            Ok(messages) => messages, Err(error) => { session.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); messages }
+                        match runner.emit_context_owned(messages, &entry_ids, None).await {
+                            Ok(messages) => messages, Err(failure) => { session.emit(AgentSessionEvent::ContinuationError { error_message: failure.error.message }); failure.messages }
                         }
                     }, None => messages,
                 };
@@ -7416,9 +7429,11 @@ impl AgentSession {
                 })
         };
         for entry in resources.prompt_paths.into_iter().filter(|_| refresh_prompts) {
-            for mut template in crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
+            let (loaded, mut load_diagnostics) = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
                 cwd: cwd.clone(), agent_dir: self.agent_dir(), prompt_paths: vec![entry.path.clone()], include_defaults: false,
-            }) {
+            });
+            for diagnostic in load_diagnostics.drain(..) { push_unique(&mut prompt_diagnostics, diagnostic); }
+            for mut template in loaded {
                 template.source_info = source_info(&template.file_path, &entry);
                 if let Some(known) = templates.iter_mut().find(|known| known.name == template.name) {
                     if known.file_path == template.file_path { *known = template; }
@@ -10149,6 +10164,37 @@ mod tests {
         session.dispose().await;
         assert!(result.expect("bounded queued admission").is_err());
         assert_eq!(storage.get("fixture-account"), before);
+    }
+
+    #[tokio::test]
+    async fn account_reset_emits_after_success_and_rejects_retired_admission() {
+        use maho_ext_api::ModelRegistry as _;
+        let session = test_session();
+        let dir = tempfile::tempdir().expect("sidecar directory");
+        let storage = session.model_registry().auth_storage.clone();
+        storage.set("fixture-reset", Some(serde_json::json!({"type":"api_key","key":"fixture",
+            "accounts":[{"name":"work","key":"fixture","blockReason":"rate_limit","keep":true}]}))).expect("seed");
+        let events = maho_ext_api::EventBus::default();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&observed);
+        let _subscription = events.on("provider-accounts-changed", Arc::new(move |event| lock(&captured).push(event.clone())));
+        let mut registry = ExtensionModelRegistryView::new(&session, events);
+        registry.agent_dir = dir.path().to_string_lossy().into_owned();
+        registry.reset_credential_account("fixture-reset", "work").await.expect("reset");
+        assert_eq!(lock(&observed).len(), 1);
+        let before = storage.get("fixture-reset");
+        assert!(before.as_ref().expect("credential")["accounts"][0].get("blockReason").is_none());
+        assert!(registry.reset_credential_account("fixture-reset", "missing").await.is_err());
+        let permit = storage.account_mutation.lock().await;
+        let mut mutation = Box::pin(registry.reset_credential_account("fixture-reset", "work"));
+        assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(mutation.as_mut(), cx).is_pending())).await);
+        session.invalidate_extension_runtime().await;
+        drop(permit);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), mutation).await;
+        session.dispose().await;
+        assert!(result.expect("bounded reset admission").is_err());
+        assert_eq!(storage.get("fixture-reset"), before);
+        assert_eq!(lock(&observed).len(), 1);
     }
 
     #[tokio::test]
@@ -15039,7 +15085,7 @@ mod tests {
     fn prompt_expansion_uses_template_arguments_and_can_be_disabled() {
         let session = test_session();
         session.set_prompt_resources(vec![crate::prompt_templates::PromptTemplate {
-            name: "review".to_owned(), description: String::new(), argument_hint: None, content: "review $1".to_owned(),
+            name: "review".to_owned(), description: String::new(), argument_hint: None, requires_arguments: false, content: "review $1".to_owned(),
             source_info: crate::source_info::create_synthetic_source_info("/tmp/review.md", crate::source_info::SyntheticSourceInfoOptions::default()),
             file_path: "/tmp/review.md".to_owned(),
         }], Vec::new());

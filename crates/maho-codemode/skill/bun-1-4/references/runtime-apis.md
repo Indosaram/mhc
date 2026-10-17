@@ -34,6 +34,7 @@ await Bun.write("page.png", await view.screenshot());
 ```
 
 - macOS: system WebKit, nothing to install. macOS/Linux/Windows: can drive installed Chrome/Chromium/Edge.
+- In the eval js kernel, Chrome-backed views run on the process main thread. The API is unchanged; constructor errors surface on the first awaited operation. `Bun.WebView.closeAll()` closes only this kernel's views, and a kernel reset closes views left open by that kernel.
 - Clicks/scrolls are trusted user input (`event.isTrusted === true`).
 - Extends `EventTarget`; screenshots are `Blob`s; `.cdp(method, params?)` escape hatch for raw Chrome DevTools Protocol.
 

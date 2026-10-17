@@ -47,6 +47,7 @@ fn model(
         provider: "kimi-coding".to_owned(),
         base_url: BASE_URL.to_owned(),
         reasoning: true,
+        default_thinking_level: None,
         thinking_level_map: levels,
         input: input.to_vec(),
         cost: ModelCost { input: cost.0, output: cost.1, cache_read: cost.2, cache_write: 0.0, tiers: None },
@@ -59,6 +60,7 @@ fn model(
         service_tier: None,
         recover_text_tool_calls: None,
         compat: Some(compat(allow_empty_signature)),
+        input_limits: None,
     }
 }
 

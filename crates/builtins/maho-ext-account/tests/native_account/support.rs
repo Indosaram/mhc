@@ -50,6 +50,22 @@ impl ModelRegistry for SyntheticRegistry {
             Ok(())
         })
     }
+    fn reset_credential_account<'a>(&'a self, provider: &'a str, name: &'a str) -> ExtensionFuture<'a, ()> {
+        let storage = self.storage.clone();
+        let repository = self.repository.clone();
+        let provider = provider.to_owned();
+        let name = name.to_owned();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+                runtime.block_on(async {
+                    let storage = storage.lock().await;
+                    credential_accounts::reset_credential_account(&storage, &provider, &name, &environment, &repository, 0).await
+                })
+            }).await.map_err(|error| ExtensionFailure::new(error.to_string()))??;
+            Ok(())
+        })
+    }
     fn remove_credential_account<'a>(&'a self, provider: &'a str, name: &'a str) -> ExtensionFuture<'a, ()> {
         let storage = self.storage.clone();
         let repository = self.repository.clone();

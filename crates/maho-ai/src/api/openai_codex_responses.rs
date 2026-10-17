@@ -1736,6 +1736,7 @@ pub fn stream_simple(model: &Model, context: &Context, options: Option<SimpleStr
             crate::types::ServiceTierPreference::Auto => "auto",
             crate::types::ServiceTierPreference::Flex => "flex",
             crate::types::ServiceTierPreference::Priority => "priority",
+            crate::types::ServiceTierPreference::Ultrafast => "ultrafast",
         };
         stream_options.extra.insert(String::from("serviceTier"), json!(tier));
     }

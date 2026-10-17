@@ -57,6 +57,7 @@ pub struct OmoRuntime {
     capture: ToolCaptureRegistry,
     delivery: Arc<Mutex<IdleInjectionDelivery>>,
     config: Arc<Mutex<ConfigAccessor>>,
+    startup: Arc<Mutex<crate::startup_deferral::StartupDeferral>>,
 }
 
 impl OmoRuntime {
@@ -90,11 +91,15 @@ impl OmoRuntime {
             defer_macrotask,
             get_captured_tools: Arc::new(move || captured.get_captured_tools()),
         };
-        Self { context, coordinator, capture, delivery, config }
+        Self { context, coordinator, capture, delivery, config, startup: Arc::default() }
     }
 
     /// Rebinds a reload's extension API without replacing the queue or captured tool registry.
     pub fn rebind(&self, delivery: IdleInjectionDelivery, config: ConfigAccessor) {
+        let mut startup = self.startup.lock().unwrap_or_else(PoisonError::into_inner);
+        startup.retire();
+        *startup = crate::startup_deferral::StartupDeferral::default();
+        drop(startup);
         *self.delivery.lock().unwrap_or_else(PoisonError::into_inner) = delivery;
         *self.config.lock().unwrap_or_else(PoisonError::into_inner) = config;
         // A new generation reuses the retained queue (upstream builds a fresh coordinator on every
@@ -126,6 +131,10 @@ impl OmoRuntime {
 
     pub fn bind(&self, ctx: &mut ExtensionContext) {
         self.context.bind(ctx);
+    }
+
+    pub fn startup_deferral(&self) -> crate::startup_deferral::StartupDeferral {
+        self.startup.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     pub fn capture_tools(&self, tools: Vec<ToolDefinition>) {

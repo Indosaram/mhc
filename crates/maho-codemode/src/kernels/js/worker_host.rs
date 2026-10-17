@@ -30,6 +30,7 @@ impl WorkerHost {
     pub async fn initialize(&mut self, options: &super::worker_startup::WorkerStartupOptions<'_>, signal: &maho_ai::utils::abort::AbortSignal) -> Result<(), ProcessError> {
         let mut frame=json!({"type":"init","sessionId":options.session_id,"connection":options.connection,"kernelGeneration":options.generation,"hostToolNames":options.host_tool_names,"foreignLanguageNames":options.foreign_language_names});
         if let Some(environment)=options.session_env {frame["sessionEnv"]=serde_json::to_value(environment)?;}
+        if let Some(memory)=options.memory {frame["memory"]=serde_json::to_value(memory)?;}
         self.post_message(&frame).await?;
         loop {
             let message = tokio::select! {

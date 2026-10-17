@@ -3,6 +3,7 @@ import { kernelToolError } from "./kernel-tools-errors.js";
 import { createKernelToolPump } from "./kernel-tools-pump.js";
 import { hostDeniedError, hostToolRefusal } from "./kernel-tools-scope.js";
 import { JsWorkerRuntime } from "./worker-runtime.js";
+import { createHeapProbe } from "./worker-heap.js";
 
 // Mirrors INTERRUPT_ACK_OP and CHILD_LIFECYCLE_OP in src/bridge/reserved.ts (this worker file cannot import TypeScript).
 const INTERRUPT_ACK_OP = "interrupt-ack";
@@ -23,6 +24,7 @@ const SESSION_ENVIRONMENT_KEYS = [
 
 export function createWorkerCore(transport, options) {
 	let runtime = null;
+	let heapProbe = null;
 	let activeCell = null;
 	const pendingTools = new Map();
 	const nestedInvokes = new Map();
@@ -48,9 +50,9 @@ export function createWorkerCore(transport, options) {
 				emit,
 				callTool: async (toolName, args) => await callTool(toolName, args),
 			});
-			emit({ type: "result", cellId: message.cellId, ok: true, valueRepr: valueRepr(value), durationMs: durationMs(startedAtMs) });
+			emit({ type: "result", cellId: message.cellId, ok: true, valueRepr: valueRepr(value), durationMs: durationMs(startedAtMs), ...runtime.memoryReport });
 		} catch (error) {
-			emit({ type: "result", cellId: message.cellId, ok: false, error: bridgeError(error), durationMs: durationMs(startedAtMs) });
+			emit({ type: "result", cellId: message.cellId, ok: false, error: bridgeError(error), durationMs: durationMs(startedAtMs), ...runtime.memoryReport });
 		} finally {
 			activeCell = null;
 		}
@@ -75,7 +77,6 @@ export function createWorkerCore(transport, options) {
 
 	function interruptCell(reason) {
 		if (!activeCell || !runtime) return;
-		emit({ type: "status", event: { op: INTERRUPT_ACK_OP, cellId: activeCell.cellId } });
 		const interruption = cellInterruptedError(reason);
 		activeCell.interruption = interruption;
 		for (const [callId, pending] of pendingTools) {
@@ -84,6 +85,8 @@ export function createWorkerCore(transport, options) {
 		}
 		kernelTools.abortAll(kernelToolError("kernel_tool_stale", interruption.message));
 		runtime.interrupt();
+		emit({ type: "status", event: { op: INTERRUPT_ACK_OP, cellId: activeCell.cellId, shellWaitActive: runtime.shellWaitActive } });
+		if (runtime.shellWaitActive) return;
 	}
 
 	function onMessage(message) {
@@ -103,8 +106,17 @@ export function createWorkerCore(transport, options) {
 				hostToolNames: message.hostToolNames ?? [],
 				foreignLanguageNames: message.foreignLanguageNames ?? [],
 				onChildEvent: (event) => emit({ type: "status", event: { op: CHILD_LIFECYCLE_OP, ...event } }),
+				onShellWaitChange: () => {
+					if (activeCell?.interruption) emit({ type: "status", event: { op: INTERRUPT_ACK_OP, cellId: activeCell.cellId, shellWaitActive: runtime.shellWaitActive } });
+				},
+				memory: message.memory,
 			});
 			emit({ type: "ready" });
+			return;
+		}
+		if (message.type === "memory-query") {
+			heapProbe ??= createHeapProbe();
+			emit({ type: "memory-query-result", requestId: message.requestId, liveBytes: Math.round(heapProbe.estimate()), measure: "heap" });
 			return;
 		}
 		if (message.type === "run") {

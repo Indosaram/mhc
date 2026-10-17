@@ -78,6 +78,24 @@ fn falls_back_to_adc_when_options_api_key_is_a_placeholder_marker() {
 }
 
 #[test]
+fn google_client_headers_override_case_variants_at_request_construction() {
+    let mut model = vertex_model("https://example.test");
+    model.headers = Some(headers_map(&[("X-Override", "model"), ("USER-AGENT", "model-agent")]));
+    let options = headers_map(&[("x-override", "request"), ("user-agent", "request-agent")]);
+    let clients = [
+        create_client_with_api_key(&model, REAL_API_KEY, Some(&options)),
+        create_client(&model, "project", "location", Some(&options), None),
+        maho_ai::api::google_generative_ai::create_client(&model, Some(REAL_API_KEY), Some(&options)),
+    ];
+    for client in clients {
+        let headers = client.headers.expect("headers");
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers.get("x-override").map(String::as_str), Some("request"));
+        assert_eq!(headers.get("user-agent").map(String::as_str), Some("request-agent"));
+    }
+}
+
+#[test]
 fn falls_back_to_adc_when_options_api_key_is_the_gcp_vertex_credentials_marker() {
     let model = vertex_model("https://us-central1-aiplatform.googleapis.com");
     let client = client_config_for(&model, Some("gcp-vertex-credentials"), None);

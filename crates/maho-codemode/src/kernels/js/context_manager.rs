@@ -13,15 +13,16 @@ enum Command {
     Cancel(String, String, oneshot::Sender<bool>),
     Reply(Value),
     Pull(oneshot::Sender<oneshot::Receiver<Value>>),
+    MemoryQuery(String, oneshot::Sender<Result<Value, String>>),
     Interrupt(String, Option<String>, oneshot::Sender<Result<(bool, Option<String>), String>>),
     Reset(oneshot::Sender<Result<(), String>>),
     Close(oneshot::Sender<Result<(), String>>),
 }
 
-struct WorkerOptions { cwd: PathBuf, session_id: String, width: u64, environment: Option<SessionEnvironment>, connection: BridgeConnectionConfig, names: KernelToolNames }
+struct WorkerOptions { cwd: PathBuf, session_id: String, width: u64, environment: Option<SessionEnvironment>, connection: BridgeConnectionConfig, names: KernelToolNames, memory: crate::bridge::protocol::KernelMemoryThresholds }
 impl WorkerOptions {
     fn startup<'a>(&'a self,names:&'a (Vec<String>,Vec<String>)) -> WorkerStartupOptions<'a> {
-        WorkerStartupOptions {cwd:&self.cwd, session_id:&self.session_id, parallel_pool_width:self.width, connection:&self.connection, generation:0, host_tool_names:&names.0, foreign_language_names:&names.1, session_env:self.environment.as_ref(), worker_entry:None}
+        WorkerStartupOptions {cwd:&self.cwd, session_id:&self.session_id, parallel_pool_width:self.width, connection:&self.connection, generation:0, host_tool_names:&names.0, foreign_language_names:&names.1, session_env:self.environment.as_ref(), worker_entry:None, memory:Some(&self.memory)}
     }
 }
 
@@ -47,11 +48,14 @@ impl JavaScriptKernel {
         Self::start_with_signal(cwd,session_id,parallel_pool_width,session_env,connection,names,maho_ai::utils::abort::AbortController::new()).await
     }
     pub async fn start_with_signal(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig,names:KernelToolNames,shutdown:maho_ai::utils::abort::AbortController)->Result<Self,ProcessError> {
+        Self::start_with_memory(cwd,session_id,parallel_pool_width,session_env,connection,names,shutdown,crate::bridge::protocol::KernelMemoryThresholds {gc_watermark_bytes:1_073_741_824,notice_bytes:1_610_612_736,ceiling_bytes:2_147_483_648}).await
+    }
+    pub async fn start_with_memory(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig,names:KernelToolNames,shutdown:maho_ai::utils::abort::AbortController,memory:crate::bridge::protocol::KernelMemoryThresholds)->Result<Self,ProcessError> {
         let owner_signal=shutdown.signal();
         let startup_owner=owner_signal.clone();
         let shutdown=maho_ai::utils::abort::AbortController::new();
         let loader=LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:connection.local_roots.clone(),artifacts_dir:connection.artifacts_dir.as_ref().map(PathBuf::from)})?;
-        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,connection,names};
+        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,connection,names,memory};
         let startup_options=options;let startup_shutdown=shutdown.clone();
         let (mut sender,receiver)=oneshot::channel();
         tokio::spawn(async move {
@@ -109,6 +113,12 @@ impl JavaScriptKernel {
         self.commands.send(Command::Pull(sender)).map_err(|_|ProcessError::Closed)?;
         receiver.await.map_err(|_|ProcessError::Closed)?.await.map_err(|_|ProcessError::Closed)
     }
+    pub async fn memory_query(&self)->Result<Value,ProcessError> {
+        let (sender,receiver)=oneshot::channel();
+        let request_id=uuid::Uuid::new_v4().to_string();
+        self.commands.send(Command::MemoryQuery(request_id, sender)).map_err(|_|ProcessError::Closed)?;
+        receiver.await.map_err(|_|ProcessError::Closed)?.map_err(ProcessError::Startup)
+    }
     /// Interrupts the active (or a queued) cell; reports whether worker state survived and, when a blocked
     /// worker had to be abandoned, the note that explains it.
     pub async fn interrupt(&self,reason:&str,id:Option<&str>)->Result<(bool,Option<String>),String> {
@@ -150,6 +160,7 @@ impl maho_ext_api::ExtensionKernelTools for JavaScriptKernel {
 
 fn route(message:Value,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue)->bool {
     if message["type"]=="status" && matches!(message["event"]["op"].as_str(),Some(crate::bridge::reserved::INTERRUPT_ACK_OP|crate::bridge::reserved::CHILD_LIFECYCLE_OP)) {return false;}
+    if message["type"]=="kernel-memory-collected" {return false;}
     if let Some(run)=runs.active() && let Some(callback)=&run.on_message {callback(&message);}
     if message["type"]=="tool-call" {calls.push_tool_call(message);return false;}
     if message["type"]!="result" || runs.active().is_none_or(|run|message["cellId"]!=run.input.cell_id) {return false;}
@@ -173,9 +184,13 @@ async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mu
         let frame=tokio::time::timeout_at(deadline,slot.next_message()).await;
         let Ok(Ok(frame))=frame else {break;};
         if tools.consume(frame.clone()) {continue;}
-        if frame["type"]=="status" && frame["event"]["op"]==crate::bridge::reserved::INTERRUPT_ACK_OP && !acknowledged {
-            acknowledged=true;
-            deadline=tokio::time::Instant::now()+Duration::from_millis(JS_INTERRUPT_GRACE_MS);
+        if frame["type"]=="status" && frame["event"]["op"]==crate::bridge::reserved::INTERRUPT_ACK_OP {
+            if frame["event"]["shellWaitActive"] == true {
+                deadline=tokio::time::Instant::now()+Duration::from_millis(WORKER_TERMINATE_DEADLINE_MS);
+            } else if !acknowledged {
+                acknowledged=true;
+                deadline=tokio::time::Instant::now()+Duration::from_millis(JS_INTERRUPT_GRACE_MS);
+            }
         }
         if route(frame,runs,calls) {calls.clear_tool_calls();return Ok((true,None));}
     }
@@ -191,6 +206,7 @@ async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mu
 async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::UnboundedReceiver<Command>,snapshot:Arc<Mutex<Snapshot>>,pid:Arc<Mutex<Option<u32>>>,tools:Arc<super::kernel_tools_host::KernelToolHostPump>,shutdown:maho_ai::utils::abort::AbortSignal) {
     let mut runs=JavaScriptRunQueue::default();
     let mut calls=SubprocessRunQueue::default();
+    let mut pending_memory_queries=std::collections::HashMap::<String,(oneshot::Sender<Result<Value,String>>,tokio::time::Instant)>::new();
     let origin=tokio::time::Instant::now();
     let mut deadline=None;
     loop {
@@ -223,6 +239,10 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                 Some(Command::Cancel(id,reason,response))=>{let _=response.send(runs.remove(&id,&reason));}
                 Some(Command::Reply(message))=>{if let Err(error)=slot.post_message(&message).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}deadline=None;}}
                 Some(Command::Pull(response))=>{let _=response.send(calls.next_tool_call());}
+                Some(Command::MemoryQuery(request_id,response))=>{
+                    if let Err(error)=slot.post_message(&json!({"type":"memory-query","requestId":request_id})).await {let _=response.send(Err(error.to_string()));continue;}
+                    pending_memory_queries.insert(request_id, (response,tokio::time::Instant::now()+Duration::from_secs(5)));
+                }
                 Some(Command::Interrupt(reason,id,response))=>{
                     let result=if id.as_ref().is_some_and(|id|runs.active().is_none_or(|run|&run.input.cell_id!=id)) {let cancelled=id.as_ref().is_some_and(|id|runs.remove(id,&reason));Ok((true,(!cancelled).then(||"cell not found".to_owned())))} else {
                         deadline=None;
@@ -231,12 +251,14 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                     let _=response.send(result);
                 }
                 Some(Command::Reset(response))=>{
+                    for (_, pending) in pending_memory_queries.drain() { let _ = pending.send(Err("JavaScript worker reset".into())); }
                     tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JavaScript worker reset",None));
                     runs.settle_all("JS kernel reset");calls.clear_tool_calls();deadline=None;
                     let result=async {slot.retire().await?;let names=(options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(options.startup(&names),&shutdown).await}.await.map_err(|error|error.to_string());
                     let _=response.send(result);
                 }
                 Some(Command::Close(response))=>{
+                    for (_, pending) in pending_memory_queries.drain() { let _ = pending.send(Err("JavaScript worker closed".into())); }
                     tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JS kernel closed",None));
                     runs.settle_all("JS kernel closed");calls.clear_tool_calls();
                     let _=slot.post_message(&json!({"type":"close"})).await;
@@ -248,14 +270,23 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
             message=slot.next_message(),if slot.present()=>match message {
                 Ok(message)=>{
                     if tools.consume(message.clone()) {continue;}
+                    if message["type"]=="memory-query-result" {
+                        if let Some(request_id)=message["requestId"].as_str() {if let Some((response,_))=pending_memory_queries.remove(request_id) {let _=response.send(Ok(message));}}
+                        continue;
+                    }
                     if route(message,&mut runs,&mut calls) {deadline=None;}
                 }
-                Err(error)=>{if let Some(mut run)=runs.release_active() {let result=stopped_result(&run.input.cell_id,&error.to_string());JavaScriptRunQueue::settle(&mut run,result);}calls.clear_tool_calls();deadline=None;if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}}
+                Err(error)=>{for (_, pending) in pending_memory_queries.drain() { let _ = pending.send(Err(error.to_string())); } if let Some(mut run)=runs.release_active() {let result=stopped_result(&run.input.cell_id,&error.to_string());JavaScriptRunQueue::settle(&mut run,result);}calls.clear_tool_calls();deadline=None;if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}}
             },
             ()=async {match deadline {Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending().await}},if deadline.is_some()=>{
                 let duration=runs.active().and_then(|run|run.input.timeout_ms).unwrap_or(0);
                 if let Err(error)=stop_active(&mut slot,&mut runs,&mut calls,&tools,&format!("timed out after {duration}ms"),&format!("JS cell timed out after {duration}ms"),duration).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}}
                 deadline=None;
+            }
+            ()=async {let until=pending_memory_queries.values().map(|(_,until)|*until).min();match until {Some(until)=>tokio::time::sleep_until(until).await,None=>std::future::pending().await}},if !pending_memory_queries.is_empty()=>{
+                let now=tokio::time::Instant::now();
+                let expired=pending_memory_queries.iter().filter_map(|(id,(_,until))|(*until<=now).then_some(id.clone())).collect::<Vec<_>>();
+                for id in expired {if let Some((response,_))=pending_memory_queries.remove(&id) {let _=response.send(Err("memory query timed out".into()));}}
             }
         }
     }

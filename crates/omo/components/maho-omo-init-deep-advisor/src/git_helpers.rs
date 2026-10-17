@@ -1,14 +1,46 @@
-use std::{fs, io, path::{Path, PathBuf}, process::Command};
+use std::{fs, io, path::{Path, PathBuf}, process::{Command, Stdio}, time::Duration};
 use crate::constants::SOURCE_EXTENSIONS;
 
 const DRIFT_EXCLUDES: &[&str] = &[":(exclude)AGENTS.md", ":(exclude,glob)**/AGENTS.md", ":(exclude).omo/init-deep.json"];
 
 pub fn run(root: &Path, args: &[&str]) -> io::Result<String> {
-    let output = Command::new("git").args(args).current_dir(root).output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned()));
+    let mut command = Command::new("git");
+    command.args(args).current_dir(root);
+    run_bounded(command, Duration::from_secs(5))
+}
+
+fn run_bounded(mut command: Command, timeout: Duration) -> io::Result<String> {
+    use std::io::{Read, Seek};
+    let mut output = tempfile::tempfile()?;
+    command.stdin(Stdio::null()).stderr(Stdio::null()).stdout(output.try_clone()?);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            runtime.block_on(async move {
+                let mut command = tokio::process::Command::from(command);
+                command.kill_on_drop(true);
+                let mut child = command.spawn()?;
+                let status = match tokio::time::timeout(timeout, child.wait()).await {
+                    Ok(status) => status?,
+                    Err(_) => {
+                        child.kill().await?;
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "advisor Git command exceeded its deadline"));
+                    }
+                };
+                if !status.success() { return Err(io::Error::other(format!("advisor Git command failed: {status}"))); }
+                output.rewind()?;
+                let mut bytes = Vec::new();
+                output.take(1_048_577).read_to_end(&mut bytes)?;
+                if bytes.len() > 1_048_576 { return Err(io::Error::other("advisor Git output exceeds one MiB")); }
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            })
+        }).join().map_err(|_| io::Error::other("advisor Git worker panicked"))?
+    })
 }
 pub fn git_is_repo(root: &Path) -> bool { run(root, &["rev-parse", "--is-inside-work-tree"]).is_ok() }
 pub fn git_head(root: &Path) -> io::Result<String> { Ok(run(root, &["rev-parse", "HEAD"] )?.trim().into()) }
@@ -57,6 +89,27 @@ pub fn git_common_dir_realpath(root: &Path) -> io::Result<PathBuf> { fs::canonic
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn command_timeout_returns_timed_out() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec sleep 60"]);
+        let error = run_bounded(command, Duration::from_millis(20)).expect_err("deadline");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_capture_suppresses_stderr_on_success_and_failure() {
+        let mut success = Command::new("sh");
+        success.args(["-c", "printf output; printf private-diagnostic >&2"]);
+        assert_eq!(run_bounded(success, Duration::from_secs(5)).expect("output"), "output");
+        let mut failure = Command::new("sh");
+        failure.args(["-c", "printf private-diagnostic >&2; exit 7"]);
+        let error = run_bounded(failure, Duration::from_secs(5)).expect_err("failure");
+        assert!(!error.to_string().contains("private-diagnostic"));
+    }
+
     pub fn repo() -> (tempfile::TempDir, String) {
         let t=tempfile::tempdir().unwrap();
         run(t.path(), &["init", "-q"]).unwrap();

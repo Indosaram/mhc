@@ -86,6 +86,7 @@ fn interrupt_input(state:&Arc<Mutex<State>>,data:&str,keys:&maho_tui::keybinding
 }
 impl Extension for TtsrExtension {
     fn register(&self,api:&mut ExtensionApi) {
+        maho_ext_rule_activation::register_rule_activation_renderer(api);
         api.register_flag("ttsr-disabled",FlagType::Boolean { default:Some(false) },Some("Disable TTSR stream-rule detection.".into()));
         api.register_flag("ttsr-rules-disabled",FlagType::String { default:Some(String::new()) },Some("Comma-separated TTSR rule names to disable.".into()));
         let state=Arc::new(Mutex::new(State::default())); let public=Arc::clone(&state); register_ttsr_commands(api,Arc::new(move ||public.lock().unwrap_or_else(std::sync::PoisonError::into_inner).public_state()));
@@ -116,7 +117,7 @@ impl Extension for TtsrExtension {
         assert!(!record_remediation_injection(&api,"collapse-repetition",&["collapse-repetition".into()],"nudge").unwrap());
         let entries=capture.0.lock().unwrap(); assert_eq!(entries.len(),1); assert_eq!(entries[0]["message"],"fixture activation failure"); assert!(entries[0]["at"].is_u64());
     }
-    #[test] fn native_registration_exposes_flags_command_and_nine_hooks() { let mut api=ExtensionApi::new(maho_ext_api::LoadedExtension::new("ttsr",".".into(),Default::default()),Default::default(),Default::default(),Default::default()); TtsrExtension.register(&mut api); assert_eq!(api.registered.handlers.len(),9); assert_eq!(api.registered.commands[0].name,"ttsr"); assert_eq!(api.registered.flags.len(),2); }
+    #[test] fn native_registration_exposes_flags_command_and_nine_hooks() { let mut api=ExtensionApi::new(maho_ext_api::LoadedExtension::new("ttsr",".".into(),Default::default()),Default::default(),Default::default(),Default::default()); TtsrExtension.register(&mut api); assert_eq!(api.registered.handlers.len(),9); assert_eq!(api.registered.commands[0].name,"ttsr"); assert_eq!(api.registered.flags.len(),2); assert!(api.registered.entry_renderers.contains_key("rule-activation")); }
     #[test] fn cancel_drops_remediation_and_disarms_recovery() { let mut state=State { pending_nudge:Some(build_nudge_message("test","test")),..Default::default() }; state.cancel(); assert!(state.generation_state.user_cancelled); assert!(state.pending_nudge.is_none()); }
     #[test] fn configured_interrupt_cancels_pending_remediation_without_consuming_input() {
         use maho_tui::keybindings::{KeybindingsManager,KeybindingDefinition,KeybindingDefinitions};

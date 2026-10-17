@@ -23,8 +23,14 @@ impl maho_ext_api::Extension for InitDeepAdvisorComponent {
         let runtime=api.runtime.clone();let profile=api.profile.clone();let events=api.events.clone();let registered=api.registered.clone();
         api.on(EventKind::SessionStart,std::sync::Arc::new(move |event,ctx| {
             if let ExtensionEvent::SessionStart(event)=event && event.reason==SessionReason::Startup {
+                let deferred=ctx.defer_macrotask.clone();
+                let ctx=ctx.clone();let runtime=runtime.clone();let registered=registered.clone();let profile=profile.clone();let events=events.clone();
+                let state_dir=state_dir.clone();let skills=skills.clone();let marker=std::sync::Arc::clone(&marker);
+                let run=move || {
                 let preflight=advisor_preflight(ctx.has_ui,runtime.get_flag("omo-senpi-init-deep-advisor-disabled")==Some(FlagValue::Boolean(true)),&ctx.cwd,&state_dir,marker(&state_dir),start);
                 match preflight {Ok(Some(preflight))=>{let mut api=maho_ext_api::ExtensionApi::new(registered.clone(),profile.clone(),events.clone(),runtime.clone());api.cwd=ctx.cwd.clone();let ctx=ctx.clone();let skills=skills.clone();tokio::spawn(async move {let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()*1000.0;if let Err(error)=crate::runtime::run_advisor_after_preflight(&api,&ctx,&preflight,&skills,now).await {match &ctx.logger {Some(logger)=>logger.warn(&format!("init-deep-advisor failed: {error}"),None),None=>maho_ext_api::diagnostic(&format!("init-deep-advisor failed: {error}"))};}});},Ok(None)=>{},Err(error)=>match &ctx.logger {Some(logger)=>logger.warn(&format!("init-deep-advisor failed: {error}"),None),None=>maho_ext_api::diagnostic(&format!("init-deep-advisor failed: {error}"))}}
+                };
+                if let Some(defer)=deferred { defer(Box::new(run)); } else { run(); }
             }
             Box::pin(async {Ok(EventResult::None)})
         }));

@@ -63,6 +63,11 @@ pub fn parse_plan_checklist(markdown: &str) -> PlanChecklist {
     structured_plan.checklist
 }
 
+/// Whether `line` is a top-level structured task row counted in `section`.
+pub fn is_structured_task_row(line: &str, section: TopLevelTaskSection) -> bool {
+    parse_structured_top_level_checkbox(line, section).is_some()
+}
+
 pub(crate) fn parse_current_top_level_task(markdown: &str) -> Option<TopLevelTaskRef> {
     let lines = split_lines(markdown);
     if !has_structured_section(&lines) {

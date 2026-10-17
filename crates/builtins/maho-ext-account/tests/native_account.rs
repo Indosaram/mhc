@@ -26,6 +26,7 @@ async fn registered_account_command_mutates_persisted_synthetic_storage() -> Res
             ("synthetic unpin",false,None,2),
             ("synthetic rename second Work Account",false,Some("Work Account"),2),
             ("synthetic clear-name second",false,None,2),
+            ("synthetic reset second",false,None,2),
             ("synthetic remove second",false,None,1),
         ] {
             runner.invoke_command("account",command,&context).await?;
@@ -41,6 +42,10 @@ async fn registered_account_command_mutates_persisted_synthetic_storage() -> Res
         assert_eq!(ui.0.lock().expect("notifications").last().expect("error notification").1,NotificationType::Error);
         runner.invoke_command("account","anthropic list",&context).await?;
         assert_eq!(ui.0.lock().expect("notifications").last().expect("environment list").1,NotificationType::Info);
+        runner.invoke_command("account","anthropic reset env",&context).await?;
+        assert_eq!(ui.0.lock().expect("notifications").last().expect("environment reset").1,NotificationType::Info);
+        runner.invoke_command("account","synthetic reset missing",&context).await?;
+        assert_eq!(ui.0.lock().expect("notifications").last().expect("unknown reset").1,NotificationType::Error);
         for command in ["anthropic remove env", "anthropic rename env Environment", "synthetic pin missing", "synthetic clear-name second extra", "", "synthetic unknown"] {
             let before = ui.0.lock().expect("notifications").len();
             runner.invoke_command("account",command,&context).await?;

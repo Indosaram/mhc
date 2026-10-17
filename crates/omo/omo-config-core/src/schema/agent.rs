@@ -20,7 +20,7 @@ fn bash_permission_schema() -> Node {
 }
 
 fn agent_permission_schema() -> Node {
-    record(union(vec![permission_value_schema(), record(permission_value_schema())]))
+    record(bash_permission_schema())
 }
 
 fn omo_agent_def_input_spec() -> ObjectSpec {

@@ -23,7 +23,7 @@ pub use crate::constants::{
     PROMETHEUS_PLANS_DIR,
 };
 pub use crate::error::BoulderStateError;
-pub use crate::plan_checklist::{get_plan_checklist, parse_plan_checklist};
+pub use crate::plan_checklist::{get_plan_checklist, is_structured_task_row, parse_plan_checklist};
 pub use crate::records::{BoulderState, BoulderWorkState, TaskSessionState};
 pub use crate::shared::{normalize_session_id, normalize_session_id_with_platform};
 pub use crate::storage::{

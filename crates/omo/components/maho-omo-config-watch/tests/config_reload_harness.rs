@@ -94,8 +94,8 @@ fn published_registration_carries_the_real_resolved_targets() -> Result<(), std:
 }
 
 // Case W2/W3 - reject then repair, driven through the published validate callable.
-#[test]
-fn registry_validate_callback_rejects_then_repairs_the_reload() -> Result<(), std::io::Error> {
+#[tokio::test]
+async fn registry_validate_callback_rejects_then_repairs_the_reload() -> Result<(), std::io::Error> {
     let fixture = fixture()?;
     let config = fixture.project.join(".omo/omo.jsonc");
     std::fs::write(&config, r#"{"task":{"default_concurrency":3}}"#)?;
@@ -105,12 +105,12 @@ fn registry_validate_callback_rejects_then_repairs_the_reload() -> Result<(), st
     let registration = published(&api);
     let changed = [config.clone()];
     std::fs::write(&config, r#"{"task":{"default_concurrency":"three"}}"#)?;
-    let ConfigWatchValidation::Rejected { errors } = (registration.validate)(&changed) else {
+    let ConfigWatchValidation::Rejected { errors } = (registration.validate)(changed.clone()).await.expect("validator") else {
         panic!("an invalid config must be rejected through the published callable");
     };
     assert!(!errors.is_empty());
     std::fs::write(&config, r#"{"task":{"default_concurrency":4}}"#)?;
-    assert_eq!((registration.validate)(&changed), ConfigWatchValidation::Ok);
+    assert_eq!((registration.validate)(changed).await.expect("validator"), ConfigWatchValidation::Ok);
     Ok(())
 }
 

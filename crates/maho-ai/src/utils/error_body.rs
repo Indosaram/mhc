@@ -10,6 +10,7 @@ pub struct NormalizedProviderError {
     pub body: Option<String>,
     pub message: String,
     pub message_carries_body: bool,
+    pub retry_after_ms: Option<u64>,
 }
 
 /// `$response.body`: a readable stream is never read.
@@ -37,6 +38,7 @@ pub enum SdkFieldValue {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SdkErrorShape {
     pub message: String,
+    pub headers: Option<reqwest::header::HeaderMap>,
     pub status_code: Option<Value>,
     pub status: Option<Value>,
     pub body: Option<Value>,
@@ -56,14 +58,18 @@ pub enum ThrownProviderError {
 pub fn normalize_provider_error(error: &ThrownProviderError) -> NormalizedProviderError {
     let sdk = match error {
         ThrownProviderError::Other(value) => {
-            return NormalizedProviderError { status: None, body: None, message: safe_json_stringify(value), message_carries_body: false };
+            return NormalizedProviderError { status: None, body: None, message: safe_json_stringify(value), message_carries_body: false, retry_after_ms: None };
         }
         ThrownProviderError::Error(sdk) => sdk.as_ref(),
     };
     let status = extract_status(sdk);
     let body = extract_body(sdk);
     let message_carries_body = body.as_ref().is_none_or(|body| sdk.message.contains(body.as_str()));
-    NormalizedProviderError { status, body, message: sdk.message.clone(), message_carries_body }
+    let retry_after_ms = if matches!(status, Some(429 | 503)) {
+        sdk.headers.as_ref().and_then(|headers| crate::utils::retry_hint::extract_429_retry_after_ms(
+            &crate::utils::retry_hint::RetryHintInput { status: Some(429), headers: Some(headers), body_text: "" }, None))
+    } else { None };
+    NormalizedProviderError { status, body, message: sdk.message.clone(), message_carries_body, retry_after_ms }
 }
 
 fn number(value: Option<&Value>) -> Option<u16> {
@@ -102,7 +108,7 @@ fn pick_body_text(error: &SdkErrorShape) -> Option<String> {
 }
 
 pub fn format_provider_error(norm: &NormalizedProviderError, prefix: Option<&str>) -> String {
-    match (norm.message_carries_body, norm.status, norm.body.as_deref()) {
+    let message = match (norm.message_carries_body, norm.status, norm.body.as_deref()) {
         (false, Some(status), Some(body)) => match prefix {
             Some(prefix) => format!("{prefix} ({status}): {body}"),
             None => format!("{status}: {body}"),
@@ -111,6 +117,11 @@ pub fn format_provider_error(norm: &NormalizedProviderError, prefix: Option<&str
             (Some(prefix), Some(status)) => format!("{prefix} ({status}): {}", norm.message),
             _ => norm.message.clone(),
         },
+    };
+    match norm.retry_after_ms {
+        Some(delay) if crate::utils::retry_hint::parse_retry_after_ms_marker(&message).is_none() =>
+            crate::utils::retry_hint::append_retry_after_ms_marker(&message, delay),
+        _ => message,
     }
 }
 
@@ -132,6 +143,43 @@ pub fn safe_json_stringify(value: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn retry_after_survives_normalization_only_for_unavailable_statuses() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", "7".parse().expect("header"));
+        for status in [429, 503, 400, 500] {
+            let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(SdkErrorShape {
+                message: "unavailable".into(), status: Some(json!(status)), headers: Some(headers.clone()), ..Default::default()
+            })));
+            let expected = matches!(status, 429 | 503).then_some(7_000);
+            assert_eq!(norm.retry_after_ms, expected);
+            assert_eq!(crate::utils::retry_hint::parse_retry_after_ms_marker(&format_provider_error(&norm, Some("API"))), expected);
+        }
+    }
+
+    #[test]
+    fn existing_retry_marker_is_not_duplicated_or_replaced() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", "7".parse().expect("header"));
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(SdkErrorShape {
+            message: "unavailable (retry-after-ms: 0)".into(), status: Some(json!(503)), headers: Some(headers), ..Default::default()
+        })));
+        let formatted = format_provider_error(&norm, None);
+        assert_eq!(formatted.matches("retry-after-ms:").count(), 1);
+        assert_eq!(crate::utils::retry_hint::parse_retry_after_ms_marker(&formatted), Some(0));
+    }
+
+    #[test]
+    fn google_sdk_error_preserves_response_retry_headers() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after-ms", "125".parse().expect("header"));
+        let error = crate::api::google_shared::GoogleRequestError::Sdk {
+            message: "unavailable".into(), status: Some(503), headers: Some(headers),
+        };
+        let norm = normalize_provider_error(&error.to_thrown());
+        assert_eq!(crate::utils::retry_hint::parse_retry_after_ms_marker(&format_provider_error(&norm, None)), Some(125));
+    }
 
     #[test]
     fn extracts_status_and_body_from_a_mistral_shaped_error() {

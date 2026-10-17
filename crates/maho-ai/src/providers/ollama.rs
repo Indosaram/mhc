@@ -134,6 +134,7 @@ fn to_ollama_model(host: &str, name: &str, show: &OllamaShowResponse) -> Option<
         provider: "ollama".to_owned(),
         base_url: format!("{host}/v1"),
         reasoning: show.capabilities.iter().any(|capability| capability == "thinking"),
+        default_thinking_level: None,
         thinking_level_map: None,
         input: if show.capabilities.iter().any(|capability| capability == "vision") {
             vec![InputModality::Text, InputModality::Image]
@@ -150,6 +151,7 @@ fn to_ollama_model(host: &str, name: &str, show: &OllamaShowResponse) -> Option<
         service_tier: None,
         recover_text_tool_calls: None,
         compat: Some(ollama_compat()),
+        input_limits: None,
     })
 }
 

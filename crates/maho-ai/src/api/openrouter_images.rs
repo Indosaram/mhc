@@ -156,6 +156,7 @@ async fn run_generate(
             .collect();
         if let Some(overrides) = options.and_then(|options| options.request.headers.as_ref()) {
             for (name, value) in overrides {
+                merged.retain(|existing, _| !existing.eq_ignore_ascii_case(name));
                 merged.insert(name.clone(), value.clone());
             }
         }

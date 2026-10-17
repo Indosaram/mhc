@@ -15,6 +15,7 @@ use crate::package_identity::dedupe_paths_by_package_identity;
 use crate::package_manager::{DefaultPackageManager, PackageManagerOptions, PathMetadata, ResolveSourcesOptions, ResolvedPaths, ResolvedResource};
 use crate::paths::{canonicalize_path, is_local_path, lexical_resolve, resolve_path, PathInputOptions};
 use crate::prompt_templates::{load_prompt_templates, LoadPromptTemplatesOptions, PromptTemplate};
+use crate::resolved_paths_memo::{ResolvedPathsMemoKeyInput, memoize_resolved_paths, resolved_paths_memo_key};
 use crate::settings_manager::{InMemorySettingsStorage, SettingsManager, SettingsScope, SettingsStorage};
 use crate::skills::{load_skills, LoadSkillsOptions, LoadSkillsResult};
 use crate::source_info::{create_source_info, SourceInfo, SourceOrigin, SourceScope};
@@ -303,15 +304,32 @@ pub fn dedupe_prompts(prompts: Vec<PromptTemplate>) -> (Vec<PromptTemplate>, Vec
 /// packages, then load the enabled paths CLI-first and in package-manager precedence order.
 /// Like upstream (`resolve()` / `installParsedSource` have no catch), a package or `-e` source that
 /// cannot be resolved or installed fails the whole load.
-pub async fn load_resources(cwd: &str, agent_dir: &str, mut settings: SettingsManager, inputs: &ResourceLoaderInputs) -> Result<LoadedResources, String> {
-    let (resolved, cli) = {
-        let manager = DefaultPackageManager::new(PackageManagerOptions { cwd, agent_dir, settings_manager: &mut settings });
+pub async fn load_resources(cwd: &str, agent_dir: &str, settings: SettingsManager, inputs: &ResourceLoaderInputs) -> Result<LoadedResources, String> {
+    load_resources_with_refresh(cwd, agent_dir, settings, inputs, false).await
+}
+
+/// Resolution refresh for an explicit reload signal when package manifests may have changed.
+pub async fn load_resources_with_refresh(cwd: &str, agent_dir: &str, settings: SettingsManager, inputs: &ResourceLoaderInputs, refresh: bool) -> Result<LoadedResources, String> {
+    let key = resolved_paths_memo_key(&ResolvedPathsMemoKeyInput {
+        agent_dir: resolve_path(agent_dir, cwd, &PathInputOptions::default()),
+        cwd: resolve_path(cwd, cwd, &PathInputOptions::default()),
+        project_trusted: settings.is_project_trusted(),
+        global_settings: serde_json::Value::Object(settings.get_global().clone()),
+        project_settings: serde_json::Value::Object(settings.get_project().clone()),
+        additional_extension_paths: inputs.additional_extension_paths.clone(),
+    });
+    let cwd_owned = cwd.to_owned();
+    let agent_dir_owned = agent_dir.to_owned();
+    let sources = inputs.additional_extension_paths.clone();
+    let (resolved, cli) = memoize_resolved_paths(key, move || async move {
+        let mut snapshot = snapshot_settings(&settings);
+        let manager = DefaultPackageManager::new(PackageManagerOptions { cwd: &cwd_owned, agent_dir: &agent_dir_owned, settings_manager: &mut snapshot });
         let resolved = manager.resolve(None).await.map_err(|error| error.to_string())?;
-        let cli = if inputs.additional_extension_paths.is_empty() { ResolvedPaths::default() } else {
-            manager.resolve_extension_sources(&inputs.additional_extension_paths, Some(ResolveSourcesOptions { local: false, temporary: true })).await.map_err(|error| error.to_string())?
+        let cli = if sources.is_empty() { ResolvedPaths::default() } else {
+            manager.resolve_extension_sources(&sources, Some(ResolveSourcesOptions { local: false, temporary: true })).await.map_err(|error| error.to_string())?
         };
-        (resolved, cli)
-    };
+        Ok((resolved, cli))
+    }, refresh).await?;
 
     let mut metadata_by_path: HashMap<String, PathMetadata> = HashMap::new();
     let enabled_prompts = enabled_paths(&resolved.prompts, &mut metadata_by_path);
@@ -356,9 +374,12 @@ pub async fn load_resources(cwd: &str, agent_dir: &str, mut settings: SettingsMa
     let prompt_candidates = if inputs.no_prompt_templates { cli_prompts } else { [cli_prompts, enabled_prompts].concat() };
     let prompt_paths = merge_paths(cwd, prompt_candidates, &inputs.additional_prompt_template_paths);
     let (mut prompts, mut prompt_diagnostics) = if inputs.no_prompt_templates && prompt_paths.is_empty() { (Vec::new(), Vec::new()) } else {
-        dedupe_prompts(load_prompt_templates(&LoadPromptTemplatesOptions {
+        let (loaded, mut diagnostics) = load_prompt_templates(&LoadPromptTemplatesOptions {
             cwd: cwd.to_owned(), agent_dir: agent_dir.to_owned(), prompt_paths, include_defaults: false,
-        }))
+        });
+        let (prompts, mut collisions) = dedupe_prompts(loaded);
+        diagnostics.append(&mut collisions);
+        (prompts, diagnostics)
     };
     for prompt in &mut prompts {
         if let Some(info) = find_source_info(&prompt.file_path, &metadata_by_path) { prompt.source_info = info; }
@@ -515,6 +536,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_refresh_rediscovers_package_resources() {
+        let dir = crate::test_support::isolated_tempdir();
+        let cwd = dir.path().join("project");
+        let agent = dir.path().join("agent");
+        let package = dir.path().join("pkg");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        write(&package.join("prompts").join("first.md"), "first");
+        let settings = || trusted_settings(serde_json::json!({"packages": ["../pkg"]}));
+        let inputs = ResourceLoaderInputs::default();
+        let cwd = cwd.to_string_lossy();
+        let agent = agent.to_string_lossy();
+        let first = load_resources(&cwd, &agent, settings(), &inputs).await.expect("initial");
+        assert!(first.prompts.iter().any(|prompt| prompt.name == "first"));
+        write(&package.join("prompts").join("second.md"), "second");
+        let cached = load_resources(&cwd, &agent, settings(), &inputs).await.expect("cached");
+        assert!(!cached.prompts.iter().any(|prompt| prompt.name == "second"));
+        let refreshed = load_resources_with_refresh(&cwd, &agent, settings(), &inputs, true).await.expect("refresh");
+        assert!(refreshed.prompts.iter().any(|prompt| prompt.name == "second"));
+    }
+
+    #[tokio::test]
     async fn cli_skill_paths_load_first_and_no_skills_drops_discovered_ones() {
         let dir = crate::test_support::isolated_tempdir();
         let cwd = dir.path().join("project");
@@ -530,10 +572,31 @@ mod tests {
         assert_eq!(names, ["cli-skill"]);
     }
 
+    #[tokio::test]
+    async fn prompt_parse_diagnostics_reach_loaded_resources() {
+        let dir = crate::test_support::isolated_tempdir();
+        let cwd = dir.path().join("project");
+        let agent = dir.path().join("agent");
+        let prompts = dir.path().join("prompts");
+        let invalid = prompts.join("invalid.md");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        write(&invalid, "---\ndescription: [unterminated\n---\nbody");
+        write(&prompts.join("valid.md"), "valid body");
+        let inputs = ResourceLoaderInputs {
+            additional_prompt_template_paths: vec![prompts.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), trusted_settings(serde_json::json!({})), &inputs).await.expect("load resources");
+        assert_eq!(loaded.prompts.iter().map(|prompt| prompt.name.as_str()).collect::<Vec<_>>(), ["valid"]);
+        assert_eq!(loaded.prompt_diagnostics.len(), 1);
+        assert_eq!(loaded.prompt_diagnostics[0].diagnostic_type, ResourceDiagnosticType::Warning);
+        assert_eq!(loaded.prompt_diagnostics[0].path.as_deref(), Some(invalid.to_string_lossy().as_ref()));
+    }
+
     #[test]
     fn duplicate_prompt_names_keep_the_first_and_report_a_collision() {
         let prompt = |path: &str| PromptTemplate {
-            name: "review".into(), description: String::new(), argument_hint: None, content: String::new(),
+            name: "review".into(), description: String::new(), argument_hint: None, requires_arguments: false, content: String::new(),
             source_info: SourceInfo::default(), file_path: path.into(),
         };
         let (kept, diagnostics) = dedupe_prompts(vec![prompt("/a/review.md"), prompt("/b/review.md")]);

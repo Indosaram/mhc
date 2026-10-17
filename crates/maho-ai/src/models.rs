@@ -428,14 +428,8 @@ pub trait Provider: Send + Sync {
         model: &'a crate::types::ImagesModel,
         context: &'a crate::types::ImagesContext,
         options: Option<crate::types::ImagesOptions>,
-    ) -> BoxFuture<'a, Result<crate::types::AssistantImages, String>>;
-    fn classify<'a>(
-        &'a self,
-        _model: &'a crate::types::ClassifierModel,
-        _context: &'a crate::types::ClassifierContext,
-        _options: Option<crate::types::ClassifierOptions>,
-    ) -> BoxFuture<'a, crate::types::ClassifierResult> {
-        Box::pin(async { Err("Provider does not support classification".to_owned()) })
+    ) -> BoxFuture<'a, Result<crate::types::AssistantImages, String>> {
+        Box::pin(async { Err("Provider does not support image generation".to_owned()) })
     }
     fn fetch_deferred(
         &self,
@@ -1092,18 +1086,6 @@ impl Models {
             }
         });
         outer
-    }
-
-    fn generate_images<'a>(
-        &'a self,
-        model: &'a crate::types::ImagesModel,
-        context: &'a crate::types::ImagesContext,
-        options: Option<crate::types::ImagesOptions>,
-    ) -> BoxFuture<'a, Result<crate::types::AssistantImages, String>> {
-        match self.api_for_model_id(&model.id) {
-            Some(streams) => streams.generate_images(model, context, options),
-            None => Box::pin(async { Err(format!("Provider {} has no image API implementation", self.input.id)) }),
-        }
     }
 
     pub fn stream(

@@ -22,6 +22,7 @@ static PROSE_S_RE: LazyLock<Regex> = LazyLock::new(|| ci(r"retry-after:\s*(\d+)"
 static PROSE_WAIT_RE: LazyLock<Regex> =
     LazyLock::new(|| ci(r"(?:try again|retry|wait after).*?(?:in\s+)?(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?)\b"));
 static PROSE_RESET_RE: LazyLock<Regex> = LazyLock::new(|| ci(r"resets?\s+at\s+(\S+)"));
+static PROSE_RESET_IN_RE: LazyLock<Regex> = LazyLock::new(|| ci(r"\bresets?\s+in\s+(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?)\b"));
 static DATA_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^data:\s*").unwrap_or_else(|e| panic!("{e}")));
 
 #[derive(Debug, Clone, Default)]
@@ -130,6 +131,9 @@ fn from_body_prose(body_text: &str, now_ms: i64) -> Option<u64> {
     if let Some(m) = PROSE_WAIT_RE.captures(body_text) {
         return Some(convert_unit(m[1].parse().unwrap_or(0.0), &m[2]));
     }
+    if let Some(m) = PROSE_RESET_IN_RE.captures(body_text) {
+        return Some(convert_unit(m[1].parse().unwrap_or(0.0), &m[2]));
+    }
     let m = PROSE_RESET_RE.captures(body_text)?;
     date_parse_ms(&m[1]).map(|parsed| clamp_absolute(parsed, now_ms))
 }
@@ -205,6 +209,17 @@ mod tests {
 
     fn hint_default_now(status: Option<u16>, h: &HeaderMap, body: &str) -> Option<u64> {
         extract_429_retry_after_ms(&RetryHintInput { status, headers: Some(h), body_text: body }, None)
+    }
+
+    #[test]
+    fn relative_reset_hints_preserve_eligibility_and_precedence() {
+        let empty = HeaderMap::new();
+        for (text, delay) in [("Limit resets in 1.5 minutes", 90_000), ("reset in 0 ms", 0), ("RESETS IN 2 SEC", 2_000)] {
+            assert_eq!(hint(Some(429), &empty, text), Some(delay));
+        }
+        assert_eq!(hint(Some(500), &empty, "resets in 2 seconds"), None);
+        assert_eq!(hint(Some(429), &headers(&[("retry-after", "3")]), "resets in 2 seconds"), Some(3_000));
+        assert_eq!(hint(Some(429), &empty, "retry in 1 second; resets in 2 seconds"), Some(1_000));
     }
 
     // ---------- 1. Eligibility gate ----------

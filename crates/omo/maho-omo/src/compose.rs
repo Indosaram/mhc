@@ -183,9 +183,17 @@ impl Extension for OmoExtension {
         // component loop so the runtime-binding pass below leaves it unwrapped.
         let shutdown_runtime = Arc::clone(&runtime);
         api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, _| {
+            shutdown_runtime.startup_deferral().retire();
             shutdown_runtime.coordinator().retire();
             Box::pin(async { Ok(maho_ext_api::EventResult::None) })
         }));
+        for kind in [maho_ext_api::EventKind::Input, maho_ext_api::EventKind::BeforeAgentStart] {
+            let startup = runtime.startup_deferral();
+            api.on(kind, Arc::new(move |_, _| {
+                startup.open();
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            }));
+        }
         let _turn = runtime.enter_turn();
         let existing: std::collections::BTreeMap<_, _> = api.registered.handlers.iter()
             .map(|(kind, handlers)| (*kind, handlers.len())).collect();
@@ -216,6 +224,10 @@ impl Extension for OmoExtension {
                     let shared = Arc::clone(&shared);
                     let mut context = context.clone();
                     shared.bind(&mut context);
+                    if matches!(event, maho_ext_api::ExtensionEvent::SessionStart(_)) {
+                        let startup = shared.startup_deferral();
+                        context.defer_macrotask = Some(Arc::new(move |work| startup.schedule(work)));
+                    }
                     Box::pin(async move {
                         let _turn = shared.enter_turn();
                         original(event, &context).await

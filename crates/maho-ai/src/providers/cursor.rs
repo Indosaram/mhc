@@ -66,6 +66,7 @@ fn to_cursor_model(entry: CursorCatalogEntry, max_tokens_by_variant: &BTreeMap<S
         provider: "cursor".to_owned(),
         base_url: CURSOR_BASE_URL.to_owned(),
         reasoning: entry.reasoning,
+        default_thinking_level: None,
         thinking_level_map: entry.thinking_level_map,
         // Subscription-billed: Cursor reports no per-token pricing here.
         cost: ModelCost::default(),
@@ -76,6 +77,7 @@ fn to_cursor_model(entry: CursorCatalogEntry, max_tokens_by_variant: &BTreeMap<S
         service_tier: None,
         recover_text_tool_calls: None,
         compat: Some(compat),
+        input_limits: None,
     }
 }
 
@@ -174,6 +176,7 @@ mod tests {
             provider: "cursor".to_owned(),
             base_url: CURSOR_BASE_URL.to_owned(),
             reasoning: false,
+            default_thinking_level: None,
             thinking_level_map: None,
             input: entry.input.iter().filter_map(|value| to_modality(value)).collect(),
             cost: ModelCost::default(),
@@ -186,6 +189,7 @@ mod tests {
             service_tier: None,
             recover_text_tool_calls: None,
             compat: None,
+            input_limits: None,
         }
     }
 

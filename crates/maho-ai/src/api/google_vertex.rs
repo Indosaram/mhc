@@ -168,15 +168,10 @@ fn build_http_options_headers(
     model: &Model,
     options_headers: Option<&BTreeMap<String, String>>,
 ) -> Option<BTreeMap<String, String>> {
-    let mut headers: BTreeMap<String, String> = BTreeMap::new();
-    headers.insert("User-Agent".into(), get_pi_user_agent());
-    if let Some(model_headers) = &model.headers {
-        headers.extend(model_headers.clone());
-    }
-    if let Some(options_headers) = options_headers {
-        headers.extend(options_headers.clone());
-    }
-    (!headers.is_empty()).then_some(headers)
+    let defaults = BTreeMap::from([("User-Agent".into(), Some(get_pi_user_agent()))]);
+    let model_headers = model.headers.as_ref().map(|headers| headers.iter().map(|(name, value)| (name.clone(), Some(value.clone()))).collect());
+    let option_headers = options_headers.map(|headers| headers.iter().map(|(name, value)| (name.clone(), Some(value.clone()))).collect());
+    crate::utils::headers::merge_provider_headers_to_record(&[Some(&defaults), model_headers.as_ref(), option_headers.as_ref()])
 }
 
 pub fn resolve_custom_base_url(base_url: &str) -> Option<String> {

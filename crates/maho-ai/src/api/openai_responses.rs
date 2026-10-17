@@ -525,6 +525,12 @@ pub fn build_params(
 /// `getServiceTierCostMultiplier`.
 pub fn get_service_tier_cost_multiplier(model: &Model, service_tier: Option<&str>) -> f64 {
     match service_tier {
+        // OpenAI prices GPT-6 Astra and GPT-6.1 Sol Ultrafast at 6x Standard on every
+        // token class and context tier. Any other model keeps its base rate.
+        Some("ultrafast") => {
+            let id = model.upstream_model_id.as_deref().unwrap_or(&model.id);
+            if ["gpt-6-astra", "gpt-6.1-sol"].contains(&id) { 6.0 } else { 1.0 }
+        }
         Some("flex") => 0.5,
         Some("priority") | Some("fast") => if model.id == "gpt-5.5" { 2.5 } else { 2.0 },
         _ => 1.0,
@@ -1480,6 +1486,7 @@ pub fn stream_simple(
             ServiceTierPreference::Auto => "auto",
             ServiceTierPreference::Flex => "flex",
             ServiceTierPreference::Priority => "priority",
+            ServiceTierPreference::Ultrafast => "ultrafast",
         };
         stream_options.extra.insert("serviceTier".into(), json!(tier));
     }

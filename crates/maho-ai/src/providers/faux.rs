@@ -1023,6 +1023,7 @@ pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> 
             provider: provider.clone(),
             base_url: DEFAULT_BASE_URL.to_owned(),
             reasoning: definition.reasoning.unwrap_or(false),
+            default_thinking_level: None,
             thinking_level_map: None,
             input: definition.input.unwrap_or_else(|| vec![crate::types::InputModality::Text, crate::types::InputModality::Image]),
             cost: definition.cost.unwrap_or_default(),
@@ -1035,6 +1036,7 @@ pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> 
             service_tier: None,
             recover_text_tool_calls: None,
             compat: None,
+            input_limits: None,
         })
         .collect();
 
