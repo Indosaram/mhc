@@ -105,13 +105,17 @@ impl Extension for HerdrExtension{
                     if has_user_reporter(&ctx.loaded_extension_paths){guard.deferred=true;return Ok(EventResult::None);}
                     guard.bound=Some(ctx.session_manager.clone());guard.client=Some(Arc::new(HerdrClient::new(socket,pane,deps.now.clone())));
                     guard.state.turn_active = !ctx.is_idle();guard.state.child_count=count_running_child_tasks(&ctx.cwd,ctx.session_manager.session_id());
-                    for channel in ["herdr:blocked","terminal_monitor_state"]{
+                    for channel in ["herdr:blocked","terminal_monitor_state",maho_ext_builtin_loose::monitor_state_event::WAKE_SOURCE_STATE_EVENT]{
                         let callback=state.clone();
                         guard.subscriptions.push(bus.on(channel,Arc::new(move|value|{
                             let mut guard=callback.lock().expect("reporter lock");if guard.stopped{return;}
                             let event=if channel=="herdr:blocked"{
                                 if !is_herdr_blocked_event(value){return;}
                                 HerdrStateEvent::Blocked{active:value["active"].as_bool().expect("validated"),id:value["id"].as_str().expect("validated").into(),label:value.get("label").and_then(Value::as_str).map(str::to_owned)}
+                            }else if channel==maho_ext_builtin_loose::monitor_state_event::WAKE_SOURCE_STATE_EVENT{
+                                if !maho_ext_builtin_loose::monitor_state_event::is_wake_source_state_event(value){return;}
+                                let count=value["activeCount"].as_u64().unwrap_or_else(||value["activeCount"].as_f64().filter(|count|*count>0.0).map_or(0,|count|count as u64));
+                                HerdrStateEvent::WakeSource{source:value["source"].as_str().expect("validated").into(),count}
                             }else{
                                 if !maho_ext_builtin_loose::monitor_state_event::is_terminal_monitor_state_event(value){return;}
                                 let count=value["activeCount"].as_u64().or_else(||value["activeCount"].as_f64().and_then(|count|count.to_string().parse().ok())).expect("validated integer count");HerdrStateEvent::Monitors{count}
