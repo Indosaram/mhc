@@ -1,9 +1,20 @@
 use maho_ai::{model::Model,types::ThinkingLevel};
 
-pub const RECOMMENDED_DEFAULT_MODELS: &[(&str,ThinkingLevel)] = &[
-    ("claude-opus-5-5",ThinkingLevel::Medium),("claude-fable-5-1",ThinkingLevel::Xhigh),
-    ("kimi-k3",ThinkingLevel::Max),("gpt-6-astra",ThinkingLevel::Xhigh),
-    ("gpt-6-sol",ThinkingLevel::Medium),("glm-5.3",ThinkingLevel::Max),
+pub const CLAUDE_PROVIDERS: &[&str] = &[
+    "anthropic-subscription",
+    "anthropic",
+    "anthropic-api",
+    "github-copilot",
+    "opencode",
+];
+pub const KIMI_PROVIDERS: &[&str] = &["kimi-coding", "kimi-for-coding", "moonshotai", "opencode-go"];
+pub const GPT_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "github-copilot", "opencode"];
+pub const GLM_PROVIDERS: &[&str] = &["zai-coding-plan", "opencode-go"];
+
+pub const RECOMMENDED_DEFAULT_MODELS: &[(&str,ThinkingLevel,&[&str])] = &[
+    ("claude-opus-5-5",ThinkingLevel::Medium,CLAUDE_PROVIDERS),("claude-fable-5-1",ThinkingLevel::Xhigh,CLAUDE_PROVIDERS),
+    ("kimi-k3",ThinkingLevel::Max,KIMI_PROVIDERS),("gpt-6-astra",ThinkingLevel::Xhigh,GPT_PROVIDERS),
+    ("gpt-6-sol",ThinkingLevel::Medium,GPT_PROVIDERS),("glm-5.3",ThinkingLevel::Max,GLM_PROVIDERS),
 ];
 pub fn canonical_model_id(id:&str)->String{
     let mut id=id.to_lowercase();
@@ -13,12 +24,12 @@ pub fn canonical_model_id(id:&str)->String{
     if id=="k3"{"kimi-k3".into()}else{id}
 }
 #[derive(Clone,Debug,PartialEq,Eq)]
-pub struct Recommendation{pub model_id:String,pub thinking_level:ThinkingLevel}
+pub struct Recommendation{pub model_id:String,pub thinking_level:ThinkingLevel,pub providers:&'static [&'static str]}
 pub fn recommendations_for(configured:Option<&[String]>)->Vec<Recommendation>{
-    configured.map_or_else(||RECOMMENDED_DEFAULT_MODELS.iter().map(|(id,level)|Recommendation{model_id:(*id).into(),thinking_level:*level}).collect(),|ids|{
+    configured.map_or_else(||RECOMMENDED_DEFAULT_MODELS.iter().map(|&(id,level,providers)|Recommendation{model_id:id.into(),thinking_level:level,providers}).collect(),|ids|{
         ids.iter().map(|id|canonical_model_id(id)).filter(|id|!id.is_empty()).map(|model_id|{
-            let thinking_level=RECOMMENDED_DEFAULT_MODELS.iter().find(|(id,_)|*id==model_id).map_or(ThinkingLevel::Medium,|(_,level)|*level);
-            Recommendation{model_id,thinking_level}
+            let (thinking_level,providers)=RECOMMENDED_DEFAULT_MODELS.iter().find(|&&(id,_,_)|id==model_id).map_or((ThinkingLevel::Medium,&[][..]),|&(_,level,providers)|(level,providers));
+            Recommendation{model_id,thinking_level,providers}
         }).collect()
     })
 }
@@ -26,8 +37,15 @@ pub fn is_recommended(model:Option<&Model>,recommendations:&[Recommendation])->b
     model.is_some_and(|model|recommendations.iter().any(|recommendation|recommendation.model_id==canonical_model_id(&model.id)))
 }
 pub fn find_available_recommendation<'a>(recommendations:&'a [Recommendation],available:&'a [Model],has_auth:impl Fn(&Model)->bool)->Option<(&'a Recommendation,&'a Model)>{
+    let available:Vec<&'a Model>=available.iter().filter(|model|has_auth(model)).collect();
     for recommendation in recommendations{
-        if let Some(model)=available.iter().find(|model|has_auth(model)&&canonical_model_id(&model.id)==recommendation.model_id){return Some((recommendation,model));}
+        let candidates:Vec<&'a Model>=available.iter().copied().filter(|candidate|canonical_model_id(&candidate.id)==recommendation.model_id).collect();
+        let model=if recommendation.providers.is_empty(){
+            candidates.first().copied()
+        }else{
+            recommendation.providers.iter().find_map(|provider|candidates.iter().copied().find(|candidate|candidate.provider==*provider))
+        };
+        if let Some(model)=model{return Some((recommendation,model));}
     }
     None
 }
