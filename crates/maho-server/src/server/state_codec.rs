@@ -120,6 +120,24 @@ impl ServiceStateEncoder {
     pub fn update(&mut self, update: &Value) -> Result<Value, ServerError> {
         let mut output = update.clone();
         match update["type"].as_str() {
+            Some("reset") => {
+                self.codecs.clear();
+                let snapshot = &update["snapshot"];
+                let instances = snapshot["instances"].as_array().ok_or_else(|| {
+                    ServerError::new("invalid_request", "Invalid service subscription snapshot")
+                })?;
+                let mut output_snapshot = snapshot.clone();
+                output_snapshot["instances"] = Value::Array(
+                    instances
+                        .iter()
+                        .map(|instance| self.instance(instance))
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+                output["snapshot"] = output_snapshot;
+                crate::client::service_wire::ServiceStateDecoder::default()
+                    .update(&output)
+                    .map_err(|e| ServerError::new("invalid_request", &e.to_string()))?;
+            }
             Some("state") => {
                 let key = key(update.get("instance"), &update["member"]);
                 let codec = self

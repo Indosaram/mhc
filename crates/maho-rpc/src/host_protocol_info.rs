@@ -24,6 +24,7 @@ pub struct RpcLaunchProfile {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HostProtocolInfo {
+    pub lifecycle: Option<HostLifecycle>,
     pub protocol_version: f64,
     pub server_version: String,
     pub capabilities: Vec<String>,
@@ -32,7 +33,12 @@ pub struct HostProtocolInfo {
     pub engine_version: Option<String>,
     pub engine_ordinal: Option<[f64; 5]>,
     pub launch_profile: Option<RpcLaunchProfile>,
+    pub memory_pressure: Option<bool>,
+    pub handover: Option<Value>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostLifecycle { Ready, Stopping }
 
 pub fn parse_host_protocol_info(data: &Value) -> Option<HostProtocolInfo> {
     let object = data.as_object()?;
@@ -57,6 +63,11 @@ pub fn parse_host_protocol_info(data: &Value) -> Option<HostProtocolInfo> {
         Some(RpcLaunchProfile { profile_id, core: RpcLaunchProfileCore { extensions, multi_session, session_runtime } })
     });
     Some(HostProtocolInfo {
+        lifecycle: match object.get("lifecycle").and_then(Value::as_str) {
+            Some("ready") => Some(HostLifecycle::Ready),
+            Some("stopping") => Some(HostLifecycle::Stopping),
+            _ => None,
+        },
         protocol_version: object.get("protocolVersion").and_then(Value::as_f64).unwrap_or(0.0),
         server_version,
         capabilities,
@@ -66,6 +77,8 @@ pub fn parse_host_protocol_info(data: &Value) -> Option<HostProtocolInfo> {
         engine_version: object.get("engineVersion").and_then(Value::as_str).map(str::to_owned),
         engine_ordinal,
         launch_profile,
+        memory_pressure: object.get("memory_pressure").and_then(Value::as_bool),
+        handover: object.get("handover").filter(|value| value.is_object()).cloned(),
     })
 }
 
@@ -121,5 +134,23 @@ mod tests {
     fn ordinal_accepts_numeric_parts_without_integer_coercion() {
         let data = json!({"serverVersion":"info","capabilities":[],"engineOrdinal":[2026,9,16,3,0.5]});
         assert_eq!(parse_host_protocol_info(&data).unwrap().engine_ordinal,Some([2026.0,9.0,16.0,3.0,0.5]));
+    }
+
+    #[test]
+    fn parses_additive_lifecycle_memory_and_handover_fields() {
+        let data = json!({"serverVersion":"info","capabilities":[],"lifecycle":"stopping","memory_pressure":true,"handover":{"deadline":42}});
+        let host = parse_host_protocol_info(&data).unwrap();
+        assert_eq!(host.lifecycle, Some(HostLifecycle::Stopping));
+        assert_eq!(host.memory_pressure, Some(true));
+        assert_eq!(host.handover, Some(json!({"deadline":42})));
+    }
+
+    #[test]
+    fn ignores_malformed_additive_fields() {
+        let data = json!({"serverVersion":"info","capabilities":[],"lifecycle":"dead","memory_pressure":"true","handover":[]});
+        let host = parse_host_protocol_info(&data).unwrap();
+        assert_eq!(host.lifecycle, None);
+        assert_eq!(host.memory_pressure, None);
+        assert_eq!(host.handover, None);
     }
 }

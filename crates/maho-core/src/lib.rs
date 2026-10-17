@@ -135,6 +135,7 @@ pub mod usage_totals;
 pub mod export_html;
 
 pub use auth_storage::{AuthStorage, CredentialKind, ReadOnlyAuthStorage, read_stored_credential};
+pub use models_json_migration::unique_backup_path;
 pub use brand::{BRAND_ENV_VAR, BrandProfile, brand_profile, env_value, parse_brand_profile};
 pub use config::{app_command, app_name, app_title, config_dir_name, get_agent_dir, get_sessions_dir};
 pub use credential_accounts::{

@@ -23,7 +23,7 @@ impl Default for CacheKeepalive{
         maho_ai::api::warm_prompt_cache::warm_prompt_cache(&model,&context,Some(options),&|model,context,options|Ok(serde_json::Value::Object(maho_ai::api::anthropic_messages::build_anthropic_warm_prompt_cache_params(model,context,Some(options))))).await.map_err(ExtensionFailure::new)
     }))}}
 }
-struct State {ctx:Option<ExtensionContext>,parked:bool,active:bool,generation:u64,attempts:u64,cost:f64,last:Option<i64>,messages:Vec<AgentMessage>,usage:Option<Usage>,work:Option<tokio::task::JoinHandle<()>>,retired:Vec<tokio::task::JoinHandle<()>>,entries:Vec<serde_json::Value>}
+struct State {ctx:Option<ExtensionContext>,parked:bool,arm_on_settle:bool,active:bool,generation:u64,attempts:u64,cost:f64,last:Option<i64>,messages:Vec<AgentMessage>,usage:Option<Usage>,work:Option<tokio::task::JoinHandle<()>>,retired:Vec<tokio::task::JoinHandle<()>>,entries:Vec<serde_json::Value>}
 async fn retire(tasks:Vec<tokio::task::JoinHandle<()>>){for task in tasks{let _result=task.await;}}
 fn append_entries(state:&Mutex<State>,sender:&ExtensionApi)->Result<(),ExtensionFailure>{
     let entries=std::mem::take(&mut state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entries);
@@ -109,7 +109,7 @@ fn arm(state:Arc<Mutex<State>>,sender:Arc<ExtensionApi>,warm:WarmRequest)->Resul
 }
 impl Extension for CacheKeepalive{
     fn register(&self,api:&mut ExtensionApi){
-        let state=Arc::new(Mutex::new(State{ctx:None,parked:false,active:false,generation:0,attempts:0,cost:0.0,last:None,messages:vec![],usage:None,work:None,retired:vec![],entries:vec![]}));
+        let state=Arc::new(Mutex::new(State{ctx:None,parked:false,arm_on_settle:false,active:false,generation:0,attempts:0,cost:0.0,last:None,messages:vec![],usage:None,work:None,retired:vec![],entries:vec![]}));
         let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
         api.register_entry_renderer(CACHE_KEEPALIVE_ENTRY_TYPE,maho_ext_host::notice::notice_entry_renderer(|entry|{
             let data=&entry.data["data"];if data["phase"]!="ping"{return None;}
@@ -117,7 +117,7 @@ impl Extension for CacheKeepalive{
             let refreshed=if tokens>=1_000_000{format!("{}M",format!("{:.1}",tokens as f64/1_000_000.0).trim_end_matches(".0"))}else if tokens>=1000{format!("{}K",format!("{:.1}",tokens as f64/1000.0).trim_end_matches(".0"))}else{tokens.to_string()};
             Some(maho_ext_host::notice::NoticeSpec{title:format!("⚡ Warm ping #{} · ~{refreshed} tokens refreshed · ${:.3}",data["iteration"],data["estimatedCostUsd"].as_f64().unwrap_or(0.0)),tone:None,why:"Refreshed the active Anthropic prompt cache while the session was idle.".into(),extra:vec![],expanded_line:Some(format!("cache read {} · cache write {} · session total ${:.3}",data["cacheRead"],data["cacheWrite"],data["cumulativeEstimatedUsd"].as_f64().unwrap_or(0.0)))})
         }),Default::default());
-        for kind in [EventKind::SessionStart,EventKind::AgentEnd,EventKind::ModelSelect,EventKind::SessionParked,EventKind::SessionResumed,EventKind::AgentStart,EventKind::Input,EventKind::SessionShutdown]{
+        for kind in [EventKind::SessionStart,EventKind::AgentEnd,EventKind::AgentSettled,EventKind::ModelSelect,EventKind::SessionParked,EventKind::SessionResumed,EventKind::AgentStart,EventKind::Input,EventKind::SessionShutdown]{
             let state=state.clone();let sender=sender.clone();let warm=self.warm.clone();
             api.on(kind,Arc::new(move|event,ctx|{let state=state.clone();let sender=sender.clone();let warm=warm.clone();Box::pin(async move{
                 let restored=if kind==EventKind::SessionStart{
@@ -126,7 +126,7 @@ impl Extension for CacheKeepalive{
                     Some(snapshot.messages.into_iter().map(|value|serde_json::from_value::<AgentMessage>(value).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>())
                 }else{None};
                 let retirement;
-                let mut rearm=matches!(kind,EventKind::SessionStart|EventKind::AgentEnd|EventKind::ModelSelect|EventKind::SessionResumed);
+                let mut rearm=matches!(kind,EventKind::SessionStart|EventKind::AgentEnd|EventKind::AgentSettled|EventKind::ModelSelect|EventKind::SessionResumed);
                 let transition;
                 {
                     let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -137,7 +137,8 @@ impl Extension for CacheKeepalive{
                             state.messages=restored.expect("session-start restoration")?;
                             state.usage=last_assistant_usage(&state.messages).map(|(usage,_)|*usage);state.last=last_assistant_timestamp(&state.messages);
                         }
-                        ExtensionEvent::AgentEnd{messages,..}=>{state.ctx=Some(ctx.clone());if last_assistant_usage(messages).is_some_and(|(_,reason)|reason==maho_ai::types::StopReason::Error){rearm=false;stop(&mut state,"provider-error",false);}else{state.messages=messages.clone();state.usage=last_assistant_usage(messages).map(|(usage,_)|*usage);state.last=Some(maho_ai::utils::diagnostics::now_ms());}}
+                        ExtensionEvent::AgentEnd{messages,..}=>{state.ctx=Some(ctx.clone());if last_assistant_usage(messages).is_some_and(|(_,reason)|reason==maho_ai::types::StopReason::Error){rearm=false;state.arm_on_settle=false;stop(&mut state,"provider-error",false);}else{state.arm_on_settle=true;state.messages=messages.clone();state.usage=last_assistant_usage(messages).map(|(usage,_)|*usage);state.last=Some(maho_ai::utils::diagnostics::now_ms());}}
+                        ExtensionEvent::AgentSettled=>{state.ctx=Some(ctx.clone());rearm=state.arm_on_settle;state.arm_on_settle=false;}
                         ExtensionEvent::ModelSelect(event)=>{let mut selected=ctx.clone();selected.model=Some(event.model.clone());state.ctx=Some(selected);stop(&mut state,"model-changed",false);}
                         ExtensionEvent::SessionParked=>{state.parked=true;stop(&mut state,"session-parked",false);}
                         ExtensionEvent::SessionResumed=>{state.parked=false;state.ctx=Some(ctx.clone());}
@@ -180,7 +181,7 @@ mod tests{
         let (dropped,finished)=tokio::sync::oneshot::channel();
         let task=tokio::spawn(async move{let _owned=Dropped(dropped);let _result=entered.send(());std::future::pending::<()>().await;});
         tokio::time::timeout(std::time::Duration::from_secs(5),started).await.expect("entered").expect("signal");
-        let mut state=State{ctx:None,parked:false,active:true,generation:9,attempts:2,cost:0.25,last:None,messages:vec![],usage:None,work:Some(task),retired:vec![],entries:vec![]};
+        let mut state=State{ctx:None,parked:false,arm_on_settle:false,active:true,generation:9,attempts:2,cost:0.25,last:None,messages:vec![],usage:None,work:Some(task),retired:vec![],entries:vec![]};
         stop(&mut state,"session-dispose",false);
         assert_eq!(state.generation,10);
         assert!(!state.active);

@@ -2,6 +2,7 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
 use crate::host_protocol_info::{HostProtocolInfo,parse_host_protocol_info};
 pub const DEFAULT_PROBE_TIMEOUT_MS:u64=10000;
+pub const DETACH_CONNECTION_CAPABILITY:&str="detach_connection";
 pub struct ProbeHostOptions<'a>{pub socket:&'a str,pub timeout_ms:Option<u64>}
 /// The running host's identity, or `None` when nothing is serving the endpoint.
 pub async fn probe_host(options:ProbeHostOptions<'_>)->Option<HostProtocolInfo>{probe_protocol_info(options.socket,options.timeout_ms.unwrap_or(DEFAULT_PROBE_TIMEOUT_MS)).await}
@@ -22,7 +23,22 @@ pub async fn connect_and_ask(socket_path:&str,request:&Value,timeout_ms:u64)->Pr
         }
     }).await;outcome
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let secret_path=match crate::socket_transport::socket_secret_path(socket_path){Ok(path)=>path,Err(_)=>return ProbeOutcome::default()};
+        let secret=match crate::socket_transport::read_socket_secret(std::path::Path::new(&secret_path)){Ok(secret)=>secret,Err(_)=>return ProbeOutcome::default()};
+        let address=match crate::socket_transport::resolve_socket_transport_address(socket_path,"win32",Some(&secret)){Ok(address)=>address,Err(_)=>return ProbeOutcome::default()};
+        let mut outcome=ProbeOutcome::default();
+        let _=tokio::time::timeout(std::time::Duration::from_millis(timeout_ms),async{
+            let mut stream=tokio::net::windows::named_pipe::ClientOptions::new().open(&address).ok()?;outcome.connected=true;
+            crate::socket_transport::send_socket_handshake(&mut stream,&secret).await.ok()?;
+            stream.write_all(crate::jsonl::serialize_json_line(request).ok()?.as_bytes()).await.ok()?;
+            let mut buffer=String::new();let mut chunk=[0u8;8192];
+            loop{let size=stream.read(&mut chunk).await.ok()?;if size==0{return None;}buffer.push_str(&String::from_utf8_lossy(&chunk[..size]));while let Some(newline)=buffer.find('\n'){let line=buffer[..newline].to_owned();buffer.drain(..=newline);if let Some(answer)=read_answer(&line){outcome.answer=Some(answer);return Some(());}}}
+        }).await;outcome
+    }
+    #[cfg(not(any(unix,windows)))]
     { let _=(socket_path,request,timeout_ms); ProbeOutcome::default() }
 }
 pub async fn request_on_socket(socket_path:&str,command:&Value,timeout_ms:u64)->Option<Value>{let mut request=serde_json::json!({"id":PROBE_REQUEST_ID});if let Some(fields)=command.as_object(){request.as_object_mut()?.extend(fields.clone());}connect_and_ask(socket_path,&request,timeout_ms).await.answer}

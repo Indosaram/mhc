@@ -571,10 +571,6 @@ impl HostCore{
                 },
                 HostMonitorSample::Memory(sample)=>{
                     if let Some(pressure)=sample.pressure_change{publisher.memory_pressure.store(pressure,std::sync::atomic::Ordering::SeqCst);}
-                    if let Some((critical,rss_mb))=sample.critical_change{
-                        let core=std::sync::Arc::clone(&publisher);
-                        tokio::spawn(async move{core.registry.lock().await.set_worker_admission(critical.then_some((rss_mb,crate::host_memory_sampler::HOST_MEMORY_SAMPLE_MS)));});
-                    }
                     if let Some(rss_mb)=sample.idle_pressure{eprintln!("senpi rpc host: memory pressure with no sessions: rssMb={rss_mb}");}
                     if let Some(record)=sample.record{publisher.broadcast_record(&record);}
                     if let Some(log)=sample.log{eprint!("{log}");}

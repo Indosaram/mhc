@@ -15,7 +15,7 @@ pub async fn ensure_prepared_host(mut prepared:LockedHostEnsure,socket:&str,agen
     let attached_pid=prepared.registration.as_ref().filter(|owner|owner.socket.as_deref().is_none_or(|registered|registered==socket)).map_or(0,|owner|owner.pid);
     match prepared.decision{
         HostDecision::Reuse{..}=>return Ok(EnsuredHost::Reused{pid:attached_pid}),
-        HostDecision::Refuse{reason,..}=>return Ok(EnsuredHost::Refused(match reason{RefuseReason::Protocol=>"protocol",RefuseReason::Capability=>"capability"})),
+        HostDecision::Refuse{reason,..}=>return Ok(EnsuredHost::Refused(match reason{RefuseReason::Protocol=>"protocol",RefuseReason::Capability=>"capability",RefuseReason::HostStopping=>"host_stopping"})),
         HostDecision::Handoff{..}=>{
             prepared.lock.release().map_err(std::io::Error::other)?;
             return match crate::host_handoff::handoff_host(socket,agent_dir,handoff).await?{Ok(successor)=>Ok(EnsuredHost::HandedOff(successor)),Err(_)=>Ok(EnsuredHost::Reused{pid:attached_pid})};

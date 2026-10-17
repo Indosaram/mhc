@@ -480,6 +480,48 @@ impl ServiceStateDecoder {
     pub fn update(&mut self, v: &Value) -> Result<Value, ClientError> {
         let mut output = v.clone();
         match v["type"].as_str() {
+            Some("reset") => {
+                keys(v, &["type", "snapshot"], &[], "reset update")?;
+                let snapshot = &v["snapshot"];
+                keys(
+                    snapshot,
+                    &["serviceId", "mode", "instances"],
+                    &[],
+                    "service subscription snapshot",
+                )?;
+                if !id(&snapshot["serviceId"])
+                    || !matches!(snapshot["mode"].as_str(), Some("singleton" | "keyed"))
+                {
+                    return Err(invalid("service subscription snapshot"));
+                }
+                let instances = snapshot["instances"]
+                    .as_array()
+                    .ok_or_else(|| invalid("service subscription snapshot"))?;
+                self.codecs.clear();
+                let mut decoded_instances = Vec::with_capacity(instances.len());
+                for instance in instances {
+                    let decoded = self.instance(instance)?;
+                    for member in decoded["members"]
+                        .as_array()
+                        .ok_or_else(|| invalid("service instance snapshot"))?
+                    {
+                        if member["kind"] == "state" {
+                            let ops = member["ops"]
+                                .as_array()
+                                .ok_or_else(|| invalid("service reset state snapshot"))?;
+                            if ops.len() != 1 || ops[0][0] != "r" {
+                                return Err(ClientError::Protocol(
+                                    "Service reset must contain full root replacements".into(),
+                                ));
+                            }
+                        }
+                    }
+                    decoded_instances.push(decoded);
+                }
+                let mut decoded_snapshot = snapshot.clone();
+                decoded_snapshot["instances"] = Value::Array(decoded_instances);
+                output["snapshot"] = decoded_snapshot;
+            }
             Some("state") => {
                 keys(
                     v,

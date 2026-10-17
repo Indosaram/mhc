@@ -11,8 +11,15 @@ pub fn is_open_ai_image_gen_enabled() -> bool {
 }
 pub fn supports_native_image_generation(target: Option<&NativeImageGenModel<'_>>) -> bool {
     let Some(target) = target else { return false; };
+    let override_value = target.compat.and_then(|compat| compat.get("supportsImageGeneration")).and_then(Value::as_bool);
+    if target.api == "openai-codex-responses" {
+        return override_value != Some(false)
+            && url::Url::parse(target.base_url).is_ok_and(|url| {
+                url.scheme() == "https" && url.host_str() == Some("chatgpt.com")
+            });
+    }
     if target.api != "openai-responses" { return false; }
-    if let Some(value) = target.compat.and_then(|compat| compat.get("supportsImageGeneration")).and_then(Value::as_bool) { return value; }
+    if let Some(value) = override_value { return value; }
     let base_url = if target.base_url.is_empty() { "https://api.openai.com/v1" } else { target.base_url };
     url::Url::parse(base_url).is_ok_and(|url| url.host_str() == Some("api.openai.com"))
 }

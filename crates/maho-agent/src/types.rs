@@ -296,13 +296,31 @@ pub fn identity_convert_to_llm() -> ConvertToLlm {
 }
 
 /// Custom app messages. senpi declares the harness kinds into `CustomAgentMessages` from
-/// `harness/messages.ts`; Rust models that declaration merge as this enum.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// `harness/messages.ts`; Rust models that declaration merge as this enum. On the wire each kind
+/// is the bare message object discriminated by its `role`, as in TS.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
 pub enum CustomAgentMessage {
     BashExecution(crate::harness::messages::BashExecutionMessage),
     Custom(crate::harness::messages::CustomMessage),
     BranchSummary(crate::harness::messages::BranchSummaryMessage),
     CompactionSummary(crate::harness::messages::CompactionSummaryMessage),
+}
+
+impl<'de> Deserialize<'de> for CustomAgentMessage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = Value::deserialize(deserializer)?;
+        let role = value.get("role").and_then(Value::as_str).map(str::to_owned);
+        let parsed = match role.as_deref() {
+            Some("bashExecution") => serde_json::from_value(value).map(CustomAgentMessage::BashExecution),
+            Some("custom") => serde_json::from_value(value).map(CustomAgentMessage::Custom),
+            Some("branchSummary") => serde_json::from_value(value).map(CustomAgentMessage::BranchSummary),
+            Some("compactionSummary") => serde_json::from_value(value).map(CustomAgentMessage::CompactionSummary),
+            other => return Err(D::Error::custom(format!("unknown custom agent message role: {other:?}"))),
+        };
+        parsed.map_err(D::Error::custom)
+    }
 }
 
 /// AgentMessage: union of LLM messages + custom messages.
