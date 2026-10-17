@@ -94,6 +94,14 @@ impl ModelRegistry {
         crate::credential_accounts::pin_credential_account_guarded(&self.auth_storage,provider,name,
             &|key|std::env::var(key).ok(),&repository,maho_ai::utils::diagnostics::now_ms().max(0) as u64,admit).await.map(|_|())
     }
+    pub(crate) async fn reset_credential_account_guarded(&self,provider:&str,name:&str,agent_dir:&str,admit:&(dyn Fn()->Result<(),String>+Send+Sync))->Result<(),String>{
+        let _mutation=self.auth_storage.account_mutation.lock().await;
+        admit()?;
+        let repository=crate::credential_pool::state_store::CredentialSlotRepository::new(
+            &crate::credential_pool::state_store::credential_pool_state_path(agent_dir));
+        crate::credential_accounts::reset_credential_account_guarded(&self.auth_storage,provider,name,
+            &|key|std::env::var(key).ok(),&repository,maho_ai::utils::diagnostics::now_ms().max(0) as u64,admit).await.map(|_|())
+    }
     pub async fn remove_credential_account(&self,provider:&str,name:&str,agent_dir:&str)->Result<(),String>{
         self.remove_credential_account_guarded(provider,name,agent_dir,&||Ok(())).await
     }

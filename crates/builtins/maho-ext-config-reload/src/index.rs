@@ -64,13 +64,22 @@ impl WatchRegistrations {
     }
     pub fn snapshot(&self) -> Vec<crate::protocol::ConfigWatchRegistration> { self.registrations.iter().map(|registration| (**registration).clone()).collect() }
 }
-pub fn validate_external_paths(validator: Option<maho_ext_api::ConfigWatchValidator>, paths: &[PathBuf]) -> Vec<String> {
+pub async fn validate_external_paths(validator: Option<maho_ext_api::ConfigWatchValidator>, paths: &[PathBuf]) -> Vec<String> {
     let Some(validator) = validator else { return Vec::new(); };
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| validator(paths))) {
-        Ok(maho_ext_api::ConfigWatchValidation::Ok) => Vec::new(),
-        Ok(maho_ext_api::ConfigWatchValidation::Rejected { errors }) => errors,
-        Err(error) => vec![error.downcast_ref::<String>().cloned().or_else(|| error.downcast_ref::<&str>().map(|message| (*message).to_owned())).unwrap_or_else(|| "Configuration validator panicked".into())],
+    use futures::FutureExt;
+    let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| validator(paths.to_vec()))) {
+        Ok(future) => future,
+        Err(error) => return vec![config_watch_panic_message(error.as_ref())],
+    };
+    match std::panic::AssertUnwindSafe(future).catch_unwind().await {
+        Ok(Ok(maho_ext_api::ConfigWatchValidation::Ok)) => Vec::new(),
+        Ok(Ok(maho_ext_api::ConfigWatchValidation::Rejected { errors })) => errors,
+        Ok(Err(error)) => vec![error.message],
+        Err(error) => vec![config_watch_panic_message(error.as_ref())],
     }
+}
+fn config_watch_panic_message(error: &(dyn std::any::Any + Send)) -> String {
+    error.downcast_ref::<String>().cloned().or_else(|| error.downcast_ref::<&str>().map(|message| (*message).to_owned())).unwrap_or_else(|| "Configuration validator panicked".into())
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReloadAdmission { Empty, InFlight, Busy, Compacting, Unavailable, ProbeVeto }

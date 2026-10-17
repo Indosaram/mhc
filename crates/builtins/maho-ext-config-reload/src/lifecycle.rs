@@ -76,8 +76,9 @@ impl Extension for ConfigReload {
                         ctx.ui.notify(&format!("Hot-reloaded: {}", format_paths(paths.iter())), NotificationType::Info);
                         let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
                         logger.log(LogLevel::Info, LogEvent::ReloadCompleted { duration_ms: handoff.requested.elapsed().as_secs_f64() * 1000.0 });
-                        let (changed, groups, ungrouped) = {
+                        let (generation, changed, groups, ungrouped) = {
                             let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                            let generation = state.generation;
                             let changed = compare_snapshots(&handoff.hashes, &state.hashes);
                             let snapshot = state.hashes.clone();
                             let mut groups = Vec::new();
@@ -96,28 +97,31 @@ impl Extension for ConfigReload {
                                     }
                                 }
                             }
-                            (changed, groups, ungrouped)
+                            (generation, changed, groups, ungrouped)
                         };
 
                         for (registration_id, paths, validator) in groups {
-                            let errors = validate_external_paths(validator, &paths);
-                            if errors.is_empty() {
-                                state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.pending.add(&registration_id, &paths);
-                            } else {
+                            let errors = validate_external_paths(validator, &paths).await;
+                            let mut current = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                            if current.generation != generation { return Ok(EventResult::None); }
+                            if errors.is_empty() { current.pending.add(&registration_id, &paths); } else {
+                                drop(current);
                                 ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
                                 events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":registration_id,"paths":paths,"errors":errors}));
                             }
                         }
+                        if state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.generation != generation { return Ok(EventResult::None); }
                         if !ungrouped.is_empty() {
                             let errors = validate_builtin_paths(&ungrouped, &ctx.agent_dir, &ctx.cwd);
-                            if errors.is_empty() {
-                                state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.pending.add("builtin", &ungrouped);
-                            } else {
+                            let mut current = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                            if current.generation != generation { return Ok(EventResult::None); }
+                            if errors.is_empty() { current.pending.add("builtin", &ungrouped); } else {
+                                drop(current);
                                 ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
                                 events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":"builtin","paths":ungrouped,"errors":errors}));
                             }
                         }
-                        if !changed.is_empty() { schedule_flush(state, ctx.clone(), None)?; }
+                        if !changed.is_empty() { schedule_flush(state, ctx.clone(), Some(generation))?; }
                     }
                 }
                 Ok(EventResult::None)
@@ -213,7 +217,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     let ready_events = events.clone();
     let scope = maho_ai::node::provider_scope::active_provider_scope();
     let work = async move {
-        loop {
+        'watch: loop {
             let change = tokio::select! {
                 result = engine.next_change_async() => result?,
                 () = rebuild.notified() => {
@@ -241,8 +245,12 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
             for (id, paths) in group_changed_paths(&paths, &targets) {
                 let errors = if id == "builtin" { validate_builtin_paths(&paths, &ctx.agent_dir, &ctx.cwd) } else {
                     let validator = shared.lock().map_err(|error| error.to_string())?.registrations.validator(&id);
-                    validate_external_paths(validator, &paths)
+                    tokio::select! {
+                        result = validate_external_paths(validator, &paths) => result,
+                        result = cancelled.changed() => { let _ = result; break 'watch; }
+                    }
                 };
+                if shared.lock().map_err(|error| error.to_string())?.generation != generation { continue; }
                 if !errors.is_empty() {
                     ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
                     logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Warn, LogEvent::ValidationRejected { registration_id: &id, error_count: errors.len() as f64 });
@@ -250,12 +258,15 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                     continue;
                 }
                 let deferred = !ctx.is_idle() || ctx.has_pending_messages().map_err(|error| error.to_string())? || ctx.is_compacting();
-                {
+                let show_deferred_notice = {
                     let mut state = shared.lock().map_err(|error| error.to_string())?;
                     if state.generation != generation || state.in_flight { continue; }
                     state.pending.add(&id, &paths);
-                    if deferred && !state.deferred_notice { state.deferred_notice = true; ctx.ui.notify("Config changed; reloading when idle", NotificationType::Info); }
-                }
+                    let show = deferred && !state.deferred_notice;
+                    if show { state.deferred_notice = true; }
+                    show
+                };
+                if show_deferred_notice { ctx.ui.notify("Config changed; reloading when idle", NotificationType::Info); }
                 let logged_paths = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
                 logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Info, LogEvent::ChangeDetected { registration_id: &id, paths: &logged_paths, deferred });
                 events.emit(CONFIG_WATCH_CHANGED, &serde_json::json!({"registrationId":id,"paths":paths,"deferred":deferred}));

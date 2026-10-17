@@ -18,6 +18,7 @@ fn devin_model(id: &str, name: &str, context_window: u64) -> Model {
         provider: "devin".to_owned(),
         base_url: "https://server.codeium.com".to_owned(),
         reasoning: false,
+        default_thinking_level: None,
         thinking_level_map: None,
         input: vec![InputModality::Text],
         cost: ModelCost::default(),
@@ -30,6 +31,7 @@ fn devin_model(id: &str, name: &str, context_window: u64) -> Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: Some(ModelCompat(compat)),
+        input_limits: None,
     }
 }
 

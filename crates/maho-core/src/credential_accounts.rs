@@ -195,6 +195,45 @@ pub async fn get_credential_accounts(
     summarize_credential_accounts(provider, storage.get(provider).as_ref(), env, repository, now).await
 }
 
+pub async fn reset_credential_account(
+    storage: &AuthStorage, provider: &str, name: &str,
+    env: &(dyn Fn(&str) -> Option<String> + Sync), repository: &CredentialSlotRepository, now: u64,
+) -> Result<String, String> {
+    reset_credential_account_guarded(storage, provider, name, env, repository, now, &|| Ok(())).await
+}
+
+pub(crate) async fn reset_credential_account_guarded(
+    storage: &AuthStorage, provider: &str, name: &str,
+    env: &(dyn Fn(&str) -> Option<String> + Sync), repository: &CredentialSlotRepository,
+    now: u64, admit: &(dyn Fn() -> Result<(), String> + Send + Sync),
+) -> Result<String, String> {
+    let accounts = get_credential_accounts(storage, provider, env, repository, now).await?;
+    let account = accounts.iter().find(|account| account.name == name)
+        .ok_or_else(|| format!("Provider account not found: {name}"))?;
+    admit()?;
+    let lane = if account.source == CredentialAccountSource::Env { "env" } else { "stored" };
+    repository.mutate_slot_state(provider, lane, name, |_| None).await?;
+    if storage.get(provider).is_some() {
+        storage.modify_credential(provider, |current| async move {
+            let Some(mut credential) = current else { return Ok(None) };
+            if let Some(object) = credential.as_object_mut() {
+                if let Some(slots) = object.get_mut("accounts").and_then(Value::as_array_mut) {
+                    for slot in slots.iter_mut().filter(|slot| slot.get("name").and_then(Value::as_str) == Some(name)) {
+                        if let Some(slot) = slot.as_object_mut() {
+                            slot.shift_remove("blockReason");
+                            slot.shift_remove("blockedUntil");
+                            slot.shift_remove("modelBlocks");
+                        }
+                    }
+                }
+                if let Some(state) = object.get_mut("slotState").and_then(Value::as_object_mut) { state.shift_remove(name); }
+            }
+            Ok(Some(credential))
+        }).await?;
+    }
+    Ok(provider.to_owned())
+}
+
 /// Atomically rename/clear stored metadata without changing identity, health or environment state.
 pub async fn rename_credential_account(
     storage: &AuthStorage,
@@ -446,6 +485,49 @@ mod tests {
         let accounts = get_credential_accounts(&store, "openai", &env_none(), &repo, 0).await.expect("accounts");
         assert_eq!(accounts.iter().map(|account| account.name.as_str()).collect::<Vec<_>>(), vec!["default", "work"]);
         assert!(accounts.iter().all(|account| account.source == CredentialAccountSource::Login));
+    }
+
+    #[tokio::test]
+    async fn reset_preserves_siblings_and_removes_both_health_sources() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        store.set("fixture", Some(json!({"type":"api_key","key":"base","accounts":[
+            {"name":"work","key":"work-key","blockReason":"rate_limit","blockedUntil":99,"modelBlocks":{"m":1},"keep":true},
+            {"name":"other","key":"other-key","blockReason":"auth_error"}
+        ],"slotState":{"work":{"blocked":true},"other":{"blocked":true}}}))).expect("seed");
+        repo.mutate_slot_state("fixture", "stored", "work", |_| Some(CredentialSlotState {
+            state_version: 0, blocked_until: Some(NOW_FAR_FUTURE), block_reason: Some(BlockReason::RateLimit),
+            failure_count: Some(1), last_success_at: None, credential_revision: None, lease: None,
+        })).await.expect("sidecar");
+        reset_credential_account_guarded(&store, "fixture", "work", &env_none(), &repo, 0, &|| Ok(())).await.expect("reset");
+        let value = store.get("fixture").expect("credential");
+        assert_eq!(value["accounts"][0], json!({"name":"work","key":"work-key","keep":true}));
+        assert_eq!(value["accounts"][1]["blockReason"], "auth_error");
+        assert_eq!(value["slotState"], json!({"other":{"blocked":true}}));
+        assert!(!repo.list_slots("fixture", "stored").await.expect("sidecar").contains_key("work"));
+        assert!(reset_credential_account_guarded(&store, "fixture", "missing", &env_none(), &repo, 0, &|| Ok(())).await.is_err());
+        assert_eq!(store.get("fixture"), Some(value));
+    }
+
+    #[tokio::test]
+    async fn environment_reset_clears_sidecar_and_matching_stored_metadata() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        let env = |key: &str| (key == "ANTHROPIC_API_KEY").then(|| "fixture-env".to_owned());
+        store.set("anthropic", Some(json!({"type":"api_key","key":"stored",
+            "accounts":[{"name":"env","key":"stored","source":"env","blockReason":"rate_limit","blockedUntil":9,"modelBlocks":{"m":1}}],
+            "slotState":{"env":{"blocked":true},"other":{"keep":true}}}))).expect("seed");
+        repo.mutate_slot_state("anthropic", "env", "env", |_| Some(CredentialSlotState {
+            state_version: 0, blocked_until: Some(NOW_FAR_FUTURE), block_reason: Some(BlockReason::RateLimit),
+            failure_count: Some(1), last_success_at: None, credential_revision: None, lease: None,
+        })).await.expect("sidecar");
+        reset_credential_account(&store, "anthropic", "env", &env, &repo, 0).await.expect("reset");
+        let value = store.get("anthropic").expect("credential");
+        assert_eq!(value["accounts"][0], json!({"name":"env","key":"stored","source":"env"}));
+        assert_eq!(value["slotState"], json!({"other":{"keep":true}}));
+        assert!(!repo.list_slots("anthropic", "env").await.expect("sidecar").contains_key("env"));
     }
 
     #[tokio::test]

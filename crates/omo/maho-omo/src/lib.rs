@@ -9,6 +9,7 @@ pub mod logger;
 pub mod provisioning;
 pub mod runtime;
 pub mod scheduler;
+pub mod startup_deferral;
 pub mod tool_hook_status;
 pub mod task_coordinator;
 pub use task_coordinator::TaskCoordinator;

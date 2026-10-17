@@ -325,6 +325,7 @@ pub fn model_as_payload_model(model: &ImagesModel) -> crate::types::Model {
         provider: model.provider.clone(),
         base_url: model.base_url.clone(),
         reasoning: false,
+        default_thinking_level: None,
         thinking_level_map: None,
         input: model.input.clone(),
         cost: crate::types::ModelCost {
@@ -343,6 +344,7 @@ pub fn model_as_payload_model(model: &ImagesModel) -> crate::types::Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
+        input_limits: None,
     }
 }
 

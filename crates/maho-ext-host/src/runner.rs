@@ -9,6 +9,8 @@ pub type WarningListener = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct BuiltinShortcut { pub keybinding: String, pub restrict_override: bool }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShortcutDiagnostic { pub message: String, pub path: String }
+#[derive(Debug)]
+pub struct OwnedContextDispatchError { pub messages: Vec<AgentMessage>, pub error: ExtensionFailure }
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
 struct ReloadRequest { result: std::sync::Mutex<Option<Result<(), ExtensionFailure>>>, ready: tokio::sync::Notify }
 type ReloadState = Arc<std::sync::Mutex<Option<Arc<ReloadRequest>>>>;
@@ -405,7 +407,7 @@ impl ExtensionRunner {
     pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>, exclude_path: Option<String>) -> Result<ProviderRequestPreparation, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context_runner = self.clone();
-        let messages = context_runner.emit_context(&messages, &[], exclude_path.as_deref()).await?;
+        let messages = context_runner.emit_context_owned(messages, &[], exclude_path.as_deref()).await.map_err(|failure| failure.error)?;
         let payload_runner = self.clone();
         let header_runner = self.clone();
         Ok(ProviderRequestPreparation {
@@ -560,6 +562,9 @@ impl ExtensionRunner {
         }).collect()
     }
     fn handlers(&self, kind: EventKind) -> Vec<(String, ExtensionHandler)> {
+        self.raw_handlers(kind).into_iter().map(|(path, handler)| (path.clone(), with_provider_exclude_path(path, handler))).collect()
+    }
+    fn raw_handlers(&self, kind: EventKind) -> Vec<(String, ExtensionHandler)> {
         let mut out = Vec::new();
         for e in self.extensions.iter() {
             // Load-registered handlers stay authoritative; a late runtime registration (e.g. the
@@ -577,7 +582,7 @@ impl ExtensionRunner {
                 if !out[start..].iter().any(|(_, seen): &(String, ExtensionHandler)| Arc::as_ptr(seen) as *const () == ptr) { out.push((e.identity.path.clone(), handler)); }
             }
         }
-        out.into_iter().map(|(path, handler)| (path.clone(), with_provider_exclude_path(path, handler))).collect()
+        out
     }
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
         let mut tools: Vec<RegisteredTool> = Vec::new();
@@ -837,26 +842,52 @@ impl ExtensionRunner {
     /// `entry_ids` stamps each message with its session entry (senpi `emitContext` copying
     /// `getSessionContextEntryId` onto the cloned messages); missing positions are unstamped.
     pub async fn emit_context(&mut self, messages: &[AgentMessage], entry_ids: &[Option<String>], exclude_path: Option<&str>) -> Result<Vec<AgentMessage>, ExtensionFailure> {
-        self.runtime.assert_active()?;
-        let handlers = self.handlers(EventKind::Context);
-        if handlers.is_empty() { return Ok(messages.to_vec()); }
+        self.emit_context_owned(messages.to_vec(), entry_ids, exclude_path).await.map_err(|failure| failure.error)
+    }
+    pub async fn emit_context_owned(&mut self, messages: Vec<AgentMessage>, entry_ids: &[Option<String>], exclude_path: Option<&str>) -> Result<Vec<AgentMessage>, OwnedContextDispatchError> {
+        if let Err(error) = self.runtime.assert_active() { return Err(OwnedContextDispatchError { messages, error }); }
+        let raw_handlers = self.raw_handlers(EventKind::Context);
+        let handlers: Vec<_> = raw_handlers.iter().map(|(path, handler)| (path.clone(), with_provider_exclude_path(path.clone(), handler.clone()))).collect();
+        if handlers.is_empty() { return Ok(messages); }
+        let read_only = raw_handlers.iter().all(|(path, handler)| {
+            if exclude_path == Some(path.as_str()) { return true; }
+            let Some(extension) = self.extensions.iter().find(|extension| extension.identity.path == *path) else { return false; };
+            let loaded = extension.handlers.get(&EventKind::Context).map_or(&[][..], Vec::as_slice);
+            let loaded_options = extension.handler_options.get(&EventKind::Context).map_or(&[][..], Vec::as_slice);
+            if let Some(index) = loaded.iter().position(|candidate| Arc::ptr_eq(candidate, handler)) {
+                return loaded_options.get(index).and_then(|options| options.mutates_messages) == Some(false);
+            }
+            let Some((live, live_options)) = self.runtime.live_handlers_with_options(path, EventKind::Context) else { return false; };
+            live.iter().position(|candidate| Arc::ptr_eq(candidate, handler)).and_then(|index| live_options.get(index))
+                .and_then(|options| options.mutates_messages) == Some(false)
+        });
+        let mut fallback = (!read_only).then(|| messages.clone());
         let entry_ids = (0..messages.len()).map(|index| entry_ids.get(index).cloned().flatten()).collect();
-        let mut event = ExtensionEvent::Context { messages: messages.to_vec(), entry_ids };
+        let mut event = ExtensionEvent::Context { messages, entry_ids };
         for (path, handler) in handlers {
             if exclude_path == Some(path.as_str()) { continue; }
-            let context = self.create_context_for_extension(Some(&path))?;
+            let context = match self.create_context_for_extension(Some(&path)) {
+                Ok(context) => context,
+                Err(error) => {
+                    let current = match event { ExtensionEvent::Context { messages, .. } => messages, _ => Vec::new() };
+                    return Err(OwnedContextDispatchError { messages: fallback.take().unwrap_or(current), error });
+                }
+            };
             match handler(&mut event, &context).await {
                 Ok(EventResult::Context { messages: Some(next) }) => if let ExtensionEvent::Context { messages, entry_ids } = &mut event {
-                    // A stamp rides on its message: it survives only where the handler kept that exact message in place.
                     *entry_ids = next.iter().enumerate().map(|(index, message)| entry_ids.get(index).cloned().flatten().filter(|_| messages.get(index) == Some(message))).collect();
                     *messages = next;
                 },
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::Context, error),
             }
-            self.runtime.assert_active()?;
+            if let Err(error) = self.runtime.assert_active() {
+                let current = match event { ExtensionEvent::Context { messages, .. } => messages, _ => Vec::new() };
+                return Err(OwnedContextDispatchError { messages: fallback.take().unwrap_or(current), error });
+            }
         }
         if let ExtensionEvent::Context { messages, .. } = event { return Ok(messages); }
-        Err(ExtensionFailure::new("context handler replaced event kind"))
+        let current = match event { ExtensionEvent::Context { messages, .. } => messages, _ => Vec::new() };
+        Err(OwnedContextDispatchError { messages: fallback.unwrap_or(current), error: ExtensionFailure::new("context handler replaced event kind") })
     }
     pub async fn emit_before_provider_request(&mut self, payload: JsonValue, exclude_path: Option<&str>) -> Result<JsonValue, ExtensionFailure> {
         self.emit_before_provider_request_with_metadata(payload, None, None, exclude_path).await

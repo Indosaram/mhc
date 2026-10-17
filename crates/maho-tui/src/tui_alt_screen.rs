@@ -1881,10 +1881,11 @@ impl TuiAltScreen {
         self.now_ms = now_ms;
         let mut render = false;
         let mut finished = Vec::new();
+        let mut errors = Vec::new();
         self.pending_copy_results.retain(|receiver| match receiver.try_recv() {
             Ok(result) => {
                 finished.push(result.is_ok());
-                if let Err(error) = result { self.flash(&error, None, now_ms); }
+                if let Err(error) = result { errors.push(error); }
                 false
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => true,
@@ -1893,6 +1894,7 @@ impl TuiAltScreen {
                 false
             }
         });
+        for error in errors { self.flash(&error, None, now_ms); }
         for ok in finished {
             if ok { self.flash("Copied!", None, now_ms); }
             else { self.flash("Copy failed", None, now_ms); }

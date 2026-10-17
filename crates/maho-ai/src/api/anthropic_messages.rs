@@ -306,6 +306,7 @@ fn merge_headers(sources: &[Option<&BTreeMap<String, Option<String>>>]) -> BTree
     let mut merged: BTreeMap<String, Option<String>> = BTreeMap::new();
     for source in sources.iter().flatten() {
         for (key, value) in source.iter() {
+            merged.retain(|existing, _| !existing.eq_ignore_ascii_case(key));
             merged.insert(key.clone(), value.clone());
         }
     }

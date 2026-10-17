@@ -29,6 +29,6 @@ async fn ready_and_retry_publish_same_callable_with_refreshed_targets() {
     assert_eq!(retry.0, "omo-owner");
     assert_eq!(retry.1.targets.len(), 1);
     assert!(Arc::ptr_eq(&initial.1.validate, &retry.1.validate));
-    assert_eq!((retry.1.validate)(&[]), ConfigWatchValidation::Ok);
+    assert_eq!((retry.1.validate)(vec![]).await.unwrap(), ConfigWatchValidation::Ok);
     assert_eq!(events.config_watch_registrations()[0].1.targets.len(), 1);
 }

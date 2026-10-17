@@ -201,9 +201,15 @@ fn registration_typed(resolved:&OmoConfigWatchTargetResolution,validator:&Arc<Mu
         id:OMO_REGISTRATION_ID.to_owned(),
         display_name:OMO_REGISTRATION_DISPLAY_NAME.to_owned(),
         targets:target_specs(resolved),
-        validate:Arc::new(move |changed:&[PathBuf]|match validator.lock().unwrap_or_else(std::sync::PoisonError::into_inner).validate(changed) {
-            ConfigWatchValidation::Ok=>ApiConfigWatchValidation::Ok,
-            ConfigWatchValidation::Rejected{errors}=>ApiConfigWatchValidation::Rejected{errors},
+        validate:Arc::new(move |changed:Vec<PathBuf>|{
+            let validator=Arc::clone(&validator);
+            Box::pin(async move {
+                let result=validator.lock().unwrap_or_else(std::sync::PoisonError::into_inner).validate(&changed);
+                Ok(match result {
+                    ConfigWatchValidation::Ok=>ApiConfigWatchValidation::Ok,
+                    ConfigWatchValidation::Rejected{errors}=>ApiConfigWatchValidation::Rejected{errors},
+                })
+            })
         }),
     }
 }

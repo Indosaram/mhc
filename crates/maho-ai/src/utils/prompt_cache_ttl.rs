@@ -330,6 +330,7 @@ mod tests {
             provider: "test-provider".into(),
             base_url: "https://example.com/v1".into(),
             reasoning: false,
+            default_thinking_level: None,
             thinking_level_map: None,
             input: vec![crate::types::InputModality::Text],
             cost: crate::types::ModelCost::default(),
@@ -342,6 +343,7 @@ mod tests {
             service_tier: None,
             recover_text_tool_calls: None,
             compat: None,
+            input_limits: None,
         }
     }
 

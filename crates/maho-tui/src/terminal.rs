@@ -850,6 +850,7 @@ impl ProcessTerminal {
             timeout: None,
             // setTimeout truncates fractional delays.
             escape_timeout: Some(escape_timeout as u64),
+            burst_window_ms: None,
         };
         self.stdin_buffer = Some(StdinBuffer::with_clock(options, Arc::clone(&self.clock)));
     }

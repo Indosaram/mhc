@@ -1,5 +1,5 @@
 #[derive(Debug, PartialEq, Eq)]
-pub enum AccountAction { List, Pin(String), Unpin, Remove(String), DisplayName(String), Usage }
+pub enum AccountAction { List, Pin(String), Unpin, Reset(String), Remove(String), DisplayName(String), Usage }
 
 pub fn parse_command(raw: &str) -> Option<(String, AccountAction)> {
     let raw = raw.trim();
@@ -10,6 +10,7 @@ pub fn parse_command(raw: &str) -> Option<(String, AccountAction)> {
         "list" => AccountAction::List,
         "pin" => args.next().map_or(AccountAction::Usage, |id| AccountAction::Pin(id.into())),
         "unpin" => AccountAction::Unpin,
+        "reset" => args.next().map_or(AccountAction::Usage, |id| AccountAction::Reset(id.into())),
         "remove" => args.next().map_or(AccountAction::Usage, |id| AccountAction::Remove(id.into())),
         "rename" | "clear-name" => AccountAction::DisplayName(remainder.into()),
         _ => AccountAction::Usage,
@@ -32,9 +33,10 @@ fn account_status(account: &CredentialAccountSummary) -> String {
 pub struct Account;
 impl Extension for Account {
     fn register(&self, api: &mut ExtensionApi) {
-        api.register_command("account", Some("List and manage credential accounts for any provider.".into()), Some("<provider> [list | pin <id> | unpin | remove <id> | rename <id> <display name...> | clear-name <id>]".into()), Arc::new(|raw, ctx| Box::pin(async move {
+        api.register_command("account", Some("List and manage credential accounts for any provider.".into()), Some("<provider> [list | pin <id> | unpin | reset <id> | remove <id> | rename <id> <display name...> | clear-name <id>]".into()), Arc::new(|raw, ctx| Box::pin(async move {
             let operation = async {
-                let (provider, action) = parse_command(raw).ok_or_else(|| ExtensionFailure::new("Usage: /account <provider> [list | pin <id> | unpin | remove <id> | rename <id> <display name...> | clear-name <id>]"))?;
+                let usage = "Usage: /account <provider> [list | pin <id> | unpin | reset <id> | remove <id> | rename <id> <display name...> | clear-name <id>]";
+                let (provider, action) = parse_command(raw).ok_or_else(|| ExtensionFailure::new(usage))?;
                 let registry = &ctx.model_registry;
                 let message = match action {
                     AccountAction::List => {
@@ -46,12 +48,13 @@ impl Extension for Account {
                     }
                     AccountAction::Pin(name) => { registry.pin_credential_account(&provider, Some(&name)).await?; format!("Pinned {provider} account '{name}'.") }
                     AccountAction::Unpin => { registry.pin_credential_account(&provider, None).await?; format!("Unpinned {provider} account.") }
+                    AccountAction::Reset(name) => { registry.reset_credential_account(&provider, &name).await?; format!("Cleared the cooldown on {provider} account '{name}'; the next request tries it again.") }
                     AccountAction::Remove(name) => { registry.remove_credential_account(&provider, &name).await?; format!("Removed {provider} account '{name}'.") }
                     AccountAction::DisplayName(args) => {
                         maho_ext_builtin_loose::account_display_name::account_display_name_command(ctx,&provider,&args).await;
                         return Ok(());
                     }
-                    AccountAction::Usage => return Err(ExtensionFailure::new("Usage: /account <provider> [list | pin <id> | unpin | remove <id> | rename <id> <display name...> | clear-name <id>]")),
+                    AccountAction::Usage => return Err(ExtensionFailure::new(usage)),
                 };
                 ctx.ui.notify(&message, NotificationType::Info);
                 Ok::<(), ExtensionFailure>(())

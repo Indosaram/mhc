@@ -51,6 +51,7 @@ fn case_model(spec: &Value, base_url: &str) -> Model {
         provider: model["provider"].as_str().expect("case model provider").to_owned(),
         base_url: base_url.to_owned(),
         reasoning: model["reasoning"].as_bool().unwrap_or(false),
+        default_thinking_level: None,
         thinking_level_map: None,
         input: model["input"]
             .as_array()
@@ -81,6 +82,7 @@ fn case_model(spec: &Value, base_url: &str) -> Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
+        input_limits: None,
     };
     built.thinking_level_map = None;
     built

@@ -22,7 +22,7 @@ use crate::image_stub::{
 use crate::terminal::Terminal;
 use crate::terminal_colors::{
     is_terminal_color_da1, parse_osc_color_response,
-    parse_terminal_color_scheme_report, RgbColor, TerminalColorScheme,
+    parse_terminal_color_scheme_report, TerminalColorScheme,
 };
 use crate::utils::{
     extract_segments, normalize_terminal_output, slice_by_column, slice_with_width, visible_width,

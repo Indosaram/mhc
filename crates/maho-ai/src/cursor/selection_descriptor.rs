@@ -167,6 +167,7 @@ mod tests {
             provider: "cursor".to_owned(),
             base_url: "https://api2.cursor.sh".to_owned(),
             reasoning: true,
+            default_thinking_level: None,
             thinking_level_map: None,
             input: vec![InputModality::Text],
             cost: ModelCost::default(),
@@ -179,6 +180,7 @@ mod tests {
             service_tier: None,
             recover_text_tool_calls: None,
             compat: None,
+            input_limits: None,
         }
     }
 

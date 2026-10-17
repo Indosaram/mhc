@@ -20,17 +20,6 @@ fn normalize_model_name(name: &str) -> String {
     GLM_GPT_VERSION.replace_all(&kimi, "$1-$2.$3").into_owned()
 }
 
-/// First shortest candidate, matching `reduce((a, b) => b.length < a.length ? b : a)`.
-fn shortest<'a>(candidates: impl Iterator<Item = &'a String>) -> Option<&'a String> {
-    candidates.reduce(|shortest, current| {
-        if current.len() < shortest.len() {
-            current
-        } else {
-            shortest
-        }
-    })
-}
-
 fn model_id(model: &str) -> &str {
     model.split_once('/').map_or(model, |(_, model_id)| model_id)
 }

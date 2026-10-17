@@ -194,6 +194,7 @@ fn build_model(base_url: &str) -> Model {
         provider: "cursor".to_owned(),
         base_url: base_url.to_owned(),
         reasoning: true,
+        default_thinking_level: None,
         thinking_level_map: None,
         input: vec![InputModality::Text],
         cost: ModelCost::default(),
@@ -206,6 +207,7 @@ fn build_model(base_url: &str) -> Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
+        input_limits: None,
     }
 }
 

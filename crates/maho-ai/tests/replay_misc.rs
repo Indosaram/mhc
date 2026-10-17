@@ -275,6 +275,7 @@ fn replay_model(api: &str, provider: &str, id: &str) -> Model {
         provider: provider.to_owned(),
         base_url: String::new(),
         reasoning: false,
+        default_thinking_level: None,
         thinking_level_map: None,
         input: vec![InputModality::Text],
         cost: ModelCost::default(),
@@ -287,6 +288,7 @@ fn replay_model(api: &str, provider: &str, id: &str) -> Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
+        input_limits: None,
     }
 }
 

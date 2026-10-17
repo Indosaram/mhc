@@ -179,14 +179,10 @@ pub fn create_client(
     api_key: Option<&str>,
     options_headers: Option<&BTreeMap<String, String>>,
 ) -> GoogleClientConfig {
-    let mut headers: BTreeMap<String, String> = BTreeMap::new();
-    headers.insert("User-Agent".into(), get_pi_user_agent());
-    if let Some(model_headers) = &model.headers {
-        headers.extend(model_headers.clone());
-    }
-    if let Some(options_headers) = options_headers {
-        headers.extend(options_headers.clone());
-    }
+    let defaults = BTreeMap::from([("User-Agent".into(), Some(get_pi_user_agent()))]);
+    let model_headers = model.headers.as_ref().map(|headers| headers.iter().map(|(name, value)| (name.clone(), Some(value.clone()))).collect());
+    let option_headers = options_headers.map(|headers| headers.iter().map(|(name, value)| (name.clone(), Some(value.clone()))).collect());
+    let headers = crate::utils::headers::merge_provider_headers_to_record(&[Some(&defaults), model_headers.as_ref(), option_headers.as_ref()]);
 
     let (base_url, api_version) = if model.base_url.is_empty() {
         (None, None)
@@ -204,7 +200,7 @@ pub fn create_client(
         base_url,
         base_url_resource_scope_collection: false,
         google_auth_key_filename: None,
-        headers: (!headers.is_empty()).then_some(headers),
+        headers,
     }
 }
 
@@ -444,8 +440,9 @@ impl GoogleRequestError {
     /// The SDK error shape `normalizeProviderError` probes.
     pub fn to_thrown(&self) -> ThrownProviderError {
         match self {
-            GoogleRequestError::Sdk { message, status, .. } => ThrownProviderError::Error(Box::new(SdkErrorShape {
+            GoogleRequestError::Sdk { message, status, headers } => ThrownProviderError::Error(Box::new(SdkErrorShape {
                 message: message.clone(),
+                headers: headers.clone(),
                 status: status.map(|status| json!(status)),
                 ..SdkErrorShape::default()
             })),

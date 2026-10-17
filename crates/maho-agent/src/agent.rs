@@ -74,6 +74,7 @@ fn default_model() -> Model {
         provider: "unknown".to_owned(),
         base_url: String::new(),
         reasoning: false,
+        default_thinking_level: None,
         thinking_level_map: None,
         input: Vec::new(),
         cost: maho_ai::types::ModelCost {
@@ -92,6 +93,7 @@ fn default_model() -> Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
+        input_limits: None,
     }
 }
 

@@ -3,7 +3,9 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { inspect } from "node:util";
 import { encodeDisplayImage, resolveDisplayOps } from "./display-image.js";
-import { terminateProcessTrees } from "./process-tree.js";
+import { terminateProcessGroups, terminateProcessTrees } from "./process-tree.js";
+import { createHeapProbe } from "./worker-heap.js";
+import { createWorkerMemory } from "./worker-memory.js";
 import { awaitMaybePromise, indirectEval, wrapUserCode } from "./worker-indirect-eval.js";
 import { installShellCapture } from "./worker-shell-capture.js";
 import { createWorkpool } from "./workpool.js";
@@ -26,13 +28,23 @@ export class JsWorkerRuntime {
 	#hooks = null;
 	#pendingDisplays = [];
 	#children = new Set();
+	#ownedGroups = new Map();
+	#shellWaits = new Set();
 	#onChildEvent;
+	#onShellWaitChange;
 	#tools;
+	#memory;
+	#lastMemoryReport = {};
 
 	constructor(options) {
 		this.#cwd = options.cwd;
 		this.#parallelPoolWidth = options.parallelPoolWidth;
 		this.#onChildEvent = typeof options.onChildEvent === "function" ? options.onChildEvent : null;
+		this.#onShellWaitChange = options.onShellWaitChange;
+		if (options.memory) {
+			this.#memory = createWorkerMemory(options.memory, report => this.#emitStatus({ op: "kernel-memory-collected", ...report }), { heap: createHeapProbe() });
+			this.#memory.captureBaseline();
+		}
 		this.#localRoots = { ...(options.localRoots ?? {}) };
 		if (options.artifactsDir && !this.#localRoots.local) this.#localRoots.local = join(options.artifactsDir, "local");
 		this.#tools = createKernelToolRegistry({
@@ -47,8 +59,15 @@ export class JsWorkerRuntime {
 		return this.#tools;
 	}
 
+	get shellWaitActive() { return this.#shellWaits.size > 0; }
+
+	get memoryReport() { return this.#lastMemoryReport; }
+
 	async run(code, cellId, hooks) {
 		this.#hooks = hooks;
+		this.#memory?.cancelIdle();
+		this.#shellWaits.clear();
+		this.#lastMemoryReport = {};
 		try {
 			let prelude = "";
 			let cellCode = code;
@@ -60,7 +79,11 @@ export class JsWorkerRuntime {
 			if (prelude) indirectEval(prelude, `${cellId}:prelude`);
 			const value = await awaitMaybePromise(indirectEval(wrapUserCode(cellCode), cellId));
 			await this.#drainPendingDisplays();
+			this.#lastMemoryReport = { memory: this.#memory?.afterCell() };
 			return value;
+		} catch (error) {
+			this.#lastMemoryReport = { memory: this.#memory?.afterCell() };
+			throw error;
 		} finally {
 			this.#pendingDisplays = [];
 			// A child still running here has lost its only owner: the cell that
@@ -68,6 +91,7 @@ export class JsWorkerRuntime {
 			// reparented to init. Retire it the way timeout and abort cleanup
 			// already do, unless the cell asked for a detached process.
 			await this.#terminateChildren();
+			this.#shellWaits.clear();
 			this.#hooks = null;
 		}
 	}
@@ -84,11 +108,13 @@ export class JsWorkerRuntime {
 		if (isPlainObject(spawnOptions) && spawnOptions.detached === true) return;
 		this.#children.add(child);
 		const pid = Number.isInteger(child.pid) && child.pid > 0 ? child.pid : null;
+		if (pid !== null && process.platform !== "win32" && !(isPlainObject(spawnOptions) && spawnOptions.detached === false)) this.#ownedGroups.set(pid, child);
 		// The host keeps its own copy of live pids: if this worker is terminated
 		// while blocked, only the host can still retire them.
 		if (pid !== null) this.#onChildEvent?.({ pid, state: "spawned" });
 		const forget = () => {
 			this.#children.delete(child);
+			if (pid !== null && this.#ownedGroups.get(pid) === child) this.#ownedGroups.delete(pid);
 			if (pid !== null) this.#onChildEvent?.({ pid, state: "exited" });
 		};
 		if (child.exited instanceof Promise) child.exited.then(forget, forget);
@@ -97,10 +123,12 @@ export class JsWorkerRuntime {
 	#terminateChildren() {
 		const children = [...this.#children].filter(child => child.exitCode === null && child.signalCode === null);
 		this.#children.clear();
-		if (children.length === 0) return undefined;
+		const groups = [...this.#ownedGroups].map(([pgid, child]) => ({ pgid, leaderExited: child.exitCode !== null || child.signalCode !== null }));
+		this.#ownedGroups.clear();
+		if (children.length === 0 && groups.length === 0) return undefined;
 		const roots = children.map(child => child.pid).filter(pid => Number.isInteger(pid) && pid > 0);
 		const settled = Promise.allSettled(children.map(child => (child.exited instanceof Promise ? child.exited : Promise.resolve())));
-		return terminateProcessTrees(roots, { graceMs: CHILD_TERMINATION_GRACE_MS, settled });
+		return Promise.all([roots.length ? terminateProcessTrees(roots, { graceMs: CHILD_TERMINATION_GRACE_MS, settled }) : Promise.resolve(), terminateProcessGroups(groups, { graceMs: CHILD_TERMINATION_GRACE_MS })]);
 	}
 
 	async #drainPendingDisplays() {
@@ -157,6 +185,11 @@ export class JsWorkerRuntime {
 			isActive: () => this.#hooks !== null,
 			emitText: (stream, data) => this.#emitText(stream, data),
 			onChild: (child, spawnOptions) => this.#trackChild(child, spawnOptions),
+			onShellWait: (promise, waiting) => {
+				if (waiting) this.#shellWaits.add(promise);
+				else this.#shellWaits.delete(promise);
+				this.#onShellWaitChange?.();
+			},
 		});
 		globalThis.__senpi_restore_console__ = () => {
 			console.log = originalLog;

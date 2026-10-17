@@ -18,7 +18,7 @@ tokio = { workspace = true, features = ["macros", "rt", "time"] }
 maho-ext-api = { path = "../../../maho-ext-api" }
 maho-omo-onboarding = { path = "../maho-omo-onboarding" }
 maho-omo-telemetry = { path = "../maho-omo-telemetry" }
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["rt", "time", "process"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

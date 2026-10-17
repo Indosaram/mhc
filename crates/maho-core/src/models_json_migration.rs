@@ -123,6 +123,19 @@ fn rewrite(content: &str, expected: &Map<String, Value>) -> Result<String, Strin
     else { serde_json::to_string_pretty(expected).map(|s| s + "\n").map_err(|e| e.to_string()) }
 }
 
+pub fn unique_backup_path(path: &Path) -> PathBuf {
+    let stamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true).replace([':', '.'], "-");
+    unique_backup_path_at(path, &stamp)
+}
+
+fn unique_backup_path_at(path: &Path, stamp: &str) -> PathBuf {
+    let base = format!("{}.backup-{stamp}", path.display());
+    let mut backup = PathBuf::from(&base);
+    let mut attempt = 1;
+    while backup.exists() { backup = PathBuf::from(format!("{base}-{attempt}")); attempt += 1; }
+    backup
+}
+
 pub fn migrate_models_json_provider_ids(path: &Path, content: &str) -> ModelsJsonMigration {
     let Ok(mut next) = parse_settings_json(content) else { return ModelsJsonMigration::Unchanged; };
     let mut renamed = Vec::new();
@@ -151,11 +164,7 @@ pub fn migrate_models_json_provider_ids(path: &Path, content: &str) -> ModelsJso
         }
     }
     if renamed.is_empty() { return ModelsJsonMigration::Unchanged; }
-    let stamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true).replace([':', '.'], "-");
-    let base = format!("{}.backup-{stamp}", path.display());
-    let mut backup = PathBuf::from(&base);
-    let mut attempt = 1;
-    while backup.exists() { backup = PathBuf::from(format!("{base}-{attempt}")); attempt += 1; }
+    let backup = unique_backup_path(path);
     let temporary = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
     let mut created = Vec::new();
     let result = (|| -> Result<(), String> {
@@ -186,6 +195,20 @@ pub fn migrate_models_json_provider_ids(path: &Path, content: &str) -> ModelsJso
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn backup_path_skips_existing_candidates_without_creating_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("models.json");
+        let stamp = "2026-10-16T00-00-00-000Z";
+        let base = unique_backup_path_at(&path, stamp);
+        fs::write(&base, "first").expect("first backup");
+        let second = unique_backup_path_at(&path, stamp);
+        assert_eq!(second, PathBuf::from(format!("{}-1", base.display())));
+        fs::write(&second, "second").expect("second backup");
+        assert_eq!(unique_backup_path_at(&path, stamp), PathBuf::from(format!("{}-2", base.display())));
+        assert_eq!(fs::read_dir(dir.path()).expect("entries").count(), 2);
+        assert_eq!(fs::read_to_string(base).expect("preserved backup"), "first");
+    }
     #[test]
     fn migration_preserves_comments_and_original_backup() {
         let dir=tempfile::tempdir().expect("tempdir");let path=dir.path().join("models.json");

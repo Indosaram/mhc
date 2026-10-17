@@ -66,11 +66,12 @@ fn string_items(value: Option<&Value>) -> Vec<String> {
 }
 
 fn merge_root_object_union(schema: &Map<String, Value>) -> Option<Map<String, Value>> {
-    let branches = match (schema.get("anyOf"), schema.get("oneOf")) {
-        (Some(Value::Array(any)), _) => any,
-        (_, Some(Value::Array(one))) => one,
-        _ => return None,
-    };
+    merge_root_object_combiner(schema, None)
+}
+
+fn merge_root_object_combiner(schema: &Map<String, Value>, combiner: Option<&str>) -> Option<Map<String, Value>> {
+    let selected = combiner.unwrap_or_else(|| if schema.get("anyOf").is_some_and(Value::is_array) { "anyOf" } else { "oneOf" });
+    let branches = schema.get(selected)?.as_array()?;
     if branches.is_empty()
         || schema.get("properties").is_some_and(|p| !p.is_object())
         || schema.get("required").is_some_and(|r| !r.is_array())
@@ -94,7 +95,7 @@ fn merge_root_object_union(schema: &Map<String, Value>) -> Option<Map<String, Va
         for (name, property_schema) in branch_properties {
             let merged = match properties.get(name) {
                 Some(existing) if existing != property_schema => {
-                    Value::Object(Map::from_iter([("anyOf".to_owned(), Value::Array(vec![existing.clone(), property_schema.clone()]))]))
+                    Value::Object(Map::from_iter([((if selected == "allOf" { "allOf" } else { "anyOf" }).to_owned(), Value::Array(vec![existing.clone(), property_schema.clone()]))]))
                 }
                 _ => property_schema.clone(),
             };
@@ -109,7 +110,9 @@ fn merge_root_object_union(schema: &Map<String, Value>) -> Option<Map<String, Va
         }
     };
     string_items(schema.get("required")).into_iter().for_each(&mut push_unique);
-    if let Some(first) = branch_required.first() {
+    if selected == "allOf" {
+        for names in &branch_required { names.iter().cloned().for_each(&mut push_unique); }
+    } else if let Some(first) = branch_required.first() {
         let mut seen = Vec::new();
         for name in first {
             if !seen.contains(name) && branch_required.iter().all(|names| names.contains(name)) {
@@ -118,7 +121,10 @@ fn merge_root_object_union(schema: &Map<String, Value>) -> Option<Map<String, Va
             }
         }
     }
-    let mut result: Map<String, Value> = schema.iter().filter(|(k, _)| *k != "anyOf" && *k != "oneOf").map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut result: Map<String, Value> = schema.iter().filter(|(k, _)| match combiner {
+        Some(key) => k.as_str() != key,
+        None => *k != "anyOf" && *k != "oneOf",
+    }).map(|(k, v)| (k.clone(), v.clone())).collect();
     result.insert("type".into(), Value::String("object".into()));
     result.insert("properties".into(), Value::Object(properties));
     if !required.is_empty() {
@@ -169,7 +175,7 @@ fn ensure_root_object_schema(schema: Map<String, Value>) -> Map<String, Value> {
     if let Some(merged) = merge_root_object_union(&schema) {
         return merged;
     }
-    if schema.contains_key("type") || has_combiner(&schema) {
+    if schema.contains_key("type") {
         return schema;
     }
     let mut schema = schema;
@@ -193,6 +199,21 @@ pub fn normalize_tool_parameters_for_moonshot(schema: &Map<String, Value>) -> Ma
 
 pub fn resolve_root_object_schema(schema: &Map<String, Value>) -> Map<String, Value> {
     merge_root_object_union(schema).unwrap_or_else(|| schema.clone())
+}
+
+pub fn normalize_tool_parameters_for_bedrock(schema: &Map<String, Value>) -> Map<String, Value> {
+    let mut normalized = schema.clone();
+    for combiner in COMBINER_KEYS {
+        if let Some(Value::Array(branches)) = normalized.get_mut(combiner) {
+            for branch in branches {
+                if let Value::Object(object) = branch { *object = normalize_tool_parameters_for_bedrock(object); }
+            }
+        }
+        if let Some(merged) = merge_root_object_combiner(&normalized, Some(combiner)) { normalized = merged; }
+    }
+    let mut result = Map::from_iter([("type".into(), Value::String("object".into()))]);
+    result.extend(normalized);
+    result
 }
 
 fn strip_moonshot_annotations(node: Value) -> Value {
@@ -260,7 +281,32 @@ mod tests {
         );
         let mixed = obj(json!({"anyOf": [{"type": "string"}, {"type": "object"}]}));
         assert_eq!(resolve_root_object_schema(&mixed), mixed);
-        assert_eq!(normalize_tool_parameters_for_openai_compat(&mixed), mixed);
+        let mut expected = mixed.clone();
+        expected.insert("type".into(), Value::String("object".into()));
+        assert_eq!(normalize_tool_parameters_for_openai_compat(&mixed), expected);
+    }
+
+    #[test]
+    fn bedrock_flattens_intersections_and_preserves_all_required_names() {
+        let schema = obj(json!({"required":["root"],"properties":{"root":{"type":"string"}},"allOf":[
+            {"properties":{"a":{"type":"string"}},"required":["a"]},
+            {"anyOf":[{"properties":{"b":{"type":"number"}},"required":["b"]},{"properties":{"b":{"type":"string"}},"required":["b"]}]}
+        ]}));
+        let normalized = normalize_tool_parameters_for_bedrock(&schema);
+        assert!(!normalized.contains_key("allOf"));
+        assert_eq!(normalized["required"], json!(["root","a","b"]));
+        assert_eq!(normalized["properties"]["b"], json!({"anyOf":[{"type":"number"},{"type":"string"}]}));
+        assert!(schema.contains_key("allOf"));
+    }
+
+    #[test]
+    fn bedrock_retains_intersection_constraints_on_shared_properties() {
+        let schema = obj(json!({"allOf":[
+            {"properties":{"value":{"type":"integer","minimum":0}}},
+            {"properties":{"value":{"type":"integer","maximum":10}}}
+        ]}));
+        assert_eq!(normalize_tool_parameters_for_bedrock(&schema)["properties"]["value"],
+            json!({"allOf":[{"type":"integer","minimum":0},{"type":"integer","maximum":10}]}));
     }
 
     #[test]

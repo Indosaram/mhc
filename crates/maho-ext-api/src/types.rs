@@ -526,6 +526,9 @@ pub trait ModelRegistry: Send + Sync {
     fn pin_credential_account<'a>(&'a self, _provider: &'a str, _name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
         Box::pin(async { Err(ExtensionFailure::new("Credential account pinning is not supported by this model registry")) })
     }
+    fn reset_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account reset is not supported by this model registry")) })
+    }
     fn remove_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str) -> ExtensionFuture<'a, ()> {
         Box::pin(async { Err(ExtensionFailure::new("Credential account removal is not supported by this model registry")) })
     }
@@ -1513,7 +1516,7 @@ pub enum ConfigWatchTargetKind { File, Dir }
 pub struct ConfigWatchTargetSpec { pub path: PathBuf, pub kind: ConfigWatchTargetKind, pub filter_globs: Vec<String> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigWatchValidation { Ok, Rejected { errors: Vec<String> } }
-pub type ConfigWatchValidator = Arc<dyn Fn(&[PathBuf]) -> ConfigWatchValidation + Send + Sync>;
+pub type ConfigWatchValidator = Arc<dyn Fn(Vec<PathBuf>) -> ExtensionFuture<'static, ConfigWatchValidation> + Send + Sync>;
 #[derive(Clone)]
 pub struct RegisteredConfigWatch { pub id: String, pub display_name: String, pub targets: Vec<ConfigWatchTargetSpec>, pub validate: ConfigWatchValidator }
 /// Typed delivery listener: receives the owning extension path plus each registration.
@@ -1675,6 +1678,7 @@ struct RuntimeState {
     provider_errors: Vec<ExtensionError>,
     registered_providers: BTreeMap<String, String>,
     live_handlers: BTreeMap<(String, EventKind), Vec<ExtensionHandler>>,
+    live_handler_options: BTreeMap<(String, EventKind), Vec<ExtensionHandlerOptions>>,
     live_commands: BTreeMap<String, LiveCommandRegistrations>,
     live_command_argument_completions: BTreeMap<String, BTreeMap<String, CommandArgumentCompletions>>,
     live_shortcuts: BTreeMap<String, BTreeMap<String, ExtensionShortcut>>,
@@ -1784,6 +1788,7 @@ impl ExtensionRuntime {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.stale.get_or_insert_with(|| message.into()); state.read_classifiers.clear(); state.pending_providers.clear();
         state.live_handlers.clear();
+        state.live_handler_options.clear();
         state.live_commands.clear();
         state.live_command_argument_completions.clear();
         state.live_shortcuts.clear();
@@ -1828,6 +1833,10 @@ impl ExtensionRuntime {
     }
     pub fn live_handlers(&self, path: &str, kind: EventKind) -> Option<Vec<ExtensionHandler>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_handlers.get(&(path.into(), kind)).cloned()
+    }
+    pub fn live_handlers_with_options(&self, path: &str, kind: EventKind) -> Option<(Vec<ExtensionHandler>, Vec<ExtensionHandlerOptions>)> {
+        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some((state.live_handlers.get(&(path.into(), kind))?.clone(), state.live_handler_options.get(&(path.into(), kind))?.clone()))
     }
     pub fn live_commands(&self, path: &str) -> Option<LiveCommandRegistrations> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_commands.get(path).cloned()
@@ -1990,7 +1999,9 @@ impl ExtensionApi {
         handlers.push(handler);
         self.registered.handler_options.entry(event).or_default().push(options);
         if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
-            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_handlers.insert((self.registered.identity.path.clone(), event), handlers.clone());
+            let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.live_handlers.insert((self.registered.identity.path.clone(), event), handlers.clone());
+            state.live_handler_options.insert((self.registered.identity.path.clone(), event), self.registered.handler_options.get(&event).cloned().unwrap_or_default());
         }
     }
     pub fn register_provider(&self, name: &str, config: ProviderConfig) -> Result<(), ExtensionFailure> {

@@ -361,6 +361,67 @@ async fn context_clones_and_isolates_original_messages() {
     let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::Context { messages, .. } = event else { panic!() }; messages.clear(); Ok(EventResult::None) }));
     let messages = vec![AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }))]; assert!(runner(vec![extension("a", EventKind::Context, handler)]).emit_context(&messages, &[], None).await.unwrap().is_empty()); assert_eq!(messages.len(), 1);
 }
+fn user(text: &str) -> AgentMessage {
+    AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text(text.into()), timestamp: 1 }))
+}
+fn context_with_mutation_option(handler: ExtensionHandler, mutates_messages: Option<bool>) -> LoadedExtension {
+    let mut ext = extension("context", EventKind::Context, handler);
+    ext.handler_options.insert(EventKind::Context, vec![ExtensionHandlerOptions { preview_safe: false, mutates_messages }]);
+    ext
+}
+#[tokio::test]
+async fn owned_context_readonly_declaration_reuses_allocation() {
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::Context { messages, .. } = event else { panic!() };
+        assert_eq!(messages.len(), 1); Ok(EventResult::None)
+    }));
+    let messages = vec![user("original")];
+    let allocation = (messages.as_ptr(), messages.capacity());
+    let result = runner(vec![context_with_mutation_option(handler, Some(false))])
+        .emit_context_owned(messages, &[], None).await.unwrap();
+    assert_eq!((result.as_ptr(), result.capacity()), allocation);
+}
+#[tokio::test]
+async fn owned_context_mutating_declaration_preserves_fallback() {
+    let runtime = ExtensionRuntime::default();
+    let invalidate = runtime.clone();
+    let handler: ExtensionHandler = Arc::new(move |event, _| {
+        if let ExtensionEvent::Context { messages, .. } = event { messages.clear(); }
+        invalidate.invalidate("stale during dispatch");
+        Box::pin(async { Ok(EventResult::None) })
+    });
+    let input = vec![user("original")];
+    let expected = input.clone();
+    let mut runner = ExtensionRunner::new(vec![context_with_mutation_option(handler, Some(true))], runtime, EventBus::default(), context());
+    let result = runner.emit_context_owned(input, &[], None).await.unwrap_err();
+    assert_eq!(result.messages, expected);
+}
+#[tokio::test]
+async fn owned_context_missing_declaration_preserves_fallback() {
+    let runtime = ExtensionRuntime::default();
+    let invalidate = runtime.clone();
+    let handler: ExtensionHandler = Arc::new(move |event, _| {
+        if let ExtensionEvent::Context { messages, .. } = event { messages.clear(); }
+        invalidate.invalidate("stale during undeclared dispatch");
+        Box::pin(async { Ok(EventResult::None) })
+    });
+    let input = vec![user("original")];
+    let expected = input.clone();
+    let mut runner = ExtensionRunner::new(vec![context_with_mutation_option(handler, None)], runtime, EventBus::default(), context());
+    let result = runner.emit_context_owned(input, &[], None).await.unwrap_err();
+    assert_eq!(result.messages, expected);
+}
+#[tokio::test]
+async fn borrowed_context_entrypoint_keeps_readonly_input_isolated() {
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::Context { messages, .. } = event else { panic!() };
+        messages.clear(); Ok(EventResult::None)
+    }));
+    let input = vec![user("original")];
+    assert!(runner(vec![context_with_mutation_option(handler, Some(false))])
+        .emit_context(&input, &[], None).await.unwrap().is_empty());
+    assert_eq!(input, vec![user("original")]);
+}
 #[tokio::test]
 async fn context_entry_ids_drop_for_replaced_messages() {
     let user = |text: &str| AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text(text.into()), timestamp: 1 }));

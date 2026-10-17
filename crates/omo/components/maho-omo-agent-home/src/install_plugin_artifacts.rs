@@ -144,21 +144,25 @@ pub struct PluginInstallResult {
     pub backup_path: PathBuf,
 }
 
+pub struct PluginInstallerOptions<'a> {
+    pub settings_path: &'a Path,
+    pub plugin_path: &'a Path,
+    pub repo_root: &'a Path,
+    pub agent_dir: &'a Path,
+    pub home_dir: &'a Path,
+    pub cli_path: &'a Path,
+    pub version: Option<&'a str>,
+    pub platform: &'a str,
+}
+
 pub fn run_plugin_installer(
-    settings_path: &Path,
-    plugin_path: &Path,
-    repo_root: &Path,
-    agent_dir: &Path,
-    home_dir: &Path,
-    cli_path: &Path,
-    version: Option<&str>,
-    platform: &str,
+    options: &PluginInstallerOptions<'_>,
 ) -> Result<PluginInstallResult, Box<dyn std::error::Error + Send + Sync>> {
-    let backup_path = install_plugin_settings(settings_path, plugin_path, repo_root, agent_dir)?;
-    let launcher_path = install_local_launcher(home_dir, plugin_path, cli_path, version, platform)?;
+    let backup_path = install_plugin_settings(options.settings_path, options.plugin_path, options.repo_root, options.agent_dir)?;
+    let launcher_path = install_local_launcher(options.home_dir, options.plugin_path, options.cli_path, options.version, options.platform)?;
     Ok(PluginInstallResult {
-        settings_path: settings_path.to_owned(),
-        plugin_path: plugin_path.to_owned(),
+        settings_path: options.settings_path.to_owned(),
+        plugin_path: options.plugin_path.to_owned(),
         launcher_path,
         backup_path,
     })
@@ -331,7 +335,7 @@ mod tests {
         let backup = install_plugin_settings(&settings, &plugin, temp.path(), &agent).expect("install");
         assert_eq!(fs::read_to_string(&backup).expect("backup"), r#"{"packages":["existing"]}"#);
         let written: serde_json::Value = serde_json::from_str(&fs::read_to_string(&settings).expect("settings written")).expect("valid json");
-        assert!(written["packages"].as_array().expect("package array").iter().any(|entry| entry == &plugin.to_string_lossy().as_ref()));
+        assert!(written["packages"].as_array().expect("package array").iter().any(|entry| *entry == plugin.to_string_lossy().as_ref()));
     }
 
     #[test]

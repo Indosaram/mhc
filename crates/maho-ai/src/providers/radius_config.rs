@@ -107,6 +107,7 @@ fn typed_radius_model(provider_id: &str, config: &RadiusGatewayConfig, model: &R
         provider: provider_id.to_owned(),
         base_url: config.base_url.clone(),
         reasoning: model.reasoning,
+        default_thinking_level: None,
         thinking_level_map: model.thinking_level_map.clone(),
         input: model.input.clone(),
         cost: model.cost.clone(),
@@ -119,6 +120,7 @@ fn typed_radius_model(provider_id: &str, config: &RadiusGatewayConfig, model: &R
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
+        input_limits: None,
     }
 }
 

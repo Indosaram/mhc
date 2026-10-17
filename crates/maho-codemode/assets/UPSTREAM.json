@@ -235,21 +235,24 @@
     },
     {
       "path": "kernels/js/worker-global-sizes.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+      "status": "patched",
+      "upstreamCommit": "404fad8c621ef4a0b9f461c57afad43582f6af7b",
+      "change": "native-safe sampled global sizing implementation",
+      "sha256": "582689b3e50b0f904bec90c2923e2ba770f5698a0634353eae18cd065565e82e"
     },
     {
       "path": "kernels/js/worker-heap.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+      "status": "patched",
+      "upstreamCommit": "a72b8eddc3e586ef5a8c933395bf57dfca143bbe",
+      "change": "native-safe Node/Bun heap probe adapter",
+      "sha256": "dd6d89a6c5e905da1725989035468dbb125da39d65dfac27e9c78348c580b65a"
     },
     {
       "path": "kernels/js/worker-memory.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+      "status": "patched",
+      "upstreamCommit": "a72b8eddc3e586ef5a8c933395bf57dfca143bbe",
+      "change": "memory collection policy wired to worker status protocol with current native defaults",
+      "sha256": "ab1ef6ed42cee083cb7a98377e4bd7820534da1f1af1d140b648eed7d95ff45f"
     },
     {
       "path": "kernels/js/worker-webview-client.js",

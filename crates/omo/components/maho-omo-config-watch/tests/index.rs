@@ -238,7 +238,7 @@ fn stands_down_when_another_omo_instance_registers() {
         id: "omo".into(),
         display_name: ".omo config".into(),
         targets: vec![ConfigWatchTargetSpec { path: PathBuf::from("/other/.omo"), kind: ConfigWatchTargetKind::Dir, filter_globs: vec!["/omo.jsonc".into()] }],
-        validate: Arc::new(|_| ConfigWatchValidation::Ok),
+        validate: Arc::new(|_| Box::pin(async { Ok(ConfigWatchValidation::Ok) })),
     };
     events.publish_config_watch("other-omo", registration);
     events.emit(CONFIG_WATCH_READY, &JsonValue::Null);

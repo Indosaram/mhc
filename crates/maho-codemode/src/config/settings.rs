@@ -56,6 +56,9 @@ pub struct CodemodeSettings {
     pub hard_limit_seconds: f64,
     pub max_detached_cells: f64,
     pub parallel_pool_width: f64,
+    pub memory_gc_watermark_bytes: f64,
+    pub memory_notice_bytes: f64,
+    pub memory_ceiling_bytes: f64,
     pub task_tools: CodemodeTaskTools,
     pub output_sink: CodemodeOutputSink,
     pub status_events: bool,
@@ -69,6 +72,9 @@ impl Default for CodemodeSettings {
             run_budget_seconds: DEFAULT_RUN_BUDGET_SECONDS,
             hard_limit_seconds: DEFAULT_HARD_LIMIT_SECONDS,
             max_detached_cells: DEFAULT_MAX_DETACHED_CELLS, parallel_pool_width: 4.0,
+            memory_gc_watermark_bytes: 1_073_741_824.0,
+            memory_notice_bytes: 1_610_612_736.0,
+            memory_ceiling_bytes: 2_147_483_648.0,
             task_tools: CodemodeTaskTools::default(), output_sink: CodemodeOutputSink::default(), status_events: true,
         }
     }
@@ -108,7 +114,8 @@ pub async fn load_codemode_settings(cwd: &Path, home_dir: &Path) -> Result<Loade
 
 fn valid_settings(settings: &CodemodeSettings) -> bool {
     [settings.cell_timeout_seconds, settings.foreground_window_seconds, settings.run_budget_seconds,
-     settings.hard_limit_seconds, settings.max_detached_cells, settings.parallel_pool_width]
+     settings.hard_limit_seconds, settings.max_detached_cells, settings.parallel_pool_width,
+     settings.memory_gc_watermark_bytes, settings.memory_notice_bytes, settings.memory_ceiling_bytes]
         .iter().all(|value| value.is_finite() && *value >= 1.0)
         && [settings.output_sink.head_bytes, settings.output_sink.max_columns]
             .iter().all(|value| value.is_finite() && *value >= 0.0)

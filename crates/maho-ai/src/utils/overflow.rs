@@ -11,7 +11,9 @@ fn build(pattern: &str, case_insensitive: bool) -> Regex {
 /// (pattern, case-insensitive) pairs in TS order.
 const OVERFLOW_SOURCES: &[(&str, bool)] = &[
     (r"^Context window exhausted: ", false),
+    (r"^The conversation is too long to resend \(about \d+ tokens, limit \d+\)", false),
     (r"prompt is too long", true),
+    (r"prompt exceeds max length", true),
     (r"request_too_large", true),
     (r"input is too long for requested model", true),
     (r"exceeds (?:(?:the|this) )?(?:model'?s )?context window", true),
@@ -22,7 +24,7 @@ const OVERFLOW_SOURCES: &[(&str, bool)] = &[
     (r"maximum context length is \d+ tokens", true),
     (r"exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?", true),
     (r"input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)", true),
-    (r"exceeds the limit of \d+", true),
+    (r"model_max_prompt_tokens_exceeded|exceeds the limit of \d+", true),
     (r"exceeds the available context size", true),
     (r"greater than the context length", true),
     (r"context window exceeds limit", true),
@@ -190,6 +192,19 @@ mod tests {
             end_turn: None,
             timestamp: 0,
         }
+    }
+
+    #[test]
+    fn recognizes_provider_overflow_additions_without_matching_quota_errors() {
+        for text in [
+            "Prompt exceeds max length",
+            "model_max_prompt_tokens_exceeded",
+            "The conversation is too long to resend (about 200000 tokens, limit 100000). Compacting it and retrying.",
+        ] {
+            assert!(is_context_overflow(&error_message(text), None), "{text}");
+        }
+        assert!(!is_context_overflow(&error_message("rate limit: model_max_prompt_tokens_exceeded"), None));
+        assert!(!is_context_overflow(&error_message("Anthropic cold-seed resend limit exceeded"), None));
     }
 
     struct LengthStopOptions {

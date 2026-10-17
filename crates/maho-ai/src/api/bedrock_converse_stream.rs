@@ -527,8 +527,12 @@ fn convert_tool_config(
 
     let mut bedrock_tools: Vec<Value> = Vec::new();
     for tool in tools {
-        let strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)?;
-        let parameters = get_json_schema_tool_parameters(tool, strict).map_err(|error| error.to_string())?;
+        let mut wire_tool = tool.clone();
+        if let Some(schema) = tool.parameters.as_object() {
+            wire_tool.parameters = Value::Object(crate::utils::tool_schema_compat::normalize_tool_parameters_for_bedrock(schema));
+        }
+        let strict = resolve_json_schema_strict_sampling(&wire_tool, supports_strict_mode)?;
+        let parameters = get_json_schema_tool_parameters(&wire_tool, strict).map_err(|error| error.to_string())?;
         let mut spec = Map::new();
         spec.insert("name".into(), Value::from(tool.name.clone()));
         spec.insert("description".into(), Value::from(tool.description.clone()));
@@ -1576,6 +1580,24 @@ fn set_budget(budgets: &mut ThinkingBudgets, level: ThinkingLevel, budget: u64) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_wire_schema_flattens_root_intersections() {
+        let tool = Tool {
+            name: "combined".into(), description: "combined arguments".into(),
+            parameters: json!({"allOf":[
+                {"properties":{"left":{"type":"string"}},"required":["left"]},
+                {"properties":{"right":{"type":"integer"}},"required":["right"]}
+            ]}),
+            output_schema: None, freeform: None, constrained_sampling: None,
+        };
+        let config = convert_tool_config(Some(std::slice::from_ref(&tool)), None, false).expect("config").expect("tools");
+        let schema = &config["tools"][0]["toolSpec"]["inputSchema"]["json"];
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["required"], json!(["left", "right"]));
+        assert!(schema.get("allOf").is_none());
+        assert!(tool.parameters.get("allOf").is_some());
+    }
 
     fn any_model() -> Model {
         crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone()
