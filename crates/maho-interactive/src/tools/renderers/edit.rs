@@ -129,7 +129,13 @@ fn build_edit_call_component(
 ) -> Rc<RefCell<dyn Component>> {
     let mut component = TuiBox::with_padding(1, 1);
     component.set_bg_fn(Some(get_edit_header_bg(preview, settled_error, theme)));
-    component.add_child(Rc::new(RefCell::new(Text::with_padding(format_edit_call(args, theme, cwd), 0, 0))));
+    let mut title = format_edit_call(args, theme, cwd);
+    if let Some(EditPreview::Diff { diff, .. }) = preview {
+        let added = diff.lines().filter(|line| line.starts_with('+') && !line.starts_with("+++")).count();
+        let removed = diff.lines().filter(|line| line.starts_with('-') && !line.starts_with("---")).count();
+        title.push_str(&theme.fg(ThemeColor::Muted, &format!(" (+{added}/-{removed})")));
+    }
+    component.add_child(Rc::new(RefCell::new(Text::with_padding(title, 0, 0))));
     if let Some(preview) = preview {
         let body = match preview {
             EditPreview::Error { error } => theme.fg(ThemeColor::Error, error),

@@ -121,7 +121,7 @@ fn output_schema_survives_definition_wrapper() {
 #[test]
 fn middle_full_output_is_bounded_and_utf8_safe() {
     let mut output = OutputAccumulator::new(OutputAccumulatorOptions { max_lines:1,max_bytes:4,temp_file_prefix:"maho-full-output".into() });
-    output.append_text("begin-한글-end").unwrap(); output.finish().unwrap(); output.close_temp_file().unwrap();
+    output.append_text("begin-한글-end").unwrap(); output.finish().unwrap();
     let full = output.read_full_output(8).unwrap();
     assert!(full.truncated); assert!(full.content.starts_with("begi")); assert!(full.content.ends_with("-end"));
     assert!(full.content.contains("bytes omitted")); output.remove_temp_file().unwrap();

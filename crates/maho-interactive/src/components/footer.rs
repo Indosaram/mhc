@@ -1,7 +1,9 @@
 //! Port of footer.ts; the host supplies its O(1) session/footer snapshot.
 use super::footer_layout::{
-    FooterLayout, FooterLayoutInput, FooterRightLabel, FooterSegment, plan_footer_layout,
+    FooterLayout, FooterLayoutInput, FooterRightFit, FooterRightForm, FooterRightLabel,
+    FooterSegment, plan_footer_layout,
 };
+use super::keybinding_hints::key_text;
 use crate::theme::theme::{Theme, ThemeColor};
 use maho_tui::utils::{truncate_to_width, visible_width};
 use std::collections::BTreeMap;
@@ -186,26 +188,15 @@ impl FooterComponent {
             .filter(|m| !m.is_empty())
             .unwrap_or("no-model");
         let fast = if s.fast_mode { "⚡ " } else { "" };
-        let thinking = if s.reasoning {
-            format!(
-                ":{}",
-                s.thinking_level
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("off")
-            )
-        } else {
-            String::new()
+        let level = s.thinking_level.as_deref().filter(|s| !s.is_empty()).unwrap_or("off");
+        let model_runs = || {
+            let mut runs = Vec::new();
+            if !fast.is_empty() { runs.push((fast.to_owned(), ThemeColor::Warning)); }
+            runs.push((model.to_owned(), ThemeColor::Accent));
+            runs
         };
-        let minimal_plain = format!("{fast}{model}{thinking}");
-        let mut runs = Vec::new();
-        if !fast.is_empty() {
-            runs.push((fast, ThemeColor::Warning));
-        }
-        runs.push((model, ThemeColor::Accent));
-        if !thinking.is_empty() {
-            runs.push((&thinking, ThemeColor::Dim));
-        }
+        let mut compact_runs = model_runs();
+        if s.reasoning { compact_runs.push((format!(":{level}"), ThemeColor::Dim)); }
         let color_runs = |runs: &[(&str, ThemeColor)], plain: &str| {
             let text = maho_tui::utils::strip_terminal_sequences(plain);
             let mut remaining = text.as_str();
@@ -224,10 +215,6 @@ impl FooterComponent {
             }
             colored
         };
-        let minimal = FooterSegment {
-            colored: color_runs(&runs, &minimal_plain),
-            plain: minimal_plain,
-        };
         let provider_prefix =
             if (s.provider_count > 1 || !s.account_suffix.is_empty()) && s.model_id.is_some() {
                 format!(
@@ -238,18 +225,35 @@ impl FooterComponent {
             } else {
                 String::new()
             };
-        let full = if provider_prefix.is_empty() {
-            None
-        } else {
-            let mut full_runs = vec![(provider_prefix.as_str(), ThemeColor::Muted)];
-            full_runs.extend(runs.iter().copied());
-            let plain = format!("{provider_prefix}{}", minimal.plain);
-            Some(FooterSegment {
-                colored: color_runs(&full_runs, &plain),
-                plain,
-            })
+        let mut label_runs = model_runs();
+        label_runs.push((" • ".to_owned(), ThemeColor::BorderMuted));
+        label_runs.push((format!("effort {level}"), ThemeColor::Muted));
+        let cycle_key = if s.reasoning { key_text("app.thinking.cycle") } else { String::new() };
+        let provider = if provider_prefix.is_empty() { Vec::new() } else { vec![(provider_prefix.clone(), ThemeColor::Muted)] };
+        let make_form = |runs: Vec<(String, ThemeColor)>, fit| {
+            let plain = runs.iter().map(|(text, _)| text.as_str()).collect::<String>();
+            let refs = runs.iter().map(|(text, color)| (text.as_str(), *color)).collect::<Vec<_>>();
+            FooterRightForm { segment: FooterSegment { colored: color_runs(&refs, &plain), plain }, fits_with: fit }
         };
-        let right_labels = FooterRightLabel { minimal, full };
+        let mut forms = Vec::new();
+        if !cycle_key.is_empty() {
+            let mut runs = provider.clone();
+            runs.extend(label_runs.clone());
+            runs.push((format!(" ({cycle_key})"), ThemeColor::Dim));
+            forms.push(make_form(runs, FooterRightFit::Everything));
+        }
+        if s.reasoning {
+            let mut runs = provider.clone();
+            runs.extend(label_runs.clone());
+            forms.push(make_form(runs, FooterRightFit::Everything));
+        }
+        if !provider_prefix.is_empty() {
+            let mut runs = provider;
+            runs.extend(compact_runs.clone());
+            forms.push(make_form(runs, FooterRightFit::MiddleElision));
+        }
+        forms.push(make_form(compact_runs.clone(), FooterRightFit::PwdElision));
+        let right_labels = FooterRightLabel { forms };
         let marker = segment("…".into(), ThemeColor::Dim);
         let plan_for = |t: &FooterSegment| {
             plan_footer_layout(&FooterLayoutInput {
@@ -273,18 +277,18 @@ impl FooterComponent {
             plan = plan_for(&tail)?;
         }
         let mut left_segments = anchor.clone();
-        let (kept, show, use_full, pwd, left_plain, right_plain) = match &plan {
-            FooterLayout::Full { use_full_right } => {
-                (middle.len(), false, *use_full_right, None, None, None)
+        let (kept, show, right_form, pwd, left_plain, right_plain) = match &plan {
+            FooterLayout::Full { right_form } => {
+                (middle.len(), false, *right_form, None, None, None)
             }
             FooterLayout::MiddleElided {
                 kept_middle_count,
                 show_marker,
-                use_full_right,
+                right_form,
             } => (
                 *kept_middle_count,
                 *show_marker,
-                *use_full_right,
+                *right_form,
                 None,
                 None,
                 None,
@@ -293,20 +297,20 @@ impl FooterComponent {
                 pwd_plain,
                 kept_middle_count,
                 show_marker,
-                use_full_right,
+                right_form,
             } => (
                 *kept_middle_count,
                 *show_marker,
-                *use_full_right,
+                *right_form,
                 Some(pwd_plain),
                 None,
                 None,
             ),
             FooterLayout::LeftElided { left_plain } => {
-                (0, false, false, None, Some(left_plain), None)
+                (0, false, right_labels.forms.len() - 1, None, Some(left_plain), None)
             }
             FooterLayout::RightTruncated { right_plain } => {
-                (0, false, false, None, None, Some(right_plain))
+                (0, false, 0, None, None, Some(right_plain))
             }
         };
         if let Some(p) = pwd {
@@ -340,12 +344,15 @@ impl FooterComponent {
         let right = if let Some(p) = right_plain {
             FooterSegment {
                 plain: p.clone(),
-                colored: color_runs(&runs, p),
+                colored: color_runs(&compact_runs.iter().map(|(text, color)| (text.as_str(), *color)).collect::<Vec<_>>(), p),
             }
-        } else if use_full {
-            right_labels.full.unwrap_or(right_labels.minimal)
         } else {
-            right_labels.minimal
+            right_labels
+                .forms
+                .get(right_form)
+                .or_else(|| right_labels.forms.last())
+                .map(|form| form.segment.clone())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "footer right-label ladder is empty"))?
         };
         let padding = " ".repeat(width.saturating_sub(left_width + visible_width(&right.plain)));
         let mut lines = vec![format!("{left}{padding}{}", right.colored)];

@@ -98,8 +98,8 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mThought: 1.5s\u001b[39m\u001b[23m",
-        " \u001b[3m\u001b[38;5;244mLet me think.\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mThought: 1.5s\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mLet me think.\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 Done."
       ]
@@ -126,8 +126,8 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mThought: 1.5s\u001b[39m\u001b[23m",
-        " \u001b[3m\u001b[38;5;244mLet me think.\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mThought: 1.5s\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mLet me think.\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 Done."
       ]
@@ -154,8 +154,8 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mThought: 1.5s\u001b[39m\u001b[23m",
-        " \u001b[3m\u001b[38;5;244mLet me think.\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mThought: 1.5s\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mLet me think.\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 Done."
       ]
@@ -182,8 +182,8 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mThought: 1.5s\u001b[39m\u001b[23m",
-        " \u001b[3m\u001b[38;5;244mLet me think.\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mThought: 1.5s\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mLet me think.\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 Done."
       ]
@@ -204,7 +204,7 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;109mThinking...\u001b[39m\u001b[23m"
       ]
     },
     {
@@ -223,7 +223,7 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;109mThinking...\u001b[39m\u001b[23m"
       ]
     },
     {
@@ -242,7 +242,7 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;109mThinking...\u001b[39m\u001b[23m"
       ]
     },
     {
@@ -261,7 +261,7 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;109mThinking...\u001b[39m\u001b[23m"
       ]
     },
     {
@@ -284,10 +284,10 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[38;5;244m▸ openai · providerNative · web_search\u001b[39m",
-        "   \u001b[38;5;241m{",
-        "   \u001b[38;5;241m  \"query\": \"rust\"",
-        "\u001b]133;B\u0007\u001b]133;C\u0007   \u001b[38;5;241m}\u001b[39m"
+        " \u001b[38;5;145m▸ openai · providerNative · web_search\u001b[39m",
+        "   \u001b[38;5;102m{",
+        "   \u001b[38;5;102m  \"query\": \"rust\"",
+        "\u001b]133;B\u0007\u001b]133;C\u0007   \u001b[38;5;102m}\u001b[39m"
       ]
     },
     {
@@ -310,10 +310,10 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[38;5;244m▾ openai · providerNative · web_search\u001b[39m",
-        "   \u001b[38;5;241m{",
-        "   \u001b[38;5;241m  \"query\": \"rust\"",
-        "\u001b]133;B\u0007\u001b]133;C\u0007   \u001b[38;5;241m}\u001b[39m"
+        " \u001b[38;5;145m▾ openai · providerNative · web_search\u001b[39m",
+        "   \u001b[38;5;102m{",
+        "   \u001b[38;5;102m  \"query\": \"rust\"",
+        "\u001b]133;B\u0007\u001b]133;C\u0007   \u001b[38;5;102m}\u001b[39m"
       ]
     },
     {
@@ -336,10 +336,10 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[38;5;244m▸ openai · providerNative · web_search\u001b[39m",
-        "   \u001b[38;5;241m{",
-        "   \u001b[38;5;241m  \"query\": \"rust\"",
-        "\u001b]133;B\u0007\u001b]133;C\u0007   \u001b[38;5;241m}\u001b[39m"
+        " \u001b[38;5;145m▸ openai · providerNative · web_search\u001b[39m",
+        "   \u001b[38;5;102m{",
+        "   \u001b[38;5;102m  \"query\": \"rust\"",
+        "\u001b]133;B\u0007\u001b]133;C\u0007   \u001b[38;5;102m}\u001b[39m"
       ]
     },
     {
@@ -362,10 +362,10 @@
       },
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[38;5;244m▾ openai · providerNative · web_search\u001b[39m",
-        "   \u001b[38;5;241m{",
-        "   \u001b[38;5;241m  \"query\": \"rust\"",
-        "\u001b]133;B\u0007\u001b]133;C\u0007   \u001b[38;5;241m}\u001b[39m"
+        " \u001b[38;5;145m▾ openai · providerNative · web_search\u001b[39m",
+        "   \u001b[38;5;102m{",
+        "   \u001b[38;5;102m  \"query\": \"rust\"",
+        "\u001b]133;B\u0007\u001b]133;C\u0007   \u001b[38;5;102m}\u001b[39m"
       ]
     },
     {
@@ -386,9 +386,9 @@
         "\u001b]133;A\u0007",
         " truncated",
         "",
-        " \u001b[38;5;167mError: Model stopped because it",
-        " \u001b[38;5;167mreached the maximum output token",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;167mlimit. The response may be incomplete.\u001b[39m"
+        " \u001b[38;5;174mError: Model stopped because it",
+        " \u001b[38;5;174mreached the maximum output token",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;174mlimit. The response may be incomplete.\u001b[39m"
       ]
     },
     {
@@ -409,9 +409,9 @@
         "\u001b]133;A\u0007",
         " truncated",
         "",
-        " \u001b[38;5;167mError: Model stopped because it",
-        " \u001b[38;5;167mreached the maximum output token",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;167mlimit. The response may be incomplete.\u001b[39m"
+        " \u001b[38;5;174mError: Model stopped because it",
+        " \u001b[38;5;174mreached the maximum output token",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;174mlimit. The response may be incomplete.\u001b[39m"
       ]
     },
     {
@@ -432,8 +432,8 @@
         "\u001b]133;A\u0007",
         " truncated",
         "",
-        " \u001b[38;5;167mError: Model stopped because it reached the maximum output token limit. The",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;167mresponse may be incomplete.\u001b[39m"
+        " \u001b[38;5;174mError: Model stopped because it reached the maximum output token limit. The",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;174mresponse may be incomplete.\u001b[39m"
       ]
     },
     {
@@ -454,8 +454,8 @@
         "\u001b]133;A\u0007",
         " truncated",
         "",
-        " \u001b[38;5;167mError: Model stopped because it reached the maximum output token limit. The",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;167mresponse may be incomplete.\u001b[39m"
+        " \u001b[38;5;174mError: Model stopped because it reached the maximum output token limit. The",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;174mresponse may be incomplete.\u001b[39m"
       ]
     },
     {
@@ -477,7 +477,7 @@
         "\u001b]133;A\u0007",
         " partial",
         "",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;167mOperation aborted\u001b[39m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;174mOperation aborted\u001b[39m"
       ]
     },
     {
@@ -499,7 +499,7 @@
         "\u001b]133;A\u0007",
         " partial",
         "",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;167mOperation aborted\u001b[39m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;174mOperation aborted\u001b[39m"
       ]
     },
     {
@@ -521,7 +521,7 @@
         "\u001b]133;A\u0007",
         " partial",
         "",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;167mOperation aborted\u001b[39m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;174mOperation aborted\u001b[39m"
       ]
     },
     {
@@ -543,7 +543,7 @@
         "\u001b]133;A\u0007",
         " partial",
         "",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;167mOperation aborted\u001b[39m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[38;5;174mOperation aborted\u001b[39m"
       ]
     },
     {
@@ -652,56 +652,56 @@
       "text": "Hello **world**",
       "width": 40,
       "lines": [
-        "\u001b]133;A\u0007\u001b[48;5;59m                                        \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;188mHello \u001b[39m\u001b[1m\u001b[38;5;188mworld\u001b[39m\u001b[22m                            \u001b[49m",
-        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                        \u001b[49m"
+        "\u001b]133;A\u0007\u001b[48;5;23m                                        \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;254mHello \u001b[39m\u001b[1m\u001b[38;5;254mworld\u001b[39m\u001b[22m                            \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;23m                                        \u001b[49m"
       ]
     },
     {
       "text": "Hello **world**",
       "width": 80,
       "lines": [
-        "\u001b]133;A\u0007\u001b[48;5;59m                                                                                \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;188mHello \u001b[39m\u001b[1m\u001b[38;5;188mworld\u001b[39m\u001b[22m                                                                    \u001b[49m",
-        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                                                                \u001b[49m"
+        "\u001b]133;A\u0007\u001b[48;5;23m                                                                                \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;254mHello \u001b[39m\u001b[1m\u001b[38;5;254mworld\u001b[39m\u001b[22m                                                                    \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;23m                                                                                \u001b[49m"
       ]
     },
     {
       "text": "1. first\n2. second",
       "width": 40,
       "lines": [
-        "\u001b]133;A\u0007\u001b[48;5;59m                                        \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m1. \u001b[39m\u001b[38;5;188mfirst\u001b[39m                               \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m2. \u001b[39m\u001b[38;5;188msecond\u001b[39m                              \u001b[49m",
-        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                        \u001b[49m"
+        "\u001b]133;A\u0007\u001b[48;5;23m                                        \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m1. \u001b[39m\u001b[38;5;254mfirst\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m2. \u001b[39m\u001b[38;5;254msecond\u001b[39m                              \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;23m                                        \u001b[49m"
       ]
     },
     {
       "text": "1. first\n2. second",
       "width": 80,
       "lines": [
-        "\u001b]133;A\u0007\u001b[48;5;59m                                                                                \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m1. \u001b[39m\u001b[38;5;188mfirst\u001b[39m                                                                       \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m2. \u001b[39m\u001b[38;5;188msecond\u001b[39m                                                                      \u001b[49m",
-        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                                                                \u001b[49m"
+        "\u001b]133;A\u0007\u001b[48;5;23m                                                                                \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m1. \u001b[39m\u001b[38;5;254mfirst\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m2. \u001b[39m\u001b[38;5;254msecond\u001b[39m                                                                      \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;23m                                                                                \u001b[49m"
       ]
     },
     {
       "text": "plain",
       "width": 40,
       "lines": [
-        "\u001b]133;A\u0007\u001b[48;5;59m                                        \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;188mplain\u001b[39m                                  \u001b[49m",
-        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                        \u001b[49m"
+        "\u001b]133;A\u0007\u001b[48;5;23m                                        \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;254mplain\u001b[39m                                  \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;23m                                        \u001b[49m"
       ]
     },
     {
       "text": "plain",
       "width": 80,
       "lines": [
-        "\u001b]133;A\u0007\u001b[48;5;59m                                                                                \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;188mplain\u001b[39m                                                                          \u001b[49m",
-        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                                                                \u001b[49m"
+        "\u001b]133;A\u0007\u001b[48;5;23m                                                                                \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;254mplain\u001b[39m                                                                          \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;23m                                                                                \u001b[49m"
       ]
     }
   ],
@@ -710,11 +710,11 @@
       "width": 40,
       "lines": [
         "",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[note]\u001b[22m\u001b[39m                                 \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mcustom \u001b[39m\u001b[1m\u001b[38;5;188mbody\u001b[39m\u001b[22m                            \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m"
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[note]\u001b[22m\u001b[39m                                 \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mcustom \u001b[39m\u001b[1m\u001b[38;5;145mbody\u001b[39m\u001b[22m                            \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m"
       ]
     },
     {
@@ -722,22 +722,22 @@
       "expanded": true,
       "lines": [
         "",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[note]\u001b[22m\u001b[39m                                 \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mcustom \u001b[39m\u001b[1m\u001b[38;5;188mbody\u001b[39m\u001b[22m                            \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m"
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[note]\u001b[22m\u001b[39m                                 \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mcustom \u001b[39m\u001b[1m\u001b[38;5;145mbody\u001b[39m\u001b[22m                            \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m"
       ]
     },
     {
       "width": 80,
       "lines": [
         "",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[note]\u001b[22m\u001b[39m                                                                         \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mcustom \u001b[39m\u001b[1m\u001b[38;5;188mbody\u001b[39m\u001b[22m                                                                    \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m"
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[note]\u001b[22m\u001b[39m                                                                         \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mcustom \u001b[39m\u001b[1m\u001b[38;5;145mbody\u001b[39m\u001b[22m                                                                    \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m"
       ]
     },
     {
@@ -745,11 +745,11 @@
       "expanded": true,
       "lines": [
         "",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[note]\u001b[22m\u001b[39m                                                                         \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mcustom \u001b[39m\u001b[1m\u001b[38;5;188mbody\u001b[39m\u001b[22m                                                                    \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m"
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[note]\u001b[22m\u001b[39m                                                                         \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mcustom \u001b[39m\u001b[1m\u001b[38;5;145mbody\u001b[39m\u001b[22m                                                                    \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m"
       ]
     }
   ],
@@ -758,22 +758,22 @@
       "width": 40,
       "lines": [
         "",
-        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m\u001b[38;5;167m · 1 failed\u001b[39m",
-        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mRead\u001b[39m a.rs\u001b[38;5;241m, \u001b[39mb.rs",
-        "    \u001b[38;5;109mSearch\u001b[39m needle in src",
-        "    \u001b[38;5;109mList\u001b[39m .\u001b[38;5;167m (failed)\u001b[39m",
-        "    \u001b[38;5;109mApplied\u001b[39m 2 project rules"
+        "\u001b[38;5;102m•\u001b[39m \u001b[1mExplored\u001b[22m\u001b[38;5;174m · 1 failed\u001b[39m",
+        "\u001b[38;5;102m  └ \u001b[39m\u001b[38;5;140mRead\u001b[39m a.rs\u001b[38;5;102m, \u001b[39mb.rs",
+        "    \u001b[38;5;140mSearch\u001b[39m needle in src",
+        "    \u001b[38;5;140mList\u001b[39m .\u001b[38;5;174m (failed)\u001b[39m",
+        "    \u001b[38;5;140mApplied\u001b[39m 2 project rules"
       ]
     },
     {
       "width": 80,
       "lines": [
         "",
-        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m\u001b[38;5;167m · 1 failed\u001b[39m",
-        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mRead\u001b[39m a.rs\u001b[38;5;241m, \u001b[39mb.rs",
-        "    \u001b[38;5;109mSearch\u001b[39m needle in src",
-        "    \u001b[38;5;109mList\u001b[39m .\u001b[38;5;167m (failed)\u001b[39m",
-        "    \u001b[38;5;109mApplied\u001b[39m 2 project rules"
+        "\u001b[38;5;102m•\u001b[39m \u001b[1mExplored\u001b[22m\u001b[38;5;174m · 1 failed\u001b[39m",
+        "\u001b[38;5;102m  └ \u001b[39m\u001b[38;5;140mRead\u001b[39m a.rs\u001b[38;5;102m, \u001b[39mb.rs",
+        "    \u001b[38;5;140mSearch\u001b[39m needle in src",
+        "    \u001b[38;5;140mList\u001b[39m .\u001b[38;5;174m (failed)\u001b[39m",
+        "    \u001b[38;5;140mApplied\u001b[39m 2 project rules"
       ]
     }
   ],
@@ -796,9 +796,9 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                       \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -819,11 +819,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                       \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}                           \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;172mmain\u001b[39m() {}                           \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -844,9 +844,9 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                                                               \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -867,11 +867,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                                                               \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}                                                                   \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;172mmain\u001b[39m() {}                                                                   \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -892,12 +892,12 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mls\u001b[22m\u001b[39m \u001b[38;5;109msrc\u001b[39m                                 \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244ma.rs\u001b[39m                                   \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mb.rs\u001b[39m                                   \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mls\u001b[22m\u001b[39m \u001b[38;5;140msrc\u001b[39m                                 \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145ma.rs\u001b[39m                                   \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mb.rs\u001b[39m                                   \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -918,12 +918,12 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mls\u001b[22m\u001b[39m \u001b[38;5;109msrc\u001b[39m                                 \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244ma.rs\u001b[39m                                   \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mb.rs\u001b[39m                                   \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mls\u001b[22m\u001b[39m \u001b[38;5;140msrc\u001b[39m                                 \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145ma.rs\u001b[39m                                   \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mb.rs\u001b[39m                                   \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -944,12 +944,12 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mls\u001b[22m\u001b[39m \u001b[38;5;109msrc\u001b[39m                                                                         \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244ma.rs\u001b[39m                                                                           \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mb.rs\u001b[39m                                                                           \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mls\u001b[22m\u001b[39m \u001b[38;5;140msrc\u001b[39m                                                                         \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145ma.rs\u001b[39m                                                                           \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mb.rs\u001b[39m                                                                           \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -970,12 +970,12 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mls\u001b[22m\u001b[39m \u001b[38;5;109msrc\u001b[39m                                                                         \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244ma.rs\u001b[39m                                                                           \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mb.rs\u001b[39m                                                                           \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mls\u001b[22m\u001b[39m \u001b[38;5;140msrc\u001b[39m                                                                         \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145ma.rs\u001b[39m                                                                           \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mb.rs\u001b[39m                                                                           \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -997,11 +997,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mgrep\u001b[22m\u001b[39m \u001b[38;5;109m/needle/\u001b[39m\u001b[38;5;244m in \u001b[39m\u001b[38;5;109msrc\u001b[39m                   \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mno matches\u001b[39m                             \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mgrep\u001b[22m\u001b[39m \u001b[38;5;140m/needle/\u001b[39m\u001b[38;5;145m in \u001b[39m\u001b[38;5;140msrc\u001b[39m                   \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mno matches\u001b[39m                             \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1023,11 +1023,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mgrep\u001b[22m\u001b[39m \u001b[38;5;109m/needle/\u001b[39m\u001b[38;5;244m in \u001b[39m\u001b[38;5;109msrc\u001b[39m                   \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mno matches\u001b[39m                             \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mgrep\u001b[22m\u001b[39m \u001b[38;5;140m/needle/\u001b[39m\u001b[38;5;145m in \u001b[39m\u001b[38;5;140msrc\u001b[39m                   \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mno matches\u001b[39m                             \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1049,11 +1049,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mgrep\u001b[22m\u001b[39m \u001b[38;5;109m/needle/\u001b[39m\u001b[38;5;244m in \u001b[39m\u001b[38;5;109msrc\u001b[39m                                                           \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mno matches\u001b[39m                                                                     \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mgrep\u001b[22m\u001b[39m \u001b[38;5;140m/needle/\u001b[39m\u001b[38;5;145m in \u001b[39m\u001b[38;5;140msrc\u001b[39m                                                           \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mno matches\u001b[39m                                                                     \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1075,11 +1075,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mgrep\u001b[22m\u001b[39m \u001b[38;5;109m/needle/\u001b[39m\u001b[38;5;244m in \u001b[39m\u001b[38;5;109msrc\u001b[39m                                                           \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mno matches\u001b[39m                                                                     \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mgrep\u001b[22m\u001b[39m \u001b[38;5;140m/needle/\u001b[39m\u001b[38;5;145m in \u001b[39m\u001b[38;5;140msrc\u001b[39m                                                           \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mno matches\u001b[39m                                                                     \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1101,11 +1101,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;109m*.rs\u001b[39m\u001b[38;5;244m in src\u001b[39m                       \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244msrc/a.rs\u001b[39m                               \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;140m*.rs\u001b[39m\u001b[38;5;145m in src\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145msrc/a.rs\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1127,11 +1127,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;109m*.rs\u001b[39m\u001b[38;5;244m in src\u001b[39m                       \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244msrc/a.rs\u001b[39m                               \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;140m*.rs\u001b[39m\u001b[38;5;145m in src\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145msrc/a.rs\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1153,11 +1153,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;109m*.rs\u001b[39m\u001b[38;5;244m in src\u001b[39m                                                               \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244msrc/a.rs\u001b[39m                                                                       \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;140m*.rs\u001b[39m\u001b[38;5;145m in src\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145msrc/a.rs\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1179,11 +1179,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;109m*.rs\u001b[39m\u001b[38;5;244m in src\u001b[39m                                                               \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244msrc/a.rs\u001b[39m                                                                       \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;140m*.rs\u001b[39m\u001b[38;5;145m in src\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145msrc/a.rs\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1208,12 +1208,12 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                       \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;52m\u001b[38;5;167m-\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;167m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                 \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;143m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                 \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m\u001b[38;5;145m (+1/-1)\u001b[39m               \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;217m-\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;217m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;16m                                 \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;115m+\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;115m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;16m                                 \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1238,12 +1238,12 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                       \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;52m\u001b[38;5;167m-\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;167m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                 \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;143m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                 \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m\u001b[38;5;145m (+1/-1)\u001b[39m               \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;217m-\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;217m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;16m                                 \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;115m+\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;115m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;16m                                 \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1268,12 +1268,12 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                                                               \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;52m\u001b[38;5;167m-\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;167m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                                                         \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;143m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                                                         \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m\u001b[38;5;145m (+1/-1)\u001b[39m                                                       \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;217m-\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;217m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;16m                                                                         \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;115m+\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;115m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;16m                                                                         \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1298,12 +1298,12 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                                                               \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;52m\u001b[38;5;167m-\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;167m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                                                         \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;143m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                                                         \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m\u001b[38;5;145m (+1/-1)\u001b[39m                                                       \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;217m-\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;217m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;16m                                                                         \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;115m+\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;115m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;16m                                                                         \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1325,11 +1325,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;109msrc/new.rs\u001b[39m                       \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}\u001b[49m\u001b[48;5;22m                        \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;140msrc/new.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;115m+\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;172mmain\u001b[39m() {}\u001b[49m\u001b[48;5;16m                        \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1351,11 +1351,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;109msrc/new.rs\u001b[39m                       \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}\u001b[49m\u001b[48;5;22m                        \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;140msrc/new.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;115m+\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;172mmain\u001b[39m() {}\u001b[49m\u001b[48;5;16m                        \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1377,11 +1377,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;109msrc/new.rs\u001b[39m                                                               \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}\u001b[49m\u001b[48;5;22m                                                                \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;140msrc/new.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;115m+\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;172mmain\u001b[39m() {}\u001b[49m\u001b[48;5;16m                                                                \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1403,11 +1403,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;109msrc/new.rs\u001b[39m                                                               \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}\u001b[49m\u001b[48;5;22m                                                                \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;140msrc/new.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[48;5;16m\u001b[38;5;115m+\u001b[39m\u001b[38;5;145m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;172mmain\u001b[39m() {}\u001b[49m\u001b[48;5;16m                                                                \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1428,11 +1428,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hi                              \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mhi\u001b[39m                                     \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;140mecho\u001b[39m hi                              \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mhi\u001b[39m                                     \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1453,11 +1453,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hi                              \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mhi\u001b[39m                                     \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;140mecho\u001b[39m hi                              \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mhi\u001b[39m                                     \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1478,11 +1478,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hi                                                                      \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mhi\u001b[39m                                                                             \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;140mecho\u001b[39m hi                                                                      \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mhi\u001b[39m                                                                             \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1503,11 +1503,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hi                                                                      \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m \u001b[38;5;244mhi\u001b[39m                                                                             \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;140mecho\u001b[39m hi                                                                      \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mhi\u001b[39m                                                                             \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1528,11 +1528,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;52m                                        \u001b[49m",
-        "\u001b[48;5;52m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109mmissing.rs\u001b[39m                        \u001b[49m",
-        "\u001b[48;5;52m                                        \u001b[49m",
-        "\u001b[48;5;52m \u001b[38;5;244mENOENT: no such file\u001b[39m                   \u001b[49m",
-        "\u001b[48;5;52m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140mmissing.rs\u001b[39m                        \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mENOENT: no such file\u001b[39m                   \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1553,11 +1553,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;52m                                        \u001b[49m",
-        "\u001b[48;5;52m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109mmissing.rs\u001b[39m                        \u001b[49m",
-        "\u001b[48;5;52m                                        \u001b[49m",
-        "\u001b[48;5;52m \u001b[38;5;244mENOENT: no such file\u001b[39m                   \u001b[49m",
-        "\u001b[48;5;52m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140mmissing.rs\u001b[39m                        \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mENOENT: no such file\u001b[39m                   \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
@@ -1578,11 +1578,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;52m                                                                                \u001b[49m",
-        "\u001b[48;5;52m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109mmissing.rs\u001b[39m                                                                \u001b[49m",
-        "\u001b[48;5;52m                                                                                \u001b[49m",
-        "\u001b[48;5;52m \u001b[38;5;244mENOENT: no such file\u001b[39m                                                           \u001b[49m",
-        "\u001b[48;5;52m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140mmissing.rs\u001b[39m                                                                \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mENOENT: no such file\u001b[39m                                                           \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     },
     {
@@ -1603,11 +1603,11 @@
       },
       "lines": [
         "",
-        "\u001b[48;5;52m                                                                                \u001b[49m",
-        "\u001b[48;5;52m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109mmissing.rs\u001b[39m                                                                \u001b[49m",
-        "\u001b[48;5;52m                                                                                \u001b[49m",
-        "\u001b[48;5;52m \u001b[38;5;244mENOENT: no such file\u001b[39m                                                           \u001b[49m",
-        "\u001b[48;5;52m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140mmissing.rs\u001b[39m                                                                \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m \u001b[38;5;145mENOENT: no such file\u001b[39m                                                           \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     }
   ],
@@ -1617,10 +1617,10 @@
       "nowMs": 1000000,
       "lines": [
         "",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                       \u001b[49m",
-        "\u001b[48;5;17m ⠋ reading · 5s / max 1m 00s            \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m"
+        "\u001b[48;5;234m                                        \u001b[49m",
+        "\u001b[48;5;234m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;234m ⠋ reading · 5s / max 1m 00s            \u001b[49m",
+        "\u001b[48;5;234m                                        \u001b[49m"
       ]
     },
     {
@@ -1628,10 +1628,10 @@
       "nowMs": 1000000,
       "lines": [
         "",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                                                               \u001b[49m",
-        "\u001b[48;5;17m ⠋ reading · 5s / max 1m 00s                                                    \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m"
+        "\u001b[48;5;234m                                                                                \u001b[49m",
+        "\u001b[48;5;234m \u001b[38;5;254m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;140msrc/main.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;234m ⠋ reading · 5s / max 1m 00s                                                    \u001b[49m",
+        "\u001b[48;5;234m                                                                                \u001b[49m"
       ]
     }
   ]

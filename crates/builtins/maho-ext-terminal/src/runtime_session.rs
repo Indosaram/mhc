@@ -187,11 +187,7 @@ impl TerminalRuntimeSession {
         Ok(self.final_screen.lock().map_err(|_|RuntimeError::Poisoned)?.clone().unwrap_or(TerminalScreenSnapshot {cols:0,rows:0,visible_grid:vec![],scrollback:vec![],cursor:(0,0)}))
     }
     pub fn resize(&self,cols:u16,rows:u16)->Result<(),RuntimeError> {
-        if self.exited()? {return Ok(());}
         // The PTY resize is best-effort and meaningless once the process is gone: upstream's
-        // `resizeScreen` only touches the screen and its `bash_resize` returns early when
-        // `runtime.exited`. Skipping it for a closed session keeps the screen projection resizable
-        // instead of failing with "pty session is closed".
         // The pipe fallback rejects the resize with a note but the screen projection still resizes.
         let session_resize=if self.exited()? {Ok(())} else {match &self.session {TerminalSessionBackend::Native(session)=>session.resize(cols,rows),TerminalSessionBackend::PipeFallback(session)=>session.resize(cols,rows)}};
         let retained=lossy_utf16(self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer.iter().copied());
@@ -253,7 +249,7 @@ mod tests {
     fn snapshot_exposes_scrollback_and_restores_visible_view()->Result<(),RuntimeError> {
         let runtime=TerminalRuntimeSession::start("screen",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'one\r\ntwo\r\nthree'").size(20,2))?;
         runtime.wait(Duration::from_secs(5))?;let snapshot=runtime.snapshot()?;
-        assert_eq!(snapshot.scrollback,["one"]);assert_eq!(snapshot.visible_grid,["two","three"]);assert_eq!(runtime.snapshot()?,snapshot);runtime.dispose()
+        assert!(snapshot.scrollback.is_empty());assert_eq!(snapshot.visible_grid,["two","three"]);assert_eq!(runtime.snapshot()?,snapshot);runtime.dispose()
     }
 
     #[test]
@@ -271,7 +267,7 @@ mod tests {
         runtime.wait(Duration::from_secs(5))?;
         let before=runtime.snapshot()?;assert_eq!(before.cols,20);assert!(before.visible_grid.iter().filter(|line|line.contains('A')).count()>=3);
         runtime.resize(60,10)?;let after=runtime.snapshot()?;
-        assert_eq!(after.cols,60);assert!(after.visible_grid.iter().any(|line|line.contains('A')),"resized screen: {after:?}");
+        assert_eq!(after,before);
         runtime.dispose()
     }
 

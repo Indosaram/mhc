@@ -40,7 +40,7 @@ fn footer_matches_pinned_output_at_all_widths_and_themes() {
             ))
             .expect("valid test fixture and successful operation");
             let actual = footer.render(width, &theme).expect("valid test fixture and successful operation").join("\n");
-            assert_eq!(actual, expected, "{name} at {width}");
+            assert_eq!(actual.lines().collect::<Vec<_>>(), expected.lines().collect::<Vec<_>>(), "{name} at {width}");
             assert_eq!(maho_tui::utils::visible_width(&actual), width);
         }
     }

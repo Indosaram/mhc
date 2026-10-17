@@ -104,7 +104,7 @@ pub fn install_local_launcher(home_dir: &Path, plugin_path: &Path, cli_path: &Pa
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
     }
-    if platform == "win32" { fs::write(home_dir.join(".local/bin/omo.cmd"), "@echo off\\r\\nnode \"%~dp0omo\" %*\\r\\n")?; }
+    if platform == "win32" { fs::write(home_dir.join(".local/bin/omo.cmd"), "@echo off\r\nnode \"%~dp0omo\" %*\r\n")?; }
     Ok(Some(path))
 }
 
@@ -129,9 +129,9 @@ pub fn install_plugin_settings(settings_path: &Path, plugin_path: &Path, repo_ro
     settings["packages"] = serde_json::json!(packages);
     if let Some(parent) = settings_path.parent() { fs::create_dir_all(parent)?; }
     let backup = settings_path.with_extension(format!("{}.backup", chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ")));
-    if settings_path.exists() { fs::copy(settings_path, &backup)?; } else { fs::write(&backup, "{}\\n")?; }
+    if settings_path.exists() { fs::copy(settings_path, &backup)?; } else { fs::write(&backup, "{}\n")?; }
     let temp = settings_path.with_extension(format!("{}.tmp", std::process::id()));
-    fs::write(&temp, format!("{}\\n", serde_json::to_string_pretty(&settings)?))?;
+    fs::write(&temp, format!("{}\n", serde_json::to_string_pretty(&settings)?))?;
     fs::rename(temp, settings_path)?;
     Ok(backup)
 }

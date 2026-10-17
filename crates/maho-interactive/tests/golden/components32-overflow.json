@@ -74,16 +74,16 @@
       "rules": [],
       "lines": [
         "",
-        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
-        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mSearch\u001b[39m pattern0 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern1 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern2 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern3 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern4 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern5 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern6 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern7 in src",
-        "    \u001b[38;5;241m… +3 more\u001b[39m"
+        "\u001b[38;5;102m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;102m  └ \u001b[39m\u001b[38;5;140mSearch\u001b[39m pattern0 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern1 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern2 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern3 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern4 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern5 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern6 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern7 in src",
+        "    \u001b[38;5;102m… +3 more\u001b[39m"
       ]
     },
     {
@@ -160,16 +160,16 @@
       "rules": [],
       "lines": [
         "",
-        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
-        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mRead\u001b[39m a.rs\u001b[38;5;241m, \u001b[39mb.rs",
-        "    \u001b[38;5;109mSearch\u001b[39m p0",
-        "    \u001b[38;5;109mSearch\u001b[39m p1",
-        "    \u001b[38;5;109mSearch\u001b[39m p2",
-        "    \u001b[38;5;109mSearch\u001b[39m p3",
-        "    \u001b[38;5;109mSearch\u001b[39m p4",
-        "    \u001b[38;5;109mSearch\u001b[39m p5",
-        "    \u001b[38;5;109mSearch\u001b[39m p6",
-        "    \u001b[38;5;241m… +2 more\u001b[39m"
+        "\u001b[38;5;102m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;102m  └ \u001b[39m\u001b[38;5;140mRead\u001b[39m a.rs\u001b[38;5;102m, \u001b[39mb.rs",
+        "    \u001b[38;5;140mSearch\u001b[39m p0",
+        "    \u001b[38;5;140mSearch\u001b[39m p1",
+        "    \u001b[38;5;140mSearch\u001b[39m p2",
+        "    \u001b[38;5;140mSearch\u001b[39m p3",
+        "    \u001b[38;5;140mSearch\u001b[39m p4",
+        "    \u001b[38;5;140mSearch\u001b[39m p5",
+        "    \u001b[38;5;140mSearch\u001b[39m p6",
+        "    \u001b[38;5;102m… +2 more\u001b[39m"
       ]
     },
     {
@@ -190,9 +190,9 @@
       ],
       "lines": [
         "",
-        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
-        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mList\u001b[39m .",
-        "    \u001b[38;5;109mApplied\u001b[39m 2 project rules"
+        "\u001b[38;5;102m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;102m  └ \u001b[39m\u001b[38;5;140mList\u001b[39m .",
+        "    \u001b[38;5;140mApplied\u001b[39m 2 project rules"
       ]
     },
     {
@@ -269,16 +269,16 @@
       "rules": [],
       "lines": [
         "",
-        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
-        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mSearch\u001b[39m pattern0 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern1 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern2 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern3 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern4 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern5 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern6 in src",
-        "    \u001b[38;5;109mSearch\u001b[39m pattern7 in src",
-        "    \u001b[38;5;241m… +3 more\u001b[39m"
+        "\u001b[38;5;102m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;102m  └ \u001b[39m\u001b[38;5;140mSearch\u001b[39m pattern0 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern1 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern2 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern3 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern4 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern5 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern6 in src",
+        "    \u001b[38;5;140mSearch\u001b[39m pattern7 in src",
+        "    \u001b[38;5;102m… +3 more\u001b[39m"
       ]
     },
     {
@@ -355,16 +355,16 @@
       "rules": [],
       "lines": [
         "",
-        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
-        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mRead\u001b[39m a.rs\u001b[38;5;241m, \u001b[39mb.rs",
-        "    \u001b[38;5;109mSearch\u001b[39m p0",
-        "    \u001b[38;5;109mSearch\u001b[39m p1",
-        "    \u001b[38;5;109mSearch\u001b[39m p2",
-        "    \u001b[38;5;109mSearch\u001b[39m p3",
-        "    \u001b[38;5;109mSearch\u001b[39m p4",
-        "    \u001b[38;5;109mSearch\u001b[39m p5",
-        "    \u001b[38;5;109mSearch\u001b[39m p6",
-        "    \u001b[38;5;241m… +2 more\u001b[39m"
+        "\u001b[38;5;102m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;102m  └ \u001b[39m\u001b[38;5;140mRead\u001b[39m a.rs\u001b[38;5;102m, \u001b[39mb.rs",
+        "    \u001b[38;5;140mSearch\u001b[39m p0",
+        "    \u001b[38;5;140mSearch\u001b[39m p1",
+        "    \u001b[38;5;140mSearch\u001b[39m p2",
+        "    \u001b[38;5;140mSearch\u001b[39m p3",
+        "    \u001b[38;5;140mSearch\u001b[39m p4",
+        "    \u001b[38;5;140mSearch\u001b[39m p5",
+        "    \u001b[38;5;140mSearch\u001b[39m p6",
+        "    \u001b[38;5;102m… +2 more\u001b[39m"
       ]
     },
     {
@@ -385,9 +385,9 @@
       ],
       "lines": [
         "",
-        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
-        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mList\u001b[39m .",
-        "    \u001b[38;5;109mApplied\u001b[39m 2 project rules"
+        "\u001b[38;5;102m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;102m  └ \u001b[39m\u001b[38;5;140mList\u001b[39m .",
+        "    \u001b[38;5;140mApplied\u001b[39m 2 project rules"
       ]
     }
   ],
@@ -412,7 +412,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mThinking...\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 done"
       ]
@@ -437,7 +437,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mreasoning\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 done"
       ]
@@ -462,7 +462,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        "   \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        "   \u001b[3m\u001b[38;5;109mreasoning\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007   done"
       ]
@@ -487,7 +487,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mreasoning\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 done"
       ]
@@ -508,7 +508,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mwhy\u001b[39m\u001b[23m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;109mwhy\u001b[39m\u001b[23m"
       ]
     },
     {
@@ -527,7 +527,7 @@
       "isExplorationDetail": true,
       "lines": [
         "\u001b]133;A\u0007",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;109mThinking...\u001b[39m\u001b[23m"
       ]
     },
     {
@@ -550,7 +550,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mThinking...\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 done"
       ]
@@ -575,7 +575,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mreasoning\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 done"
       ]
@@ -600,7 +600,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        "   \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        "   \u001b[3m\u001b[38;5;109mreasoning\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007   done"
       ]
@@ -625,7 +625,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        " \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        " \u001b[3m\u001b[38;5;109mreasoning\u001b[39m\u001b[23m",
         "",
         "\u001b]133;B\u0007\u001b]133;C\u0007 done"
       ]
@@ -646,7 +646,7 @@
       "isExplorationDetail": false,
       "lines": [
         "\u001b]133;A\u0007",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mwhy\u001b[39m\u001b[23m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;109mwhy\u001b[39m\u001b[23m"
       ]
     },
     {
@@ -665,7 +665,7 @@
       "isExplorationDetail": true,
       "lines": [
         "\u001b]133;A\u0007",
-        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m"
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;109mThinking...\u001b[39m\u001b[23m"
       ]
     }
   ],
@@ -678,15 +678,15 @@
       "lines": [
         "",
         " \u001b[1mFork from Message\u001b[22m",
-        " \u001b[38;5;244mSelect a user message to copy the",
-        " \u001b[38;5;244mactive path up to that point into a",
-        " \u001b[38;5;244mnew session\u001b[39m",
+        " \u001b[38;5;145mSelect a user message to copy the",
+        " \u001b[38;5;145mactive path up to that point into a",
+        " \u001b[38;5;145mnew session\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m",
+        "\u001b[38;5;74m────────────────────────────────────────\u001b[39m",
         "",
-        "\u001b[38;5;244m  No user messages found\u001b[39m",
+        "\u001b[38;5;145m  No user messages found\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m"
+        "\u001b[38;5;74m────────────────────────────────────────\u001b[39m"
       ]
     },
     {
@@ -754,45 +754,45 @@
       "lines": [
         "",
         " \u001b[1mFork from Message\u001b[22m",
-        " \u001b[38;5;244mSelect a user message to copy the",
-        " \u001b[38;5;244mactive path up to that point into a",
-        " \u001b[38;5;244mnew session\u001b[39m",
+        " \u001b[38;5;145mSelect a user message to copy the",
+        " \u001b[38;5;145mactive path up to that point into a",
+        " \u001b[38;5;145mnew session\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m",
+        "\u001b[38;5;74m────────────────────────────────────────\u001b[39m",
         "",
-        "\u001b[38;5;109m› \u001b[39m\u001b[1mmessage 0\u001b[22m",
-        "\u001b[38;5;244m  Message 1 of 14\u001b[39m",
+        "\u001b[38;5;140m› \u001b[39m\u001b[1mmessage 0\u001b[22m",
+        "\u001b[38;5;145m  Message 1 of 14\u001b[39m",
         "",
         "  message 1",
-        "\u001b[38;5;244m  Message 2 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 2 of 14\u001b[39m",
         "",
         "  message 2",
-        "\u001b[38;5;244m  Message 3 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 3 of 14\u001b[39m",
         "",
         "  message 3",
-        "\u001b[38;5;244m  Message 4 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 4 of 14\u001b[39m",
         "",
         "  message 4",
-        "\u001b[38;5;244m  Message 5 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 5 of 14\u001b[39m",
         "",
         "  message 5",
-        "\u001b[38;5;244m  Message 6 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 6 of 14\u001b[39m",
         "",
         "  message 6",
-        "\u001b[38;5;244m  Message 7 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 7 of 14\u001b[39m",
         "",
         "  message 7",
-        "\u001b[38;5;244m  Message 8 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 8 of 14\u001b[39m",
         "",
         "  message 8",
-        "\u001b[38;5;244m  Message 9 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 9 of 14\u001b[39m",
         "",
         "  message 9",
-        "\u001b[38;5;244m  Message 10 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 10 of 14\u001b[39m",
         "",
-        "\u001b[38;5;244m  (1/14)\u001b[39m",
+        "\u001b[38;5;145m  (1/14)\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m"
+        "\u001b[38;5;74m────────────────────────────────────────\u001b[39m"
       ]
     },
     {
@@ -860,45 +860,45 @@
       "lines": [
         "",
         " \u001b[1mFork from Message\u001b[22m",
-        " \u001b[38;5;244mSelect a user message to copy the",
-        " \u001b[38;5;244mactive path up to that point into a",
-        " \u001b[38;5;244mnew session\u001b[39m",
+        " \u001b[38;5;145mSelect a user message to copy the",
+        " \u001b[38;5;145mactive path up to that point into a",
+        " \u001b[38;5;145mnew session\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m",
+        "\u001b[38;5;74m────────────────────────────────────────\u001b[39m",
         "",
         "  message 4",
-        "\u001b[38;5;244m  Message 5 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 5 of 14\u001b[39m",
         "",
         "  message 5",
-        "\u001b[38;5;244m  Message 6 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 6 of 14\u001b[39m",
         "",
         "  message 6",
-        "\u001b[38;5;244m  Message 7 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 7 of 14\u001b[39m",
         "",
         "  message 7",
-        "\u001b[38;5;244m  Message 8 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 8 of 14\u001b[39m",
         "",
         "  message 8",
-        "\u001b[38;5;244m  Message 9 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 9 of 14\u001b[39m",
         "",
         "  message 9",
-        "\u001b[38;5;244m  Message 10 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 10 of 14\u001b[39m",
         "",
         "  message 10",
-        "\u001b[38;5;244m  Message 11 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 11 of 14\u001b[39m",
         "",
         "  message 11",
-        "\u001b[38;5;244m  Message 12 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 12 of 14\u001b[39m",
         "",
         "  message 12",
-        "\u001b[38;5;244m  Message 13 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 13 of 14\u001b[39m",
         "",
-        "\u001b[38;5;109m› \u001b[39m\u001b[1mmessage 13\u001b[22m",
-        "\u001b[38;5;244m  Message 14 of 14\u001b[39m",
+        "\u001b[38;5;140m› \u001b[39m\u001b[1mmessage 13\u001b[22m",
+        "\u001b[38;5;145m  Message 14 of 14\u001b[39m",
         "",
-        "\u001b[38;5;244m  (14/14)\u001b[39m",
+        "\u001b[38;5;145m  (14/14)\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m"
+        "\u001b[38;5;74m────────────────────────────────────────\u001b[39m"
       ]
     },
     {
@@ -909,14 +909,14 @@
       "lines": [
         "",
         " \u001b[1mFork from Message\u001b[22m",
-        " \u001b[38;5;244mSelect a user message to copy the active path up to that point into a new",
-        " \u001b[38;5;244msession\u001b[39m",
+        " \u001b[38;5;145mSelect a user message to copy the active path up to that point into a new",
+        " \u001b[38;5;145msession\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        "\u001b[38;5;74m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
         "",
-        "\u001b[38;5;244m  No user messages found\u001b[39m",
+        "\u001b[38;5;145m  No user messages found\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+        "\u001b[38;5;74m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
       ]
     },
     {
@@ -984,44 +984,44 @@
       "lines": [
         "",
         " \u001b[1mFork from Message\u001b[22m",
-        " \u001b[38;5;244mSelect a user message to copy the active path up to that point into a new",
-        " \u001b[38;5;244msession\u001b[39m",
+        " \u001b[38;5;145mSelect a user message to copy the active path up to that point into a new",
+        " \u001b[38;5;145msession\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        "\u001b[38;5;74m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
         "",
-        "\u001b[38;5;109m› \u001b[39m\u001b[1mmessage 0\u001b[22m",
-        "\u001b[38;5;244m  Message 1 of 14\u001b[39m",
+        "\u001b[38;5;140m› \u001b[39m\u001b[1mmessage 0\u001b[22m",
+        "\u001b[38;5;145m  Message 1 of 14\u001b[39m",
         "",
         "  message 1",
-        "\u001b[38;5;244m  Message 2 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 2 of 14\u001b[39m",
         "",
         "  message 2",
-        "\u001b[38;5;244m  Message 3 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 3 of 14\u001b[39m",
         "",
         "  message 3",
-        "\u001b[38;5;244m  Message 4 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 4 of 14\u001b[39m",
         "",
         "  message 4",
-        "\u001b[38;5;244m  Message 5 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 5 of 14\u001b[39m",
         "",
         "  message 5",
-        "\u001b[38;5;244m  Message 6 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 6 of 14\u001b[39m",
         "",
         "  message 6",
-        "\u001b[38;5;244m  Message 7 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 7 of 14\u001b[39m",
         "",
         "  message 7",
-        "\u001b[38;5;244m  Message 8 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 8 of 14\u001b[39m",
         "",
         "  message 8",
-        "\u001b[38;5;244m  Message 9 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 9 of 14\u001b[39m",
         "",
         "  message 9",
-        "\u001b[38;5;244m  Message 10 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 10 of 14\u001b[39m",
         "",
-        "\u001b[38;5;244m  (1/14)\u001b[39m",
+        "\u001b[38;5;145m  (1/14)\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+        "\u001b[38;5;74m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
       ]
     },
     {
@@ -1089,44 +1089,44 @@
       "lines": [
         "",
         " \u001b[1mFork from Message\u001b[22m",
-        " \u001b[38;5;244mSelect a user message to copy the active path up to that point into a new",
-        " \u001b[38;5;244msession\u001b[39m",
+        " \u001b[38;5;145mSelect a user message to copy the active path up to that point into a new",
+        " \u001b[38;5;145msession\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        "\u001b[38;5;74m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
         "",
         "  message 4",
-        "\u001b[38;5;244m  Message 5 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 5 of 14\u001b[39m",
         "",
         "  message 5",
-        "\u001b[38;5;244m  Message 6 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 6 of 14\u001b[39m",
         "",
         "  message 6",
-        "\u001b[38;5;244m  Message 7 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 7 of 14\u001b[39m",
         "",
         "  message 7",
-        "\u001b[38;5;244m  Message 8 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 8 of 14\u001b[39m",
         "",
         "  message 8",
-        "\u001b[38;5;244m  Message 9 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 9 of 14\u001b[39m",
         "",
         "  message 9",
-        "\u001b[38;5;244m  Message 10 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 10 of 14\u001b[39m",
         "",
         "  message 10",
-        "\u001b[38;5;244m  Message 11 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 11 of 14\u001b[39m",
         "",
         "  message 11",
-        "\u001b[38;5;244m  Message 12 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 12 of 14\u001b[39m",
         "",
         "  message 12",
-        "\u001b[38;5;244m  Message 13 of 14\u001b[39m",
+        "\u001b[38;5;145m  Message 13 of 14\u001b[39m",
         "",
-        "\u001b[38;5;109m› \u001b[39m\u001b[1mmessage 13\u001b[22m",
-        "\u001b[38;5;244m  Message 14 of 14\u001b[39m",
+        "\u001b[38;5;140m› \u001b[39m\u001b[1mmessage 13\u001b[22m",
+        "\u001b[38;5;145m  Message 14 of 14\u001b[39m",
         "",
-        "\u001b[38;5;244m  (14/14)\u001b[39m",
+        "\u001b[38;5;145m  (14/14)\u001b[39m",
         "",
-        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+        "\u001b[38;5;74m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
       ]
     }
   ]

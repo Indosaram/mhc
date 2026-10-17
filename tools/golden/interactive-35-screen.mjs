@@ -4,7 +4,7 @@ import { join } from "node:path";
 const root = process.env.SENPI_SRC;
 if (!root) throw new Error("SENPI_SRC is required");
 const pin = Bun.spawn(["git", "--no-pager", "-C", root, "rev-parse", "HEAD"], { stdout: "pipe" });
-if ((await new Response(pin.stdout).text()).trim() !== "fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407" || await pin.exited !== 0) throw new Error("senpi pin mismatch");
+if ((await new Response(pin.stdout).text()).trim() !== "cf69f5e72eb325219a93e17bb54bbd4ba787899e" || await pin.exited !== 0) throw new Error("senpi pin mismatch");
 if (process.env.GOLDEN_PLATFORM === "darwin") Object.defineProperty(process, "platform", { value: "darwin" });
 const home = mkdtempSync("/tmp/lane35-screen-");
 const agentDir = join(home,"agent"); mkdirSync(agentDir);
@@ -27,7 +27,7 @@ const services = await createAgentSessionServices({ cwd:"/tmp",agentDir,settings
 const result = await createAgentSessionFromServices({ services,sessionManager:SessionManager.inMemory("/tmp",{id:"lane35-screen"}),model:faux.model,autoTitleSessions:false });
 // Match native_mode's injected faux stream: no SDK system prompt, tools or session cache.
 const { streamSimple } = await load("packages/ai/src/compat.ts");
-result.session.agent.streamFunction=(model,context,options)=>streamSimple(model,{...context,systemPrompt:"",tools:[]},{...options,sessionId:undefined});
+result.session.agent.streamFunction=(model,context,options)=>streamSimple(model,{...context,messages:context.messages.filter(message=>message.role!=="system").map(message=>message.role==="user"&&Array.isArray(message.content)?{...message,content:message.content.filter(block=>block.type!=="text"||!block.text.startsWith("<environment_context>"))}:message),systemPrompt:"",tools:[]},{...options,sessionId:undefined});
 const runtime = new AgentSessionRuntime(result.session,services,async()=>{throw new Error("unexpected runtime recreation");});
 const mode = new InteractiveMode(runtime,{ tuiMode:"fullscreen" });
 const columns=Number(process.env.GOLDEN_COLUMNS??120);
@@ -37,13 +37,15 @@ const writes=[]; const write=terminal.write.bind(terminal);
 terminal.write=data=>{writes.push(data);write(data);};
 mode.renderer = createInteractiveTui({ tuiMode:"fullscreen",showHardwareCursor:false,logDirectory:agentDir,terminal,mouse:false });
 await mode.init();
+initTheme("dark",false);
+runtime.session.agent.streamFunction=(model,context,options)=>streamSimple(model,{...context,messages:context.messages.filter(message=>message.role!=="system").map(message=>message.role==="user"&&Array.isArray(message.content)?{...message,content:message.content.filter(block=>block.type!=="text"||!block.text.startsWith("<environment_context>"))}:message),systemPrompt:"",tools:[]},{...options,sessionId:undefined});
 let settled;
 const completed = new Promise(resolve=>{settled=resolve;});
-const unsubscribe=result.session.subscribe(event=>{if(event.type==="agent_settled")settled();});
+const unsubscribe=runtime.session.subscribe(event=>{if(event.type==="agent_settled")settled();});
 mode.editor.handleInput("hi"); mode.editor.handleInput("\r");
 const submission=mode.pendingUserInputs.shift();
 if (!submission) throw new Error("editor did not queue hi");
-await result.session.prompt(submission.text,mode.buildMainLoopPromptOptions(submission));
+await runtime.session.prompt(submission.text,mode.buildMainLoopPromptOptions(submission));
 await Promise.race([completed,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("faux turn did not settle")),10000);timer.unref();})]);
 const command=process.env.GOLDEN_COMMAND;
 if(command){

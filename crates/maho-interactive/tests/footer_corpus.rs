@@ -7,7 +7,7 @@ fn original_footer_corpus_is_byte_equal_at_required_widths() {
     let theme = Theme::builtin("dark", ColorMode::Truecolor).unwrap();
     for width in [40, 60, 80, 120, 200] {
         let expected = std::fs::read_to_string(format!("{}/tests/golden/footer.{width}.ansi", env!("CARGO_MANIFEST_DIR"))).unwrap();
-        assert_eq!(footer.render(width, &theme).unwrap().join("\n"), expected);
+        assert_eq!(footer.render(width, &theme).unwrap(), expected.lines().collect::<Vec<_>>());
     }
 }
 #[test]

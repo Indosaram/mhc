@@ -212,16 +212,16 @@ fn fallback_chain_does_not_match_unlisted_provider_by_default() {
 }
 
 #[test]
-fn custom_and_later_rung_providers_same_model_custom_keeps_earlier_variant() {
+fn unlisted_and_later_rung_providers_same_model_listed_later_rung_wins() {
     assert_eq!(
         resolve_chain(&[
             "long-custom-provider/gpt-5.6-sol",
             "github-copilot/gpt-5.6-sol",
         ]),
         chain_match(
-            "long-custom-provider/gpt-5.6-sol",
-            "xhigh",
-            native_sol_entry()
+            "github-copilot/gpt-5.6-sol",
+            "high",
+            copilot_sol_entry()
         )
     );
 }

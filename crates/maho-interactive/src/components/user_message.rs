@@ -10,7 +10,7 @@ use maho_tui::tui::{Component, Container};
 use std::sync::Arc;
 
 use super::markdown_transform::{create_markdown_transform, MessageType, TransformedMarkdown};
-use crate::theme::{Theme, ThemeColor};
+use crate::theme::{Theme, ThemeBg, ThemeColor};
 
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
 const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
@@ -58,6 +58,7 @@ impl UserMessageComponent {
         self.render_revision = self.render_revision.wrapping_add(1);
         self.content.clear();
         let fg = self.theme.clone();
+        let bg = self.theme.clone();
         let transform = Rc::new(create_markdown_transform(
             MessageType::User,
             false,
@@ -65,11 +66,12 @@ impl UserMessageComponent {
         ));
         self.content.add_child(Rc::new(RefCell::new(TransformedMarkdown::new(
             &self.text,
-            0,
-            0,
+            self.output_pad,
+            1,
             self.markdown_theme.clone(),
             Some(DefaultTextStyle {
                 color: Some(Arc::new(move |text| fg.fg(ThemeColor::UserMessageText, text))),
+                bg_color: Some(Arc::new(move |text| bg.bg(ThemeBg::UserMessageBg, text))),
                 ..Default::default()
             }),
             MarkdownOptions {

@@ -8,7 +8,8 @@ pub fn build_policies_section() -> String {
 - Never create a git commit unless the user explicitly requested it.
 - Never present unread code or unrun commands as verified fact.
 - Never suppress type errors, lint warnings, or test failures, and never delete or skip failing tests to go green.
-- Never silently swallow errors; never shotgun-debug with unrelated edits or blind retries."
+- Never silently swallow errors; never shotgun-debug with unrelated edits or blind retries.
+- Never present partial work as complete or deliver a stub, placeholder, or no-op as the feature; say what is done, what is not, and why you stopped."
         .to_string()
 }
 
@@ -20,6 +21,6 @@ mod tests {
     fn the_hard_blocks_are_all_present() {
         let section = build_policies_section();
         assert!(section.starts_with("## Policies\n\n### Hard Blocks\n"));
-        assert_eq!(section.matches("- Never ").count(), 4);
+        assert_eq!(section.matches("- Never ").count(), 5);
     }
 }

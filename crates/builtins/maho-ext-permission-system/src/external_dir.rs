@@ -7,9 +7,16 @@ pub fn expand_home(input:&str,home:&Path)->PathBuf {
 }
 pub fn to_parent_directory_pattern(input:&str,directory:bool)->String {
     if input=="~"||input=="$HOME" {return format!("{input}/*");}
-    if directory || input.ends_with('/') || input.ends_with('\\') {return format!("{input}*");}
+    let trailing_separator=input.ends_with('/') || input.ends_with('\\');
+    if directory {return if trailing_separator {format!("{input}*")} else {format!("{input}/*")};}
+    if trailing_separator {return format!("{input}*");}
+    // `inputPath.replace(/[\\/][^\\/]+$/, "/*")`; a parent that is the filesystem root keeps the input.
     match input.rfind(['/', '\\']) {
-        Some(index) if index>0 => format!("{}/*",&input[..index]),
+        Some(index) if index+1<input.len() => {
+            let parent=format!("{}/*",&input[..index]);
+            let root=if input.starts_with('/')||input.starts_with('\\') {"/"} else {""};
+            if parent.replace('\\',"/")==format!("{root}*") {input.into()} else {parent}
+        }
         _ => input.into(),
     }
 }

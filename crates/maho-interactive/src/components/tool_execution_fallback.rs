@@ -21,7 +21,11 @@ fn sanitize_fallback_string(value: &str, max_length: usize) -> String {
     let stripped = strip_terminal_sequences(value);
     let mut sanitized = String::with_capacity(stripped.len());
     for character in stripped.chars() {
-        if character <= '\u{1f}' || ('\u{7f}'..='\u{9f}').contains(&character) {
+        if ('\u{0}'..='\u{8}').contains(&character)
+            || character == '\u{b}'
+            || ('\u{e}'..='\u{1f}').contains(&character)
+            || ('\u{7f}'..='\u{9f}').contains(&character)
+        {
             sanitized.push(' ');
         } else {
             sanitized.push(character);
@@ -33,6 +37,18 @@ fn sanitize_fallback_string(value: &str, max_length: usize) -> String {
     }
     let taken: String = collapsed.chars().take(max_length.saturating_sub(3)).collect();
     format!("{taken}...")
+}
+
+fn sanitize_call_string(value: &str) -> String {
+    strip_terminal_sequences(value)
+        .chars()
+        .filter(|character| {
+            !('\u{0}'..='\u{8}').contains(character)
+                && *character != '\u{b}'
+                && !('\u{b}'..='\u{1f}').contains(character)
+                && !( '\u{7f}'..='\u{9f}').contains(character)
+        })
+        .collect()
 }
 
 fn sanitize_fallback_json_value(value: &Value) -> Value {
@@ -123,25 +139,33 @@ pub fn create_tool_call_fallback(tool_name: &str, theme: &Theme) -> Rc<RefCell<d
 
 pub fn create_tool_call_fallback_with_args(tool_name: &str, args: &Value, expanded: bool, theme: &Theme) -> Rc<RefCell<dyn Component>> {
     let title = theme.fg(ThemeColor::ToolTitle, &theme.bold(&sanitize_fallback_string(tool_name, FALLBACK_STRING_MAX_LENGTH)));
-    let serialized = serde_json::to_string_pretty(&sanitize_call_args(args)).unwrap_or_default();
-    let bounded = if serialized.chars().count() > FALLBACK_JSON_MAX_LENGTH {
-        format!("{}...", serialized.chars().take(FALLBACK_JSON_MAX_LENGTH - 3).collect::<String>())
-    } else { serialized };
-    let content = if expanded {
-        bounded
-    } else {
-        match args {
-            Value::Object(map) => map.iter().map(|(key, value)| format!("{key}={}", value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string()))).collect::<Vec<_>>().join(" "),
-            other => other.to_string(),
-        }
+    let safe = sanitize_call_args(args);
+    let entries: Vec<_> = match &safe {
+        Value::Null => Vec::new(),
+        Value::Object(map) => map.iter().map(|(key,value)|(key.as_str(),value)).collect(),
+        value => vec![("args",value)],
     };
-    let text = if content.is_empty() { title } else { format!("{title} {content}") };
+    let text = if entries.is_empty() {
+        title
+    } else if expanded {
+        let lines = entries.iter().map(|(key,value)| {
+            let text = value.as_str().map(str::to_owned).unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default());
+            format!("  {key}: {}", text.replace('\t', "   ").replace('\r', "").replace('\n', "\n    "))
+        }).collect::<Vec<_>>().join("\n");
+        format!("{title}\n{}",theme.fg(ThemeColor::Muted,&lines))
+    } else {
+        let pairs = entries.iter().map(|(key,value)|format!("{key}={value}")).collect::<Vec<_>>().join(" ");
+        let preview = if pairs.encode_utf16().count()>100 { format!("{}...",String::from_utf16_lossy(&pairs.encode_utf16().take(97).collect::<Vec<_>>())) } else { pairs };
+        format!("{title} {}",theme.fg(ThemeColor::Muted,&preview))
+    };
     Rc::new(RefCell::new(Text::with_padding(text, 0, 0)))
 }
 
 fn sanitize_call_args(value: &Value) -> Value {
     match value {
-        Value::String(text) => Value::String(sanitize_fallback_string(text, FALLBACK_STRING_MAX_LENGTH)),
+        Value::String(text) => {
+            Value::String(sanitize_call_string(text))
+        }
         Value::Array(values) => Value::Array(values.iter().map(sanitize_call_args).collect()),
         Value::Object(values) => Value::Object(values.iter().map(|(key, value)| (key.clone(), sanitize_call_args(value))).collect()),
         other => other.clone(),
@@ -203,8 +227,8 @@ mod tests {
         let args = serde_json::json!({"query": "find\u{001b}[31m red\nfiles"});
         let compact = format_tool_execution_fallback("search", &args, None, false, &theme);
         assert!(compact.contains("find red files"));
-        assert!(!compact.contains('\u{001b}'));
+        assert!(!compact.contains("\\u001b"));
         let expanded = serde_json::to_string_pretty(&sanitize_call_args(&args)).expect("JSON serialization");
-        assert!(expanded.contains("find red files"));
+        assert!(expanded.contains("find red\\nfiles"));
     }
 }

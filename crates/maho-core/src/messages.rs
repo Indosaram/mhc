@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(elided[2]["content"][0]["type"], "image");
         assert_eq!(elided[1]["content"][0]["type"], "image");
         assert_eq!(elided[0]["content"][0]["type"], "text");
-        assert_eq!(elided[0]["content"][0]["text"], IMAGE_ELISION_PLACEHOLDER);
+        assert_eq!(elided[0]["content"][0]["text"], format!("{IMAGE_ELISION_PLACEHOLDER} (image id: {})", image_content_id(&"x".repeat(10))));
     }
 
     #[test]

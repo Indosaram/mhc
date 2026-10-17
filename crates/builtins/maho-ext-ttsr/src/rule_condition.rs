@@ -15,7 +15,7 @@ pub fn compile_rule_condition(condition:&str)->CompiledCondition {
     }
 }
 fn javascript_regex_error(error:&str)->String {
-    if error.contains("unclosed group") || error.contains("unterminated group") { return "Invalid regular expression: /(?:/: Unterminated group".into(); }
+    if error.contains("unclosed group") || error.contains("unterminated group") || error == "Unbalanced parenthesis" { return "Invalid regular expression: /(?:/: Unterminated group".into(); }
     if error.contains("unclosed character class") { return "Invalid regular expression: /(?:/: Unterminated character class".into(); }
     if error.contains("nothing to repeat") || error.contains("quantifier") { return "Invalid regular expression: /(?:/: Nothing to repeat".into(); }
     error.into()

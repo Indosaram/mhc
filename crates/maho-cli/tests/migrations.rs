@@ -5,7 +5,7 @@ fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, std:
 }
 #[test] fn first_run_moves_sessions_and_records_completed_scans() {
     let (_root, home, cwd, agent) = fixture(); fs::write(agent.join("planted.jsonl"), "{\"type\":\"session\",\"cwd\":\"/tmp/marker-planted-cwd\"}\n").expect("write"); fs::create_dir(cwd.join(".pi")).expect("mkdir"); fs::write(cwd.join(".pi/settings.json"), "{}").expect("write");
-    run_migrations(&cwd, &home, &agent).expect("migrate"); assert!(agent.join("sessions/--tmp-marker-planted-cwd--/planted.jsonl").exists()); assert!(cwd.join(".omo/settings.json").exists()); assert!(!cwd.join(".pi").exists()); assert_eq!(maho_cli::migrations_state::read_completed_scan_migrations(&agent).len(), 2);
+    run_migrations(&cwd, &home, &agent).expect("migrate"); assert!(agent.join("sessions/--tmp-marker-planted-cwd--/planted.jsonl").exists()); assert!(cwd.join(".omo/settings.json").exists()); assert!(cwd.join(".pi/settings.json").exists()); assert_eq!(maho_cli::migrations_state::read_completed_scan_migrations(&agent).len(), 2);
 }
 #[test] fn second_run_skips_scans_when_marker_is_present() {
     let (_root, home, cwd, agent) = fixture(); maho_cli::migrations_state::write_completed_scan_migrations(&maho_cli::migrations_state::SCAN_MIGRATIONS, &agent).expect("marker"); fs::write(agent.join("planted.jsonl"), "{\"type\":\"session\",\"cwd\":\"/tmp/example\"}\n").expect("write");
@@ -50,7 +50,8 @@ fn brand_copy_skips_desktop_reserved_directories_case_insensitively() {
     fs::write(old.join("Desktop.init-test/state"), "desktop").expect("desktop content");
     fs::write(old.join("desktop/state"), "desktop").expect("desktop content");
     maho_cli::brand_dir_migration::migrate_engine_state_to_brand_dir(&old, &new).expect("migrate");
-    assert!(!new.join("Desktop.init-test").exists());
+    // senpi `isDesktopReserved` folds case only on darwin/win32 (case-insensitive filesystems).
+    assert_eq!(new.join("Desktop.init-test").exists(), !cfg!(any(target_os = "macos", target_os = "windows")));
     assert!(!new.join("desktop").exists());
 }
 

@@ -441,6 +441,78 @@ fn given_a_running_wave_when_cancelled_then_tasks_cancel_and_the_run_settles_can
 }
 
 #[test]
+fn cancellation_waits_for_a_late_admission_result_to_be_attached() {
+    struct GatedStart {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+        cancelled: Mutex<Vec<String>>,
+        waited: mpsc::Sender<()>,
+    }
+
+    impl TestTaskPort for GatedStart {
+        fn start_owned(&self, _: &ManagerStartSpec, _: &DagTaskOwner) -> Result<OwnedStartResult, String> {
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            Ok(OwnedStartResult::Started {
+                task: crate::manager::types::StartedTask {
+                    task_id: "late-task".into(),
+                    status: TaskStatus::Running,
+                    name: "a".into(),
+                    resolved_model: None,
+                    queue_position: None,
+                    name_warning: None,
+                },
+                reused: false,
+            })
+        }
+
+        fn wait_for(&self, _: &str) -> Result<crate::state::TaskRecord, String> {
+            let _ = self.waited.send(());
+            Err("test waiter stopped".into())
+        }
+
+        fn cancel_task(&self, task_id: &str) -> Result<(), String> {
+            self.cancelled.lock().unwrap().push(task_id.into());
+            Ok(())
+        }
+    }
+
+    let fixture = fixture(definition(vec![node("a", &[]), node("b", &["a"])]), 5);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (waited_tx, waited_rx) = mpsc::channel();
+    let port = Arc::new(GatedStart {
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+        cancelled: Mutex::new(Vec::new()),
+        waited: waited_tx,
+    });
+    fixture.scheduler.set_task_port(Arc::clone(&port) as Arc<dyn TestTaskPort>);
+    let attached = event_signal(&fixture.scheduler, |event| {
+        matches!(&event.payload, DagRunEventPayload::NodeTaskAttached { node_id, task_id, .. } if node_id == "a" && task_id == "late-task")
+    });
+    let running = run_in_background(&fixture.scheduler);
+
+    recv_within(&entered_rx, "start admission gate");
+    let scheduler = Arc::clone(&fixture.scheduler);
+    let cancelling = std::thread::spawn(move || scheduler.cancel(&run_id(), Some("stop now")));
+    let started = fixture.scheduler.state.cancellation_started.lock().unwrap();
+    let (started, timeout) = fixture.scheduler.state.cancellation_condvar
+        .wait_timeout_while(started, std::time::Duration::from_secs(5), |started| !*started).unwrap();
+    assert!(*started && !timeout.timed_out(), "cancellation did not reach the admission barrier");
+    drop(started);
+    release_tx.send(()).unwrap();
+
+    recv_within(&attached, "late task attachment");
+    recv_within(&waited_rx, "attached task waiter");
+    cancelling.join().unwrap().expect("cancel");
+    let result = recv_within(&running, "cancelled scheduler").expect("run");
+    assert_eq!(result.status, DagRunStatus::Cancelled);
+    assert!(result.nodes.iter().all(|node| node.state == DagNodeState::Cancelled));
+    assert_eq!(*port.cancelled.lock().unwrap(), vec!["late-task"]);
+}
+
+#[test]
 fn given_a_paused_unclaimed_run_when_cancelled_then_it_ends_cancelled_without_task_cancellation() {
     let fixture = fixture(definition(vec![node("a", &[]), node("b", &["a"])]), 5);
     {

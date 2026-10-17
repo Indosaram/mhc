@@ -387,6 +387,10 @@ impl Theme {
                     export_colors.insert(key.clone(), ansi256_to_hex(index));
                 }
                 ColorValue::Text(text) if !text.is_empty() => {
+                    let text = if text.to_ascii_lowercase().starts_with("okhsl(") {
+                        let [r, g, b] = parse_ok_color(&text).ok_or_else(|| ThemeError::Invalid(format!("Invalid color: {text}")))?;
+                        format!("#{r:02x}{g:02x}{b:02x}")
+                    } else { text };
                     export_colors.insert(key.clone(), text);
                 }
                 ColorValue::Text(_) => {}
@@ -516,6 +520,7 @@ impl Theme {
                                 "#e5e5e7".into()
                             }
                         }
+                        ColorValue::Text(t) if t.to_ascii_lowercase().starts_with("oklch(") || t.to_ascii_lowercase().starts_with("okhsl(") => parse_ok_color(t).map_or_else(|| t.clone(), |rgb| format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])),
                         ColorValue::Text(t) => t.clone(),
                     },
                 )
@@ -541,21 +546,96 @@ impl Theme {
         self.fg(ThemeColor::BashMode, text)
     }
 }
-fn parse_ok_color(text: &str) -> Option<[u8;3]> {
+fn parse_ok_color(text: &str) -> Option<[u8; 3]> {
+    let lower = text.to_ascii_lowercase();
+    let is_okhsl = lower.starts_with("okhsl(");
+    let is_oklch = lower.starts_with("oklch(");
+    if !is_okhsl && !is_oklch { return None; }
     let inside = text.split_once('(')?.1.strip_suffix(')')?;
-    let fields: Vec<&str> = inside.split(|c: char| c.is_whitespace() || c == '/').filter(|s| !s.is_empty()).collect();
-    if fields.len() < 3 { return None; }
-    let a: f64 = fields[0].trim_end_matches('%').parse().ok()?;
-    let b: f64 = fields[1].parse().ok()?;
-    let c: f64 = fields[2].parse().ok()?;
-    let (l, chroma, hue) = if text.to_ascii_lowercase().starts_with("oklch") { (a, b, c.to_radians()) } else { (a / 100.0, b / 100.0, c.to_radians()) };
-    let aa = chroma * hue.cos(); let bb = chroma * hue.sin();
-    let ll = l + 0.3963377774*aa + 0.2158037573*bb;
-    let mm = l - 0.1055613458*aa - 0.0638541728*bb;
-    let ss = l - 0.0894841775*aa - 1.2914855480*bb;
-    let (ll,mm,ss)=(ll.powi(3),mm.powi(3),ss.powi(3));
-    let linear=[4.0767416621*ll-3.3077115913*mm+0.2309699292*ss,-1.2684380046*ll+2.6097574011*mm-0.3413193965*ss,-0.0041960863*ll-0.7034186147*mm+1.7076147010*ss];
-    Some(linear.map(|v| { let s=if v<=0.0031308 {12.92*v} else {1.055*v.powf(1.0/2.4)-0.055}; (s.clamp(0.0,1.0)*255.0).round() as u8 }))
+    let fields: Vec<&str> = inside.split_whitespace().collect();
+    if fields.len() != 3 { return None; }
+    let number = |field: &str| -> Option<f64> {
+        let value = field.trim_end_matches('%').trim_end_matches("deg").parse::<f64>().ok()?;
+        value.is_finite().then_some(value)
+    };
+    let lightness_field = fields[if is_okhsl { 2 } else { 0 }];
+    let lightness = number(lightness_field)? / if lightness_field.ends_with('%') { 100.0 } else { 1.0 };
+    let second = number(fields[1])? / if fields[1].ends_with('%') { 100.0 } else { 1.0 };
+    let hue = number(fields[if is_okhsl { 0 } else { 2 }])?;
+    if !(0.0..=1.0).contains(&lightness) || second < 0.0 || (is_okhsl && second > 1.0) { return None; }
+    let rgb = if is_okhsl {
+        okhsl_to_rgb(hue, second, lightness)
+    } else {
+        oklch_to_rgb(lightness, second, hue)
+    };
+    Some(rgb)
+}
+
+// Oklab and OKHSL conversion math ported from packages/tui/src/oklab.ts.
+// Copyright (c) 2021 Bjorn Ottosson, used under the MIT license.
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+type Vector = [f64; 3];
+type Matrix = [[f64; 3]; 3];
+const LAB_TO_LMS: Matrix = [[1.0,0.3963377773761749,0.2158037573099136],[1.0,-0.1055613458156586,-0.0638541728258133],[1.0,-0.0894841775298119,-1.2914855480194092]];
+const LMS_TO_LINEAR_SRGB: Matrix = [[4.076_741_636_075_958,-3.307_711_539_258_063,0.2309699031821043],[-1.2684379732850315,2.609_757_349_287_688,-0.341319376002657],[-0.0041960761386756,-0.7034186179359362,1.7076146940746117]];
+fn multiply(matrix: Matrix, [x,y,z]: Vector) -> Vector { matrix.map(|row| row[0]*x+row[1]*y+row[2]*z) }
+fn oklab_to_linear_srgb(lab: Vector) -> Vector { multiply(LMS_TO_LINEAR_SRGB, multiply(LAB_TO_LMS, lab).map(|v| v.powi(3))) }
+fn linear_to_rgb(linear: Vector) -> [u8; 3] {
+    linear.map(|v| { let encoded = if v > 0.0031308 { 1.055*v.powf(1.0/2.4)-0.055 } else { 12.92*v }; (encoded.clamp(0.0,1.0)*255.0).round() as u8 })
+}
+const SATURATION_FIT: [([f64;2],[f64;5]);3] = [([-1.8817031,-0.80936501],[1.19086277,1.76576728,0.59662641,0.75515197,0.56771245]),([1.8144408,-1.19445267],[0.73956515,-0.45954404,0.08285427,0.12541073,-0.14503204]),([0.13110758,1.81333971],[1.35733652,-0.00915799,-1.1513021,-0.50559606,0.00692167])];
+fn lms_slopes(a:f64,b:f64)->Vector { [a*LAB_TO_LMS[0][1]+b*LAB_TO_LMS[0][2],a*LAB_TO_LMS[1][1]+b*LAB_TO_LMS[1][2],a*LAB_TO_LMS[2][1]+b*LAB_TO_LMS[2][2]] }
+fn max_saturation(a:f64,b:f64)->f64 {
+    let channel=SATURATION_FIT.iter().position(|(xy,_)| xy[0]*a+xy[1]*b>1.0).unwrap_or(2);
+    let [k0,k1,k2,k3,k4]=SATURATION_FIT[channel].1;
+    let weights=LMS_TO_LINEAR_SRGB[channel]; let saturation=k0+k1*a+k2*b+k3*a*a+k4*a*b; let slopes=lms_slopes(a,b);
+    let base=slopes.map(|k|1.0+saturation*k);
+    let dot=|v:Vector| weights[0]*v[0]+weights[1]*v[1]+weights[2]*v[2];
+    let f=dot(base.map(|v|v.powi(3))); let f1=dot(std::array::from_fn(|i|3.0*slopes[i]*base[i].powi(2))); let f2=dot(std::array::from_fn(|i|6.0*slopes[i].powi(2)*base[i]));
+    saturation-f*f1/(f1*f1-0.5*f*f2)
+}
+fn cusp(a:f64,b:f64)->(f64,f64) { let s=max_saturation(a,b); let l=oklab_to_linear_srgb([1.0,s*a,s*b]).into_iter().fold(f64::NEG_INFINITY,f64::max).cbrt().recip(); (l,l*s) }
+fn max_chroma(a:f64,b:f64,l:f64,peak:(f64,f64))->f64 {
+    let (cl,cc)=peak; if l<=cl { return cc*l/cl; }
+    let t=cc*(l-1.0)/(cl-1.0); let slopes=lms_slopes(a,b); let lms=slopes.map(|k|l+t*k); let cubes=lms.map(|v|v.powi(3));
+    let first=std::array::from_fn(|i|3.0*slopes[i]*lms[i].powi(2)); let second=std::array::from_fn(|i|6.0*slopes[i].powi(2)*lms[i]);
+    let steps=LMS_TO_LINEAR_SRGB.map(|row| { let dot=|v:Vector|row[0]*v[0]+row[1]*v[1]+row[2]*v[2]; let f=dot(cubes)-1.0; let f1=dot(first); let f2=dot(second); let u=f1/(f1*f1-0.5*f*f2); if u>=0.0 {-f*u} else {f64::MAX} });
+    t+steps.into_iter().fold(f64::INFINITY,f64::min)
+}
+fn chroma_stops(l:f64,a:f64,b:f64)->(f64,f64,f64) {
+    let peak=cusp(a,b); let cmax=max_chroma(a,b,l,peak); let k=cmax/(l*(peak.1/peak.0)).min((1.0-l)*(peak.1/(1.0-peak.0)));
+    let mids=0.11516993+1.0/(7.4477897+4.1590124*b+a*(-2.19557347+1.75198401*b+a*(-2.13704948-10.02301043*b+a*(-4.24894561+5.38770819*b+4.69891013*a))));
+    let midt=0.11239642+1.0/(1.6132032-0.68124379*b+a*(0.40370612+0.90148123*b+a*(-0.27087943+0.6122399*b+a*(0.00299215-0.45399568*b-0.14661872*a))));
+    let cmid=0.9*k*(1.0/(1.0/(l*mids).powi(4)+1.0/((1.0-l)*midt).powi(4))).sqrt().sqrt();
+    let c0=(1.0/(1.0/(l*0.4).powi(2)+1.0/((1.0-l)*0.8).powi(2))).sqrt(); (c0,cmid,cmax)
+}
+fn okhsl_to_rgb(hue:f64,s:f64,l:f64)->[u8;3] {
+    const K1:f64=0.206; const K2:f64=0.03; let k3=(1.0+K1)/(1.0+K2); let ll=(l*l+K1*l)/(k3*(l+K2));
+    if ll<=0.0 || ll>=1.0 || s<=0.0 { return linear_to_rgb(oklab_to_linear_srgb([ll,0.0,0.0])); }
+    let angle=hue.rem_euclid(360.0).to_radians(); let (a,b)=(angle.cos(),angle.sin()); let (c0,cmid,cmax)=chroma_stops(ll,a,b);
+    let chroma=if s<0.8 { let t=1.25*s; let k1=0.8*c0; t*k1/(1.0-(1.0-k1/cmid)*t) } else { let t=5.0*(s-0.8); let k1=0.2*cmid.powi(2)*1.25_f64.powi(2)/c0; cmid+t*k1/(1.0-(1.0-k1/(cmax-cmid))*t) };
+    linear_to_rgb(oklab_to_linear_srgb([ll,chroma*a,chroma*b]))
+}
+fn oklch_to_rgb(l:f64,c:f64,h:f64)->[u8;3] {
+    let angle=h.to_radians(); let at=|chroma:f64|oklab_to_linear_srgb([l,chroma*angle.cos(),chroma*angle.sin()]);
+    let direct=at(c); if direct.iter().all(|v|*v>=-1e-7&&*v<=1.0+1e-7) { return linear_to_rgb(direct); }
+    let mut low=0.0; let mut high=c; let mut linear=at(0.0);
+    for _ in 0..20 { let chroma=(low+high)/2.0; let candidate=at(chroma); if candidate.iter().all(|v|*v>=-1e-7&&*v<=1.0+1e-7) { low=chroma; linear=candidate; } else { high=chroma; } }
+    linear_to_rgb(linear)
 }
 fn style(t: &str, open: u8, close: u8) -> String {
     if t.is_empty() {

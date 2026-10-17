@@ -174,7 +174,8 @@ async fn run_policy_scenario() {
     let actions=Arc::new(PolicyActions::new(settings));
     let mut ctx=context();ctx.session_manager=Arc::new(PolicySession(Arc::clone(&actions)));
     let mut api=ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
-    maho_ext_compaction::CompactionExtension.register(&mut api);
+    let extension = maho_ext_compaction::CompactionExtension;
+    Extension::register(&extension, &mut api);
     let source=vec![serde_json::from_value(serde_json::json!({"role":"assistant","content":[{"type":"toolCall","id":"call","name":"read","arguments":{}}],"api":"faux","provider":"faux","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":0})).expect("native compaction scenario invariant"),serde_json::from_value(serde_json::json!({"role":"toolResult","toolCallId":"call","toolName":"read","content":[{"type":"text","text":"x".repeat(30000)}],"isError":false,"timestamp":0})).expect("native compaction scenario invariant")];
     let mut event=ExtensionEvent::Context {messages:source.clone(),entry_ids:Vec::new()};
     let result=api.registered.handlers[&EventKind::Context][0](&mut event,&ctx).await.expect("native compaction scenario invariant");
@@ -222,9 +223,13 @@ async fn registered_restoration_is_bounded_accepted_only_and_once() {
 
 #[tokio::test]
 async fn provider_owned_model_selection_stands_down_before_unbound_actions() {
+    let directory = tempfile::tempdir().expect("isolated provider settings");
+    std::fs::write(directory.path().join("settings.json"), r#"{"claudeSdkOauthProvider":{"compactionOwner":"sdk","resumeMode":"auto"}}"#).expect("provider settings");
     let mut api = ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
     maho_ext_compaction::CompactionExtension.register(&mut api);
     let mut ctx = context();
+    ctx.cwd = directory.path().to_path_buf();
+    ctx.agent_dir = directory.path().to_path_buf();
     let model: Model = serde_json::from_value(serde_json::json!({"id":"m","name":"m","api":"anthropic-messages","provider":"anthropic-subscription","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("native compaction scenario invariant");
     ctx.model=Some(model.clone());
     let mut event=ExtensionEvent::ModelSelect(ModelSelectEvent {model,previous_model:None,source:ModelSelectSource::Set,system_prompt:String::new(),system_prompt_options:Default::default()});

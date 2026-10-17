@@ -121,7 +121,7 @@ fn unknown_properties_are_dropped_with_a_diagnostic() {
     assert_eq!(
         recorder.options(),
         [TelemetryTransportOptions {
-            disable_geoip: true,
+            disable_geoip: false,
             disable_remote_config: true,
             enable_exception_autocapture: false,
             enable_local_evaluation: false,

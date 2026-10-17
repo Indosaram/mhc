@@ -211,11 +211,15 @@ async fn releases_subscriptions_on_shutdown_and_replaces_them_on_repeated_regist
     comp.register(&mut api);
     assert_eq!(emissions.load(Ordering::SeqCst), 1);
     events.emit(CONFIG_WATCH_READY, &JsonValue::Null);
-    assert_eq!(emissions.load(Ordering::SeqCst), 2);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while emissions.load(Ordering::SeqCst) != 2 { tokio::task::yield_now().await; }
+    }).await.expect("READY publication");
     comp.register(&mut api);
     assert_eq!(emissions.load(Ordering::SeqCst), 3);
     events.emit(CONFIG_WATCH_READY, &JsonValue::Null);
-    assert_eq!(emissions.load(Ordering::SeqCst), 4);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while emissions.load(Ordering::SeqCst) != 4 { tokio::task::yield_now().await; }
+    }).await.expect("READY publication after re-register");
     let mut event = ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Reload, target_session_file: None, signal: None });
     let context = support::context();
     for handler in api.registered.handlers[&EventKind::SessionShutdown].clone() {

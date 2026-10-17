@@ -23,12 +23,11 @@ pub fn is_ultrawork_input(text:&str)->bool{!visible_invocations(text).is_empty()
 // relayed and negated regions are blanked (offset-preserving) before the pattern runs.
 const NOT_AFTER_IDENTIFIER:&str=r"(?<![A-Za-z0-9][-_.]|[/\\])";
 const NOT_BEFORE_PATH:&str=r"(?![-_.]?[A-Za-z0-9]*[/\\])";
-const SEGMENT_END:&str=r"(?![-_.]?[A-Za-z0-9])";
+const NOT_INTO_IDENTIFIER:&str=r"(?!(?:--|[-_](?!(?:loop|plan|research|execute|mass)(?![-_.]?[A-Za-z0-9])))[A-Za-z0-9]|\.[A-Za-z0-9])";
 fn fancy(pattern:&str)->fancy_regex::Regex{match fancy_regex::Regex::new(pattern){Ok(regex)=>regex,Err(error)=>panic!("invalid static ultrawork expression: {error}")}}
 static ULTRAWORK_KEYWORD:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?i)\b(?:ultrawork|ulw)\b"));
 static ULTRAWORK_CURRENT_PROMPT_PATTERN:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||{
-    let not_into=format!(r"(?![-_](?!(?:loop|plan|research|execute|mass){SEGMENT_END})[A-Za-z0-9]|\.[A-Za-z0-9])");
-    fancy(&format!(r"(?i){NOT_AFTER_IDENTIFIER}\b(?:ultrawork|ulw)\b{not_into}{NOT_BEFORE_PATH}"))
+    fancy(&format!(r"(?i){NOT_AFTER_IDENTIFIER}\b(?:ultrawork|ulw)\b{NOT_INTO_IDENTIFIER}{NOT_BEFORE_PATH}"))
 });
 static INJECTED_BLOCK:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?i)<(omo-[a-z0-9-]+-pointer|ultrawork-mode|omo-ultrawork-reminder)>[\s\S]*?</\1>"));
 static INLINE_CODE:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)"));
@@ -66,7 +65,9 @@ fn strip_quoted_spans(text:&str)->String{
 /// Every visible keyword invocation as (start, end, is_full_word) byte offsets into `text`.
 fn visible_invocations(text:&str)->Vec<(usize,usize,bool)>{
     let visible=strip_quoted_regions(text);
-    ULTRAWORK_CURRENT_PROMPT_PATTERN.find_iter(&visible).flatten().map(|found|(found.start(),found.end(),!found.as_str().eq_ignore_ascii_case("ulw"))).collect()
+    ULTRAWORK_CURRENT_PROMPT_PATTERN.find_iter(&visible).flatten()
+        .filter(|found|!visible[found.end()..].starts_with("--"))
+        .map(|found|(found.start(),found.end(),!found.as_str().eq_ignore_ascii_case("ulw"))).collect()
 }
 pub fn already_embedded(text:&str)->bool{text.contains("<ultrawork-mode>")&&text.contains("</ultrawork-mode>")}
 

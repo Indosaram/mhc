@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use utils::*;
 
-const MIGRATION_KEY: &str = "model-version:anthropic/claude-opus-4-4->anthropic/claude-opus-4-8";
+const MIGRATION_KEY: &str = "model-version:anthropic/claude-opus-4-4->anthropic/claude-opus-5-5";
 
 fn obj(value: Value) -> Map<String, Value> {
     match value {
@@ -104,11 +104,11 @@ fn migrate_config_writes_config_before_sidecar() {
 
     assert_eq!(
         Value::Object(raw),
-        json!({"agents": {"prometheus": {"model": "anthropic/claude-opus-4-8"}}})
+        json!({"agents": {"prometheus": {"model": "anthropic/claude-opus-5-5"}}})
     );
     assert_eq!(
         read_json(&config_path),
-        json!({"agents": {"prometheus": {"model": "anthropic/claude-opus-4-8"}}})
+        json!({"agents": {"prometheus": {"model": "anthropic/claude-opus-5-5"}}})
     );
     assert_eq!(
         read_json(&get_sidecar_path(&config_path)),
@@ -136,7 +136,7 @@ fn migrate_config_skips_sidecar_when_config_write_fails_and_retries_later() {
     assert!(migrate_config_file(&config_path, &mut retried));
     assert_eq!(
         Value::Object(retried),
-        json!({"agents": {"prometheus": {"model": "anthropic/claude-opus-4-8"}}})
+        json!({"agents": {"prometheus": {"model": "anthropic/claude-opus-5-5"}}})
     );
     assert!(get_sidecar_path(&config_path).exists());
 }
@@ -151,7 +151,7 @@ fn migrate_config_preserves_migrations_field_when_sidecar_write_fails() {
 
     assert!(migrate_config_file(&config_path, &mut raw));
 
-    let expected = json!({"agents": {"prometheus": {"model": "anthropic/claude-opus-4-8"}}, "_migrations": [MIGRATION_KEY]});
+    let expected = json!({"agents": {"prometheus": {"model": "anthropic/claude-opus-5-5"}}, "_migrations": [MIGRATION_KEY]});
     assert_eq!(Value::Object(raw), expected);
     assert_eq!(read_json(&config_path), expected);
     assert!(get_sidecar_path(&config_path).is_dir());

@@ -65,11 +65,20 @@ async fn extension_trigger_never_arms_user_session() {
 
 #[tokio::test]
 async fn skill_name_only_and_prefixed_variants_do_not_arm() {
-    for prompt in ["/skill:myulw run", "ulw-plan", "omo-agent-toolkit ulw-loop status --json"] {
+    for prompt in ["/skill:myulw run", "ulw--plan"] {
         let api = register();
         assert!(matches!(input(&api, prompt, true).await, EventResult::Input(InputEventResult::Continue)));
         let EventResult::Input(InputEventResult::Transform { text, .. }) = input(&api, "ulw", true).await else { panic!("transform") };
         assert_eq!(text, format!("ulw\n{}", maho_omo_ultrawork::generated_directive::SENPI_ULTRAWORK_DIRECTIVE));
+    }
+}
+
+#[tokio::test]
+async fn plain_skill_family_mentions_arm_by_upstream_overlap_matching() {
+    for prompt in ["ulw-plan", "omo-agent-toolkit ulw-loop status --json"] {
+        let api=register();
+        let EventResult::Input(InputEventResult::Transform{text,..})=input(&api,prompt,true).await else {panic!("transform")};
+        assert_eq!(text,format!("{prompt}\n{}",maho_omo_ultrawork::generated_directive::SENPI_ULTRAWORK_DIRECTIVE));
     }
 }
 

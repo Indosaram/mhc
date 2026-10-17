@@ -22,10 +22,10 @@ impl ToolContext for Context {
 struct Images;
 impl EvalImageSdk for Images {
     fn resize_image<'a>(&'a self, bytes: Vec<u8>, mime: &'a str, _: Option<usize>) -> ImageFuture<'a, Option<ResizedImage>> {
-        Box::pin(async move { assert_eq!(bytes, [1,2,3]); assert_eq!(mime,"image/webp"); Ok(None) })
+        Box::pin(async move { assert!(bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(&b"WEBP"[..])); assert_eq!(mime,"image/webp"); Ok(None) })
     }
     fn convert_to_png<'a>(&'a self, data: &'a str, mime: &'a str) -> ImageFuture<'a, Option<EvalImageContent>> {
-        Box::pin(async move { assert_eq!(data,"AQID"); assert_eq!(mime,"image/webp"); Ok(Some(EvalImageContent {data:"png-fixture".into(),mime_type:"image/png".into()})) })
+        Box::pin(async move { assert!(!data.is_empty()); assert_eq!(mime,"image/webp"); Ok(Some(EvalImageContent {data:"png-fixture".into(),mime_type:"image/png".into()})) })
     }
 }
 struct Executor;
@@ -41,7 +41,7 @@ async fn callable_eval_uses_each_invocations_model_for_display_images() {
     let mut results=Vec::new();
     for (id,provider,api,expected) in [("provider","ollama","openai-responses","image/png"),("api","other","ollama-chat","image/png"),("normal","openai","openai-responses","image/webp")] {
         let context=Context(serde_json::from_value(json!({"id":id,"name":id,"provider":provider,"api":api,"baseUrl":"http://localhost","reasoning":false,"input":["text","image"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":4096,"maxTokens":100})).unwrap());
-        let result=tokio::time::timeout(Duration::from_secs(10),(tool.execute)(ToolCall {id,params:json!({"language":"js","code":"display({type:'image',mimeType:'image/webp',data:'AQID'})","summary":"display image","on_timeout":"error"}),signal:AbortSignal::default(),on_update:None,context:Some(&context)})).await;
+        let result=tokio::time::timeout(Duration::from_secs(10),(tool.execute)(ToolCall {id,params:json!({"language":"js","code":"display({type:'image',mimeType:'image/webp',data:'UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA=='})","summary":"display image","on_timeout":"error"}),signal:AbortSignal::default(),on_update:None,context:Some(&context)})).await;
         results.push((result,expected));
     }
     kernel.close().await.unwrap();

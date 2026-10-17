@@ -1,5 +1,3 @@
-//! Port of senpi `packages/coding-agent/src/modes/interactive/tips/catalog/model-tips.ts`.
-
 use super::types::TipDefinition;
 
 pub const MODEL_TIPS: &[TipDefinition] = &[
@@ -7,7 +5,13 @@ pub const MODEL_TIPS: &[TipDefinition] = &[
         id: "thinking-level",
         bindings: &["app.thinking.cycle"],
         requires_command: None,
-        render: |keys| format!("Use {} to cycle the model's thinking level.", keys("app.thinking.cycle")),
+        render: |keys| format!("Use /thinking <level> to set the thinking level, /thinking to pick one, or {} to cycle through them.", keys("app.thinking.cycle")),
+    },
+    TipDefinition {
+        id: "efforts-command",
+        bindings: &[],
+        requires_command: Some("efforts"),
+        render: |_keys| "Use /efforts <level> to set the reasoning effort for the current model; /efforts alone lists the levels it supports.".to_string(),
     },
     TipDefinition {
         id: "favorite-model-rotation",

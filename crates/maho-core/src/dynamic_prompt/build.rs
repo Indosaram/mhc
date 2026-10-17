@@ -56,15 +56,9 @@ fn build_context_files_section(context_files: &[ContextFile]) -> String {
     lines.join("\n").trim_end().to_string()
 }
 
-fn current_date() -> String {
-    chrono::Utc::now().format("%Y-%m-%d").to_string()
-}
-
 /// `buildDynamicSystemPrompt`.
 pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>) -> String {
-    let prompt_cwd = options.cwd.replace('\\', "/");
     let tools = categorize_tools(&options.selected_tools);
-    let date = current_date();
 
     let tool_section = build_tool_section(&tools, &options.tool_snippets, &options.prompt_guidelines);
 
@@ -82,6 +76,8 @@ pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>
             tool_section.clone(),
             String::new(),
             build_policies_section(),
+            String::new(),
+            super::handoff::build_handoff_section(options.surface, false),
             String::new(),
             build_style_section(),
         ],
@@ -110,10 +106,6 @@ pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>
         dialect: options.workstation_dialect,
         facts: None,
     }));
-
-    sections.push(String::new());
-    sections.push(format!("Current date: {date}"));
-    sections.push(format!("Current working directory: {prompt_cwd}"));
 
     sections.join("\n")
 }
@@ -166,7 +158,11 @@ mod tests {
         let workstation = prompt.find("<workstation>").expect("workstation");
         assert!(identity < intent && intent < working && working < verification && verification < tools);
         assert!(tools < policies && policies < style && style < workstation);
-        assert!(prompt.ends_with(&format!("Current date: {}\nCurrent working directory: /work", current_date())));
+        assert!(prompt.ends_with(&build_workstation_section(&BuildWorkstationSectionOptions {
+            selected_tools: options().selected_tools,
+            dialect: None,
+            facts: None,
+        })));
     }
 
     #[test]
@@ -222,7 +218,7 @@ mod tests {
         assert!(!prompt.contains("## Style"));
         assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("<workstation>"));
-        assert!(prompt.contains("Current working directory: /work"));
+        assert!(!prompt.contains("Current working directory:"));
     }
 
     #[test]

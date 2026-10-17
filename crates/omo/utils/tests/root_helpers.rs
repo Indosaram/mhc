@@ -429,10 +429,10 @@ fn frontmatter_default_mode_strips_leading_bom() {
 #[test]
 fn tar_listing_preserves_entry_path_whitespace() {
     let parsed = parse_tar_listing_output(
-        "-rw-r--r-- 1 user group 3 2026-10-16 10:00  file.txt \n",
+        "-rw-r--r-- 1 user group 123 Jan 01 12:34 trailing-space.txt \n",
     )
     .expect("valid tar line");
-    assert_eq!(parsed[0].path, " file.txt ");
+    assert_eq!(parsed[0].path, "trailing-space.txt ");
 }
 
 #[test]

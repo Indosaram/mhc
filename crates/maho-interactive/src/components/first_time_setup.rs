@@ -17,14 +17,14 @@ use crate::theme::{TerminalTheme, Theme, ThemeColor};
 use super::ask_user_answer_key::{key_hint, raw_key_hint};
 
 pub struct FirstTimeSetupResult {
-    pub theme: TerminalTheme,
+    pub theme: String,
     pub share_analytics: bool,
 }
 
 pub struct FirstTimeSetupOptions {
     pub detected_theme: TerminalTheme,
     pub theme: Theme,
-    pub on_theme_preview: Box<dyn FnMut(TerminalTheme)>,
+    pub on_theme_preview: Box<dyn FnMut(String)>,
     pub on_submit: Box<dyn FnMut(FirstTimeSetupResult)>,
     pub on_cancel: Box<dyn FnMut()>,
 }
@@ -36,17 +36,21 @@ enum Step {
 }
 
 struct ThemeOption {
-    value: TerminalTheme,
+    value: &'static str,
     label: &'static str,
 }
 
 const THEME_OPTIONS: &[ThemeOption] = &[
     ThemeOption {
-        value: TerminalTheme::Dark,
+        value: "system",
+        label: "System (matches your terminal colors)",
+    },
+    ThemeOption {
+        value: "dark",
         label: "Dark",
     },
     ThemeOption {
-        value: TerminalTheme::Light,
+        value: "light",
         label: "Light",
     },
 ];
@@ -84,7 +88,7 @@ pub struct FirstTimeSetupComponent {
     theme_index: usize,
     analytics_index: usize,
     theme: Theme,
-    on_theme_preview: Box<dyn FnMut(TerminalTheme)>,
+    on_theme_preview: Box<dyn FnMut(String)>,
     on_submit: Box<dyn FnMut(FirstTimeSetupResult)>,
     on_cancel: Box<dyn FnMut()>,
     root: Container,
@@ -92,13 +96,9 @@ pub struct FirstTimeSetupComponent {
 
 impl FirstTimeSetupComponent {
     pub fn new(options: FirstTimeSetupOptions) -> Self {
-        let theme_index = THEME_OPTIONS
-            .iter()
-            .position(|option| option.value == options.detected_theme)
-            .unwrap_or(0);
         let mut component = Self {
             step: Step::Theme,
-            theme_index,
+            theme_index: 0,
             analytics_index: 0,
             theme: options.theme,
             on_theme_preview: options.on_theme_preview,
@@ -155,13 +155,6 @@ impl FirstTimeSetupComponent {
 
         if self.step == Step::Theme {
             self.add_text(theme.fg(ThemeColor::Text, "Pick a theme."));
-            self.add_text(theme.fg(
-                ThemeColor::Muted,
-                &format!(
-                    "Detected system appearance: {}",
-                    theme_name(self.detected_theme())
-                ),
-            ));
             self.root.add_child(Rc::new(RefCell::new(Spacer::new(1))));
             let labels: Vec<&str> = THEME_OPTIONS.iter().map(|option| option.label).collect();
             self.add_option_list(&labels, self.theme_index);
@@ -197,16 +190,12 @@ impl FirstTimeSetupComponent {
             .add_child(Rc::new(RefCell::new(SetupBorder { theme })));
     }
 
-    fn detected_theme(&self) -> TerminalTheme {
-        THEME_OPTIONS[self.theme_index].value
-    }
-
     fn move_selection(&mut self, delta: isize) {
         if self.step == Step::Theme {
             let next = clamp_index(self.theme_index, delta, THEME_OPTIONS.len());
             if next != self.theme_index {
                 self.theme_index = next;
-                (self.on_theme_preview)(THEME_OPTIONS[self.theme_index].value);
+                (self.on_theme_preview)(THEME_OPTIONS[self.theme_index].value.to_string());
             }
         } else {
             self.analytics_index = clamp_index(self.analytics_index, delta, ANALYTICS_OPTIONS.len());
@@ -217,13 +206,6 @@ impl FirstTimeSetupComponent {
 
 fn clamp_index(current: usize, delta: isize, len: usize) -> usize {
     (current as isize + delta).clamp(0, len as isize - 1) as usize
-}
-
-fn theme_name(theme: TerminalTheme) -> &'static str {
-    match theme {
-        TerminalTheme::Dark => "dark",
-        TerminalTheme::Light => "light",
-    }
 }
 
 impl Component for FirstTimeSetupComponent {
@@ -243,7 +225,7 @@ impl Component for FirstTimeSetupComponent {
                 self.update();
             } else {
                 (self.on_submit)(FirstTimeSetupResult {
-                    theme: THEME_OPTIONS[self.theme_index].value,
+                    theme: THEME_OPTIONS[self.theme_index].value.to_string(),
                     share_analytics: ANALYTICS_OPTIONS[self.analytics_index].value,
                 });
             }

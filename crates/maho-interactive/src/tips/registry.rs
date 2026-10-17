@@ -2,6 +2,7 @@
 
 use std::sync::LazyLock;
 
+use super::catalog::computer_tips::COMPUTER_TIPS;
 use super::catalog::cli_tips::CLI_TIPS;
 use super::catalog::dag_tips::DAG_TIPS;
 use super::catalog::ethos_tips::ETHOS_TIPS;
@@ -28,6 +29,7 @@ pub static TIP_DEFINITIONS: LazyLock<Vec<&'static TipDefinition>> = LazyLock::ne
         SUBAGENT_TIPS,
         MEMORY_TIPS,
         DAG_TIPS,
+        COMPUTER_TIPS,
         ETHOS_TIPS,
     ] {
         definitions.extend(group.iter());

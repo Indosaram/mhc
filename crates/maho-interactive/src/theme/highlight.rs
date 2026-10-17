@@ -13,6 +13,7 @@ fn eager_language(lang: &str) -> Option<(&'static str, &'static str)> {
         "java" | "jsp" => ("java", "Java"),
         "go" | "golang" => ("go", "Go"),
         "javascript" | "js" | "jsx" | "mjs" | "cjs" => ("javascript", "JavaScript"),
+        "json" => ("json", "JSON"),
         "cpp" | "cc" | "c++" | "h++" | "hpp" | "hh" | "hxx" | "cxx" => ("cpp", "C++"),
         "typescript" | "ts" | "tsx" | "mts" | "cts" => ("typescript", "TypeScript"),
         "php" => ("php", "PHP Source"),
@@ -55,7 +56,15 @@ fn scope_color(scope: &str, text: &str, lang: &str) -> Option<ThemeColor> {
     let word = text.trim();
     let is_word = word.chars().any(char::is_alphanumeric);
     let starts = |prefix: &str| scope.starts_with(prefix);
-    if starts("comment") {
+    if lang == "json" && starts("punctuation.definition.string") {
+        Some(ThemeColor::SyntaxString)
+    } else if lang == "json" && starts("punctuation") {
+        Some(ThemeColor::SyntaxPunctuation)
+    } else if lang == "json" && starts("string.quoted.double.json") && scope.contains("key") {
+        Some(ThemeColor::SyntaxVariable)
+    } else if lang == "json" && starts("constant.language") {
+        Some(ThemeColor::SyntaxKeyword)
+    } else if starts("comment") {
         Some(ThemeColor::SyntaxComment)
     } else if starts("string") || starts("storage.type.string") {
         Some(ThemeColor::SyntaxString)
@@ -121,6 +130,9 @@ fn scope_color(scope: &str, text: &str, lang: &str) -> Option<ThemeColor> {
 /// `scopes` is the stack innermost-first, stringified once per stack change; `in_meta` is whether
 /// any of them is a `meta` span.
 fn token_color(scopes: &[String], in_meta: bool, text: &str, lang: &str) -> Option<ThemeColor> {
+    if lang == "json" && scopes.iter().any(|scope| scope.starts_with("meta.mapping.key")) {
+        return Some(ThemeColor::SyntaxVariable);
+    }
     let color = scopes.iter().find_map(|scope| scope_color(scope, text, lang));
     let keeps_color = matches!(
         color,

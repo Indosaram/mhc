@@ -345,10 +345,10 @@ fn legacy_config_keys_are_rewritten_to_their_current_omo_equivalents() {
         result.document["[opencode]"],
         json!({
             "agents": {
-                "oracle": { "model": "anthropic/claude-opus-4-8" },
-                "sisyphus": { "model": "anthropic/claude-opus-4-8" },
+                "oracle": { "model": "anthropic/claude-opus-5-5" },
+                "sisyphus": { "model": "anthropic/claude-opus-5-5" },
             },
-            "categories": { "deep": { "model": "anthropic/claude-opus-4-8" } },
+            "categories": { "deep": { "model": "anthropic/claude-opus-5-5" } },
             "disabled_agents": ["sisyphus"],
             "disabled_hooks": ["anthropic-context-window-limit-recovery"],
             "hashline_edit": { "enabled": true },

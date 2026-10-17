@@ -1,4 +1,5 @@
 pub mod cli_tips;
+pub mod computer_tips;
 pub mod dag_tips;
 pub mod ethos_tips;
 pub mod input_tips;

@@ -99,7 +99,7 @@ fn footer_model_survives_very_narrow_layout() {
 #[test]
 fn footer_provider_prefix_requires_multiple_providers() {
     let mut s = snapshot();
-    assert!(plain(&s, 200).contains("(test) test-model:high"));
+    assert!(plain(&s, 200).contains("(test) test-model • effort high"));
     s.provider_count = 1;
     assert!(!plain(&s, 200).contains("(test)"));
 }
@@ -107,7 +107,7 @@ fn footer_provider_prefix_requires_multiple_providers() {
 fn fast_mode_marks_model_label() {
     let mut s = snapshot();
     s.fast_mode = true;
-    assert!(plain(&s, 120).contains("⚡ test-model:high"));
+    assert!(plain(&s, 120).contains("⚡ test-model • effort high"));
 }
 #[test]
 fn nonfast_mode_has_no_lightning() {
