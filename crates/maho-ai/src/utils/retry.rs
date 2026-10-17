@@ -8,6 +8,33 @@ use regex::{Regex, RegexBuilder};
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
 
+/// Diagnostic type on a terminal assistant message whose request failed because an OAuth refresh
+/// failed transiently (senpi#2893).
+pub const OAUTH_REFRESH_UNAVAILABLE_DIAGNOSTIC: &str = "oauth_refresh_unavailable";
+
+// A provider's support request id is opaque hex that can contain `429` or `500`, which message
+// classifiers read as HTTP statuses, so every id is rendered behind this marker and removed before
+// classification.
+pub const PROVIDER_REQUEST_ID_MARKER: &str = "request id:";
+
+static REQUEST_ID_SEGMENT: LazyLock<Regex> =
+    LazyLock::new(|| RegexBuilder::new(r"request id: [^\s,;)]+").case_insensitive(true).build().unwrap_or_else(|e| panic!("request id pattern: {e}")));
+
+pub fn format_provider_request_id(label: &str, id: &str) -> String {
+    format!("{label} {PROVIDER_REQUEST_ID_MARKER} {id}")
+}
+
+pub fn strip_provider_request_ids(text: &str) -> String {
+    REQUEST_ID_SEGMENT.replace_all(text, PROVIDER_REQUEST_ID_MARKER).into_owned()
+}
+
+/// Anthropic's rejection of a Claude subscription token used outside Claude Code (senpi#3259).
+pub const ANTHROPIC_THIRD_PARTY_BILLING_MARKER: &str = "Third-party apps now draw from your extra usage";
+
+pub fn is_anthropic_third_party_billing_message(error_message: Option<&str>) -> bool {
+    error_message.is_some_and(|message| message.to_lowercase().contains(&ANTHROPIC_THIRD_PARTY_BILLING_MARKER.to_lowercase()))
+}
+
 pub struct UsageLimitExhaustion {
     pub codes: &'static [&'static str],
     pub markers: &'static [&'static str],
@@ -40,6 +67,7 @@ static NON_RETRYABLE_PROVIDER_ERROR_PATTERN: LazyLock<Regex> = LazyLock::new(|| 
         "credits are required",
     ]);
     patterns.extend(owned(USAGE_LIMIT_EXHAUSTION.markers));
+    patterns.push(regex::escape(ANTHROPIC_THIRD_PARTY_BILLING_MARKER));
     patterns.extend(owned(&[
         r"invalid request: tools\.",
         r"invalid request: functions\.",
@@ -281,6 +309,11 @@ where
 }
 
 pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
+    if message.stop_reason == StopReason::Error
+        && message.diagnostics.as_ref().is_some_and(|diagnostics| diagnostics.iter().any(|d| d.kind == OAUTH_REFRESH_UNAVAILABLE_DIAGNOSTIC))
+    {
+        return true;
+    }
     if message.stop_reason != StopReason::Error
         || matches!(message.stop_details, Some(AssistantStopDetails::Refusal { .. } | AssistantStopDetails::Sensitive))
     {
@@ -430,11 +463,12 @@ impl ErrorMessageClass {
 }
 
 pub fn classify_error_message(error_message: &str) -> ErrorMessageClass {
+    let text = strip_provider_request_ids(error_message);
     if error_message.is_empty() {
         ErrorMessageClass::Unknown
-    } else if NON_RETRYABLE_PROVIDER_ERROR_PATTERN.is_match(error_message) {
+    } else if NON_RETRYABLE_PROVIDER_ERROR_PATTERN.is_match(&text) {
         ErrorMessageClass::NonRetryable
-    } else if RETRYABLE_PROVIDER_ERROR_PATTERN.is_match(error_message) {
+    } else if RETRYABLE_PROVIDER_ERROR_PATTERN.is_match(&text) {
         ErrorMessageClass::Retryable
     } else {
         ErrorMessageClass::Unknown
@@ -532,6 +566,15 @@ mod tests {
     fn applies_bounded_injectable_codex_style_jitter() {
         assert_eq!(retry_delay_ms(&RetryPolicy { random: Some(Arc::new(|| 0.0)), ..policy(3) }, 1), 900);
         assert_eq!(retry_delay_ms(&RetryPolicy { random: Some(Arc::new(|| 1.0)), ..policy(3) }, 1), 1_100);
+    }
+
+    #[test]
+    fn strips_opaque_request_ids_before_retry_classification() {
+        assert_eq!(strip_provider_request_ids("temporary issue request id: C6FD:500; retry"), "temporary issue request id:; retry");
+        assert_eq!(classify_error_message("temporary issue request id: 500"), ErrorMessageClass::Unknown);
+        assert_eq!(format_provider_request_id("GitHub", "abc"), "GitHub request id: abc");
+        assert!(is_anthropic_third_party_billing_message(Some("Third-party apps now draw from your extra usage")));
+        assert_eq!(classify_error_message("400 Third-party apps now draw from your extra usage"), ErrorMessageClass::NonRetryable);
     }
 
     /// "keeps provider retry hints above the jittered schedule"

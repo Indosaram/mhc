@@ -1,4 +1,4 @@
-use std::{collections::{BTreeSet,VecDeque},io::Write,path::{Path,PathBuf}};
+use std::{collections::{BTreeSet,VecDeque},io::Write,path::{Path,PathBuf},time::{Duration,Instant}};
 use serde_json::{Value,json};
 use sha2::{Digest,Sha256};
 use fancy_regex::Regex;
@@ -76,11 +76,13 @@ fn redact_data(value:&Value,secrets:&mut BTreeSet<String>)->Result<Value,Box<fan
 pub fn map_mcp_log_level(level:&str)->(&'static str,u8) {
     match level {"emergency"=>("emergency",0),"alert"=>("alert",1),"critical"|"crit"=>("critical",2),"error"|"err"=>("error",3),"warning"|"warn"=>("warning",4),"notice"=>("notice",5),"debug"=>("debug",7),_=>("info",6)}
 }
-pub struct McpLogger {pub file_path:PathBuf,server:String,max_file_bytes:usize,ring:VecDeque<String>,file_sink_disabled:bool,file_mode_set:bool}
+/// Pinned `log-file-rotation.ts::LOG_SINK_RETRY_MS` (5 s): a failed file sink is retried after this delay.
+const LOG_SINK_RETRY:Duration=Duration::from_secs(5);
+pub struct McpLogger {pub file_path:PathBuf,server:String,max_file_bytes:usize,ring:VecDeque<String>,file_sink_retry_at:Option<Instant>,file_mode_set:bool}
 impl McpLogger {
     pub fn new(server:&str,log_dir:&Path,max_file_bytes:Option<usize>)->Result<Self,regex::Error> {
         let safe=regex::Regex::new(r"[^A-Za-z0-9._-]+")?.replace_all(server,"_");let safe=if safe.is_empty(){"server"}else{safe.as_ref()};
-        Ok(Self {file_path:log_dir.join(format!("{safe}.log")),server:server.into(),max_file_bytes:max_file_bytes.unwrap_or(1024*1024),ring:VecDeque::new(),file_sink_disabled:false,file_mode_set:false})
+        Ok(Self {file_path:log_dir.join(format!("{safe}.log")),server:server.into(),max_file_bytes:max_file_bytes.unwrap_or(1024*1024),ring:VecDeque::new(),file_sink_retry_at:None,file_mode_set:false})
     }
     pub fn get_ring_buffer(&self)->Vec<String> {self.ring.iter().cloned().collect()}
     fn push_ring(&mut self,line:String) {self.ring.push_back(line);while self.ring.len()>200{self.ring.pop_front();}}
@@ -94,7 +96,13 @@ impl McpLogger {
     }
     pub fn log(&mut self,level:&str,message:&str,data:Option<&Value>,channel:Option<&str>)->Result<(),Box<fancy_regex::Error>> {
         let line=self.format_line(level,message,data,channel.unwrap_or("server"))?;self.push_ring(line.clone());
-        if !self.file_sink_disabled && self.write_file(&line).is_err() {self.file_sink_disabled=true;let warning=self.format_line("warning","file sink disabled after write failure",None,"file")?;self.push_ring(warning);}
+        if self.file_sink_retry_at.is_none_or(|retry_at|Instant::now()>=retry_at) {
+            self.file_sink_retry_at=None;
+            if self.write_file(&line).is_err() {
+                self.file_sink_retry_at=Some(Instant::now()+LOG_SINK_RETRY);
+                let warning=self.format_line("warning","file sink disabled after write failure",None,"file")?;self.push_ring(warning);
+            }
+        }
         Ok(())
     }
     fn write_file(&mut self,line:&str)->std::io::Result<()> {

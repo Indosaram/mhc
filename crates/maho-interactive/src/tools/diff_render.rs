@@ -141,6 +141,22 @@ fn render_tool_diff_line(
     theme.bg(background, &rendered)
 }
 
+pub fn count_diff_changes(diff_text: &str) -> (usize, usize) {
+    let mut added = 0;
+    let mut removed = 0;
+    for line in diff_text.split('\n') {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    (added, removed)
+}
+
 pub fn render_tool_diff(diff_text: &str, file_path: Option<&str>, theme: &Theme) -> String {
     let parsed_lines: Vec<RenderableDiffLine> = diff_text.split('\n').map(parse_renderable_diff_line).collect();
     let mut rendered: Vec<String> = Vec::new();
@@ -192,4 +208,14 @@ pub fn render_tool_diff(diff_text: &str, file_path: Option<&str>, theme: &Theme)
     }
 
     rendered.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_diff_changes;
+
+    #[test]
+    fn counts_changed_lines_without_diff_headers() {
+        assert_eq!(count_diff_changes("--- old\n+++ new\n-removed\n+added\n context"), (1, 1));
+    }
 }

@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::{RenderedComponent, ToolRenderContext, ToolRenderResultOptions, ToolRenderers};
 use crate::theme::{Theme, ThemeBg, ThemeColor};
-use crate::tools::diff_render::render_tool_diff;
+use crate::tools::diff_render::{count_diff_changes, render_tool_diff};
 use crate::tools::render_utils::{render_tool_path, str_value};
 
 #[derive(Clone, Debug)]
@@ -131,8 +131,7 @@ fn build_edit_call_component(
     component.set_bg_fn(Some(get_edit_header_bg(preview, settled_error, theme)));
     let mut title = format_edit_call(args, theme, cwd);
     if let Some(EditPreview::Diff { diff, .. }) = preview {
-        let added = diff.lines().filter(|line| line.starts_with('+') && !line.starts_with("+++")).count();
-        let removed = diff.lines().filter(|line| line.starts_with('-') && !line.starts_with("---")).count();
+        let (added, removed) = count_diff_changes(diff);
         title.push_str(&theme.fg(ThemeColor::Muted, &format!(" (+{added}/-{removed})")));
     }
     component.add_child(Rc::new(RefCell::new(Text::with_padding(title, 0, 0))));
