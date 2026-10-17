@@ -98,6 +98,7 @@ fn activity_carries_target_model_turn_and_tool_counts() {
             current_tool: None,
             last_assistant_line: Some("Final assistant update".to_string()),
             turns: 1.0,
+            failed_turns: None,
             tool_calls: Some(1.0),
             tokens: Some(500.0),
             output_tokens: Some(100.0),

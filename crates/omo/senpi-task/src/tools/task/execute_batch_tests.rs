@@ -90,6 +90,7 @@ fn plan_unresolved(
         attempted_chain: None,
         category: None,
         missing_providers: None,
+        unlisted_provider_model: None,
     })
 }
 

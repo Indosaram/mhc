@@ -461,6 +461,7 @@ pub fn resolve_category(
             category_default_model: builtin_model.clone(),
             is_user_configured_category_model: false,
             fallback_chain: fallback_chain.map(<[DelegateFallbackEntry]>::to_vec),
+            allow_unlisted_providers: false,
             available_models: available_models.iter().cloned().collect(),
             system_default_model: options.system_default_model.clone(),
         },

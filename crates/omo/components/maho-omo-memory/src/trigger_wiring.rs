@@ -71,7 +71,7 @@ impl ReflectionTriggerWiring {
 pub struct ResolvedTriggerConfig { pub enabled: bool, pub config: TriggerConfig }
 pub fn resolve_reflection_trigger_config(settings: &serde_json::Value, agent: Option<&str>) -> Result<ResolvedTriggerConfig, String> {
     let reflection = match agent { Some(agent) => crate::reflection_settings::resolve_agent_reflection_settings(Some(settings), agent)?, None => settings["reflection"].clone() };
-    Ok(ResolvedTriggerConfig { enabled:reflection["enabled"].as_bool().ok_or("Missing reflection enabled")?, config:TriggerConfig { step_count:reflection["trigger"]["step_count"].as_u64().map(|value| usize::try_from(value).map_err(|error| error.to_string())).transpose()?, on_compaction:reflection["trigger"]["on_compaction"].as_bool() } })
+    Ok(ResolvedTriggerConfig { enabled:reflection["enabled"].as_bool().ok_or("Missing reflection enabled")?, config:TriggerConfig { step_count:reflection["trigger"]["step_count"].as_u64().map(|value| usize::try_from(value).map_err(|error| error.to_string())).transpose()?, on_compaction:reflection["trigger"]["on_compaction"].as_bool(), snapshot_max_bytes:None } })
 }
 
 #[cfg(test)]
@@ -93,7 +93,7 @@ mod tests {
         let journal=TranscriptJournal::new(TranscriptJournalOptions::new(paths.transcripts.join("conversation")));
         journal.append(&[TranscriptEntry::Text(TextTranscriptEntry::new("user","Question","2026-01-01T00:00:00.000Z","m:user","m")),TranscriptEntry::Text(TextTranscriptEntry::new("assistant","Answer","2026-01-01T00:00:00.000Z","m:assistant","m"))]).unwrap();
         let transcripts=paths.transcripts.clone(); let sequence=Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let store=Arc::new(ReflectionReservationStore::new(ReflectionReservationStoreOptions { identity:MemoryIdentity { id:"agent".into(), safe_slug:"agent".into(), paths }, config:TriggerConfig { step_count:Some(1), on_compaction:Some(false) }, get_journal:Arc::new(move |id| Ok(TranscriptJournal::new(TranscriptJournalOptions::new(transcripts.join(id))))), create_run_id:Some(Arc::new(move || format!("run-{}",sequence.fetch_add(1,std::sync::atomic::Ordering::SeqCst)))), now_iso:None, launcher_identity:None }));
+        let store=Arc::new(ReflectionReservationStore::new(ReflectionReservationStoreOptions { identity:MemoryIdentity { id:"agent".into(), safe_slug:"agent".into(), paths }, config:TriggerConfig { step_count:Some(1), on_compaction:Some(false), snapshot_max_bytes:None }, get_journal:Arc::new(move |id| Ok(TranscriptJournal::new(TranscriptJournalOptions::new(transcripts.join(id))))), create_run_id:Some(Arc::new(move || format!("run-{}",sequence.fetch_add(1,std::sync::atomic::Ordering::SeqCst)))), now_iso:None, launcher_identity:None }));
         let engine=store.clone(); let ledger=Arc::new(Mutex::new(MemoryPendingLedger::default())); let launches=Arc::new(Mutex::new(vec![])); let observed=launches.clone();
         let wiring=create_reflection_trigger_wiring(ReflectionTriggerWiringOptions { resolve_session:Arc::new(move |_| Some(ReflectionTriggerSession { conversation_id:"conversation".into(), ledger:ledger.clone(), engine:engine.clone(), enabled:true })), on_launch:Arc::new(move |request| { observed.lock().unwrap().push(request); Ok(()) }), warn:Arc::new(|error| panic!("{error}")) });
         for _ in 0..3 { wiring.handle_event(&end(false,false),"session"); wiring.handle_event(&ExtensionEvent::AgentSettled,"session"); }

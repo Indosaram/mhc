@@ -517,17 +517,6 @@ pub struct TaskRecord {
     pub host_session: Option<HostSessionIdentity>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SuspensionReason { DaemonUnavailable, HandoffParked, HostDraining, HostIncompatible, IdleEvicted, OwnHostUnreachable, RevivalDeferred, StoreIndexUnavailable }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AwaitingInputReason { ResumedTurnAborted, ResumedTurnUnfinished }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskAwaitingInput { pub reason: AwaitingInputReason, pub since: String }
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskTransition {
     Start {

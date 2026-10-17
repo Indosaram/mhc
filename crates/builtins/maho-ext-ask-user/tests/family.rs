@@ -2,7 +2,7 @@ use maho_ext_api::Model;
 use maho_ext_ask_user::{family::{pick_variant, tool_name}, schema::AskUserVariant};
 
 fn model(api: &str, id: &str) -> Model {
-    Model { id: id.into(), name: id.into(), api: api.into(), provider: "custom-gateway".into(), base_url: "https://example.invalid".into(), reasoning: false, thinking_level_map: None, input: vec![], cost: Default::default(), context_window: 100, max_tokens: 10, sampling_params: None, headers: None, cache_retention: None, upstream_model_id: None, service_tier: None, recover_text_tool_calls: None, compat: None }
+    Model { id: id.into(), name: id.into(), api: api.into(), provider: "custom-gateway".into(), base_url: "https://example.invalid".into(), reasoning: false, thinking_level_map: None, input: vec![], cost: Default::default(), context_window: 100, max_tokens: 10, sampling_params: None, headers: None, cache_retention: None, upstream_model_id: None, service_tier: None, recover_text_tool_calls: None, compat: None, default_thinking_level: None, input_limits: None }
 }
 
 #[test]

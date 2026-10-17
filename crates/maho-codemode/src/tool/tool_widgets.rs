@@ -89,7 +89,7 @@ fn prepared_core_arguments(name: &str, args: &Value, cwd: &Path) -> Option<Value
         .or_insert_with(|| Rc::new(maho_tools::index::create_all_tool_definitions(cwd, maho_tools::index::ToolsOptions::default()))).clone());
     let definition = definitions.get(name)?;
     let prepared = match &definition.prepare_arguments { Some(prepare) => prepare(args.clone()).ok()?, None => args.clone() };
-    let tool = maho_ai::types::Tool { name: name.into(), description: String::new(), parameters: definition.parameters.clone(), freeform: None, constrained_sampling: None };
+    let tool = maho_ai::types::Tool { name: name.into(), description: String::new(), parameters: definition.parameters.clone(), output_schema: None, freeform: None, constrained_sampling: None };
     let call = maho_ai::types::ToolCall { name: name.into(), arguments: prepared.as_object()?.clone(), ..Default::default() };
     maho_ai::utils::validation::validate_tool_arguments(&tool, &call).ok()?;
     Some(prepared)

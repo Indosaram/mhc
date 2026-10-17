@@ -158,7 +158,7 @@ impl MemoryWiring{
     pub async fn on_session_shutdown(&mut self,reason:crate::shutdown_drain::ShutdownReason,session:&str,deadline:f64,now:&(dyn Fn()->f64+Sync),warn:&mut (dyn FnMut(&str,Option<&str>)+Send)){
         self.maintenance.dispose();self.maintenance.settled().await;self.shutdown(session);
         let identity=self.runtime.resolve_context(session).map(|context|context.identity.clone());
-        if let Some(identity)=identity { if let Some(facts)=self.runtime.existing_facts_wiring(&identity){facts.cancel_active().await;} }
+        if let Some(identity)=identity && let Some(facts)=self.runtime.existing_facts_wiring(&identity) {facts.cancel_active().await;}
         let evaluators=std::mem::take(&mut self.evaluators);
         let evaluators={let mut drain=crate::shutdown_drain::create_shutdown_drain(MemoryShutdownSteps{wiring:self,now});for evaluator in evaluators{drain.register_evaluator(evaluator);}drain.run(reason,session,deadline,now,warn).await;std::mem::take(&mut drain.evaluators)};
         self.evaluators=evaluators;

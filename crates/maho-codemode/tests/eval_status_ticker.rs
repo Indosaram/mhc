@@ -9,7 +9,7 @@ fn fixture() -> (EvalStatusTicker, tokio::sync::mpsc::UnboundedReceiver<Option<S
     let (send, receive) = tokio::sync::mpsc::unbounded_channel();
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let now = Arc::clone(&clock);
-    let ticker = EvalStatusTicker::new(Arc::new(move |value| { send.send(value).expect("receiver alive"); }), Arc::new(move || now.load(Ordering::SeqCst) as f64));
+    let ticker = EvalStatusTicker::new(Arc::new(move |value| { send.send(value).expect("receiver alive"); Ok(()) }), Arc::new(move || now.load(Ordering::SeqCst) as f64));
     (ticker, receive, clock)
 }
 

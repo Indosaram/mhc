@@ -47,6 +47,8 @@ impl UserMessageComponent {
         component
     }
 
+    pub fn render_revision(&self) -> u64 { self.render_revision }
+
     pub fn set_output_pad(&mut self, padding: usize) {
         self.output_pad = padding;
         self.rebuild();
@@ -98,8 +100,6 @@ impl Component for UserMessageComponent {
         }
         lines
     }
-
-    pub fn render_revision(&self) -> u64 { self.render_revision }
 
     fn invalidate(&mut self) {
         self.content.invalidate();

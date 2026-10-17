@@ -147,6 +147,7 @@ pub fn tool(name: &str, description: &str, parameters: Value) -> Tool {
         name: name.to_owned(),
         description: description.to_owned(),
         parameters,
+        output_schema: None,
         freeform: None,
         constrained_sampling: None,
     }

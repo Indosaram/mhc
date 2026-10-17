@@ -78,34 +78,6 @@ pub struct SpawnParamsInput {
     pub tasks: Option<Vec<SpawnItemInput>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunInBackgroundResolution {
-    Value(Option<bool>),
-    Conflict(String),
-}
-
-const RUN_IN_BACKGROUND_CONFLICT_MESSAGE: &str = "run_in_background is batch-wide: every value in one task call must agree. Set it once at the top level (true returns every task id immediately; false waits for every result) and drop the disagreeing item-level values.";
-
-pub fn resolve_run_in_background(params: &SpawnParamsInput) -> RunInBackgroundResolution {
-    let mut values = Vec::new();
-    if let Some(value) = params.run_in_background {
-        values.push(("top-level".to_string(), value));
-    }
-    for (index, item) in params.tasks.iter().flatten().enumerate() {
-        if let Some(value) = item.run_in_background {
-            values.push((format!("tasks[{index}]"), value));
-        }
-    }
-    let has_true = values.iter().any(|(_, value)| *value);
-    let has_false = values.iter().any(|(_, value)| !*value);
-    if has_true && has_false {
-        let seen = values.iter().map(|(label, value)| format!("{label}={value}")).collect::<Vec<_>>().join(", ");
-        RunInBackgroundResolution::Conflict(format!("{RUN_IN_BACKGROUND_CONFLICT_MESSAGE} Seen: {seen}."))
-    } else {
-        RunInBackgroundResolution::Value(values.first().map(|(_, value)| *value))
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchShapeErrorCode {
     PromptAndTasks,
@@ -240,24 +212,25 @@ pub fn resolve_run_in_background(
     params: &SpawnParamsInput,
 ) -> Result<Option<bool>, RunInBackgroundConflictError> {
     let mut seen = Vec::new();
-    let mut value = params.run_in_background;
-    if let Some(top_level) = value {
-        seen.push(format!("top-level={top_level}"));
-    }
-    if let Some(tasks) = &params.tasks {
-        for (index, item) in tasks.iter().enumerate() {
-            if let Some(item_value) = item.run_in_background {
-                seen.push(format!("tasks[{index}]={item_value}"));
-                if value.is_some_and(|existing| existing != item_value) {
-                    return Err(RunInBackgroundConflictError {
-                        message: format!("{RUN_IN_BACKGROUND_CONFLICT_MESSAGE} Seen: {}.", seen.join(", ")),
-                    });
-                }
-                value = Some(item_value);
+    let mut values = Vec::new();
+    let mut note = |label: String, value: Option<bool>| {
+        if let Some(value) = value {
+            seen.push(format!("{label}={value}"));
+            if !values.contains(&value) {
+                values.push(value);
             }
         }
+    };
+    note("top-level".to_string(), params.run_in_background);
+    for (index, item) in params.tasks.iter().flatten().enumerate() {
+        note(format!("tasks[{index}]"), item.run_in_background);
     }
-    Ok(value)
+    if values.len() > 1 {
+        return Err(RunInBackgroundConflictError {
+            message: format!("{RUN_IN_BACKGROUND_CONFLICT_MESSAGE} Seen: {}.", seen.join(", ")),
+        });
+    }
+    Ok(values.first().copied())
 }
 
 fn single_item(params: &SpawnParamsInput, prompt: &str) -> SpawnItemInput {

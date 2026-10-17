@@ -309,7 +309,7 @@ mod tests {
     use serde_json::{json, Value};
 
     fn tool(name: &str) -> Tool {
-        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), freeform: None, constrained_sampling: None }
+        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn message(content: Vec<ContentBlock>, stop_reason: StopReason) -> AssistantMessage {
@@ -466,7 +466,7 @@ mod tests {
     // the recovery resolver must still recognize the registered tool behind it.
 
     fn schema_tool(name: &str, description: &str, parameters: Value) -> Tool {
-        Tool { name: name.into(), description: description.into(), parameters, freeform: None, constrained_sampling: None }
+        Tool { name: name.into(), description: description.into(), parameters, output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn todo_tool() -> Tool {

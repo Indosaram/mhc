@@ -341,6 +341,7 @@ fn given_a_terminal_snapshot_with_run_stats_when_the_status_row_renders_then_run
             cost_usd: None,
             cache_hit_rate_last: None,
             cache_hit_rate_run: None,
+            ..Default::default()
         }),
         ..snapshot()
     };
@@ -369,6 +370,7 @@ fn given_run_stats_with_cost_and_cache_hits_when_the_status_row_renders_then_the
             cost_usd: Some(0.4213),
             cache_hit_rate_last: Some(0.2),
             cache_hit_rate_run: Some(0.8712),
+            ..Default::default()
         }),
         ..snapshot()
     };
@@ -395,6 +397,7 @@ fn given_run_stats_with_cost_but_no_cache_facts_when_the_status_row_renders_then
             cost_usd: Some(0.5),
             cache_hit_rate_last: None,
             cache_hit_rate_run: None,
+            ..Default::default()
         }),
         ..snapshot()
     };

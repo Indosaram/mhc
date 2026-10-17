@@ -585,7 +585,7 @@ impl<T: Component> Component for SharedDialog<T> {
 struct ThemeDetection {
     auto: Option<(String, String)>,
     color_scheme: Option<maho_tui::tui::TerminalQueryTicket<Option<maho_tui::terminal_colors::TerminalColorScheme>>>,
-    background: maho_tui::tui::TerminalQueryTicket<Option<maho_tui::terminal_colors::RgbColor>>,
+    background: maho_tui::tui::TerminalQueryTicket<maho_tui::terminal_colors::TerminalColors>,
 }
 
 /// senpi's detection timeout for both terminal theme queries.
@@ -796,14 +796,14 @@ impl InteractiveMode {
             if auto.is_none() && let Some(name) = &setting && !already_applied && *name != self.theme.name { self.apply_theme_name(name, true); }
             if auto.is_some() || setting.is_none() {
                 let color_scheme = auto.is_some().then(|| ui.base_mut().query_terminal_color_scheme(terminal, THEME_DETECTION_TIMEOUT_MS, now_ms));
-                let background = ui.base_mut().query_terminal_background_color(terminal, THEME_DETECTION_TIMEOUT_MS, now_ms);
+                let background = ui.base_mut().query_terminal_colors(terminal, THEME_DETECTION_TIMEOUT_MS, now_ms);
                 self.theme_detection = Some(ThemeDetection { auto, color_scheme, background });
             }
         }
         ui.base_mut().poll_terminal_queries(now_ms);
         let settled = self.theme_detection.as_ref().and_then(|detection| {
             let scheme = match &detection.color_scheme { Some(ticket) => Some(ticket.result()?), None => None };
-            Some((scheme.flatten(), detection.background.result()?))
+            Some((scheme.flatten(), detection.background.result()?.background))
         });
         if let Some((scheme, background)) = settled && let Some(detection) = self.theme_detection.take() {
             self.finish_terminal_theme_detection(detection, scheme, background);
@@ -2717,7 +2717,7 @@ impl InteractiveMode {
     /// senpi `queueCompactionMessage`.
     fn queue_compaction_message(&mut self, text: &str, dropped_image_count: usize) {
         let enqueue_order = self.session.reserve_queued_input_order();
-        self.compaction_queue.borrow_mut().queued.push(crate::compaction_queue_transfer::CompactionQueuedMessage { text: text.to_owned(), mode: maho_ext_api::StreamingBehavior::Steer, enqueue_order: Some(enqueue_order), pending_echo_id: None });
+        self.compaction_queue.borrow_mut().queued.push(crate::compaction_queue_transfer::CompactionQueuedMessage { text: text.to_owned(), mode: maho_ext_api::StreamingBehavior::Steer, enqueue_order: Some(enqueue_order), pending_echo_id: None, unknown_command_as_text: false });
         self.editor.editor.add_to_history(text);
         self.editor.editor.set_text("");
         self.show_status(if dropped_image_count > 0 {
@@ -3407,7 +3407,7 @@ impl InteractiveMode {
                 macro_rules! string { ($field:ident, $key:literal) => { if let Some(value) = settings.get_string($key) { config.$field = value; } }; }
                 config.show_images = settings.get_show_images(); config.auto_resize_images = settings.get_image_auto_resize(); config.block_images = settings.get_block_images(); boolean!(enable_skill_commands, "enableSkillCommands");
                 boolean!(hide_thinking_block, "hideThinkingBlock"); boolean!(smooth_streaming, "smoothStreaming"); boolean!(show_cache_miss_notices, "showCacheMissNotices"); boolean!(collapse_changelog, "collapseChangelog");
-                boolean!(enable_install_telemetry, "enableInstallTelemetry"); config.show_hardware_cursor = settings.get_show_hardware_cursor(); boolean!(quiet_startup, "quietStartup"); config.clear_on_shrink = settings.get_clear_on_shrink(); config.show_terminal_progress = settings.get_show_terminal_progress(); boolean!(fullscreen_copy_on_select, "fullscreenCopyOnSelect");
+                boolean!(enable_install_telemetry, "enableInstallTelemetry"); config.show_hardware_cursor = settings.get_show_hardware_cursor(); config.quiet_startup = match settings.get_value("quietStartup") { Some(serde_json::Value::Bool(true)) => crate::components::settings_selector::QuietStartup::All, Some(serde_json::Value::String(value)) if value == "header" => crate::components::settings_selector::QuietStartup::Initial, _ => crate::components::settings_selector::QuietStartup::Off }; config.clear_on_shrink = settings.get_clear_on_shrink(); config.show_terminal_progress = settings.get_show_terminal_progress(); boolean!(fullscreen_copy_on_select, "fullscreenCopyOnSelect");
                 config.image_width_cells = settings.get_image_width_cells() as usize; number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); config.output_pad = settings.get_output_pad(); config.autocomplete_max_visible = settings.get_autocomplete_max_visible();
                 string!(steering_mode, "steeringMode"); string!(follow_up_mode, "followUpMode"); string!(transport, "transport"); string!(double_escape_action, "doubleEscapeAction"); config.tree_filter_mode = settings.get_tree_filter_mode(); string!(fullscreen_scrollbar, "fullscreenScrollbar");
                 use crate::components::settings_selector::{MermaidRenderingMode, TuiMode, FullscreenExitOutput, DefaultProjectTrust};
@@ -3464,7 +3464,15 @@ impl InteractiveMode {
             })); }
             persist!(on_smooth_streaming_change, "smoothStreaming", bool); persist!(on_smooth_streaming_fps_change, "smoothStreamingFps", u32); persist!(on_show_cache_miss_notices_change, "showCacheMissNotices", bool); persist!(on_collapse_changelog_change, "collapseChangelog", bool); persist!(on_enable_install_telemetry_change, "enableInstallTelemetry", bool);
             persist!(on_double_escape_action_change, "doubleEscapeAction", String); persist!(on_tree_filter_mode_change, "treeFilterMode", String); persist!(on_show_hardware_cursor_change, "showHardwareCursor", bool); persist!(on_editor_padding_x_change, "editorPaddingX", usize); persist!(on_output_pad_change, "outputPad", u8); persist!(on_autocomplete_max_visible_change, "autocompleteMaxVisible", usize);
-            persist!(on_quiet_startup_change, "quietStartup", bool); persist_with!(on_clear_on_shrink_change, "clearOnShrink", bool, |settings, value| settings.set_clear_on_shrink(value)); persist_with!(on_show_terminal_progress_change, "showTerminalProgress", bool, |settings, value| settings.set_show_terminal_progress(value)); persist!(on_fullscreen_scrollbar_change, "fullscreenScrollbar", String); persist!(on_fullscreen_copy_on_select_change, "fullscreenCopyOnSelect", bool);
+            { let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.on_quiet_startup_change = Some(Box::new(move |value: crate::components::settings_selector::QuietStartup| {
+                // senpi QuietStartup = boolean | "header".
+                let value = match value { crate::components::settings_selector::QuietStartup::All => serde_json::json!(true), crate::components::settings_selector::QuietStartup::Initial => serde_json::json!("header"), crate::components::settings_selector::QuietStartup::Off => serde_json::json!(false) };
+                let values = [("quietStartup".into(), value.clone())].into_iter().collect();
+                match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
+                    Ok(()) => { drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::SettingChanged("quietStartup".into(), value))); }
+                    Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                }
+            })); } persist_with!(on_clear_on_shrink_change, "clearOnShrink", bool, |settings, value| settings.set_clear_on_shrink(value)); persist_with!(on_show_terminal_progress_change, "showTerminalProgress", bool, |settings, value| settings.set_show_terminal_progress(value)); persist!(on_fullscreen_scrollbar_change, "fullscreenScrollbar", String); persist!(on_fullscreen_copy_on_select_change, "fullscreenCopyOnSelect", bool);
             // senpi `onTerminalMouseChange`: the host applies it by recreating the renderer, and only
             // when no overlay is open; the setting is persisted once the host accepts the change.
             { let ui = self.extension_ui.clone(); callbacks.on_terminal_mouse_change = Some(Box::new(move |value: String| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::TerminalSetting("terminalMouse".into(), serde_json::json!(value)))))); }

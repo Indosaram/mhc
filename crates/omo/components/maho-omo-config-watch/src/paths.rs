@@ -12,7 +12,7 @@ fn target(path:PathBuf,globs:&[&str])->OmoConfigWatchTarget { OmoConfigWatchTarg
 fn contains(parent:&Path,child:&Path)->bool { child.strip_prefix(parent).is_ok() }
 fn default_filesystem_type(path:&Path)->Option<i64> {
     #[cfg(target_os="linux")]
-    { rustix::fs::statfs(path).ok().map(|stat|stat.f_type as i64) }
+    { rustix::fs::statfs(path).ok().map(|stat|stat.f_type) }
     #[cfg(not(target_os="linux"))]
     { let _=path; None }
 }
@@ -20,11 +20,11 @@ fn restricted(target:&OmoConfigWatchTarget,protected:&[PathBuf])->bool {
     protected.iter().any(|path| {
         if contains(path,&target.path) { return true; }
         if !contains(&target.path,path) { return false; }
-        !( !target.filter_globs.is_empty() && target.filter_globs.iter().all(|glob| {
+        target.filter_globs.is_empty() || !target.filter_globs.iter().all(|glob| {
             let Some(relative)=glob.strip_prefix('/') else { return false; };
             let glob_path=target.path.join(relative);
             !contains(&glob_path,path) && !contains(path,&glob_path)
-        }))
+        })
     })
 }
 pub fn resolve_omo_config_watch_target_resolution(cwd:&Path,home:&Path,env:&BTreeMap<String,String>)->OmoConfigWatchTargetResolution {
@@ -36,7 +36,7 @@ pub fn resolve_omo_config_watch_target_resolution(cwd:&Path,home:&Path,env:&BTre
     project_directories.extend(omo_config_core::find_project_config_paths_farthest_first(&cwd.to_string_lossy(),&home.to_string_lossy(),&omo_config_core::StdReadFileSystem,None).into_iter().filter_map(|p|PathBuf::from(p).parent().map(Path::to_owned)));
     let user=home.join(".omo"); let mut targets=Vec::new();
     if user.is_dir() { if default_filesystem_type(&user)!=Some(PLAN9_FILE_SYSTEM_TYPE) { targets.push(target(user.clone(),&OMO_CONFIG_FILE_FILTER_GLOBS)); } }
-    else if let Some(parent)=user.parent().filter(|p|p.is_dir()) { if default_filesystem_type(parent)!=Some(PLAN9_FILE_SYSTEM_TYPE) { targets.push(target(parent.to_owned(),&USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS)); } }
+    else if let Some(parent)=user.parent().filter(|p|p.is_dir()) && default_filesystem_type(parent)!=Some(PLAN9_FILE_SYSTEM_TYPE) { targets.push(target(parent.to_owned(),&USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS)); }
     let mut ancestors=Vec::new();
     for ancestor in cwd.ancestors().take(128) { ancestors.push(ancestor); if contains(home,cwd) && ancestor==home { break; } }
     if default_filesystem_type(cwd)!=Some(PLAN9_FILE_SYSTEM_TYPE) {

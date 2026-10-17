@@ -74,7 +74,7 @@ pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> To
             if truncated.truncated { details.insert("truncation".into(), json!(truncated)); notices.push(format!("{} limit reached", format_size(DEFAULT_MAX_BYTES))); }
             let mut content = vec![ToolContent::text(format!("{}{}", truncated.content, if notices.is_empty() { "" } else { "\n" }))];
             if !notices.is_empty() { content.push(model_only_text(format!("[{}]", notices.join(". ")))); }
-            Ok(ToolResult { content, details: if details.is_empty() { None } else { Some(details.into()) } })
+            Ok(ToolResult { content, details: if details.is_empty() { None } else { Some(details.into()) }, structured_content: None })
         })
     });
     let mut tool = ToolDefinition::new("find", "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or 50KB (whichever is hit first).", json!({"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'"},"path":{"type":"string","description":"Directory to search in (default: current directory)"},"limit":{"type":"number","description":"Maximum number of results (default: 1000)"}},"required":["pattern"]}), execute);

@@ -35,7 +35,7 @@ impl LspComponent {
                 let result=call_packaged_daemon_tool(&name,args,context,call.signal).await?;
                 if result.is_error {return Err(ToolError::Message(result.text().into()));}
                 let content=result.content.into_iter().map(serde_json::from_value::<ToolContent>).collect::<Result<Vec<_>,_>>()?;
-                Ok(ToolResult {content,details:result.details})
+                Ok(ToolResult {content,details:result.details, structured_content: None })
             })});
             let name=tool.name.clone();let home=extension_home;
             let renderers=tool_renderers(&name).expect("every LSP descriptor has call and result renderers");

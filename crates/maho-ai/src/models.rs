@@ -425,9 +425,9 @@ pub trait Provider: Send + Sync {
     ) -> AssistantMessageEventStream;
     fn generate_images<'a>(
         &'a self,
-        model: &'a crate::types::ImagesModel,
-        context: &'a crate::types::ImagesContext,
-        options: Option<crate::types::ImagesOptions>,
+        _model: &'a crate::types::ImagesModel,
+        _context: &'a crate::types::ImagesContext,
+        _options: Option<crate::types::ImagesOptions>,
     ) -> BoxFuture<'a, Result<crate::types::AssistantImages, String>> {
         Box::pin(async { Err("Provider does not support image generation".to_owned()) })
     }

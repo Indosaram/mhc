@@ -25,14 +25,14 @@ pub fn create_apply_patch_tool_variant(variant:crate::types::ApplyPatchWireMode)
         let progress=(total>0).then_some(crate::types::ApplyPatchProgress{applied:0,failed:0,total});
         let (text,details)=crate::preview::create_pending_patch_update(cwd,&input,progress,None).await;
         let preview=details.as_ref().and_then(|details|details.preview.clone());
-        if let Some(update)=&call.on_update { update(ToolResult{content:vec![ToolContent::text(text)],details:details.map(serde_json::to_value).transpose()?})?; }
+        if let Some(update)=&call.on_update { update(ToolResult{content:vec![ToolContent::text(text)],details:details.map(serde_json::to_value).transpose()?, structured_content: None })?; }
         let on_update=call.on_update.clone(); let owned_cwd=cwd.to_path_buf(); let progress_input=input.clone();
         let callback=move |progress| { let update=on_update.clone(); let cwd=owned_cwd.clone(); let input=progress_input.clone(); let preview=preview.clone(); Box::pin(async move {
             let (text,details)=crate::preview::create_pending_patch_update(&cwd,&input,Some(progress),preview).await;
-            if let Some(update)=update { update(ToolResult{content:vec![ToolContent::text(text)],details:details.map(serde_json::to_value).transpose().map_err(|error|error.to_string())?}).map_err(|error|error.to_string())?; } Ok(())
+            if let Some(update)=update { update(ToolResult{content:vec![ToolContent::text(text)],details:details.map(serde_json::to_value).transpose().map_err(|error|error.to_string())?, structured_content: None }).map_err(|error|error.to_string())?; } Ok(())
         }) as std::pin::Pin<Box<dyn std::future::Future<Output=Result<(),String>>+Send>> };
         let result=crate::apply::apply_patch_detailed_with_progress(cwd,&input,Some(&callback)).await.map_err(ToolError::Message)?;
-        let (text,details)=execution_result(result); Ok(ToolResult{content:vec![ToolContent::text(text)],details:Some(serde_json::to_value(details)?)})
+        let (text,details)=execution_result(result); Ok(ToolResult{content:vec![ToolContent::text(text)],details:Some(serde_json::to_value(details)?), structured_content: None })
     })));
     tool.label="ApplyPatch".into();
     if variant==crate::types::ApplyPatchWireMode::Json { tool.description=crate::constants::apply_patch_json_description(); }

@@ -21,6 +21,7 @@ pub enum WorkstationDialect {
     Claude,
     Codex,
     Kimi,
+    Gemini,
 }
 
 fn cpu_model() -> Option<String> {
@@ -189,6 +190,9 @@ fn instruction(dialect: WorkstationDialect, executors: &str) -> String {
         ),
         WorkstationDialect::Kimi => format!(
             "{executors} on this workstation — choose commands, paths, and parallelism that fit it. When writing code for another target platform, keep the code portable; only the execution happens here."
+        ),
+        WorkstationDialect::Gemini => format!(
+            "{executors} on this workstation; match commands, paths, package managers, and parallel pool sizes to it. Code you write may target another machine; code you run always runs here."
         ),
         WorkstationDialect::Default => format!(
             "**EXECUTION HAPPENS HERE.** {executors} on THIS machine — you MUST match commands, paths, package managers, and parallel pool sizes to the workstation above. Code you WRITE may target a different machine; anything you RUN executes HERE."

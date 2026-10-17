@@ -147,7 +147,7 @@ async fn real_eval_completion_handle_survives_cells_but_not_session_switch() {
             })
         }),
         home_dir: root.path().into(), environment: Default::default(),
-        js_runtime: maho_codemode::tool::types::EvalRuntimeInfo { name: "bun".into(), version: "1.4.0".into(), path: None },
+        js_runtime: maho_codemode::tool::types::EvalRuntimeInfo { name: "bun".into(), version: "1.4.0".into(), path: None, isolation: None },
     }).unwrap();
 
     let session_a = root.path().join("session-a.jsonl");

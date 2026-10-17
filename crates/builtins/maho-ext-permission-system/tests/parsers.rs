@@ -74,7 +74,6 @@ fn glob_uses_list_permission(){let r=parse("glob",json!({"path":"src"}));assert_
 #[test]
 fn fallback(){assert_eq!(parse("unknown",json!({}))[0].patterns,vec!["*"]);}
 #[test]
-#[test]
 fn apply_patch_explicit_file_uses_edit_permission(){
     let requests=parse("apply_patch",json!({"path":"src/file.rs"}));
     assert_eq!(requests[0].permission,"edit");

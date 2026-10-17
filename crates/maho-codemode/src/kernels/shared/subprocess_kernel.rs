@@ -40,7 +40,7 @@ impl SubprocessKernel {
         let snapshot = Arc::new(Mutex::new((None, vec![])));
         let (commands, receiver) = mpsc::unbounded_channel();
         let owner=signal.clone();let actor_signal=shutdown.signal();let actor_snapshot=snapshot.clone();let actor_pid=pid.clone();let actor_alive=alive.clone();let actor_pending=pending.clone();
-        let actor=tokio::spawn(async move {run_actor(options, process, receiver, actor_snapshot, actor_pid,actor_signal,actor_alive,actor_pending).await;owner.remove_abort_listener(listener);});
+        let actor=tokio::spawn(async move {run_actor(options, process, receiver, ActorShared {snapshot:actor_snapshot,pid:actor_pid,shutdown:actor_signal,alive:actor_alive,pending:actor_pending}).await;owner.remove_abort_listener(listener);});
         Ok(Self { commands, snapshot, pid,shutdown,alive,pending,actor:tokio::sync::Mutex::new(Some(actor)) })
     }
 
@@ -161,7 +161,11 @@ async fn replace_process(options: &SubprocessKernelOptions, process: &mut Subpro
     Ok(())
 }
 
-async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProcess, mut commands: mpsc::UnboundedReceiver<Command>, snapshot: Arc<Mutex<QueueSnapshot>>, pid: Arc<Mutex<Option<u32>>>,shutdown:maho_ai::utils::abort::AbortSignal,alive:Arc<std::sync::atomic::AtomicBool>,pending:Arc<std::sync::Mutex<Vec<super::subprocess_contract::KernelRunInput>>>) {
+/// State the kernel handle shares with its actor task.
+struct ActorShared { snapshot: Arc<Mutex<QueueSnapshot>>, pid: Arc<Mutex<Option<u32>>>, shutdown: maho_ai::utils::abort::AbortSignal, alive: Arc<std::sync::atomic::AtomicBool>, pending: Arc<std::sync::Mutex<Vec<super::subprocess_contract::KernelRunInput>>> }
+
+async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProcess, mut commands: mpsc::UnboundedReceiver<Command>, shared: ActorShared) {
+    let ActorShared { snapshot, pid, shutdown, alive, pending } = shared;
     let mut runs = SubprocessRunQueue::default();
     let origin = tokio::time::Instant::now();
     let now = || origin.elapsed().as_secs_f64() * 1000.0;
@@ -235,14 +239,14 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                     if runs.handle_message(message, options.on_message.as_ref()) { deadline = None; }
                     if runs.active().is_none() && process.try_wait().await.is_ok_and(|status| status.is_some()) {
                         let reason = "Kernel process exited".to_owned();
-                        pending.lock().expect("pending kernel runs").extend(runs.drain().into_iter().map(|run| run.input));
+                        pending.lock().expect("pending kernel runs").extend(runs.drain().into_iter().map(|run| run.input.clone()));
                         alive.store(false, std::sync::atomic::Ordering::Release);
                         failure = Some(reason);
                     }
                     if let Some(error) = startup_failure {
                         let reason=ProcessError::Startup(error).to_string();
                         if let Some(mut active)=runs.release_active() {let result=failure_result(&active,&reason,now());settle_pending_run(&mut active,result);}
-                        let queued=runs.drain().into_iter().map(|run|run.input).collect::<Vec<_>>();
+                        let queued=runs.drain().into_iter().map(|run|run.input.clone()).collect::<Vec<_>>();
                         pending.lock().expect("pending kernel runs").extend(queued);
                         alive.store(false,std::sync::atomic::Ordering::Release);
                         failure = Some(reason);
@@ -254,7 +258,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                 Err(error) => {
                     let reason=error.to_string();
                     if let Some(mut active)=runs.release_active() { let result=failure_result(&active,&reason,now()); settle_pending_run(&mut active,result); }
-                    let queued=runs.drain().into_iter().map(|run| run.input).collect::<Vec<_>>();
+                    let queued=runs.drain().into_iter().map(|run| run.input.clone()).collect::<Vec<_>>();
                     pending.lock().expect("pending kernel runs").extend(queued);
                     alive.store(false,std::sync::atomic::Ordering::Release);
                     failure=Some(reason);runs.clear_tool_calls();

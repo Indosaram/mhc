@@ -31,21 +31,6 @@ pub fn format_countdown_label(remaining_ms: f64) -> String {
     if seconds >= 300 { format!("{}m", seconds.div_ceil(60)) } else { format!("{:02}:{:02}", seconds / 60, seconds % 60) }
 }
 
-#[cfg(test)]
-mod parity_tests {
-    use super::*;
-    #[test]
-    fn stale_non_finite_indices_and_local_resolution_are_handled() {
-        let request = QuestionRequest { request_id: "r".into(), questions: vec![Question { id: "q".into(), header: "h".into(), question: "q?".into(), options: vec![], multi_select: false }], wait_for_answer: false, timeout_ms: 0 };
-        let mut state = AskUserQuestionState::new(request);
-        state.jump_to_question_index(f64::INFINITY);
-        assert_eq!(state.active_index, 0);
-        state.jump_to_question(usize::MAX);
-        assert_eq!(state.active_index, 0);
-        assert_eq!(state.build_response(QuestionStatus::Answered, None).resolved_by.as_deref(), Some("local_ui"));
-        assert_eq!(state.build_response(QuestionStatus::Cancelled, None).resolved_by, None);
-    }
-}
 pub struct AskUserQuestionState {
     pub request: QuestionRequest, pub active_index: usize, pub highlight_index: usize, pub focus: QuestionFocus, pub submit_row_index: usize, pub notice: Option<String>, pub comment: Option<String>, dismiss_pending: bool, selected: BTreeMap<String, Vec<String>>, texts: BTreeMap<String, String>,
 }
@@ -90,4 +75,20 @@ if let Some(t)=&a.text && !t.trim().is_empty() { self.texts.insert(q.id.clone(),
     pub fn submit_outcome(&self,force_partial:bool) -> Option<QuestionStatus> { if self.comment.as_ref().is_some_and(|s| !s.trim().is_empty()) { Some(QuestionStatus::CommentSubmitted) } else if self.unanswered().is_empty() || self.answered_count()>0 || force_partial { Some(QuestionStatus::Answered) } else { None } }
     pub fn build_response(&self,status:QuestionStatus,auto_resolved_after_ms:Option<u64>) -> QuestionResponse { QuestionResponse { status, answers:self.answers(), resolved_by:matches!(status, QuestionStatus::Answered | QuestionStatus::CommentSubmitted).then(|| "local_ui".into()), comment:self.comment.clone().filter(|s| !s.trim().is_empty()), unanswered:self.unanswered(), auto_resolved_after_ms } }
     pub fn refresh_draft(&self) -> QuestionDraft { QuestionDraft { answers:self.answers(), comment:self.comment.clone().filter(|s| !s.trim().is_empty()) } }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn stale_non_finite_indices_and_local_resolution_are_handled() {
+        let request = QuestionRequest { request_id: "r".into(), questions: vec![Question { id: "q".into(), header: "h".into(), question: "q?".into(), options: vec![], multi_select: false }], wait_for_answer: false, timeout_ms: 0 };
+        let mut state = AskUserQuestionState::new(request);
+        state.jump_to_question_index(f64::INFINITY);
+        assert_eq!(state.active_index, 0);
+        state.jump_to_question(usize::MAX);
+        assert_eq!(state.active_index, 0);
+        assert_eq!(state.build_response(QuestionStatus::Answered, None).resolved_by.as_deref(), Some("local_ui"));
+        assert_eq!(state.build_response(QuestionStatus::Cancelled, None).resolved_by, None);
+    }
 }

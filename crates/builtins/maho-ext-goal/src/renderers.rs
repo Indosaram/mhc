@@ -10,7 +10,7 @@ pub fn native_goal_tool_renderers(tool_name:&'static str)->maho_ext_api::ToolRen
         })),
         render_result:Some(Arc::new(|result,options,theme,_| {
             let content=result.content.iter().filter_map(|content|match content { maho_ai::types::ContentBlock::Text(text)=>Some(maho_ext_api::ToolContent::text(&text.text)),_=>None }).collect();
-            let result=maho_ext_api::ToolResult { content,details:Some(result.details.clone()) };
+            let result=maho_ext_api::ToolResult { content,details:Some(result.details.clone()), structured_content: None };
             let text=match render_goal_tool_result(&result,options.expanded,|role,text|format!("{}{text}\x1b[39m",theme.colors.get(role).map_or("\x1b[39m",String::as_str)),|text|format!("\x1b[1m{text}\x1b[22m")) { Ok(text)=>text,Err(error)=>std::panic::panic_any(error) };
             Box::new(Text::with_padding(text,0,0))
         })),

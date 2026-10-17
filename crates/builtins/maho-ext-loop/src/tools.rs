@@ -24,7 +24,7 @@ pub async fn execute_schedule_wakeup(scheduler:&dyn ScheduleWakeupSchedulerPort,
     if stop {
         let loop_id=dynamic_id(scheduler)?; let ignored=["delaySeconds","prompt"].into_iter().filter(|field|params.get(*field).is_some()).collect::<Vec<_>>();
         let outcome=scheduler.stop_dynamic_loop(StopDynamicLoopRequest { loop_id:loop_id.clone(),reason:reason.into() }).await.map_err(|error|ToolError::Message(error.message))?;
-        return Ok(ToolResult { content:vec![maho_ext_api::ToolContent::text(format!("Stopped dynamic loop {loop_id}."))],details:Some(json!({"ok":true,"action":"stopped","loopId":loop_id,"terminalReason":"stopped","reason":reason,"endedAt":outcome.ended_at,"ignoredFields":ignored})) });
+        return Ok(ToolResult { content:vec![maho_ext_api::ToolContent::text(format!("Stopped dynamic loop {loop_id}."))],details:Some(json!({"ok":true,"action":"stopped","loopId":loop_id,"terminalReason":"stopped","reason":reason,"endedAt":outcome.ended_at,"ignoredFields":ignored})), structured_content: None });
     }
     let requested=params.get("delaySeconds").ok_or_else(||ToolError::Message("delaySeconds is required unless stop is true.".into()))?.as_f64().filter(|delay|delay.is_finite() && delay.fract()==0.0).ok_or_else(||ToolError::Message("delaySeconds must be a finite integer number of seconds.".into()))?;
     let prompt=params["prompt"].as_str().filter(|prompt|!js_trim(prompt).is_empty()).ok_or_else(||ToolError::Message("prompt is required and must be non-empty unless stop is true.".into()))?;
@@ -33,7 +33,7 @@ pub async fn execute_schedule_wakeup(scheduler:&dyn ScheduleWakeupSchedulerPort,
     let requested_label=maho_ai::utils::js::number_to_string(requested);
     let text=if clamped { format!("Scheduled loop {loop_id} in {delay}s; requested {requested_label}s was clamped to the supported 60-3600s range.") } else { format!("Scheduled loop {loop_id} in {delay}s.") };
     let mut details=json!({"ok":true,"action":"scheduled","loopId":loop_id,"wakeupId":outcome.wakeup_id,"requestedDelaySeconds":requested,"delaySeconds":delay,"clamped":clamped,"dueAt":outcome.due_at,"reason":reason,"prompt":prompt,"noop":noop,"noopStreak":outcome.noop_streak}); if let Some(id)=outcome.replaced_wakeup_id { details["replacedWakeupId"]=id.into(); }
-    Ok(ToolResult { content:vec![maho_ext_api::ToolContent::text(text)],details:Some(details) })
+    Ok(ToolResult { content:vec![maho_ext_api::ToolContent::text(text)],details:Some(details), structured_content: None })
 }
 #[cfg(test)]
 #[path="tools_parity_tests.rs"]

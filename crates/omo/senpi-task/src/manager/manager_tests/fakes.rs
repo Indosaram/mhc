@@ -528,7 +528,7 @@ pub(crate) fn make_lifecycle_manager_with_cap(cap: usize) -> Harness {
         Ok(AdmissionResult::Rejected(error)) => SpawnAdmission::Rejected {
             message: error.to_string(),
             max_children: Some(MaxChildren::Number(error.max_children)),
-            residents: Some(error.residents.iter().map(|resident| crate::manager::types::ResidentSummary { task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.clone() }).collect()),
+            residents: Some(error.residents.iter().map(|resident| crate::manager::types::ResidentSummary { task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.as_str().to_string() }).collect()),
         },
         Err(error) => SpawnAdmission::Rejected { message: error.to_string(), max_children: None, residents: None },
     }));
@@ -780,7 +780,7 @@ pub(crate) fn make_lifecycle_manager(
                 message: error.to_string(),
                 max_children: Some(MaxChildren::Number(error.max_children)),
                 residents: Some(error.residents.iter().map(|resident| crate::manager::types::ResidentSummary {
-                    task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.clone(),
+                    task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.as_str().to_string(),
                 }).collect()),
             },
             Err(error) => SpawnAdmission::Rejected {

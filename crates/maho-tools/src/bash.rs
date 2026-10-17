@@ -31,7 +31,6 @@ async fn sleep_until_some(deadline: Option<tokio::time::Instant>) {
 impl BashOperations for LocalShellOperations {
     fn exec<'a>(&'a self, command: &'a str, cwd: &'a Path, options: BashExecOptions) -> ToolFuture<'a, BashExit> {
         Box::pin(async move {
-            let started_at = Instant::now();
             use crate::shell::{kill_process_tree, note_detached_child_exited, prune_tracked_detached_children, track_detached_child_pid};
             let timeout = resolve_timeout_ms(options.timeout)?;
             if options.signal.is_aborted() { return Err(ToolError::Message("aborted".into())); }
@@ -150,35 +149,6 @@ pub fn resolve_spawn_context(command: String, cwd: PathBuf, hook: Option<&BashSp
     }
     let context = BashSpawnContext { command, cwd, env }; if let Some(hook) = hook { hook(context) } else { Ok(context) }
 }
-#[cfg(test)]
-mod browser_env_tests {
-    use super::*;
-    #[test]
-    fn browser_engine_is_removed_from_inherited_shell_environment() {
-        let shell_env: ShellEnvProvider = Arc::new(|| BTreeMap::from([("OMO_BROWSER_ENGINE".into(), "stale".into())]));
-        let resolved = resolve_spawn_context("true".into(), PathBuf::from("."), None, false, None, Some(&shell_env)).expect("resolve shell context");
-        assert!(!resolved.env.contains_key("OMO_BROWSER_ENGINE"));
-    }
-    struct BrowserContext { session: Session }
-    struct Session;
-    impl ToolSessionManager for Session { fn session_id(&self) -> &str { "test" } fn session_file(&self) -> Option<&Path> { None } }
-    impl ToolContext for BrowserContext {
-        fn cwd(&self) -> &Path { Path::new(".") }
-        fn model(&self) -> Option<&maho_ai::model::Model> { None }
-        fn thinking_level(&self) -> Option<maho_ai::types::ThinkingLevel> { None }
-        fn session_manager(&self) -> &dyn ToolSessionManager { &self.session }
-        fn goal_store_file(&self) -> Option<&Path> { None }
-        fn browser_engine(&self) -> Option<&str> { Some("chromium") }
-    }
-    #[test]
-    fn browser_engine_is_exported_only_when_session_environment_is_exposed() {
-        let context = BrowserContext { session: Session };
-        let hidden = resolve_spawn_context("true".into(), PathBuf::from("."), None, false, Some(&context), None).expect("resolve hidden context");
-        let exposed = resolve_spawn_context("true".into(), PathBuf::from("."), None, true, Some(&context), None).expect("resolve exposed context");
-        assert!(!hidden.env.contains_key("OMO_BROWSER_ENGINE"));
-        assert_eq!(exposed.env.get("OMO_BROWSER_ENGINE").map(String::as_str), Some("chromium"));
-    }
-}
 fn format_output(snapshot: &OutputSnapshot, last_line_bytes: usize, empty: &str) -> (ToolResult, String) {
     let truncation = &snapshot.truncation;
     let text = if snapshot.content.is_empty() { empty } else { &snapshot.content };
@@ -191,7 +161,7 @@ fn format_output(snapshot: &OutputSnapshot, last_line_bytes: usize, empty: &str)
     } else { None };
     let mut content = vec![ToolContent::text(format!("{text}{}", if notice.is_some() { "\n" } else { "" }))];
     let combined = if let Some(notice) = notice { content.push(model_only_text(&notice)); format!("{text}\n\n{notice}") } else { text.into() };
-    (ToolResult { content, details: truncation.truncated.then(|| json!({"truncation":truncation,"fullOutputPath":snapshot.full_output_path})) }, combined)
+    (ToolResult { content, details: truncation.truncated.then(|| json!({"truncation":truncation,"fullOutputPath":snapshot.full_output_path})), structured_content: None }, combined)
 }
 pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, options: BashToolOptions) -> ToolDefinition {
     let expose_environment = options.expose_session_environment.unwrap_or(true);
@@ -205,7 +175,7 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
             let command = match options.command_prefix.as_deref().filter(|p| !p.is_empty()) { Some(prefix) => format!("{prefix}\n{}", input.command), None => input.command };
             let context = resolve_spawn_context(command, call.context.map_or(cwd.as_path(), ToolContext::cwd).to_path_buf(), options.spawn_hook.as_ref(), options.expose_session_environment.unwrap_or(true), call.context, options.shell_env.as_ref())?;
             let output = Arc::new(Mutex::new(OutputAccumulator::new(OutputAccumulatorOptions { temp_file_prefix: config.temp_file_prefix, ..Default::default() })));
-            if let Some(update) = &call.on_update { update(ToolResult { content: Vec::new(), details: None })?; }
+            if let Some(update) = &call.on_update { update(ToolResult { content: Vec::new(), details: None, structured_content: None })?; }
             let captured = Arc::clone(&output);
             let changed = Arc::new(tokio::sync::Notify::new());
             let data_changed = Arc::clone(&changed);
@@ -223,7 +193,7 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
             let emit_update = || -> Result<(), ToolError> {
                 if let Some(update) = &call.on_update {
                     let snapshot = output.lock().map_err(|_| ToolError::Message("Output accumulator lock poisoned".into()))?.snapshot(true)?;
-                    update(ToolResult { content: vec![ToolContent::text(snapshot.content)], details: Some(json!({"truncation":snapshot.truncation.truncated.then_some(snapshot.truncation),"fullOutputPath":snapshot.full_output_path})) })?;
+                    update(ToolResult { content: vec![ToolContent::text(snapshot.content)], details: Some(json!({"truncation":snapshot.truncation.truncated.then_some(snapshot.truncation),"fullOutputPath":snapshot.full_output_path})), structured_content: None })?;
                 }
                 Ok(())
             };
@@ -243,7 +213,7 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
             output.finish()?; let snapshot = output.snapshot(true)?;
             if update_error.is_none()
                 && let Some(update) = &call.on_update
-                && let Err(error) = update(ToolResult { content: vec![ToolContent::text(snapshot.content.clone())], details: Some(json!({"truncation":snapshot.truncation.truncated.then_some(&snapshot.truncation),"fullOutputPath":snapshot.full_output_path})) }) { update_error = Some(error); }
+                && let Err(error) = update(ToolResult { content: vec![ToolContent::text(snapshot.content.clone())], details: Some(json!({"truncation":snapshot.truncation.truncated.then_some(&snapshot.truncation),"fullOutputPath":snapshot.full_output_path})), structured_content: None }) { update_error = Some(error); }
             output.close_temp_file()?;
             if let Some(error) = update_error { output.remove_temp_file()?; return Err(error); }
             match execution {
@@ -274,4 +244,34 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
 }
 pub fn create_bash_tool_definition(cwd: PathBuf, options: BashToolOptions) -> ToolDefinition {
     create_shell_tool_definition(cwd, ShellToolConfig { name: "bash".into(), shell_name: "bash".into(), prompt_snippet: "Execute bash commands (ls, rg, find, etc.)".into(), temp_file_prefix: "pi-bash".into() }, options)
+}
+
+#[cfg(test)]
+mod browser_env_tests {
+    use super::*;
+    #[test]
+    fn browser_engine_is_removed_from_inherited_shell_environment() {
+        let shell_env: ShellEnvProvider = Arc::new(|| BTreeMap::from([("OMO_BROWSER_ENGINE".into(), "stale".into())]));
+        let resolved = resolve_spawn_context("true".into(), PathBuf::from("."), None, false, None, Some(&shell_env)).expect("resolve shell context");
+        assert!(!resolved.env.contains_key("OMO_BROWSER_ENGINE"));
+    }
+    struct BrowserContext { session: Session }
+    struct Session;
+    impl ToolSessionManager for Session { fn session_id(&self) -> &str { "test" } fn session_file(&self) -> Option<&Path> { None } }
+    impl ToolContext for BrowserContext {
+        fn cwd(&self) -> &Path { Path::new(".") }
+        fn model(&self) -> Option<&maho_ai::model::Model> { None }
+        fn thinking_level(&self) -> Option<maho_ai::types::ThinkingLevel> { None }
+        fn session_manager(&self) -> &dyn ToolSessionManager { &self.session }
+        fn goal_store_file(&self) -> Option<&Path> { None }
+        fn browser_engine(&self) -> Option<&str> { Some("chromium") }
+    }
+    #[test]
+    fn browser_engine_is_exported_only_when_session_environment_is_exposed() {
+        let context = BrowserContext { session: Session };
+        let hidden = resolve_spawn_context("true".into(), PathBuf::from("."), None, false, Some(&context), None).expect("resolve hidden context");
+        let exposed = resolve_spawn_context("true".into(), PathBuf::from("."), None, true, Some(&context), None).expect("resolve exposed context");
+        assert!(!hidden.env.contains_key("OMO_BROWSER_ENGINE"));
+        assert_eq!(exposed.env.get("OMO_BROWSER_ENGINE").map(String::as_str), Some("chromium"));
+    }
 }

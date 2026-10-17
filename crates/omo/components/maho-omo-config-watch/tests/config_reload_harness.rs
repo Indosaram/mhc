@@ -103,7 +103,7 @@ async fn registry_validate_callback_rejects_then_repairs_the_reload() -> Result<
     let mut api = api();
     component.register(&mut api);
     let registration = published(&api);
-    let changed = [config.clone()];
+    let changed = vec![config.clone()];
     std::fs::write(&config, r#"{"task":{"default_concurrency":"three"}}"#)?;
     let ConfigWatchValidation::Rejected { errors } = (registration.validate)(changed.clone()).await.expect("validator") else {
         panic!("an invalid config must be rejected through the published callable");

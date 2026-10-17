@@ -42,7 +42,7 @@ pub fn parse_catalog(payload: &Value) -> Vec<ProviderModelConfig> {
     }).collect()
 }
 pub fn persisted(models: &[ProviderModelConfig]) -> Vec<Model> {
-    models.iter().map(|model| Model { id: model.id.clone(), name: model.name.clone(), api: "anthropic-messages".into(), provider: "glm-zcode".into(), base_url: resolve_base_url(), reasoning: model.reasoning, thinking_level_map: model.thinking_level_map.clone(), input: model.input.clone(), cost: model.cost.clone(), context_window: model.context_window, max_tokens: model.max_tokens, compat: model.compat.as_ref().map(anthropic_compat), headers: None, upstream_model_id: None, sampling_params: None, cache_retention: None, service_tier: None, recover_text_tool_calls: None }).collect()
+    models.iter().map(|model| Model { id: model.id.clone(), name: model.name.clone(), api: "anthropic-messages".into(), provider: "glm-zcode".into(), base_url: resolve_base_url(), reasoning: model.reasoning, thinking_level_map: model.thinking_level_map.clone(), input: model.input.clone(), cost: model.cost.clone(), context_window: model.context_window, max_tokens: model.max_tokens, compat: model.compat.as_ref().map(anthropic_compat), headers: None, upstream_model_id: None, sampling_params: None, cache_retention: None, service_tier: None, recover_text_tool_calls: None, default_thinking_level: None, input_limits: None }).collect()
 }
 pub fn stored_to_config(stored: Option<&ModelsStoreEntry>) -> Vec<ProviderModelConfig> {
     stored.into_iter().flat_map(|stored| &stored.models).filter(|model| !model.id.is_empty() && !model.name.is_empty() && model.context_window > 0 && model.max_tokens > 0 && [model.cost.input,model.cost.output,model.cost.cache_read,model.cost.cache_write].iter().all(|value| value.is_finite())).map(|model| {

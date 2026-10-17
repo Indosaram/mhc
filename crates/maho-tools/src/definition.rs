@@ -97,16 +97,13 @@ pub enum ToolContent {
 impl ToolContent {
     pub fn text(text: impl Into<String>) -> Self { Self::Text { text: text.into(), audience: None } }
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub content: Vec<ToolContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub structured_content: Option<Value>,
-}
-impl Default for ToolResult {
-    fn default() -> Self { Self { content: Vec::new(), details: None, structured_content: None } }
 }
 impl ToolResult {
     pub fn text(text: impl Into<String>) -> Self { Self { content: vec![ToolContent::text(text)], details: None, structured_content: None } }

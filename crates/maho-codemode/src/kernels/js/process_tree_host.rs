@@ -72,7 +72,8 @@ async fn bounded_process_output(command: &mut tokio::process::Command, max_bytes
     let Ok(mut child)=command.stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn() else {return String::new();};
     let Some(stdout)=child.stdout.take() else {return String::new();};
     let mut output=Vec::new();
-    let read=AsyncReadExt::take(stdout,max_bytes+1).read_to_end(&mut output);
+    let mut limited=AsyncReadExt::take(stdout,max_bytes+1);
+    let read=limited.read_to_end(&mut output);
     if tokio::time::timeout(Duration::from_secs(5),read).await.is_err() {let _=child.start_kill();return String::new();}
     if output.len() as u64>max_bytes {
         output.truncate(max_bytes as usize);

@@ -134,7 +134,7 @@ fn native_slots_preserve_each_half_and_isolate_interleaved_tool_calls() {
     let second = renderers.render_call(&theme(), &context).expect("second");
     assert_eq!(second.borrow_mut().render(80), ["call:second:1:None:80"]);
     context.tool_call_id = "first";
-    let result = ToolResult { content: vec![ToolContent::text("done")], details: Some(serde_json::json!({"key":1})) };
+    let result = ToolResult { content: vec![ToolContent::text("done")], details: Some(serde_json::json!({"key":1})), structured_content: None };
     let result_child = renderers.render_result(&result, ToolRenderResultOptions { expanded: true, is_partial: true }, &theme(), &context).expect("result");
     assert_eq!(result_child.borrow_mut().render(80), ["result:first:1:true:true:None:80"]);
     let next_call = renderers.render_call(&theme(), &context).expect("next call");
@@ -170,7 +170,7 @@ fn ask_card_fallback_reuses_the_ask_user_renderers() {
     let line = call.borrow_mut().render(80).join("\n");
     assert!(line.contains("[Pick one] [Then this]"), "headers: {line}");
     assert!(line.contains("wait for answer"), "wait mode: {line}");
-    let result = ToolResult { content: vec![ToolContent::text("The user responded")], details: Some(serde_json::json!({"status": "answered", "answers": {"a": "x"}, "unanswered": ["b"]})) };
+    let result = ToolResult { content: vec![ToolContent::text("The user responded")], details: Some(serde_json::json!({"status": "answered", "answers": {"a": "x"}, "unanswered": ["b"]})), structured_content: None };
     let result_child = renderers.borrow_mut().render_result(&result, ToolRenderResultOptions::default(), &theme(), &context).expect("result half");
     let line = result_child.borrow_mut().render(80).join("\n");
     assert!(line.contains("answered; 1 answered; 1 unanswered"), "summary: {line}");

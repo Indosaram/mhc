@@ -14,7 +14,7 @@ pub async fn config_with_native_routes(mut config:super::types::WebsearchConfig,
     let Some(registry)=registry else{return Ok(config)};
     let mut models=registry.get_available();if let Some(model)=model{models.insert(0,model.clone());}
     let available=models.iter().map(model_info).collect::<Vec<_>>();let active=model.map(model_info);
-    let auth=|info:NativeModelInfo|{let registry=registry.clone();let model=models.iter().find(|model|model_info(model)==info).cloned();async move {match model {Some(model)=>registry.get_api_key_and_headers(&model).await.ok().and_then(|auth|auth.auth.api_key.map(|api_key|NativeAuth{api_key,headers:Some(auth.auth.headers),base_url:auth.auth.base_url})),None=>None}}};
+    let auth=|info:NativeModelInfo|{let registry=registry.clone();let model=models.iter().find(|model|model_info(model)==info).cloned();async move {match model {Some(model)=>registry.get_api_key_and_headers(&model).await.ok().and_then(|auth|auth.auth.api_key.map(|api_key|NativeAuth{api_key,headers:auth.auth.headers.map(|headers|headers.into_iter().filter_map(|(name,value)|value.map(|value|(name,value))).collect()),base_url:auth.auth.base_url})),None=>None}}};
     let mut entries=build_native_entries(active.as_ref(),Some(&available),Some(&auth),signal).await?;
     if !entries.is_empty(){entries.extend(config.providers);config.providers=entries;}
     Ok(config)
@@ -154,7 +154,7 @@ mod tests {
     }
     #[tokio::test] async fn upstream_dotted_private_routes_rejected_before_auth() {
         let mut first=model("openai","gpt-5.5");first.base_url="https://localhost./v1".into();let mut second=model("openai","gpt-4.1");second.base_url="https://127.1../v1".into();
-        let auth=|_:NativeModelInfo|async -> Option<NativeAuth> { panic!("private routes cannot resolve auth") };
+        let auth=|_:NativeModelInfo|->std::future::Ready<Option<NativeAuth>> { panic!("private routes cannot resolve auth") };
         assert!(build_native_entries(None,Some(&[first,second]),Some(&auth),None).await.unwrap().is_empty());
     }
     #[tokio::test] async fn upstream_dotted_public_aliases_preserve_first_endpoint() {
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(entry.config.id.as_deref(),Some("deepseek/native"));assert_eq!(entry.config.model.as_deref(),Some("deepseek-v4-flash"));assert_eq!(entry.priority,Some(-1.));
         assert_eq!(entry.config.base_url.as_deref(),Some("https://api.example.test/anthropic/v1/messages"));
         let mut private=model("openai","gpt-5");private.base_url="https://localhost./v1".into();
-        let no_auth=|_:NativeModelInfo|async -> Option<NativeAuth> { panic!("private URL must not resolve auth") };
+        let no_auth=|_:NativeModelInfo|->std::future::Ready<Option<NativeAuth>> { panic!("private URL must not resolve auth") };
         assert!(build_native_entry(Some(&private),Some(&no_auth),None,None).await.unwrap().is_none());
     }
     #[tokio::test] async fn native_auth_headers_and_credential_host_are_bound_to_route() {

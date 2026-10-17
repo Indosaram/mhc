@@ -35,7 +35,7 @@ impl McpWireStatusRegistry {
     pub fn thread_ids(&self) -> Vec<String> {self.threads.keys().cloned().collect()}
 }
 pub fn create_process_mcp_wire_status_adapter(agent_dir: &Path,cwd: &Path,env: &BTreeMap<String,String>) -> Result<McpWireStatusAdapter,maho_ext_mcp::config::McpConfigValidationError> {
-    let config = load_mcp_config(LoadMcpConfigOptions {agent_dir,cwd,env,project_trusted:false})?;
+    let config = load_mcp_config(LoadMcpConfigOptions {agent_dir,cwd,env,project_trusted:false,home_dir:None,claude_config_dir:None})?;
     let servers = config.servers.into_values().filter(|server|server.source == McpServerSource::Global).map(|server| {
         let auth_status = match server.config.as_ref().map(resolve_auth_mode).unwrap_or(ServerAuthMode::None) {ServerAuthMode::None=>McpWireAuthStatus::Unsupported,ServerAuthMode::Bearer=>McpWireAuthStatus::BearerToken,ServerAuthMode::OAuth=>McpWireAuthStatus::NotLoggedIn};
         McpWireStatusServer {name:server.name,server_info:None,tools:Vec::new(),resources:Vec::new(),resource_templates:Vec::new(),auth_status,status:None}

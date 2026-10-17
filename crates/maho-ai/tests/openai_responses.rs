@@ -58,6 +58,8 @@ fn model(api: &str, provider: &str, id: &str) -> Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
+        default_thinking_level: None,
+        input_limits: None,
     }
 }
 
@@ -1171,6 +1173,7 @@ fn azure_tools_honor_supports_strict_mode_false() {
         name: "preferred".into(),
         description: "Preferred constrained tool".into(),
         parameters: json!({ "type": "object", "properties": { "value": { "type": "string" } } }),
+        output_schema: None,
         freeform: None,
         constrained_sampling: Some(maho_ai::types::ConstrainedSampling::Config(
             maho_ai::types::ConstrainedSamplingConfig::JsonSchema {
@@ -1488,6 +1491,7 @@ async fn azure_forwards_a_provider_specific_tool_choice_with_its_tools() {
         name: "read".into(),
         description: "Read a file".into(),
         parameters: json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+        output_schema: None,
         freeform: None,
         constrained_sampling: None,
     }]);
@@ -1512,6 +1516,7 @@ async fn azure_forwards_a_provider_neutral_tool_choice_from_simple_options() {
         name: "read".into(),
         description: "Read a file".into(),
         parameters: json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+        output_schema: None,
         freeform: None,
         constrained_sampling: None,
     }]);
@@ -1533,6 +1538,7 @@ fn responses_tool_conversion_covers_function_freeform_and_grammar_tools() {
         name: "read".into(),
         description: "Read a file".into(),
         parameters: json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+        output_schema: None,
         freeform: None,
         constrained_sampling: None,
     };
@@ -1540,6 +1546,7 @@ fn responses_tool_conversion_covers_function_freeform_and_grammar_tools() {
         name: "patch".into(),
         description: "Apply a patch".into(),
         parameters: json!({ "type": "object" }),
+        output_schema: None,
         freeform: Some(maho_ai::types::FreeformToolFormat {
             kind: "grammar".into(),
             syntax: "lark".into(),
@@ -1551,6 +1558,7 @@ fn responses_tool_conversion_covers_function_freeform_and_grammar_tools() {
         name: "query".into(),
         description: "Query".into(),
         parameters: json!({ "type": "object", "properties": { "q": { "type": "string" } }, "required": ["q"] }),
+        output_schema: None,
         freeform: None,
         constrained_sampling: Some(maho_ai::types::ConstrainedSampling::Config(
             maho_ai::types::ConstrainedSamplingConfig::Grammar {
@@ -2152,6 +2160,7 @@ fn ping_tool() -> Tool {
         name: "ping".into(),
         description: "Ping".into(),
         parameters: json!({ "type": "object", "properties": { "value": { "type": "string" } }, "required": ["value"] }),
+        output_schema: None,
         freeform: None,
         constrained_sampling: None,
     }
@@ -2228,6 +2237,7 @@ async fn compat_sets_strict_mode_explicitly_for_cloudflare_responses_tools() {
                 "properties": { "path": { "type": "string" }, "offset": { "type": "number" } },
                 "required": ["path"]
             }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         },
@@ -2235,6 +2245,7 @@ async fn compat_sets_strict_mode_explicitly_for_cloudflare_responses_tools() {
             name: "constrained".into(),
             description: "A constrained tool".into(),
             parameters: json!({ "type": "object", "properties": { "value": { "type": "string" } }, "required": ["value"] }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: Some(ConstrainedSampling::Config(ConstrainedSamplingConfig::JsonSchema {
                 strict: JsonSchemaStrictness::Prefer,
@@ -2941,6 +2952,7 @@ fn apply_patch_tool() -> Tool {
             "properties": { "input": { "type": "string" } },
             "required": ["input"]
         }),
+        output_schema: None,
         freeform: Some(FreeformToolFormat {
             kind: "grammar".into(),
             syntax: "lark".into(),

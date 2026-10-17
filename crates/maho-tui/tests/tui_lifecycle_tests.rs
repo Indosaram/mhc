@@ -132,11 +132,14 @@ fn osc11_reply_settles_the_background_query_and_is_consumed() {
     let mut base = TuiBase::new();
     let mut terminal = RecordingTerminal::default();
     let seen = focused_recorder(&mut base);
-    let ticket = base.query_terminal_background_color(&mut terminal, 100, 0);
-    assert_eq!(terminal.out, "\x1b]11;?\x07");
-    assert_eq!(ticket.result(), None);
+    let ticket = base.query_terminal_colors(&mut terminal, 100, 0);
+    assert!(terminal.out.starts_with("\x1b]10;?\x07\x1b]11;?\x07"));
+    assert!(terminal.out.ends_with("\x1b[c"));
+    assert!(ticket.result().is_none());
     base.handle_terminal_input("\x1b]11;rgb:ffff/ffff/ffff\x07", false);
-    assert_eq!(ticket.result(), Some(Some(RgbColor { r: 255, g: 255, b: 255 })));
+    assert!(ticket.result().is_none());
+    base.handle_terminal_input("\x1b[?62;22c", false);
+    assert_eq!(ticket.result().and_then(|colors| colors.background), Some(RgbColor { r: 255, g: 255, b: 255 }));
     assert!(seen.borrow().is_empty());
 }
 

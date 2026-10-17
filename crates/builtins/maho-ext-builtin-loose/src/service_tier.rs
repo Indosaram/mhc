@@ -20,7 +20,7 @@ pub fn add_service_tier_to_payload(api:Option<&str>,mut payload:Value,tier:Optio
     payload
 }
 pub fn add_standard_service_tier_to_payload(api:Option<&str>,payload:Value,tier:Option<ServiceTier>)->Value{
-    add_service_tier_to_payload(api,payload,tier.map(|tier|match tier{ServiceTier::Auto=>RequestedServiceTier::Auto,ServiceTier::Flex=>RequestedServiceTier::Flex,ServiceTier::Priority=>RequestedServiceTier::Priority}))
+    add_service_tier_to_payload(api,payload,tier.map(|tier|match tier{ServiceTier::Auto=>RequestedServiceTier::Auto,ServiceTier::Flex=>RequestedServiceTier::Flex,ServiceTier::Priority=>RequestedServiceTier::Priority, ServiceTier::Ultrafast=>RequestedServiceTier::Ultrafast}))
 }
 
 #[cfg(test)]
@@ -117,7 +117,7 @@ impl Extension for ServiceTierExtension{
                 let model=ctx.model.as_ref();let memory=model.map(|model|memory_model(ctx,host.as_ref(),model));let catalog=model.and_then(|model|host.catalog_tier(model));
                 let state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let api=model.map(|model|model.api.as_str());
-                let effective=effective_service_tier(api,state.fast,ctx.service_tier,state.global,state.memory,memory.as_ref().map(key)==state.key,catalog==Some(ServiceTier::Priority)).map(|tier|match tier{ServiceTier::Auto=>RequestedServiceTier::Auto,ServiceTier::Flex=>RequestedServiceTier::Flex,ServiceTier::Priority=>RequestedServiceTier::Priority});
+                let effective=effective_service_tier(api,state.fast,ctx.service_tier,state.global,state.memory,memory.as_ref().map(key)==state.key,catalog==Some(ServiceTier::Priority)).map(|tier|match tier{ServiceTier::Auto=>RequestedServiceTier::Auto,ServiceTier::Flex=>RequestedServiceTier::Flex,ServiceTier::Priority=>RequestedServiceTier::Priority, ServiceTier::Ultrafast=>RequestedServiceTier::Ultrafast});
                 let tier=service_tier_for_provider(model.map(|model|model.provider.as_str()),effective);
                 // Same gate as `add_service_tier_to_payload`: skip copying a payload it would leave untouched.
                 if !(supports_service_tier(api)&&tier.is_some()&&payload.as_object().is_some_and(|object|!object.contains_key("service_tier"))){return Ok(EventResult::None);}

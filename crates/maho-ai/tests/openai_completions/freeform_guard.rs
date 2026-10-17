@@ -13,6 +13,7 @@ async fn rejects_freeform_tools_before_serializing_chat_completions_function_too
             "properties": { "input": { "type": "string" } },
             "required": ["input"],
         }),
+        output_schema: None,
         freeform: Some(maho_ai::types::FreeformToolFormat {
             kind: "grammar".to_owned(),
             syntax: "lark".to_owned(),

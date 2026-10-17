@@ -26,6 +26,9 @@ impl WorkerOptions {
     }
 }
 
+/// Startup inputs for [`JavaScriptKernel::start_with_memory`].
+pub struct JavaScriptKernelStart { pub parallel_pool_width:u64, pub session_env:Option<SessionEnvironment>, pub connection:BridgeConnectionConfig, pub names:KernelToolNames, pub shutdown:maho_ai::utils::abort::AbortController, pub memory:crate::bridge::protocol::KernelMemoryThresholds }
+
 pub struct JavaScriptKernel {
     commands: mpsc::UnboundedSender<Command>,
     tools: Arc<super::kernel_tools_host::KernelToolHostPump>,
@@ -48,9 +51,10 @@ impl JavaScriptKernel {
         Self::start_with_signal(cwd,session_id,parallel_pool_width,session_env,connection,names,maho_ai::utils::abort::AbortController::new()).await
     }
     pub async fn start_with_signal(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig,names:KernelToolNames,shutdown:maho_ai::utils::abort::AbortController)->Result<Self,ProcessError> {
-        Self::start_with_memory(cwd,session_id,parallel_pool_width,session_env,connection,names,shutdown,crate::bridge::protocol::KernelMemoryThresholds {gc_watermark_bytes:1_073_741_824,notice_bytes:1_610_612_736,ceiling_bytes:2_147_483_648}).await
+        Self::start_with_memory(cwd,session_id,JavaScriptKernelStart {parallel_pool_width,session_env,connection,names,shutdown,memory:crate::bridge::protocol::KernelMemoryThresholds {gc_watermark_bytes:1_073_741_824,notice_bytes:1_610_612_736,ceiling_bytes:2_147_483_648}}).await
     }
-    pub async fn start_with_memory(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig,names:KernelToolNames,shutdown:maho_ai::utils::abort::AbortController,memory:crate::bridge::protocol::KernelMemoryThresholds)->Result<Self,ProcessError> {
+    pub async fn start_with_memory(cwd:&Path,session_id:&str,start:JavaScriptKernelStart)->Result<Self,ProcessError> {
+        let JavaScriptKernelStart {parallel_pool_width,session_env,connection,names,shutdown,memory}=start;
         let owner_signal=shutdown.signal();
         let startup_owner=owner_signal.clone();
         let shutdown=maho_ai::utils::abort::AbortController::new();
@@ -251,14 +255,14 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                     let _=response.send(result);
                 }
                 Some(Command::Reset(response))=>{
-                    for (_, pending) in pending_memory_queries.drain() { let _ = pending.send(Err("JavaScript worker reset".into())); }
+                    for (_, (pending, _)) in pending_memory_queries.drain() { let _ = pending.send(Err("JavaScript worker reset".into())); }
                     tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JavaScript worker reset",None));
                     runs.settle_all("JS kernel reset");calls.clear_tool_calls();deadline=None;
                     let result=async {slot.retire().await?;let names=(options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(options.startup(&names),&shutdown).await}.await.map_err(|error|error.to_string());
                     let _=response.send(result);
                 }
                 Some(Command::Close(response))=>{
-                    for (_, pending) in pending_memory_queries.drain() { let _ = pending.send(Err("JavaScript worker closed".into())); }
+                    for (_, (pending, _)) in pending_memory_queries.drain() { let _ = pending.send(Err("JavaScript worker closed".into())); }
                     tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JS kernel closed",None));
                     runs.settle_all("JS kernel closed");calls.clear_tool_calls();
                     let _=slot.post_message(&json!({"type":"close"})).await;
@@ -271,12 +275,12 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                 Ok(message)=>{
                     if tools.consume(message.clone()) {continue;}
                     if message["type"]=="memory-query-result" {
-                        if let Some(request_id)=message["requestId"].as_str() {if let Some((response,_))=pending_memory_queries.remove(request_id) {let _=response.send(Ok(message));}}
+                        if let Some(request_id)=message["requestId"].as_str() && let Some((response,_))=pending_memory_queries.remove(request_id) {let _=response.send(Ok(message));}
                         continue;
                     }
                     if route(message,&mut runs,&mut calls) {deadline=None;}
                 }
-                Err(error)=>{for (_, pending) in pending_memory_queries.drain() { let _ = pending.send(Err(error.to_string())); } if let Some(mut run)=runs.release_active() {let result=stopped_result(&run.input.cell_id,&error.to_string());JavaScriptRunQueue::settle(&mut run,result);}calls.clear_tool_calls();deadline=None;if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}}
+                Err(error)=>{for (_, (pending, _)) in pending_memory_queries.drain() { let _ = pending.send(Err(error.to_string())); } if let Some(mut run)=runs.release_active() {let result=stopped_result(&run.input.cell_id,&error.to_string());JavaScriptRunQueue::settle(&mut run,result);}calls.clear_tool_calls();deadline=None;if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}}
             },
             ()=async {match deadline {Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending().await}},if deadline.is_some()=>{
                 let duration=runs.active().and_then(|run|run.input.timeout_ms).unwrap_or(0);

@@ -64,7 +64,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn tool(name: &str, description: &str, parameters: Value) -> Tool {
-        Tool { name: name.into(), description: description.into(), parameters, freeform: None, constrained_sampling: None }
+        Tool { name: name.into(), description: description.into(), parameters, output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn weather_tool() -> Tool {

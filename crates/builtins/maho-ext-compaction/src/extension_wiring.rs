@@ -132,7 +132,7 @@ pub fn summarization_tools(api: &maho_ext_api::ExtensionApi) -> Vec<maho_ai::typ
     let Ok(definitions) = api.get_all_tools() else { return Vec::new(); };
     let Ok(active) = api.get_active_tools() else { return Vec::new(); };
     active.iter().filter_map(|name|definitions.iter().find(|tool|&tool.name == name)).map(|tool|maho_ai::types::Tool {
-        name: tool.name.clone(), description: tool.description.clone(), parameters: tool.parameters.clone(), freeform: None, constrained_sampling: None,
+        name: tool.name.clone(), description: tool.description.clone(), parameters: tool.parameters.clone(), output_schema: None, freeform: None, constrained_sampling: None,
     }).collect()
 }
 
@@ -190,8 +190,8 @@ pub async fn generate_core_route_compaction(
         let mut request_model = model.clone();
         if let Some(id) = auth.upstream_model_id.filter(|id|!id.is_empty()) {request_model.id=id;}
         if let Some(base_url) = auth.auth.base_url.filter(|base_url|!base_url.is_empty()) {request_model.base_url=base_url;}
-        let service_tier = context.service_tier.map(|tier|match tier {maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"})
-            .or_else(||auth.service_tier.map(|tier|match tier {maho_ai::types::ServiceTierPreference::Auto=>"auto",maho_ai::types::ServiceTierPreference::Flex=>"flex",maho_ai::types::ServiceTierPreference::Priority=>"priority"}));
+        let service_tier = context.service_tier.map(|tier|match tier {maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority", maho_ext_api::ServiceTier::Ultrafast=>"ultrafast"})
+            .or_else(||auth.service_tier.map(|tier|match tier {maho_ai::types::ServiceTierPreference::Auto=>"auto",maho_ai::types::ServiceTierPreference::Flex=>"flex",maho_ai::types::ServiceTierPreference::Priority=>"priority", maho_ai::types::ServiceTierPreference::Ultrafast=>"ultrafast"}));
         let key = auth.auth.api_key;
         let remote_deadline = crate::openai_remote_timeout::RemoteCompactionDeadline::new(std::time::Duration::from_millis(crate::openai_remote::openai_remote_compaction_timeout_ms(&model, event.preparation.tokens_before)));
         let branch = crate::speculative::branch_values(context);

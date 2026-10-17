@@ -1,4 +1,6 @@
 use maho_omo_ultrawork::*;
+use maho_omo_ultrawork::generated_directive::{SENPI_ASTRA_ULTRAWORK_DIRECTIVE, SENPI_ULTRAWORK_DIRECTIVE};
+use maho_ext_api::AgentMessage;
 #[test] fn trigger_corpus() { for s in ["ulw","ULW","ultrawork","ULTRAWORK","before ultrawork after","ulw-loop","ulw-plan."] { assert!(is_ultrawork_input(s)); } for s in ["ulwultrawork","하이ulw","ulw_helper.ts"] { assert!(!is_ultrawork_input(s)); } }
 #[test] fn skill_family_not_trigger() { for s in ["","ulw-plan","ulw-loop","ulw-research","nulw-plan","ulw--plan","plan only"] { assert!(!is_ultrawork_input(s)); } }
 #[test] fn keyword_filter_rejects_references_quotes_and_relays() { for s in ["ulw_helper", "mass-ulw-refactor", "ulw-plan.md", ".omo/ulw/", "`ulw`", "> ulw", "[REPORT] ulw\nbody"] { assert!(!is_ultrawork_input(s), "{s}"); } for s in ["ulw", "please ulw", "ulw-loop", "ulw-plan."] { assert!(is_ultrawork_input(s), "{s}"); } }

@@ -244,7 +244,7 @@ mod tests {
     use serde_json::json;
 
     fn tool(parameters: Value) -> Tool {
-        Tool { name: "t".into(), description: "d".into(), parameters, freeform: None, constrained_sampling: None }
+        Tool { name: "t".into(), description: "d".into(), parameters, output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn param(name: &str, raw_value: &str) -> InvokeParameter {

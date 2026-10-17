@@ -17,7 +17,7 @@ fn rejects_disagreeing_run_in_background_values() {
         }]),
         ..Default::default()
     };
-    assert!(matches!(resolve_run_in_background(&params), RunInBackgroundResolution::Conflict(_)));
+    assert!(resolve_run_in_background(&params).is_err());
 }
 
 fn target(

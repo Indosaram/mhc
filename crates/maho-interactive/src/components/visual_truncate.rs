@@ -31,7 +31,7 @@ impl Component for VisualLinePreview {
             let preview = truncate_to_visual_lines_from(&self.text, self.max_visual_lines, width, 0, self.keep);
             let mut lines = preview.visual_lines;
             if preview.skipped_count > 0 {
-                let hint = maho_tui::utils::truncate_to_width(&(self.format_hint)(preview.skipped_count), width, "...");
+                let hint = maho_tui::utils::truncate_to_width(&(self.format_hint)(preview.skipped_count), width, "...", false);
                 match self.keep { VisualLineSelection::Start => lines.push(hint), VisualLineSelection::End => lines.insert(0, hint) }
             }
             self.cached_lines = Some(lines);

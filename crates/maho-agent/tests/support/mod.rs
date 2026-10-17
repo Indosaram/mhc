@@ -64,6 +64,8 @@ pub fn test_model() -> Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
+        default_thinking_level: None,
+        input_limits: None,
     }
 }
 
@@ -123,6 +125,7 @@ pub fn result_tool(name: &str, result: AgentToolResult) -> AgentTool {
             name: name.to_owned(),
             description: name.to_owned(),
             parameters: json!({ "type": "object", "properties": {} }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         },
@@ -148,6 +151,7 @@ pub fn counting_result_tool(name: &str, result: AgentToolResult) -> (AgentTool, 
             name: name.to_owned(),
             description: name.to_owned(),
             parameters: json!({ "type": "object", "properties": {} }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         },
@@ -278,6 +282,7 @@ pub fn recording_tool(name: &str) -> (AgentTool, Arc<Mutex<Vec<Value>>>) {
                 "properties": { "city": { "type": "string" } },
                 "required": ["city"],
             }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         },

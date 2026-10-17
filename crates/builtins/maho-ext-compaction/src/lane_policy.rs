@@ -106,7 +106,7 @@ mod tests {
             }));
         }
         assert_eq!(loads, 2);
-        assert!(policy.owns_compaction("/repo", Some("anthropic-subscription"), None, "manual", |_| {
+        assert!(policy.owns_compaction("/repo", Some("anthropic-subscription"), None, "manual", |_| -> Result<(Option<String>, Option<String>), ()> {
             panic!("manual ownership must not read settings")
         }));
         assert!(!policy.owns_compaction("/repo", Some("anthropic-subscription"), None, "threshold", |_| {

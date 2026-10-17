@@ -214,7 +214,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
     let registered_definitions = definitions.clone();
     let context_accessor = session_accessor.clone();
-    let context_factory: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
+    let context_factory: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move |_, _| {
         let session = context_accessor.get().expect("SDK session initialized before tool execution")()
             .expect("SDK session retained during tool execution");
         Arc::new(extension_context::create(&session))

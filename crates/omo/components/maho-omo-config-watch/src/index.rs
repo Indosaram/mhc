@@ -112,8 +112,7 @@ impl Extension for ConfigWatchComponent {
         let duplicate=events.on_native::<(String,RegisteredConfigWatch)>(maho_ext_api::CONFIG_WATCH_REGISTER_CHANNEL,Arc::new(move|(owner,payload)|{
             let should_stand_down={
                 let mut state=duplicate_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if owner==duplicate_path || payload.id!=OMO_REGISTRATION_ID { false }
-                else if state.emitting_registration.as_ref().is_some_and(|emitting|Arc::ptr_eq(&emitting.validate,&payload.validate)) { false }
+                if *owner==duplicate_path || payload.id!=OMO_REGISTRATION_ID || state.emitting_registration.as_ref().is_some_and(|emitting|Arc::ptr_eq(&emitting.validate,&payload.validate)) { false }
                 else { state.stood_down=true; true }
             };
             if should_stand_down {

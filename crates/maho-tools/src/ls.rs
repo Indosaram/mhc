@@ -70,7 +70,7 @@ pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDe
                 if truncated.truncated { details.insert("truncation".into(), json!(truncated)); notices.push(format!("{} limit reached", format_size(DEFAULT_MAX_BYTES))); }
                 let mut content = vec![ToolContent::text(format!("{}{}", truncated.content, if notices.is_empty() { "" } else { "\n" }))];
                 if !notices.is_empty() { content.push(model_only_text(format!("[{}]", notices.join(". ")))); }
-                Ok(ToolResult { content, details: if details.is_empty() { None } else { Some(details.into()) } })
+                Ok(ToolResult { content, details: if details.is_empty() { None } else { Some(details.into()) }, structured_content: None })
             };
             tokio::select! { result = work => result, () = call.signal.cancelled() => Err(ToolError::Aborted) }
         })

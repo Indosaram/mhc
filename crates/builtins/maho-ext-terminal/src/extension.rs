@@ -54,7 +54,7 @@ fn bind_monitor_events(mut state:tokio::sync::watch::Receiver<Vec<crate::monitor
 }
 fn tool_result(result:TerminalToolResult)->Result<ToolResult,ToolError> {
     if result.is_error==Some(true) {return Err(ToolError::Message(result.content.into_iter().map(|part|part.text).collect::<Vec<_>>().join("\n")));}
-    Ok(ToolResult {content:result.content.into_iter().map(|part|ToolContent::Text {text:part.text,audience:part.audience.map(|_|"model".to_owned())}).collect(),details:result.details.map(Value::Object)})
+    Ok(ToolResult {content:result.content.into_iter().map(|part|ToolContent::Text {text:part.text,audience:part.audience.map(|_|"model".to_owned())}).collect(),details:result.details.map(Value::Object), structured_content: None })
 }
 #[cfg(unix)]
 fn terminal_now_ms()->f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|elapsed|elapsed.as_secs_f64()*1000.0)}

@@ -301,6 +301,7 @@ mod tests {
             name: "get_weather".into(),
             description: "d".into(),
             parameters: serde_json::json!({"type": "object"}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         };

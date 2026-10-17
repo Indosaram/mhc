@@ -58,6 +58,8 @@ fn model_from_json(id: &str, definition: &ModelsJsonModel, config: &ModelsJsonPr
         max_tokens: definition.max_tokens.unwrap_or(16384.0) as u64, sampling_params: definition.sampling_params.clone(), headers: None,
         cache_retention: definition.cache_retention.or(config.cache_retention), upstream_model_id: definition.upstream_model_id.clone(), service_tier: definition.service_tier,
         recover_text_tool_calls: definition.recover_text_tool_calls, compat: merge_compat(config.compat.as_ref(), definition.compat.as_ref()),
+        default_thinking_level: None,
+        input_limits: None,
     })
 }
 
@@ -370,7 +372,7 @@ mod tests {
         let provider = composed(Some(base.clone()));
         let mut model = test_model();
         model.compat = Some(ModelCompat(Map::from_iter([("toolCallFormat".to_owned(), serde_json::json!("hermes"))])));
-        let tool = maho_ai::types::Tool { name: "get_weather".into(), description: "d".into(), parameters: serde_json::json!({"type": "object"}), freeform: None, constrained_sampling: None };
+        let tool = maho_ai::types::Tool { name: "get_weather".into(), description: "d".into(), parameters: serde_json::json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None };
         let context = Context { system_prompt: Some("base".into()), messages: Vec::new(), tools: Some(vec![tool]) };
         let message = tokio::time::timeout(std::time::Duration::from_secs(5), provider.stream_simple(&model, &context, None).result())
             .await.expect("bounded stream").expect("result");

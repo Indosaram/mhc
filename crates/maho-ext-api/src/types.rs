@@ -442,7 +442,7 @@ impl Theme {
 #[derive(Clone, Debug)]
 pub struct ScopedModel { pub model: Model, pub thinking_level: Option<ThinkingLevel>, pub service_tier: Option<ServiceTier> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServiceTier { Auto, Flex, Priority }
+pub enum ServiceTier { Auto, Flex, Priority, Ultrafast }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CredentialAccountSource { Login, Import, Env }
@@ -486,7 +486,7 @@ pub trait ModelRegistry: Send + Sync {
         model.service_tier.map(|tier| match tier {
             maho_ai::types::ServiceTierPreference::Auto => ServiceTier::Auto,
             maho_ai::types::ServiceTierPreference::Flex => ServiceTier::Flex,
-            maho_ai::types::ServiceTierPreference::Priority => ServiceTier::Priority,
+            maho_ai::types::ServiceTierPreference::Priority => ServiceTier::Priority, maho_ai::types::ServiceTierPreference::Ultrafast => ServiceTier::Ultrafast,
         })
     }
     /// senpi `model.promptPreset`: the per-model preset from models.json `modelOverrides` or a model definition.
@@ -1076,6 +1076,9 @@ impl ToolContext for ExtensionContext {
 pub struct BuildSystemPromptOptions { pub cwd: PathBuf, pub custom_prompt: Option<String>, pub append_system_prompt: Option<String>, pub tools: Vec<String>, pub tool_snippets: BTreeMap<String, String>, pub prompt_guidelines: Vec<String>, pub skills: Vec<Skill>, pub context_files: Vec<ContextFile>, pub surface: PromptSurface }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextFile { pub path: String, pub content: String }
+/// senpi `PromptSurface`: where the assistant's replies are rendered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PromptSurface { #[default] Terminal, App, Chat }
 #[derive(Clone, Debug, PartialEq)]
 pub struct CustomMessage { pub custom_type: String, pub content: Vec<ToolContent>, pub display: bool, pub details: Option<JsonValue> }
 #[derive(Clone, Debug)]

@@ -31,7 +31,7 @@ fn result_from(value: &Value) -> Option<ToolResult> {
         .iter()
         .map(|part| serde_json::from_value(part.clone()).expect("tool content"))
         .collect();
-    Some(ToolResult { content, details: value.get("details").filter(|value| !value.is_null()).cloned() })
+    Some(ToolResult { content, details: value.get("details").filter(|value| !value.is_null()).cloned(), structured_content: None })
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn formatted_tool_execution_fallbacks_match_pinned_senpi() {
 #[test]
 fn fallback_sanitisation_collapses_controls_and_strips_ansi() {
     let theme = theme();
-    let result = ToolResult { content: vec![ToolContent::text("\u{1b}[31mred\u{1b}[0m")], details: None };
+    let result = ToolResult { content: vec![ToolContent::text("\u{1b}[31mred\u{1b}[0m")], details: None, structured_content: None };
     let component = create_tool_result_fallback(Some(&result), false, &theme).expect("component");
     let rendered = lines_of(&component).join("\n");
     assert!(rendered.contains("red"));

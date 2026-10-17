@@ -14,7 +14,7 @@ fn model(url: &str) -> Model {
         thinking_level_map: None, input: vec![InputModality::Text], cost: ModelCost::default(),
         context_window: 8192, max_tokens: 64, sampling_params: None, headers: None,
         cache_retention: None, upstream_model_id: None, service_tier: None,
-        recover_text_tool_calls: None, compat: None }
+        recover_text_tool_calls: None, compat: None, default_thinking_level: None, input_limits: None }
 }
 
 fn image_model(api: &str, url: &str) -> ImagesModel {

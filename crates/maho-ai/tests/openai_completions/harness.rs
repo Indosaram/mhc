@@ -195,6 +195,7 @@ pub fn tool(name: &str, parameters: Value) -> Tool {
         name: name.to_owned(),
         description: format!("{name} tool"),
         parameters,
+        output_schema: None,
         freeform: None,
         constrained_sampling: None,
     }

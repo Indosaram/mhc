@@ -53,6 +53,8 @@ fn model(base_url: &str) -> Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
+        default_thinking_level: None,
+        input_limits: None,
     }
 }
 
@@ -315,6 +317,7 @@ fn request_context() -> Context {
             name: "read".into(),
             description: "Read a file".into(),
             parameters: serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }]),

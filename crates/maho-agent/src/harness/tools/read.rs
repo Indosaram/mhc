@@ -96,6 +96,7 @@ pub fn create_read_tool<T: HasExecutionToolContext>(
                 DEFAULT_MAX_BYTES / 1024
             ),
             parameters: json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to read (relative or absolute)"},"offset":{"type":"number","description":"Line number to start reading from (1-indexed)"},"limit":{"type":"number","description":"Maximum number of lines to read"}},"required":["path"]}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         },

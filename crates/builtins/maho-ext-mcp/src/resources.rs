@@ -29,7 +29,7 @@ pub fn create_mcp_resource_tools(servers:Arc<dyn Fn()->Vec<McpResourceServer>+Se
                 let mime=resource.get("mimeType").and_then(Value::as_str).filter(|mime|!mime.is_empty()).map_or_else(String::new,|mime|format!(" ({mime})"));
                 format!("- @mcp:{}/{uri} — {name}{mime}",entry.server)
             })).collect::<Vec<_>>();
-            Ok(ToolResult {content:vec![ToolContent::text(if lines.is_empty(){"No MCP resources available.".into()}else{lines.join("\n")})],details:Some(json!({"preview":format!("{} resource(s)",lines.len()),"server":scope.unwrap_or("*"),"tool":"mcp_list_resources"}))})
+            Ok(ToolResult {content:vec![ToolContent::text(if lines.is_empty(){"No MCP resources available.".into()}else{lines.join("\n")})],details:Some(json!({"preview":format!("{} resource(s)",lines.len()),"server":scope.unwrap_or("*"),"tool":"mcp_list_resources"})), structured_content: None })
         })
     }));
     list.label="List MCP resources".into();list.execution_mode=Some(ToolExecutionMode::Parallel);
@@ -40,7 +40,7 @@ pub fn create_mcp_resource_tools(servers:Arc<dyn Fn()->Vec<McpResourceServer>+Se
             let uri=call.params.get("uri").and_then(Value::as_str).ok_or_else(||ToolError::Message("Missing MCP resource URI".into()))?;
             let entry=servers.iter().find(|entry|entry.server==name).ok_or_else(||ToolError::Message(format!("Unknown MCP server '{name}' for resource {uri}.")))?;
             let text=read_mcp_resource_as_text(entry,uri).await.map_err(|error|ToolError::Message(error.to_string()))?;
-            Ok(ToolResult {content:vec![ToolContent::text(text)],details:Some(json!({"preview":uri,"server":name,"tool":"mcp_read_resource"}))})
+            Ok(ToolResult {content:vec![ToolContent::text(text)],details:Some(json!({"preview":uri,"server":name,"tool":"mcp_read_resource"})), structured_content: None })
         })
     }));
     read.label="Read MCP resource".into();read.execution_mode=Some(ToolExecutionMode::Parallel);

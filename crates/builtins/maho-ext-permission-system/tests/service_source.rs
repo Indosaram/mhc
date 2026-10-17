@@ -47,12 +47,12 @@ async fn once_requires_new_reply_but_always_allows_next_matching_request() {
     for reply in [Reply::Once, Reply::Always] {
         let mut service = PermissionService::new(vec![], vec![], PermissionEventEmitter::default());
         let first = service.ask(request("first"));
-        service.reply(ReplyInput { request_id: "first".into(), reply, message: None });
+        service.reply(ReplyInput { request_id: "first".into(), reply, message: None, always: None });
         first.await.expect("first approval");
         let second = service.ask(request("second"));
         let pending = service.list();
         if reply == Reply::Once {
-            service.reply(ReplyInput { request_id: "second".into(), reply: Reply::Reject, message: None });
+            service.reply(ReplyInput { request_id: "second".into(), reply: Reply::Reject, message: None, always: None });
             assert!(matches!(second.await, Err(PermissionError::Rejected)));
             assert_eq!(serde_json::to_value(pending).expect("pending"), serde_json::to_value(vec![request("second")]).expect("request"));
             assert!(service.get_approved().is_empty());
@@ -103,7 +103,7 @@ async fn mixed_allowed_pending_request_emits_original_payload_and_once_reply() {
     // When admission waits and the user approves once.
     let completion = service.ask(original.clone());
     assert_eq!(serde_json::to_value(service.list()).expect("pending payload"), serde_json::to_value([original.clone()]).expect("original payload"));
-    service.reply(ReplyInput { request_id: "mixed".into(), reply: Reply::Once, message: None });
+    service.reply(ReplyInput { request_id: "mixed".into(), reply: Reply::Once, message: None, always: None });
     completion.await.expect("once");
     // Then complete asked payload and reply survive, with no persistent approval.
     assert_eq!(serde_json::to_value(&*asked.lock().expect("asked")).expect("asked payload"), serde_json::to_value([original]).expect("original payload"));
@@ -130,7 +130,7 @@ async fn always_preserves_existing_approval_and_reevaluates_all_patterns() {
     second.patterns = vec!["git status".into(), "git push".into()];
     let second_completion = service.ask(second);
     // When granting persistent approval.
-    service.reply(ReplyInput { request_id: "first".into(), reply: Reply::Always, message: None });
+    service.reply(ReplyInput { request_id: "first".into(), reply: Reply::Always, message: None, always: None });
     // Then both settle, all new patterns append and prior approvals remain.
     first_completion.await.expect("first");
     second_completion.await.expect("second");
@@ -152,7 +152,7 @@ async fn corrected_rejection_emits_reject_for_original_and_cascade() {
     let first = service.ask(request("first"));
     let second = service.ask(request("second"));
     // When rejecting the original with feedback.
-    service.reply(ReplyInput { request_id: "first".into(), reply: Reply::Reject, message: Some("use status".into()) });
+    service.reply(ReplyInput { request_id: "first".into(), reply: Reply::Reject, message: Some("use status".into()), always: None });
     // Then only the original carries feedback and both emit rejection.
     assert!(matches!(first.await, Err(PermissionError::Corrected(message)) if message == "use status"));
     assert!(matches!(second.await, Err(PermissionError::Rejected)));

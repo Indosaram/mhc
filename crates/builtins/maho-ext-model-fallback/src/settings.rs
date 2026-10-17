@@ -15,7 +15,7 @@ mod tests {
     use maho_core::retry_fallback::expansion::{rank_family_models, FallbackAuthTiers};
 
     fn model(provider: &str) -> Model {
-        Model { id: "example-v1".into(), name: "Example".into(), api: "openai-completions".into(), provider: provider.into(), base_url: String::new(), reasoning: false, thinking_level_map: None, input: vec![], cost: ModelCost::default(), context_window: 4096, max_tokens: 1024, sampling_params: None, headers: None, cache_retention: None, upstream_model_id: None, service_tier: None, recover_text_tool_calls: None, compat: None }
+        Model { id: "example-v1".into(), name: "Example".into(), api: "openai-completions".into(), provider: provider.into(), base_url: String::new(), reasoning: false, thinking_level_map: None, input: vec![], cost: ModelCost::default(), context_window: 4096, max_tokens: 1024, sampling_params: None, headers: None, cache_retention: None, upstream_model_id: None, service_tier: None, recover_text_tool_calls: None, compat: None, default_thinking_level: None, input_limits: None }
     }
 
     #[test]

@@ -251,7 +251,7 @@ impl ToolExecutionComponent {
 
     pub fn update_result(&mut self, result: ToolExecutionResult, is_partial: bool) {
         self.result_byte_length = Some(result.content.iter().map(|part| match part {
-            ToolContent::Text { text } => text.len(),
+            ToolContent::Text { text, .. } => text.len(),
             ToolContent::Image { data, .. } => data.len(),
         }).sum());
         self.result = Some(result.clone());

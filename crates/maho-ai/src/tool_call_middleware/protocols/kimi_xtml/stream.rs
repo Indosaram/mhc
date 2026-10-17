@@ -242,7 +242,7 @@ mod tests {
     use crate::tool_call_middleware::types::StreamParserEvent;
 
     fn tool(name: &str) -> Tool {
-        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), freeform: None, constrained_sampling: None }
+        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     #[test]
@@ -288,6 +288,7 @@ mod tests {
             name: "get_weather".into(),
             description: "Get weather for a city".into(),
             parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "count": {"type": "number"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }

@@ -35,6 +35,7 @@ fn make_tool(name: &str) -> Tool {
         name: name.into(),
         description: format!("Test tool {name}"),
         parameters: json!({ "type": "object", "properties": { "input": { "type": "string" } } }),
+        output_schema: None,
         freeform: None,
         constrained_sampling: None,
     }

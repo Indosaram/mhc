@@ -1782,6 +1782,7 @@ mod tests {
             name: "t".into(),
             description: "d".into(),
             parameters: json!({ "type": "object", "properties": { "a": { "type": "string" } } }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         };

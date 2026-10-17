@@ -68,7 +68,7 @@ impl MemoryFactsWiring {
         self.fire(true);
     }
     pub fn launch_extractor(&mut self) { if (self.options.facts_enabled)() { self.fire(false); } }
-    pub async fn cancel_active(&mut self) { if let Some(extractor)=&mut self.options.extractor { extractor.cancel_active().await; } }
+    pub async fn cancel_active(&mut self) { if let Some(extractor)=&mut self.options.extractor && let Err(error)=extractor.cancel_active().await { maho_ext_api::diagnostic(&format!("memory facts cancel failed: {error}")); } }
     pub async fn launch_if_threshold_met(&mut self, signal: Option<&FactsAbortSignal>) -> bool {
         if signal.is_some_and(FactsAbortSignal::is_aborted) || !(self.options.facts_enabled)() { return false; }
         if signal.is_some_and(FactsAbortSignal::is_aborted) { return false; }

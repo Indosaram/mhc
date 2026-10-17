@@ -373,6 +373,7 @@ mod tests {
             name: name.into(),
             description: "d".into(),
             parameters,
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }

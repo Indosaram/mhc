@@ -76,6 +76,7 @@ fn parse_model_selector(
         variant: None,
         reasoning_effort: thinking.clone(),
         reasoning: thinking,
+        service_tier: None,
     })
 }
 

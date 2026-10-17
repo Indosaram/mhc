@@ -110,7 +110,7 @@ fn project_failed_turn_fragments(messages: &[serde_json::Value]) -> Vec<serde_js
             if candidate["role"] == "toolResult" && candidate["toolCallId"].as_str().is_some_and(|id| calls.contains(&id)) { dropped[later] = true; }
         }
     }
-    messages.iter().zip(dropped).filter_map(|(message, dropped)| (!dropped).then(|| message.clone())).collect()
+    messages.iter().zip(dropped).filter(|(_, dropped)| !dropped).map(|(message, _)| message.clone()).collect()
 }
 
 fn complete_tool_chains(messages: &[serde_json::Value]) -> bool {

@@ -4141,6 +4141,7 @@ dependencies = [
  "maho-ai",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-ext-rule-activation",
  "maho-test-support",
  "maho-tui",
  "regex",

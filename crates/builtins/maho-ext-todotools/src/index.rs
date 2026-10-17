@@ -1,21 +1,26 @@
 use serde_json::Value;
 use crate::todo_types::{TodoAsk,TodoPhase,TodoState};
 pub struct NativeTodotoolsExtension {pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,pub copy_markdown:crate::commands::CopyTodoMarkdown,pub widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
-struct NativeTodoAccessors {phases:std::sync::Mutex<Vec<TodoPhase>>,ask:std::sync::Mutex<Option<TodoAsk>>,ui:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>,widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
+struct NativeTodoAccessors {branch:std::sync::Mutex<Vec<Value>>,phases:std::sync::Mutex<Vec<TodoPhase>>,ask:std::sync::Mutex<Option<TodoAsk>>,ui:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>,widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
 impl crate::tools_todo::TodoAccessors for NativeTodoAccessors {
     fn get_current_phases(&self)->Vec<TodoPhase>{self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
     fn set_current_phases(&self,phases:Vec<TodoPhase>){*self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=phases;}
     fn get_current_ask(&self)->Option<TodoAsk>{self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
     fn set_current_ask(&self,ask:Option<TodoAsk>){*self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ask;}
     fn get_current_state(&self)->TodoState{TodoState{phases:self.get_current_phases(),ask:self.get_current_ask()}}
+    fn branch_entries(&self)->Vec<Value>{self.branch.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
     fn sync_widget(&self,_:&dyn maho_ext_api::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>{
         if let Some(ui)=self.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){ui.set_widget("todo-sidebar",crate::todo_widget_component::widget_content_with_ask(&self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner),self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(),completed,self.widget_sender.clone()),Default::default());}Ok(())
     }
 }
 impl maho_ext_api::Extension for NativeTodotoolsExtension {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi){
-        let accessors=std::sync::Arc::new(NativeTodoAccessors {phases:Default::default(),ask:Default::default(),ui:Default::default(),widget_sender:self.widget_sender.clone()});
+        let accessors=std::sync::Arc::new(NativeTodoAccessors {branch:Default::default(),phases:Default::default(),ask:Default::default(),ui:Default::default(),widget_sender:self.widget_sender.clone()});
         for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree]{let captured=accessors.clone();api.on(event,std::sync::Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {*captured.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.has_ui.then(||ctx.ui.clone());Ok(maho_ext_api::EventResult::None)})}));}
+        {let captured=accessors.clone();api.on(maho_ext_api::EventKind::TurnStart,std::sync::Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {
+            *captured.branch.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.session_manager.get_branch().into_iter().map(|entry|entry.data).collect();
+            Ok(maho_ext_api::EventResult::None)
+        })}));}
         TodotoolsExtension {actions:self.actions.clone(),accessors:accessors.clone(),copy_markdown:self.copy_markdown.clone()}.register(api);
         api.on(maho_ext_api::EventKind::SessionShutdown,std::sync::Arc::new(move |_,ctx|{let accessors=accessors.clone();Box::pin(async move {if ctx.has_ui{ctx.ui.set_widget("todo-sidebar",None,Default::default());}accessors.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();Ok(maho_ext_api::EventResult::None)})}));
     }
@@ -96,7 +101,7 @@ mod tests {
     #[test] fn prompt_hook_preserves_host_prompt_and_appends_shipped_section() {
         let event=maho_ext_api::ExtensionEvent::BeforeAgentStart(maho_ext_api::BeforeAgentStartEvent {
             prompt:"work".into(),images:None,system_prompt:"host prompt".into(),
-            system_prompt_options:maho_ext_api::BuildSystemPromptOptions {cwd:Default::default(),custom_prompt:None,append_system_prompt:None,tools:vec![],tool_snippets:Default::default(),prompt_guidelines:vec![],skills:vec![],context_files:vec![]},
+            system_prompt_options:maho_ext_api::BuildSystemPromptOptions {cwd:Default::default(),custom_prompt:None,append_system_prompt:None,tools:vec![],tool_snippets:Default::default(),prompt_guidelines:vec![],skills:vec![],context_files:vec![],surface:Default::default()},
         });
         match prompt_hook_result(&event) {
             maho_ext_api::EventResult::BeforeAgentStart(result)=>{

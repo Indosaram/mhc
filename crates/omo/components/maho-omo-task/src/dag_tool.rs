@@ -211,7 +211,7 @@ fn control_failure(error: DagNodeControlError) -> ToolResult {
     failure(code, &error.message, vec![], vec![], vec![], node_ids)
 }
 
-fn validate_nodes(definition_nodes: &[NodeInput]) -> Result<Vec<DagNodeInput>, ToolResult> {
+fn validate_nodes(definition_nodes: &[NodeInput]) -> Result<Vec<DagNodeInput>, Box<ToolResult>> {
     let mut errors = Vec::new();
     let mut nodes = Vec::new();
     for node in definition_nodes {
@@ -248,7 +248,7 @@ fn validate_nodes(definition_nodes: &[NodeInput]) -> Result<Vec<DagNodeInput>, T
             .map(|error| format!("Node \"{}\": {}", error["node_id"].as_str().unwrap_or_default(), error["message"].as_str().unwrap_or_default()))
             .collect::<Vec<_>>()
             .join(" ");
-        return Err(failure("invalid_definition", &message, errors, vec![], vec![], vec![]));
+        return Err(Box::new(failure("invalid_definition", &message, errors, vec![], vec![], vec![])));
     }
     Ok(nodes)
 }
@@ -260,7 +260,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
         };
         let nodes = match validate_nodes(&definition.nodes) {
             Ok(nodes) => nodes,
-            Err(res) => return Ok(res),
+            Err(res) => return Ok(*res),
         };
         let warnings = lint_dag_definition_nodes(&definition.nodes);
         let result = match deps.manager.start(DagStartParams {
@@ -470,7 +470,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
             };
             let nodes = match validate_nodes(&definition.nodes) {
                 Ok(nodes) => nodes,
-                Err(res) => return Ok(res),
+                Err(res) => return Ok(*res),
             };
             let Some(amend) = &deps.amend else {
                 return Ok(failure("invalid_amendment", &format!("Dag run {run_id} has no amend surface wired in this session."), vec![], vec![], vec![], vec![]));

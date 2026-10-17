@@ -287,6 +287,7 @@ fn given_a_two_node_run_when_both_nodes_complete_then_wait_resolves_with_each_no
                     cost_usd: None,
                     cache_hit_rate_last: None,
                     cache_hit_rate_run: None,
+                    ..Default::default()
                 }),
                 ..node("plan")
             }),

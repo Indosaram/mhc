@@ -33,31 +33,6 @@ pub fn strip_image_markers(text: &str) -> String {
 
 pub struct EditorCapabilities { pub paste_markers: bool, pub image_markers: bool, pub expanded_text: bool }
 
-#[cfg(test)]
-mod capability_tests {
-    use super::*;
-    use maho_tui::editor_component::EditorComponent;
-
-    struct CapabilityEditor;
-    impl EditorComponent for CapabilityEditor {
-        fn get_text(&self) -> String { String::new() }
-        fn set_text(&mut self, _text: &str) {}
-        fn get_paste_state(&self) -> Option<maho_tui::paste_markers::PasteState> { None }
-        fn set_paste_state(&mut self, _state: &maho_tui::paste_markers::PasteState) {}
-        fn get_image_marker_state(&self) -> Option<maho_tui::paste_markers::ImageMarkerState> { None }
-        fn set_image_marker_state(&mut self, _state: &maho_tui::paste_markers::ImageMarkerState) {}
-        fn get_expanded_text(&self) -> Option<String> { None }
-    }
-
-    #[test]
-    fn capability_flags_are_independent() {
-        let capabilities = editor_capabilities(&CapabilityEditor);
-        assert!(!capabilities.paste_markers);
-        assert!(!capabilities.image_markers);
-        assert!(!capabilities.expanded_text);
-    }
-}
-
 pub fn editor_capabilities(editor: &dyn EditorComponent) -> EditorCapabilities {
     EditorCapabilities { paste_markers: editor.get_paste_state().is_some(), image_markers: editor.get_image_marker_state().is_some(), expanded_text: editor.get_expanded_text().is_some() }
 }
@@ -85,4 +60,27 @@ pub fn expand_editor_submission(editor: &dyn EditorComponent, text: &str) -> Str
 
 pub fn expand_submitted_text(editor: &dyn EditorComponent, text: &str) -> String {
     editor.get_expanded_text().filter(|text| !text.is_empty()).unwrap_or_else(|| editor.get_paste_state().map_or_else(|| text.to_owned(), |state| expand_paste_markers(text, &state)))
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use maho_tui::editor_component::EditorComponent;
+
+    struct CapabilityEditor;
+    impl maho_tui::tui::Component for CapabilityEditor {
+        fn render(&mut self, _width: usize) -> Vec<String> { Vec::new() }
+    }
+    impl EditorComponent for CapabilityEditor {
+        fn get_text(&self) -> String { String::new() }
+        fn set_text(&mut self, _text: &str) {}
+    }
+
+    #[test]
+    fn capability_flags_are_independent() {
+        let capabilities = editor_capabilities(&CapabilityEditor);
+        assert!(!capabilities.paste_markers);
+        assert!(!capabilities.image_markers);
+        assert!(!capabilities.expanded_text);
+    }
 }

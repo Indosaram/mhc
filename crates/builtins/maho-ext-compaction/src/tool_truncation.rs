@@ -27,7 +27,7 @@ pub fn truncate_oversized_tool_results(results: &[ToolResult]) -> Vec<ToolResult
         let mut next = result.clone();
         for block in &mut next.content {
             if let ToolContent::Text {text,..} = block {
-                let bytes = text.as_bytes().len();
+                let bytes = text.len();
                 if bytes <= 4096 || marker(text).is_some() { continue; }
                 let units: Vec<u16> = text.encode_utf16().collect();
                 let head_end = char_boundary(&units, 800.min(units.len()), false);

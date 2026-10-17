@@ -55,7 +55,7 @@ pub async fn run_reserved_tool(name: &str, context: ReservedDispatchContext<'_>)
         RESERVED_AGENT_TOOL => Ok(context.agent_bridge.run(context.args, AgentBridgeOptions { call_id:context.call_id,task_tool_name:context.task_tool_name,executor:context.executor,tools:context.tools,execute_options:context.execute_options,emit_status:context.emit_status }).await?),
         RESERVED_OUTPUT_TOOL => Ok(serde_json::to_value(run_eval_output(context.args.clone(),context.task_output_tool_name,context.executor,context.execute_options).await?)?),
         RESERVED_SCHEMA_TOOL => Ok(serde_json::to_value(run_eval_schema(context.args,context.tools.ok_or(ReservedDispatchError::SchemaUnavailable)?)?)?),
-        RESERVED_PACKAGES_INSTALL_TOOL => Ok(crate::bridges::packages_install::run_packages_install(context.args, context.environments, context.execute_options.signal.clone()).await?),
+        RESERVED_PACKAGES_INSTALL_TOOL => Ok(crate::bridges::packages_install::run_packages_install(context.args, context.environments, context.execute_options.signal.as_ref().map(|signal| { let bridged=maho_ext_api::AbortSignal::default(); if signal.aborted() { bridged.abort(); } else { let target=bridged.clone(); signal.add_abort_listener(move |_| target.abort()); } bridged })).await?),
         _ => Err(ReservedDispatchError::NotReserved(name.into())),
     }
 }

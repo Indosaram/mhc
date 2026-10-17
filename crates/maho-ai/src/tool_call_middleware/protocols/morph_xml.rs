@@ -1146,6 +1146,7 @@ mod tests {
             name: "get_weather".into(),
             description: "Get weather for a location".into(),
             parameters: json!({"type": "object", "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}, "required": ["city", "days"]}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -1156,13 +1157,14 @@ mod tests {
             name: "todowrite".into(),
             description: "Write todos".into(),
             parameters: json!({"type": "object", "properties": {"todos": {"type": "array", "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}, "required": ["content", "status", "priority"]}}}, "required": ["todos"]}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
     }
 
     fn location_tool() -> Tool {
-        Tool { name: "get_location".into(), description: "Get the location".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None }
+        Tool { name: "get_location".into(), description: "Get the location".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn parsed_call(name: &str, arguments: Value) -> ParsedToolCall {
@@ -1369,6 +1371,7 @@ mod tests {
                 name: "get_weather".into(),
                 description: "Get weather".into(),
                 parameters: json!({"type": "object", "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}, "required": ["city"]}),
+                output_schema: None,
                 freeform: None,
                 constrained_sampling: None,
             },
@@ -1376,10 +1379,11 @@ mod tests {
                 name: "todowrite".into(),
                 description: "Write todos".into(),
                 parameters: json!({"type": "object", "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}, "required": ["content", "status", "priority"]}}}, "required": ["todos"]}),
+                output_schema: None,
                 freeform: None,
                 constrained_sampling: None,
             },
-            Tool { name: "get_location".into(), description: "Get location".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None },
+            Tool { name: "get_location".into(), description: "Get location".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None },
         ]
     }
 
@@ -1486,8 +1490,8 @@ mod tests {
 
     #[test]
     fn handles_consecutive_tool_calls_without_leaking_xml_tags_into_text_output() {
-        let tool_a = Tool { name: "tool_a".into(), description: "A".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None };
-        let tool_b = Tool { name: "tool_b".into(), description: "B".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None };
+        let tool_a = Tool { name: "tool_a".into(), description: "A".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None };
+        let tool_b = Tool { name: "tool_b".into(), description: "B".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None };
         let mut parser = create_morph_xml_stream_parser(vec![tool_a, tool_b], None);
         let mut all_events = parser.feed("<tool_a></tool_a><tool_b></tool_b>");
         all_events.extend(parser.finish());
@@ -1500,8 +1504,8 @@ mod tests {
 
     #[test]
     fn handles_tool_calls_separated_only_by_whitespace_without_leaking_xml_tags() {
-        let tool_a = Tool { name: "tool_a".into(), description: "A".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None };
-        let tool_b = Tool { name: "tool_b".into(), description: "B".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None };
+        let tool_a = Tool { name: "tool_a".into(), description: "A".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None };
+        let tool_b = Tool { name: "tool_b".into(), description: "B".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None };
         let mut parser = create_morph_xml_stream_parser(vec![tool_a, tool_b], None);
         let mut all_events = parser.feed("<tool_a></tool_a>\n  \n<tool_b></tool_b>");
         all_events.extend(parser.finish());
@@ -1518,6 +1522,7 @@ mod tests {
             name: "get_weather".into(),
             description: "Get weather".into(),
             parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         };
@@ -1590,6 +1595,7 @@ mod tests {
             name: "bad_tool".into(),
             description: "Strict tool".into(),
             parameters: json!({"type": "object", "properties": {"name": {"type": "string"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         };
@@ -1615,6 +1621,7 @@ mod tests {
             name: "write_file".into(),
             description: "Write a file".into(),
             parameters: json!({"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}, "encoding": {"type": "string"}}, "required": ["file_path", "content"]}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         };

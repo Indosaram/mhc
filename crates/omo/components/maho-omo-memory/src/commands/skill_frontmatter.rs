@@ -359,10 +359,10 @@ mod tests {
 
     #[test]
     fn field_setter_preserves_body_bytes_and_replaces_folded_value() {
-        let content = "---\r\ndescription: >\r\n  old value\r\nname: skill\r\n---\r\nbody\r\n\xff";
+        let content = "---\r\ndescription: >\r\n  old value\r\nname: skill\r\n---\r\nbody\r\n\u{ff}";
         let result = set_skill_frontmatter_field(content, "description", "new value");
         assert!(result.changed);
-        assert!(result.content.ends_with("body\r\n\xff"));
+        assert!(result.content.ends_with("body\r\n\u{ff}"));
         assert!(result.content.contains("description: \"new value\"\r\nname: skill"));
         assert!(!set_skill_frontmatter_field(&result.content, "description", "new value").changed);
     }

@@ -228,7 +228,7 @@ pub fn build_chaos_engines(input: BuildChaosEnginesInput) -> Vec<ChaosEngine> {
                     message: error.to_string(),
                     max_children: Some(crate::manager::types::MaxChildren::Number(error.max_children)),
                     residents: Some(error.residents.iter().map(|resident| crate::manager::types::ResidentSummary {
-                        task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.clone(),
+                        task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.as_str().to_string(),
                     }).collect()),
                 },
                 Err(error) => SpawnAdmission::Rejected {

@@ -73,6 +73,8 @@ fn model(api: &str, url: &str) -> Model {
         input: vec![InputModality::Text], cost: ModelCost::default(), context_window: 128_000,
         max_tokens: 1024, sampling_params: None, headers: None, cache_retention: None,
         upstream_model_id: None, service_tier: None, recover_text_tool_calls: None, compat: None,
+        default_thinking_level: None,
+        input_limits: None,
     }
 }
 

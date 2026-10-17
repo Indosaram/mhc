@@ -49,10 +49,15 @@ impl SenpiSubprocessRunner{
         use super::fork_cost::{MemoryLaunchSurface,MemoryRouteCandidate,MemoryLaunchRouteInput,Pricing,choose_memory_launch_route};
         let ReflectionModelResolution::Resolved{model,thinking,..}=resolution else{return Err("reflection route requires a resolved model".into());};
         let cost=|model:&str|model.split_once('/').and_then(|(provider,id)|registry.and_then(|registry|registry.find(provider,id))).as_ref().and_then(super::registry_fallback::read_model_pricing).map(|cost|Pricing{input:cost.input,cache_read:cost.cache_read,output:None});
-        let quick=MemoryRouteCandidate{model:model.clone(),thinking:thinking.clone(),cost:cost(model)};
-        let inherited=session.and_then(|session|{let model=format!("{}/{}",session.provider,session.id);cost(&model).map(|cost|MemoryRouteCandidate{model,thinking:session.thinking.clone(),cost:Some(cost)})});
+        let entry=|model:&str|model.split_once('/').and_then(|(provider,id)|registry.and_then(|registry|registry.find(provider,id)));
+        let window=|model:&str|entry(model).as_ref().and_then(crate::model_registry_resolver::read_model_context_window);
+        let quick=MemoryRouteCandidate{model:model.clone(),thinking:thinking.clone(),cost:cost(model),context_window:window(model)};
+        let inherited=session.and_then(|session|{let model=format!("{}/{}",session.provider,session.id);let context_window=window(&model);cost(&model).map(|cost|MemoryRouteCandidate{model,thinking:session.thinking.clone(),cost:Some(cost),context_window})});
+        // runner-launch-route.ts reflectionPayloadTokens: serialized snapshot entry bytes at ~4 bytes/token.
+        let payload_bytes=run.request.snapshots.iter().map(|captured|serde_json::to_vec(&captured.snapshot.entries).map_or(0,|bytes|bytes.len())).sum::<usize>();
+        let payload_tokens=Some(payload_bytes.div_ceil(4) as f64);
         let surface=if run.request.trigger==memory_core::reflection::ReflectionTrigger::Dream{MemoryLaunchSurface::Dream}else{MemoryLaunchSurface::Reflection};
-        choose_memory_launch_route(&MemoryLaunchRouteInput{surface,quick:Some(&quick),session:inherited.as_ref(),parent_context_tokens,turns:surface.profile().turns,cache_hit}).map_err(|error|error.to_string())
+        choose_memory_launch_route(&MemoryLaunchRouteInput{surface,quick:Some(&quick),session:inherited.as_ref(),parent_context_tokens,payload_tokens,turns:surface.profile().turns,cache_hit}).map_err(|error|error.to_string())
     }
     pub async fn launch<F:Future<Output=Result<ReflectionExecutionResult,String>>>(
         &mut self,input:ReflectionRunnerInput<'_>,mut live:Option<&mut dyn ReflectionLiveSession>,
