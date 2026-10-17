@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use memory_core::{
     locks::parse_lock_record,
-    memfs::parse_memory_file,
+    memfs::{is_memory_content_path, parse_memory_file},
     seeds::V1_PERSONA_SEED_SHA256,
     support::{host::hostname, sha256::sha256_hex},
 };
@@ -32,6 +32,7 @@ impl CheckLevel {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DoctorCheck {
     pub name: String,
     pub level: CheckLevel,
@@ -88,7 +89,12 @@ pub fn check_repository(identity: &MemoryCommandIdentity) -> DoctorCheck {
 }
 
 pub fn check_frontmatter(repo_dir: &Path) -> Vec<DoctorCheck> {
-    let paths = list_markdown(repo_dir, "");
+    // Only the frontmatter contract (the set the pre-commit hook validates); root files such as
+    // ARCHIVE.md and notes/ are outside it.
+    let paths: Vec<String> = list_markdown(repo_dir, "")
+        .into_iter()
+        .filter(|path| is_memory_content_path(path))
+        .collect();
     let mut failures: Vec<String> = Vec::new();
     for path in &paths {
         let Ok(content) = std::fs::read_to_string(repo_dir.join(path)) else {
@@ -407,4 +413,73 @@ pub fn check_tokens(repo_dir: &Path, warn_tokens: usize) -> DoctorCheck {
 
 pub fn repo_dir_of(identity: &MemoryCommandIdentity) -> PathBuf {
     identity.identity_paths.repo.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID: &str = "---\ndescription: A valid memory file\n---\n\nbody\n";
+    const NO_FRONTMATTER: &str = "# Archive\n\n- 2026-03: summarized facts\n";
+
+    fn repo_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::Builder::new()
+            .prefix("doctor-frontmatter-scope-")
+            .tempdir()
+            .expect("tempdir");
+        for (path, content) in files {
+            let full = dir.path().join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).expect("mkdir");
+            }
+            std::fs::write(full, content).expect("write");
+        }
+        dir
+    }
+
+    #[test]
+    fn given_a_root_archive_md_and_notes_file_without_frontmatter_when_checked_then_they_are_outside_the_contract_and_the_check_passes() {
+        let repo = repo_with(&[
+            ("system/persona.md", VALID),
+            ("reference/tools.md", VALID),
+            ("ARCHIVE.md", NO_FRONTMATTER),
+            ("notes/facts/2026-03.md", NO_FRONTMATTER),
+        ]);
+
+        let checks = check_frontmatter(repo.path());
+        let frontmatter = &checks[0];
+
+        assert_eq!(
+            frontmatter,
+            &DoctorCheck {
+                name: "frontmatter".to_owned(),
+                level: CheckLevel::Ok,
+                detail: "2 memory files valid".to_owned(),
+            }
+        );
+        assert_eq!(
+            format!("[{}] {}: {}", frontmatter.level.as_str(), frontmatter.name, frontmatter.detail),
+            "[ok] frontmatter: 2 memory files valid"
+        );
+    }
+
+    #[test]
+    fn given_a_contract_file_without_frontmatter_when_checked_then_it_still_fails_and_names_only_that_file() {
+        let repo = repo_with(&[
+            ("system/persona.md", VALID),
+            ("people/alice.md", NO_FRONTMATTER),
+            ("ARCHIVE.md", NO_FRONTMATTER),
+        ]);
+
+        let checks = check_frontmatter(repo.path());
+        let frontmatter = &checks[0];
+
+        assert_eq!(frontmatter.level, CheckLevel::Fail);
+        assert!(
+            frontmatter.detail.starts_with("1 invalid file: people/alice.md ("),
+            "unexpected detail: {}",
+            frontmatter.detail
+        );
+        assert!(!frontmatter.detail.contains("ARCHIVE.md"));
+    }
 }
