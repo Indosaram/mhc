@@ -73,6 +73,8 @@ pub fn track_outcome(
     model: String,
     epoch: i64,
 ) {
+    #[cfg(test)]
+    test_barrier::track(Arc::as_ptr(&handle) as *const () as usize);
     std::thread::spawn(move || {
         let outcome = handle.wait_for_outcome();
         settle_outcome(ports.as_ref(), &task_id, &handle, &model, epoch, outcome);
@@ -246,6 +248,18 @@ pub(crate) mod test_barrier {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    pub(crate) fn register(ptr: usize) {
+        lock().insert(ptr, Entry::default());
+    }
+
+    pub(crate) fn track(ptr: usize) {
+        let mut entries = lock();
+        let entry = entries.entry(ptr).or_default();
+        if entry.finished {
+            *entry = Entry::default();
+        }
+    }
+
     pub(crate) fn note_issue(ptr: usize) {
         let mut entries = lock();
         let entry = entries.entry(ptr).or_default();
@@ -303,5 +317,41 @@ pub(crate) mod test_barrier {
                 })
                 .unwrap_or_else(|error| error.into_inner().0);
         }
+    }
+
+    #[test]
+    fn reused_handle_address_starts_fresh_outcome_accounting() {
+        let ptr = usize::MAX;
+        register(ptr);
+
+        note_issue(ptr);
+        note_consume(ptr);
+        assert!(!has_outstanding(ptr));
+
+        note_issue(ptr);
+        assert!(!has_outstanding(ptr));
+
+        register(ptr);
+        note_issue(ptr);
+        assert!(has_outstanding(ptr));
+
+        note_consume(ptr);
+        assert!(!has_outstanding(ptr));
+        lock().remove(&ptr);
+    }
+
+    #[test]
+    fn revived_handle_tracks_another_outcome() {
+        let ptr = usize::MAX - 1;
+        register(ptr);
+        track(ptr);
+        note_issue(ptr);
+        note_consume(ptr);
+        track(ptr);
+        note_issue(ptr);
+        assert!(has_outstanding(ptr));
+        note_consume(ptr);
+        assert!(!has_outstanding(ptr));
+        lock().remove(&ptr);
     }
 }
