@@ -199,21 +199,21 @@ fn given_classified_runner_errors_with_secrets_when_named_subagent_start_fails_t
             Some(ResolvedChildPlan {
                 model: "openai/gpt-5.6-sol".to_string(),
                 resolved_model: Some(model.clone()),
-                agent_type: Some("momus".to_string()),
+                agent_type: Some("plan-reviewer".to_string()),
                 ..ResolvedChildPlan::default()
             }),
         );
 
         let failure = start_failed(harness.manager.start(&ManagerStartSpec {
             prompt: "private prompt payload".to_string(),
-            subagent_type: Some("momus".to_string()),
+            subagent_type: Some("plan-reviewer".to_string()),
             name: Some("secure-agent".to_string()),
             run_in_background: false,
             ..base_spec()
         }));
 
         assert_eq!(failure.name, "secure-agent");
-        assert_eq!(failure.subagent_type.as_deref(), Some("momus"));
+        assert_eq!(failure.subagent_type.as_deref(), Some("plan-reviewer"));
         assert_eq!(failure.execution_mode, ExecutionMode::InProcess);
         assert_eq!(failure.model, "openai/gpt-5.6-sol");
         assert_eq!(failure.resolved_model.as_ref(), Some(&model));

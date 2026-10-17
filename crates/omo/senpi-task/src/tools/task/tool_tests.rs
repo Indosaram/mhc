@@ -61,9 +61,9 @@ fn omo_config() -> Value {
 fn agents() -> BTreeMap<String, AgentDefinition> {
     let mut agents = BTreeMap::new();
     agents.insert(
-        "momus".to_string(),
+        "plan-reviewer".to_string(),
         AgentDefinition {
-            name: "momus".to_string(),
+            name: "plan-reviewer".to_string(),
             description: Some("Deep reasoning".to_string()),
             ..Default::default()
         },
@@ -165,7 +165,7 @@ fn given_a_custom_omo_json_category_when_the_description_is_read_then_it_lists_t
     with_tool(|tool| {
         assert!(tool.description.contains("release-crew"));
         assert!(tool.description.contains("Ships the release train"));
-        assert!(tool.description.contains("momus"));
+        assert!(tool.description.contains("plan-reviewer"));
     });
 }
 

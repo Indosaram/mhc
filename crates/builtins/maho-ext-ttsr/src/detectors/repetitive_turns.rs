@@ -9,13 +9,39 @@ pub const REPETITIVE_TURNS_HISTORY_CAPACITY: usize = 6;
 fn expression(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex { cell.get_or_init(|| match Regex::new(pattern) { Ok(regex) => regex, Err(error) => panic!("invalid static repetitive-turn expression: {error}") }) }
 fn whitespace(c: char) -> bool { matches!(c, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}') }
 pub fn normalize_turn_text(text: &str) -> String {
-    static HANDOFF_ASK: OnceLock<Regex> = OnceLock::new();
     static HEX: OnceLock<Regex> = OnceLock::new(); static DIGITS: OnceLock<Regex> = OnceLock::new();
-    let without_handoff=expression(&HANDOFF_ASK,r"\bAsk:[\s\S]*?(?=\b(?:For you|You need|Now):)").replace_all(text," ");
+    let without_handoff=strip_handoff_asks(text);
     let lowered = without_handoff.to_lowercase();
     let folded = expression(&HEX, r"(?i)(?-u:\b)[0-9a-f]{7,}(?-u:\b)").replace_all(&lowered, "#");
     let folded = expression(&DIGITS, r"[0-9][0-9.,:/-]*").replace_all(&folded, "#");
     folded.split(whitespace).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
+}
+/// JS \`text.replace(/\\bAsk:[\\s\\S]*?(?=\\b(?:For you|You need|Now):)/g, " ")\`: each \`Ask:\` up to the
+/// nearest following handoff slot label is replaced by one space; an \`Ask:\` with no later label stays.
+fn strip_handoff_asks(text: &str) -> String {
+    fn word_byte(byte: u8) -> bool { byte.is_ascii_alphanumeric() || byte == b'_' }
+    let bytes = text.as_bytes();
+    let boundary = |index: usize| -> bool {
+        let before = index.checked_sub(1).map(|i| word_byte(bytes[i])).unwrap_or(false);
+        let after = bytes.get(index).copied().map(word_byte).unwrap_or(false);
+        before != after
+    };
+    let next_label = |from: usize| -> Option<usize> {
+        (from..=bytes.len()).find(|&index| boundary(index) && ["For you:", "You need:", "Now:"].iter().any(|label| bytes[index..].starts_with(label.as_bytes())))
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let mut search = 0;
+    while let Some(offset) = text[search..].find("Ask:") {
+        let start = search + offset;
+        if !boundary(start) { search = start + 1; continue; }
+        match next_label(start + 4) {
+            Some(end) => { out.push_str(&text[cursor..start]); out.push(' '); cursor = end; search = end; }
+            None => break,
+        }
+    }
+    out.push_str(&text[cursor..]);
+    out
 }
 /// Words of an already-normalized turn, in order; trigrams are windows of three of these.
 pub fn turn_words(normalized: &str) -> impl Iterator<Item = &str> {

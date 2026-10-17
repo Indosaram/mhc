@@ -124,7 +124,7 @@ fn given_nodes_with_routes_and_labels_when_compiled_then_nodes_carry_pending_sta
         DagNodeInput {
             prompt: "run b".to_string(),
             target: DagNodeTarget::SubagentType {
-                subagent_type: "momus".to_string(),
+                subagent_type: "plan-reviewer".to_string(),
                 model: Some("gpt-5.6".to_string()),
             },
             ..node("b", &["a"])
@@ -162,7 +162,7 @@ fn given_nodes_with_routes_and_labels_when_compiled_then_nodes_carry_pending_sta
     assert_eq!(
         second.route,
         DagRoute::Agent {
-            agent: "momus".to_string(),
+            agent: "plan-reviewer".to_string(),
             model: Some("gpt-5.6".to_string())
         }
     );

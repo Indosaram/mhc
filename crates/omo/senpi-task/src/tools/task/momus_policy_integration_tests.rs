@@ -1,4 +1,4 @@
-//! `tools/task/momus-policy.integration.test.ts`
+//! `tools/task/plan-reviewer-policy.integration.test.ts`
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -291,7 +291,7 @@ fn ctx() -> TaskToolContext {
 fn momus_params(prompt: &str) -> SpawnParamsInput {
     SpawnParamsInput {
         prompt: Some(prompt.to_string()),
-        subagent_type: Some("momus".to_string()),
+        subagent_type: Some("plan-reviewer".to_string()),
         run_in_background: Some(true),
         ..SpawnParamsInput::default()
     }
@@ -335,7 +335,7 @@ fn given_an_open_plan_session_when_the_full_momus_lifecycle_is_driven_then_forci
     );
     let context = ctx();
 
-    // when step 1: momus is spawned with a chatty zero-path prompt
+    // when step 1: plan-reviewer is spawned with a chatty zero-path prompt
     let first = execute
         .execute(
             "call-1",
@@ -357,9 +357,9 @@ fn given_an_open_plan_session_when_the_full_momus_lifecycle_is_driven_then_forci
         Some(canonical(PLAN_A))
     );
     let first_record = store.load(&first_id).expect("load").expect("record");
-    assert_eq!(first_record.agent_type.as_deref(), Some("momus"));
+    assert_eq!(first_record.agent_type.as_deref(), Some("plan-reviewer"));
 
-    // when step 2: momus is spawned with an explicit B path
+    // when step 2: plan-reviewer is spawned with an explicit B path
     let second = execute
         .execute(
             "call-2",
@@ -378,13 +378,13 @@ fn given_an_open_plan_session_when_the_full_momus_lifecycle_is_driven_then_forci
         Some(canonical(PLAN_B))
     );
 
-    // when step 3a: the running momus is sent a message
-    let reminder = interaction_policy_for_agent("momus")
-        .expect("momus policy")
+    // when step 3a: the running plan-reviewer is sent a message
+    let reminder = interaction_policy_for_agent("plan-reviewer")
+        .expect("plan-reviewer policy")
         .send_denial_reminder;
     let running_send = manager
         .send_to_task(&send_input(&first_id, "please reconsider your verdict"))
-        .expect("send to running momus");
+        .expect("send to running plan-reviewer");
 
     // then the refusal is the registry reminder and NOTHING reaches the child session
     match &running_send {
@@ -399,23 +399,23 @@ fn given_an_open_plan_session_when_the_full_momus_lifecycle_is_driven_then_forci
     };
     assert_eq!(steer_count(&first_id), 0);
 
-    // when step 3b: the momus child completes and is sent another message
+    // when step 3b: the plan-reviewer child completes and is sent another message
     in_process.wait_handle(&first_id).complete("[OKAY]");
     manager
         .wait_for(&first_id, None, Some(WAIT))
         .unwrap_or_else(|error| panic!("{first_id} never settled: {error}"));
     let completed_send = manager
         .send_to_task(&send_input(&first_id, "one more thing"))
-        .expect("send to completed momus");
+        .expect("send to completed plan-reviewer");
 
-    // then a finished momus is equally unmessageable - revival is impossible
+    // then a finished plan-reviewer is equally unmessageable - revival is impossible
     assert!(
         matches!(completed_send, SendOutcome::OneShotAgent { .. }),
         "expected one_shot_agent, got {completed_send:?}"
     );
     assert_eq!(steer_count(&first_id), 0);
 
-    // when step 4: the second momus is cancelled
+    // when step 4: the second plan-reviewer is cancelled
     let cancel = manager.cancel_task(&second_id, Some("no longer needed"), Default::default());
 
     // then cancel succeeds - create/cancel/output are the only verbs and cancel is one of them
@@ -424,7 +424,7 @@ fn given_an_open_plan_session_when_the_full_momus_lifecycle_is_driven_then_forci
         "cancel reported not_found: {cancel:?}"
     );
 
-    // when step 5: a fresh momus is spawned after the cancel
+    // when step 5: a fresh plan-reviewer is spawned after the cancel
     let third = execute
         .execute(
             "call-3",

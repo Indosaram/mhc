@@ -59,13 +59,13 @@ fn given_disabled_category_when_listed_then_it_is_omitted() {
 #[test]
 fn given_loaded_agent_definitions_when_listed_then_names_and_descriptions_surface_disabled_excluded()
 {
-    let mut momus = AgentDefinition::named("momus");
-    momus.description = "Deep reasoning".to_string().into();
+    let mut plan_reviewer = AgentDefinition::named("plan-reviewer");
+    plan_reviewer.description = "Deep reasoning".to_string().into();
     let mut hidden = AgentDefinition::named("hidden");
     hidden.description = "n/a".to_string().into();
     hidden.disable = true.into();
     let agents: BTreeMap<String, AgentDefinition> = [
-        ("momus".to_string(), momus),
+        ("plan-reviewer".to_string(), plan_reviewer),
         ("hidden".to_string(), hidden),
     ]
     .into_iter()
@@ -74,7 +74,7 @@ fn given_loaded_agent_definitions_when_listed_then_names_and_descriptions_surfac
     let listed = list_task_agents(&agents);
 
     assert!(listed.contains(&TaskAgentInfo {
-        name: "momus".to_string(),
+        name: "plan-reviewer".to_string(),
         description: Some("Deep reasoning".to_string()),
     }));
     assert!(!listed.iter().any(|entry| entry.name == "hidden"));

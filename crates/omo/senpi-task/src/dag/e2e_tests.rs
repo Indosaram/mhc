@@ -333,7 +333,7 @@ fn assert_scripted_success(fixture: &ScriptedFixture, input: DagDefinition, wave
 #[test]
 fn scripted_diamond_preserves_fanout_and_join_waves_end_to_end() {
     let fixture = scripted_fixture();
-    assert_scripted_success(&fixture, definition("diamond", vec![node("root", &[]), agent_node("left", &["root"], "explore"), node("right", &["root"]), agent_node("join", &["left", "right"], "momus")]), vec![vec!["root"], vec!["left", "right"], vec!["join"]]);
+    assert_scripted_success(&fixture, definition("diamond", vec![node("root", &[]), agent_node("left", &["root"], "explore"), node("right", &["root"]), agent_node("join", &["left", "right"], "plan-reviewer")]), vec![vec!["root"], vec!["left", "right"], vec!["join"]]);
 }
 
 #[test]
@@ -342,14 +342,14 @@ fn scripted_mixed_routes_preserve_models_membership_and_outputs() {
     let mut design = node("design", &["intake"]); design.target = DagNodeTarget::Category("visual-engineering".into());
     let mut budget = node("budget", &["intake"]); budget.target = DagNodeTarget::Category("deep".into());
     let mut docs = node("docs", &["evidence", "budget"]); docs.target = DagNodeTarget::Category("writing".into());
-    let input = definition("mixed-eight", vec![node("intake", &[]), agent_node("research", &[], "explore"), design, agent_node("evidence", &["research"], "librarian"), budget, agent_node("build", &["design", "evidence"], "hephaestus"), docs, agent_node("review", &["build", "docs"], "momus")]);
+    let input = definition("mixed-eight", vec![node("intake", &[]), agent_node("research", &[], "explore"), design, agent_node("evidence", &["research"], "librarian"), budget, agent_node("build", &["design", "evidence"], "hephaestus"), docs, agent_node("review", &["build", "docs"], "plan-reviewer")]);
     let result = assert_scripted_success(&fixture, input.clone(), vec![vec!["intake", "research"], vec!["design", "evidence", "budget"], vec!["build", "docs"], vec!["review"]]);
     assert_eq!(result.snapshot.nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>(), input.nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>());
     // Launch order follows the frontier, not declaration (TS e2e-happy), so each node's spec is
     // matched by its prompt.
     let specs = fixture.runner.specs();
     assert_eq!(specs.len(), input.nodes.len());
-    for (target, input) in ["quick", "explore", "visual-engineering", "librarian", "deep", "hephaestus", "writing", "momus"].into_iter().zip(&input.nodes) {
+    for (target, input) in ["quick", "explore", "visual-engineering", "librarian", "deep", "hephaestus", "writing", "plan-reviewer"].into_iter().zip(&input.nodes) {
         let spec = specs.iter().find(|spec| spec.prompt == format!("do {}", input.id)).expect("node launched");
         assert_eq!(spec.model, Some(format!("scripted/{target}")));
         match &input.target {

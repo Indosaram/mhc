@@ -1024,7 +1024,7 @@ fn gating_ungated_category_keeps_chain_fallback() {
     let resolved = expect_resolved(resolve(
         "quick",
         json!({}),
-        &registry(vec![model("quotio-openai", "gpt-5.6-luna-fast")]),
+        &registry(vec![model("openai-codex", "gpt-5.6-luna-fast")]),
     ));
     assert_eq!(resolved.spec.model_id, "gpt-5.6-luna-fast");
     assert!(contains(&resolved.available_categories, "quick"));

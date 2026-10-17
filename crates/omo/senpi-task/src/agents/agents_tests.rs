@@ -124,14 +124,14 @@ fn interaction_policy_only_plan_reviewer_present() {
         .collect();
     assert_eq!(keys, vec!["plan-reviewer"]);
     assert!(interaction_policy_for_agent(" plan-reviewer ").is_some());
-    assert!(!keys.contains(&"metis"));
+    assert!(!keys.contains(&"plan-consultant"));
 }
 
 #[test]
 fn one_shot_names_contain_exactly_plan_reviewer() {
     let names = one_shot_agent_names();
     assert!(names.contains("plan-reviewer"));
-    for absent in ["momus", "metis", "explore", "librarian"] {
+    for absent in ["plan-reviewer", "plan-consultant", "explore", "librarian"] {
         assert!(!names.contains(absent));
     }
     assert_eq!(names.len(), 1);
@@ -162,7 +162,7 @@ fn interaction_policy_lookup_unknown_is_none() {
 
 #[test]
 fn interaction_policy_lookup_momus_is_none() {
-    assert_eq!(interaction_policy_for_agent("momus"), None);
+    assert_eq!(interaction_policy_for_agent("plan-reviewer"), None);
 }
 
 #[test]
@@ -424,7 +424,7 @@ fn builtin_definitions_carry_role_specific_x_search_rules() {
     for definition in BUILTIN_AGENT_DEFAULTS.iter() {
         let rules = definition.tools.as_deref().unwrap_or_default();
         assert_eq!(rules.len(), if definition.name == "explore" || definition.name == "librarian" { 10 } else { 9 });
-        let mut patterns: Vec<&str> = rules.iter().map(|rule| rule.pattern.as_str()).collect();
+        let mut patterns: Vec<&str> = rules.iter().map(|rule| rule.pattern.as_str()).filter(|pattern| *pattern != "x_search").collect();
         patterns.sort_unstable();
         assert_eq!(patterns, expected);
         assert!(rules.iter().filter(|rule| rule.pattern != "x_search").all(|rule| rule.allow));
@@ -793,7 +793,7 @@ fn chain_tuning_top_level_effort_reaches_record() {
         reasoning_effort: text("minimal"),
         ..AgentDefinition::named("explore")
     }]);
-    let models = registry(vec![model("openai", "gpt-5.6-luna-fast")]);
+    let models = registry(vec![model("openai", "gpt-6-luna-fast")]);
     let result = expect_resolved(resolve("explore", &agents, &models));
     assert_eq!(
         result
@@ -808,10 +808,10 @@ fn chain_tuning_top_level_effort_reaches_record() {
 fn chain_tuning_configured_variant_wins_over_rung() {
     let agents = roster(vec![AgentDefinition {
         variant: text("low"),
-        ..AgentDefinition::named("momus")
+        ..AgentDefinition::named("plan-reviewer")
     }]);
-    let models = registry(vec![model("openai", "gpt-5.6-terra")]);
-    let result = expect_resolved(resolve("momus", &agents, &models));
+    let models = registry(vec![model("openai", "gpt-6-astra")]);
+    let result = expect_resolved(resolve("plan-reviewer", &agents, &models));
     assert_eq!(
         result
             .resolved_model
@@ -823,12 +823,12 @@ fn chain_tuning_configured_variant_wins_over_rung() {
 
 #[test]
 fn chain_tuning_rung_variant_survives_without_configured_tuning() {
-    let agents = roster(vec![AgentDefinition::named("momus")]);
-    let models = registry(vec![model("openai", "gpt-5.6-terra")]);
-    let record = expect_resolved(resolve("momus", &agents, &models))
+    let agents = roster(vec![AgentDefinition::named("plan-reviewer")]);
+    let models = registry(vec![model("openai", "gpt-6-astra")]);
+    let record = expect_resolved(resolve("plan-reviewer", &agents, &models))
         .resolved_model
         .expect("record");
-    assert_eq!(record.variant.as_deref(), Some("high"));
+    assert_eq!(record.variant.as_deref(), Some("xhigh"));
     assert_eq!(record.reasoning_effort, None);
 }
 
@@ -847,7 +847,7 @@ fn resolve_denylist_rides_persona() {
         disallowed_tools: Some(vec!["bash".to_string(), "write".to_string()]),
         ..explore_with_prompt()
     }]);
-    let models = registry(vec![model("openai", "gpt-5.6-luna-fast")]);
+    let models = registry(vec![model("openai", "gpt-6-luna-fast")]);
     let result = expect_resolved(resolve("explore", &agents, &models));
     assert_eq!(
         result.persona.tool_denylist,
@@ -858,7 +858,7 @@ fn resolve_denylist_rides_persona() {
 #[test]
 fn resolve_without_disallowed_tools_has_no_denylist() {
     let agents = roster(vec![explore_with_prompt()]);
-    let models = registry(vec![model("openai", "gpt-5.6-luna-fast")]);
+    let models = registry(vec![model("openai", "gpt-6-luna-fast")]);
     assert_eq!(
         expect_resolved(resolve("explore", &agents, &models))
             .persona
@@ -873,11 +873,11 @@ fn resolve_fallback_chain_returns_metadata_and_persona() {
         execution_mode: text("in-process"),
         ..explore_with_prompt()
     }]);
-    let models = registry(vec![model("openai", "gpt-5.6-luna-fast")]);
+    let models = registry(vec![model("openai", "gpt-6-luna-fast")]);
     let result = expect_resolved(resolve("explore", &agents, &models));
-    assert_eq!(result.model, "openai/gpt-5.6-luna-fast");
+    assert_eq!(result.model, "openai/gpt-6-luna-fast");
     let mut expected =
-        ResolvedModelRecord::new(ResolvedModelSource::Agent, "openai", "gpt-5.6-luna-fast");
+        ResolvedModelRecord::new(ResolvedModelSource::Agent, "openai", "gpt-6-luna-fast");
     expected.variant = text("low");
     expected.reasoning = text("low");
     assert_eq!(result.resolved_model, Some(expected));
@@ -1002,15 +1002,15 @@ fn resolve_all_keyless_uses_builtin_chain() {
         ..AgentDefinition::named("explore")
     }]);
     let models = catalog_registry(
-        vec![model("openai", "gpt-5.6-luna-fast")],
+        vec![model("openai", "gpt-6-luna-fast")],
         vec![
             model("anthropic", "claude-haiku-4-5"),
-            model("openai", "gpt-5.6-luna-fast"),
+            model("openai", "gpt-6-luna-fast"),
         ],
     );
     assert_eq!(
         expect_resolved(resolve("explore", &agents, &models)).model,
-        "openai/gpt-5.6-luna-fast"
+        "openai/gpt-6-luna-fast"
     );
 }
 
@@ -1022,15 +1022,15 @@ fn resolve_disabled_agent_is_not_found() {
             ..AgentDefinition::named("explore")
         },
         AgentDefinition {
-            model: text("openai/momus"),
-            ..AgentDefinition::named("momus")
+            model: text("openai/plan-reviewer"),
+            ..AgentDefinition::named("plan-reviewer")
         },
     ]);
     assert_eq!(
         resolve("explore", &agents, &registry(vec![])),
         AgentResolutionResult::NotFound {
             agent: "explore".to_string(),
-            available_agents: vec!["momus".to_string()],
+            available_agents: vec!["plan-reviewer".to_string()],
         }
     );
 }
@@ -1039,8 +1039,8 @@ fn resolve_disabled_agent_is_not_found() {
 fn resolve_unknown_agent_returns_sorted_roster() {
     let agents = roster(vec![
         AgentDefinition {
-            model: text("openai/momus"),
-            ..AgentDefinition::named("momus")
+            model: text("openai/plan-reviewer"),
+            ..AgentDefinition::named("plan-reviewer")
         },
         AgentDefinition {
             model: text("openai/explore"),
@@ -1051,7 +1051,7 @@ fn resolve_unknown_agent_returns_sorted_roster() {
         resolve("missing", &agents, &registry(vec![])),
         AgentResolutionResult::NotFound {
             agent: "missing".to_string(),
-            available_agents: vec!["explore".to_string(), "momus".to_string()],
+            available_agents: vec!["explore".to_string(), "plan-reviewer".to_string()],
         }
     );
 }
@@ -1086,10 +1086,10 @@ fn resolve_override_without_registry_filters_allowlist() {
             AgentToolRule::new("bash git status", true),
             AgentToolRule::new("lsp_diagnostics", true),
         ]),
-        ..AgentDefinition::named("momus")
+        ..AgentDefinition::named("plan-reviewer")
     }]);
     let result = expect_resolved(resolve_agent(
-        "momus",
+        "plan-reviewer",
         &agents,
         None,
         &ResolveAgentOptions {

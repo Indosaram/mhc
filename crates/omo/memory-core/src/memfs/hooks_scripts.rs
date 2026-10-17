@@ -17,9 +17,22 @@ fm_value() {
     grep "^$2:" | head -1 | cut -d: -f2- | sed 's/^ *//;s/ *$//'
 }
 
+check_plain_scalar() {
+  # $1 = file, $2 = key, $3 = value. A quoted value is the renderer's own
+  # output; a plain value must be one that strict YAML reads back verbatim.
+  case "$3" in
+    \"*|\'*|"") return 0 ;;
+    *": "*|*":"|*" #"*|"#"*|"["*|"]"*|"{"*|"}"*|"&"*|"*"*|"!"*|"|"*|">"*|"%"*|"@"*|"\`"*|","*|"?"*|"-"|"- "*)
+      printf "  %s: '%s' is not a safe YAML plain scalar (quote it, or remove ': ' and ' #'): %s\n" "$1" "$2" "$3"
+      ;;
+  esac
+}
+
 check_keys() {
-  # Prints one error line per offending frontmatter key. Runs in a pipeline
-  # subshell, so it must never rely on assignments leaking to the caller.
+  # $1 = file, $2 = HEAD content, $3 = frontmatter, $4 = key policy
+  # ("contract" = memory key allowlist, "skill" = any key). Prints one error
+  # line per offending frontmatter key. Runs in a pipeline subshell, so it
+  # must never rely on assignments leaking to the caller.
   printf '%s\n' "$3" | while IFS= read -r line; do
     [ -z "$line" ] && continue
     # Indented lines are YAML continuations of the previous key.
@@ -28,15 +41,19 @@ check_keys() {
     key=$(printf '%s\n' "$line" | cut -d: -f1 | tr -d ' ')
     value=$(printf '%s\n' "$line" | cut -d: -f2- | sed 's/^ *//;s/ *$//')
 
-    known=false
-    for k in $ALL_KNOWN_KEYS; do
-      [ "$key" = "$k" ] && known=true && break
-    done
-    if [ "$known" = false ]; then
-      case "$4" in
-        skill) ;;
-        *) printf "  %s: unknown frontmatter key '%s' (allowed: %s)\n" "$1" "$key" "$ALL_KNOWN_KEYS"; continue ;;
-      esac
+    if [ "$4" != skill ]; then
+      known=false
+      for k in $ALL_KNOWN_KEYS; do
+        [ "$key" = "$k" ] && known=true && break
+      done
+      if [ "$known" = false ]; then
+        printf "  %s: unknown frontmatter key '%s' (allowed: %s)\n" "$1" "$key" "$ALL_KNOWN_KEYS"
+        continue
+      fi
+    fi
+
+    if [ "$key" != description ] && [ "$key" != aliases ] && [ "$key" != read_only ]; then
+      check_plain_scalar "$1" "$key" "$value"
     fi
 
     if [ "$key" = read_only ]; then
@@ -55,13 +72,14 @@ check_keys() {
       case "$value" in
         "") printf "  %s: 'description' must not be empty\n" "$1" ;;
         [\>\|]*) printf "  %s: 'description' must be a non-empty single line\n" "$1" ;;
-        *": "*|*":"|*" #"*|"["*|"]"*|"{"*|"}"*|"&"*|"!"*|"|"*|">"*|"%"*|"@"*|","*|"?"*|"-"|"- "*) printf "  %s: 'description' is not a safe YAML scalar\n" "$1" ;;
+        *) check_plain_scalar "$1" description "$value" ;;
       esac
     fi
   done
 }
 
 check_file() {
+  # $1 = file, $2 = key policy ("contract" or "skill")
   file="$1"
   policy="${2:-contract}"
   staged=$(git show ":$file")
@@ -104,15 +122,20 @@ errors=$(
       printf '  %s: invalid skill path (skills must be folders). Use skills/<name>/SKILL.md\n' "$skill_file"
     done
 
-  # Frontmatter is validated for system/reference/people and skill documents.
-  # SKILL.md files live under skills/ and are never matched here.
+  # Memory content keys are an allowlist under system/, reference/ and people/.
   git diff --cached --name-only --diff-filter=ACM |
     grep -E '^(memory/)?(system|reference|people)/.*\.md$' |
     while IFS= read -r file; do
-      check_file "$file"
+      check_file "$file" contract
     done
 
-  git diff --cached --name-only --diff-filter=ACM | grep -E '^(memory/)?skills/.+/SKILL\.md$' | while IFS= read -r file; do check_file "$file" skill; done
+  # SKILL.md is read by the skill loader as strict YAML: same value rules,
+  # description required, any key allowed.
+  git diff --cached --name-only --diff-filter=ACM |
+    grep -E '^(memory/)?skills/.+/SKILL\.md$' |
+    while IFS= read -r file; do
+      check_file "$file" skill
+    done
 )
 
 if [ -n "$errors" ]; then
@@ -121,12 +144,45 @@ if [ -n "$errors" ]; then
   exit 1
 fi
 
-secret_failed=$(git diff --cached --no-renames --diff-filter=AMT --raw --no-abbrev | while IFS= read -r line; do
-  meta=${line%%"$TAB"*}; p=${line#*"$TAB"}; set -- $meta; [ "$2" = "160000" ] && continue
-  blob=$(git cat-file blob "$4" 2>/dev/null) || { printf 'memory pre-commit: %s could not be read for secret screening\n' "$p"; continue; }
-  if printf '%s' "$blob" | grep -E -q '(^|[^A-Za-z0-9_])AKIA[0-9A-Z]{16}([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])sk-(proj-)?[-_A-Za-z0-9]+'; then printf 'memory pre-commit: %s contains secret-like content\n' "$p"; fi
-done)
-if [ -n "$secret_failed" ]; then printf '%s\n' "$secret_failed"; exit 1; fi
+
+# Secret-like material backstop for hand commits (regex-only defense in depth;
+# the authoritative gates scan with evasion normalisation before this runs).
+# Content is read by blob id from the raw diff (renames shown as an add, so a
+# moved file is scanned too), so no file name (quoted,
+# non-ASCII or carrying shell metacharacters) decides what gets scanned; the
+# name is only ever printed, as data, in git's own quoting.
+secret_failed=$(
+  git diff --cached --no-renames --diff-filter=AMT --raw --no-abbrev |
+    while IFS= read -r line; do
+      meta=${line%%"$TAB"*}
+      p=${line#*"$TAB"}
+      set -- $meta
+      [ "$2" = "160000" ] && continue
+      blob=$(git cat-file blob "$4" 2>/dev/null) || {
+        printf 'memory pre-commit: %s could not be read for secret screening\n' "$p"
+        continue
+      }
+      if printf '%s' "$blob" | grep -E -q -e '(^|[^A-Za-z0-9_])AKIA[0-9A-Z]{16}([^A-Za-z0-9_]|$)'; then
+        printf 'memory pre-commit: %s contains secret-like content (aws_access_key)\n' "$p"
+      fi
+      if printf '%s' "$blob" | grep -E -q -e '(^|[^A-Za-z0-9_])([Bb][Ee][Aa][Rr][Ee][Rr]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Ww][Dd])[[:space:]]*[=:][[:space:]]*[^[:space:]]{1,255}'; then
+        printf 'memory pre-commit: %s contains secret-like content (credential_assignment)\n' "$p"
+      fi
+      if printf '%s' "$blob" | grep -E -q -e '(^|[^A-Za-z0-9_])[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*:[[:space:]]*[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+[^[:space:]]{1,255}'; then
+        printf 'memory pre-commit: %s contains secret-like content (authorization_header)\n' "$p"
+      fi
+      if printf '%s' "$blob" | grep -E -q -e '(^|[^A-Za-z0-9_])sk-(proj-)?[-_A-Za-z0-9]+([^A-Za-z0-9_-]|$)'; then
+        printf 'memory pre-commit: %s contains secret-like content (openai_key)\n' "$p"
+      fi
+      if printf '%s' "$blob" | grep -E -q -e '(^|[^A-Za-z0-9_])(ghp|github_pat|glpat|xox[baprs])[-_][-_A-Za-z0-9]+([^A-Za-z0-9_-]|$)'; then
+        printf 'memory pre-commit: %s contains secret-like content (vendor_token)\n' "$p"
+      fi
+    done
+)
+if [ -n "$secret_failed" ]; then
+  printf '%s\n' "$secret_failed"
+  exit 1
+fi
 
 exit 0
 "##;

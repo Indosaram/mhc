@@ -67,7 +67,7 @@ pub fn build_task_tool_description(input: &DescriptionInput<'_>) -> String {
             format!(
                 "\n  Plan-gated agents (spawnable only after the user explicitly requests the ulw-plan workflow, a .omo/plans/*.md plan artifact was touched in this session, and start-work was never invoked): {gated}"
             ),
-            "\n  momus is one-shot: spawn it, read task_output, optionally task_cancel; task_send is always refused. The harness replaces the momus spawn prompt with the canonical plan-review contract (one .omo/plans/*.md path only) - any other prompt content is discarded, so pass the plan path and nothing else.",
+            "\n  plan-reviewer is one-shot: spawn it, read task_output, optionally task_cancel; task_send is always refused. The harness replaces the plan-reviewer spawn prompt with the canonical plan-review contract (one .omo/plans/*.md path only) - any other prompt content is discarded, so pass the plan path and nothing else.",
         )
     };
     let category_list = render_list(
@@ -92,8 +92,6 @@ Blank provider padding is normalized automatically; do not add filler values.
 load_skills prepends named skills. run_in_background=true returns task ids for parallel work; false waits for results.
 name is an optional stable handle. model is an explicit override for subagent_type spawns ONLY.
 NEVER combine model with category: a category-routed task always takes its model from omo.json (categories.<name>.models), so passing both fails with invalid_arguments.
-  CORRECT: task(subagent_type="momus", model="openai/gpt-5.6-sol", prompt="...")
-  INCORRECT: task(category="architect", model="quotio-openai/gpt-5.6-luna-fast", prompt="...")
 task_send continues an existing child; task always spawns.
 Prompts MUST be in English."#
     )

@@ -48,8 +48,8 @@ fn known_broken_name_returns_recorded_spec_error() {
 }
 #[test]
 fn curated_agent_rejected_before_team_creation() {
-    let root = tempfile::tempdir().unwrap(); let ports = build_member_ports(&json!({}), &BTreeSet::from(["momus".into()]));
-    let raw = json!({"members":[{"name":"momus","kind":"subagent_type","subagent_type":"momus","prompt":"review"}]});
+    let root = tempfile::tempdir().unwrap(); let ports = build_member_ports(&json!({}), &BTreeSet::from(["plan-reviewer".into()]));
+    let raw = json!({"members":[{"name":"plan-reviewer","kind":"subagent_type","subagent_type":"plan-reviewer","prompt":"review"}]});
     let error = resolve_team_spec(None, Some(&raw), &ports, root.path(), None).err().unwrap();
     assert_eq!(error.code, SenpiTeamSpecErrorCode::UnknownSubagentType);
 }

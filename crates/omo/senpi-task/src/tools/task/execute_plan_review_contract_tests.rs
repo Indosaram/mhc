@@ -76,9 +76,9 @@ fn empty_refs_session() -> FakeState {
     }
 }
 
-/// The contract path for the momus agent: the forced child prompt, or the denial message.
+/// The contract path for the plan-reviewer agent: the forced child prompt, or the denial message.
 fn momus_contract(prompt: &str, state: &FakeState) -> Result<String, String> {
-    assert!(interaction_policy_for_agent("momus").is_some());
+    assert!(interaction_policy_for_agent("plan-reviewer").is_some());
     match resolve_plan_review_target(prompt, state) {
         PlanReviewTarget::Path { path } => Ok(build_plan_review_prompt(&path)),
         PlanReviewTarget::Deny { message } => Err(message),
@@ -130,7 +130,7 @@ fn artifact_true_with_zero_references_and_no_path_denies() {
 #[test]
 fn missing_resolver_fails_closed_into_deny_for_momus() {
     // A session without plan state (no resolver) never yields a child prompt.
-    let outcome = plan_review_contract_outcome(None, "momus", &format!("review {PLAN_A}"), "s1");
+    let outcome = plan_review_contract_outcome(None, "plan-reviewer", &format!("review {PLAN_A}"), "s1");
 
     assert_eq!(
         outcome,
@@ -169,10 +169,10 @@ fn prompt_substitution_depends_only_on_recorded_path() {
 fn batch_only_momus_item_prompt_is_forced() {
     let state = open_session();
 
-    let momus = momus_contract("check my plan thoroughly please", &state);
+    let plan_reviewer = momus_contract("check my plan thoroughly please", &state);
     let explore = plan_review_contract_outcome(None, "explore", "scan the repo", "s1");
 
-    assert_eq!(momus, Ok(canonical(PLAN_A)));
+    assert_eq!(plan_reviewer, Ok(canonical(PLAN_A)));
     assert_eq!(explore, None);
 }
 

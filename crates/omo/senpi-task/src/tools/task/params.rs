@@ -31,7 +31,7 @@ fn build_task_tool_params() -> Value {
             },
             "subagent_type": {
                 "type": "string",
-                "description": "Agent name to invoke directly (e.g. momus). Mutually exclusive with category; required unless category is given."
+                "description": "Agent name to invoke directly (e.g. plan-reviewer). Mutually exclusive with category; required unless category is given."
             },
             "run_in_background": {
                 "type": "boolean",

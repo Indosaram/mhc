@@ -11,9 +11,9 @@ use crate::tools::task::description::{
 };
 
 fn agents() -> BTreeMap<String, AgentDefinition> {
-    let mut momus = AgentDefinition::named("momus");
-    momus.description = "Deep reasoning".to_string().into();
-    [("momus".to_string(), momus)].into_iter().collect()
+    let mut plan_reviewer = AgentDefinition::named("plan-reviewer");
+    plan_reviewer.description = "Deep reasoning".to_string().into();
+    [("plan-reviewer".to_string(), plan_reviewer)].into_iter().collect()
 }
 
 fn empty_config() -> Value {
@@ -58,7 +58,7 @@ fn given_description_when_built_then_it_describes_spawn_only_task_and_task_send_
 #[test]
 fn given_loaded_agents_when_built_then_it_lists_available_agent_types() {
     let description = build(&empty_config());
-    assert!(description.contains("momus"));
+    assert!(description.contains("plan-reviewer"));
 }
 
 #[test]

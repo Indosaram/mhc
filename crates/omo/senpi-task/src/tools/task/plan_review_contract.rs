@@ -1,5 +1,5 @@
 //! `tools/task/plan-review-contract.ts`: the plan-review prompt contract for one-shot review
-//! agents (momus). The child receives EXACTLY one canonical sentence carrying one
+//! agents (plan-reviewer). The child receives EXACTLY one canonical sentence carrying one
 //! `.omo/plans/*.md` path. Target precedence: an explicit single path in the caller prompt that
 //! matches a session-recorded reference; otherwise the session's most-referenced plan artifact
 //! (count desc, recency tie-break); otherwise the spawn is denied.
@@ -17,7 +17,7 @@ static PLAN_PATH_GLOBAL: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(r#"(?i)[^\s"'`()\[\]]*\.omo[\\/]plans[\\/][^\s"'`()\[\]/\\]+\.md"#).ok()
 });
 
-pub const PLAN_REVIEW_DENY_MESSAGE: &str = "momus requires exactly one .omo/plans/*.md path: include the plan path in the prompt, or touch the plan file in this session first.";
+pub const PLAN_REVIEW_DENY_MESSAGE: &str = "plan-reviewer requires exactly one .omo/plans/*.md path: include the plan path in the prompt, or touch the plan file in this session first.";
 
 pub fn extract_plan_paths(text: &str) -> Vec<String> {
     let Some(pattern) = PLAN_PATH_GLOBAL.as_ref() else {
@@ -106,7 +106,7 @@ pub fn resolve_plan_review_contract(
 /// Returns `None` when the target agent carries no plan-review contract (passthrough), otherwise
 /// the forced prompt or the denial. A missing resolver fails CLOSED into the empty state, which
 /// yields the deny branch for contract agents. The only agent carrying an interaction policy
-/// (momus) is the plan-review contract agent.
+/// (plan-reviewer) is the plan-review contract agent.
 pub fn plan_review_contract_outcome(
     resolver: Option<&SkillInvocationResolver>,
     subagent_type: &str,

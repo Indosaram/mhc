@@ -1058,7 +1058,7 @@ fn retired_momus_id_starts_as_ordinary_agent() {
             prompt: "TASK: review the plan. DELIVERABLE: findings. SCOPE: read-only. VERIFY: findings listed. STOP WHEN: findings are written.".into(),
             label: None,
             category: None,
-            subagent_type: Some("momus".into()),
+            subagent_type: Some("plan-reviewer".into()),
             model: Some("anthropic/claude-opus-4".into()),
             depends_on: None,
             task_summary: None,
@@ -1084,7 +1084,7 @@ fn retired_momus_id_starts_as_ordinary_agent() {
     assert_eq!(details["kind"], "started");
     let node = &details["snapshot"]["nodes"][0];
     assert_eq!(node["route"]["kind"], "agent");
-    assert_eq!(node["route"]["agent"], "momus");
+    assert_eq!(node["route"]["agent"], "plan-reviewer");
     assert_eq!(node["route"]["model"], "anthropic/claude-opus-4");
     assert!(details["warnings"].as_array().unwrap().is_empty());
 }

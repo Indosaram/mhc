@@ -3,7 +3,7 @@ use maho_omo_agent_home::resolve_agent_home;
 pub const PLAN9_FILE_SYSTEM_TYPE:i64=0x0102_1997;
 pub const OMO_CONFIG_FILE_FILTER_GLOBS:[&str;2]=["/omo.jsonc","/omo.json"];
 pub const OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;3]=["/.omo","/.omo/omo.jsonc","/.omo/omo.json"];
-pub const USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;1]=["/.omo"];
+pub const USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;3]=["/.omo","/.omo/omo.jsonc","/.omo/omo.json"];
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct OmoConfigWatchTarget { pub path:PathBuf,pub kind:&'static str,pub filter_globs:Vec<String> }
 #[derive(Clone,Debug,PartialEq,Eq)]

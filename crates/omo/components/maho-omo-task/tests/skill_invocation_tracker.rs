@@ -12,7 +12,7 @@ mod support;
         api.registered.handlers[&EventKind::Input][0](&mut event,&context).await.expect("registered input");
         if id=="human-plan" { let state=tracker.state_for("session"); assert!(state.has_user_requested("ulw-plan")); assert!(!state.has_invoked("ulw-plan")); }
     }
-    let state=tracker.state_for("session"); assert!(state.has_invoked("start-work")); assert!(state.has_user_requested("start-work")); assert!(tracker.invocation_gate_denial("momus","session").is_some()); assert!(!tracker.state_for("foreign").has_invoked("start-work"));
+    let state=tracker.state_for("session"); assert!(state.has_invoked("start-work")); assert!(state.has_user_requested("start-work")); assert!(tracker.invocation_gate_denial("plan-reviewer","session").is_some()); assert!(!tracker.state_for("foreign").has_invoked("start-work"));
 }
 #[tokio::test] async fn registered_events_capture_input_tool_result_and_shutdown() {
     use maho_ext_api::{EventKind,ExtensionEvent,InputEvent,ToolResultEvent,SessionShutdownEvent,SessionReason};
@@ -23,12 +23,12 @@ mod support;
 }
 #[test] fn spawn_policy_reads_current_tracked_gate_and_plan_state() {
     use senpi_task::tools::task::spawn_policy::{SpawnPolicyDeps,PlanReviewContractOutcome};
-    let tracker=SkillInvocationTracker::new().expect("tracker"); assert!(tracker.invocation_gate_denial("momus","a").is_some()); assert!(tracker.invocation_gate_denial("explore","a").is_none());
+    let tracker=SkillInvocationTracker::new().expect("tracker"); assert!(tracker.invocation_gate_denial("plan-reviewer","a").is_some()); assert!(tracker.invocation_gate_denial("explore","a").is_none());
     tracker.input("a","/skill:ulw-plan",InputSource::Interactive); tracker.tool_result("a","write",&json!({"path":"/repo/.omo/plans/a.md"}),false);
-    assert!(tracker.invocation_gate_denial("momus","a").is_none());
-    let Some(PlanReviewContractOutcome::Prompt { prompt })=tracker.plan_review_contract_outcome("momus","ignored caller text","a") else { panic!("canonical prompt"); };
+    assert!(tracker.invocation_gate_denial("plan-reviewer","a").is_none());
+    let Some(PlanReviewContractOutcome::Prompt { prompt })=tracker.plan_review_contract_outcome("plan-reviewer","ignored caller text","a") else { panic!("canonical prompt"); };
     assert_eq!(prompt,senpi_task::tools::task::plan_review_contract::build_plan_review_prompt("/repo/.omo/plans/a.md"));
-    tracker.input("a","/skill:start-work",InputSource::Interactive); assert!(tracker.invocation_gate_denial("momus","a").is_some()); assert!(tracker.invocation_gate_denial("momus","foreign").is_some());
+    tracker.input("a","/skill:start-work",InputSource::Interactive); assert!(tracker.invocation_gate_denial("plan-reviewer","a").is_some()); assert!(tracker.invocation_gate_denial("plan-reviewer","foreign").is_some());
 }
 #[test] fn read_skill_arms_invoked_not_requested() { let tracker = SkillInvocationTracker::new().unwrap(); tracker.tool_result("a","read",&json!({"path":"/repo/skills/ulw-plan/SKILL.md"}),false); let state = tracker.state_for("a"); assert!(state.has_invoked("ulw-plan")); assert!(!state.has_user_requested("ulw-plan")); }
 #[test] fn failed_reads_do_not_arm_invocation() { let tracker = SkillInvocationTracker::new().unwrap(); tracker.tool_result("a","read",&json!({"path":"/repo/skills/ulw-plan/SKILL.md"}),true); assert!(!tracker.state_for("a").has_invoked("ulw-plan")); }

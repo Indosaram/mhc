@@ -21,8 +21,8 @@ fn agent_set() -> BTreeMap<String, AgentDefinition> {
     [
         ("explore", "Codebase search"),
         ("librarian", "Docs research"),
-        ("metis", "Pre-planning consultant"),
-        ("momus", "Plan reviewer"),
+        ("plan-consultant", "Pre-planning consultant"),
+        ("plan-reviewer", "Plan reviewer"),
     ]
     .into_iter()
     .map(|(name, description)| (name.to_string(), agent(name, description)))
@@ -46,8 +46,8 @@ fn given_gated_and_plain_agents_when_built_then_plan_gated_agents_are_classified
     assert!(description.contains("start-work"));
     assert!(description.contains("user explicitly request"));
     assert!(description.contains(".omo/plans"));
-    assert!(description.contains("metis"));
-    assert!(description.contains("momus"));
+    assert!(description.contains("plan-consultant"));
+    assert!(description.contains("plan-reviewer"));
 }
 
 #[test]
@@ -60,8 +60,8 @@ fn given_gated_and_plain_agents_when_built_then_available_agents_line_excludes_g
         .unwrap_or_default();
     assert!(available_line.contains("explore"));
     assert!(available_line.contains("librarian"));
-    assert!(!available_line.contains("metis"));
-    assert!(!available_line.contains("momus"));
+    assert!(!available_line.contains("plan-consultant"));
+    assert!(!available_line.contains("plan-reviewer"));
 }
 
 #[test]

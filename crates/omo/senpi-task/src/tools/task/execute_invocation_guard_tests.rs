@@ -161,7 +161,7 @@ fn run(params: SpawnParamsInput, invocations: Option<FakeInvocations>) -> (TaskT
 
 #[test]
 fn given_no_resolver_when_spawning_momus_then_fails_closed_without_starting() {
-    let (result, count) = run(single("p", Some("momus"), None, false), None);
+    let (result, count) = run(single("p", Some("plan-reviewer"), None, false), None);
 
     assert_eq!(count, 0);
     assert_eq!(result.details.status, "denied");
@@ -171,7 +171,7 @@ fn given_no_resolver_when_spawning_momus_then_fails_closed_without_starting() {
 #[test]
 fn given_no_invocations_when_spawning_momus_then_denies_naming_ulw_plan() {
     let (result, count) = run(
-        single("p", Some("momus"), None, false),
+        single("p", Some("plan-reviewer"), None, false),
         Some(state(&[], &[], false)),
     );
 
@@ -183,7 +183,7 @@ fn given_no_invocations_when_spawning_momus_then_denies_naming_ulw_plan() {
 #[test]
 fn given_no_invocations_when_spawning_metis_then_denies_naming_ulw_plan() {
     let (result, count) = run(
-        single("p", Some("metis"), None, false),
+        single("p", Some("plan-consultant"), None, false),
         Some(state(&[], &[], false)),
     );
 
@@ -195,7 +195,7 @@ fn given_no_invocations_when_spawning_metis_then_denies_naming_ulw_plan() {
 #[test]
 fn given_only_skill_md_read_invocation_when_spawning_momus_then_stays_denied() {
     let (result, count) = run(
-        single("p", Some("momus"), None, false),
+        single("p", Some("plan-reviewer"), None, false),
         Some(state(&["ulw-plan"], &[], true)),
     );
 
@@ -206,7 +206,7 @@ fn given_only_skill_md_read_invocation_when_spawning_momus_then_stays_denied() {
 #[test]
 fn given_user_requested_plan_with_artifact_when_spawning_momus_then_gate_opens() {
     let (result, count) = run(
-        single("p", Some("momus"), None, true),
+        single("p", Some("plan-reviewer"), None, true),
         Some(state(&[], &["ulw-plan"], true)),
     );
 
@@ -217,7 +217,7 @@ fn given_user_requested_plan_with_artifact_when_spawning_momus_then_gate_opens()
 #[test]
 fn given_requested_plan_then_start_work_when_spawning_momus_then_denies_naming_start_work() {
     let (result, count) = run(
-        single("p", Some("momus"), None, false),
+        single("p", Some("plan-reviewer"), None, false),
         Some(state(&["start-work"], &["ulw-plan"], true)),
     );
 
@@ -229,7 +229,7 @@ fn given_requested_plan_then_start_work_when_spawning_momus_then_denies_naming_s
 #[test]
 fn given_only_start_work_when_spawning_momus_then_forbidden_denial_takes_precedence() {
     let (result, count) = run(
-        single("p", Some("momus"), None, false),
+        single("p", Some("plan-reviewer"), None, false),
         Some(state(&["start-work"], &[], false)),
     );
 
@@ -264,7 +264,7 @@ fn given_no_invocations_when_spawning_category_then_gate_does_not_apply() {
 fn given_batch_with_gated_item_when_executed_then_gated_item_fails_and_never_reaches_manager() {
     let params = SpawnParamsInput {
         tasks: Some(vec![
-            item("review the plan", "momus"),
+            item("review the plan", "plan-reviewer"),
             item("scan", "explore"),
         ]),
         run_in_background: Some(true),

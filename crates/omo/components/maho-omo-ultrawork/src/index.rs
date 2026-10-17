@@ -19,33 +19,54 @@ impl SessionArming {
 pub fn shared_session_arming()->Arc<Mutex<SessionArming>>{static ARMING:OnceLock<Arc<Mutex<SessionArming>>>=OnceLock::new();Arc::clone(ARMING.get_or_init(||Arc::new(Mutex::new(SessionArming::default()))))}
 
 pub fn is_ultrawork_input(text:&str)->bool{!visible_invocations(text).is_empty()}
-fn keyword_matches(text:&str)->Vec<(usize,usize,bool)>{let mut found=Vec::new();let mut offset=0;while offset<text.len(){let rest=&text[offset..];let full=rest.find("ultrawork").map(|i|(i,9,true));let short=rest.match_indices("ulw").find(|(i,_)|!rest[i+3..].starts_with('-')).map(|(i,_)|(i,3,false));let next=match(full,short){(None,None)=>break,(Some(v),None)|(None,Some(v))=>v,(Some(a),Some(b))=>if a.0<=b.0{a}else{b}};let start=offset+next.0;let end=start+next.1;found.push((start,end,next.2));offset=end;}found}
-fn is_invocation_word(text:&str,start:usize,end:usize)->bool{let before=text[..start].chars().next_back();let after=text[end..].chars().next();let word=|c:char|c.is_alphanumeric()||c=='_';!(before.is_some_and(word)||after.is_some_and(word)||after==Some('.')&&text[end+1..].chars().next().is_some_and(|c|c.is_alphanumeric()||c=='_'))}
+// skill-pointers/strip-quoted-regions.ts: the keyword arms only as a word of its own; quoted, injected,
+// relayed and negated regions are blanked (offset-preserving) before the pattern runs.
+const NOT_AFTER_IDENTIFIER:&str=r"(?<![A-Za-z0-9][-_.]|[/\\])";
+const NOT_BEFORE_PATH:&str=r"(?![-_.]?[A-Za-z0-9]*[/\\])";
+const SEGMENT_END:&str=r"(?![-_.]?[A-Za-z0-9])";
+fn fancy(pattern:&str)->fancy_regex::Regex{match fancy_regex::Regex::new(pattern){Ok(regex)=>regex,Err(error)=>panic!("invalid static ultrawork expression: {error}")}}
+static ULTRAWORK_KEYWORD:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?i)\b(?:ultrawork|ulw)\b"));
+static ULTRAWORK_CURRENT_PROMPT_PATTERN:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||{
+    let not_into=format!(r"(?![-_](?!(?:loop|plan|research|execute|mass){SEGMENT_END})[A-Za-z0-9]|\.[A-Za-z0-9])");
+    fancy(&format!(r"(?i){NOT_AFTER_IDENTIFIER}\b(?:ultrawork|ulw)\b{not_into}{NOT_BEFORE_PATH}"))
+});
+static INJECTED_BLOCK:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?i)<(omo-[a-z0-9-]+-pointer|ultrawork-mode|omo-ultrawork-reminder)>[\s\S]*?</\1>"));
+static INLINE_CODE:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)"));
+static RELAY_HEADER:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"^\s*(?:\[(?:[A-Z][A-Z0-9_-]{2,}|[\w.-]+ -> [\w.-]+)\]|[A-Z][\w.-]{0,30} \([^()\s]{1,40}\)(?:, | to )[\w.-]{1,40}:)"));
+static BLOCK_QUOTE_LINE:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?m)^ {0,3}>[^\n]*"));
+static DOUBLE_QUOTED:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy("\"[^\"\\n]*\"|\u{201C}[^\u{201D}\\n]*\u{201D}"));
+static URL_SPAN:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r#"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s<>"'`]+"#));
+static NEGATED_INVOCATION:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy("(?i)\\b(?:do\\s+not|don['\u{2019}]t|dont|never)\\s+(?:load|use|run|invoke|start|trigger|arm|enable)\\b[^.;:!?\\n]*?(?=[.;:!?\\n]|\\s(?:but|then|instead|however)\\b|\\s[\u{2014}\u{2013}-]\\s|$)"));
+static FENCE_START:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?m)^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)"));
+fn mask(region:&str)->String{region.chars().map(|c|if matches!(c,'\r'|'\n'){c}else{'\0'}).collect()}
+fn mask_all(text:&str,regex:&fancy_regex::Regex)->String{
+    let mut out=String::with_capacity(text.len());let mut last=0;
+    for found in regex.find_iter(text).flatten(){out.push_str(&text[last..found.start()]);out.push_str(&mask(found.as_str()));last=found.end();}
+    out.push_str(&text[last..]);out
+}
+/// `stripQuotedRegions`: quoted spans plus negated invocations masked.
+fn strip_quoted_regions(text:&str)->String{mask_all(&strip_quoted_spans(text),&NEGATED_INVOCATION)}
+/// `stripQuotedSpans`: injected blocks, fences, inline code, block quotes, quotes, URLs and relays masked.
+fn strip_quoted_spans(text:&str)->String{
+    if RELAY_HEADER.is_match(text).unwrap_or(false){return mask(text);}
+    let mut visible=mask_all(text,&INJECTED_BLOCK);
+    let mut from=0;
+    while let Ok(Some(opening))=FENCE_START.captures_from_pos(&visible,from){
+        let (Some(whole),Some(fence))=(opening.get(0),opening.get(1)) else {break};
+        let fence=fence.as_str();let fence_char=&fence[..1];
+        let end_pattern=fancy(&format!(r"(?m)^ {{0,3}}{}{{{},}}[ \t]*\r?$",fancy_regex::escape(fence_char),fence.len()));
+        let end=match end_pattern.find_from_pos(&visible,whole.end()){Ok(Some(closing))=>closing.end(),_=>visible.len()};
+        let start=whole.start();
+        visible=format!("{}{}{}",&visible[..start],mask(&visible[start..end]),&visible[end..]);
+        from=end;
+    }
+    let visible=mask_all(&visible,&INLINE_CODE);let visible=mask_all(&visible,&BLOCK_QUOTE_LINE);
+    let visible=mask_all(&visible,&DOUBLE_QUOTED);mask_all(&visible,&URL_SPAN)
+}
+/// Every visible keyword invocation as (start, end, is_full_word) byte offsets into `text`.
 fn visible_invocations(text:&str)->Vec<(usize,usize,bool)>{
-    let lower_text=text.to_ascii_lowercase();
-    let mut visible=vec![true;text.len()];
-    for(open,close)in[("<ultrawork-mode>","</ultrawork-mode>"),("<omo-ultrawork-reminder>","</omo-ultrawork-reminder>")]{
-        let mut cursor=0;
-        while let Some(a)=lower_text[cursor..].find(open){let start=cursor+a;let Some(b)=lower_text[start+open.len()..].find(close)else{break};let end=start+open.len()+b+close.len();visible[start..end].fill(false);cursor=end;}
-    }
-    let mut offset=0;let mut result=Vec::new();
-    for line in text.split_inclusive('\n'){
-        let trimmed=line.trim_start();
-        if trimmed.starts_with('>'){visible[offset..offset+line.len()].fill(false);offset+=line.len();continue;}
-        let relay=trimmed.starts_with('[')&&trimmed.find(']').is_some_and(|i|i>1)||trimmed.split_once(" (").is_some_and(|(name,rest)|!name.is_empty()&&rest.contains("), ")&&rest.ends_with(':'));
-        if relay{visible[offset..].fill(false);break;}
-        let lower=line.to_ascii_lowercase();
-        for(start,end,full)in keyword_matches(&lower){
-            if !visible[offset+start..offset+end].iter().all(|b|*b)||!is_invocation_word(&lower,start,end){continue;}
-            let prefix=lower_text[..offset+start].to_owned();let before=prefix.chars().rev().find(|c|!c.is_whitespace());
-            let leading_dash=before==Some('-')&&prefix.split_whitespace().next_back().is_none_or(|part|part.ends_with('-'));
-            let quote_open=prefix.chars().filter(|c|matches!(c,'`'|'"'|'\''|'“'|'‘')).count();
-            if quote_open%2==1||leading_dash||prefix.ends_with("mass-")||prefix.ends_with('.') {continue;}
-            result.push((offset+start,offset+end,full));
-        }
-        offset+=line.len();
-    }
-    result
+    let visible=strip_quoted_regions(text);
+    ULTRAWORK_CURRENT_PROMPT_PATTERN.find_iter(&visible).flatten().map(|found|(found.start(),found.end(),!found.as_str().eq_ignore_ascii_case("ulw"))).collect()
 }
 pub fn already_embedded(text:&str)->bool{text.contains("<ultrawork-mode>")&&text.contains("</ultrawork-mode>")}
 
@@ -53,8 +74,8 @@ pub fn already_embedded(text:&str)->bool{text.contains("<ultrawork-mode>")&&text
 #[derive(Clone,Debug,PartialEq,Eq)]pub struct UltraworkClassification{pub matched_ulw:bool,pub matched_ultrawork:bool,pub occurrence_count:usize,pub effective:bool,pub stage:&'static str,pub route:&'static str,pub suppression_reason:&'static str}
 pub fn arming_snapshot(id:Option<&str>)->ArmingSnapshot{let a=shared_session_arming();let a=a.lock().unwrap_or_else(std::sync::PoisonError::into_inner);ArmingSnapshot{was_armed:a.is_armed(id),compact_rearm_pending:a.is_compact_rearm_pending(id)}}
 pub fn classify_ultrawork_input(text:&str,source:InputSource,snapshot:ArmingSnapshot)->UltraworkClassification{
-    let visible=visible_invocations(text);let lower=text.to_ascii_lowercase();let all=keyword_matches(&lower);let mut result=UltraworkClassification{matched_ulw:visible.iter().any(|(_,_,full)|!*full),matched_ultrawork:visible.iter().any(|(_,_,full)|*full),occurrence_count:visible.len(),effective:false,stage:"none",route:"none",suppression_reason:"none"};if source==InputSource::Extension{result.suppression_reason="extension_source";return result;}
-    if visible.is_empty(){result.suppression_reason=if all.iter().any(|(s,e,_)|!is_invocation_word(&lower,*s,*e)){"identifier_reference"}else if !all.is_empty(){"negated_mention"}else{"no_keyword"};return result;}
+    let visible=visible_invocations(text);let mut result=UltraworkClassification{matched_ulw:visible.iter().any(|(_,_,full)|!*full),matched_ultrawork:visible.iter().any(|(_,_,full)|*full),occurrence_count:visible.len(),effective:false,stage:"none",route:"none",suppression_reason:"none"};if source==InputSource::Extension{result.suppression_reason="extension_source";return result;}
+    if visible.is_empty(){result.suppression_reason=if ULTRAWORK_KEYWORD.is_match(&strip_quoted_regions(text)).unwrap_or(false){"identifier_reference"}else if ULTRAWORK_KEYWORD.is_match(&strip_quoted_spans(text)).unwrap_or(false){"negated_mention"}else{"no_keyword"};return result;}
     if already_embedded(text){result.route="embedded_directive";result.suppression_reason="embedded_directive";return result;}result.route="direct";if let Some(rest)=text.strip_prefix("/skill:"){let(name,_)=rest.split_once(' ').unwrap_or((rest,""));if name=="ultrawork"{result.route="skill_expansion";result.suppression_reason="skill_expansion";return result;}let args=text.find(' ').map_or(text.len(),|i|i+1);if !visible.iter().any(|(i,_,_)|*i>=args){result.route="none";result.suppression_reason="skill_name_only";return result;}result.route="skill_args";}result.effective=true;result.stage=if snapshot.compact_rearm_pending{"post_compact_rearm"}else if snapshot.was_armed{"remention"}else{"first_arm"};result
 }
 pub fn skill_invocation_suppressed(text:&str)->bool{let Some(rest)=text.strip_prefix("/skill:")else{return false;};let(name,args)=rest.split_once(' ').unwrap_or((rest,""));name=="ultrawork"||!is_ultrawork_input(args)}

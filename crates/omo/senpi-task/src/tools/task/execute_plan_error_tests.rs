@@ -90,7 +90,7 @@ fn given_unknown_target_with_active_agents_and_categories_when_executed_then_bot
         PlanResolutionCode::UnknownTarget,
         "Target \"nope\" not found.",
     );
-    error.available_agents = Some(vec!["explore".to_string(), "momus".to_string()]);
+    error.available_agents = Some(vec!["explore".to_string(), "plan-reviewer".to_string()]);
     error.available_categories = Some(vec!["deep".to_string(), "quick".to_string()]);
     let (_dir, manager) = plan_error_manager(error);
 
@@ -105,7 +105,7 @@ fn given_unknown_target_with_active_agents_and_categories_when_executed_then_bot
     // then
     assert_eq!(
         first_text(&result),
-        "Target \"nope\" not found. Available agents: explore, momus. Available categories: deep, quick."
+        "Target \"nope\" not found. Available agents: explore, plan-reviewer. Available categories: deep, quick."
     );
 }
 

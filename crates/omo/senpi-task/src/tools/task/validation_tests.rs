@@ -83,14 +83,14 @@ fn given_legacy_category_alias_when_validated_then_canonical_name_is_selected() 
 #[test]
 fn given_only_subagent_type_when_validated_then_resolves_to_a_subagent_selection() {
     assert_eq!(
-        target(None, Some("momus"), None),
-        TaskTargetSelection::SubagentType("momus".to_string())
+        target(None, Some("plan-reviewer"), None),
+        TaskTargetSelection::SubagentType("plan-reviewer".to_string())
     );
 }
 
 #[test]
 fn given_both_category_and_subagent_type_when_validated_then_returns_a_typed_both_targets_error() {
-    let error = target_error_of(target(Some("quick"), Some("momus"), None));
+    let error = target_error_of(target(Some("quick"), Some("plan-reviewer"), None));
 
     assert_eq!(error.code, TaskTargetErrorCode::BothTargets);
     assert!(error.message.contains("EITHER category OR subagent_type"));
@@ -234,7 +234,7 @@ fn given_item_background_flags_without_top_level_value_when_resolved_then_hoists
 fn given_legacy_single_prompt_params_when_resolved_then_yields_exactly_one_item() {
     let params = SpawnParamsInput {
         prompt: Some("do it".to_string()),
-        subagent_type: Some("momus".to_string()),
+        subagent_type: Some("plan-reviewer".to_string()),
         model: Some("anthropic/claude-opus-4".to_string()),
         load_skills: Some(strings(&["a"])),
         ..SpawnParamsInput::default()
@@ -256,7 +256,7 @@ fn given_legacy_single_prompt_params_when_resolved_then_yields_exactly_one_item(
             load_skills: strings(&["a"]),
             tools: None,
             run_in_background: None,
-            target: SpawnTarget::SubagentType("momus".to_string()),
+            target: SpawnTarget::SubagentType("plan-reviewer".to_string()),
         }]
     );
 }
@@ -265,7 +265,7 @@ fn given_legacy_single_prompt_params_when_resolved_then_yields_exactly_one_item(
 fn given_a_three_item_batch_when_resolved_then_inherits_top_level_model_and_subagent_and_item_overrides_win()
  {
     let params = SpawnParamsInput {
-        subagent_type: Some("momus".to_string()),
+        subagent_type: Some("plan-reviewer".to_string()),
         model: Some("anthropic/claude-opus-4".to_string()),
         load_skills: Some(strings(&["shared"])),
         tasks: Some(vec![
@@ -294,21 +294,21 @@ fn given_a_three_item_batch_when_resolved_then_inherits_top_level_model_and_suba
             )
         })
         .collect();
-    let momus = SpawnTarget::SubagentType("momus".to_string());
+    let plan_reviewer = SpawnTarget::SubagentType("plan-reviewer".to_string());
     assert_eq!(
         facts,
         vec![
             (
-                momus.clone(),
+                plan_reviewer.clone(),
                 Some("anthropic/claude-opus-4"),
                 strings(&["shared"])
             ),
             (
-                momus.clone(),
+                plan_reviewer.clone(),
                 Some("anthropic/claude-haiku"),
                 strings(&["shared"])
             ),
-            (momus, Some("anthropic/claude-opus-4"), strings(&["extra"])),
+            (plan_reviewer, Some("anthropic/claude-opus-4"), strings(&["extra"])),
         ]
     );
 }
@@ -320,7 +320,7 @@ fn given_an_item_subagent_type_when_resolved_then_it_suppresses_the_inherited_to
         tasks: Some(vec![
             item("one"),
             SpawnItemInput {
-                subagent_type: Some("momus".to_string()),
+                subagent_type: Some("plan-reviewer".to_string()),
                 ..item("two")
             },
         ]),
@@ -336,7 +336,7 @@ fn given_an_item_subagent_type_when_resolved_then_it_suppresses_the_inherited_to
         targets,
         vec![
             SpawnTarget::Category("quick".to_string()),
-            SpawnTarget::SubagentType("momus".to_string()),
+            SpawnTarget::SubagentType("plan-reviewer".to_string()),
         ]
     );
 }
@@ -378,7 +378,7 @@ fn given_an_item_with_both_category_and_subagent_type_when_resolved_then_returns
             item("ok"),
             SpawnItemInput {
                 category: Some("deep".to_string()),
-                subagent_type: Some("momus".to_string()),
+                subagent_type: Some("plan-reviewer".to_string()),
                 ..item("bad")
             },
         ]),
@@ -504,8 +504,8 @@ fn given_category_with_model_when_validated_then_returns_a_typed_category_with_m
 #[test]
 fn given_subagent_type_with_model_when_validated_then_resolves_to_a_subagent_selection() {
     assert_eq!(
-        target(None, Some("momus"), Some("openai/gpt-5.6-sol")),
-        TaskTargetSelection::SubagentType("momus".to_string())
+        target(None, Some("plan-reviewer"), Some("openai/gpt-5.6-sol")),
+        TaskTargetSelection::SubagentType("plan-reviewer".to_string())
     );
 }
 
@@ -566,7 +566,7 @@ fn given_a_top_level_category_and_an_item_model_then_returns_an_item_target_erro
 #[test]
 fn given_subagent_items_inheriting_a_top_level_model_then_resolves_ok_with_the_model_attached() {
     let params = SpawnParamsInput {
-        subagent_type: Some("momus".to_string()),
+        subagent_type: Some("plan-reviewer".to_string()),
         model: Some("openai/gpt-5.6-sol".to_string()),
         tasks: Some(vec![item("one")]),
         ..SpawnParamsInput::default()

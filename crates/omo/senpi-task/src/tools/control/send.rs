@@ -46,7 +46,7 @@ pub const TASK_SEND_DESCRIPTION: &str = concat!(
     " ",
     "Team messages always steer into the recipient's running turn.",
     " ",
-    "One-shot agents (momus) always refuse task_send in every state; spawn a new momus instead.",
+    "One-shot agents (plan-reviewer) always refuse task_send in every state; spawn a new plan-reviewer instead.",
 );
 
 pub const MEMBER_SCOPED_TASK_SEND_DESCRIPTION: &str = concat!(

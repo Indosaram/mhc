@@ -103,7 +103,7 @@ fn given_both_targets_when_driven_then_the_engine_start_api_is_never_reached() {
         &SpawnParamsInput {
             prompt: Some("p".to_string()),
             category: Some("quick".to_string()),
-            subagent_type: Some("momus".to_string()),
+            subagent_type: Some("plan-reviewer".to_string()),
             ..SpawnParamsInput::default()
         },
     );
