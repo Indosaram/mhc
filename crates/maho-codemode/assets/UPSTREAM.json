@@ -6,19 +6,6 @@
   "note": "Provenance of every runtime asset embedded by src/kernels/shared/runtime_asset.rs. status: verbatim = byte-identical to upstreamCommit; patched = upstreamCommit plus the described mhc change; local = mhc-only; unported = exists upstream, intentionally not shipped. Run scripts/codemode-upstream-diff.py <senpi checkout> to see upstream drift; update sha256 here when an asset changes.",
   "assets": [
     {
-      "path": "kernels/jl/prelude.jl",
-      "status": "verbatim",
-      "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
-      "sha256": "613e88ddf68f8781738bb9e4af934c52eedb602d4b836c4e78d7ce41b8b51989"
-    },
-    {
-      "path": "kernels/jl/runner.jl",
-      "status": "patched",
-      "upstreamCommit": "0d2271793ce114157563589d2af96d0387f2313a",
-      "change": "completion bridge call sends cellId",
-      "sha256": "14176530f30f7d4c60c76e85eec84560818348a04866828e3b585e1904e23f7d"
-    },
-    {
       "path": "kernels/js/display-image.js",
       "status": "verbatim",
       "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
@@ -140,32 +127,6 @@
       "status": "verbatim",
       "upstreamCommit": "d0392b0814f3c033f58d09dc181321858be27a75",
       "sha256": "21075bd31fe1eca2565fbe8b279987f8f6df0821517f191d3ddaf82848912b23"
-    },
-    {
-      "path": "kernels/py/prelude.py",
-      "status": "patched",
-      "upstreamCommit": "b01b281fa24655bbdb310bd462be300a411c8811",
-      "change": "completion cellId and host-computed per-cell preludes",
-      "sha256": "6646eb526038cf94dbfbab1419a7b6ce795162309613779f3eaabdb9c84e7a4a"
-    },
-    {
-      "path": "kernels/rb/prelude.rb",
-      "status": "patched",
-      "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
-      "change": "completion bridge call sends cellId",
-      "sha256": "f2cb58d6c2156776428883b096d8e86db9dba6eca2d112e030993c938abd14cf"
-    },
-    {
-      "path": "kernels/rb/runner.rb",
-      "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "2fdbf81059031ab742e88297dac7fd2ef23c2e66c64bb2923e15dbb15ef7e8fd"
-    },
-    {
-      "path": "kernels/rb/workpool.rb",
-      "status": "verbatim",
-      "upstreamCommit": "0d2271793ce114157563589d2af96d0387f2313a",
-      "sha256": "16d0ca253e71aef5e8363b732e84a8500ceec666aa56bccefc13048f4a99ce0d"
     },
     {
       "path": "skill/bun-1-4/references/breaking-changes.md",

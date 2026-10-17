@@ -57,14 +57,6 @@ fn active_tool_snapshot_does_not_require_bound_runtime() {
 }
 
 #[test]
-fn runtime_languages_require_settings_and_detection_not_availability_enabled() {
-    use maho_codemode::{config::settings::{CodemodeSettings, Languages}, interpreters::detect::{InterpreterDetection, LanguageAvailability}, tool::types::EvalLanguage};
-    let settings=CodemodeSettings {languages:Languages {py:true,js:true,rb:false,jl:true},..Default::default()};
-    let availability=[EvalLanguage::Py,EvalLanguage::Js,EvalLanguage::Rb,EvalLanguage::Jl].map(|language|(language,LanguageAvailability {enabled:false,detected:if language==EvalLanguage::Jl {InterpreterDetection::Unavailable}else {InterpreterDetection::Detected {path:"interpreter".into(),version:"1.0".into(),resolved_path:None}}}));
-    assert_eq!(enabled_languages_from(&settings,&availability),Languages {py:true,js:true,rb:false,jl:false});
-}
-
-#[test]
 fn runtime_session_id_preserves_strings_and_generates_uuid_for_other_values() {
     assert_eq!(session_id_from(&serde_json::json!({"sessionId":""})),"");
     assert_eq!(session_id_from(&serde_json::json!({"sessionId":"session-1"})),"session-1");
@@ -82,7 +74,7 @@ async fn runtime_preparation_loads_project_settings_applies_language_overrides_a
     let home=root.path().join("home");
     std::fs::create_dir_all(cwd.join(".omo")).unwrap();
     std::fs::create_dir(&home).unwrap();
-    std::fs::write(cwd.join(".omo/codemode.json"),r#"{"languages":{"py":false,"js":false,"rb":false,"jl":false},"parallelPoolWidth":3.9}"#).unwrap();
+    std::fs::write(cwd.join(".omo/codemode.json"),r#"{"languages":{"js":false},"parallelPoolWidth":3.9}"#).unwrap();
     let environment=std::collections::HashMap::from([("SENPI_CODEMODE_JS".into(),"true".into())]);
     let session_file=root.path().join("session.jsonl");
     let event=serde_json::json!({"sessionId":"runtime-session"});
@@ -92,9 +84,6 @@ async fn runtime_preparation_loads_project_settings_applies_language_overrides_a
     assert_eq!(runtime.cwd,cwd);
     assert_eq!(runtime.parallel_pool_width,3);
     assert!(runtime.enabled_languages.js);
-    assert!(!runtime.enabled_languages.py);
-    assert!(!runtime.enabled_languages.rb);
-    assert!(!runtime.enabled_languages.jl);
     assert!(runtime.settings.languages.js);
     assert_eq!(runtime.artifacts.dir,root.path().join("session-artifacts"));
     assert!(!runtime.artifacts.temp);

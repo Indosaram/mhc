@@ -11,7 +11,7 @@ pub fn detached_notification_spill_path(artifacts_dir: Option<&Path>, cell_id: &
 }
 
 pub async fn build_detached_cell_notification(snapshot: &EvalDetachedCellSnapshot, spill_path: Option<&Path>) -> EvalDetachedCellNotification {
-    let language = match snapshot.language { EvalLanguage::Js => "js", EvalLanguage::Py => "py", EvalLanguage::Rb => "rb", EvalLanguage::Jl => "jl" };
+    let language = match snapshot.language { EvalLanguage::Js => "js" };
     let outcome = if let Some(seconds) = snapshot.hard_limit_seconds { format!("was killed at the {seconds}s hard limit") }
         else if let Some(seconds) = snapshot.run_budget_seconds { format!("was killed after exhausting its {seconds}s run budget (own execution time; host tool calls excluded)") }
         else { match snapshot.state { EvalDetachedCellState::Completed => "completed", EvalDetachedCellState::Cancelled => "cancelled", _ => "failed" }.into() };

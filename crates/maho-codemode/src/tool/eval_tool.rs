@@ -12,11 +12,11 @@ fn tool_result(result:AgentToolResult)->ToolResult {
 }
 
 fn language_name(language:super::types::EvalLanguage) -> &'static str {
-    match language {super::types::EvalLanguage::Js=>"js",super::types::EvalLanguage::Py=>"py",super::types::EvalLanguage::Rb=>"rb",super::types::EvalLanguage::Jl=>"jl"}
+    match language {super::types::EvalLanguage::Js=>"js"}
 }
 
 fn enabled_language_list(enabled:&crate::config::settings::Languages) -> Vec<&'static str> {
-    super::types::EVAL_LANGUAGE_ORDER.iter().copied().filter(|language|match language {super::types::EvalLanguage::Js=>enabled.js,super::types::EvalLanguage::Py=>enabled.py,super::types::EvalLanguage::Rb=>enabled.rb,super::types::EvalLanguage::Jl=>enabled.jl}).map(language_name).collect()
+    super::types::EVAL_LANGUAGE_ORDER.iter().copied().filter(|_|enabled.js).map(language_name).collect()
 }
 
 pub fn create_eval_tool(options:Arc<CreateEvalToolOptions>) -> Result<ToolDefinition,String> {
@@ -40,7 +40,7 @@ pub fn create_eval_tool(options:Arc<CreateEvalToolOptions>) -> Result<ToolDefini
                 EvalToolRequest::Peek {cell_id}=>options.cell_manager.lock().expect("cell manager lock").peek(&cell_id).map(|snapshot|create_detached_control_result(&snapshot)),
                 EvalToolRequest::Stop {cell_id}=>EvalDetachedCellManager::stop(&options.cell_manager,&cell_id,"Stopped detached eval cell").await.map(|snapshot|create_detached_control_result(&snapshot)),
                 EvalToolRequest::Run(input)=>{
-                    let enabled=match input.language {super::types::EvalLanguage::Js=>options.settings.languages.js,super::types::EvalLanguage::Py=>options.settings.languages.py,super::types::EvalLanguage::Rb=>options.settings.languages.rb,super::types::EvalLanguage::Jl=>options.settings.languages.jl};
+                    let enabled=match input.language {super::types::EvalLanguage::Js=>options.settings.languages.js};
                     if !enabled {return Err(ToolError::Message(format!("Unsupported eval language \"{}\". Enabled languages: {}",language_name(input.language),enabled_language_list(&options.settings.languages).join(", "))));}
                     let kernel_manager=options.kernel_manager.clone();
                     let tracker=kernel_manager.execution_tracker();

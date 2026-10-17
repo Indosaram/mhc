@@ -6,7 +6,6 @@ fn snapshot(language: EvalLanguage, retained: Option<bool>, note: Option<&str>) 
 }
 #[tokio::test] async fn js_retained_state() { let cell = snapshot(EvalLanguage::Js, Some(true), None); assert!(build_detached_cell_notification(&cell, None).await.content.contains(&interruption_state_note(cell.language, cell.state_retained).unwrap())); }
 #[tokio::test] async fn js_lost_state() { let cell = snapshot(EvalLanguage::Js, Some(false), None); assert!(build_detached_cell_notification(&cell, None).await.content.contains(&interruption_state_note(cell.language, cell.state_retained).unwrap())); }
-#[tokio::test] async fn py_lost_state() { let cell = snapshot(EvalLanguage::Py, Some(false), None); assert!(build_detached_cell_notification(&cell, None).await.content.contains(&interruption_state_note(cell.language, cell.state_retained).unwrap())); }
 #[tokio::test] async fn supplied_note_follows_state() { let cell = snapshot(EvalLanguage::Js, Some(false), Some("A synchronous call is blocking the old worker.\n")); assert!(build_detached_cell_notification(&cell, None).await.content.contains(&format!("{} A synchronous call is blocking the old worker.", interruption_state_note(cell.language, cell.state_retained).unwrap()))); }
 #[tokio::test] async fn unknown_state_note() { let cell = snapshot(EvalLanguage::Js, None, None); assert!(build_detached_cell_notification(&cell, None).await.content.contains(&unknown_interruption_state_note(cell.language))); }
 #[tokio::test] async fn overflow_spills_full_utf8_body_and_caps_tail() {

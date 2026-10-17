@@ -14,7 +14,7 @@ pub fn detached_cell_is_active(state: EvalDetachedCellState) -> bool {
 }
 
 pub fn active_detached_cell_reuse_error(cell_id: &str, language: EvalLanguage, state: EvalDetachedCellState, detached: bool) -> String {
-    let language = match language { EvalLanguage::Js => "js", EvalLanguage::Py => "py", EvalLanguage::Rb => "rb", EvalLanguage::Jl => "jl" };
+    let language = match language { EvalLanguage::Js => "js" };
     let state = if detached { "detached" } else { state.as_str() };
     format!("Eval cell {cell_id} from a previous call is still {state} in the {language} kernel. Use eval({{ action: \"peek\", cell_id: \"{cell_id}\" }}) to read it or eval({{ action: \"stop\", cell_id: \"{cell_id}\" }}) to end it before its id can be reused.")
 }

@@ -20,13 +20,13 @@ fn model_dialect_selection_preserves_family_boundaries() {
 
 #[test]
 fn disabled_languages_are_rejected() {
-    assert!(build_eval_prompt(&Languages {py:false,js:false,rb:false,jl:false}, &EvalPromptOptions::default()).is_err());
+    assert!(build_eval_prompt(&Languages {js:false}, &EvalPromptOptions::default()).is_err());
 }
 
 #[test]
 fn every_enabled_language_combination_resolves_template_tags() {
-    for mask in 1..16 {
-        let enabled = Languages { py:mask & 1 != 0, js:mask & 2 != 0, rb:mask & 4 != 0, jl:mask & 8 != 0 };
+    for enabled in [true] {
+        let enabled = Languages { js:enabled };
         for model in ["unknown", "claude-sonnet", "gpt-6", "codex-6", "kimi-k2"] {
             for spawns in [false, true] {
                 let options = EvalPromptOptions { model_id:Some(model.into()), spawns, monitor:true, ..Default::default() };
@@ -39,7 +39,7 @@ fn every_enabled_language_combination_resolves_template_tags() {
     }
 }
 
-fn all_languages() -> Languages { Languages { py:true, js:true, rb:true, jl:true } }
+fn all_languages() -> Languages { Languages { js:true } }
 
 #[test]
 fn monitor_guidance_appears_only_when_monitor_is_registered() {
@@ -70,9 +70,10 @@ fn output_helper_and_spawn_default_agent_require_spawns() {
 }
 
 #[test]
-fn language_line_uses_kernel_labels_and_any_joins() {
-    let prompt = build_eval_prompt(&Languages { py:false, js:false, rb:true, jl:true }, &EvalPromptOptions::default()).unwrap();
-    assert!(prompt.description.contains("`language`: `\"rb\"` persistent Ruby kernel, `\"jl\"` persistent Julia kernel."));
-    assert!(prompt.description.contains("Ruby: synchronous; helper options are keyword args;"));
-    assert!(prompt.description.contains("Julia: synchronous; helper options are standard keyword args;"));
+fn language_line_offers_only_javascript() {
+    let prompt = build_eval_prompt(&all_languages(), &EvalPromptOptions::default()).unwrap();
+    assert!(prompt.description.contains("`language`: `\"js\"` persistent JavaScript VM."));
+    assert!(!prompt.description.contains("Python"));
+    assert!(!prompt.description.contains("Ruby"));
+    assert!(!prompt.description.contains("Julia"));
 }

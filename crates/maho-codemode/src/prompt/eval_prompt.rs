@@ -50,11 +50,11 @@ pub struct EvalPromptParts {
 pub struct EvalPromptError(pub String);
 
 pub fn build_eval_prompt(enabled: &Languages, options: &EvalPromptOptions) -> Result<EvalPromptParts, EvalPromptError> {
-    if !enabled.py && !enabled.js && !enabled.rb && !enabled.jl { return Err(EvalPromptError("no kernels enabled for eval prompt".into())); }
+    if !enabled.js { return Err(EvalPromptError("no kernels enabled for eval prompt".into())); }
     let style = eval_emphasis_style(options.model_id.as_deref());
     let mut context = HashMap::new();
     for (key, value) in [
-        ("py", enabled.py), ("js", enabled.js), ("rb", enabled.rb), ("jl", enabled.jl),
+        ("js", enabled.js),
         ("spawns", options.spawns), ("monitor", options.monitor),
         ("styleClaude", style == EvalEmphasisStyle::Claude), ("styleCodex", style == EvalEmphasisStyle::Codex),
         ("styleGpt", style == EvalEmphasisStyle::Gpt), ("styleKimi", style == EvalEmphasisStyle::Kimi),
@@ -81,7 +81,7 @@ pub fn build_eval_prompt(enabled: &Languages, options: &EvalPromptOptions) -> Re
         EvalEmphasisStyle::Gpt => "Use eval to batch a step's independent tool calls in one cell and inspect every result; long cells detach on their own and notify on completion, so do not poll.",
         EvalEmphasisStyle::Kimi => "Put a step's independent calls into one eval cell with parallel(thunks) and keep every failed item in the result.",
     };
-    Ok(EvalPromptParts { description, prompt_snippet: "Run one incremental code cell in a persistent language kernel.".into(), prompt_guidelines: vec![guideline.into(), "Use eval reset only when a language kernel must be wiped; reset is scoped to the selected language.".into()] })
+    Ok(EvalPromptParts { description, prompt_snippet: "Run one incremental code cell in the persistent JavaScript kernel.".into(), prompt_guidelines: vec![guideline.into(), "Use eval reset only when the JavaScript kernel must be wiped.".into()] })
 }
 
 fn truthy(value: Option<&serde_json::Value>) -> bool {
