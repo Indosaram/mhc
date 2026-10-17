@@ -1,0 +1,72 @@
+name: setup
+description: Free runner disk, install the pinned Rust toolchain, protoc, bun and the pinned senpi checkout.
+inputs:
+  cache-key:
+    description: Cargo cache key; each test shard needs its own, since their target dirs differ.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: free disk
+      shell: bash
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+        sudo docker image prune --all --force >/dev/null 2>&1 || true
+        df -h /
+
+    - name: rust toolchain
+      shell: bash
+      run: |
+        rustup show active-toolchain || rustup toolchain install
+        rustc --version
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+
+    - name: protoc
+      shell: bash
+      run: |
+        curl -sSLo /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+        sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+        protoc --version
+
+    - uses: oven-sh/setup-bun@v2
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "24"
+
+    # Grep, find and ast-grep tests drive the real rg / fd / sg executables.
+    - name: search tools
+      shell: bash
+      run: |
+        sudo apt-get install -y -qq ripgrep fd-find >/dev/null
+        npm install -g --silent "@ast-grep/cli@${AST_GREP_VERSION}"
+        rg --version | head -1 && fdfind --version && sg --version
+
+    - name: cache senpi checkout
+      id: senpi-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/code/senpi
+        key: senpi-${{ env.SENPI_PIN }}
+
+    - name: pinned senpi checkout
+      if: steps.senpi-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        git init -q ~/code/senpi
+        git -C ~/code/senpi remote add origin https://github.com/code-yeongyu/senpi.git
+        git -C ~/code/senpi fetch -q --depth 1 origin "$SENPI_PIN"
+        git -C ~/code/senpi checkout -q FETCH_HEAD
+        cd ~/code/senpi && bun install --frozen-lockfile --ignore-scripts
+
+    - name: git identity for tests
+      shell: bash
+      run: |
+        git config --global user.name ci
+        git config --global user.email ci@example.invalid
+        git -C ~/code/senpi rev-parse HEAD

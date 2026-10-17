@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "verify/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: "1"
+  # Full debuginfo for ~140 crates' test binaries is far larger than line tables.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  PROTOC_VERSION: "29.3"
+  # Must equal PINNED_VERSION in assets/omo-latest/skills/ast-grep/install.sh.
+  AST_GREP_VERSION: "0.45.0"
+  # Must equal SENPI_PIN in tools/golden/pin.mjs; golden tests refuse any other senpi commit.
+  SENPI_PIN: fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407
+
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: clippy
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: disk usage
+        if: always()
+        run: df -h / && du -sh target 2>/dev/null || true
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: build
+      - name: build mhc binary
+        run: cargo build -p maho-cli --locked
+      - name: disk usage
+        if: always()
+        run: df -h / && du -sh target 2>/dev/null || true
+
+  # One job building every test binary filled the runner disk (`No space left on device`), so
+  # each shard builds and runs only its own crates; scripts/ci-shard.py covers every member once.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: test-${{ matrix.shard }}
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: select crates
+        run: echo "CRATES=$(python3 scripts/ci-shard.py 6 ${{ matrix.shard }})" >> "$GITHUB_ENV"
+      - name: build tests (shard ${{ matrix.shard }}/6)
+        run: |
+          cargo nextest run --locked --no-run $CRATES
+          cargo build --locked -p maho-senpi-desktop-engine
+      - name: run tests (shard ${{ matrix.shard }}/6)
+        run: cargo nextest run --locked --no-fail-fast --tool-config-file "ci:$GITHUB_WORKSPACE/.github/nextest.toml" $CRATES
+      - name: disk usage
+        if: always()
+        run: df -h / && du -sh target 2>/dev/null || true
