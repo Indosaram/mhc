@@ -8,7 +8,7 @@ pub fn goal_tool_result(goal:Option<&crate::types::Goal>,notice:Option<&str>)->R
     let text=crate::format::format_goal_tool_response(goal,notice).map_err(|error|ToolError::Message(error.to_string()))?;
     let mut details=serde_json::to_value(crate::format::goal_tool_response(goal)).map_err(|error|ToolError::Message(error.to_string()))?;
     if let Some(notice)=notice { details["notice"]=notice.into(); }
-    Ok(maho_ext_api::ToolResult { content:vec![maho_ext_api::ToolContent::text(text)],details:Some(details) })
+    Ok(maho_ext_api::ToolResult { content:vec![maho_ext_api::ToolContent::text(text)],details:Some(details), structured_content: None })
 }
 pub async fn execute_create_goal(reference:&crate::types::GoalStoreRef,objective:&str,now:u64)->Result<(crate::types::Goal,maho_ext_api::ToolResult),ToolError> {
     let current=crate::store::read_goal(reference).map_err(|error|ToolError::Message(error.to_string()))?;

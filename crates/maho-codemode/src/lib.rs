@@ -230,7 +230,7 @@ mod host_line_tests {
 
     #[test]
     fn host_line_names_platform_cores_and_js_runtime() {
-        let line=host_line(&tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None});
+        let line=host_line(&tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None,isolation:None});
         assert!(line.contains(" cores"),"{line}");
         assert!(line.ends_with(" \u{00b7} bun 1.4.0"),"{line}");
     }

@@ -704,6 +704,7 @@ fn dream_rejection_code(rejection: maho_omo_memory::dream_trigger_fire::DreamFir
     match rejection {
         DreamFireRejection::NoUnreflectedContent => "no_unreflected_content".to_owned(),
         DreamFireRejection::Aborted => "aborted".to_owned(),
+        DreamFireRejection::Parked => "parked".to_owned(),
         DreamFireRejection::Gate(gate) => gate.as_code().to_owned(),
     }
 }

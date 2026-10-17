@@ -39,7 +39,7 @@ pub fn admit_resident(
                         .name
                         .clone()
                         .unwrap_or_else(|| record.task_id.clone()),
-                    status: record.status.as_str().to_string(),
+                    status: record.status,
                 })
                 .collect(),
         }));

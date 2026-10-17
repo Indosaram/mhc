@@ -284,7 +284,7 @@ impl AppServerRuntime {
                     let wire = build_wire_thread(&entry, &turn_log, method == "thread/resume" || params["includeTurns"] == true, &version).await.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
                     if method == "thread/read" { return Ok(json!({"thread":wire})); }
                     let model = entry.session.model();
-                    let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority" });
+                    let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority", maho_ext_api::ServiceTier::Ultrafast => "ultrafast" });
                     let mut response = json!({"thread":wire,"model":model.id,"modelProvider":model.provider,"serviceTier":tier,"cwd":entry.cwd,"runtimeWorkspaceRoots":[entry.cwd],"instructionSources":[],"approvalPolicy":if method == "thread/start" {super::start_options::requested_approval_policy(params)} else {json!("never")},"approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"activePermissionProfile":null,"reasoningEffort":entry.session.thinking_level(),"multiAgentMode":"explicitRequestOnly"});
                     if method == "thread/resume" { response["initialTurnsPage"] = Value::Null; }
                     let queued = std::mem::take(&mut entry.queued_terminal_notifications);
@@ -346,7 +346,7 @@ impl AppServerRuntime {
                     let mut wire = build_wire_thread(&entry, &turn_log, true, &version).await.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
                     wire["forkedFromId"] = json!(source);
                     let model = entry.session.model();
-                    let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority" });
+                    let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority", maho_ext_api::ServiceTier::Ultrafast => "ultrafast" });
                     let response = json!({"thread":wire,"model":model.id,"modelProvider":model.provider,"serviceTier":tier,"cwd":entry.cwd,"runtimeWorkspaceRoots":[entry.cwd],"instructionSources":[],"approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"activePermissionProfile":null,"reasoningEffort":entry.session.thinking_level(),"multiAgentMode":"explicitRequestOnly"});
                     let queued = std::mem::take(&mut entry.queued_terminal_notifications);
                     let client_id = context.connection.id.clone();

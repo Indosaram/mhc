@@ -23,6 +23,7 @@ fn run_stats() -> TaskRunStats {
         cost_usd: Some(0.0125),
         cache_hit_rate_last: None,
         cache_hit_rate_run: None,
+        ..Default::default()
     }
 }
 
@@ -63,6 +64,7 @@ fn terminal_record(project_dir: &std::path::Path, final_response: &str) -> TaskR
             owner: None,
             runner_kind: None,
             host_session: None,
+            ..Default::default()
         },
         None,
     )

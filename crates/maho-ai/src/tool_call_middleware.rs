@@ -131,6 +131,8 @@ mod tests {
             service_tier: None,
             recover_text_tool_calls: None,
             compat: None,
+            default_thinking_level: None,
+            input_limits: None,
         }
     }
 
@@ -292,6 +294,7 @@ mod repair_golden_tests {
             name: value["name"].as_str().expect("tool name").to_string(),
             description: value["description"].as_str().expect("tool description").to_string(),
             parameters: value["parameters"].clone(),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }

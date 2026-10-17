@@ -41,7 +41,7 @@ pub async fn read_video(path: &Path, signal: &AbortSignal) -> Result<ToolResult,
     if stats.len() > MAX_VIDEO_BYTES { return Err(ToolError::Message(format!("\"{}\" is {} bytes, which exceeds the maximum 100MB for video files. Create a smaller clip (e.g. with ffmpeg) and read that instead.",path.display(),stats.len()))); }
     let data = encode_file_base64(path, stats.len()).await?;
     signal.check()?;
-    Ok(ToolResult { content: vec![ToolContent::text(format!("Read video file \"{}\" [{mime}, {} bytes]. The video is attached below.",path.file_name().unwrap_or_default().to_string_lossy(),stats.len())), ToolContent::Image { data, mime_type: mime.into() }], details: None })
+    Ok(ToolResult { content: vec![ToolContent::text(format!("Read video file \"{}\" [{mime}, {} bytes]. The video is attached below.",path.file_name().unwrap_or_default().to_string_lossy(),stats.len())), ToolContent::Image { data, mime_type: mime.into() }], details: None, structured_content: None })
 }
 
 /// Streams the file through a 3-byte-aligned buffer into one pre-sized base64 string, so the raw

@@ -435,9 +435,9 @@ async fn watcher_awaits_registered_validator_and_cancellation_discards_its_resul
     struct SignalOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
     impl Drop for SignalOnDrop { fn drop(&mut self) { if let Some(sender)=self.0.take() { let _=sender.send(()); } } }
     let entered=Arc::clone(&entered_tx);let release=Arc::clone(&release_rx);let dropped=Arc::new(std::sync::Mutex::new(Some(dropped_tx)));
-    events.publish_config_watch("fixture",RegisteredConfigWatch{
+    events.publish_config_watch("fixture",maho_ext_api::RegisteredConfigWatch{
         id:"async-fixture".into(),display_name:"async fixture".into(),
-        targets:vec![ConfigWatchTargetSpec{path:path.clone(),kind:ConfigWatchTargetKind::File,filter_globs:vec![]}],
+        targets:vec![maho_ext_api::ConfigWatchTargetSpec{path:path.clone(),kind:maho_ext_api::ConfigWatchTargetKind::File,filter_globs:vec![]}],
         validate:Arc::new(move |_|{
             let entered=entered.lock().unwrap().take();let release=Arc::clone(&release);let dropped=dropped.lock().unwrap().take();
             Box::pin(async move{
@@ -445,7 +445,7 @@ async fn watcher_awaits_registered_validator_and_cancellation_discards_its_resul
                 if let Some(entered)=entered{let _=entered.send(());}
                 let receiver=release.lock().await.take().expect("single validator invocation");
                 let _=receiver.await;
-                Ok(ConfigWatchValidation::Rejected{errors:vec!["late rejection".into()]})
+                Ok(maho_ext_api::ConfigWatchValidation::Rejected{errors:vec!["late rejection".into()]})
             })
         }),
     });

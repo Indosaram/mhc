@@ -69,7 +69,7 @@ impl ComputerToolResult {
                 },
             })
             .collect();
-        ToolResult { content, details }
+        ToolResult { content, details, structured_content: None }
     }
 }
 

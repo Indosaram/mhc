@@ -85,9 +85,9 @@ impl CellResultBuilder {
         let details=self.details(Some(&output),is_error);
         self.emit_update(is_error);
         let shown=if !output.output.is_empty() {output.output.clone()} else if !output.images.is_empty() {format!("(displayed {} image{}; no text output)",output.images.len(),if output.images.len()==1 {""} else {"s"})} else {"(no output)".into()};
-        let text=output.meta.as_ref().map_or(shown.clone(),|meta|format!("{shown}\n{}",crate::output::output_meta::format_model_truncation_notice(meta)));
+        let text=output.meta.as_ref().and_then(|meta|serde_json::from_value::<crate::output::output_meta::TruncationMeta>(meta.clone()).ok()).map_or(shown.clone(),|meta|format!("{shown}\n{}",crate::output::output_meta::format_model_truncation_notice(&meta)));
         let mut result=AgentToolResult::text(text);
-        for notice in [self.restart_notice.clone(),self.memory.as_ref().and_then(|memory|memory.get("notice").and_then(Value::as_str).map(str::to_owned))].into_iter().flatten() { result.content.push(ContentBlock::Text(maho_ext_api::TextContent {text:notice})); }
+        for notice in [self.restart_notice.clone(),self.memory.as_ref().and_then(|memory|memory.get("notice").and_then(Value::as_str).map(str::to_owned))].into_iter().flatten() { result.content.push(ContentBlock::Text(maho_ai::types::TextContent {text:notice,audience:None,text_signature:None})); }
         result.content.extend(output.images.into_iter().map(|image|ContentBlock::Image(ImageContent {data:image.data,mime_type:image.mime_type})));
         result.details=details;
         Ok(result)
@@ -119,7 +119,7 @@ impl CellResultBuilder {
         if output.is_some_and(|output|output.has_markdown) {cell["hasMarkdown"]=json!(true);}
         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64()*1000.0;
         let mut details=json!({"language":state.input.language,"languages":[state.input.language],"summary":state.input.summary,"durationMs":state.duration_ms,"wallDurationMs":(now-state.started_at).max(0.0),"toolCallCount":state.tool_call_metrics.len(),"toolCalls":state.tool_calls,"truncated":output.is_some_and(|output|output.truncated),"cells":[cell]});
-        if let Some(memory)=output.and_then(|_|self.memory.as_ref()) {details["memory"]=memory.clone();}
+        if let Some(memory)=output.and(self.memory.as_ref()) {details["memory"]=memory.clone();}
         if let Some(kernel_state)=self.kernel_state.as_ref() {details["kernelState"]=kernel_state.clone();}
         if let Some(runtime)=&state.runtime {details["runtime"]=json!(runtime);}
         if is_error {details["isError"]=json!(true);}

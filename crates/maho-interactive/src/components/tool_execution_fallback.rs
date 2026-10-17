@@ -148,22 +148,6 @@ fn sanitize_call_args(value: &Value) -> Value {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fallback_call_shows_sanitized_args_and_expands_json() {
-        let theme = Theme::default();
-        let args = serde_json::json!({"query": "find\u{001b}[31m red\nfiles"});
-        let compact = format_tool_execution_fallback("search", &args, None, false, &theme);
-        assert!(compact.contains("find red files"));
-        assert!(!compact.contains('\u{001b}'));
-        let expanded = serde_json::to_string_pretty(&sanitize_call_args(&args)).expect("JSON serialization");
-        assert!(expanded.contains("find red files"));
-    }
-}
-
 pub fn create_tool_result_fallback(
     result: Option<&ToolResult>,
     show_images: bool,
@@ -207,4 +191,20 @@ pub fn format_tool_execution_fallback(
         text += &format!("\n{}", sanitize_fallback_string(&output, FALLBACK_JSON_MAX_LENGTH));
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_call_shows_sanitized_args_and_expands_json() {
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Color256).expect("builtin theme");
+        let args = serde_json::json!({"query": "find\u{001b}[31m red\nfiles"});
+        let compact = format_tool_execution_fallback("search", &args, None, false, &theme);
+        assert!(compact.contains("find red files"));
+        assert!(!compact.contains('\u{001b}'));
+        let expanded = serde_json::to_string_pretty(&sanitize_call_args(&args)).expect("JSON serialization");
+        assert!(expanded.contains("find red files"));
+    }
 }

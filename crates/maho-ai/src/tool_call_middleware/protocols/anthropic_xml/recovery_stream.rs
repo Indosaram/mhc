@@ -343,6 +343,7 @@ mod tests {
             name: name.into(),
             description: "d".into(),
             parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }

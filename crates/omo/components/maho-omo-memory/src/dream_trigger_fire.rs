@@ -43,7 +43,7 @@ pub fn fire_dream<S:DreamTriggerSession>(session:&mut S,origin:DreamOrigin,setti
     impl DreamTriggerSession for Session{
         type Error=Error;
         fn conversation_id(&self)->&str{"current"}fn paths(&self)->&MemoryIdentityPaths{&self.paths}
-        fn capture_snapshot(&mut self,id:&str)->Result<Option<ReflectionSnapshot>,Error>{self.captured.push(id.into());if self.abort_after_capture{self.abort.set(true);}Ok((!self.empty).then(||ReflectionSnapshot{start_message_id:"a".into(),end_message_id:"a".into(),start_line:1,end_snapshot_line:1,entries:vec![]}))}
+        fn capture_snapshot(&mut self,id:&str)->Result<Option<ReflectionSnapshot>,Error>{self.captured.push(id.into());if self.abort_after_capture{self.abort.set(true);}Ok((!self.empty).then(||ReflectionSnapshot{start_message_id:"a".into(),end_message_id:"a".into(),start_line:1,end_snapshot_line:1,entries:vec![],backlog_remaining:None}))}
         fn try_reserve(&mut self,request:ReflectionRequest)->Result<ReservationResult,Error>{self.reserved=Some(request.clone());Ok(ReservationResult{status:if self.pending{"pending"}else{"active"}.into(),run:ReservedRun{run_id:"dream-1".into(),request,reserved_at:None,launcher_pid:None,launcher_hostname:None,launcher_process_start:None}})}
         fn launch(&mut self,_:ReservedRun)->Result<(),Error>{self.launches+=1;if self.launch_fails{Err(Error)}else{Ok(())}}
     }

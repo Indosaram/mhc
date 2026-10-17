@@ -45,6 +45,7 @@ fn in_place_normalizing_tool() -> AgentTool {
             name: "in_place_normalizer".to_owned(),
             description: "Normalizes its arguments in place and returns the same reference.".to_owned(),
             parameters: parameters(),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         },

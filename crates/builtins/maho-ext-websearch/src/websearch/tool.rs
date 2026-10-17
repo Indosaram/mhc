@@ -46,7 +46,7 @@ pub fn create_web_search_tool_with_registry(get_config:std::sync::Arc<dyn Fn()->
             let blocked:Option<Vec<String>>=call.params.get("blocked_domains").map(|value|serde_json::from_value(value.clone())).transpose()?;
             let error_result=|message:String,reason:Option<&str>| {
                 let mut details=json!({"phase":"error","query":query,"error":message}); if let Some(reason)=reason { details["reason"]=json!(reason); }
-                ToolResult{content:vec![ToolContent::text(message)],details:Some(details)}
+                ToolResult{content:vec![ToolContent::text(message)],details:Some(details), structured_content: None }
             };
             if allowed.as_ref().is_some_and(|domains|!domains.is_empty()) && blocked.as_ref().is_some_and(|domains|!domains.is_empty()) { return Ok(error_result("Error: Cannot specify both allowed_domains and blocked_domains in the same request".into(),None)); }
             let config=match get_config() {
@@ -60,19 +60,19 @@ pub fn create_web_search_tool_with_registry(get_config:std::sync::Arc<dyn Fn()->
             let mut progress=json!({"phase":"searching","query":query,"providerLabels":labels,"maxResults":request.max_results,"strategy":match config.strategy { RoutingStrategy::Priority=>"priority",RoutingStrategy::RoundRobin=>"round-robin",RoutingStrategy::FillFirst=>"fill-first" }});
             if let Some(allowed)=allowed { progress["allowedDomains"]=json!(allowed); }
             if let Some(blocked)=blocked { progress["blockedDomains"]=json!(blocked); }
-            if let Some(update)=&call.on_update { update(ToolResult{content:vec![ToolContent::text(format_search_progress_text(&query,&labels,None))],details:Some(progress.clone())})?; }
+            if let Some(update)=&call.on_update { update(ToolResult{content:vec![ToolContent::text(format_search_progress_text(&query,&labels,None))],details:Some(progress.clone()), structured_content: None })?; }
             let listener=|provider:&str,attempts:&[super::types::SearchAttempt],routes:&[String]| {
                 if let Some(update)=&call.on_update {
                     let mut details=progress.clone(); details["currentProvider"]=json!(provider); details["routeLabels"]=json!(routes);
                     let holder=super::types::SearchDetails{provider:super::types::SearchProvider::Exa,entry_id:None,query:String::new(),results:vec![],duration_ms:0.,truncated:false,strategy:None,attempts:Some(attempts.to_vec()),answer:None,error:None};
                     details["attempts"]=search_details_value(&holder)["attempts"].clone();
-                    update(ToolResult{content:vec![ToolContent::text(format_search_progress_text(&query,&labels,Some(provider)))],details:Some(details)})?;
+                    update(ToolResult{content:vec![ToolContent::text(format_search_progress_text(&query,&labels,Some(provider)))],details:Some(details), structured_content: None })?;
                 }
                 Ok(())
             };
             let mut routing=routing.lock().await; let (key,state)=&mut *routing; sync_routing_state(&config,key,state);
             let details=super::search::perform_search(&config,&request,Some(&call.signal),state.as_mut(),Some(&listener)).await?;
-            Ok(ToolResult{content:vec![ToolContent::text(super::search::format_search_text(&details))],details:Some(search_details_value(&details))})
+            Ok(ToolResult{content:vec![ToolContent::text(super::search::format_search_text(&details))],details:Some(search_details_value(&details)), structured_content: None })
         })
     }));
     tool.label="Web Search".into(); tool.prompt_snippet=Some("Search the web for current information, documentation, news, or external facts.".into());

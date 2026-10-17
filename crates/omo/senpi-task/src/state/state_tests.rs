@@ -1131,6 +1131,7 @@ fn run_stats() -> TaskRunStats {
         cost_usd: Some(0.4213),
         cache_hit_rate_last: Some(0.9123),
         cache_hit_rate_run: Some(0.8712),
+        ..Default::default()
     }
 }
 

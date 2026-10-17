@@ -129,11 +129,12 @@ impl Extension for UlwLoopComponent {
             })
         }));
 
-        let runtime = api.runtime.clone();
+        let settled_state = Arc::clone(&state);
+        let settled_pending = Arc::clone(&pending_run);
+        let settled_runtime = api.runtime.clone();
 
         api.on(EventKind::AgentEnd, Arc::new(move |event, ctx| {
             let state = Arc::clone(&state);
-            let runtime = runtime.clone();
             let footer = Arc::clone(&footer);
             let reader = reader.clone();
             let logger = ctx.logger.clone().or(logger.clone());
@@ -171,9 +172,6 @@ impl Extension for UlwLoopComponent {
             })
         }));
 
-        let settled_state = Arc::clone(&state);
-        let settled_pending = Arc::clone(&pending_run);
-        let settled_runtime = api.runtime.clone();
         api.on(EventKind::AgentSettled, Arc::new(move |_, ctx| {
             let state = Arc::clone(&settled_state);
             let pending_run = Arc::clone(&settled_pending);
@@ -182,7 +180,7 @@ impl Extension for UlwLoopComponent {
                 let Some(run) = pending_run.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { return Ok(EventResult::None); };
                 let outcome = read_agent_end_outcome(&run.payload);
                 if outcome.blocked_by.is_some() {
-                    log_info(&Some(ctx.logger.clone()), "omo-senpi ulw-loop continuation skipped", Some(serde_json::json!({"reason":"terminal-outcome"})));
+                    log_info(&ctx.logger, "omo-senpi ulw-loop continuation skipped", Some(serde_json::json!({"reason":"terminal-outcome"})));
                     return Ok(EventResult::None);
                 }
                 let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

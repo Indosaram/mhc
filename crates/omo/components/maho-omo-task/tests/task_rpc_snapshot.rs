@@ -16,7 +16,7 @@ use senpi_task::{state::{TaskRecordInput,create_task_record}, tools::output::typ
     snapshot.age_ms=999;
     snapshot.task_id="i".repeat(257); snapshot.child_session_id=Some("i".repeat(257)); snapshot.execution_mode="x".repeat(32001); snapshot.model="x".repeat(32001);
     snapshot.name=Some("x".repeat(32001)); snapshot.task_summary=Some("x".repeat(32001)); snapshot.agent_type=Some("x".repeat(32001)); snapshot.category=Some("x".repeat(32001)); snapshot.description=Some("x".repeat(32001)); snapshot.final_response=Some("x".repeat(32001)); snapshot.error_message=Some("x".repeat(32001));
-    snapshot.resolved_model=Some(ResolvedModelRecord { provider:"x".repeat(32001),model_id:"x".repeat(32001),display:"x".repeat(32001),source:ResolvedModelSource::Category,variant:Some("x".repeat(32001)),reasoning_effort:Some("x".repeat(32001)),reasoning:Some("x".repeat(32001)) });
+    snapshot.resolved_model=Some(ResolvedModelRecord { provider:"x".repeat(32001),model_id:"x".repeat(32001),display:"x".repeat(32001),source:ResolvedModelSource::Category,variant:Some("x".repeat(32001)),reasoning_effort:Some("x".repeat(32001)),reasoning:Some("x".repeat(32001)),service_tier:None });
     let value=bounded_task_output(&TaskOutputDetails::Status { snapshot }).expect("output"); assert_eq!(value["kind"],"status"); let snapshot=&value["snapshot"];
     for key in ["task_id","child_session_id"] { assert_eq!(snapshot[key].as_str().expect("id").len(),256); }
     for key in ["name","task_summary","execution_mode","model","agent_type","category","description","final_response","error_message"] { assert_eq!(snapshot[key].as_str().expect("text").len(),32000,"{key}"); }
@@ -26,7 +26,7 @@ use senpi_task::{state::{TaskRecordInput,create_task_record}, tools::output::typ
 }
 #[test] fn live_progress_projects_all_optional_fields_including_zero() {
     use senpi_task::progress::{ProgressActivity,ToolProgressDetails};
-    let mut details=ToolProgressDetails { progress:ProgressActivity { activity:"working".into(),started_at:12.0 },child_id:"private-child".into(),current_tool:None,last_assistant_line:None,turns:0.0,tool_calls:None,tokens:None,output_tokens:None,tokens_per_second:None };
+    let mut details=ToolProgressDetails { progress:ProgressActivity { activity:"working".into(),started_at:12.0 },child_id:"private-child".into(),current_tool:None,last_assistant_line:None,turns:0.0,tool_calls:None,tokens:None,output_tokens:None,tokens_per_second:None,failed_turns:None };
     let required=serde_json::json!({"activity":"working","started_at":12.0,"turns":0.0});
     assert_eq!(maho_omo_task::task_rpc_codec::live_progress_snapshot(&details),required);
     details.current_tool=Some("read".into()); details.last_assistant_line=Some("line".into()); details.tool_calls=Some(0.0); details.tokens=Some(0.0); details.output_tokens=Some(0.0); details.tokens_per_second=Some(0.0);
@@ -60,7 +60,7 @@ use senpi_task::{state::{TaskRecordInput,create_task_record}, tools::output::typ
 #[test] fn snapshots_preserve_full_durable_stats_and_prefer_live_stats_when_supplied() {
     use senpi_task::state::{TaskRunStats,TaskStatus};
     let mut record=create_task_record(TaskRecordInput::default(),Some(1)).expect("record"); record.status=TaskStatus::Completed; record.child_session_id=Some("child".into()); record.final_response=Some("result".into());
-    let stats=TaskRunStats { runtime_ms:2500,turns:3,tool_calls:4,output_tokens:Some(200),total_tokens:Some(1200),generation_ms:Some(1500),tokens_per_second:Some(133.3),cost_usd:Some(0.12),cache_hit_rate_last:Some(0.5),cache_hit_rate_run:Some(0.4) }; record.run_stats=Some(stats.clone());
+    let stats=TaskRunStats { runtime_ms:2500,turns:3,tool_calls:4,output_tokens:Some(200),total_tokens:Some(1200),generation_ms:Some(1500),tokens_per_second:Some(133.3),cost_usd:Some(0.12),cache_hit_rate_last:Some(0.5),cache_hit_rate_run:Some(0.4),..Default::default() }; record.run_stats=Some(stats.clone());
     let value=task_snapshot(&record,None,None).expect("durable"); assert_eq!(value["run_stats"],serde_json::to_value(&stats).expect("stats")); assert_eq!(value["child_session_id"],"child"); assert_eq!(value["final_response"],"result");
     let live=TaskRunStats { runtime_ms:1000,..Default::default() }; let value=task_snapshot(&record,Some(&live),None).expect("live"); assert_eq!(value["run_stats"],serde_json::to_value(&live).expect("stats"));
     record.status=TaskStatus::Error; record.error_message=Some("failed".into()); assert_eq!(task_snapshot(&record,None,None).expect("error")["error_message"],"failed");

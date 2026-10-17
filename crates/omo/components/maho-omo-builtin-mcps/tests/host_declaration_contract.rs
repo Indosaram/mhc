@@ -24,6 +24,8 @@ fn load(cwd: &Path, agent_dir: &Path) -> ResolvedMcpConfig {
         agent_dir,
         env: &BTreeMap::new(),
         project_trusted: false,
+        home_dir: None,
+        claude_config_dir: None,
     })
     .expect("load config")
 }

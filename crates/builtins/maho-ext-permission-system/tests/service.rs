@@ -15,7 +15,6 @@ async fn once_resolves(){ let mut s=PermissionService::new(vec![],vec![],Permiss
 #[tokio::test]
 async fn always_covers_same_session(){ let mut s=PermissionService::new(vec![],vec![],PermissionEventEmitter::default()); let first=s.ask(request("a","s")); let second=s.ask(request("b","s")); s.reply(ReplyInput{request_id:"a".into(),reply:Reply::Always,message:None,always:None}); assert!(first.await.is_ok()); assert!(second.await.is_ok()); assert_eq!(s.get_approved().len(),1); }
 #[tokio::test]
-#[tokio::test]
 async fn reject_cascades_same_session(){ let mut s=PermissionService::new(vec![],vec![],PermissionEventEmitter::default()); let first=s.ask(request("a","s")); let second=s.ask(request("b","s")); s.reply(ReplyInput{request_id:"a".into(),reply:Reply::Reject,message:None,always:None}); assert!(matches!(first.await,Err(PermissionError::Rejected))); assert!(matches!(second.await,Err(PermissionError::Rejected))); }
 #[tokio::test]
 async fn feedback_correction(){ let mut s=PermissionService::new(vec![],vec![],PermissionEventEmitter::default()); let future=s.ask(request("a","s")); s.reply(ReplyInput{request_id:"a".into(),reply:Reply::Reject,message:Some("use status".into()),always:None}); assert!(matches!(future.await,Err(PermissionError::Corrected(text)) if text == "use status")); }

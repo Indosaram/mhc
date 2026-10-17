@@ -146,7 +146,7 @@ fn tool_execution_images_match_pinned_senpi_without_image_support() {
                 data: String::from("aGVsbG8="),
                 mime_type: String::from("image/png"),
             }],
-            details: None,
+            details: None, structured_content: None
         });
         assert_eq!(trim(images.render(width)), expected(case), "images at {width}");
     }

@@ -194,9 +194,9 @@ pub(crate) fn detect_startup_theme(
     let clock = std::time::Instant::now();
     let now = || u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
     let scheme = screen.base_mut().query_terminal_color_scheme(terminal, 100, now());
-    let background = screen.base_mut().query_terminal_background_color(terminal, 100, now());
+    let colors = screen.base_mut().query_terminal_colors(terminal, 100, now());
     let mut passthrough = Vec::new();
-    while scheme.result().is_none() || background.result().is_none() {
+    while scheme.result().is_none() || colors.result().is_none() {
         terminal.pump(16).map_err(|error| error.to_string())?;
         for chunk in std::mem::take(&mut *input.borrow_mut()) {
             if let Some(rest) = screen.base_mut().consume_terminal_protocol_input(&chunk) { passthrough.push(rest); }
@@ -211,7 +211,7 @@ pub(crate) fn detect_startup_theme(
             TerminalColorScheme::Light => TerminalTheme::Light,
             TerminalColorScheme::Dark => TerminalTheme::Dark,
         }),
-        background.result().flatten().map(|rgb| [rgb.r, rgb.g, rgb.b]),
+        colors.result().and_then(|colors| colors.background).map(|rgb| [rgb.r, rgb.g, rgb.b]),
         std::env::var("COLORFGBG").ok().as_deref(),
     );
     let name = resolve_theme_setting(theme_setting, terminal_theme).unwrap_or_else(|| terminal_theme.name()).to_owned();

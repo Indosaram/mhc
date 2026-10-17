@@ -14,7 +14,7 @@ async fn external_worker_and_inline_worker_initialize_and_close() {
         let controller = AbortController::new();
         let connection=BridgeConnectionConfig {port:1,token:"local".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:Some(4)};
         let session_env=maho_codemode::kernels::session_env::SessionEnvironment::from([("PI_SESSION_ID".into(),"context-session".into())]);
-        let options=maho_codemode::kernels::js::worker_startup::WorkerStartupOptions {cwd,session_id:"worker-test",parallel_pool_width:4,connection:&connection,generation:1,host_tool_names:&[],foreign_language_names:&[],session_env:Some(&session_env),worker_entry:None};
+        let options=maho_codemode::kernels::js::worker_startup::WorkerStartupOptions {cwd,session_id:"worker-test",parallel_pool_width:4,connection:&connection,generation:1,host_tool_names:&[],foreign_language_names:&[],session_env:Some(&session_env),worker_entry:None,memory:None};
         tokio::time::timeout(std::time::Duration::from_secs(5), worker.initialize(&options, &controller.signal())).await.unwrap().unwrap();
         worker.post_message(&serde_json::json!({"type":"run","cellId":"cell","code":"process.env.PI_SESSION_ID"})).await.unwrap();
         loop {
@@ -40,7 +40,7 @@ async fn worker_slot_falls_back_and_fences_retired_generation() {
     let mut slot = WorkerSlot::default();
     tokio::time::timeout(std::time::Duration::from_secs(5), slot.ensure_ready(WorkerStartupOptions {
         cwd, session_id:"fallback",parallel_pool_width:4,connection:&connection,generation:0,
-        host_tool_names:&[],foreign_language_names:&[],session_env:None,worker_entry:Some(std::path::Path::new("/missing/worker.js")),
+        host_tool_names:&[],foreign_language_names:&[],session_env:None,worker_entry:Some(std::path::Path::new("/missing/worker.js")),memory:None,
     }, &controller.signal())).await.unwrap().unwrap();
     assert_eq!(slot.mode(), JavaScriptKernelMode::Inline);
     assert!(slot.present());

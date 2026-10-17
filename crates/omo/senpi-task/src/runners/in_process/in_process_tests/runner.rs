@@ -442,6 +442,7 @@ fn record(
         variant: variant.map(str::to_string),
         reasoning_effort: reasoning_effort.map(str::to_string),
         reasoning: None,
+        service_tier: None,
     }
 }
 

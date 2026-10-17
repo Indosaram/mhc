@@ -139,6 +139,7 @@ fn resolved_model(provider: &str, model_id: &str, display: &str) -> ResolvedMode
         reasoning_effort: Some("xhigh".to_string()),
         reasoning: None,
         variant: None,
+        service_tier: None,
         source: ResolvedModelSource::Category,
     }
 }

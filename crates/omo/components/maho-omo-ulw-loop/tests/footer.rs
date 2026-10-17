@@ -19,7 +19,7 @@ fn goal_cache_invalidates_on_metadata_change_and_clears_on_dispose() -> Result<(
     footer.tick();
     assert!(!footer.running);
     footer.dispose();
-    assert!(footer.goal_cache.entries.is_empty());
+    assert_eq!(footer.cached_goal_count(), 0);
     Ok(())
 }
 

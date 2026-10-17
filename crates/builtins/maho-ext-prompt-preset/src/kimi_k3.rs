@@ -1,4 +1,4 @@
-use maho_core::dynamic_prompt::{build::{BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt}, handoff::{build_handoff_section, CHAT_FINAL_MESSAGE}, verification::build_test_discipline_section, tool_categorization::get_tools_prompt_display, workstation::WorkstationDialect};
+use maho_core::dynamic_prompt::{build::{BuildDynamicSystemPromptOptions, DynamicPromptCoreContext, build_dynamic_system_prompt}, handoff::build_handoff_section, verification::build_test_discipline_section, tool_categorization::get_tools_prompt_display, workstation::WorkstationDialect};
 use crate::execution_tooling::{build_execution_tooling_paragraph, ExecutionToolingDialect};
 
 fn build_search_line(context: &DynamicPromptCoreContext) -> String {

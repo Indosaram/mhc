@@ -1,6 +1,6 @@
 use maho_ext_cache_keepalive::*;
 use maho_ai::types::{Model,Usage};
-fn model()->Model{Model{id:"m".into(),name:"m".into(),api:"anthropic-messages".into(),provider:"anthropic".into(),base_url:"https://api.anthropic.com/v1".into(),reasoning:false,thinking_level_map:None,input:vec![],cost:Default::default(),context_window:100,max_tokens:10,sampling_params:None,headers:None,cache_retention:None,upstream_model_id:None,service_tier:None,recover_text_tool_calls:None,compat:None}}
+fn model()->Model{Model{id:"m".into(),name:"m".into(),api:"anthropic-messages".into(),provider:"anthropic".into(),base_url:"https://api.anthropic.com/v1".into(),reasoning:false,thinking_level_map:None,input:vec![],cost:Default::default(),context_window:100,max_tokens:10,sampling_params:None,headers:None,cache_retention:None,upstream_model_id:None,service_tier:None,recover_text_tool_calls:None,compat:None, default_thinking_level: None, input_limits: None }}
 #[test]
 fn costs_use_prompt_tokens_and_each_cache_rate(){let mut model=model();model.cost.input=3.0;model.cost.cache_read=0.3;model.cost.cache_write=3.75;let usage=Usage{input:100,cache_read:200,cache_write:300,..Usage::default()};assert_eq!(projected_ping_cost(&model,Some(&usage)),0.00225);assert_eq!(actual_ping_cost(&model,&usage),0.001485);assert_eq!(projected_ping_cost(&model,None),0.0);}
 #[test]

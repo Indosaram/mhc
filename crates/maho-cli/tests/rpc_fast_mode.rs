@@ -18,7 +18,7 @@ impl ServiceTierHost for FileTierHost {
         model.service_tier.map(|tier| match tier {
             maho_ai::types::ServiceTierPreference::Auto => ServiceTier::Auto,
             maho_ai::types::ServiceTierPreference::Flex => ServiceTier::Flex,
-            maho_ai::types::ServiceTierPreference::Priority => ServiceTier::Priority,
+            maho_ai::types::ServiceTierPreference::Priority => ServiceTier::Priority, maho_ai::types::ServiceTierPreference::Ultrafast => ServiceTier::Ultrafast,
         })
     }
 
@@ -45,14 +45,14 @@ impl ServiceTierHost for FileTierHost {
             let mut manager = SettingsManager::create(
                 &ctx.cwd.to_string_lossy(), &ctx.agent_dir.to_string_lossy(), "/unused-home", false,
             );
-            let tier = match tier { ServiceTier::Auto => "auto", ServiceTier::Flex => "flex", ServiceTier::Priority => "priority" };
+            let tier = match tier { ServiceTier::Auto => "auto", ServiceTier::Flex => "flex", ServiceTier::Priority => "priority", ServiceTier::Ultrafast => "ultrafast" };
             manager.set_model_service_tier(&model.provider, &model.id, tier).map_err(ExtensionFailure::new)
         })
     }
 }
 
 fn parse_tier(value: &str) -> Option<ServiceTier> {
-    match value { "auto" => Some(ServiceTier::Auto), "flex" => Some(ServiceTier::Flex), "priority" => Some(ServiceTier::Priority), _ => None }
+    match value { "auto" => Some(ServiceTier::Auto), "flex" => Some(ServiceTier::Flex), "priority" => Some(ServiceTier::Priority), "ultrafast" => Some(ServiceTier::Ultrafast), _ => None }
 }
 
 fn model_catalog(path: &Path) -> Result<(), Box<dyn std::error::Error>> {

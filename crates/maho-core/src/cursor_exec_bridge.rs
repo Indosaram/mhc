@@ -216,7 +216,7 @@ mod tests {
         let results = observed.clone();
         let tool = AgentTool {
             label: "read".into(), prepare_arguments: None, replay: None, execution_mode: None,
-            tool: maho_ai::types::Tool { name: "read".into(), description: String::new(), parameters: json!({"type":"object"}), freeform: None, constrained_sampling: None },
+            tool: maho_ai::types::Tool { name: "read".into(), description: String::new(), parameters: json!({"type":"object"}), output_schema: None, freeform: None, constrained_sampling: None },
             execute: Arc::new(|id, args, signal, _| Box::pin(async move {
                 assert_eq!(id, "call-identity");
                 assert_eq!(args, json!({"path":"sample"}));
@@ -270,7 +270,7 @@ mod tests {
             label: "grep".into(), prepare_arguments: None, replay: None, execution_mode: None,
             tool: maho_ai::types::Tool { name: "grep".into(), description: String::new(),
                 parameters: json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}),
-                freeform: None, constrained_sampling: None },
+                output_schema: None, freeform: None, constrained_sampling: None },
             execute: Arc::new(move |_, _, _, _| { flag.store(true, std::sync::atomic::Ordering::SeqCst); Box::pin(async { maho_agent::types::AgentToolResult::text("ran") }) }),
         };
         let options = CursorExecBridgeOptions {
@@ -293,7 +293,7 @@ mod tests {
         let tool = AgentTool {
             label: "grep".into(), replay: None, execution_mode: None,
             prepare_arguments: Some(Arc::new(|mut args: Value| { args["prepared"] = json!(true); args })),
-            tool: maho_ai::types::Tool { name: "grep".into(), description: String::new(), parameters: json!({"type":"object"}), freeform: None, constrained_sampling: None },
+            tool: maho_ai::types::Tool { name: "grep".into(), description: String::new(), parameters: json!({"type":"object"}), output_schema: None, freeform: None, constrained_sampling: None },
             execute: Arc::new(|_, args, _, _| Box::pin(async move {
                 assert_eq!(args, json!({"pattern":"needle","prepared":true}));
                 maho_agent::types::AgentToolResult::text("")

@@ -119,7 +119,7 @@ mod tests {
         };
         let call = renderers.render_call(&theme, &context).expect("call component");
         assert_eq!(call.borrow_mut().render(40), vec!["call 1 @40".to_owned()]);
-        let result = ToolResult { content: vec![ToolContent::text("ok")], details: Some(serde_json::json!({"kind": "image"})) };
+        let result = ToolResult { content: vec![ToolContent::text("ok")], details: Some(serde_json::json!({"kind": "image"})), structured_content: None };
         let component = renderers.render_result(&result, ToolRenderResultOptions::default(), &theme, &context).expect("result component");
         assert_eq!(component.borrow_mut().render(40), vec!["result image @40".to_owned()]);
     }

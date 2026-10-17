@@ -286,6 +286,7 @@ mod tests {
             name: "Bash".into(),
             description: "Run a command".into(),
             parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string", "minLength": 3}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }

@@ -69,7 +69,7 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
                     let failure = computer_failure(&e.code, &e.reason, &stop_hotkey, None);
                     return Ok(ToolResult {
                         content: vec![ToolContent::text(&failure.message)],
-                        details: Some(json!({ "value": failure, "isError": true })),
+                        details: Some(json!({ "value": failure, "isError": true })), structured_content: None
                     });
                 }
             };
@@ -99,7 +99,7 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
                     let failure = computer_failure(&reason, &message, &stop_hotkey, perm.as_ref());
                     return Ok(ToolResult {
                         content: vec![ToolContent::text(&failure.message)],
-                        details: Some(json!({ "value": failure, "isError": true })),
+                        details: Some(json!({ "value": failure, "isError": true })), structured_content: None
                     });
                 }
             };
@@ -139,7 +139,7 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
                     content.push(ToolContent::text(text));
                     Ok(ToolResult {
                         content,
-                        details: serde_json::to_value(&result.details).ok(),
+                        details: serde_json::to_value(&result.details).ok(), structured_content: None
                     })
                 }
                 Some(idx) => {
@@ -186,7 +186,7 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
 
                     Ok(ToolResult {
                         content,
-                        details: Some(details),
+                        details: Some(details), structured_content: None
                     })
                 }
             }

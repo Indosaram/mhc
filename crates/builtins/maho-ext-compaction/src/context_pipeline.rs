@@ -64,7 +64,7 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
     let source = if managed {
         let state = reduction_state.as_deref_mut().unwrap_or(&mut local_reduction_state);
         let unreduced_converted=typed_messages(input.messages)?;
-        let reduced = reduce_context_with_frontier(&typed_messages(&admitted)?, input.unreduced_messages.unwrap_or(&unreduced_converted), state, input.context_window, input.reduction_ceiling_tokens.unwrap_or(input.prompt_context_window), input.context_overhead_tokens, input.reduction_block_budget_ratio, input.breaker_fallback);
+        let reduced = reduce_context_with_frontier(&typed_messages(&admitted)?, input.unreduced_messages.unwrap_or(&unreduced_converted), state, crate::context_reduction_frontier::ReductionBudget { window: input.context_window, ceiling: input.reduction_ceiling_tokens.unwrap_or(input.prompt_context_window), overhead: input.context_overhead_tokens, block_ratio: input.reduction_block_budget_ratio, force: input.breaker_fallback });
         reduced.into_iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?
     } else if native && input.breaker_fallback && !input.append_only_transcript {
         reduce_context_messages(&typed_messages(&admitted)?, &ReduceContextOptions::builtin()).messages.into_iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?
@@ -107,7 +107,8 @@ mod tests {
             messages: &messages, entry_ids: &[None], model: None, branch_entries: &[], context_window: 100_000,
             prompt_context_window: 100_000, usage_tokens: Some(90_000.0), provider_native_path: false,
             tool_admission_enabled: false, breaker_fallback: true, lane_owns_compaction: false,
-            append_only_transcript: false,
+            append_only_transcript: false, context_reduction_state: None, unreduced_messages: None,
+            context_overhead_tokens: 0, reduction_ceiling_tokens: None, reduction_block_budget_ratio: None,
             emergency_prune_latch: &mut latch, reminder: None, now: 0,
         }).expect("valid context");
         assert_eq!(output.messages.len(), 1);

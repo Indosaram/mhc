@@ -24,7 +24,6 @@ use crate::tools::task::types::{
 use crate::tools::task::validation::{
     BatchShape, SpawnParamsInput, TargetInput, TaskTargetSelection, resolve_run_in_background, resolve_spawn_items,
     validate_batch_shape, validate_task_target,
-    RunInBackgroundResolution, resolve_run_in_background,
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -104,10 +103,6 @@ impl TaskExecute<'_> {
         let Some(first) = items.first() else {
             return Ok(invalid_arguments("Provide at least one task item."));
         };
-        let run_in_background = match resolve_run_in_background(params) {
-            RunInBackgroundResolution::Value(value) => value,
-            RunInBackgroundResolution::Conflict(message) => return Ok(invalid_arguments(&message)),
-        };
         // `apply`/`merge` are isolation-only: asking to merge a child that never ran in a clone is a
         // caller mistake, refused BEFORE any spawn so zero child sessions are created.
         for item in &items {
@@ -163,6 +158,7 @@ impl TaskExecute<'_> {
                             attempted_chain: None,
                             category: None,
                             missing_providers: None,
+                            unlisted_provider_model: None,
                         }));
                     }
                     SpawnPolicyVerdict::Force { prompt } => {

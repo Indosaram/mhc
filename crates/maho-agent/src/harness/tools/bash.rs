@@ -91,6 +91,7 @@ pub fn create_bash_tool<T: HasExecutionToolContext>(
                 DEFAULT_MAX_BYTES / 1024
             ),
             parameters: json!({"type":"object","properties":{"command":{"type":"string","description":"Bash command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"}},"required":["command"]}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         },

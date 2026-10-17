@@ -38,7 +38,7 @@ pub fn create_webfetch_tool()->maho_tools::definition::ToolDefinition {
                 let mut details=json!({"phase":phase,"url":url,"format":format_name,"timeoutSeconds":timeout,"progress":progress});
                 if let Some(bytes)=bytes { details["bytesRead"]=json!(bytes); }
                 if let Some(total)=total { details["totalBytes"]=json!(total); }
-                update(ToolResult{content:vec![ToolContent::text(format!("Fetching {url} as {format_name} (timeout {timeout}s)"))],details:Some(details)})?;
+                update(ToolResult{content:vec![ToolContent::text(format!("Fetching {url} as {format_name} (timeout {timeout}s)"))],details:Some(details), structured_content: None })?;
             } Ok::<_,ToolError>(())
         };
         emit("fetching",None,None)?;
@@ -54,7 +54,7 @@ pub fn create_webfetch_tool()->maho_tools::definition::ToolDefinition {
         let details=json!({"url":url,"finalUrl":fetched.url,"format":format_name,"status":fetched.status,"statusText":fetched.status_text,"contentType":fetched.content_type,"bytes":fetched.bytes,"timeoutSeconds":timeout,"converted":converted,"truncated":fetched.truncated,"outputTruncated":capped.truncated,"outputBytes":capped.output_bytes,"outputTotalBytes":capped.total_bytes});
         let mut content=vec![ToolContent::text(if capped.notice.is_some() { format!("{}\n",capped.text) } else { capped.text })];
         if let Some(notice)=capped.notice { content.push(ToolContent::Text{text:notice,audience:Some("model".into())}); }
-        Ok(ToolResult{content,details:Some(details)})
+        Ok(ToolResult{content,details:Some(details), structured_content: None })
     })));
     tool.label="Web Fetch".into(); tool.prompt_snippet=Some("webfetch: retrieve URL content as markdown, text, or html".into());
     tool.prompt_guidelines=Some(vec!["Use webfetch when a specific URL must be retrieved.".into(),"Prefer markdown format unless raw HTML or plain text is explicitly needed.".into(),"The tool is read-only and does not modify files.".into()]); tool

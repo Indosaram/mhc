@@ -5094,6 +5094,7 @@ mod tests {
             name: name.to_owned(),
             description: description.to_owned(),
             parameters,
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -5119,6 +5120,8 @@ mod tests {
             service_tier: None,
             recover_text_tool_calls: None,
             compat: compat.map(|value| serde_json::from_value(value).expect("compat")),
+            default_thinking_level: None,
+            input_limits: None,
         }
     }
 

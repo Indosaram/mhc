@@ -707,6 +707,7 @@ async fn stops_before_polling_steering_when_a_tool_aborts_the_run() {
             name: "wait".to_owned(),
             description: "Wait for abort".to_owned(),
             parameters: json!({ "type": "object", "properties": { "value": { "type": "string" } } }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         },

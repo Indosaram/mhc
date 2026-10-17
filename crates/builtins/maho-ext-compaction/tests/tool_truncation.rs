@@ -33,6 +33,6 @@ fn text(result:&ToolResult)->&str { match &result.content[0] { ToolContent::Text
     let result=ToolResult::text("\u{ac00}".repeat(2000));let output=truncate_oversized_tool_results(&[result]);assert!(text(&output[0]).contains("<truncated:6000 bytes original"));
 }
 #[test] fn images_and_metadata_are_preserved() {
-    let result=ToolResult {content:vec![ToolContent::text("X".repeat(60000)),ToolContent::Image {data:"bytes".into(),mime_type:"image/png".into()}],details:Some(serde_json::json!({"origin":"tool"}))};
+    let result=ToolResult {content:vec![ToolContent::text("X".repeat(60000)),ToolContent::Image {data:"bytes".into(),mime_type:"image/png".into()}],details:Some(serde_json::json!({"origin":"tool"})), structured_content: None };
     let output=pre_prune_tool_outputs_to_budget(std::slice::from_ref(&result),1);assert_eq!(output[0].content[1],result.content[1]);assert_eq!(output[0].details,result.details);
 }

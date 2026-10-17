@@ -19,6 +19,7 @@ mod tests {
             name: name.into(),
             description: "d".into(),
             parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -32,7 +33,7 @@ mod tests {
         assert_eq!(calls[0].name, "get_weather");
     }
     fn bash_tool() -> Tool {
-        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn edit_tool() -> Tool {
@@ -40,6 +41,7 @@ mod tests {
             name: "Edit".into(),
             description: "Edit a file".into(),
             parameters: json!({"type": "object", "required": ["file_path", "edits"], "properties": {"file_path": {"type": "string"}, "edits": {"type": "array", "items": {"type": "object", "required": ["oldText", "newText"], "properties": {"oldText": {"type": "string"}, "newText": {"type": "string"}}}}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -107,7 +109,7 @@ mod tests {
             })),
         };
         let text = r#"<invoke name="Bash"><parameter name="command"></parameter></invoke>"#;
-        let strict_tool = Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string", "minLength": 1}}}), freeform: None, constrained_sampling: None };
+        let strict_tool = Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string", "minLength": 1}}}), output_schema: None, freeform: None, constrained_sampling: None };
         assert!(parse_antml_generated_text(text, &[strict_tool], Some(&options)).is_empty());
         assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not process antml tool call, keeping original text."]);
     }

@@ -36,7 +36,7 @@ pub fn valid_host_message(value: &Value) -> bool {
 pub fn valid_kernel_message(value: &Value) -> bool {
     if !nonempty(value, "requestId") { return false; }
     match (value.get("type").and_then(Value::as_str), value.get("ok").and_then(Value::as_bool)) {
-        (Some("kernel-tool-describe-reply" | "kernel-tool-invoke-reply"), Some(false)) => value.get("error").is_some_and(tool_error),
+        (Some("kernel-tool-describe-reply"), Some(false)) => value.get("error").is_some_and(tool_error),
         (Some("kernel-tool-invoke-reply"), Some(true)) => value.get("value").is_some() && optional(value, "output", Value::is_string),
         (Some("kernel-tool-invoke-reply"), Some(false)) => value.get("error").is_some_and(tool_error) && optional(value, "output", Value::is_string),
         (Some("kernel-tool-describe-reply"), Some(true)) => value.get("results").and_then(Value::as_array).is_some_and(|results| results.iter().all(|result| {

@@ -56,9 +56,9 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
         let (mut start,mut taken,mut split)=(body.len(),0usize,false);
         for (index,character) in body.char_indices().rev() {let units=character.len_utf16();if taken+units>2000 {split=taken<2000;break;}taken+=units;start=index;}
         let text=if split {format!("\u{fffd}{}",&body[start..])} else {body[start..].to_owned()};
-        if let Some(update)=&call.on_update {update(maho_tools::definition::ToolResult {content:vec![maho_tools::definition::ToolContent::text(text)],details:Some(json!({"progress":{"activity":activity,"startedAt":started_at}}))}).map_err(|error|error.to_string())?;}Ok(())
+        if let Some(update)=&call.on_update {update(maho_tools::definition::ToolResult {content:vec![maho_tools::definition::ToolContent::text(text)],details:Some(json!({"progress":{"activity":activity,"startedAt":started_at}})), structured_content: None }).map_err(|error|error.to_string())?;}Ok(())
     };
-    if let Some(update)=&call.on_update {update(maho_tools::definition::ToolResult {content:vec![],details:None}).map_err(|error|error.to_string())?;}
+    if let Some(update)=&call.on_update {update(maho_tools::definition::ToolResult {content:vec![],details:None, structured_content: None }).map_err(|error|error.to_string())?;}
     let mut last_emission=None;let mut trailing=None;
     let settled=loop {tokio::select! {
         settled=&mut outcome=>break settled?,

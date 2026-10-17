@@ -63,7 +63,7 @@ pub fn capture_list_ask(entries:&[Value],_previous:Option<&TodoAsk>)->Option<Tod
         let answer_frame=raw.lines().any(|line|line.trim()=="<answer>")&&raw.lines().any(|line|line.trim()=="</answer>");if answer_frame{return None;}
         let text=crate::todo_format::sanitize_todo_text(raw);(!text.is_empty()).then(||(index,entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),text))
     }).collect::<Vec<_>>();
-    if let Some((index,ask))=restore.filter(|(index,_)|Some(*index)>last_state&&requests.last().is_none_or(|request|request.0<*index)){return Some(ask);}
+    if let Some((_,ask))=restore.filter(|(index,_)|Some(*index)>last_state&&requests.last().is_none_or(|request|request.0<*index)){return Some(ask);}
     let selected=if last_state.is_none(){requests.first()}else{requests.last()}?;
     if last_state.is_some()&&selected.0<=last_state.unwrap_or_default(){return None;}
     let chars=selected.2.chars().collect::<Vec<_>>();let text=if chars.len()>200{format!("{}… (+{} chars)",chars[..200].iter().collect::<String>(),chars.len()-200)}else{selected.2.clone()};

@@ -302,6 +302,7 @@ mod tests {
             name: name.into(),
             description: "d".into(),
             parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -379,22 +380,22 @@ mod tests {
         assert!(parser.finish().is_empty());
     }
     fn bash_tool() -> Tool {
-        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn counter_tool() -> Tool {
-        Tool { name: "Count".into(), description: "Count a value".into(), parameters: json!({"type": "object", "required": ["count"], "properties": {"count": {"type": "number"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "Count".into(), description: "Count a value".into(), parameters: json!({"type": "object", "required": ["count"], "properties": {"count": {"type": "number"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn noop_tool() -> Tool {
-        Tool { name: "noop".into(), description: "Do nothing".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None }
+        Tool { name: "noop".into(), description: "Do nothing".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn fixture_tools() -> Vec<Tool> {
         vec![
-            Tool { name: "get_weather".into(), description: "Get weather".into(), parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}}), freeform: None, constrained_sampling: None },
-            Tool { name: "todowrite".into(), description: "Write todos".into(), parameters: json!({"type": "object", "required": ["todos"], "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["content", "status", "priority"], "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}}}}}), freeform: None, constrained_sampling: None },
-            Tool { name: "get_location".into(), description: "Get location".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None },
+            Tool { name: "get_weather".into(), description: "Get weather".into(), parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}}), output_schema: None, freeform: None, constrained_sampling: None },
+            Tool { name: "todowrite".into(), description: "Write todos".into(), parameters: json!({"type": "object", "required": ["todos"], "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["content", "status", "priority"], "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}}}}}), output_schema: None, freeform: None, constrained_sampling: None },
+            Tool { name: "get_location".into(), description: "Get location".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None },
         ]
     }
 
@@ -743,7 +744,7 @@ next</parameter></invoke> after"#;
     }
 
     fn canonical_bash_tool() -> Tool {
-        Tool { name: "bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     #[test]

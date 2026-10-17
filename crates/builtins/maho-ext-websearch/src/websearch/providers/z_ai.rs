@@ -12,7 +12,7 @@ pub fn build_request(ctx:&BuildContext<'_>,model:Option<&str>,search_context_siz
         let mut body=json!({"search_engine":"search-prime","search_query":append_domain_filters(ctx.query,None,ctx.blocked_domains),"count":json_count(clamp(ctx.max_results,1.,50.))});
         if let Some(domain)=ctx.allowed_domains.and_then(|domains|domains.first()).filter(|domain|!domain.is_empty()) { body["search_domain_filter"]=json!(domain); } body
     };
-    BuiltSearchRequest{url:provider_url(SearchProvider::Zai,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("Authorization".into(),format!("Bearer {}",ctx.api_key.unwrap_or_default()))])),body}
+    BuiltSearchRequest{url:provider_url(SearchProvider::Zai,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("Authorization".into(),format!("Bearer {}",ctx.api_key.unwrap_or_default()))])),body:Some(body)}
 }
 pub fn normalize_response(data:&Value)->Vec<SearchResultItem> {
     let normalize=|field|data.get(field).and_then(Value::as_array).into_iter().flatten().filter_map(|item|result(item.get("title").and_then(Value::as_str),item.get("link").and_then(Value::as_str),item.get("content").and_then(Value::as_str),item.get("media").and_then(Value::as_str),None)).take(50).collect::<Vec<_>>();
@@ -24,11 +24,11 @@ mod tests {
     #[test] fn direct_search_filters_blocked_and_first_allowed_domain() {
         let allowed=vec!["a.test".into(),"b.test".into()]; let blocked=vec!["x.test".into()];
         let request=build_request(&BuildContext{query:"q",max_results:100.,api_key:None,base_url:None,allowed_domains:Some(&allowed),blocked_domains:Some(&blocked)},None,None);
-        assert_eq!(request.body,json!({"search_engine":"search-prime","search_query":"q -site:x.test","count":50.,"search_domain_filter":"a.test"}));
+        assert_eq!(request.body.expect("request body"),json!({"search_engine":"search-prime","search_query":"q -site:x.test","count":50.,"search_domain_filter":"a.test"}));
     }
     #[test] fn chat_search_prefers_chat_results() {
         let request=build_request(&BuildContext{query:"q",max_results:2.,api_key:None,base_url:None,allowed_domains:None,blocked_domains:None},Some("glm-4"),Some("high"));
-        assert_eq!(request.body["tools"][0]["web_search"]["content_size"],"high");
+        assert_eq!(request.body.as_ref().expect("request body")["tools"][0]["web_search"]["content_size"],"high");
         let response=normalize_response(&json!({"web_search":[{"title":"chat","link":"https://a","media":"a"}],"search_result":[{"title":"fallback","link":"https://b"}]})); assert_eq!(response[0].title,"chat");
     }
 }

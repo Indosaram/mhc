@@ -187,6 +187,7 @@ mod tests {
             name: name.into(),
             description: "d".into(),
             parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -244,6 +245,7 @@ mod tests {
                 "properties": { "command": { "type": "string", "minLength": 3 } },
                 "required": ["command"],
             }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }

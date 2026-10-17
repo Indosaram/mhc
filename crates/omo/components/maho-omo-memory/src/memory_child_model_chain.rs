@@ -86,5 +86,6 @@ fn fallback_record(candidate: &ReflectionModelCandidate) -> ResolvedModelRecord 
         variant: None,
         reasoning_effort: None,
         reasoning: candidate.thinking.clone(),
+        service_tier: None,
     }
 }

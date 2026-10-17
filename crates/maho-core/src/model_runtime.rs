@@ -3,7 +3,7 @@ use crate::model_config::ModelConfig;
 use crate::provider_composer::{AuthStatus, ProviderConfigInput, compose_model_provider};
 use maho_ai::legacy_provider_ids::normalize_provider_id;
 use maho_ai::models::{AuthResolution, AuthResolutionOverrides, CreateModelsOptions, Models, ModelsAuth, ModelsError, ModelsErrorCode, ModelsRefreshOptions, ModelsRefreshResult, ModelsRequestTransforms, Provider, create_models};
-use maho_ai::types::{AssistantMessage, AssistantMessageEventStream, BoxFuture, Context, ImagesContext, ImagesModel, ImagesOptions, AssistantImages, Model, SimpleStreamOptions, StreamOptions};
+use maho_ai::types::{AssistantMessage, AssistantMessageEventStream, BoxFuture, Context, Model, SimpleStreamOptions, StreamOptions};
 use maho_ai::auth::context::DefaultAuthContext;
 use maho_ai::auth::pool::slots::{PooledCredential, project_slot};
 use maho_ai::auth::types::{ApiKeyCredential, AuthCheck, AuthOperationOptions, AuthType, Credential, CredentialInfo, CredentialStore, ProviderAuth};
@@ -538,11 +538,6 @@ impl ModelRuntime {
     pub fn get_warnings(&self) -> Vec<String> {self.config.read().unwrap_or_else(|p|p.into_inner()).get_warnings().to_vec()}
     pub fn get_models(&self,provider:Option<&str>) -> Vec<Model> {self.models.get_models(provider)}
     pub fn get_model(&self,provider:&str,id:&str) -> Option<Model> {self.models.get_model(&normalize_provider_id(provider),id)}
-    pub fn get_all_models(&self,provider:Option<&str>) -> Vec<maho_ai::models::AnyModel> {self.models.get_all_models(provider)}
-    pub fn get_models_of_type<T: maho_ai::models::ModelType>(&self, type_: T, provider:Option<&str>) -> Vec<T::Model> {self.models.get_models_of_type(type_,provider)}
-    pub fn get_model_of_type<T: maho_ai::models::ModelType>(&self, type_: T, provider:&str, id:&str) -> Option<T::Model> {self.models.get_model_of_type(type_,provider,id)}
-    pub async fn get_available_of_type<T: maho_ai::models::ModelType>(&self, type_: T, provider:Option<&str>) -> Vec<T::Model> {self.models.get_available_of_type(type_,provider).await}
-    pub async fn get_all_available(&self,provider:Option<&str>) -> Vec<maho_ai::models::AnyModel> {self.models.get_all_available(provider).await}
     pub fn get_provider(&self,id:&str) -> Option<Arc<dyn Provider>> {self.models.get_provider(&normalize_provider_id(id))}
     pub fn get_providers(&self) -> Vec<Arc<dyn Provider>> {self.models.get_providers()}
     /// senpi `getAvailable`: a provider-scoped read goes straight to the registry; a full read
@@ -1113,7 +1108,7 @@ mod tests {
         faux.core.set_responses(vec![faux_assistant_message(invoke, FauxAssistantMessageOptions::default()).into()]);
         runtime.register_native_provider(faux.provider.clone());
         let model = runtime.get_model("faux-recovery", "claude-fixture").expect("model");
-        let tool = maho_ai::types::Tool { name: "get_weather".into(), description: "d".into(), parameters: serde_json::json!({"type":"object"}), freeform: None, constrained_sampling: None };
+        let tool = maho_ai::types::Tool { name: "get_weather".into(), description: "d".into(), parameters: serde_json::json!({"type":"object"}), output_schema: None, freeform: None, constrained_sampling: None };
         let context = Context { system_prompt: None, messages: Vec::new(), tools: Some(vec![tool]) };
         let mut options = StreamOptions::default();
         options.request.api_key = Some("fixture-key".into());

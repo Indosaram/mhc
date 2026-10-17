@@ -79,6 +79,7 @@ mod tests {
             name: name.into(),
             description: "d".into(),
             parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -89,6 +90,7 @@ mod tests {
             name: "inspect".into(),
             description: "d".into(),
             parameters: json!({"type": "object", "properties": {"label": {"type": "string"}, "count": {"type": "number"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -158,27 +160,27 @@ mod tests {
         assert!(parse_anthropic_xml_generated_text(text, &[tool("get_weather")], None).is_empty());
     }
     fn bash_tool() -> Tool {
-        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn canonical_bash_tool() -> Tool {
-        Tool { name: "bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn noop_tool() -> Tool {
-        Tool { name: "noop".into(), description: "Do nothing".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None }
+        Tool { name: "noop".into(), description: "Do nothing".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn optional_tool() -> Tool {
-        Tool { name: "optional".into(), description: "Accept an optional note".into(), parameters: json!({"type": "object", "properties": {"note": {"type": "string"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "optional".into(), description: "Accept an optional note".into(), parameters: json!({"type": "object", "properties": {"note": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn flag_tool() -> Tool {
-        Tool { name: "Flag".into(), description: "Toggle a flag".into(), parameters: json!({"type": "object", "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "Flag".into(), description: "Toggle a flag".into(), parameters: json!({"type": "object", "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn xml_sensitive_tool() -> Tool {
-        Tool { name: "probe<&\"".into(), description: "Probe XML-sensitive values".into(), parameters: json!({"type": "object", "required": ["message"], "properties": {"message": {"type": "string"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "probe<&\"".into(), description: "Probe XML-sensitive values".into(), parameters: json!({"type": "object", "required": ["message"], "properties": {"message": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn error_messages(handler: impl Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync + 'static) -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, ParserOptions) {

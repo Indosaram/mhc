@@ -49,7 +49,7 @@ pub fn create_tool_search_tool(service:std::sync::Arc<tokio::sync::Mutex<crate::
             let matches=service.search(query,5,&crate::engine::bm25::Bm25SearchOptions{source,group:group.map(String::from),..Default::default()}).map_err(|error|ToolError::Message(error.to_string()))?;
             let hints=service.hidden_tool_hints(query); let mut parameters=std::collections::BTreeMap::new(); for item in &matches { parameters.insert(item.name.clone(),service.get_tool_parameters(&item.name).map_err(|error|ToolError::Message(error.to_string()))?); }
             let text=build_tool_search_result_text(query,&matches,&hints,source,group,|name|parameters.get(name).cloned().flatten());
-            Ok(ToolResult{content:vec![ToolContent::text(text)],details:Some(json!({"matched":matches.iter().map(|item|&item.name).collect::<Vec<_>>(),"query":query}))})
+            Ok(ToolResult{content:vec![ToolContent::text(text)],details:Some(json!({"matched":matches.iter().map(|item|&item.name).collect::<Vec<_>>(),"query":query})), structured_content: None })
         })
     }));
     tool.label="Tool search".into(); tool.execution_mode=Some(ToolExecutionMode::Parallel); tool.prepare_arguments=Some(Arc::new(|args|Ok(prepare_tool_search_arguments(args)))); tool.prompt_snippet=Some("Search deferred tool catalogs by capability; call a returned tool by name to use it.".into()); tool

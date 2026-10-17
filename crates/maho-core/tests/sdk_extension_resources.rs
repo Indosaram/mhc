@@ -32,7 +32,7 @@ async fn sdk_native_factory_discovers_resources_and_recreates_on_new_session() {
                     serde_json::json!({"type":"object","properties":{}}), Arc::new(|_| Box::pin(async {
                         Ok(maho_ext_api::ToolResult { content: vec![maho_ext_api::ToolContent::Text {
                             text: "SDK_REGISTERED_EXECUTED".into(), audience: None,
-                        }], details: None })
+                        }], details: None, structured_content: None })
                     }))));
                 api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |_, _| {
                     let started = started.clone();

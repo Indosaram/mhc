@@ -50,7 +50,7 @@ pub fn create_write_tool_definition(cwd: PathBuf, options: WriteToolOptions) -> 
             call.signal.check()?;
             if let Some(parent) = path.parent() { ops.mkdir(parent).await?; }
             call.signal.check()?; ops.write_file(&path, &input.content).await?; call.signal.check()?;
-            Ok(ToolResult { content: vec![ToolContent::text(format!("Successfully wrote to {}", input.path))], details: create_write_details(&input.path, &input.content, baseline).map(serde_json::to_value).transpose()? })
+            Ok(ToolResult { content: vec![ToolContent::text(format!("Successfully wrote to {}", input.path))], details: create_write_details(&input.path, &input.content, baseline).map(serde_json::to_value).transpose()?, structured_content: None })
         })
     });
     let mut tool = ToolDefinition::new("write", "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.", json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to write (relative or absolute)"},"content":{"type":"string","description":"Content to write to the file"}},"required":["path","content"]}), execute);

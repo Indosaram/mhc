@@ -46,7 +46,7 @@ impl TransferDependencies for QueueHost {
 }
 
 fn messages(texts: &[&str]) -> Vec<CompactionQueuedMessage> {
-    texts.iter().map(|text| CompactionQueuedMessage { text: (*text).into(), mode: StreamingBehavior::Steer, enqueue_order: None, pending_echo_id: None }).collect()
+    texts.iter().map(|text| CompactionQueuedMessage { text: (*text).into(), mode: StreamingBehavior::Steer, enqueue_order: None, pending_echo_id: None, unknown_command_as_text: false }).collect()
 }
 
 #[tokio::test]

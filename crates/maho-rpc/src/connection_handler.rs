@@ -168,7 +168,7 @@ pub fn session_model_entry_json(entry:&maho_core::agent_session::SessionModelEnt
     let mut value=serde_json::json!({"model":&entry.model});
     if let Some(level)=&entry.thinking_level{value["thinkingLevel"]=serde_json::to_value(level).unwrap_or(serde_json::Value::Null);}
     if let Some(selection)=&entry.thinking_selection&&let Ok(selection)=serde_json::to_value(selection){value["thinkingSelection"]=selection;}
-    if let Some(tier)=entry.service_tier{value["serviceTier"]=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"}.into();}
+    if let Some(tier)=entry.service_tier{value["serviceTier"]=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority", maho_ext_api::ServiceTier::Ultrafast=>"ultrafast"}.into();}
     value
 }
 /// Milliseconds since the epoch, the clock the RPC host stamps records with.
@@ -203,7 +203,7 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
     let mut state=serde_json::json!({
         "model":session.model(),
         "thinkingLevel":session.thinking_level(),
-        "serviceTier":session.effective_service_tier().map(|tier|match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"}),
+        "serviceTier":session.effective_service_tier().map(|tier|match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority", maho_ext_api::ServiceTier::Ultrafast=>"ultrafast"}),
         "fastMode":session.is_fast_mode_active(),
         "isStreaming":session.is_streaming(),
         "isCompacting":session.is_compacting(),
@@ -334,7 +334,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             #[derive(serde::Deserialize)]#[serde(rename_all="camelCase")]struct WireModel{model:maho_ai::types::Model,thinking_level:Option<maho_ai::types::ThinkingLevel>,thinking_selection:Option<maho_ai::types::ThinkingSelection>,service_tier:Option<String>}
             let parsed=models.iter().cloned().map(|value|{
                 let entry:WireModel=serde_json::from_value(value).map_err(|error|error.to_string())?;
-                let service_tier=entry.service_tier.map(|tier|match tier.as_str(){"auto"=>Ok(maho_ext_api::ServiceTier::Auto),"flex"=>Ok(maho_ext_api::ServiceTier::Flex),"priority"=>Ok(maho_ext_api::ServiceTier::Priority),_=>Err(format!("Unknown service tier: {tier}"))}).transpose()?;
+                let service_tier=entry.service_tier.map(|tier|match tier.as_str(){"auto"=>Ok(maho_ext_api::ServiceTier::Auto),"flex"=>Ok(maho_ext_api::ServiceTier::Flex),"priority"=>Ok(maho_ext_api::ServiceTier::Priority),"ultrafast"=>Ok(maho_ext_api::ServiceTier::Ultrafast),_=>Err(format!("Unknown service tier: {tier}"))}).transpose()?;
                 Ok(maho_core::agent_session::SessionModelEntry{model:entry.model,thinking_level:entry.thinking_level,thinking_selection:entry.thinking_selection,service_tier})
             }).collect::<Result<Vec<_>,String>>();
             let favorite=matches!(&command.body,RpcCommandBody::SetFavoriteModels{..});
@@ -354,14 +354,14 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let result=match content{Err(error)=>Err(error),Ok(content)=>session.send_custom_message_content(custom_type.clone(),content,*display,details.clone(),maho_ext_api::SendMessageOptions{trigger_turn:trigger_turn.unwrap_or_else(||session.is_streaming()),deliver_as:deliver_as.map(|mode|match mode{crate::rpc_types::DeliveryMode::Steer=>maho_ext_api::DeliverAs::Steer,crate::rpc_types::DeliveryMode::FollowUp=>maho_ext_api::DeliverAs::FollowUp,crate::rpc_types::DeliveryMode::NextTurn=>maho_ext_api::DeliverAs::NextTurn})}).await};
             ("send_custom_message",result.map(|()|None))
         },
-        RpcCommandBody::GetFastMode=>("get_fast_mode",Ok(Some(serde_json::json!({"enabled":session.is_fast_mode_active(),"serviceTier":session.effective_service_tier().map(|tier|match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"})})))),
+        RpcCommandBody::GetFastMode=>("get_fast_mode",Ok(Some(serde_json::json!({"enabled":session.is_fast_mode_active(),"serviceTier":session.effective_service_tier().map(|tier|match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority", maho_ext_api::ServiceTier::Ultrafast=>"ultrafast"})})))),
         RpcCommandBody::SetFastMode{enabled}=>{
             // Same entry point as /fast: persistence, `-fast` key normalization and pin precedence live in apply_fast_mode.
             let result=match session.apply_fast_mode(*enabled).await{
                 Ok(result) if !result.applied=>Err(result.message),
                 Ok(result)=>{
                     let memory=result.memory_model.unwrap_or_else(||session.model());
-                    Ok(Some(serde_json::json!({"enabled":result.enabled,"serviceTier":match result.recorded_tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"},"provider":memory.provider,"modelId":memory.id})))
+                    Ok(Some(serde_json::json!({"enabled":result.enabled,"serviceTier":match result.recorded_tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority", maho_ext_api::ServiceTier::Ultrafast=>"ultrafast"},"provider":memory.provider,"modelId":memory.id})))
                 }
                 Err(error)=>Err(error.message),
             };
@@ -1314,7 +1314,7 @@ mod connection_events_tests{
         session.emit_extension_event(maho_core::agent_session::SESSION_REBIND_CHANNEL,&serde_json::json!({"reason":"reload"}));
         assert!(of_type(&records,"commands_changed").is_empty());
         let source_info=maho_core::source_info::create_synthetic_source_info("rpc-commands-changed",maho_core::source_info::SyntheticSourceInfoOptions{source:"test".into(),..Default::default()});
-        session.set_prompt_resources(vec![maho_core::prompt_templates::PromptTemplate{name:"review".into(),description:"Review work".into(),argument_hint:None,content:"review".into(),source_info,file_path:"/tmp/review.md".into()}],Vec::new());
+        session.set_prompt_resources(vec![maho_core::prompt_templates::PromptTemplate{name:"review".into(),description:"Review work".into(),argument_hint:None,requires_arguments:false,content:"review".into(),source_info,file_path:"/tmp/review.md".into()}],Vec::new());
         session.emit_extension_event(maho_core::agent_session::SESSION_REBIND_CHANNEL,&serde_json::json!({"reason":"reload"}));
         let changed=of_type(&records,"commands_changed");
         assert_eq!(changed.len(),1);

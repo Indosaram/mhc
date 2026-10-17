@@ -71,7 +71,12 @@ fn reduce_prefix(messages: &[Message], cut: usize) -> Vec<Message> {
     prefix
 }
 
-pub fn reduce_context_with_frontier(messages:&[Message],unreduced:&[Message],state:&mut ContextReductionState,window:u64,ceiling:u64,overhead:u64,block_ratio:Option<f64>,force:bool)->Vec<Message> {
+/// The token budget a frontier reduction pass runs against.
+#[derive(Clone, Copy, Debug)]
+pub struct ReductionBudget { pub window:u64, pub ceiling:u64, pub overhead:u64, pub block_ratio:Option<f64>, pub force:bool }
+
+pub fn reduce_context_with_frontier(messages:&[Message],unreduced:&[Message],state:&mut ContextReductionState,budget:ReductionBudget)->Vec<Message> {
+    let ReductionBudget { window, ceiling, overhead, block_ratio, force } = budget;
     if state.cut_index>messages.len() || (state.cut_index>0 && fingerprint(unreduced,state.cut_index)!=state.prefix_hash) { *state=ContextReductionState::default(); }
     let reduced=if state.engaged {reduce_prefix(messages,state.cut_index)} else {messages.to_vec()};
     let projected=projected_reduction_tokens(&reduced,state,unreduced,overhead);

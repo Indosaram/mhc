@@ -11,20 +11,20 @@ fn transform_results(messages: &[Value], transform: impl FnOnce(&[ToolResult]) -
         .map(|m| {
             let content=m["content"].as_array().into_iter().flatten().filter_map(|block| {
                 match block["type"].as_str()? {
-                    "text"=>block["text"].as_str().map(|text|ToolContent::text(text)),
+                    "text"=>block["text"].as_str().map(ToolContent::text),
                     "image"=>block["data"].as_str().map(|data|ToolContent::Image {data:data.to_owned(),mime_type:block["mimeType"].as_str().unwrap_or_default().to_owned()}),
                     _=>None,
                 }
             }).collect();
-            ToolResult {content,details:None}
+            ToolResult {content,details:None, structured_content: None }
         }).collect();
     if results.is_empty() { return messages.to_vec(); }
     let transformed = transform(&results);
     let mut next = transformed.into_iter();
     messages.iter().map(|message| {
         let mut message = message.clone();
-        if message.get("role").and_then(Value::as_str) == Some("toolResult") && let Some(result) = next.next() {
-            if let Ok(value)=serde_json::to_value(result.content) { message["content"] = value; }
+        if message.get("role").and_then(Value::as_str) == Some("toolResult") && let Some(result) = next.next() && let Ok(value)=serde_json::to_value(result.content) {
+            message["content"] = value;
         }
         message
     }).collect()

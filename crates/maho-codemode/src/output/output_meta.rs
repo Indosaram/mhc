@@ -33,7 +33,7 @@ pub enum TruncatedBy { Lines, Bytes, Columns, Middle }
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LineRange { pub start: usize, pub end: usize }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TruncationMeta {
     pub direction: Direction,
@@ -90,6 +90,14 @@ pub fn format_truncation_warning(meta: Option<&TruncationMeta>) -> Option<String
     };
     if let Some(path) = &meta.artifact_id { message.push_str(&format!(". Full output: {path}")); }
     Some(format!("[{message}]"))
+}
+
+/// `formatModelTruncationNotice`: the model-facing notice, the warning without its artifact path plus a separate artifact line.
+pub fn format_model_truncation_notice(meta: &TruncationMeta) -> String {
+    let shown = TruncationMeta { artifact_id: None, ..meta.clone() };
+    let detail = format_truncation_warning(Some(&shown)).map(|warning| warning[1..warning.len() - 1].to_owned());
+    let notice = format!("[Output truncated: kept {} of {} bytes.{}]", meta.output_bytes, meta.total_bytes, detail.map_or_else(String::new, |detail| format!(" {detail}")));
+    match &meta.artifact_id { Some(path) => format!("{notice}\n{}", artifact_notice(path)), None => notice }
 }
 
 pub fn strip_output_notice<'a>(text: &'a str, meta: Option<&TruncationMeta>) -> &'a str {

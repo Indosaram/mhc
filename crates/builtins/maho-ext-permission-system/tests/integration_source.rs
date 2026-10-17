@@ -19,7 +19,7 @@ async fn parsed_tools_persist_always_approval_across_service_reconstruction() ->
             let mut service = PermissionService::new(vec![], vec![], PermissionEventEmitter::default());
             let completion = service.ask(request.clone());
             assert_eq!(serde_json::to_value(service.list())?, serde_json::to_value(vec![request.clone()])?);
-            service.reply(ReplyInput { request_id: name.into(), reply: Reply::Always, message: None });
+            service.reply(ReplyInput { request_id: name.into(), reply: Reply::Always, message: None, always: None });
             completion.await?;
             let approved = service.get_approved();
             assert_eq!(approved, request.always.iter().map(|pattern| Rule { permission: permission.into(), pattern: pattern.clone(), action: Action::Allow }).collect::<Vec<_>>());

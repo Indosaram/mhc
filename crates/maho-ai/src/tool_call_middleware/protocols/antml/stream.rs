@@ -20,6 +20,7 @@ mod tests {
             name: name.into(),
             description: "d".into(),
             parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -35,7 +36,7 @@ mod tests {
         assert!(parser.finish().is_empty());
     }
     fn bash_tool() -> Tool {
-        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), freeform: None, constrained_sampling: None }
+        Tool { name: "Bash".into(), description: "Run a shell command".into(), parameters: json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}), output_schema: None, freeform: None, constrained_sampling: None }
     }
 
     fn edit_tool() -> Tool {
@@ -43,6 +44,7 @@ mod tests {
             name: "Edit".into(),
             description: "Edit a file".into(),
             parameters: json!({"type": "object", "required": ["file_path", "edits"], "properties": {"file_path": {"type": "string"}, "edits": {"type": "array", "items": {"type": "object", "required": ["oldText", "newText"], "properties": {"oldText": {"type": "string"}, "newText": {"type": "string"}}}}}}),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         }
@@ -50,9 +52,9 @@ mod tests {
 
     fn fixture_tools() -> Vec<Tool> {
         vec![
-            Tool { name: "get_weather".into(), description: "Get weather".into(), parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}}), freeform: None, constrained_sampling: None },
-            Tool { name: "todowrite".into(), description: "Write todos".into(), parameters: json!({"type": "object", "required": ["todos"], "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["content", "status", "priority"], "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}}}}}), freeform: None, constrained_sampling: None },
-            Tool { name: "get_location".into(), description: "Get location".into(), parameters: json!({"type": "object", "properties": {}}), freeform: None, constrained_sampling: None },
+            Tool { name: "get_weather".into(), description: "Get weather".into(), parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}}), output_schema: None, freeform: None, constrained_sampling: None },
+            Tool { name: "todowrite".into(), description: "Write todos".into(), parameters: json!({"type": "object", "required": ["todos"], "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["content", "status", "priority"], "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}}}}}), output_schema: None, freeform: None, constrained_sampling: None },
+            Tool { name: "get_location".into(), description: "Get location".into(), parameters: json!({"type": "object", "properties": {}}), output_schema: None, freeform: None, constrained_sampling: None },
         ]
     }
 
@@ -172,7 +174,7 @@ mod tests {
     #[test]
     fn suppresses_an_unrecoverably_malformed_known_invoke_and_reports_it() {
         let (seen, handler) = error_sink();
-        let count_tool = Tool { name: "Count".into(), description: "Count".into(), parameters: json!({"type": "object", "required": ["count"], "properties": {"count": {"type": "number"}}}), freeform: None, constrained_sampling: None };
+        let count_tool = Tool { name: "Count".into(), description: "Count".into(), parameters: json!({"type": "object", "required": ["count"], "properties": {"count": {"type": "number"}}}), output_schema: None, freeform: None, constrained_sampling: None };
         let mut parser = create_antml_stream_parser(vec![count_tool], Some(options_with(false, handler)));
         let call = r#"<invoke name="Count"><parameter name="count">not-a-number</parameter></invoke>"#;
         let events = feed_all(&mut parser, &format!("Before {call} after"));

@@ -33,7 +33,6 @@ pub fn require_codemode_runtime_asset(local_override: Option<&Path>, package_rel
 const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
     ("kernels/jl/prelude.jl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/jl/prelude.jl"))),
     ("kernels/jl/handles.jl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/jl/handles.jl"))),
-    ("kernels/jl/globals.jl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/jl/globals.jl"))),
     ("kernels/jl/runner.jl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/jl/runner.jl"))),
     ("kernels/js/display-image.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/display-image.js"))),
     ("kernels/js/handles.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/handles.js"))),
@@ -61,7 +60,6 @@ const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
     ("kernels/js/workpool.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/workpool.js"))),
     ("kernels/py/prelude.py", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/py/prelude.py"))),
     ("kernels/rb/prelude.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/prelude.rb"))),
-    ("kernels/rb/handles.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/handles.rb"))),
     ("kernels/rb/runner.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/runner.rb"))),
     ("kernels/rb/workpool.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/workpool.rb"))),
     ("skill/bun-1-4/SKILL.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/SKILL.md"))),

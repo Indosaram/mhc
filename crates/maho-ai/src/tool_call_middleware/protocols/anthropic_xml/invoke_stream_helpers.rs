@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn coerce_stream_parameters_falls_back_to_json_schema_when_configured() {
         use crate::tool_call_middleware::protocols::anthropic_xml::invoke_protocol::ANTHROPIC_XML_INVOKE_CONFIG;
-        let tool = Tool { name: "t".into(), description: String::new(), parameters: serde_json::json!({}), freeform: None, constrained_sampling: None };
+        let tool = Tool { name: "t".into(), description: String::new(), parameters: serde_json::json!({}), output_schema: None, freeform: None, constrained_sampling: None };
         let params = vec![InvokeParameter { name: "a".into(), raw_value: "1".into() }];
         // ANTHROPIC_XML_INVOKE_CONFIG.coerce requires the tool to declare "a" in its schema, so
         // this exercises the schema-based rejection returning None and then, with fallback
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn coerce_stream_parameters_fallback_rejects_duplicate_names() {
         use crate::tool_call_middleware::protocols::anthropic_xml::invoke_protocol::ANTHROPIC_XML_INVOKE_CONFIG;
-        let tool = Tool { name: "t".into(), description: String::new(), parameters: serde_json::json!({}), freeform: None, constrained_sampling: None };
+        let tool = Tool { name: "t".into(), description: String::new(), parameters: serde_json::json!({}), output_schema: None, freeform: None, constrained_sampling: None };
         let params = vec![
             InvokeParameter { name: "a".into(), raw_value: "1".into() },
             InvokeParameter { name: "a".into(), raw_value: "2".into() },

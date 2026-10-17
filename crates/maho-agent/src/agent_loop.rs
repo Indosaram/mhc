@@ -1259,7 +1259,7 @@ fn is_sequential_tool_call(current_context: &AgentContext, tool_call: &AgentTool
 enum ToolCallPreparation {
     Prepared {
         tool_call: AgentToolCall,
-        tool: AgentTool,
+        tool: Box<AgentTool>,
         args: serde_json::Value,
         requested_name: Option<String>,
     },
@@ -1429,7 +1429,7 @@ async fn prepare_resolved_tool_call(
     }
     ToolCallPreparation::Prepared {
         tool_call: prepared_tool_call.tool_call,
-        tool: tool.clone(),
+        tool: Box::new(tool.clone()),
         args: effective_args,
         requested_name: None,
     }

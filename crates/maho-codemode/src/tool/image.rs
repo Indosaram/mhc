@@ -8,19 +8,6 @@ pub const MAX_DISPLAY_IMAGES_PER_CELL: usize = 8;
 pub const MAX_DISPLAY_IMAGE_BYTES_PER_CELL: usize = 24 * 1024 * 1024;
 pub const MAX_JSON_OUTPUTS_PER_CELL: usize = 64;
 
-#[cfg(test)]
-mod image_validation_tests {
-    use super::*;
-
-    #[test]
-    fn validates_payload_signatures_and_overrides_declared_mime() {
-        assert_eq!(validate_display_image("iVBORw0KGgoAAAANSUhEUg==").map(|(_, mime)| mime), Some("image/png".into()));
-        assert_eq!(validate_display_image("/9j/4AAQSkZJRg==").map(|(_, mime)| mime), Some("image/jpeg".into()));
-        assert!(validate_display_image("AAAA").is_some_and(|(_, mime)| mime.is_empty()));
-        assert!(validate_display_image("not base64").is_none());
-    }
-}
-
 pub struct EvalOutputOptions {
     pub artifact_path: Option<PathBuf>,
     pub head_bytes: usize,
@@ -192,4 +179,17 @@ fn truncation_meta_from_summary(summary: &crate::output::streaming_output::Outpu
         meta["shownRange"]=json!({"start":summary.total_lines.saturating_sub(summary.output_lines).saturating_add(1).max(1),"end":summary.total_lines});
     }
     Some(meta)
+}
+
+#[cfg(test)]
+mod image_validation_tests {
+    use super::*;
+
+    #[test]
+    fn validates_payload_signatures_and_overrides_declared_mime() {
+        assert_eq!(validate_display_image("iVBORw0KGgoAAAANSUhEUg==").map(|(_, mime)| mime), Some("image/png".into()));
+        assert_eq!(validate_display_image("/9j/4AAQSkZJRg==").map(|(_, mime)| mime), Some("image/jpeg".into()));
+        assert!(validate_display_image("AAAA").is_some_and(|(_, mime)| mime.is_empty()));
+        assert!(validate_display_image("not base64").is_none());
+    }
 }

@@ -13,7 +13,7 @@ pub fn register_workpool_tool(api: &mut ExtensionApi, backend: Arc<dyn WorkpoolT
             let session_id = context.session_manager().session_id().to_owned();
             let caller = WorkpoolCaller { session_id: session_id.clone(), root_session_id: session_id, depth: 0, cwd: context.cwd().to_string_lossy().into_owned() };
             let result = tool.execute_json(&caller, call.params).await.map_err(|error| ToolError::Message(error.to_string()))?;
-            Ok(ToolResult { content: vec![ToolContent::text(result.to_string())], details: Some(result) })
+            Ok(ToolResult { content: vec![ToolContent::text(result.to_string())], details: Some(result), structured_content: None })
         })
     }));
     definition.label = tool.label.into();

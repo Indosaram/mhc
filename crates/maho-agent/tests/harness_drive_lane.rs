@@ -231,7 +231,7 @@ fn named_tool(name: &str) -> Arc<maho_agent::harness::types::AgentHarnessTool<()
         label: name.into(),
         prepare_arguments: None,
         replay: None,
-        tool: maho_ai::types::Tool { name: name.into(), description: String::new(), parameters: serde_json::json!({"type":"object"}), freeform: None, constrained_sampling: None },
+        tool: maho_ai::types::Tool { name: name.into(), description: String::new(), parameters: serde_json::json!({"type":"object"}), output_schema: None, freeform: None, constrained_sampling: None },
         execute: Arc::new(|_, _, _, _, _, _| Box::pin(async { Err("unused".to_owned()) })),
     })
 }

@@ -6,7 +6,7 @@ fn pinned_provider_full_configuration_requests(){
  let request=maho_ext_websearch::websearch::tool::request_from_arguments(case["request"]["query"].as_str().expect("query").into(),Some(vec!["example.com".into()]),None,&config).expect("request");
  let actual=maho_ext_websearch::websearch::providers::build_search_request(&config.providers[0].config,&request).expect("provider request");
  assert_eq!(actual.url,case["url"].as_str().expect("url"),"{case}");assert_eq!(actual.method,case["method"].as_str().expect("method"));
- assert_eq!(serde_json::to_value(actual.headers).expect("headers"),case["headers"],"{case}");compare_json(&actual.body,&case["body"]);
+ assert_eq!(serde_json::to_value(actual.headers).expect("headers"),case["headers"],"{case}");compare_json(actual.body.as_ref().unwrap_or(&serde_json::Value::Null),&case["body"]);
  }
 }
 fn compare_json(actual:&serde_json::Value,expected:&serde_json::Value){

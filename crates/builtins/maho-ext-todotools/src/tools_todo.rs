@@ -7,6 +7,9 @@ pub trait TodoAccessors:Send+Sync {
     fn get_current_state(&self)->crate::todo_types::TodoState { crate::todo_types::TodoState{phases:self.get_current_phases(),ask:self.get_current_ask()} }
     fn set_current_phases(&self,phases:Vec<crate::todo_types::TodoPhase>);
     fn set_current_ask(&self,_ask:Option<crate::todo_types::TodoAsk>) {}
+    /// senpi \`ctx.sessionManager.getBranch()\` as the todo tool sees it; tool calls carry no session
+    /// branch here, so the extension snapshots it before each agent turn.
+    fn branch_entries(&self)->Vec<serde_json::Value> { Vec::new() }
     fn sync_widget(&self,ctx:&dyn maho_tools::definition::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>;
 }
 pub fn register_todo_tool(api:&mut maho_ext_api::ExtensionApi,actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn TodoAccessors>) {
@@ -51,7 +54,7 @@ pub fn create_todo_tool(actions:std::sync::Arc<dyn maho_ext_api::ExtensionAction
             let current_ask=accessors.get_current_ask();
             let op=call.params.get("op").and_then(serde_json::Value::as_str);
             let creates=op==Some("init")||op==Some("append")&&previous.iter().all(|phase|phase.tasks.is_empty());
-            let next_ask=if creates { crate::todo_storage::capture_list_ask(&ctx.session_manager().get_branch(),current_ask.as_ref()).or_else(||current_ask.clone()) } else { current_ask.clone() };
+            let next_ask=if creates { crate::todo_storage::capture_list_ask(&accessors.branch_entries(),current_ask.as_ref()).or_else(||current_ask.clone()) } else { current_ask.clone() };
             let (text,mut details)=plan_execution_with_ask(&call.params,&previous,next_ask.as_ref(),storage).map_err(ToolError::Message)?;
             details.ask=next_ask;
             if details.op!=Some(TodoOperation::View) {
@@ -61,7 +64,7 @@ pub fn create_todo_tool(actions:std::sync::Arc<dyn maho_ext_api::ExtensionAction
                 accessors.set_current_ask(details.ask.clone());
                 accessors.sync_widget(ctx,details.completed_tasks.as_deref().unwrap_or_default()).map_err(|error|ToolError::Message(error.to_string()))?;
             }
-            Ok(ToolResult{content:vec![ToolContent::text(text)],details:Some(serde_json::to_value(details)?)})
+            Ok(ToolResult{content:vec![ToolContent::text(text)],details:Some(serde_json::to_value(details)?), structured_content: None })
         })
     }));
     tool.label="Todo".into(); tool.execution_mode=Some(ToolExecutionMode::Sequential);

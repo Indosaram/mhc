@@ -19,7 +19,7 @@ async fn completion_ignoring_abort_is_dropped_before_session_shutdown_returns() 
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     let (started,mut started_rx)=tokio::sync::mpsc::unbounded_channel();
     let (dropped,dropped_rx)=tokio::sync::oneshot::channel();let dropped=Arc::new(Mutex::new(Some(dropped)));
-    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(move |_,ctx| {let guard=CompletionDrop(dropped.lock().unwrap().take());let started=started.clone();Box::pin(async move {let _guard=guard;started.send(ctx.signal.unwrap()).unwrap();std::future::pending().await})}),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(move |_,ctx| {let guard=CompletionDrop(dropped.lock().unwrap().take());let started=started.clone();Box::pin(async move {let _guard=guard;started.send(ctx.signal.unwrap()).unwrap();std::future::pending().await})}),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None, isolation: None}}).unwrap();
     let ctx=context(root.path());
     let mut start=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
     (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
@@ -53,7 +53,7 @@ async fn native_factory_registers_baseline_eval_before_runtime_actions_are_bound
         complete:Arc::new(|_,_|Box::pin(async {panic!("factory setup must not request completion")})),
         home_dir:"/fixture/home".into(),
         environment:Default::default(),
-        js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None},
+        js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None, isolation: None},
     }).unwrap();
     assert_eq!(api.registered.tools.len(),1);
     assert_eq!(api.registered.tools[0].definition.name,"eval");
@@ -78,7 +78,7 @@ async fn registered_callable_enforces_configured_detached_capacity() {
     std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false},"maxDetachedCells":1,"cellTimeoutSeconds":1,"foregroundWindowSeconds":3}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
-    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None, isolation: None}}).unwrap();
     let ctx=context(root.path());let mut start=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
     (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
     let execute=host.tools.lock().unwrap().last().unwrap().definition.execute.clone();
@@ -101,7 +101,7 @@ async fn registered_callable_schema_uses_resolved_language_settings() {
     std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":true,"js":false,"rb":false,"jl":false},"maxDetachedCells":3}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
-    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None, isolation: None}}).unwrap();
     let ctx=context(root.path());let mut start=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
     (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
     let schema=host.tools.lock().unwrap().last().unwrap().definition.parameters.clone();
@@ -123,7 +123,7 @@ async fn concurrent_completion_keeps_each_invocations_context() {
     maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(move |request,ctx| {
         let wait=if request.prompt=="A" {released.lock().unwrap().take()} else {None};let entered=entered.clone();let captured=captured.clone();
         Box::pin(async move {entered.send(request.prompt.clone()).unwrap();if let Some(wait)=wait {wait.await.unwrap();}captured.lock().unwrap().push((request.prompt,ctx.cwd,ctx.thinking_level,ctx.goal_store_file,ctx.model.map(|model|model.name),ctx.service_tier));Ok(serde_json::json!({"text":"ok"}))})
-    }),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    }),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None, isolation: None}}).unwrap();
     let ctx=context(root.path());let mut start=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
     (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
     let execute=host.tools.lock().unwrap()[0].definition.execute.clone();
@@ -174,7 +174,7 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
     let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     let seen=Arc::new(Mutex::new(Vec::new()));let captured=seen.clone();
-    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {captured.lock().unwrap().push((ctx.service_tier,ctx.model.as_ref().map(|model|model.name.clone())));Ok(serde_json::json!({"text":"fresh"}))})}),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {captured.lock().unwrap().push((ctx.service_tier,ctx.model.as_ref().map(|model|model.name.clone())));Ok(serde_json::json!({"text":"fresh"}))})}),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None, isolation: None}}).unwrap();
     let mut ctx=context(root.path());
     let model:Model=serde_json::from_value(serde_json::json!({"id":"same","name":"same","provider":"fixture","api":"openai-responses","baseUrl":"http://localhost","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":4096,"maxTokens":100})).unwrap();
     ctx.model=Some(model.clone());
@@ -233,7 +233,7 @@ async fn native_session_registration_runs_real_worker_and_shutdown_rejects_stale
     let host=Arc::new(Host::default());
     let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
-    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("unexpected completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("unexpected completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None, isolation: None}}).unwrap();
     let ctx=context(root.path());
     let emissions=Arc::new(Mutex::new(Vec::new()));
     let captured=emissions.clone();

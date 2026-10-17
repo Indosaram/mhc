@@ -272,7 +272,6 @@ impl maho_ext_api::Extension for CompactionExtension {
                         && tokens.is_some_and(|tokens|tokens >= window as f64 * policy::compute_effective_threshold(window as f64, state.last_yield));
                     let raw = messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                     let provider_native_path = openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref());
-                    let append_only_transcript = context.mode == maho_ext_api::ExtensionMode::AppServer;
                     let mut reduction_state = context_reduction_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     // Only the provider-native replay boundary reads the branch; skip the full branch copy otherwise.
                     let branch_entries = if provider_native_path { speculative::branch_values(context) } else { Vec::new() };
@@ -282,7 +281,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                         usage_tokens: tokens, provider_native_path,
                         tool_admission_enabled: settings.ideal.tool_admission_enabled != Some(false), breaker_fallback, lane_owns_compaction,
                         context_reduction_state: Some(&mut reduction_state), context_overhead_tokens: 0,
-                        unreduced_messages: Some(messages),
+                        unreduced_messages: None,
                         reduction_ceiling_tokens: None, reduction_block_budget_ratio: None, append_only_transcript,
                         emergency_prune_latch: &mut latch.lock().unwrap_or_else(std::sync::PoisonError::into_inner), reminder: None,
                         now: chrono::Utc::now().timestamp_millis(),

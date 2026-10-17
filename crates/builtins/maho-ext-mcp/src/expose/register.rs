@@ -48,7 +48,7 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                         let progress=value.get("params").unwrap_or(&Value::Null);
                         if value.get("method").and_then(Value::as_str)==Some("notifications/progress") && progress.get("progressToken")==Some(&json!(token)) && let Some(update)=&call.on_update {
                             let total=progress.get("total").map_or_else(String::new,|total|format!("/{total}"));let message=progress.get("message").and_then(Value::as_str).map_or_else(String::new,|message|format!(" {message}"));
-                            update(ToolResult {content:vec![ToolContent::text(format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)))],details:Some(json!({"progress":progress,"server":entry.server,"tool":entry.tool}))}).map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;
+                            update(ToolResult {content:vec![ToolContent::text(format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)))],details:Some(json!({"progress":progress,"server":entry.server,"tool":entry.tool})), structured_content: None }).map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;
                         }
                     }
                     result=&mut request=>{call.signal.check().map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;break result?;},
@@ -79,5 +79,5 @@ pub fn mapped_guarded_result(entry:&McpToolCatalogEntry,result:&Value,agent_dir:
     }).collect::<Vec<_>>();
     let preview=content.iter().map(|block|match block {ToolContent::Text {text,..}=>text.clone(),ToolContent::Image {mime_type,..}=>format!("[{mime_type} image]")}).collect::<Vec<_>>().join(" ");
     let preview=preview.trim();let preview=if preview.is_empty(){"(empty result)".into()}else if preview.encode_utf16().count()>120 {format!("{}...",String::from_utf16_lossy(&preview.encode_utf16().take(117).collect::<Vec<_>>()))}else{preview.to_owned()};
-    Ok(ToolResult {content,details:Some(json!({"preview":preview,"server":entry.server,"tool":entry.tool}))})
+    Ok(ToolResult {content,details:Some(json!({"preview":preview,"server":entry.server,"tool":entry.tool})), structured_content: None })
 }

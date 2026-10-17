@@ -50,7 +50,7 @@ pub fn update_near_duplicates(state: &mut NearDuplicateState, entry: &ScalarEntr
             let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
             if state.inside_fence || fence { state.fenced = true; }
             let line=String::from_utf16_lossy(&state.line_text);
-            let indented=(line.starts_with("  ")||line.starts_with('\t')) && !regex::Regex::new(r"^(?: {2,}|\t)(?![ \t]*(?:[-*+]|\d+[.)])[ \t]").is_ok_and(|regex|regex.is_match(&line));
+            let indented=indented_code(&line);
             let code_shaped=indented||state.line_last_char.is_some_and(|character|CODE_LINE_ENDINGS.contains(&character));
             if !state.fenced && code_shaped { state.length-=state.line_length+1; state.word_chars-=state.line_word_chars; if state.length==0 { state.start_offset=0; } }
             else if state.retained.len() < NEAR_DUPLICATE_TEXT_RETENTION_MAX { state.retained.extend_from_slice(&state.line_text); state.retained.push(CharCode::LINE_FEED); }
@@ -66,6 +66,28 @@ pub fn update_near_duplicates(state: &mut NearDuplicateState, entry: &ScalarEntr
     if state.line_text.len() < NEAR_DUPLICATE_TEXT_RETENTION_MAX { state.line_text.extend_from_slice(&entry.value); }
     None
 }
+/// senpi `INDENTED_CODE` (`/^(?: {2,}|\t)(?![ \t]*(?:[-*+]|\d+[.)])[ \t])/`): two or more spaces or a
+/// tab, not followed by a list marker. `regex` has no look-ahead, so the negative look-ahead is checked here.
+fn indented_code(line: &str) -> bool {
+    let rest = if let Some(rest) = line.strip_prefix('\t') {
+        rest
+    } else {
+        let spaces = line.len() - line.trim_start_matches(' ').len();
+        if spaces < 2 { return false; }
+        &line[spaces..]
+    };
+    // The regex backtracks over the `{2,}` run, so any later split point counts; trimming every
+    // leading blank covers each one because `[ \t]*` absorbs the rest.
+    let after_blanks = rest.trim_start_matches([' ', '\t']);
+    let marker_len = if after_blanks.starts_with(['-', '*', '+']) {
+        Some(1)
+    } else {
+        let digits = after_blanks.len() - after_blanks.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        (digits > 0 && after_blanks[digits..].starts_with(['.', ')'])).then_some(digits + 1)
+    };
+    !marker_len.is_some_and(|len| after_blanks[len..].starts_with([' ', '\t']))
+}
+
 #[cfg(test)] mod tests {
     use super::*; use crate::stream_utils::ScalarScanner;
     const PARAGRAPH: &str = "The current matrix is progressing through the native integration checks while the remaining jobs continue running.";
@@ -79,3 +101,4 @@ pub fn update_near_duplicates(state: &mut NearDuplicateState, entry: &ScalarEntr
     #[test] fn no_blank_separator_leaves_paragraph_open() { let result = feed(&format!("{PARAGRAPH}\n").repeat(20)); assert!(result.is_none()); }
     #[test] fn code_shaped_lines_are_excluded_from_echo_signatures() { let line="  render_svg_element_with_different_content_and_attributes("; let input=format!("{line}\n\n").repeat(12); assert!(feed(&input).is_none()); }
 }
+

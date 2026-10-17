@@ -67,7 +67,7 @@ impl ModelPayload {
             source: senpi_task::state::RESOLVED_MODEL_SOURCES.into_iter()
                 .find(|source| source.as_str() == self.source)?,
             provider: self.provider, model_id: self.model_id, display: self.display,
-            variant: self.variant, reasoning_effort: self.reasoning_effort, reasoning: self.reasoning,
+            variant: self.variant, reasoning_effort: self.reasoning_effort, reasoning: self.reasoning, service_tier: None,
         })
     }
 }

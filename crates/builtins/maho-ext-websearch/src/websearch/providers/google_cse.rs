@@ -5,7 +5,7 @@ use crate::websearch::provider_endpoints::{SearchProvider,provider_url};
 pub fn build_request(ctx:&BuildContext<'_>,search_engine_id:Option<&str>)->Result<BuiltSearchRequest,url::ParseError> {
     let mut url=url::Url::parse(provider_url(SearchProvider::GoogleCse,ctx.base_url))?;
     url.query_pairs_mut().append_pair("q",&append_domain_filters(ctx.query,ctx.allowed_domains,ctx.blocked_domains)).append_pair("key",ctx.api_key.unwrap_or("")).append_pair("cx",search_engine_id.unwrap_or("")).append_pair("num",&clamp(ctx.max_results,1.0,10.0).to_string());
-    Ok(BuiltSearchRequest{url:url.into(),method:"GET",headers:BTreeMap::from([("Accept".into(),"application/json".into())]),body:Value::Null})
+    Ok(BuiltSearchRequest{url:url.into(),method:"GET",headers:BTreeMap::from([("Accept".into(),"application/json".into())]),body:None})
 }
 pub fn normalize_response(data:&Value)->Vec<SearchResultItem> {
     data.get("items").and_then(Value::as_array).into_iter().flatten().filter_map(|item|result(item.get("title").and_then(Value::as_str),item.get("link").and_then(Value::as_str),item.get("snippet").and_then(Value::as_str),None,None)).take(50).collect()

@@ -49,20 +49,6 @@ impl Default for ReadToolOptions {
 }
 #[derive(Deserialize)]
 pub struct ReadToolInput { pub path: String, pub offset: Option<usize>, pub limit: Option<usize> }
-#[cfg(test)]
-mod image_resize_tests {
-    use super::*;
-    #[test]
-    fn model_resize_profile_controls_output_dimensions() {
-        let image = image::DynamicImage::new_rgb8(120, 60);
-        let mut encoded = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut encoded, image::ImageFormat::Png).expect("encode fixture");
-        let (content, _) = process_image(encoded.into_inner(), "image/png".into(), true, Some(maho_ai::types::ModelImageResizeOptions { max_width: 40, max_height: 40, max_bytes: None })).expect("resize image");
-        let ToolContent::Image { data, .. } = content.get(1).expect("resized image attachment") else { panic!("resized image attachment expected"); };
-        let decoded = image::load_from_memory(&base64::engine::general_purpose::STANDARD.decode(data).expect("decode base64")).expect("decode image");
-        assert_eq!((decoded.width(), decoded.height()), (40, 20));
-    }
-}
 pub fn detect_supported_image_mime_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[255,216,255]) { return if bytes.get(3) == Some(&247) { None } else { Some("image/jpeg") }; }
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -111,7 +97,6 @@ fn process_image(bytes: Vec<u8>, mime: String, resize: bool, resize_options: Opt
         let (width,height) = (decoded.width(),decoded.height());
         let max_width = resize_options.as_ref().map_or(2000, |options| options.max_width);
         let max_height = resize_options.as_ref().map_or(2000, |options| options.max_height);
-        let max_bytes = resize_options.as_ref().and_then(|options| options.max_bytes).unwrap_or(4_718_592);
         let original_size_limit = resize_options.as_ref().and_then(|options| options.max_bytes).map_or(4_718_592, |bytes| bytes.div_ceil(3)*4);
         if width > max_width || height > max_height || bytes.len().div_ceil(3)*4 >= original_size_limit {
             let (mut w,mut h) = (width,height);
@@ -156,7 +141,7 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
                     let (mut images, mut note) = tokio::task::spawn_blocking(move || process_image(buffer, mime, resize, resize_options)).await.map_err(|e| ToolError::Message(e.to_string()))??;
                     if images.is_empty() { note = format!("Read image file [{original_mime}]\n{note}"); }
                     if call.context.and_then(ToolContext::model).is_some_and(|m| !m.input.contains(&maho_ai::types::InputModality::Image)) { note.push_str("\n[Current model does not support images. The image will be omitted from this request.]"); }
-                    let mut content = vec![ToolContent::text(note)]; content.append(&mut images); return Ok(ToolResult { content, details: None });
+                    let mut content = vec![ToolContent::text(note)]; content.append(&mut images); return Ok(ToolResult { content, details: None, structured_content: None });
                 }
                 let text = String::from_utf8_lossy(&buffer); let lines: Vec<_> = text.split('\n').collect(); let start = input.offset.unwrap_or(1).saturating_sub(1);
                 if start >= lines.len() { return Err(ToolError::Message(format!("Offset {} is beyond end of file ({} lines total)", input.offset.unwrap_or(1), lines.len()))); }
@@ -176,7 +161,7 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
                     truncation.content
                 };
                 let mut content = Vec::new(); if !output.is_empty() || notice.is_none() { content.push(ToolContent::text(format!("{output}{}",if notice.is_some() { "\n" } else { "" }))); }
-                if let Some(notice) = notice { content.push(model_only_text(notice)); } Ok(ToolResult { content, details })
+                if let Some(notice) = notice { content.push(model_only_text(notice)); } Ok(ToolResult { content, details, structured_content: None })
             };
             tokio::select! { result = work => result, () = call.signal.cancelled() => Err(ToolError::Aborted) }
         })
@@ -184,4 +169,19 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
     let mut tool = ToolDefinition::new("read", "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.", json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to read (relative or absolute)"},"offset":{"type":"number","description":"Line number to start reading from (1-indexed)"},"limit":{"type":"number","description":"Maximum number of lines to read"}},"required":["path"]}), execute);
     tool.constrained_sampling = Some(maho_ai::types::ConstrainedSampling::Config(maho_ai::types::ConstrainedSamplingConfig::JsonSchema { strict: maho_ai::types::JsonSchemaStrictness::Prefer }));
     tool.prompt_snippet = Some("Read file contents".into()); tool.prompt_guidelines = Some(vec!["Use read to examine files instead of cat or sed.".into()]); tool
+}
+
+#[cfg(test)]
+mod image_resize_tests {
+    use super::*;
+    #[test]
+    fn model_resize_profile_controls_output_dimensions() {
+        let image = image::DynamicImage::new_rgb8(120, 60);
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut encoded, image::ImageFormat::Png).expect("encode fixture");
+        let (content, _) = process_image(encoded.into_inner(), "image/png".into(), true, Some(maho_ai::types::ModelImageResizeOptions { max_width: 40, max_height: 40, max_bytes: None })).expect("resize image");
+        let ToolContent::Image { data, .. } = content.get(1).expect("resized image attachment") else { panic!("resized image attachment expected"); };
+        let decoded = image::load_from_memory(&base64::engine::general_purpose::STANDARD.decode(data).expect("decode base64")).expect("decode image");
+        assert_eq!((decoded.width(), decoded.height()), (40, 20));
+    }
 }

@@ -37,7 +37,7 @@ pub async fn register_thread_settings(core: &Arc<RwLock<ServerCore>>,threads: Ar
             if let Some(effort) = effort.filter(|effort|*effort != session.thinking_level()) {session.set_session_thinking_level(effort);}
             let after = session.model();
             if after.provider != current.provider || after.id != current.id || before_effort != session.thinking_level() {
-                let tier = session.service_tier().map(|tier|match tier {maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"});
+                let tier = session.service_tier().map(|tier|match tier {maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority", maho_ext_api::ServiceTier::Ultrafast=>"ultrafast"});
                 let notification = json!({"method":"thread/settings/updated","params":{"threadId":id,"threadSettings":{"cwd":entry.cwd,"approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"},"activePermissionProfile":null,"model":after.id,"modelProvider":after.provider,"serviceTier":tier,"effort":session.thinking_level(),"summary":null,"collaborationMode":{"mode":"default","settings":{"model":"unknown","reasoning_effort":"off","developer_instructions":null}},"personality":null}}});
                 let recipients = entry.subscribers.iter().cloned().collect::<Vec<_>>();
                 context.connection.defer_until_responded(move || {tokio::spawn(async move {

@@ -131,7 +131,7 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
                 cwd: request.cwd, paths, match_count: if mode == GrepMode::Files { None } else { Some(file_matches.iter().map(|f| f.count.unwrap_or(0)).sum()) }, file_count: file_matches.len(),
                 skip, next_skip: more.then_some(skip + selected.len() as u32), file_limit_reached: more, per_file_limit_reached: per_file, total_limit_reached: total_limit,
                 scan: scan_value(&scan), lines_truncated: matches.iter().any(|r| r.truncated), matches, file_matches };
-            Ok(ToolResult { content: super::format::format_grep_content(&details), details: Some(serde_json::to_value(details)?) })
+            Ok(ToolResult { content: super::format::format_grep_content(&details), details: Some(serde_json::to_value(details)?), structured_content: None })
         })
     });
     let mut tool = ToolDefinition::new("grep", "Search file contents with tool.grep({ pattern, path }) inside eval. Supports regex/literal patterns, file pages with skip, context, count/files modes, and structured results. Respects .gitignore.", json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]},"limit":{"type":"number"},"skip":{"type":"number"}},"required":["pattern"]}), execute);

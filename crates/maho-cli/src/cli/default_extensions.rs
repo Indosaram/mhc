@@ -362,7 +362,7 @@ impl maho_ext_builtin_loose::service_tier::ServiceTierHost for ServiceTierHost {
         model.service_tier.map(|tier| match tier {
             maho_ai::types::ServiceTierPreference::Auto => maho_ext_api::ServiceTier::Auto,
             maho_ai::types::ServiceTierPreference::Flex => maho_ext_api::ServiceTier::Flex,
-            maho_ai::types::ServiceTierPreference::Priority => maho_ext_api::ServiceTier::Priority,
+            maho_ai::types::ServiceTierPreference::Priority => maho_ext_api::ServiceTier::Priority, maho_ai::types::ServiceTierPreference::Ultrafast => maho_ext_api::ServiceTier::Ultrafast,
         })
     }
     fn upstream_id(&self, model: &maho_ext_api::Model) -> String {
@@ -379,12 +379,12 @@ impl maho_ext_builtin_loose::service_tier::ServiceTierHost for ServiceTierHost {
     fn persist<'a>(&'a self,ctx:&'a maho_ext_api::ExtensionContext,model:&'a maho_ext_api::Model,tier:maho_ext_api::ServiceTier)->maho_ext_api::ExtensionFuture<'a,()>{
         Box::pin(async move{
             let mut manager=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&maho_core::config::home_dir(),(ctx.is_project_trusted_fn)());
-            let tier=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"};
+            let tier=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority", maho_ext_api::ServiceTier::Ultrafast=>"ultrafast"};
             manager.set_model_service_tier(&model.provider,&model.id,tier).map_err(ExtensionFailure::new)
         })
     }
 }
-fn parse_service_tier(tier:&str)->Option<maho_ext_api::ServiceTier>{match tier{"auto"=>Some(maho_ext_api::ServiceTier::Auto),"flex"=>Some(maho_ext_api::ServiceTier::Flex),"priority"=>Some(maho_ext_api::ServiceTier::Priority),_=>None}}
+fn parse_service_tier(tier:&str)->Option<maho_ext_api::ServiceTier>{match tier{"auto"=>Some(maho_ext_api::ServiceTier::Auto),"flex"=>Some(maho_ext_api::ServiceTier::Flex),"priority"=>Some(maho_ext_api::ServiceTier::Priority),"ultrafast"=>Some(maho_ext_api::ServiceTier::Ultrafast),_=>None}}
 
 pub fn test_service_tier_host() -> impl maho_ext_builtin_loose::service_tier::ServiceTierHost { ServiceTierHost }
 

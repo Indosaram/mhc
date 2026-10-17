@@ -76,7 +76,7 @@ pub(crate) fn workpool_yield_tool_with_events(identity: &senpi_task::runners::in
                         senpi_task::workpool::worker_capability::WorkpoolYieldReceipt::Refused(error) => serde_json::json!({"accepted":false,"code":error.code,"message":error.message,"key":error.key}),
                     }).collect::<Vec<_>>();
                     let result = serde_json::json!({"pool_id":pool_id,"generation":generation,"results":results});
-                    Ok(maho_ext_api::ToolResult { content: vec![maho_ext_api::ToolContent::text(result.to_string())], details: Some(result) })
+                    Ok(maho_ext_api::ToolResult { content: vec![maho_ext_api::ToolContent::text(result.to_string())], details: Some(result), structured_content: None })
                 })
             }),
         )

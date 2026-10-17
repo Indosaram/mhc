@@ -73,7 +73,7 @@ pub fn register_task_tools_with_sync(api: &mut ExtensionApi, deps: TaskToolsDeps
                 let result = serde_json::to_value(partial.details.details).map_err(ToolError::from).and_then(|mut details| {
                     let progress = serde_json::to_value(partial.details.progress)?;
                     if let (Some(details), Some(progress)) = (details.as_object_mut(), progress.as_object()) { details.extend(progress.clone()); }
-                    callback(ToolResult { content: partial.content.into_iter().map(|content| ToolContent::text(content.text)).collect(), details: Some(details) })
+                    callback(ToolResult { content: partial.content.into_iter().map(|content| ToolContent::text(content.text)).collect(), details: Some(details), structured_content: None })
                 });
                 if let Err(error) = result { *progress_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error); update_abort.abort(); }
             }) as Arc<senpi_task::tools::task::execute_single::TaskToolUpdate>);
@@ -233,7 +233,7 @@ pub fn task_output_renderers() -> ToolRenderers<(), Value> {
     }
 }
 
-pub fn tool_text(text: String, details: Value) -> ToolResult { ToolResult { content: vec![ToolContent::text(text)], details: Some(details) } }
+pub fn tool_text(text: String, details: Value) -> ToolResult { ToolResult { content: vec![ToolContent::text(text)], details: Some(details), structured_content: None } }
 
 pub fn register_lead_team_tools(api: &mut ExtensionApi, service: Arc<dyn senpi_task::tools::team::types::TeamToolsService>) {
     let deps = senpi_task::tools::team::types::TeamToolDeps { service };

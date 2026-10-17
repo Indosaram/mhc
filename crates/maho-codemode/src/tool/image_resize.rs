@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin};
 use base64::Engine;
 use serde::{Serialize, Deserialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvalImageContent { pub data: String, pub mime_type: String }
 

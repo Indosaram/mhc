@@ -18,8 +18,8 @@ fn fields(metadata:&str)->Map<String,Value> {
         for line in normalized.lines() {
             let Some((key,raw))=line.split_once(':') else { continue; };
             if key.is_empty()||!key.chars().all(|value|value.is_ascii_alphanumeric()||matches!(value,'_'|'-')) { continue; }
-            let Ok(Value::Mapping(mapping))=serde_yaml::from_str::<Value>(&format!("{key}: {raw}")) else { continue; };
-            if let Some(value)=mapping.get(Value::String(key.into())) { result.insert(key.into(),value.clone()); }
+            let Ok(Value::Object(mapping))=serde_yaml::from_str::<Value>(&format!("{key}: {raw}")) else { continue; };
+            if let Some(value)=mapping.get(key) { result.insert(key.into(),value.clone()); }
         }
         return result;
     }

@@ -83,7 +83,7 @@ fn parser_snapshot(parser:&mut vt100::Parser)->Option<TerminalScreenSnapshot> {
     screen.set_scrollback(0);Some(TerminalScreenSnapshot {cols,rows,visible_grid,scrollback,cursor})
 }
 
-#[derive(Debug,PartialEq,Eq)]
+#[derive(Debug,Clone,PartialEq,Eq)]
 pub struct TerminalScreenSnapshot {
     pub cols:u16,
     pub rows:u16,
@@ -137,7 +137,7 @@ impl TerminalRuntimeSession {
         let final_screen=Arc::new(Mutex::new(None));
         let exit:ExitState=Arc::new((Mutex::new(None),Condvar::new()));let settled=Arc::clone(&exit);
         let (exit_sender,exit_signal)=tokio::sync::watch::channel(None);
-        let release_signal=exit_signal.clone();let release_screen=screen.clone();let released_snapshot=final_screen.clone();
+        let release_screen=screen.clone();let released_snapshot=final_screen.clone();
         let exit_thread=std::thread::spawn(move || {
             // session-exit.ts `normalizeTerminalExit`: any requested kill (SIGTERM included) marks the exit cancelled.
             let result=match waiter.join() {Ok(result)=>result.map(|mut exit|{exit.cancelled|=exit_kill_requested.load(Ordering::SeqCst);exit}).map_err(|e|e.to_string()),Err(_)=>Err("terminal exit waiter panicked".to_owned())};

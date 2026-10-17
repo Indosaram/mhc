@@ -199,22 +199,9 @@ pub fn load_mcp_config(options: LoadMcpConfigOptions<'_>) -> Result<ResolvedMcpC
     })?;
     let settings = merge_settings(Some(&merge_settings(global.as_ref().and_then(|c| c.settings.as_ref()), claude_settings.as_ref())?), project.as_ref().and_then(|c| c.settings.as_ref()))?;
     let mut result = ResolvedMcpConfig { settings, servers: BTreeMap::new(), diagnostics };
-    for (config, raw, source, path, trusted) in [
-        (global, None, McpServerSource::Global, global_path, true),
-    ] {
-        if trusted {
-            for (name, declaration) in config.and_then(|c| c.mcp_servers).unwrap_or_default() {
-                let config = normalize_server(declaration);
-                result.servers.insert(name.clone(), resolved_server(name, source, path.clone(), config)?);
-            }
-        } else if let Some(servers) = raw.as_ref().and_then(|r| r.get("mcpServers")).and_then(Value::as_object) {
-            for name in servers.keys() {
-                if let Some(existing) = result.servers.get(name).filter(|s| s.state != McpServerState::Untrusted) {
-                    result.diagnostics.push(format!("Blocked untrusted {source} MCP server '{name}' from shadowing trusted {} server.", existing.source)); continue;
-                }
-                result.servers.insert(name.clone(), ResolvedMcpServer { name: name.clone(), source, source_path: path.clone(), state: McpServerState::Untrusted, transport: None, config_hash: None, config: None });
-            }
-        }
+    for (name, declaration) in global.and_then(|c| c.mcp_servers).unwrap_or_default() {
+        let config = normalize_server(declaration);
+        result.servers.insert(name.clone(), resolved_server(name, McpServerSource::Global, global_path.clone(), config)?);
     }
     for (config, raw, path, trusted) in claude_configs {
         if trusted {

@@ -66,6 +66,8 @@ impl FooterStatus {
         if self.runtime.as_ref().is_none_or(|r|!self.active||!goal_active_cached(r,&mut self.goal_cache)) {self.stop();return;}
         self.frame=(self.frame+1)%ULW_LOOP_FOOTER_FRAMES.len();self.publish();
     }
+    /// Number of goal files whose parsed JSON is cached (dispose empties it).
+    pub fn cached_goal_count(&self) -> usize { self.goal_cache.entries.len() }
     pub fn dispose(&mut self) {self.active=false;self.stop();self.runtime=None;self.goal_cache.clear();}
     fn publish(&mut self) { if let Some(runtime)=&self.runtime {runtime.ui.set_status("ulw-loop",Some(ULW_LOOP_FOOTER_FRAMES[self.frame]));self.published=true;} }
     fn stop(&mut self) {if let Some(timer)=self.timer.take(){timer.abort();}self.running=false;if self.published && let Some(runtime)=&self.runtime {runtime.ui.set_status("ulw-loop",None);}self.published=false;self.frame=0;}

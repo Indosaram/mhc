@@ -34,12 +34,12 @@ mod tests {
         let request=SearchRequest{query:"rust release notes".into(),max_results:5.,allowed_domains:None,blocked_domains:None};
         let built=build_search_request(&config,&request).unwrap();assert_eq!(built.method,"POST");assert_eq!(built.headers["x-api-key"],"fixture-key");assert_eq!(built.headers["anthropic-version"],"2023-06-01");
         assert_eq!(built.url,"https://api.deepseek.com/anthropic/v1/messages");
-        assert_eq!(built.body,json!({"model":"deepseek-v4-flash","max_tokens":1024,"messages":[{"role":"user","content":"rust release notes"}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}]}));
+        assert_eq!(built.body.expect("request body"),json!({"model":"deepseek-v4-flash","max_tokens":1024,"messages":[{"role":"user","content":"rust release notes"}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}]}));
     }
     #[test] fn upstream_model_override_and_domain_filter() {
         let mut config=SearchProviderConfig::new(SearchProvider::Deepseek);config.api_key=Some("fixture-key".into());config.model=Some("deepseek-v4-pro".into());config.allowed_domains=Some(vec!["rust-lang.org".into()]);
         let built=build_search_request(&config,&SearchRequest{query:"rust release notes".into(),max_results:5.,allowed_domains:None,blocked_domains:None}).unwrap();
-        assert_eq!(built.body["model"],"deepseek-v4-pro");assert_eq!(built.body["tools"],json!([{"type":"web_search_20250305","name":"web_search","max_uses":8,"allowed_domains":["rust-lang.org"]}]));
+        assert_eq!(built.body.as_ref().expect("request body")["model"],"deepseek-v4-pro");assert_eq!(built.body.as_ref().expect("request body")["tools"],json!([{"type":"web_search_20250305","name":"web_search","max_uses":8,"allowed_domains":["rust-lang.org"]}]));
     }
-    #[test] fn official_endpoint_and_default_model() { let req=build_request(&BuildContext{query:"q",max_results:1.,api_key:None,base_url:None,allowed_domains:None,blocked_domains:None},None); assert_eq!(req.url,"https://api.deepseek.com/anthropic/v1/messages"); assert_eq!(req.body["model"],"deepseek-v4-flash"); }
+    #[test] fn official_endpoint_and_default_model() { let req=build_request(&BuildContext{query:"q",max_results:1.,api_key:None,base_url:None,allowed_domains:None,blocked_domains:None},None); assert_eq!(req.url,"https://api.deepseek.com/anthropic/v1/messages"); assert_eq!(req.body.as_ref().expect("request body")["model"],"deepseek-v4-flash"); }
 }

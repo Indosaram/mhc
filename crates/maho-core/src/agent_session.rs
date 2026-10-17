@@ -795,7 +795,7 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
         self.registry.get_service_tier(model).map(|tier| match tier {
             maho_ai::types::ServiceTierPreference::Auto => maho_ext_api::ServiceTier::Auto,
             maho_ai::types::ServiceTierPreference::Flex => maho_ext_api::ServiceTier::Flex,
-            maho_ai::types::ServiceTierPreference::Priority => maho_ext_api::ServiceTier::Priority,
+            maho_ai::types::ServiceTierPreference::Priority => maho_ext_api::ServiceTier::Priority, maho_ai::types::ServiceTierPreference::Ultrafast => maho_ext_api::ServiceTier::Ultrafast,
         })
     }
     fn prompt_preset(&self, model: &Model) -> Option<String> { self.registry.get_prompt_preset(model) }
@@ -1351,6 +1351,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         let tools = session.get_active_tool_names();
         let (tool_snippets, prompt_guidelines) = session.tool_prompt_contributions(&tools);
         maho_ext_api::BuildSystemPromptOptions { cwd: session.cwd().into(), tools, tool_snippets, prompt_guidelines, skills,
+            surface: maho_ext_api::PromptSurface::default(),
             custom_prompt,
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: session.project_context_files().into_iter()
@@ -4523,7 +4524,7 @@ impl AgentSession {
         { let mut state = self.state(); state.loaded_context_files = None; state.resolved_system_prompt = None; }
         self.with_settings_manager_mut(|manager| manager.rebind_cwd(&cwd));
         let weak = self.weak_accessor();
-        let context: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
+        let context: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move |_, _| {
             let session = weak().expect("Session retained during tool execution");
             Arc::new(crate::sdk::extension_context::create(&session))
         });
@@ -5076,6 +5077,7 @@ impl AgentSession {
             &crate::dynamic_prompt::build::BuildDynamicSystemPromptOptions {
                 cwd: self.cwd(), selected_tools: active, tool_snippets: snippets, prompt_guidelines: guidelines,
                 context_files: self.project_context_files(), skills, tuning_section: None, core_prompt: None, workstation_dialect: None,
+                surface: crate::dynamic_prompt::PromptSurface::default(),
             },
         ));
         let mut base = if append.is_empty() { base_prompt } else { format!("{base_prompt}\n\n{}", append.join("\n\n")) };
@@ -5126,6 +5128,7 @@ impl AgentSession {
         let (tool_snippets, prompt_guidelines) = self.tool_prompt_contributions(&tools);
         let (custom_prompt, append) = self.resolved_system_prompt();
         maho_ext_api::BuildSystemPromptOptions {
+            surface: maho_ext_api::PromptSurface::default(),
             custom_prompt,
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: self.project_context_files().into_iter()
@@ -6097,7 +6100,7 @@ impl AgentSession {
     pub fn replace_custom_tool(&self, definition: ToolDefinition) -> Result<(), String> {
         if self.is_streaming() { return Err("Cannot replace a tool during an active turn".into()); }
         let weak = self.weak_accessor();
-        let context: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
+        let context: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move |_, _| {
             let session = weak().expect("Custom tool session retained during tool execution");
             Arc::new(crate::sdk::extension_context::create(&session))
         });
@@ -6560,7 +6563,7 @@ impl AgentSession {
             return self.effective_service_tier().map(|tier| match tier {
                 ServiceTier::Auto => ServiceTierPreference::Auto,
                 ServiceTier::Flex => ServiceTierPreference::Flex,
-                ServiceTier::Priority => ServiceTierPreference::Priority,
+                ServiceTier::Priority => ServiceTierPreference::Priority, ServiceTier::Ultrafast => ServiceTierPreference::Ultrafast,
             });
         }
         self.model_runtime().get_compatibility_request_config(request_model).service_tier
@@ -8963,7 +8966,7 @@ fn service_tier_from_preference(preference: ServiceTierPreference) -> ServiceTie
     match preference {
         ServiceTierPreference::Auto => ServiceTier::Auto,
         ServiceTierPreference::Flex => ServiceTier::Flex,
-        ServiceTierPreference::Priority => ServiceTier::Priority,
+        ServiceTierPreference::Priority => ServiceTier::Priority, ServiceTierPreference::Ultrafast => ServiceTier::Ultrafast,
     }
 }
 
@@ -9985,7 +9988,7 @@ mod tests {
         let tool = AgentTool {
             label: "updates".to_owned(), prepare_arguments: None, replay: None, execution_mode: None,
             tool: maho_ai::types::Tool { name: "updates".to_owned(), description: "updates".to_owned(),
-                parameters: serde_json::json!({"type":"object","properties":{}}), freeform: None, constrained_sampling: None },
+                parameters: serde_json::json!({"type":"object","properties":{}}), output_schema: None, freeform: None, constrained_sampling: None },
             execute: Arc::new(|_, _, _, update| Box::pin(async move {
                 update.expect("update callback")(AgentToolResult::text("partial"));
                 AgentToolResult::text("complete")
@@ -11253,6 +11256,7 @@ mod tests {
             name: name.to_owned(),
             description: format!("{name} tool"),
             parameters: serde_json::json!({ "type": "object" }),
+            output_schema: None,
             freeform: None,
             constrained_sampling: None,
         };

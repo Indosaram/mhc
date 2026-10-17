@@ -60,7 +60,7 @@ mod tests {
     const LUNA: Pricing = Pricing { input: 0.25, cache_read: Some(0.025), output: Some(2.0) };
     const OPUS: Pricing = Pricing { input: 5.0, cache_read: Some(0.5), output: Some(25.0) };
     fn fork(parent: f64, turns: u32, cache_hit: bool) -> f64 { estimate_fork_cost(&ForkCostInput { pricing: KIMI, parent_context_tokens: parent, turns, output_tokens: 6996.0, cache_hit }) }
-    fn candidate(cost: Option<Pricing>) -> MemoryRouteCandidate { MemoryRouteCandidate { model: "fixture/model".into(), thinking: None, cost } }
+    fn candidate(cost: Option<Pricing>) -> MemoryRouteCandidate { MemoryRouteCandidate { model: "fixture/model".into(), thinking: None, cost, context_window: None } }
     fn route(surface: MemoryLaunchSurface, session: Option<&MemoryRouteCandidate>, parent_context_tokens: Option<f64>, turns: u32) -> MemoryLaunchRoute { choose_memory_launch_route(&MemoryLaunchRouteInput { surface, quick: Some(&candidate(Some(KIMI))), session, parent_context_tokens, payload_tokens: None, turns, cache_hit: true }).unwrap() }
     #[test]
     fn per_turn_cache_billing() { let one = fork(156_872.0, 1, true); let five = fork(156_872.0, 5, true); let twenty_one = fork(156_872.0, 21, true); assert!((one / 0.26042 - 0.17).abs() < 0.05); assert!((five / 0.26042 - 0.54).abs() < 0.05); assert!((twenty_one / 0.26042 - 2.08).abs() < 0.05); assert!(twenty_one > five * 3.0); }

@@ -52,7 +52,7 @@ fn tool_definition(replace: bool, binary: PathBuf, resolver: Option<Arc<crate::b
             if let Some(globs) = call.params.get("globs") { details["globs"] = globs.clone(); }
             if let Some(hint) = hint { details["hint"] = json!(hint); }
             if replace { details["rewrite"] = json!(options.rewrite); details["dryRun"] = json!(dry_run); }
-            Ok(ToolResult { content: vec![ToolContent::text(text)], details: Some(details) })
+            Ok(ToolResult { content: vec![ToolContent::text(text)], details: Some(details), structured_content: None })
         })
     }));
     definition.label = if replace { "AST Grep Replace" } else { "AST Grep Search" }.into();

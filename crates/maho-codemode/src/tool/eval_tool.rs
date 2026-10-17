@@ -8,7 +8,7 @@ fn tool_result(result:AgentToolResult)->ToolResult {
         ContentBlock::Text(text)=>Some(ToolContent::text(text.text)),
         ContentBlock::Image(image)=>Some(ToolContent::Image {data:image.data,mime_type:image.mime_type}),
         _=>None,
-    }).collect(),details:Some(result.details)}
+    }).collect(),details:Some(result.details), structured_content: None }
 }
 
 fn language_name(language:super::types::EvalLanguage) -> &'static str {

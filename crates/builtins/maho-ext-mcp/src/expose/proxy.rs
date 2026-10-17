@@ -18,7 +18,7 @@ fn text_result(server: &str, text: String) -> ToolResult {
     );
     ToolResult {
         content: vec![ToolContent::text(text)],
-        details: Some(json!({"preview": preview, "server": server, "tool": "proxy"})),
+        details: Some(json!({"preview": preview, "server": server, "tool": "proxy"})), structured_content: None
     }
 }
 

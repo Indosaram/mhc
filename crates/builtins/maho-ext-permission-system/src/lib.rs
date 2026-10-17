@@ -60,8 +60,7 @@ impl Extension for PermissionSystem{
                         if config::EDIT_TOOLS.contains(&event.tool_name.as_str()){metadata.insert("filepath".into(),path.clone());}
                         if event.tool_name=="read"{metadata.insert("filePath".into(),path);}
                     }
-                    let mut request=types::Request::new(format!("permission-{}",counter.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1),ctx.session_manager.session_id().into(),parsed.permission,parsed.patterns,parsed.always,metadata);
-                    let preset=runtime.get_flag("permission-preset").and_then(|flag|match flag{FlagValue::String(value)=>cli::parse_permission_preset_flag(&value),_=>None});
+                    let request=types::Request::new(format!("permission-{}",counter.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1),ctx.session_manager.session_id().into(),parsed.permission,parsed.patterns,parsed.always,metadata);
                     let (future,pending,rules,cli)={let mut guard=state.lock().expect("permission state lock");let policy=guard.as_mut().expect("session policy initialized");let future=policy.service.ask(request.clone());let pending=policy.service.list().iter().any(|entry|entry.id==request.id);(future,pending,policy.static_rules.clone(),policy.cli.clone())};
                     if pending{
                         let reply=if ctx.has_ui{Some(prompt::show_permission_prompt(ctx,&request).await)}else{

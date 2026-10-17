@@ -47,6 +47,7 @@ pub fn build_comment_response(
     QuestionResponse {
         status: QuestionStatus::CommentSubmitted,
         answers: draft.answers.clone(),
+        resolved_by: Some("local_ui".into()),
         comment: Some(comment.to_string()),
         unanswered: unanswered_ids(request, draft),
         auto_resolved_after_ms: None,
@@ -66,6 +67,7 @@ pub fn build_timed_out_response(
     QuestionResponse {
         status: QuestionStatus::TimedOut,
         answers: draft.answers.clone(),
+        resolved_by: None,
         comment,
         unanswered: unanswered_ids(request, draft),
         auto_resolved_after_ms: Some(auto_resolved_after_ms),
@@ -77,6 +79,7 @@ pub fn build_cancelled_response(request: &QuestionRequest, draft: &QuestionDraft
     QuestionResponse {
         status: QuestionStatus::Cancelled,
         answers: draft.answers.clone(),
+        resolved_by: None,
         comment: None,
         unanswered: unanswered_ids(request, draft),
         auto_resolved_after_ms: None,
