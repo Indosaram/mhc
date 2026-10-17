@@ -6,13 +6,11 @@ use maho_codemode::{
     config::settings::CodemodeSettings,
     extension::kernel_preludes::{active_kernel_preludes, project_kernel_prelude, KernelPreludeCollisionError},
     extension::session_manager::{CodemodeSessionManager, CreateCodemodeSessionManagerOptions},
-    interpreters::detect::{InterpreterDetection, LanguageAvailability},
     prompt::eval_prompt::{build_eval_prompt, EvalPromptOptions},
     tool::{
         detached_cell_manager::EvalDetachedCellManager,
         eval_tool::create_eval_tool,
         eval_tool_options::*,
-        types::*,
     },
 };
 use maho_tools::definition::{AbortSignal, KernelPrelude, ToolCall, ToolContent};
@@ -51,7 +49,6 @@ impl OutputExecuteTool for TestExecutor {
 fn create_computer_prelude() -> KernelPrelude {
     KernelPrelude {
         javascript: "globalThis.computer = { click: async (args) => { const res = await tool.computer({ action: 'call', method: 'click', ...args }); return res.details?.value; } };".into(),
-        python: "class _Computer:\n    def click(self, **args):\n        return tool.computer({'action': 'call', 'method': 'click', **args})['details']['value']\ncomputer = _Computer()\n".into(),
         documentation: "computer(args): Drive desktop GUI".into(),
         exports: vec!["computer".into()],
         ..Default::default()
@@ -59,7 +56,7 @@ fn create_computer_prelude() -> KernelPrelude {
 }
 
 #[tokio::test]
-async fn test_active_tool_kernel_prelude_js_and_python_execution() {
+async fn test_active_tool_kernel_prelude_js_execution() {
     let artifacts = tempfile::tempdir().unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let executor = Arc::new(TestExecutor { calls: calls.clone() });
@@ -80,19 +77,6 @@ async fn test_active_tool_kernel_prelude_js_and_python_execution() {
         session_id: "test-prelude-session".into(),
         cwd: artifacts.path().into(),
         settings: CodemodeSettings::default(),
-        availability: [
-            (EvalLanguage::Py, true),
-            (EvalLanguage::Js, true),
-            (EvalLanguage::Rb, false),
-            (EvalLanguage::Jl, false),
-        ].map(|(language, enabled)| (language, LanguageAvailability {
-            enabled,
-            detected: if language == EvalLanguage::Py {
-                InterpreterDetection::Detected { path: "python3".into(), version: "3".into(), resolved_path: None }
-            } else {
-                InterpreterDetection::Unavailable
-            },
-        })),
         local_roots: None,
         artifacts_dir: Some(artifacts.path().into()),
         session_env: None,
@@ -101,7 +85,6 @@ async fn test_active_tool_kernel_prelude_js_and_python_execution() {
         complete: Arc::new(|request| Box::pin(async move {
             Ok(json!({"text": request.prompt, "details": {"model": "fixture/model"}}))
         })),
-        python_startup_timeout: Some(std::time::Duration::from_secs(60)),
     }).await.unwrap());
 
     let active_tools_clone = active_tools.clone();
@@ -160,36 +143,6 @@ async fn test_active_tool_kernel_prelude_js_and_python_execution() {
     assert_eq!(calls.lock().unwrap().len(), 1);
     assert_eq!(calls.lock().unwrap()[0].0, "computer");
 
-    let py_call = (eval_tool.execute)(ToolCall {
-        id: "call-py-1",
-        params: json!({
-            "language": "py",
-            "code": "hasattr(computer, 'click')",
-            "summary": "check py computer prelude"
-        }),
-        signal: AbortSignal::default(),
-        on_update: None,
-        context: None,
-    }).await.unwrap();
-
-    assert!(py_call.content.iter().any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("True"))));
-
-    let py_invoke = (eval_tool.execute)(ToolCall {
-        id: "call-py-invoke",
-        params: json!({
-            "language": "py",
-            "code": "computer.click(x=10, y=20)",
-            "summary": "invoke python computer facade through real bridge"
-        }),
-        signal: AbortSignal::default(),
-        on_update: None,
-        context: None,
-    }).await.unwrap();
-
-    assert!(py_invoke.content.iter().any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("called"))));
-    assert_eq!(calls.lock().unwrap().len(), 2);
-    assert_eq!(calls.lock().unwrap()[1].0, "computer");
-
     *active_tools.lock().unwrap() = vec![];
 
     let js_deactivated = (eval_tool.execute)(ToolCall {
@@ -206,20 +159,6 @@ async fn test_active_tool_kernel_prelude_js_and_python_execution() {
 
     assert!(js_deactivated.content.iter().any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("undefined"))));
 
-    let py_deactivated = (eval_tool.execute)(ToolCall {
-        id: "call-py-2",
-        params: json!({
-            "language": "py",
-            "code": "'computer' in globals()",
-            "summary": "check deactivation removes py global"
-        }),
-        signal: AbortSignal::default(),
-        on_update: None,
-        context: None,
-    }).await.unwrap();
-
-    assert!(py_deactivated.content.iter().any(|c| matches!(c, ToolContent::Text { text, .. } if text.contains("False"))));
-
     session.dispose().await.unwrap();
 }
 
@@ -227,7 +166,6 @@ async fn test_active_tool_kernel_prelude_js_and_python_execution() {
 fn test_collision_prevention_on_builtins() {
     let collision = KernelPrelude {
         javascript: "".into(),
-        python: "".into(),
         documentation: "".into(),
         exports: vec!["print".into()],
         ..Default::default()
@@ -244,9 +182,6 @@ fn test_prompt_includes_active_prelude_documentation() {
     let options = EvalPromptOptions { kernel_preludes: vec![create_computer_prelude()], ..Default::default() };
     let enabled = maho_codemode::config::settings::Languages {
         js: true,
-        py: true,
-        rb: false,
-        jl: false,
     };
     let prompt = build_eval_prompt(&enabled, &options).unwrap();
     assert!(prompt.description.contains("computer(args): Drive desktop GUI"));

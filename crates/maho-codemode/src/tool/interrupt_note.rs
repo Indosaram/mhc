@@ -20,7 +20,7 @@ where F: Future<Output = (bool, Option<String>)> {
 }
 
 fn language_label(language: EvalLanguage) -> &'static str {
-    match language { EvalLanguage::Js => "JavaScript worker", EvalLanguage::Py => "Python kernel", EvalLanguage::Rb => "Ruby kernel", EvalLanguage::Jl => "Julia kernel" }
+    match language { EvalLanguage::Js => "JavaScript worker" }
 }
 
 pub fn interruption_state_note(language: EvalLanguage, state_retained: Option<bool>) -> Option<String> {

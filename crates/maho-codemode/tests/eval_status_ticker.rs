@@ -2,7 +2,7 @@ use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use maho_codemode::{extension::eval_status_ticker::*, tool::{detached_cell_contract::EvalDetachedCellStatusEntry, types::EvalLanguage}};
 
 fn entry(started: f64) -> EvalDetachedCellStatusEntry {
-    EvalDetachedCellStatusEntry { cell_id: "cell-1".into(), language: EvalLanguage::Py, summary: Some("long running cell".into()), started_at_ms: started, queued_behind: None }
+    EvalDetachedCellStatusEntry { cell_id: "cell-1".into(), language: EvalLanguage::Js, summary: Some("long running cell".into()), started_at_ms: started, queued_behind: None }
 }
 
 fn fixture() -> (EvalStatusTicker, tokio::sync::mpsc::UnboundedReceiver<Option<String>>, Arc<AtomicU64>) {
@@ -29,11 +29,11 @@ async fn interval_lifetime_owned_by_ticker() {
 async fn immediate_render_and_one_second_refresh() {
     let (mut ticker, mut receive, clock) = fixture();
     ticker.sync(vec![entry(1_000_000.0)]);
-    assert_eq!(receive.recv().await.unwrap().unwrap(), "↗ py · long running cell (0s)");
+    assert_eq!(receive.recv().await.unwrap().unwrap(), "↗ js · long running cell (0s)");
     tokio::task::yield_now().await;
     clock.store(1_001_000, Ordering::SeqCst);
     tokio::time::advance(std::time::Duration::from_secs(1)).await;
-    assert_eq!(receive.recv().await.unwrap().unwrap(), "↗ py · long running cell (1s)");
+    assert_eq!(receive.recv().await.unwrap().unwrap(), "↗ js · long running cell (1s)");
 }
 
 #[tokio::test(start_paused = true)]

@@ -12,15 +12,8 @@ pub fn is_tool_available(api: &ExtensionApi, name: &str, active_tools: Option<&[
     }
 }
 
-pub fn enabled_languages_from(settings: &crate::config::settings::CodemodeSettings, availability: &crate::interpreters::detect::InterpreterAvailability) -> crate::config::settings::Languages {
-    use crate::{interpreters::detect::InterpreterDetection, tool::types::EvalLanguage};
-    let detected = |language| availability.iter().any(|(candidate, status)| *candidate == language && matches!(status.detected, InterpreterDetection::Detected { .. }));
-    crate::config::settings::Languages {
-        py: settings.languages.py && detected(EvalLanguage::Py),
-        js: settings.languages.js && detected(EvalLanguage::Js),
-        rb: settings.languages.rb && detected(EvalLanguage::Rb),
-        jl: settings.languages.jl && detected(EvalLanguage::Jl),
-    }
+pub fn enabled_languages_from(settings: &crate::config::settings::CodemodeSettings, available: bool) -> crate::config::settings::Languages {
+    crate::config::settings::Languages { js: settings.languages.js && available }
 }
 
 pub fn session_id_from(event: &JsonValue) -> String {
@@ -56,24 +49,23 @@ pub struct PreparedRuntime {
     pub cwd: std::path::PathBuf,
     pub parallel_pool_width: u64,
     pub enabled_languages: crate::config::settings::Languages,
-    pub availability: crate::interpreters::detect::InterpreterAvailability,
     pub runtimes: Vec<(crate::tool::types::EvalLanguage, crate::tool::types::EvalRuntimeInfo)>,
     pub settings: crate::config::settings::CodemodeSettings,
     pub artifacts: crate::output::output_meta::SessionArtifactsDir,
 }
 
 pub async fn prepare_runtime(options: RuntimePreparationOptions<'_>, detector: &mut crate::interpreters::detect::InterpreterDetector) -> Result<PreparedRuntime, std::io::Error> {
-    use crate::{config::settings::{load_codemode_settings, resolve_enabled_languages}, interpreters::detect::get_interpreter_availability};
+    use crate::config::settings::{load_codemode_settings, resolve_enabled_languages};
     let mut settings = load_codemode_settings(options.cwd, options.home_dir).await?.settings;
     settings.languages = resolve_enabled_languages(&settings, options.environment);
-    let availability = get_interpreter_availability(&settings, detector).await;
-    let enabled_languages = enabled_languages_from(&settings, &availability);
+    let detection = detector.detect(crate::tool::types::EvalLanguage::Js).await;
+    let detected = matches!(&detection, crate::interpreters::detect::InterpreterDetection::Detected { .. });
+    let enabled_languages = enabled_languages_from(&settings, detected);
     let artifacts = crate::output::output_meta::resolve_session_artifacts_dir(options.session_file)?;
     let configured_width = settings.parallel_pool_width;
     let parallel_pool_width = if configured_width.is_finite() { configured_width.trunc().max(1.0) as u64 } else { 1 };
-    let detections = availability.iter().map(|(language, status)| (*language, status.detected.clone())).collect::<Vec<_>>();
-    let runtimes = super::runtime_info::runtimes_from_availability(&detections, options.js_runtime);
-    Ok(PreparedRuntime {session_id: session_id_from(options.event), cwd: options.cwd.into(), parallel_pool_width, enabled_languages, availability, runtimes, settings, artifacts})
+    let runtimes = vec![(crate::tool::types::EvalLanguage::Js, options.js_runtime)];
+    Ok(PreparedRuntime {session_id: session_id_from(options.event), cwd: options.cwd.into(), parallel_pool_width, enabled_languages, runtimes, settings, artifacts})
 }
 
 pub struct RuntimeHostOptions {
@@ -109,9 +101,8 @@ where
     let spawns = host.active_tools.iter().any(|name| name == &prepared.settings.task_tools.task);
     let manager = create(super::session_manager::CreateCodemodeSessionManagerOptions {
         session_id: prepared.session_id.clone(), cwd: prepared.cwd.clone(), settings: prepared.settings.clone(),
-        availability: prepared.availability, local_roots: None, artifacts_dir: Some(prepared.artifacts.dir.clone()),
+        local_roots: None, artifacts_dir: Some(prepared.artifacts.dir.clone()),
         session_env: Some(host.session_env), executor: host.executor.clone(), list_tools: host.list_tools, complete: host.complete,
-        python_startup_timeout: None,
     }).await?;
     Ok(SessionRuntime {session_id: prepared.session_id, cwd: prepared.cwd, parallel_pool_width: prepared.parallel_pool_width,
         manager: std::sync::Arc::new(manager), enabled_languages: prepared.enabled_languages, runtimes: prepared.runtimes,

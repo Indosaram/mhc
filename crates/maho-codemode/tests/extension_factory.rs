@@ -13,7 +13,7 @@ impl Drop for CompletionDrop {
 async fn completion_ignoring_abort_is_dropped_before_session_shutdown_returns() {
     let root=tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join(".omo")).unwrap();
-    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":true,"js":false,"rb":false,"jl":false}}"#).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"js":true}}"#).unwrap();
     let host=Arc::new(Host::default());
     let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
@@ -26,7 +26,7 @@ async fn completion_ignoring_abort_is_dropped_before_session_shutdown_returns() 
     let execute=host.tools.lock().unwrap()[0].definition.execute.clone();
     let signal=maho_tools::definition::AbortSignal::default();let caller_signal=signal.clone();
     let invocation_context=ctx.clone();
-    let mut run=tokio::spawn(async move {execute(maho_tools::definition::ToolCall {id:"ignored-completion",params:serde_json::json!({"language":"py","code":"completion('park')","summary":"completion cancellation","on_timeout":"error"}),signal:caller_signal,on_update:None,context:Some(&invocation_context)}).await});
+    let mut run=tokio::spawn(async move {execute(maho_tools::definition::ToolCall {id:"ignored-completion",params:serde_json::json!({"language":"js","code":"await completion('park')","summary":"completion cancellation","on_timeout":"error"}),signal:caller_signal,on_update:None,context:Some(&invocation_context)}).await});
     let started=tokio::time::timeout(std::time::Duration::from_secs(10),started_rx.recv()).await;
     signal.abort();
     let cancellation=tokio::time::timeout(std::time::Duration::from_secs(3),&mut run).await;
@@ -75,7 +75,7 @@ struct Registry;
 #[tokio::test]
 async fn registered_callable_enforces_configured_detached_capacity() {
     let root=tempfile::tempdir().unwrap();std::fs::create_dir(root.path().join(".omo")).unwrap();
-    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false},"maxDetachedCells":1,"cellTimeoutSeconds":1,"foregroundWindowSeconds":3}"#).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"js":true},"maxDetachedCells":1,"cellTimeoutSeconds":1,"foregroundWindowSeconds":3}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None, isolation: None}}).unwrap();
@@ -98,7 +98,7 @@ async fn registered_callable_enforces_configured_detached_capacity() {
 async fn registered_callable_schema_uses_resolved_language_settings() {
     let root=tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join(".omo")).unwrap();
-    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":true,"js":false,"rb":false,"jl":false},"maxDetachedCells":3}"#).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"js":true},"maxDetachedCells":3}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None, isolation: None}}).unwrap();
@@ -107,14 +107,14 @@ async fn registered_callable_schema_uses_resolved_language_settings() {
     let schema=host.tools.lock().unwrap().last().unwrap().definition.parameters.clone();
     let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
     (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx).await.unwrap();
-    assert_eq!(schema["properties"]["language"]["anyOf"],serde_json::json!([{"const":"py","type":"string"}]));
+    assert_eq!(schema["properties"]["language"]["anyOf"],serde_json::json!([{"const":"js","type":"string"}]));
 }
 
 #[tokio::test]
 async fn concurrent_completion_keeps_each_invocations_context() {
     let root=tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join(".omo")).unwrap();
-    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false}}"#).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"js":true}}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     let (entered,mut entries)=tokio::sync::mpsc::unbounded_channel();
@@ -169,7 +169,7 @@ impl ExtensionActions for Host {
 async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eval() {
     let root=tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join(".omo")).unwrap();
-    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":true,"js":true,"rb":true,"jl":true}}"#).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"js":true}}"#).unwrap();
     let host=Arc::new(Host::default());
     let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
@@ -186,25 +186,12 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
     (api.registered.handlers[&EventKind::ModelSelect][0])(&mut selected,&ctx).await.unwrap();
     assert!(Arc::ptr_eq(&execute,&host.tools.lock().unwrap()[0].definition.execute));
     ctx.model.as_mut().unwrap().name="invocation-local".into();
-    // Interpreter availability is probed independently of the eval schema (config discovery
-    // contract: a language is enabled only when its interpreter is detected). js/py/rb are always
-    // required, so a schema regression that drops any of them fails here; jl joins only when a
-    // real julia interpreter is detected, matching the product contract on any host.
-    let mut detector=maho_codemode::interpreters::detect::InterpreterDetector::new("24.1.0".into(),false);
-    let jl_detected=matches!(detector.detect(maho_codemode::tool::types::EvalLanguage::Jl).await,maho_codemode::interpreters::detect::InterpreterDetection::Detected{..});
-    let mut expected_languages=vec!["js".to_owned(),"py".to_owned(),"rb".to_owned()];
-    if jl_detected {expected_languages.push("jl".to_owned());}
+    let expected_languages=vec!["js".to_owned()];
     let schema_languages=host.tools.lock().unwrap()[0].definition.parameters["properties"]["language"]["anyOf"].as_array().unwrap().iter().map(|value|value["const"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
-    assert_eq!(schema_languages,expected_languages,"eval must enable js/py/rb always and jl only when the julia interpreter is detected");
+    assert_eq!(schema_languages,expected_languages);
     let mut results=Vec::new();
     for language in &expected_languages {
-        let (id,code)=match language.as_str() {
-            "js"=>("fresh-js","await completion('context')"),
-            "py"=>("fresh-py","completion('context')"),
-            "rb"=>("fresh-rb","completion('context')"),
-            "jl"=>("fresh-jl","completion(\"context\")"),
-            other=>panic!("eval enabled an unexpected language: {other}"),
-        };
+        let (id,code)=("fresh-js","await completion('context')");
         results.push(tokio::time::timeout(std::time::Duration::from_secs(10),execute(maho_tools::definition::ToolCall {id,params:serde_json::json!({"language":language,"code":code,"summary":"context freshness","on_timeout":"error"}),signal:Default::default(),on_update:None,context:Some(&ctx)})).await);
     }
     let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
@@ -229,7 +216,7 @@ impl ExtensionSessionActions for Host {
 async fn native_session_registration_runs_real_worker_and_shutdown_rejects_stale_runs() {
     let root=tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join(".omo")).unwrap();
-    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false}}"#).unwrap();
+    std::fs::write(root.path().join(".omo/codemode.json"),r#"{"languages":{"js":true}}"#).unwrap();
     let host=Arc::new(Host::default());
     let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
