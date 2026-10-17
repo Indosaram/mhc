@@ -102,6 +102,7 @@ impl maho_ext_api::ExtensionSessionActions for TestSessionActions {
                 is_error: Some(false),
                 terminate: Some(false),
                 added_tool_names: Some(vec![]),
+                structured_content: None,
                 usage: None,
             })
         })

@@ -116,7 +116,7 @@ async fn execute_tool(options: &CursorExecBridgeOptions, name: &str, id: String,
     (options.emit_event)(AgentEvent::ToolExecutionEnd { tool_call_id: id.clone(), tool_name: name.to_owned(), result: serde_json::to_value(&result).unwrap_or(Value::Null), is_error: result.is_error }, signal.clone()).await;
     if let Some(emit) = &options.emit_tool_result {
         emit(id, name.to_owned(), prepared, maho_agent::types::AgentToolResult {
-            content: result.content.clone(), details: result.details.clone().unwrap_or(Value::Null), usage: result.usage,
+            content: result.content.clone(), details: result.details.clone().unwrap_or(Value::Null), structured_content: None, usage: result.usage,
             is_error: Some(result.is_error), added_tool_names: result.added_tool_names.clone(), terminate: None,
         }, result.is_error).await;
     }

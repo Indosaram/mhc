@@ -16,7 +16,7 @@ pub fn select_registry_fallback_models(available: &Value) -> Vec<RegistryFallbac
         let lower = id.to_lowercase();
         if ["embed", "image", "audio", "tts", "whisper", "rerank", "moderation"].iter().any(|word| lower.contains(word)) { return None; }
         let context = entry.get("contextWindow").and_then(Value::as_f64);
-        if context.is_some_and(|context| context < 65_536.0) { return None; }
+        if context.is_some_and(|context| context < 131_072.0) { return None; }
         let cost = read_model_pricing(entry);
         let fast = ["fast", "flash", "mini", "lite", "haiku", "turbo", "highspeed"].iter().any(|word| lower.contains(word));
         Some((RegistryFallbackCandidate { model: format!("{provider}/{id}"), cost }, context, fast, order))
@@ -45,6 +45,8 @@ mod tests {
     fn non_chat_excluded() { assert_eq!(models(json!([priced("text-embedding-005",0.001,200000),priced("chat-model",1.0,200000)])), ["x/chat-model"]); }
     #[test]
     fn tiny_context_excluded() { assert_eq!(models(json!([priced("tiny",0.01,8192),priced("roomy",1.0,200000)])), ["x/roomy"]); }
+    #[test]
+    fn context_floor_is_131072_tokens() { assert_eq!(models(json!([priced("too-small",0.01,131071),priced("minimum",1.0,131072)])), ["x/minimum"]); }
     #[test]
     fn malformed_registry_empty() { for value in [Value::Null,json!({}),json!([{"provider":"x"},{"id":"y"},null,"junk"])] { assert!(models(value).is_empty()); } }
     #[test]

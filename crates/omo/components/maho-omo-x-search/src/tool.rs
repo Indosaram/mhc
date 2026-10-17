@@ -67,6 +67,7 @@ fn error_result(code: XSearchErrorCode, message: &str) -> AgentToolResult {
     AgentToolResult {
         content: vec![ContentBlock::text(text)],
         details: serde_json::to_value(details).unwrap_or(JsonValue::Null),
+        structured_content: None,
         usage: None,
         added_tool_names: None,
         terminate: None,
@@ -162,6 +163,7 @@ pub fn create_x_search_tool(
                     Ok(AgentToolResult {
                         content: vec![ContentBlock::text(text)],
                         details: serde_json::to_value(details).unwrap_or(JsonValue::Null),
+                        structured_content: None,
                         usage: None,
                         added_tool_names: None,
                         terminate: None,

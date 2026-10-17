@@ -36,6 +36,7 @@ fn reply_agent_result(details: JsonValue) -> AgentToolResult {
     AgentToolResult {
         content: vec![ContentBlock::text(text)],
         details,
+        structured_content: None,
         usage: None,
         added_tool_names: None,
         terminate: None,

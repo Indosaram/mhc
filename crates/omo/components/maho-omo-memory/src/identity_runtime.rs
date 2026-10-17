@@ -72,7 +72,7 @@ impl crate::worker::runner_types::ReflectionReservationPort for ReflectionReserv
         fn wait_outcome<'a>(&'a self,_:&'a std::path::Path,_:f64)->crate::worker::run_reconciliation::ReconcileFuture<'a>{Box::pin(async{Ok(())})}
         fn wait_until(&self,_:f64)->crate::worker::run_reconciliation::ReconcileFuture<'_>{Box::pin(async{Ok(())})}
         fn signal_group(&self,_:u64,_:&str)->Result<(),String>{Ok(())}
-        fn fail(&self,_:&std::path::Path,_:&crate::worker::reservation_run_ledger::ReservationRunLedger,_:bool)->Result<Option<crate::worker::run_finalization_types::ReservationRunResult>,String>{Ok(None)}
+        fn fail(&self,_:&std::path::Path,_:&crate::worker::reservation_run_ledger::ReservationRunLedger,_:bool,_:bool)->Result<Option<crate::worker::run_finalization_types::ReservationRunResult>,String>{Ok(None)}
         fn abandon(&self,_:&std::path::Path,_:&crate::worker::reservation_run_ledger::ReservationRunLedger)->Result<Option<crate::worker::run_finalization_types::ReservationRunResult>,String>{Ok(None)}
     }
 

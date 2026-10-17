@@ -7,7 +7,7 @@ fn into_agent_result(result: ToolResult) -> AgentToolResult {
     AgentToolResult { content:result.content.into_iter().map(|part| match part {
         ToolContent::Text { text,audience } => ContentBlock::Text(TextContent { text,audience:audience.map(|_| TextAudience::Model),text_signature:None }),
         ToolContent::Image { data,mime_type } => ContentBlock::Image(ImageContent { data,mime_type }),
-    }).collect(),details:result.details.unwrap_or(serde_json::Value::Null),usage:None,added_tool_names:None,terminate:None,is_error:None }
+    }).collect(),details:result.details.unwrap_or(serde_json::Value::Null),structured_content:result.structured_content,usage:None,added_tool_names:None,terminate:None,is_error:None }
 }
 fn from_agent_result(result: AgentToolResult) -> Result<ToolResult,ToolError> {
     if result.is_error == Some(true) {
@@ -22,7 +22,7 @@ fn from_agent_result(result: AgentToolResult) -> Result<ToolResult,ToolError> {
             ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => return Err(ToolError::Message("Tool results must contain text or image content".into())),
         }
     }
-    Ok(ToolResult { content,details:(!result.details.is_null()).then_some(result.details),structured_content:None })
+    Ok(ToolResult { content,details:(!result.details.is_null()).then_some(result.details),structured_content:result.structured_content })
 }
 pub fn wrap_tool_definition(definition: ToolDefinition,context_factory: Option<ContextFactory>) -> AgentTool {
     let prepare = definition.prepare_arguments.clone().map(|prepare| Arc::new(move |args| match prepare(args) { Ok(args) => args, Err(error) => serde_json::json!({"error":error.to_string()}) }) as maho_agent::ToolArgumentShim);

@@ -21,7 +21,7 @@ pub struct PreparedToolCall<TContext> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImmediateToolOutcome {
     pub tool_call: ToolCall,
-    pub result: AgentToolResult,
+    pub result: Box<AgentToolResult>,
     pub is_error: bool,
     pub terminate: bool,
 }
@@ -99,7 +99,7 @@ pub fn create_error_tool_result(message: &str) -> AgentToolResult {
 fn immediate_error(tool_call: ToolCall, message: &str, terminate: bool) -> ImmediateToolOutcome {
     ImmediateToolOutcome {
         tool_call,
-        result: create_error_tool_result(message),
+        result: Box::new(create_error_tool_result(message)),
         is_error: true,
         terminate,
     }
@@ -224,6 +224,7 @@ pub fn finalize_tool_call<TContext>(
     let is_error = patch.as_ref().and_then(|patch| patch.is_error).unwrap_or(executed_is_error);
     let result = match patch {
         Some(patch) => AgentToolResult {
+            structured_content: if patch.content.is_some() { None } else { executed.result.structured_content },
             content: patch.content.unwrap_or(executed.result.content),
             details: patch.details.unwrap_or(executed.result.details),
             usage: patch.usage.or(executed.result.usage),
@@ -245,6 +246,7 @@ pub fn tool_result_from_message(message: &ToolResultMessage, terminate: bool) ->
     AgentToolResult {
         content: message.content.clone(),
         details: message.details.clone().unwrap_or(Value::Object(Map::new())),
+        structured_content: None,
         usage: message.usage,
         added_tool_names: None,
         terminate: if terminate { Some(true) } else { None },

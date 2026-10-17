@@ -1072,7 +1072,7 @@ async fn execute_tool_calls_sequential(
         let finalized = match &preparation {
             ToolCallPreparation::Immediate { tool_call, result, is_error } => FinalizedToolCallOutcome {
                 tool_call: tool_call.clone(),
-                result: result.clone(),
+                result: (**result).clone(),
                 is_error: *is_error,
             },
             ToolCallPreparation::Prepared { .. } => {
@@ -1236,7 +1236,7 @@ async fn run_prepared_tool_call(
     if let ToolCallPreparation::Immediate { tool_call, result, is_error } = preparation {
         return FinalizedToolCallOutcome {
             tool_call: tool_call.clone(),
-            result: result.clone(),
+            result: (**result).clone(),
             is_error: *is_error,
         };
     }
@@ -1265,7 +1265,7 @@ enum ToolCallPreparation {
     },
     Immediate {
         tool_call: AgentToolCall,
-        result: AgentToolResult,
+        result: Box<AgentToolResult>,
         is_error: bool,
     },
 }
@@ -1319,10 +1319,10 @@ async fn prepare_tool_call(
     if tool_call.incomplete == Some(true) {
         return ToolCallPreparation::Immediate {
             tool_call: tool_call.clone(),
-            result: create_error_tool_result(&create_incomplete_tool_call_error_message(
+            result: Box::new(create_error_tool_result(&create_incomplete_tool_call_error_message(
                 &tool_call.name,
                 tool_call.error_message.as_deref(),
-            )),
+            ))),
             is_error: true,
         };
     }
@@ -1338,7 +1338,7 @@ async fn prepare_tool_call(
         };
         return ToolCallPreparation::Immediate {
             tool_call: tool_call.clone(),
-            result: create_error_tool_result(&message),
+            result: Box::new(create_error_tool_result(&message)),
             is_error: true,
         };
     };
@@ -1356,7 +1356,7 @@ async fn prepare_tool_call(
             },
             ToolCallPreparation::Immediate { tool_call, result, is_error } => ToolCallPreparation::Immediate {
                 tool_call,
-                result: with_tool_name_correction(result, &requested_name, tool.name()),
+                result: Box::new(with_tool_name_correction(*result, &requested_name, tool.name())),
                 is_error,
             },
         };
@@ -1377,7 +1377,7 @@ async fn prepare_resolved_tool_call(
         Err(message) => {
             return ToolCallPreparation::Immediate {
                 tool_call: tool_call.clone(),
-                result: create_error_tool_result(&message),
+                result: Box::new(create_error_tool_result(&message)),
                 is_error: true,
             };
         }
@@ -1398,7 +1398,7 @@ async fn prepare_resolved_tool_call(
         if signal.as_ref().is_some_and(AbortSignal::aborted) {
             return ToolCallPreparation::Immediate {
                 tool_call: tool_call.clone(),
-                result: create_error_tool_result("Operation aborted"),
+                result: Box::new(create_error_tool_result("Operation aborted")),
                 is_error: true,
             };
         }
@@ -1410,7 +1410,7 @@ async fn prepare_resolved_tool_call(
                 if before_result.terminate == Some(true) {
                     result.terminate = Some(true);
                 }
-                return ToolCallPreparation::Immediate { tool_call: tool_call.clone(), result, is_error: true };
+                return ToolCallPreparation::Immediate { tool_call: tool_call.clone(), result: Box::new(result), is_error: true };
             }
             Some(before_result) => {
                 if let Some(replacement) = before_result.args {
@@ -1423,7 +1423,7 @@ async fn prepare_resolved_tool_call(
     if signal.as_ref().is_some_and(AbortSignal::aborted) {
         return ToolCallPreparation::Immediate {
             tool_call: tool_call.clone(),
-            result: create_error_tool_result("Operation aborted"),
+            result: Box::new(create_error_tool_result("Operation aborted")),
             is_error: true,
         };
     }
@@ -1561,9 +1561,12 @@ async fn finalize_executed_tool_call(
         )
         .await;
         if let Some(after_result) = after_result {
+            // Structured content not replaced along with the content may no longer match it.
+            let structured_content = after_result.structured_content.or(if after_result.content.is_some() { None } else { result.structured_content });
             result = AgentToolResult {
                 content: after_result.content.unwrap_or(result.content),
                 details: after_result.details.unwrap_or(result.details),
+                structured_content,
                 usage: after_result.usage.or(result.usage),
                 added_tool_names: result.added_tool_names,
                 terminate: after_result.terminate.or(result.terminate),
@@ -1583,6 +1586,7 @@ fn create_error_tool_result(message: &str) -> AgentToolResult {
     AgentToolResult {
         content: vec![ContentBlock::text(message)],
         details: serde_json::Value::Object(serde_json::Map::new()),
+        structured_content: None,
         usage: None,
         added_tool_names: None,
         terminate: None,

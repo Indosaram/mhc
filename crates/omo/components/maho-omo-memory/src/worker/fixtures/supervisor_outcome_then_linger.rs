@@ -6,7 +6,7 @@ pub async fn run(run_dir: &Path) -> Result<(), ArtifactError> {
     write_run_json_atomic(&run_dir.join("outcome.json"), &RunOutcome {
         version: 1, run_id: launch.run_id, attempt: Some(launch.attempt),
         finished_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        child_exit: ChildExit { code: Some(0), signal: None }, timed_out: false,
+        child_exit: ChildExit { code: Some(0), signal: None }, timed_out: false, recovered_from_worktree: None,
     }, 0o600)?;
     unlink_run_artifact(&path)?;
     super::supervisor_never_publishes::run(run_dir).await

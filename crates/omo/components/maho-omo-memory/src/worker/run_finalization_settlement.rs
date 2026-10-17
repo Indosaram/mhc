@@ -55,6 +55,7 @@ pub fn settle_reservation_run(context: &RunFinalizationContext<'_>, run_dir: &Pa
     let mut terminal = serde_json::json!({"version":1,"runId":current.run_id(),"outcome":decision.outcome,"finishedAt":finalized,"generation":started});
     if let Some(sha) = &decision.integration_sha { terminal["integrationSha"] = sha.clone().into(); }
     if let Some(reason) = &decision.reason { terminal["reason"] = reason.clone().into(); }
+    if decision.recovered_from_worktree { terminal["recoveredFromWorktree"] = true.into(); }
     write_run_json_atomic(&run_dir.join("final.json"), &terminal, 0o600).map_err(|error| error.to_string())?;
     memory_core::receipts::maybe_kill_at("before-receipt", Default::default());
     let outcome_val = serde_json::from_value(decision.outcome.clone().into()).unwrap_or(memory_core::reflection::ReflectionOutcome::Failed);
@@ -97,7 +98,7 @@ mod tests {
         let value = serde_json::json!({"version":1,"runId":"run","kind":"reflection","trigger":"manual","startedAt":"2026-01-15T10:00:00.000Z","hardDeadlineAt":100,"terminationGraceMs":5,"deadlineAt":105,"mergePolicy":"auto","worktreeDir":"/unused","worktreeBranch":"memory/run","baseSha":"sha","gitFilePath":"/unused/.git","gitFileSnapshot":"gitdir: unused","commonConfigPath":"/unused/config","commonConfigSnapshot":null,"category":"quick","conversationIds":["conversation"],"validatedChangedPaths":[]});
         write_run_json_atomic(&root.path().join("ledger.json"), &value, 0o600).unwrap();
         let ledger = parse_reservation_run_ledger(value).unwrap();
-        let decision = || DurableFinalizationDecision { outcome:"no_changes".into(), reason:None, detail:None, integration_sha:None };
+        let decision = || DurableFinalizationDecision { outcome:"no_changes".into(), reason:None, detail:None, integration_sha:None, recovered_from_worktree:false };
         let context = RunFinalizationContext {
             identity: &identity,
             reservation: &Inactive,
@@ -135,7 +136,7 @@ mod tests {
             receipts: None,
             warn: None,
         };
-        assert!(settle_reservation_run(&context, root.path(), &ledger, DurableFinalizationDecision { outcome:"failed".into(), reason:None, detail:None, integration_sha:None }).is_err());
+        assert!(settle_reservation_run(&context, root.path(), &ledger, DurableFinalizationDecision { outcome:"failed".into(), reason:None, detail:None, integration_sha:None, recovered_from_worktree:false }).is_err());
         assert!(!root.path().join("final.json").exists());
     }
 }

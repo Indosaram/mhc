@@ -7216,6 +7216,7 @@ impl AgentSession {
     async fn emit_after_tool_call_hooks(&self, tool_call: maho_agent::types::AgentToolCall, args: Value, result: AgentToolResult, is_error: bool) -> Option<maho_agent::types::AfterToolCallResult> {
         let mut guard = self.extension_runner.lock().await.clone();
         let original_content = result.content.clone();
+        let structured_content = result.structured_content.clone();
         let rewrite = if let Some(runner) = guard.as_mut() {
             let content = serde_json::from_value(serde_json::to_value(original_content.clone()).ok()?).ok()?;
             runner.emit_tool_result(maho_ext_api::ToolResultEvent {
@@ -7231,11 +7232,13 @@ impl AgentSession {
             Some(self.with_settings_manager(SettingsManager::get_image_auto_resize)),
         ).await.into_owned();
         if rewrite.is_none() && content == original_content { return None; }
+        // A hook that replaced the content drops structured content that may no longer match it.
+        let structured_content = if rewrite.as_ref().is_some_and(|rewrite| rewrite.content.is_some()) { None } else { structured_content };
         let (details, is_error, usage) = rewrite.map_or((None, Some(is_error), None), |rewrite|
             (rewrite.details, Some(rewrite.is_error.unwrap_or(is_error)), rewrite.usage));
         Some(maho_agent::types::AfterToolCallResult {
             content: Some(serde_json::from_value(serde_json::to_value(content).ok()?).ok()?),
-            details, is_error, usage, terminate: None,
+            details, structured_content, is_error, usage, terminate: None,
         })
     }
 

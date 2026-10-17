@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use serde_json::Value;
-use senpi_task::{category::{CategoryResolutionResult, ResolveCategoryOptions, resolve_category}, host::{HostError, SenpiModelRegistry}};
+use senpi_task::{category::{CategoryResolutionResult, ResolveCategoryOptions, builtin_category_chain_candidates, resolve_category}, host::{HostError, SenpiModelRegistry}};
 use super::{memory_model_attempts::ReflectionModelCandidate, model_cost::{LaunchChoice, ReflectionLaunchCandidate, ReflectionLaunchInput, choose_reflection_launch_model}, registry_fallback::{read_model_pricing, select_registry_fallback_models}};
 
 pub struct ReflectionSessionModel { pub provider: String, pub id: String, pub thinking: Option<String> }
@@ -13,6 +13,12 @@ pub enum ReflectionModelResolution {
 fn normalize_thinking(value: Option<&str>) -> Option<String> {
     let value = match value? { "none" => "off", other => other };
     ["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&value).then(|| value.into())
+}
+
+/// A memory child has nobody to answer a refused model, so the builtin chain's connected rungs stay
+/// reachable after the user's own rungs.
+fn builtin_chain_fallbacks(category: &str, registry: &dyn SenpiModelRegistry, selected: &str) -> Result<Vec<ReflectionModelCandidate>, HostError> {
+    Ok(builtin_category_chain_candidates(category, registry)?.into_iter().filter(|candidate| candidate.model != selected).map(|candidate| ReflectionModelCandidate { thinking: normalize_thinking(candidate.variant.as_deref()), model: candidate.model, load_extensions: None }).collect())
 }
 
 fn beyond_category(category: &str, registry: Option<&dyn SenpiModelRegistry>, session: Option<&ReflectionSessionModel>) -> Result<Option<ReflectionModelResolution>, HostError> {
@@ -39,7 +45,10 @@ pub fn resolve_reflection_model(category: &str, config: &Value, registry: Option
         let configured = if let Some(canonical) = canonical { canonical.clone() } else if let Some(legacy) = legacy { let mut entries = vec![Value::String(selected.clone())]; if let Some(array) = legacy.as_array() { entries.extend(array.iter().cloned()); } else { entries.push(legacy.clone()); } entries } else { vec![] };
         let selector = |entry: &Value| entry.as_str().or_else(|| entry.get("model").and_then(Value::as_str)).map(str::to_owned);
         if let Some(index) = configured.iter().position(|entry| selector(entry).as_deref() == Some(&selected)) {
-            for entry in &configured[index + 1..] {
+            // Every other configured rung is a candidate: the category selects against the availability
+            // snapshot, so an earlier rung it skipped is routinely still usable. Continue below the
+            // selection first, then wrap to the rungs above it.
+            for entry in configured[index + 1..].iter().chain(&configured[..index]) {
                 let Some(model) = selector(entry) else { continue; };
                 let Some((provider, id)) = model.split_once('/').filter(|(provider, id)| !provider.is_empty() && !id.is_empty()) else { continue; };
                 if registry.find(provider, id).is_none() { continue; }
@@ -47,6 +56,7 @@ pub fn resolve_reflection_model(category: &str, config: &Value, registry: Option
                 fallbacks.push(ReflectionModelCandidate { model, thinking , load_extensions: None });
             }
         }
+        fallbacks.extend(builtin_chain_fallbacks(category, registry, &selected)?);
         let mut seen = BTreeSet::new();
         fallbacks.retain(|candidate| seen.insert(candidate.model.clone()));
         return Ok(ReflectionModelResolution::Resolved { category: resolved_category, model: selected, thinking, source: None, fallbacks });
@@ -57,7 +67,7 @@ pub fn resolve_reflection_model(category: &str, config: &Value, registry: Option
         let mut parts = pinned.split('/');
         if let (Some(provider), Some(id)) = (parts.next(), parts.next())
             && registry.find(provider, id).is_some()
-        { return Ok(ReflectionModelResolution::Resolved { category: category.into(), model: pinned.into(), thinking: None, source: None, fallbacks: vec![] }); }
+        { return Ok(ReflectionModelResolution::Resolved { category: category.into(), model: pinned.into(), thinking: None, source: None, fallbacks: builtin_chain_fallbacks(category, registry, pinned)? }); }
     }
     if !matches!(resolution, CategoryResolutionResult::Disabled { .. })
         && let Some(fallback) = beyond_category(category, Some(registry), session)?
@@ -101,6 +111,12 @@ mod tests {
     #[test] fn expensive_session_does_not_override_registry() { let session = ReflectionSessionModel { provider: "google".into(), id: "gemini-3.1-pro".into(), thinking: None }; assert!(matches!(resolve_reflection_model("quick", &json!({}), Some(&priced_registry()), Some(&session)).unwrap(), ReflectionModelResolution::Resolved { source: Some("registry_fallback"), .. })); }
     #[test] fn cheaper_session_wins_without_cache_reuse() { let mut registry = priced_registry(); registry.available = json!([registry.catalog[0]]); let session = ReflectionSessionModel { provider: "google".into(), id: "gemini-3.6-flash".into(), thinking: None }; assert!(matches!(resolve_reflection_model("quick", &json!({}), Some(&registry), Some(&session)).unwrap(), ReflectionModelResolution::Resolved { source: Some("session_inherit"), fallbacks, .. } if fallbacks.is_empty())); }
     #[test] fn empty_registry_inherits_live_session() { let session = ReflectionSessionModel { provider: "live".into(), id: "model".into(), thinking: Some("low".into()) }; assert!(matches!(resolve_reflection_model("quick", &json!({}), Some(&Registry { available: json!([]), catalog: vec![] }), Some(&session)).unwrap(), ReflectionModelResolution::Resolved { source: Some("session_inherit"), thinking: Some(thinking), .. } if thinking == "low")); }
+    #[test] fn pinned_model_outside_the_chain_keeps_builtin_rungs_as_fallbacks() {
+        let catalog = vec![json!({"provider":"omo-mock","id":"mock-1"}), json!({"provider":"deepseek","id":"deepseek-v4-flash"})];
+        let registry = Registry { available: Value::Array(catalog.clone()), catalog };
+        let result = resolve_reflection_model("quick", &json!({"categories":{"quick":{"model":"omo-mock/mock-1"}}}), Some(&registry), None).unwrap();
+        assert!(matches!(result, ReflectionModelResolution::Resolved { model, fallbacks, .. } if model == "omo-mock/mock-1" && fallbacks.iter().any(|fallback| fallback.model == "deepseek/deepseek-v4-flash")));
+    }
     #[test] fn unavailable_pin_can_use_registry_ladder() { assert!(matches!(resolve_reflection_model("quick", &json!({"categories":{"quick":{"model":"google/ghost"}}}), Some(&priced_registry()), None).unwrap(), ReflectionModelResolution::Resolved { source: Some("registry_fallback"), .. })); }
     #[test] fn empty_registry_reports_attempted_chain() { assert!(matches!(resolve_reflection_model("quick", &json!({}), Some(&Registry { available: json!([]), catalog: vec![] }), None).unwrap(), ReflectionModelResolution::CategoryUnavailable { attempted_chain: Some(chain), .. } if !chain.is_empty())); }
     #[test] fn canonical_stale_chain_preserves_fallbacks() { let catalog = vec![json!({"provider":"extension-only","id":"primary"}), json!({"provider":"omo-mock","id":"mock-1"})]; let registry = Registry { available: json!([]), catalog }; let result = resolve_reflection_model("quick", &json!({"categories":{"quick":{"models":[{"model":"extension-only/primary","reasoning":"off"},{"model":"omo-mock/mock-1","reasoning":"minimal"}]}}}), Some(&registry), None).unwrap(); assert!(matches!(result, ReflectionModelResolution::Resolved { model, thinking: Some(thinking), fallbacks, .. } if model == "extension-only/primary" && thinking == "off" && fallbacks.len() == 1 && fallbacks[0].thinking.as_deref() == Some("minimal"))); }

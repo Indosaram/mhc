@@ -173,7 +173,7 @@ async fn replay_clears_old_checkpoint_and_returns_persisted_arguments() {
     let lane = lane(Control::Running);
     let pending = DurableCall::EffectPending { source_index: 0, result_entry_id: "result".into(), replay: ToolCallReplay::Safe };
     publish_tool_intent(&lane, pending.clone(), &call(), serde_json::json!({"path":"saved"}), ToolCallReplay::Safe, false, &BACKGROUND_CONTEXT).await.unwrap();
-    let checkpoint = maho_agent::types::AgentToolResult { content: vec![maho_ai::types::ContentBlock::text("durable")], details: serde_json::json!({"offset":2}), usage: None, added_tool_names: None, terminate: None, is_error: None };
+    let checkpoint = maho_agent::types::AgentToolResult { content: vec![maho_ai::types::ContentBlock::text("durable")], details: serde_json::json!({"offset":2}), structured_content: None, usage: None, added_tool_names: None, terminate: None, is_error: None };
     let mutation = lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.unwrap();
     mutation.commit(vec![Write::Value(set_value(&pending_tool_output("op", "result"), serde_json::to_value(&checkpoint).unwrap()))], &BACKGROUND_CONTEXT).await.unwrap();
     mutation.end(&BACKGROUND_CONTEXT).await;

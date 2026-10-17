@@ -113,7 +113,7 @@ fn given_a_merged_settlement_when_final_json_lands_then_one_merged_receipt_with_
         &context,
         &run_dir,
         &ledger,
-        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "merged".into(), reason: None, detail: None, integration_sha: Some("abc123".into()) },
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "merged".into(), reason: None, detail: None, integration_sha: Some("abc123".into()), recovered_from_worktree: false },
     ).unwrap();
 
     let recorded = calls.lock().unwrap().clone();
@@ -148,14 +148,14 @@ fn given_no_change_and_failed_settlements_when_settled_then_no_changes_and_faile
         &context,
         &run_dir1,
         &ledger1,
-        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "no_changes".into(), reason: None, detail: None, integration_sha: None },
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "no_changes".into(), reason: None, detail: None, integration_sha: None, recovered_from_worktree: false },
     ).unwrap();
 
     crate::worker::run_finalization_settlement::settle_reservation_run(
         &context,
         &run_dir2,
         &ledger2,
-        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "failed".into(), reason: Some("validation_failed".into()), detail: Some("secret token=abc123456 leaked".into()), integration_sha: None },
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "failed".into(), reason: Some("validation_failed".into()), detail: Some("secret token=abc123456 leaked".into()), integration_sha: None, recovered_from_worktree: false },
     ).unwrap();
 
     let list = read_receipts(&identity.paths.runtime);
@@ -237,7 +237,7 @@ fn given_a_merged_run_whose_receipt_write_failed_when_reconciled_twice_then_exac
         &context,
         &run_dir,
         &ledger,
-        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "merged".into(), reason: None, detail: None, integration_sha: Some("abc123".into()) },
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "merged".into(), reason: None, detail: None, integration_sha: Some("abc123".into()), recovered_from_worktree: false },
     ).unwrap();
 
     assert_eq!(read_receipts(&identity.paths.runtime).len(), 0);
@@ -274,7 +274,7 @@ fn given_a_normally_receipted_run_when_reconciled_after_a_restart_then_no_second
         &context,
         &run_dir,
         &ledger,
-        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "merged".into(), reason: None, detail: None, integration_sha: Some("abc123".into()) },
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "merged".into(), reason: None, detail: None, integration_sha: Some("abc123".into()), recovered_from_worktree: false },
     ).unwrap();
 
     assert_eq!(read_receipts(&identity.paths.runtime).len(), 1);

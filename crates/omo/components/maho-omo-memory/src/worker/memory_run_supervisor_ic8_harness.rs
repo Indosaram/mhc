@@ -38,6 +38,8 @@ impl Ic8Harness {
             .env("OMO_MEMORY_SUPERVISOR_TASKKILL_COMMAND", serde_json::to_string(&taskkill).map_err(|error| error.to_string())?);
         #[cfg(unix)]
         command.process_group(0);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
         let child = command.spawn().map_err(|error| error.to_string())?;
         if let Some(pid) = child.id() { self.live.insert(pid); }
         Ok(child)

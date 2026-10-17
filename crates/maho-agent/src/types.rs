@@ -135,6 +135,10 @@ pub struct AfterToolCallResult {
     pub content: Option<Vec<ContentBlock>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
+    /// Replaces the structured content. When `content` is replaced without it, the structured
+    /// content is dropped because it may no longer match the content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -454,6 +458,10 @@ pub struct AgentToolResult {
     /// `details` is `undefined`, so a missing key reads as `null`.
     #[serde(default)]
     pub details: Value,
+    /// Machine-readable result matching the tool's `outputSchema`, for programmatic callers. Not
+    /// sent to the model; `content` remains the model-facing result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<Value>,
     /// Usage from the final tool execution itself, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
@@ -473,6 +481,7 @@ impl AgentToolResult {
         Self {
             content: vec![ContentBlock::text(message)],
             details: Value::Object(Default::default()),
+            structured_content: None,
             usage: None,
             added_tool_names: None,
             terminate: None,

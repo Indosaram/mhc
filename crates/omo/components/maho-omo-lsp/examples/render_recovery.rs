@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut context = ToolRenderContext {args:args.clone(),tool_call_id:name.into(),invalidate:std::rc::Rc::new(||{}),last_component:None,state:(),cwd:"/tmp/project".into(),execution_started:true,args_complete:true,is_partial:false,expanded:true,show_images:false,image_protocol:None,is_error:false,has_result:Some(true),spinner_frame:None};
         let mut call = renderers.render_call.ok_or("call missing")?(&args,&theme,&mut context);
         for line in call.render(width) {println!("{line}\r");}
-        let result = maho_ext_api::AgentToolResult {content:serde_json::from_value(json!([{"type":"text","text":"Rename ready"}]))?,details,usage:None,added_tool_names:None,terminate:None,is_error:None};
+        let result = maho_ext_api::AgentToolResult {content:serde_json::from_value(json!([{"type":"text","text":"Rename ready"}]))?,details,structured_content: None, usage:None,added_tool_names:None,terminate:None,is_error:None};
         let mut output = renderers.render_result.ok_or("result missing")?(&result,ToolRenderResultOptions {expanded:true,is_partial:false},&theme,&mut context);
         for line in output.render(width) {println!("{line}\r");}
         println!("\r");

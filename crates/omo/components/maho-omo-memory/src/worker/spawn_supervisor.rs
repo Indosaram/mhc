@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap,path::Path};
 use super::{run_artifacts::{RunLaunchManifest,RunOutcome,RunKind,RunAttempt,write_run_json_atomic,read_run_json,run_outcome_matches_ledger},memory_model_attempts::ReflectionChildResult,run_sentinel::{wait_for_run_completion,SentinelWaitResult},spawn_supervisor_support::{read_tail,is_node_signal}};
 
+/// Prefix of the error the launcher sees when the supervisor exits without a complete outcome.
+pub const SUPERVISOR_EXIT_PREFIX:&str="memory run supervisor exited with";
+
 pub struct SupervisedChildInput<'a> {
     pub run_dir:&'a Path,pub run_id:&'a str,pub attempt:u32,pub model:&'a str,pub thinking:Option<&'a str>,pub next_attempt:Option<RunAttempt>,pub kind:RunKind,
     pub command:&'a str,pub args:&'a [String],pub cwd:&'a Path,pub env:&'a BTreeMap<String,String>,pub hard_deadline_at:f64,pub termination_grace_ms:f64,pub max_output_bytes:usize,
@@ -21,6 +24,7 @@ pub async fn run_reflection_child(args:&super::spawn_types::ReflectionSpawnArgs,
     let mut ledger=serde_json::json!({"version":1,"runId":metadata.run_id,"kind":metadata.kind,"category":args.category,"conversationIds":args.conversation_ids,"trigger":metadata.trigger,"startedAt":started,"attempt":args.attempt,"model":args.model,"hardDeadlineAt":args.hard_deadline_at,"terminationGraceMs":options.termination_grace_ms,"deadlineAt":args.hard_deadline_at+options.termination_grace_ms,"mergePolicy":metadata.merge_policy,"worktreeDir":worktree.dir,"worktreeBranch":worktree.branch,"baseSha":worktree.base_commit_sha,"gitFilePath":worktree.git_file_path,"gitFileSnapshot":worktree.git_file_snapshot,"commonConfigPath":worktree.common_config_path,"commonConfigSnapshot":worktree.common_config_snapshot});
     if metadata.kind=="dream" {ledger["origin"]=metadata.origin.into();}
     if let Some(target)=metadata.target_doc {ledger["targetDoc"]=target.into();}
+    if let (Some(budget),Some(target))=(metadata.system_token_budget,metadata.system_token_target) {ledger["systemTokenBudget"]=budget.into();ledger["systemTokenTarget"]=target.into();}
     let kind=if metadata.kind=="dream"{RunKind::Dream}else{RunKind::Reflection};
     run_supervised_child(SupervisedChildInput {run_dir:&args.paths.session_dir,run_id:metadata.run_id,attempt:args.attempt,model:&args.model,thinking:args.thinking.as_deref(),next_attempt:args.next_attempt.clone(),kind,command:&args.command,args:&args.args,cwd:&args.cwd,env:&args.env,hard_deadline_at:args.hard_deadline_at,termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,ledger:ledger.as_object().ok_or("Invalid reflection ledger")?.clone()}).await
 }
@@ -82,7 +86,7 @@ pub async fn run_supervised_child(input:SupervisedChildInput<'_>)->Result<Reflec
     tokio::pin!(wait);
     tokio::select! {
         result=supervisor.wait()=> {
-            if !complete() {return Err(match result {Ok(status)=>format!("memory run supervisor exited with {}",status.code().map_or_else(||"unknown status".into(),|code|code.to_string())),Err(error)=>error.to_string()});}
+            if !complete() {return Err(match result {Ok(status)=>format!("{SUPERVISOR_EXIT_PREFIX} {}",status.code().map_or_else(||"unknown status".into(),|code|code.to_string())),Err(error)=>error.to_string()});}
         },
         result=&mut wait=>if result==SentinelWaitResult::Timeout {return Err("memory run supervisor did not publish an outcome before its deadline".into());},
     };

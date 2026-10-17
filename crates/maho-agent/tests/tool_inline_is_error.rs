@@ -49,6 +49,7 @@ fn inline_result(content: &str, details: serde_json::Value, is_error: Option<boo
     AgentToolResult {
         content: vec![text_block(content)],
         details,
+        structured_content: None,
         usage: None,
         added_tool_names: None,
         terminate: None,

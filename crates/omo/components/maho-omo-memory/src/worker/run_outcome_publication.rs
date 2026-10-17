@@ -46,7 +46,7 @@ mod tests {
     fn fixture(root:&Path)->(RunLaunchManifest,RunOutcome) {
         let stdout=root.join("stdout"); let stderr=root.join("stderr"); std::fs::write(&stdout,"").unwrap(); std::fs::write(&stderr,"").unwrap();
         write_run_json_atomic(&root.join("ledger.json"),&serde_json::json!({"attempt":1,"model":"old","thinking":"high","pid":42,"processStart":"start","childPid":43,"childProcessStart":"child"}),0o600).unwrap();
-        (RunLaunchManifest {version:1,run_id:"run".into(),attempt:1,next_attempt:None,kind:RunKind::Reflection,command:"child".into(),args:vec![],cwd:root.to_string_lossy().into_owned(),env:Default::default(),hard_deadline_at:100.0,termination_grace_ms:10.0,max_output_bytes:100,stdout_path:stdout.to_string_lossy().into_owned(),stderr_path:stderr.to_string_lossy().into_owned()},RunOutcome {version:1,run_id:"run".into(),attempt:Some(1),finished_at:"now".into(),child_exit:ChildExit {code:Some(0),signal:None},timed_out:false})
+        (RunLaunchManifest {version:1,run_id:"run".into(),attempt:1,next_attempt:None,kind:RunKind::Reflection,command:"child".into(),args:vec![],cwd:root.to_string_lossy().into_owned(),env:Default::default(),hard_deadline_at:100.0,termination_grace_ms:10.0,max_output_bytes:100,stdout_path:stdout.to_string_lossy().into_owned(),stderr_path:stderr.to_string_lossy().into_owned()},RunOutcome {version:1,run_id:"run".into(),attempt:Some(1),finished_at:"now".into(),child_exit:ChildExit {code:Some(0),signal:None},timed_out:false,recovered_from_worktree:None})
     }
     #[test] fn publication_marks_intent_before_gate_and_keeps_success_claim() {
         let root=tempfile::tempdir().unwrap(); let (manifest,outcome)=fixture(root.path());

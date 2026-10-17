@@ -42,7 +42,7 @@ impl GoalExtension {
                     continuation.reconcile(context).await?;
                     Ok(maho_ext_api::AgentToolResult {
                         content:result.content.into_iter().map(|content|match content { maho_ext_api::ToolContent::Text { text,.. }=>maho_ext_api::ContentBlock::text(text),maho_ext_api::ToolContent::Image { data,mime_type }=>maho_ext_api::ContentBlock::Image(maho_ai::types::ImageContent { data,mime_type }) }).collect(),
-                        details:result.details.unwrap_or(serde_json::Value::Null),usage:None,added_tool_names:None,terminate:None,is_error:None,
+                        details:result.details.unwrap_or(serde_json::Value::Null),structured_content: None, usage:None,added_tool_names:None,terminate:None,is_error:None,
                     })
                 })
             });

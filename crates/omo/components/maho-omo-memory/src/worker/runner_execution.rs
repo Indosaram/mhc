@@ -46,7 +46,7 @@ fn finalize_execution_failure(
     let dir=input.identity.paths.reflection.join("runs").join(&input.run.run_id);
     if dir.join("ledger.json").exists(){
         let ledger=super::reservation_run_ledger::parse_reservation_run_ledger(super::run_artifacts::read_run_json(&dir.join("ledger.json")).map_err(|error|error.to_string())?).map_err(|error|error.to_string())?;
-        let finalized=if matches!(error,MemoryModelAttemptError::Exhausted(_)){super::run_finalization::override_failed_reservation_run(input.finalization,&dir,&ledger,error.to_string(),gate)?}else{super::run_finalization::fail_reservation_run(input.finalization,&dir,&ledger,false,Some(error.to_string()),gate)?};
+        let finalized=if matches!(error,MemoryModelAttemptError::Exhausted(_)){super::run_finalization::override_failed_reservation_run(input.finalization,&dir,&ledger,error.to_string(),gate)?}else{super::run_finalization::fail_reservation_run(input.finalization,&dir,&ledger,false,Some(error.to_string()),error.to_string().starts_with(super::spawn_supervisor::SUPERVISOR_EXIT_PREFIX),gate)?};
         return super::runner_finalization_result::require_finalized_result(finalized).map(|result|ReflectionExecutionResult::Finalized(Box::new(result)));
     }
     let cleanup=worktree.map(memory_core::reflection::cleanup_reflection_worktree);

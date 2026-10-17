@@ -72,7 +72,7 @@ pub struct TypedAgentToolResult<TDetails> {
 impl<TDetails: serde::Serialize> TypedAgentToolResult<TDetails> {
     pub fn into_agent_result(self) -> Result<AgentToolResult, ExtensionFailure> {
         Ok(AgentToolResult { content: self.content, details: serde_json::to_value(self.details).map_err(|error| ExtensionFailure::new(error.to_string()))?,
-            usage: self.usage, added_tool_names: self.added_tool_names, terminate: self.terminate, is_error: self.is_error })
+            structured_content: None, usage: self.usage, added_tool_names: self.added_tool_names, terminate: self.terminate, is_error: self.is_error })
     }
 }
 impl<TDetails: serde::de::DeserializeOwned> TypedAgentToolResult<TDetails> {

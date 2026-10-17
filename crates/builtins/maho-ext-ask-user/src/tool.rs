@@ -13,7 +13,7 @@ fn unavailable(request: &QuestionRequest) -> QuestionResponse {
 }
 fn result(variant: AskUserVariant, request: &QuestionRequest, response: &QuestionResponse, required: bool) -> AgentToolResult {
     let text=if required && !matches!(response.status,QuestionStatus::Answered|QuestionStatus::CommentSubmitted){crate::format::format_required_no_answer(response,&request.questions)}else if response.status==QuestionStatus::Cancelled{response.comment.clone().unwrap_or_else(||format_result_text(response,&request.questions))}else{format_result_text(response,&request.questions)};
-    AgentToolResult { content: vec![ContentBlock::Text(TextContent { text, audience: None, text_signature: None })], details: format_result_details(variant, response, &request.questions), usage: None, added_tool_names: None, terminate: None, is_error: None }
+    AgentToolResult { content: vec![ContentBlock::Text(TextContent { text, audience: None, text_signature: None })], details: format_result_details(variant, response, &request.questions), structured_content: None, usage: None, added_tool_names: None, terminate: None, is_error: None }
 }
 fn emit_wake(bus:&EventBus,session:&str){
     let entries=get_pending_questions(session).into_iter().filter(|entry|!entry.request.wait_for_answer).collect::<Vec<_>>();
@@ -44,7 +44,7 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
             let timeout = (settings.timeout_minutes * 60_000.0) as u64;
             let request = match to_canonical(variant, &args, id.into(), Some(timeout)){
                 Ok(request)=>request,
-                Err(message)=>return Ok(AgentToolResult{content:vec![ContentBlock::Text(TextContent{text:message,audience:None,text_signature:None})],details:json!({"status":"unavailable"}),usage:None,added_tool_names:None,terminate:None,is_error:None}),
+                Err(message)=>return Ok(AgentToolResult{content:vec![ContentBlock::Text(TextContent{text:message,audience:None,text_signature:None})],details:json!({"status":"unavailable"}),structured_content: None, usage:None,added_tool_names:None,terminate:None,is_error:None}),
             };
             let required=args.get("required").and_then(serde_json::Value::as_bool)==Some(true);
             let (timed_out, unavailable_now) = {
@@ -159,7 +159,7 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                 if !owner_request.wait_for_answer{let owner=owners.borrow().clone();if let Some(owner)=owner{emit_wake(&owner.sender.events,&session);}}
                 settled.send_replace(Some(response));
             });
-            if resuming || !request.wait_for_answer { return Ok(AgentToolResult { content: vec![ContentBlock::Text(TextContent { text:"Question accepted; the answer will arrive as a user message.".into(), audience:None, text_signature:None })], details:json!({"accepted":true,"requestId":id,"status":"pending"}), usage:None,added_tool_names:None,terminate:None,is_error:None }); }
+            if resuming || !request.wait_for_answer { return Ok(AgentToolResult { content: vec![ContentBlock::Text(TextContent { text:"Question accepted; the answer will arrive as a user message.".into(), audience:None, text_signature:None })], details:json!({"accepted":true,"requestId":id,"status":"pending"}), structured_content: None, usage:None,added_tool_names:None,terminate:None,is_error:None }); }
             loop {
                 let response = completion.borrow().clone();
                 if let Some(response) = response { task.await.map_err(|error|ExtensionFailure::new(error.to_string()))?; return Ok(result(variant, &request, &response,required)); }
