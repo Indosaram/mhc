@@ -10,7 +10,7 @@ fn real_tool_definitions_preserve_permission_parser_field_contracts() {
         ("edit", vec![("path",Some("string")),("edits",Some("array"))]),
         ("write", vec![("path",Some("string")),("content",Some("string"))]),
         ("read", vec![("path",Some("string")),("offset",Some("number")),("limit",Some("number"))]),
-        ("grep", vec![("pattern",Some("string")),("path",Some("string"))]),
+        ("grep", vec![("pattern",Some("string")),("path",None)]),
         ("find", vec![("pattern",Some("string")),("path",Some("string")),("limit",Some("number"))]),
         ("ls", vec![("path",Some("string")),("limit",Some("number"))]),
     ] {
@@ -43,7 +43,7 @@ fn schema_shaped_inputs_produce_complete_permission_requests() {
         ("multiedit",json!({"file_path":"src/multi.ts"}),"edit","src/multi.ts",vec!["src/multi.ts"]),
         ("multiedit",json!({}),"edit","*",vec!["*"]),
         ("unknown_tool",json!({"someField":"someValue"}),"unknown_tool","*",vec!["*"]),
-        ("new_upstream_tool",json!({"command":"do something"}),"new_upstream_tool","*",vec!["*"]),
+        ("new_upstream_tool",json!({"command":"do something"}),"new_upstream_tool","do something",vec!["do something"]),
     ] {
         assert_eq!(registry.parse(tool,&input,(cwd,Path::new("/home/user"))),vec![PermissionRequest {permission:permission.into(),patterns:vec![pattern.into()],always:always.into_iter().map(str::to_owned).collect()}],"{tool} {input}");
     }

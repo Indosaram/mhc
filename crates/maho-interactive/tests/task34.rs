@@ -15,7 +15,7 @@ use maho_interactive::components::ask_user_question_state::{
     format_countdown_label, QuestionDraft, QuestionRequest, QuestionResponse, NOT_ANSWERED_NOTICE,
 };
 use maho_interactive::components::first_time_setup::{
-    FirstTimeSetupComponent, FirstTimeSetupOptions,
+    FirstTimeSetupComponent, FirstTimeSetupOptions, FirstTimeSetupResult,
 };
 use maho_interactive::grok::tool_row::{GrokToolRow, GrokToolRowState};
 use maho_interactive::grok::welcome_card::GrokWelcomeCard;
@@ -312,11 +312,15 @@ fn grok_chrome_and_first_time_setup_render_matches_pinned_golden() {
         }
     }
 
+    let submitted_theme = Rc::new(RefCell::new(None));
+    let submitted_theme_callback = submitted_theme.clone();
     let mut setup = FirstTimeSetupComponent::new(FirstTimeSetupOptions {
         detected_theme: TerminalTheme::Dark,
         theme: theme.clone(),
         on_theme_preview: Box::new(|_| {}),
-        on_submit: Box::new(|_| {}),
+        on_submit: Box::new(move |result: FirstTimeSetupResult| {
+            *submitted_theme_callback.borrow_mut() = Some(result.theme);
+        }),
         on_cancel: Box::new(|| {}),
     });
     for width in [40usize, 60, 80] {
@@ -336,4 +340,6 @@ fn grok_chrome_and_first_time_setup_render_matches_pinned_golden() {
             "first-time setup analytics step at {width}"
         );
     }
+    setup.handle_input("\r");
+    assert_eq!(*submitted_theme.borrow(), Some("system".to_string()));
 }

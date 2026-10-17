@@ -51,7 +51,7 @@ async fn read_bounds_characters_and_redacts_secrets() {
     std::fs::write(dir.path().join("note.txt"), format!("OPENAI_API_KEY=sk-live-abc\n{}", "x".repeat(7000))).expect("write");
     let tools = tools(dir.path(), Vec::new(), Arc::new(CliBudgetSlot::new(8)));
     let body = text((tool(&tools, "read").execute)(call(serde_json::json!({ "path": "note.txt" }))).await.expect("read ok"));
-    assert!(body.contains("OPENAI_API_KEY=***"), "the secret is redacted");
+    assert!(body.contains("OPENAI_***"), "the secret is redacted (memory-core `redactSecretLikeMaterial` masks the whole assignment span)");
     assert!(!body.contains("sk-live-abc"), "the credential is absent");
     let cap = DEFAULT_KIBITZER_TOOL_CAPS.read_chars;
     assert!(body.chars().count() <= cap + 64, "the body is bounded by the read cap: {} chars", body.chars().count());

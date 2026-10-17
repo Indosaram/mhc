@@ -249,7 +249,9 @@ pub(crate) mod test_barrier {
     pub(crate) fn note_issue(ptr: usize) {
         let mut entries = lock();
         let entry = entries.entry(ptr).or_default();
-        if !entry.finished { entry.issued += 1; }
+        if !entry.finished {
+            entry.issued += 1;
+        }
         state().cv.notify_all();
     }
 
@@ -263,6 +265,20 @@ pub(crate) mod test_barrier {
 
     pub(crate) fn has_outstanding(ptr: usize) -> bool {
         lock().get(&ptr).is_some_and(|entry| entry.consumed < entry.issued)
+    }
+
+    pub(crate) fn wait_until_all_consumed() {
+        let mut entries = lock();
+        while entries.values().any(|entry| entry.consumed < entry.issued) {
+            entries = state()
+                .cv
+                .wait_timeout(entries, std::time::Duration::from_secs(5))
+                .map(|(entries, timeout)| {
+                    assert!(!timeout.timed_out(), "outcome watcher never consumed its signal");
+                    entries
+                })
+                .unwrap_or_else(|error| error.into_inner().0);
+        }
     }
 
     /// Drops every entry; called between chaos iterations so a reused allocation cannot inherit a

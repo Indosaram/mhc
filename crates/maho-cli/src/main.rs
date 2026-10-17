@@ -245,8 +245,33 @@ fn run() -> Result<(), String> {
             return Ok(());
         }
         Some("app-server") => {
-            eprintln!("The app-server command has been removed. Use \"{} --mode rpc\" for process integration.", maho_core::config::app_name());
-            std::process::exit(1);
+            let grok = maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&maho_core::config::current_env());
+            let parsed = maho_cli::cli::args::parse_args(&argv[1..], grok)?;
+            let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+            let agent_dir = maho_core::config::get_agent_dir();
+            let config = maho_cli::cli::host_runtime::CliRuntimeConfiguration::from_parsed(
+                &parsed,
+                &cwd.to_string_lossy(),
+                &agent_dir,
+                maho_core::project_trust::AppMode::AppServer,
+            );
+            let session_dir = maho_cli::cli::runtime::resolve_session_dir(
+                parsed.session_dir.as_deref(),
+                std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(),
+                None,
+            );
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+            let code = runtime.block_on(maho_cli::cli::app_server::run_app_server_with_signals(
+                &argv,
+                config,
+                env!("CARGO_PKG_VERSION"),
+                session_dir,
+                &executable,
+                &[],
+            ))?;
+            if code != 0 { std::process::exit(code); }
+            return Ok(());
         }
         Some("config") => {
             let options = maho_cli::package_manager_cli::parse_config_command(&argv)?.ok_or("Missing config command")?;

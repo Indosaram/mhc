@@ -3844,12 +3844,12 @@ impl InteractiveMode {
 | `{expand_tools}` | Toggle tool output expansion |
 | `{toggle_thinking}` | Toggle thinking block visibility |
 | `{external_editor}` | Edit message in external editor |
-| `{copy_message}` | Copy last assistant message |
+| `{copy_message}` | Copy selection or last assistant message |
 | `{follow_up}` | Queue follow-up message |
 | `{dequeue}` | Restore queued messages |
 | `{answer_question}` | Open the pending question before dequeue (also: empty Enter; /answer lists requests) |
 | `{next_question}` | Cycle pending questions from an empty composer |
-| `{paste_image}` | Paste image or text from clipboard |
+| `{paste_image}` | Paste files on macOS, images, or text from clipboard |
 | `/` | Slash commands |
 | `!` | Run bash command |
 | `!!` | Run bash command (excluded from context) |

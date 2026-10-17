@@ -1154,9 +1154,12 @@ EVAL-FIRST: `eval` is your default execution surface. Before acting, ask "how do
         },
         "task": {
             "default_concurrency": 5,
-            "default_execution_mode": "in-process",
+            "default_execution_mode": "auto",
+            "host_engine_policy": "upgrade",
+            "host_shard_prewarm": "first-turn",
             "isolation": { "enabled": false, "backend": "auto", "apply": true, "merge": "patch", "commits": "generic" },
             "max_depth": 1,
+            "process_runner": "host",
             "residency_max_children": residency,
             "resume_children": true,
             "team": { "max_members": 8, "max_parallel_members": 4, "max_wall_clock_minutes": 120 },

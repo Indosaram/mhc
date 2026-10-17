@@ -924,8 +924,10 @@ fn admit_frontier(context: &DagSchedulerContext, emitted: &mut std::collections:
             let result = if let Some(message) = policy_failure { Err(message) } else { start_owned(context, &spec, &owner(context, &node_id)) };
             (node_id, result)
         }).collect();
-        resolve_admission_idle(context);
-        if admission_stopped(context) && !cancellation_started(context) { return Ok(false); }
+        if admission_stopped(context) && !cancellation_started(context) {
+            resolve_admission_idle(context);
+            return Ok(false);
+        }
         for (node_id, result) in results {
             match result {
                 Err(message) => { if !cancellation_started(context) { fail_node(context, &node_id, DagNodeErrorCode::StartFailed, &message)?; } }
@@ -956,6 +958,7 @@ fn admit_frontier(context: &DagSchedulerContext, emitted: &mut std::collections:
                 }
             }
         }
+        resolve_admission_idle(context);
         // The task owner record is durable even when admission finishes after suspension; this
         // retired controller must not attach, fail, or promote the node.
         if cancellation_started(context) { return Ok(false); }

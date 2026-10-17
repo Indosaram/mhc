@@ -3,25 +3,25 @@
     {
       "width": 0,
       "lines": [
-        "\u001b[38;5;69m─\u001b[39m"
+        "\u001b[38;5;74m─\u001b[39m"
       ]
     },
     {
       "width": 1,
       "lines": [
-        "\u001b[38;5;69m─\u001b[39m"
+        "\u001b[38;5;74m─\u001b[39m"
       ]
     },
     {
       "width": 10,
       "lines": [
-        "\u001b[38;5;69m──────────\u001b[39m"
+        "\u001b[38;5;74m──────────\u001b[39m"
       ]
     },
     {
       "width": 80,
       "lines": [
-        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+        "\u001b[38;5;74m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
       ]
     }
   ],
@@ -40,7 +40,7 @@
           }
         ]
       },
-      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation (transcript_missing) - sent 209.3KB, 4 duplicate ultrawork blocks collapsed\u001b[39m"
+      "notice": "\u001b[38;5;145mSession continuity lost - resent the full conversation (transcript_missing) - sent 209.3KB, 4 duplicate ultrawork blocks collapsed\u001b[39m"
     },
     {
       "message": {
@@ -55,7 +55,7 @@
           }
         ]
       },
-      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation - sent 1.0KB\u001b[39m"
+      "notice": "\u001b[38;5;145mSession continuity lost - resent the full conversation - sent 1.0KB\u001b[39m"
     },
     {
       "message": {
@@ -69,7 +69,7 @@
           }
         ]
       },
-      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation (registry_miss)\u001b[39m"
+      "notice": "\u001b[38;5;145mSession continuity lost - resent the full conversation (registry_miss)\u001b[39m"
     },
     {
       "message": {
@@ -83,7 +83,7 @@
           }
         ]
       },
-      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation - sent 1B\u001b[39m"
+      "notice": "\u001b[38;5;145mSession continuity lost - resent the full conversation - sent 1B\u001b[39m"
     },
     {
       "message": {
@@ -97,7 +97,7 @@
           }
         ]
       },
-      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation - sent 2.0MB\u001b[39m"
+      "notice": "\u001b[38;5;145mSession continuity lost - resent the full conversation - sent 2.0MB\u001b[39m"
     },
     {
       "message": {
@@ -111,7 +111,7 @@
           }
         ]
       },
-      "notice": "\u001b[38;5;244mSession continuity disabled (resumeMode: off) - resending the conversation each turn (resume_mode_off)\u001b[39m"
+      "notice": "\u001b[38;5;145mSession continuity disabled (resumeMode: off) - resending the conversation each turn (resume_mode_off)\u001b[39m"
     },
     {
       "message": {
@@ -147,7 +147,7 @@
           }
         ]
       },
-      "notice": "\u001b[38;5;244mSession continuity lost - resume failed, resent the full conversation\u001b[39m"
+      "notice": "\u001b[38;5;145mSession continuity lost - resume failed, resent the full conversation\u001b[39m"
     },
     {
       "message": {},
@@ -170,26 +170,26 @@
       "width": 20,
       "text": "Hello **world**\n\n1. first\n2. second",
       "lines": [
-        "\u001b]133;A\u0007\u001b[48;5;59m                    \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;188mHello \u001b[39m\u001b[1m\u001b[38;5;188mworld\u001b[39m\u001b[22m        \u001b[49m",
+        "\u001b]133;A\u0007\u001b[48;5;23m                    \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;254mHello \u001b[39m\u001b[1m\u001b[38;5;254mworld\u001b[39m\u001b[22m        \u001b[49m",
+        "\u001b[48;5;23m                    \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m1. \u001b[39m\u001b[38;5;254mfirst\u001b[39m           \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m2. \u001b[39m\u001b[38;5;254msecond\u001b[39m          \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;23m                    \u001b[49m"
+      ]
+    },
+    {
+      "kind": "branch",
+      "width": 20,
+      "expanded": false,
+      "text": "Retained **context**.",
+      "lines": [
         "\u001b[48;5;59m                    \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m1. \u001b[39m\u001b[38;5;188mfirst\u001b[39m           \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m2. \u001b[39m\u001b[38;5;188msecond\u001b[39m          \u001b[49m",
-        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                    \u001b[49m"
-      ]
-    },
-    {
-      "kind": "branch",
-      "width": 20,
-      "expanded": false,
-      "text": "Retained **context**.",
-      "lines": [
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m           \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mBranch summary (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m   \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mto expand)\u001b[39m         \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m"
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[branch]\u001b[22m\u001b[39m           \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mBranch summary (\u001b[39m\u001b[38;5;102m\u001b[39m\u001b[38;5;145m   \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mto expand)\u001b[39m         \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m"
       ]
     },
     {
@@ -198,13 +198,13 @@
       "expanded": true,
       "text": "Retained **context**.",
       "lines": [
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m           \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mBranch Summary\u001b[39m\u001b[22m     \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m  \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m"
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[branch]\u001b[22m\u001b[39m           \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mBranch Summary\u001b[39m\u001b[22m     \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mRetained \u001b[39m\u001b[1m\u001b[38;5;145mcontext\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m.\u001b[39m  \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m"
       ]
     },
     {
@@ -222,19 +222,19 @@
         }
       },
       "lines": [
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m       \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses   \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mWebSocket          \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mcompaction: 20     \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mretained items     \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mfrom 1,000 OpenAI  \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188minput items;       \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mcompacted from     \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188m12,345 tokens (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mexpand)\u001b[39m            \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m"
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[compaction]\u001b[22m\u001b[39m       \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mOpenAI Responses   \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mWebSocket          \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mcompaction: 20     \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mretained items     \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mfrom 1,000 OpenAI  \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145minput items;       \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mcompacted from     \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145m12,345 tokens (\u001b[39m\u001b[38;5;102m\u001b[39m\u001b[38;5;145m to \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mexpand)\u001b[39m            \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m"
       ]
     },
     {
@@ -252,21 +252,21 @@
         }
       },
       "lines": [
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m       \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mCompacted from     \u001b[49m",
-        "\u001b[48;5;17m \u001b[1;38;5;188m12,345 tokens\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m\u001b[39m      \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses   \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mWebSocket          \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mcompaction: 20     \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mretained items     \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mfrom 1,000 OpenAI  \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188minput items\u001b[39m        \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m  \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mSafe\u001b[39m               \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m"
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[compaction]\u001b[22m\u001b[39m       \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mCompacted from     \u001b[49m",
+        "\u001b[48;5;59m \u001b[1;38;5;145m12,345 tokens\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m\u001b[39m      \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mOpenAI Responses   \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mWebSocket          \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mcompaction: 20     \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mretained items     \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mfrom 1,000 OpenAI  \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145minput items\u001b[39m        \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mRetained \u001b[39m\u001b[1m\u001b[38;5;145mcontext\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m.\u001b[39m  \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mSafe\u001b[39m               \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m"
       ]
     },
     {
@@ -284,10 +284,10 @@
         }
       ],
       "lines": [
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m \u001b[39m\u001b[38;5;188mrust,      \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mtests\u001b[39m\u001b[38;5;241m ( to expand)\u001b[39m \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m"
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[skill]\u001b[22m \u001b[39m\u001b[38;5;145mrust,      \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mtests\u001b[39m\u001b[38;5;102m ( to expand)\u001b[39m \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m"
       ]
     },
     {
@@ -305,16 +305,16 @@
         }
       ],
       "lines": [
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m\u001b[39m            \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mrust\u001b[39m\u001b[22m               \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mUse \u001b[39m\u001b[1m\u001b[38;5;188msafe\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m APIs.\u001b[39m     \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mtests\u001b[39m\u001b[22m              \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mRun tests.\u001b[39m         \u001b[49m",
-        "\u001b[48;5;17m                    \u001b[49m"
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[skill]\u001b[22m\u001b[39m            \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mrust\u001b[39m\u001b[22m               \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mUse \u001b[39m\u001b[1m\u001b[38;5;145msafe\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m APIs.\u001b[39m     \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mtests\u001b[39m\u001b[22m              \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mRun tests.\u001b[39m         \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m"
       ]
     },
     {
@@ -322,25 +322,25 @@
       "width": 40,
       "text": "Hello **world**\n\n1. first\n2. second",
       "lines": [
-        "\u001b]133;A\u0007\u001b[48;5;59m                                        \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;188mHello \u001b[39m\u001b[1m\u001b[38;5;188mworld\u001b[39m\u001b[22m                            \u001b[49m",
+        "\u001b]133;A\u0007\u001b[48;5;23m                                        \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;254mHello \u001b[39m\u001b[1m\u001b[38;5;254mworld\u001b[39m\u001b[22m                            \u001b[49m",
+        "\u001b[48;5;23m                                        \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m1. \u001b[39m\u001b[38;5;254mfirst\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m2. \u001b[39m\u001b[38;5;254msecond\u001b[39m                              \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;23m                                        \u001b[49m"
+      ]
+    },
+    {
+      "kind": "branch",
+      "width": 40,
+      "expanded": false,
+      "text": "Retained **context**.",
+      "lines": [
         "\u001b[48;5;59m                                        \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m1. \u001b[39m\u001b[38;5;188mfirst\u001b[39m                               \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m2. \u001b[39m\u001b[38;5;188msecond\u001b[39m                              \u001b[49m",
-        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                        \u001b[49m"
-      ]
-    },
-    {
-      "kind": "branch",
-      "width": 40,
-      "expanded": false,
-      "text": "Retained **context**.",
-      "lines": [
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m                               \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mBranch summary (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to expand)\u001b[39m            \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m"
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[branch]\u001b[22m\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mBranch summary (\u001b[39m\u001b[38;5;102m\u001b[39m\u001b[38;5;145m to expand)\u001b[39m            \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m"
       ]
     },
     {
@@ -349,13 +349,13 @@
       "expanded": true,
       "text": "Retained **context**.",
       "lines": [
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m                               \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mBranch Summary\u001b[39m\u001b[22m                         \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m                      \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m"
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[branch]\u001b[22m\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mBranch Summary\u001b[39m\u001b[22m                         \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mRetained \u001b[39m\u001b[1m\u001b[38;5;145mcontext\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m.\u001b[39m                      \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m"
       ]
     },
     {
@@ -373,14 +373,14 @@
         }
       },
       "lines": [
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m                           \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses WebSocket compaction: \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188m20 retained items from 1,000 OpenAI    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188minput items; compacted from 12,345     \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mtokens (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to expand)\u001b[39m                    \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m"
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[compaction]\u001b[22m\u001b[39m                           \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mOpenAI Responses WebSocket compaction: \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145m20 retained items from 1,000 OpenAI    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145minput items; compacted from 12,345     \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mtokens (\u001b[39m\u001b[38;5;102m\u001b[39m\u001b[38;5;145m to expand)\u001b[39m                    \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m"
       ]
     },
     {
@@ -398,17 +398,17 @@
         }
       },
       "lines": [
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m                           \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mCompacted from 12,345 tokens\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m\u001b[39m           \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses WebSocket compaction: \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188m20 retained items from 1,000 OpenAI    \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188minput items\u001b[39m                            \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m                      \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mSafe\u001b[39m                                   \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m"
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[compaction]\u001b[22m\u001b[39m                           \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mCompacted from 12,345 tokens\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m\u001b[39m           \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mOpenAI Responses WebSocket compaction: \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145m20 retained items from 1,000 OpenAI    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145minput items\u001b[39m                            \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mRetained \u001b[39m\u001b[1m\u001b[38;5;145mcontext\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m.\u001b[39m                      \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mSafe\u001b[39m                                   \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m"
       ]
     },
     {
@@ -426,9 +426,9 @@
         }
       ],
       "lines": [
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m \u001b[39m\u001b[38;5;188mrust, tests\u001b[39m\u001b[38;5;241m ( to expand)\u001b[39m       \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m"
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[skill]\u001b[22m \u001b[39m\u001b[38;5;145mrust, tests\u001b[39m\u001b[38;5;102m ( to expand)\u001b[39m       \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m"
       ]
     },
     {
@@ -446,16 +446,16 @@
         }
       ],
       "lines": [
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m\u001b[39m                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mrust\u001b[39m\u001b[22m                                   \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mUse \u001b[39m\u001b[1m\u001b[38;5;188msafe\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m APIs.\u001b[39m                         \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mtests\u001b[39m\u001b[22m                                  \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mRun tests.\u001b[39m                             \u001b[49m",
-        "\u001b[48;5;17m                                        \u001b[49m"
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[skill]\u001b[22m\u001b[39m                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mrust\u001b[39m\u001b[22m                                   \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mUse \u001b[39m\u001b[1m\u001b[38;5;145msafe\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m APIs.\u001b[39m                         \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mtests\u001b[39m\u001b[22m                                  \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mRun tests.\u001b[39m                             \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m"
       ]
     },
     {
@@ -463,25 +463,25 @@
       "width": 80,
       "text": "Hello **world**\n\n1. first\n2. second",
       "lines": [
-        "\u001b]133;A\u0007\u001b[48;5;59m                                                                                \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;188mHello \u001b[39m\u001b[1m\u001b[38;5;188mworld\u001b[39m\u001b[22m                                                                    \u001b[49m",
+        "\u001b]133;A\u0007\u001b[48;5;23m                                                                                \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;254mHello \u001b[39m\u001b[1m\u001b[38;5;254mworld\u001b[39m\u001b[22m                                                                    \u001b[49m",
+        "\u001b[48;5;23m                                                                                \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m1. \u001b[39m\u001b[38;5;254mfirst\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;23m \u001b[38;5;140m2. \u001b[39m\u001b[38;5;254msecond\u001b[39m                                                                      \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;23m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "kind": "branch",
+      "width": 80,
+      "expanded": false,
+      "text": "Retained **context**.",
+      "lines": [
         "\u001b[48;5;59m                                                                                \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m1. \u001b[39m\u001b[38;5;188mfirst\u001b[39m                                                                       \u001b[49m",
-        "\u001b[48;5;59m \u001b[38;5;109m2. \u001b[39m\u001b[38;5;188msecond\u001b[39m                                                                      \u001b[49m",
-        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                                                                \u001b[49m"
-      ]
-    },
-    {
-      "kind": "branch",
-      "width": 80,
-      "expanded": false,
-      "text": "Retained **context**.",
-      "lines": [
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m                                                                       \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mBranch summary (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to expand)\u001b[39m                                                    \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m"
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[branch]\u001b[22m\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mBranch summary (\u001b[39m\u001b[38;5;102m\u001b[39m\u001b[38;5;145m to expand)\u001b[39m                                                    \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m"
       ]
     },
     {
@@ -490,13 +490,13 @@
       "expanded": true,
       "text": "Retained **context**.",
       "lines": [
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m                                                                       \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mBranch Summary\u001b[39m\u001b[22m                                                                 \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m                                                              \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m"
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[branch]\u001b[22m\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mBranch Summary\u001b[39m\u001b[22m                                                                 \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mRetained \u001b[39m\u001b[1m\u001b[38;5;145mcontext\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m.\u001b[39m                                                              \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m"
       ]
     },
     {
@@ -514,12 +514,12 @@
         }
       },
       "lines": [
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m                                                                   \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses WebSocket compaction: 20 retained items from 1,000 OpenAI     \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188minput items; compacted from 12,345 tokens (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to expand)\u001b[39m                         \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m"
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[compaction]\u001b[22m\u001b[39m                                                                   \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mOpenAI Responses WebSocket compaction: 20 retained items from 1,000 OpenAI     \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145minput items; compacted from 12,345 tokens (\u001b[39m\u001b[38;5;102m\u001b[39m\u001b[38;5;145m to expand)\u001b[39m                         \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m"
       ]
     },
     {
@@ -537,16 +537,16 @@
         }
       },
       "lines": [
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m                                                                   \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mCompacted from 12,345 tokens\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m\u001b[39m                                                   \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses WebSocket compaction: 20 retained items from 1,000 OpenAI     \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188minput items\u001b[39m                                                                    \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m                                                              \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mSafe\u001b[39m                                                                           \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m"
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[compaction]\u001b[22m\u001b[39m                                                                   \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mCompacted from 12,345 tokens\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m\u001b[39m                                                   \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mOpenAI Responses WebSocket compaction: 20 retained items from 1,000 OpenAI     \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145minput items\u001b[39m                                                                    \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mRetained \u001b[39m\u001b[1m\u001b[38;5;145mcontext\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m.\u001b[39m                                                              \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mSafe\u001b[39m                                                                           \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m"
       ]
     },
     {
@@ -564,9 +564,9 @@
         }
       ],
       "lines": [
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m \u001b[39m\u001b[38;5;188mrust, tests\u001b[39m\u001b[38;5;241m ( to expand)\u001b[39m                                               \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m"
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[skill]\u001b[22m \u001b[39m\u001b[38;5;145mrust, tests\u001b[39m\u001b[38;5;102m ( to expand)\u001b[39m                                               \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m"
       ]
     },
     {
@@ -584,16 +584,16 @@
         }
       ],
       "lines": [
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m\u001b[39m                                                                        \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mrust\u001b[39m\u001b[22m                                                                           \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mUse \u001b[39m\u001b[1m\u001b[38;5;188msafe\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m APIs.\u001b[39m                                                                 \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mtests\u001b[39m\u001b[22m                                                                          \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m",
-        "\u001b[48;5;17m \u001b[38;5;188mRun tests.\u001b[39m                                                                     \u001b[49m",
-        "\u001b[48;5;17m                                                                                \u001b[49m"
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;140m\u001b[1m[skill]\u001b[22m\u001b[39m                                                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mrust\u001b[39m\u001b[22m                                                                           \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mUse \u001b[39m\u001b[1m\u001b[38;5;145msafe\u001b[39m\u001b[22m\u001b[38;5;145m\u001b[38;5;145m APIs.\u001b[39m                                                                 \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[1m\u001b[38;5;145mtests\u001b[39m\u001b[22m                                                                          \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;145mRun tests.\u001b[39m                                                                     \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m"
       ]
     }
   ]

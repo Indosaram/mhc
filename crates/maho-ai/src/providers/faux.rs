@@ -738,7 +738,8 @@ impl FauxCore {
                 return;
             };
 
-            if simple.deferred.is_some() {
+            // senpi `if (streamOptions?.deferred)`: `deferred: false` is a plain, non-deferred request.
+            if simple.deferred.as_ref().is_some_and(|deferred| !matches!(deferred, crate::types::DeferredOption::Enabled(false))) {
                 let handle = DeferredHandle {
                     provider: model.provider.clone(),
                     model_id: model.id.clone(),

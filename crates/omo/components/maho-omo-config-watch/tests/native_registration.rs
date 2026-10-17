@@ -21,7 +21,7 @@ async fn ready_and_retry_publish_same_callable_with_refreshed_targets() {
     component.register(&mut api);
     let initial = receiver.try_recv().unwrap();
     events.emit(CONFIG_WATCH_READY, &JsonValue::Null);
-    let ready = receiver.try_recv().unwrap();
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap().unwrap();
     assert!(Arc::ptr_eq(&initial.1.validate, &ready.1.validate));
     targets.lock().unwrap().push(OmoConfigWatchTarget { path: "/fixture/.omo".into(), kind: "dir", filter_globs: vec!["/omo.jsonc".into()] });
     events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":"omo","paths":[],"errors":["repair"]}));

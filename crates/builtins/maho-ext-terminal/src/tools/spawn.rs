@@ -3,6 +3,9 @@ use maho_pty::PtyExit;
 /// kind-specific args; stdin-transport shells (legacy WSL bash `-s`) get the command written after start.
 pub fn command_options(command:&str,cwd:Option<&std::path::Path>,shell_path:Option<&str>)->std::io::Result<(maho_pty::PtySessionOptions,Option<String>)> {
     let shell=maho_tools::shell::get_shell_config(shell_path).map_err(std::io::Error::other)?;
+    command_options_for_shell(command,cwd,shell)
+}
+fn command_options_for_shell(command:&str,cwd:Option<&std::path::Path>,shell:maho_tools::shell::ShellConfig)->std::io::Result<(maho_pty::PtySessionOptions,Option<String>)> {
     let use_stdin=shell.command_transport==Some("stdin");
     let is_windows_git_bash=cfg!(windows) && shell.kind==Some(maho_tools::shell::ShellKind::Bash) && shell.command_transport.is_none();
     let mut options=maho_pty::PtySessionOptions::new(shell.shell);options.args=if is_windows_git_bash {vec!["-lc".to_owned()]} else {shell.args};
@@ -33,9 +36,8 @@ mod tests {
     }
     #[test]
     fn legacy_wsl_bash_uses_stdin_transport() -> std::io::Result<()> {
-        let dir=tempfile::tempdir()?;let path=dir.path().join("bash.exe");std::fs::write(&path,b"")?;
-        let input=format!("{}\\Windows\\System32\\bash.exe",dir.path().display());
-        let (options,stdin)=command_options("echo ready",None,Some(&input))?;
+        let shell=maho_tools::shell::shell_config_for_path("C:\\Windows\\System32\\bash.exe");
+        let (options,stdin)=command_options_for_shell("echo ready",None,shell)?;
         assert_eq!(options.args,["-s"]);assert_eq!(stdin,Some("echo ready\n".to_owned()));Ok(())
     }
     #[cfg(windows)]

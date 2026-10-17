@@ -23,8 +23,9 @@ fn default_agent_protected_paths_are_never_covered() -> Result<(), Box<dyn std::
     let cwd = home.join("work/project/child");
     std::fs::create_dir_all(&cwd)?;
     let resolution = resolve_omo_config_watch_target_resolution(&cwd, &home, &BTreeMap::new());
+    let agent = maho_omo_agent_home::resolve_agent_home::resolve_agent_home(&BTreeMap::new(), &home, &cwd, std::path::Path::exists);
     for target in &resolution.targets {
-        for protected in [home.join(".omo/agent/auth.json"), home.join(".omo/agent/sessions"), home.join(".omo/agent/logs")] {
+        for protected in [agent.join("auth.json"), agent.join("sessions"), agent.join("logs")] {
             for glob in &target.filter_globs {
                 let glob_path = target.path.join(glob.trim_start_matches('/'));
                 assert!(!glob_path.starts_with(&protected));
@@ -33,7 +34,7 @@ fn default_agent_protected_paths_are_never_covered() -> Result<(), Box<dyn std::
         }
     }
     assert_eq!(resolution.targets.iter().filter(|t| t.filter_globs == OMO_CONFIG_DIRECTORY_FILTER_GLOBS)
-        .map(|t| t.path.clone()).collect::<Vec<_>>(), vec![cwd, home.join("work/project"), home.join("work")]);
+        .map(|t| t.path.clone()).collect::<Vec<_>>(), vec![home.clone(), cwd, home.join("work/project"), home.join("work"), home]);
     Ok(())
 }
 
@@ -61,13 +62,14 @@ fn every_ancestor_creation_target_is_root_anchored() -> Result<(), Box<dyn std::
     let env = BTreeMap::from([("SENPI_CODING_AGENT_DIR".into(), root.path().join("agent").to_string_lossy().into_owned())]);
     let resolution = resolve_omo_config_watch_target_resolution(&cwd, &home, &env);
     let creation: Vec<_> = resolution.targets.iter().filter(|t| t.filter_globs.iter().any(|g| g == "/.omo/omo.jsonc")).collect();
-    assert_eq!(creation.len(), 4);
+    // Four ancestors including HOME plus HOME's user-config creation target.
+    assert_eq!(creation.len(), 5);
     for target in creation { assert_eq!(target.filter_globs, ["/.omo", "/.omo/omo.jsonc", "/.omo/omo.json"]); }
     Ok(())
 }
 
 #[test]
-fn user_creation_target_has_only_the_user_root_filter() -> Result<(), Box<dyn std::error::Error>> {
+fn user_creation_target_is_basename_anchored() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let home = root.path().join("home");
     let cwd = home.join("project");
@@ -75,6 +77,6 @@ fn user_creation_target_has_only_the_user_root_filter() -> Result<(), Box<dyn st
     let env = BTreeMap::from([("SENPI_CODING_AGENT_DIR".into(), root.path().join("agent").to_string_lossy().into_owned())]);
     let resolution = resolve_omo_config_watch_target_resolution(&cwd, &home, &env);
     let target = resolution.targets.iter().find(|t| t.path == home && t.filter_globs.iter().any(|g| g == "/.omo")).expect("user target");
-    assert_eq!(target.filter_globs, ["/.omo"]);
+    assert_eq!(target.filter_globs, ["/.omo", "/.omo/omo.jsonc", "/.omo/omo.json"]);
     Ok(())
 }

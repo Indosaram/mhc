@@ -56,11 +56,10 @@ async fn faux_trigger_matches_reference_hidden_delivery_and_typed_prompt() {
 }
 
 #[tokio::test]
-async fn faux_skill_family_suppression_matches_reference() {
+async fn faux_skill_family_mention_injects_directive_once() {
     let reference: serde_json::Value = serde_json::from_str(include_str!("reference-suppressed.json"))
         .expect("generated suppression reference");
     let entries = reference["entries"].as_array().expect("reference entries");
-    assert!(!entries.iter().any(|entry| entry["customType"] == "omo-ultrawork:directive"));
     let user = entries.iter().find(|entry| entry["message"]["role"] == "user").expect("reference user");
     let mut script = load_script("hello").expect("shared faux responses");
     script.prompt = user["message"]["content"][0]["text"].as_str().expect("prompt").into();
@@ -69,8 +68,11 @@ async fn faux_skill_family_suppression_matches_reference() {
         extension: Box::new(maho_omo_ultrawork::UltraworkComponent { arming: Default::default() }),
     });
     let actual = tokio::time::timeout(std::time::Duration::from_secs(10), session.run_native())
-        .await.expect("bounded suppression run").expect("native suppression run");
+        .await.expect("bounded skill-family run").expect("native skill-family run");
     let messages = actual["messages"].as_array().expect("messages");
-    assert!(!messages.iter().any(|message| message["customType"] == "omo-ultrawork:directive"));
-    assert_eq!(messages[0]["content"], user["message"]["content"]);
+    let directives: Vec<_> = messages.iter().filter(|message| message["customType"] == "omo-ultrawork:directive").collect();
+    assert_eq!(directives.len(), 1);
+    assert_eq!(directives[0]["display"], false);
+    assert_eq!(directives[0]["content"][0]["text"], maho_omo_ultrawork::generated_directive::SENPI_ULTRAWORK_DIRECTIVE);
+    assert_eq!(messages.iter().find(|message| message["role"] == "user").expect("user message")["content"], user["message"]["content"]);
 }

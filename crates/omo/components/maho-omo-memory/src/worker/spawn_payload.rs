@@ -273,6 +273,7 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         let missing = root.path().join("missing.json");
         let mut input = reflection_input(root.path(), &run, &worktree, &policy);
         input.skills_usage_source = &skills;
+        input.memory_usage_source = &missing;
         input.dream_state_source = &missing;
         input.system_token_budget=Some(1000); input.system_token_target=Some(900);
         let args = prepare_reflection_spawn(input).unwrap();
@@ -291,6 +292,7 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         let missing = root.path().join("missing.json");
         let mut input = reflection_input(root.path(), &run, &worktree, &policy);
         input.skills_usage_source = &skills;
+        input.memory_usage_source = &missing;
         input.dream_state_source = &missing;
         input.system_token_budget=Some(1000); input.system_token_target=Some(900);
         let args = prepare_reflection_spawn(input).unwrap();
@@ -316,8 +318,8 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         let args = prepare_reflection_fork_spawn(input).unwrap();
         assert_eq!(args.cwd, root.path());
         assert_eq!(args.parent_session_file.as_deref(), Some(session.as_path()));
-        assert_eq!(&args.args[..2], &["-p", "--fork"]);
-        assert!(!args.args.iter().any(|arg| arg == "prefix" || arg == "--tools" || arg.starts_with("--no-")));
+        assert_eq!(&args.args[..3], &["prefix", "-p", "--fork"]);
+        assert!(!args.args.iter().any(|arg| arg == "--tools" || arg.starts_with("--no-")));
         assert!(prepare_reflection_fork_spawn(reflection_input(root.path(), &run, &worktree, &policy)).is_err());
     }
     #[test]

@@ -90,7 +90,7 @@ mod isolate_tests {
     fn isolate_requires_enabled_js_sandbox_and_fresh_state() {
         assert_eq!(match parse_eval_request_with_sandbox(&request("js", serde_json::json!({"isolate":true})), true).unwrap() { EvalToolRequest::Run(input) => input.isolate, _ => None }, Some(true));
         assert_eq!(parse_eval_request_with_sandbox(&request("js", serde_json::json!({"isolate":true})), false).unwrap_err().code(), Some("eval_isolate_invalid"));
-        assert!(parse_eval_request_with_sandbox(&request("py", serde_json::json!({"isolate":true})), true).unwrap_err().to_string().contains("JavaScript only"));
+        assert!(parse_eval_request_with_sandbox(&request("py", serde_json::json!({"isolate":true})), true).unwrap_err().to_string().contains("Unsupported eval language"));
         assert!(parse_eval_request_with_sandbox(&request("js", serde_json::json!({"isolate":true,"reset":true})), true).unwrap_err().to_string().contains("reset does not apply"));
         assert!(parse_eval_request_with_sandbox(&request("js", serde_json::json!({"isolate":"yes"})), true).unwrap_err().to_string().contains("isolate must be true or false"));
     }

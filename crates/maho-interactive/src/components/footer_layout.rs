@@ -7,8 +7,19 @@ pub struct FooterSegment {
 }
 #[derive(Debug, Clone)]
 pub struct FooterRightLabel {
-    pub minimal: FooterSegment,
-    pub full: Option<FooterSegment>,
+    /// Forms from richest to poorest; the final entry is the always-kept floor.
+    pub forms: Vec<FooterRightForm>,
+}
+#[derive(Debug, Clone)]
+pub struct FooterRightForm {
+    pub segment: FooterSegment,
+    pub fits_with: FooterRightFit,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FooterRightFit {
+    Everything,
+    MiddleElision,
+    PwdElision,
 }
 pub struct FooterLayoutInput<'a> {
     pub width: usize,
@@ -24,18 +35,18 @@ pub struct FooterLayoutInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FooterLayout {
     Full {
-        use_full_right: bool,
+        right_form: usize,
     },
     MiddleElided {
         kept_middle_count: usize,
         show_marker: bool,
-        use_full_right: bool,
+        right_form: usize,
     },
     PwdElided {
         pwd_plain: String,
         kept_middle_count: usize,
         show_marker: bool,
-        use_full_right: bool,
+        right_form: usize,
     },
     LeftElided {
         left_plain: String,
@@ -81,7 +92,7 @@ pub fn plan_footer_layout(input: &FooterLayoutInput<'_>) -> Result<FooterLayout,
         )
     })?;
     let prefer_pwd = visible_width(&pwd.plain) > input.width / 3;
-    let plan = |right: &FooterSegment, use_full_right: bool| {
+    let plan = |right: &FooterRightForm, right_form: usize| {
         let mut candidates = vec![(input.middle.len(), false)];
         candidates.extend((0..input.middle.len()).rev().map(|i| (i, true)));
         candidates.push((0, false));
@@ -97,20 +108,25 @@ pub fn plan_footer_layout(input: &FooterLayoutInput<'_>) -> Result<FooterLayout,
             left.push(input.tail);
             if segments_width(&left, input.separator)
                 + input.min_padding
-                + visible_width(&right.plain)
+                + visible_width(&right.segment.plain)
                 <= input.width
             {
                 return Some(if kept_middle_count == input.middle.len() {
-                    FooterLayout::Full { use_full_right }
+                    FooterLayout::Full { right_form }
                 } else {
                     FooterLayout::MiddleElided {
                         kept_middle_count,
                         show_marker,
-                        use_full_right,
+                        right_form,
                     }
                 });
             }
-            if prefer_pwd || (!use_full_right && kept_middle_count == 0 && !show_marker) {
+            if right.fits_with == FooterRightFit::Everything {
+                return None;
+            }
+            if right.fits_with == FooterRightFit::PwdElision
+                && (prefer_pwd || (kept_middle_count == 0 && !show_marker))
+            {
                 let rest: Vec<_> = input
                     .anchor
                     .iter()
@@ -127,7 +143,7 @@ pub fn plan_footer_layout(input: &FooterLayoutInput<'_>) -> Result<FooterLayout,
                     .collect();
                 let budget = input.width.saturating_sub(
                     input.min_padding
-                        + visible_width(&right.plain)
+                        + visible_width(&right.segment.plain)
                         + visible_width(input.separator)
                         + segments_width(&rest, input.separator),
                 );
@@ -136,24 +152,24 @@ pub fn plan_footer_layout(input: &FooterLayoutInput<'_>) -> Result<FooterLayout,
                         pwd_plain: elide_head(&pwd.plain, budget),
                         kept_middle_count,
                         show_marker,
-                        use_full_right,
+                        right_form,
                     });
                 }
             }
         }
         None
     };
-    if let Some(full) = &input.right.full
-        && let Some(p) = plan(full, true)
-    {
-        return Ok(p);
+    for (right_form, form) in input.right.forms.iter().enumerate() {
+        if let Some(p) = plan(form, right_form) {
+            return Ok(p);
+        }
     }
-    if let Some(p) = plan(&input.right.minimal, false) {
-        return Ok(p);
-    }
+    let floor = input.right.forms.last().map(|form| &form.segment).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "footer right-label ladder is empty")
+    })?;
     let budget = input
         .width
-        .saturating_sub(input.min_padding + visible_width(&input.right.minimal.plain));
+        .saturating_sub(input.min_padding + visible_width(&floor.plain));
     if budget >= 1 {
         let text = input
             .anchor
@@ -167,7 +183,7 @@ pub fn plan_footer_layout(input: &FooterLayoutInput<'_>) -> Result<FooterLayout,
         })
     } else {
         Ok(FooterLayout::RightTruncated {
-            right_plain: truncate_to_width(&input.right.minimal.plain, input.width, "", false),
+            right_plain: truncate_to_width(&floor.plain, input.width, "", false),
         })
     }
 }

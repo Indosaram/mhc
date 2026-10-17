@@ -12260,7 +12260,7 @@ mod tests {
         let prompt = session.system_prompt();
         assert!(prompt.contains("## Intent Gate"));
         assert!(prompt.contains("<workstation>"));
-        assert!(prompt.contains("Current date: "));
+        assert!(!prompt.contains("Current date: "));
     }
 
     #[test]

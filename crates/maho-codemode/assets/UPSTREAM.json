@@ -80,16 +80,17 @@
     },
     {
       "path": "kernels/js/process-tree.js",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "f821f6988a50af4a61093c1675eb2fda0c63682b",
-      "sha256": "654293536b821afa0790c9350319d8ff9e68443f52b3c1655f7d6cd1e99d5c84"
+      "sha256": "c81c5ba9f6b675440cede30f6b1a4937e56aff369a5434f4bd88f4e38a749c63",
+      "change": "process-group cleanup and guarded Windows tree termination"
     },
     {
       "path": "kernels/js/worker-core.js",
       "status": "patched",
       "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "change": "bridge errors forward error.data",
-      "sha256": "b4466fde1c59c752b675b1a08605b3c72838fd9a00b1aaf12533a644f98ee1d9"
+      "change": "bridge error.data, shell-wait and memory reporting",
+      "sha256": "02cb78dba556e6fcf4e0009defdb8c03b4d0a79471e3544f9f164d44c4fbc968"
     },
     {
       "path": "kernels/js/worker-entry.js",
@@ -99,28 +100,31 @@
     },
     {
       "path": "kernels/js/worker-indirect-eval.js",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "0eb6a7f5ac959c510f1059ccf739060b7e6aac2b",
-      "sha256": "67266c729ffbf5237166c4e7c69a82fd66f58f2adb0d70dea74cf31008122ea8"
+      "sha256": "772a5a02181579051546decde882545bb6e7b03d32c84b37686a37c91213b41a",
+      "change": "use shared isKernelGlobal predicate"
     },
     {
       "path": "kernels/js/worker-runtime.js",
       "status": "patched",
       "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
-      "change": "installs wait()/handle() from handles.js",
-      "sha256": "8d86e50de338cf6ef26a9e41ebcb285a4e5fc1c18a8ad55d00f6063ca4ce0e9a"
+      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting",
+      "sha256": "40e0983bde1e03491bd8f93cbd083437c06727cc97cf4b2bd5715cf05d41ad61"
     },
     {
       "path": "kernels/js/worker-shadow-guard.js",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "0eb6a7f5ac959c510f1059ccf739060b7e6aac2b",
-      "sha256": "95d7208c4d3e7749697c60ba210ce4dc0f98c858a1fa468fa2103736376f1987"
+      "sha256": "528286684aec08ca458e37fa227b0f6f13fb8fc3e109531a2589a33dbafd2ce9",
+      "change": "export shared isKernelGlobal predicate"
     },
     {
       "path": "kernels/js/worker-shell-capture.js",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "c44e259d177bc65b02e5912395dbc3f58ae5e741",
-      "sha256": "71f151a18b861556cc640847060c6b8f20fd829a3a508869c0bb1afa76eda19a"
+      "sha256": "5a62792a581592bc1e69fb7f843f35410202247155404e92d903831cdfba411f",
+      "change": "track shell waits and process groups"
     },
     {
       "path": "kernels/js/workpool.js",
@@ -172,9 +176,10 @@
     },
     {
       "path": "skill/bun-1-4/references/runtime-apis.md",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "6d5ff56b46652748a84360d28beda00402946b46e8144ebd6299390f53332f8e"
+      "sha256": "3cd3dc2d9acb3457835d7b00c39e04d77dfe233e15cbf1453b04bb55779857f9",
+      "change": "document kernel-owned WebView lifecycle"
     },
     {
       "path": "skill/bun-1-4/references/security.md",
@@ -190,9 +195,10 @@
     },
     {
       "path": "skill/bun-1-4/SKILL.md",
-      "status": "verbatim",
+      "status": "patched",
       "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "c62d01920c6aa560ffbacd9db37af445495aad8f1d32283371e4400d106fc51a"
+      "sha256": "74ce99000567fc14f8281cec7bf0f905523b12e1116d58f3b9eacde4d69a7864",
+      "change": "clarify eval-first skill loading"
     },
     {
       "path": "kernels/js/worker-global-sizes.js",
@@ -226,6 +232,13 @@
       "status": "unported",
       "upstreamCommit": null,
       "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+    },
+    {
+      "path": "kernels/js/windows-tree-kill.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "native kernel Windows process-tree cleanup with ancestor and system-process protection",
+      "sha256": "2b868a633d7ba3a1471f4e3bd0f68769e98205178f89acba2f32c9865c10c343"
     }
   ]
 }

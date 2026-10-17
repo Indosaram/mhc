@@ -42,8 +42,9 @@ pub fn choose_memory_launch_route(input: &MemoryLaunchRouteInput<'_>) -> Result<
     let Some(pricing) = session.cost else { return Ok(pick(Route::Quick, quick, Reason::NoPricing)); };
     let Some(parent_context_tokens) = input.parent_context_tokens else { return Ok(pick(Route::Quick, quick, Reason::UnknownContext)); };
     let profile = input.surface.profile();
-    let Some(context_window) = session.context_window else { return Ok(pick(Route::Quick, quick, Reason::UnknownContext)); };
-    if parent_context_tokens + 3_800.0 + input.payload_tokens.unwrap_or(0.0) + 500.0 * f64::from(input.turns) > context_window as f64 * 0.8 { return Ok(pick(Route::Quick, quick, Reason::WindowUnfit)); }
+    // An unknown session window cannot rule the fork out; only a known window that cannot fit does.
+    if let Some(context_window) = session.context_window
+        && parent_context_tokens + 3_800.0 + input.payload_tokens.unwrap_or(0.0) + 500.0 * f64::from(input.turns) > context_window as f64 * 0.8 { return Ok(pick(Route::Quick, quick, Reason::WindowUnfit)); }
     let fork_cost = estimate_fork_cost(&ForkCostInput { pricing, parent_context_tokens, turns: input.turns, output_tokens: profile.output_tokens, cache_hit: input.cache_hit });
     let Some(quick_pricing) = quick.cost else { return Ok(pick(Route::Quick, quick, Reason::NoPricing)); };
     let quick_cost = estimate_quick_cost(quick_pricing, profile);

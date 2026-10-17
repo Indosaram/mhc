@@ -127,8 +127,13 @@ async fn shutdown_retires_ready_republication() -> Result<(), std::io::Error> {
     }));
     component.register(&mut api);
     assert_eq!(emissions.load(Ordering::SeqCst), 1, "the initial registration is published");
-    api.events.emit(CONFIG_WATCH_READY, &JsonValue::Null);
-    assert_eq!(emissions.load(Ordering::SeqCst), 2, "READY re-publishes the registration");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        api.events.emit(CONFIG_WATCH_READY, &JsonValue::Null);
+        loop {
+            if emissions.load(Ordering::SeqCst) == 2 { break; }
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("READY registration");
     let context = support::context();
     for handler in api.registered.handlers[&EventKind::SessionShutdown].clone() {
         let mut event = ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Reload, target_session_file: None, signal: None });

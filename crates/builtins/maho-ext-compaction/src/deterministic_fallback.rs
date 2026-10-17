@@ -98,21 +98,6 @@ mod meaningful_user_tests {
     }
 }
 
-fn project_failed_turn_fragments(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    let mut dropped = vec![false; messages.len()];
-    for (index, message) in messages.iter().enumerate() {
-        if message["role"] != "assistant" || message["stopReason"] != "aborted" { continue; }
-        dropped[index] = true;
-        let calls: Vec<_> = message["content"].as_array().into_iter().flatten()
-            .filter(|block| block["type"] == "toolCall")
-            .filter_map(|block| block["id"].as_str()).collect();
-        for (later, candidate) in messages.iter().enumerate().skip(index + 1) {
-            if candidate["role"] == "toolResult" && candidate["toolCallId"].as_str().is_some_and(|id| calls.contains(&id)) { dropped[later] = true; }
-        }
-    }
-    messages.iter().zip(dropped).filter(|(_, dropped)| !dropped).map(|(message, _)| message.clone()).collect()
-}
-
 fn complete_tool_chains(messages: &[serde_json::Value]) -> bool {
     use std::collections::HashMap;
     let mut calls = HashMap::new();
@@ -213,14 +198,14 @@ pub fn create_required_compaction_fallback(
     let projected: Vec<_> = build_context_entries(&projection_entries, None).iter()
         .flat_map(|entry| session_entry_to_context_messages(entry).into_iter().map(|message| (entry["id"].clone(), message))).collect();
     let projected_messages: Vec<_> = projected.iter().map(|(_, message)| message.clone()).collect();
-    let normalized = project_failed_turn_fragments(&projected_messages);
-    let mut next = 0;
-    let retained_positions: Vec<_> = normalized.iter().map(|message| {
-        let offset = projected_messages[next..].iter().position(|candidate|candidate == message)
-            .expect("normalization preserves original message order");
-        next += offset + 1;
-        next - 1
-    }).collect();
+    let mut retained_positions = Vec::new();
+    for (index, message) in projected_messages.iter().enumerate() {
+        if message["role"] == "assistant" && matches!(message["stopReason"].as_str(), Some("aborted" | "error")) { continue; }
+        if message["role"] == "toolResult" && message["toolCallId"].as_str().is_some_and(|id| {
+            projected_messages.iter().any(|candidate| candidate["role"] == "assistant" && matches!(candidate["stopReason"].as_str(), Some("aborted" | "error")) && candidate["content"].as_array().is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "toolCall" && block["id"] == id)))
+        }) { continue; }
+        retained_positions.push(index);
+    }
     for (index, retained_suffix) in candidates {
         diagnostics.candidates_checked += 1;
         let id = branch_entries[index]["id"].as_str().unwrap_or_default();
@@ -244,7 +229,7 @@ pub fn create_required_compaction_fallback(
                 let projected_index = retained_indexes[unsafe_index];
                 rejection_details["unsafeMessageIndex"] = json!(projected_index);
                 if let Some(role) = canonical[unsafe_index].get("role") { rejection_details["unsafeMessageRole"] = role.clone(); }
-                rejection_details["unsafeEntryId"] = projected[projected_index].0.clone();
+                rejection_details["unsafeEntryId"] = projected[retained_indexes[unsafe_index]].0.clone();
             }
             Some("unsafe-retained-content")
         } else if !complete_tool_chains(&canonical) { Some("atomic-tool-chain-cut") } else {

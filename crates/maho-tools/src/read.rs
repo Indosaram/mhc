@@ -180,7 +180,7 @@ mod image_resize_tests {
         let mut encoded = std::io::Cursor::new(Vec::new());
         image.write_to(&mut encoded, image::ImageFormat::Png).expect("encode fixture");
         let (content, _) = process_image(encoded.into_inner(), "image/png".into(), true, Some(maho_ai::types::ModelImageResizeOptions { max_width: 40, max_height: 40, max_bytes: None })).expect("resize image");
-        let ToolContent::Image { data, .. } = content.get(1).expect("resized image attachment") else { panic!("resized image attachment expected"); };
+        let ToolContent::Image { data, .. } = content.first().expect("resized image attachment") else { panic!("resized image attachment expected"); };
         let decoded = image::load_from_memory(&base64::engine::general_purpose::STANDARD.decode(data).expect("decode base64")).expect("decode image");
         assert_eq!((decoded.width(), decoded.height()), (40, 20));
     }

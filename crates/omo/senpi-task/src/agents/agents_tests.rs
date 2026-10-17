@@ -131,7 +131,7 @@ fn interaction_policy_only_plan_reviewer_present() {
 fn one_shot_names_contain_exactly_plan_reviewer() {
     let names = one_shot_agent_names();
     assert!(names.contains("plan-reviewer"));
-    for absent in ["plan-reviewer", "plan-consultant", "explore", "librarian"] {
+    for absent in ["momus", "plan-consultant", "explore", "librarian"] {
         assert!(!names.contains(absent));
     }
     assert_eq!(names.len(), 1);
@@ -161,8 +161,9 @@ fn interaction_policy_lookup_unknown_is_none() {
 }
 
 #[test]
-fn interaction_policy_lookup_momus_is_none() {
-    assert_eq!(interaction_policy_for_agent("plan-reviewer"), None);
+fn interaction_policy_lookup_retired_ids_are_none() {
+    assert_eq!(interaction_policy_for_agent("momus"), None);
+    assert_eq!(interaction_policy_for_agent("metis"), None);
 }
 
 #[test]

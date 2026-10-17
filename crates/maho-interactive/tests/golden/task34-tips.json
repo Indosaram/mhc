@@ -1,6 +1,7 @@
 {
   "registryIds": [
     "thinking-level",
+    "efforts-command",
     "favorite-model-rotation",
     "model-selector-favorites",
     "model-command-search",
@@ -104,6 +105,11 @@
     "dag.resume",
     "dag.vs-parallel",
     "dag.scale",
+    "computer.what-it-is",
+    "computer.stop-chord",
+    "computer.background-input",
+    "computer.look-dont-touch",
+    "computer.permissions",
     "ethos.tuning-discipline",
     "ethos.tools-transparent",
     "ethos.only-harness",
@@ -135,7 +141,7 @@
         "thinking-level": 10
       },
       "hasCommand": false,
-      "tipId": "favorite-model-rotation"
+      "tipId": "efforts-command"
     },
     {
       "history": {
@@ -143,11 +149,12 @@
         "favorite-model-rotation": 5
       },
       "hasCommand": false,
-      "tipId": "model-selector-favorites"
+      "tipId": "efforts-command"
     },
     {
       "history": {
         "thinking-level": 1,
+        "efforts-command": 1,
         "favorite-model-rotation": 1,
         "model-selector-favorites": 1,
         "model-command-search": 1,
@@ -251,6 +258,11 @@
         "dag.resume": 1,
         "dag.vs-parallel": 1,
         "dag.scale": 1,
+        "computer.what-it-is": 1,
+        "computer.stop-chord": 1,
+        "computer.background-input": 1,
+        "computer.look-dont-touch": 1,
+        "computer.permissions": 1,
         "ethos.tuning-discipline": 1,
         "ethos.tools-transparent": 1,
         "ethos.only-harness": 1,
@@ -271,12 +283,12 @@
     }
   ],
   "startupTip": {
-    "line": "Tip: Rotate through favorite models with ctrl+p; go backward with shift+ctrl+p.\n↳ Want the full story on any tip? Ask about it — the give-me-tips skill has the tour.",
-    "tipId": "favorite-model-rotation"
+    "line": "Tip: Use /efforts <level> to set the reasoning effort for the current model; /efforts alone lists the levels it supports.\n↳ Want the full story on any tip? Ask about it — the give-me-tips skill has the tour.",
+    "tipId": "efforts-command"
   },
   "workingTip": {
-    "line": "Tip: Rotate through favorite models with ctrl+p; go backward with shift+ctrl+p.\n↳ Want the full story on any tip? Ask about it — the give-me-tips skill has the tour.",
-    "tipId": "favorite-model-rotation"
+    "line": "Tip: Use /efforts <level> to set the reasoning effort for the current model; /efforts alone lists the levels it supports.\n↳ Want the full story on any tip? Ask about it — the give-me-tips skill has the tour.",
+    "tipId": "efforts-command"
   },
   "historyRecorded": {
     "a": 1,

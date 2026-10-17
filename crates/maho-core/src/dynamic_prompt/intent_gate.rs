@@ -21,7 +21,7 @@ pub fn build_intent_gate(tools: &[AvailableTool]) -> String {
 
 Open every turn with one short routing line:
 
-> I read this as [intent] - [plan]. I'll stop when [the observable condition that ends this turn].
+I read this as [intent] - [plan]. I'll stop when [the observable condition that ends this turn].
 
 The line keeps your reading transparent; only the user's explicit request commits you to implementation. Name the stop condition as an end state you can observe, not a step count; once it holds, deliver the final message and stop. Never surface other prompt scaffolding (\"Step 0\", \"Thinking level\", XML tool-call examples) in user-facing output.
 {}

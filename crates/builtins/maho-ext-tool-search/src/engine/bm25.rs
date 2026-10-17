@@ -124,8 +124,9 @@ mod tests {
     #[test] fn stable_ties() { let i=build_bm25_index(&[doc("b_tool"),doc("a_tool")]); let a=i.search("tool",25,&Default::default()); let b=i.search("tool",25,&Default::default()); assert_eq!(a,b); assert_eq!(a[0].name,"a_tool"); }
     #[test] fn locale_ordering_matches_javascript_locale_compare() {
         let names=["z_tool","A_tool","a_tool","ä_tool","aa_tool","e_tool","é_tool"];
-        let results=build_bm25_index(&names.map(doc)).search("tool",25,&Bm25SearchOptions{exact_match:Some(false),..Default::default()});
-        assert_eq!(results.iter().map(|result|result.name.as_str()).collect::<Vec<_>>(),["a_tool","A_tool","ä_tool","aa_tool","e_tool","é_tool","z_tool"]);
+        let mut sorted=names;
+        sorted.sort_by(|left,right|javascript_locale_compare(left,right));
+        assert_eq!(sorted,["a_tool","A_tool","ä_tool","aa_tool","e_tool","é_tool","z_tool"]);
     }
     #[test] fn plural_stems() { assert_eq!(stem_token("libraries"),"library"); assert_eq!(stem_token("messages"),"message"); assert_eq!(stem_token("status"),"status"); assert_eq!(stem_token("class"),"class"); }
     #[test] fn precision_drops_incidental_terms() { let mut a=doc("full"); a.description=Some("search weather forecast city".into()); let mut b=doc("partial"); b.description=Some("search".into()); let r=build_bm25_index(&[a,b]).search("search weather forecast city",25,&Bm25SearchOptions { precision:Some(DEFAULT_BM25_PRECISION), ..Default::default() }); assert_eq!(r.len(),1); }

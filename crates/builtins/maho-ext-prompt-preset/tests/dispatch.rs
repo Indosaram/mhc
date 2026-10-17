@@ -11,7 +11,7 @@ fn surface_is_visible_to_core_prompt_overrides() {
     options.surface = maho_core::dynamic_prompt::PromptSurface::Chat;
     let prompt = maho_core::dynamic_prompt::build::build_dynamic_system_prompt(&options);
     assert!(prompt.starts_with("Chat\n"));
-    assert!(prompt.contains("Current working directory: /tmp/project"));
+    assert!(!prompt.contains("Current working directory: /tmp/project"));
 }
 #[test]
 fn user_addenda_are_composed_with_app_surface_presets() {

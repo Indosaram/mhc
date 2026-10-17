@@ -7,12 +7,12 @@ mod support;
     use maho_ext_api::{EventKind,ExtensionEvent,InputEvent};
     use senpi_task::tools::task::spawn_policy::SpawnPolicyDeps;
     let tracker=SkillInvocationTracker::new().expect("tracker"); let mut api=support::api(); tracker.register(&mut api); let context=support::context();
-    for (id,text) in [("human-plan","ulw plan for the refactor"),("expanded-start-work","<skill name=\"start-work\" location=\"/skills/start-work/SKILL.md\"> Execute the plan.")] {
+    for (id,text) in [("human-plan","ulw plan for the refactor"),("expanded-ulw-execute","<skill name=\"ulw-execute\" location=\"/skills/ulw-execute/SKILL.md\"> Execute the plan.")] {
         let mut event=ExtensionEvent::Input(InputEvent { input_id:id.into(),text:text.into(),images:None,source:InputSource::Interactive,streaming_behavior:None });
         api.registered.handlers[&EventKind::Input][0](&mut event,&context).await.expect("registered input");
         if id=="human-plan" { let state=tracker.state_for("session"); assert!(state.has_user_requested("ulw-plan")); assert!(!state.has_invoked("ulw-plan")); }
     }
-    let state=tracker.state_for("session"); assert!(state.has_invoked("start-work")); assert!(state.has_user_requested("start-work")); assert!(tracker.invocation_gate_denial("plan-reviewer","session").is_some()); assert!(!tracker.state_for("foreign").has_invoked("start-work"));
+    let state=tracker.state_for("session"); assert!(state.has_invoked("ulw-execute")); assert!(state.has_user_requested("ulw-execute")); assert!(tracker.invocation_gate_denial("plan-reviewer","session").is_some()); assert!(!tracker.state_for("foreign").has_invoked("ulw-execute"));
 }
 #[tokio::test] async fn registered_events_capture_input_tool_result_and_shutdown() {
     use maho_ext_api::{EventKind,ExtensionEvent,InputEvent,ToolResultEvent,SessionShutdownEvent,SessionReason};
@@ -28,14 +28,14 @@ mod support;
     assert!(tracker.invocation_gate_denial("plan-reviewer","a").is_none());
     let Some(PlanReviewContractOutcome::Prompt { prompt })=tracker.plan_review_contract_outcome("plan-reviewer","ignored caller text","a") else { panic!("canonical prompt"); };
     assert_eq!(prompt,senpi_task::tools::task::plan_review_contract::build_plan_review_prompt("/repo/.omo/plans/a.md"));
-    tracker.input("a","/skill:start-work",InputSource::Interactive); assert!(tracker.invocation_gate_denial("plan-reviewer","a").is_some()); assert!(tracker.invocation_gate_denial("plan-reviewer","foreign").is_some());
+    tracker.input("a","/skill:ulw-execute",InputSource::Interactive); assert!(tracker.invocation_gate_denial("plan-reviewer","a").is_some()); assert!(tracker.invocation_gate_denial("plan-reviewer","foreign").is_some());
 }
 #[test] fn read_skill_arms_invoked_not_requested() { let tracker = SkillInvocationTracker::new().unwrap(); tracker.tool_result("a","read",&json!({"path":"/repo/skills/ulw-plan/SKILL.md"}),false); let state = tracker.state_for("a"); assert!(state.has_invoked("ulw-plan")); assert!(!state.has_user_requested("ulw-plan")); }
 #[test] fn failed_reads_do_not_arm_invocation() { let tracker = SkillInvocationTracker::new().unwrap(); tracker.tool_result("a","read",&json!({"path":"/repo/skills/ulw-plan/SKILL.md"}),true); assert!(!tracker.state_for("a").has_invoked("ulw-plan")); }
 #[test] fn skill_reads_preserve_windows_names_and_exclude_other_tools() {
     let tracker=SkillInvocationTracker::new().expect("tracker");
-    for tool in ["write","edit"] { tracker.tool_result("a",tool,&json!({"path":"C:\\repo\\skills\\start-work\\SKILL.md"}),false); }
-    assert!(!tracker.state_for("a").has_invoked("start-work")); tracker.tool_result("a","read",&json!({"path":"C:\\repo\\skills\\start-work\\SKILL.md"}),false); assert!(tracker.state_for("a").has_invoked("start-work")); assert!(!tracker.state_for("a").has_user_requested("start-work")); assert!(!tracker.state_for("foreign").has_invoked("start-work"));
+    for tool in ["write","edit"] { tracker.tool_result("a",tool,&json!({"path":"C:\\repo\\skills\\ulw-execute\\SKILL.md"}),false); }
+    assert!(!tracker.state_for("a").has_invoked("ulw-execute")); tracker.tool_result("a","read",&json!({"path":"C:\\repo\\skills\\ulw-execute\\SKILL.md"}),false); assert!(tracker.state_for("a").has_invoked("ulw-execute")); assert!(!tracker.state_for("a").has_user_requested("ulw-execute")); assert!(!tracker.state_for("foreign").has_invoked("ulw-execute"));
 }
 #[test] fn unrelated_reads_and_failed_plan_writes_do_not_create_state() {
     let tracker=SkillInvocationTracker::new().expect("tracker"); tracker.tool_result("a","read",&json!({"path":"/repo/src/main.rs"}),false); tracker.tool_result("a","write",&json!({"path":".omo/plans/a.md"}),true); tracker.tool_result("a","edit",&json!({"path":"src/main.rs"}),false); let state=tracker.state_for("a"); assert!(!state.has_invoked("main.rs")); assert!(!state.has_plan_artifact());

@@ -59,6 +59,7 @@ async fn end(api: &ExtensionApi) {
     let mut event = ExtensionEvent::AgentEnd { messages: support::finished_turn(), aborted: Some(false),
         abort_source: None, will_retry: Some(false) };
     api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &support::context()).await.expect("dispatch");
+    api.registered.handlers[&EventKind::AgentSettled][0](&mut ExtensionEvent::AgentSettled, &support::context()).await.expect("settled");
 }
 
 #[tokio::test]

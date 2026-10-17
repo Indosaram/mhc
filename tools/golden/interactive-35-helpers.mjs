@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = process.env.SENPI_SRC ?? '/home/indo/code/senpi';
-if (execFileSync('git', ['--no-pager', '-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== 'fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407') throw new Error('senpi pin mismatch');
+if (execFileSync('git', ['--no-pager', '-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== 'cf69f5e72eb325219a93e17bb54bbd4ba787899e') throw new Error('senpi pin mismatch');
 if (process.env.GOLDEN_PLATFORM === 'darwin') Object.defineProperty(process, 'platform', { value: 'darwin' });
 process.env.COLORTERM = 'truecolor';
 process.env.FORCE_COLOR = '3';

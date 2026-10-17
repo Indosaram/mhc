@@ -12,7 +12,7 @@ fn build(pattern: &str, case_insensitive: bool) -> Regex {
 const OVERFLOW_SOURCES: &[(&str, bool)] = &[
     (r"^Context window exhausted: ", false),
     (r"^The conversation is too long to resend \(about \d+ tokens, limit \d+\)", false),
-    (r"prompt is too long", true),
+    (r"prompt (?:is )?too long", true),
     (r"prompt exceeds max length", true),
     (r"request_too_large", true),
     (r"input is too long for requested model", true),
@@ -37,7 +37,6 @@ const OVERFLOW_SOURCES: &[(&str, bool)] = &[
     (r"context[_ ]length[_ ]exceeded", true),
     (r"too many tokens", true),
     (r"token limit exceeded", true),
-    (r"^4(?:00|13)\s*(?:status code)?\s*\(no body\)", true),
     (r"(?:request[ _])?(?:body|entity|payload)[_ ]too[_ ]large", true),
     (r"Request payload is \d+ (?:bytes, over the \d+ byte|tokens, over the \d+ token) limit Kiro accepts\.", false),
     (r"Model context limit reached\. Conversation size exceeds model capacity\.", false),
@@ -60,6 +59,7 @@ const NON_OVERFLOW_SOURCES: &[(&str, bool)] = &[
 static OVERFLOW_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| OVERFLOW_SOURCES.iter().map(|(p, i)| build(p, *i)).collect());
 static NON_OVERFLOW_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| NON_OVERFLOW_SOURCES.iter().map(|(p, i)| build(p, *i)).collect());
 static RESOURCE_EXHAUSTED_PATTERN: LazyLock<Regex> = LazyLock::new(|| build(r"resource.?exhausted", true));
+static CEREBRAS_BODYLESS_OVERFLOW_PATTERN: LazyLock<Regex> = LazyLock::new(|| build(r"^4(?:00|13)\s*(?:status code)?\s*\(no body\)", true));
 
 fn token_count(usage: &Usage) -> u64 {
     if usage.total_tokens != 0 { usage.total_tokens } else { usage.input + usage.output + usage.cache_read + usage.cache_write }
@@ -71,6 +71,9 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u6
     {
         let non_overflow = NON_OVERFLOW_PATTERNS.iter().any(|p| p.is_match(error));
         if !non_overflow && OVERFLOW_PATTERNS.iter().any(|p| p.is_match(error)) {
+            return true;
+        }
+        if !non_overflow && message.provider == "cerebras" && CEREBRAS_BODYLESS_OVERFLOW_PATTERN.is_match(error) {
             return true;
         }
         let tokens = token_count(&message.usage);
@@ -563,7 +566,7 @@ mod tests {
 
     #[test]
     fn get_overflow_patterns_count() {
-        assert_eq!(get_overflow_patterns().len(), 29);
+        assert_eq!(get_overflow_patterns().len(), 30);
     }
 
     #[test]

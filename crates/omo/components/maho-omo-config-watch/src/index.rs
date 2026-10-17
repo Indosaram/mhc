@@ -54,7 +54,7 @@ pub struct ConfigWatchComponentOptions {
     pub logger:Option<Arc<dyn ComponentLogger>>,
 }
 
-struct Lifecycle { registration:Option<RegisteredConfigWatch>, fingerprint:String, retries:usize, warned_reload_required:bool, emitting_registration:Option<RegisteredConfigWatch>, stood_down:bool }
+struct Lifecycle { registration:Option<RegisteredConfigWatch>, fingerprint:String, retries:usize, warned_reload_required:bool, emitting_registration:Option<RegisteredConfigWatch>, stood_down:bool, shutdown:bool }
 
 pub struct ConfigWatchComponent {
     pub options:ConfigWatchComponentOptions,
@@ -97,7 +97,7 @@ impl Extension for ConfigWatchComponent {
         let validator=Arc::new(Mutex::new(create_validator(&cwd)));
         *self.validator.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(Arc::clone(&validator));
         let events=api.events.clone();
-        let state=Arc::new(Mutex::new(Lifecycle{registration:None,fingerprint:String::new(),retries:0,warned_reload_required:false,emitting_registration:None,stood_down:false}));
+        let state=Arc::new(Mutex::new(Lifecycle{registration:None,fingerprint:String::new(),retries:0,warned_reload_required:false,emitting_registration:None,stood_down:false,shutdown:false}));
         let resolved=resolve_with_warning(&cwd,&resolution,&log,&state);
         let registration=registration_typed(&resolved,&validator);
         state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registration=Some(registration.clone());
@@ -112,7 +112,7 @@ impl Extension for ConfigWatchComponent {
         let duplicate=events.on_native::<(String,RegisteredConfigWatch)>(maho_ext_api::CONFIG_WATCH_REGISTER_CHANNEL,Arc::new(move|(owner,payload)|{
             let should_stand_down={
                 let mut state=duplicate_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if *owner==duplicate_path || payload.id!=OMO_REGISTRATION_ID || state.emitting_registration.as_ref().is_some_and(|emitting|Arc::ptr_eq(&emitting.validate,&payload.validate)) { false }
+        if *owner==duplicate_path || payload.id!=OMO_REGISTRATION_ID || state.emitting_registration.as_ref().is_some_and(|emitting|Arc::ptr_eq(&emitting.validate,&payload.validate)) { false }
                 else { state.stood_down=true; true }
             };
             if should_stand_down {
@@ -154,9 +154,10 @@ impl Extension for ConfigWatchComponent {
         }));
         self.subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend([ready,duplicate,reloaded,rejected]);
 
-        let shutdown_subscriptions=Arc::clone(&self.subscriptions);let shutdown_epoch=Arc::clone(&self.retry_epoch);
+        let shutdown_subscriptions=Arc::clone(&self.subscriptions);let shutdown_epoch=Arc::clone(&self.retry_epoch);let shutdown_state=Arc::clone(&state);
         api.on(EventKind::SessionShutdown,Arc::new(move|_,_|{
             shutdown_epoch.fetch_add(1,Ordering::SeqCst);
+            shutdown_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shutdown=true;
             shutdown_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
             Box::pin(async { Ok(EventResult::None) })
         }));
@@ -217,9 +218,10 @@ fn schedule_registration(events:EventBus,path:String,state:Arc<Mutex<Lifecycle>>
     let scheduled=epoch.fetch_add(1,Ordering::SeqCst).wrapping_add(1);
     let callback=move || {
         if epoch.load(Ordering::SeqCst)!=scheduled { return; }
+        let blocked={let state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.stood_down||state.shutdown};
+        if blocked { return; }
         let registration={
             let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.stood_down { return; }
             let registration=state.registration.clone();
             state.emitting_registration=registration.clone();
             registration

@@ -118,20 +118,20 @@
       "width": 40,
       "lines": [
         "",
-        "\u001b[48;5;22m                                        \u001b[49m",
-        "\u001b[48;5;22m CUSTOM CALL                            \u001b[49m",
-        "\u001b[48;5;22m CUSTOM RESULT                          \u001b[49m",
-        "\u001b[48;5;22m                                        \u001b[49m"
+        "\u001b[48;5;16m                                        \u001b[49m",
+        "\u001b[48;5;16m CUSTOM CALL                            \u001b[49m",
+        "\u001b[48;5;16m CUSTOM RESULT                          \u001b[49m",
+        "\u001b[48;5;16m                                        \u001b[49m"
       ]
     },
     {
       "width": 80,
       "lines": [
         "",
-        "\u001b[48;5;22m                                                                                \u001b[49m",
-        "\u001b[48;5;22m CUSTOM CALL                                                                    \u001b[49m",
-        "\u001b[48;5;22m CUSTOM RESULT                                                                  \u001b[49m",
-        "\u001b[48;5;22m                                                                                \u001b[49m"
+        "\u001b[48;5;16m                                                                                \u001b[49m",
+        "\u001b[48;5;16m CUSTOM CALL                                                                    \u001b[49m",
+        "\u001b[48;5;16m CUSTOM RESULT                                                                  \u001b[49m",
+        "\u001b[48;5;16m                                                                                \u001b[49m"
       ]
     }
   ]
