@@ -24,9 +24,9 @@ pub fn parse_eval_request(params: &Value) -> Result<EvalToolRequest, EvalRequest
         return Err(EvalRequestError(format!("Unknown eval action \"{}\"", js_string(value))));
     }
     let language = match params.get("language").and_then(Value::as_str) {
-        Some("js") => EvalLanguage::Js, Some("py") => EvalLanguage::Py,
-        Some("rb") => EvalLanguage::Rb, Some("jl") => EvalLanguage::Jl,
-        _ => return Err(EvalRequestError("eval run requires language".into())),
+        Some("js") => EvalLanguage::Js,
+        Some(value) => return Err(EvalRequestError(format!("Unsupported eval language \"{value}\"; expected \"js\""))),
+        None => return Err(EvalRequestError("eval run requires language \"js\"".into())),
     };
     let code = params.get("code").and_then(Value::as_str).ok_or_else(|| EvalRequestError("eval run requires code".into()))?.to_owned();
     let summary = params.get("summary").and_then(normalize_eval_summary).ok_or_else(|| EvalRequestError("eval run requires summary — one line in the user's language: what you are working on and for what purpose".into()))?;

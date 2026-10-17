@@ -142,7 +142,7 @@ fn install_eval(api:&mut ExtensionApi,host:&Arc<Mutex<ExtensionApi>>,state:&Arc<
     settings.foreground_window_seconds=config::settings::resolve_foreground_window_seconds(&settings,&options.environment);
     settings.run_budget_seconds=config::settings::resolve_run_budget_seconds(&settings,&options.environment);
     settings.hard_limit_seconds=config::settings::resolve_hard_limit_seconds(&settings,&options.environment);
-    if let Some(runtime)=runtime {settings.languages=runtime.enabled_languages.clone();} else {settings.languages=config::settings::Languages {py:true,js:true,rb:true,jl:true};}
+    if let Some(runtime)=runtime {settings.languages=runtime.enabled_languages.clone();} else {settings.languages=config::settings::Languages {js:true};}
     let catalog_host=Arc::downgrade(host);let catalog=Arc::new(move ||catalog_host.upgrade().ok_or_else(||"codemode session manager is disposed".to_owned())?.lock().expect("extension api").get_all_tools().map(|tools|tools.into_iter().map(|tool|bridges::schema_bridge::EvalSchemaToolInfo {name:tool.name,description:Some(tool.description),parameters:Some(tool.parameters),kernel_prelude:None}).collect()).map_err(|error|error.to_string()));
     let executor=runtime.as_ref().map_or_else(|| {let api=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));Arc::new(extension::runtime_factory::RuntimeExecuteTool {api,active_tools:vec![]}) as Arc<dyn bridges::output_bridge::OutputExecuteTool>},|runtime|runtime.executor.clone());
     let cells=state.cells.clone();let weak_cells=Arc::downgrade(&cells);

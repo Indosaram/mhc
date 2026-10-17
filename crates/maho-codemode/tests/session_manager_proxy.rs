@@ -46,11 +46,11 @@ async fn old_invocation_cleanup_preserves_replacement_same_id_context() {
 async fn kernel_delegation_is_gated_by_live_session_generation() {
     use maho_codemode::tool::{eval_tool_options::EvalKernelManager, types::EvalLanguage};
     let (proxy, _) = proxy();
-    assert_eq!(proxy.get_kernel(EvalLanguage::Py).await.err().unwrap(), "codemode session has not started");
+    assert_eq!(proxy.get_kernel(EvalLanguage::Js).await.err().unwrap(), "codemode session has not started");
     assert!(proxy.replace(proxy.begin_replacement(), manager(None)).await);
-    assert_eq!(proxy.get_kernel(EvalLanguage::Rb).await.err().unwrap(), "fixture kernel Rb");
+    assert_eq!(proxy.get_kernel(EvalLanguage::Js).await.err().unwrap(), "fixture kernel Js");
     proxy.begin_replacement();
-    assert_eq!(proxy.get_kernel(EvalLanguage::Py).await.err().unwrap(), "codemode session manager is disposed");
+    assert_eq!(proxy.get_kernel(EvalLanguage::Js).await.err().unwrap(), "codemode session manager is disposed");
     proxy.dispose().await;
 }
 

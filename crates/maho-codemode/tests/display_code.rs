@@ -20,7 +20,7 @@ fn comments_are_preserved_between_statements() {
 
 #[test]
 fn readable_other_language_and_malformed_code_are_unchanged() {
-    for (code,language) in [("const x=1;\nprint(x);".into(),EvalLanguage::Js),(format!("const x=({}","a + ".repeat(40)),EvalLanguage::Js),(format!("print({})","1 + ".repeat(40)),EvalLanguage::Py)] {
+    for (code,language) in [("const x=1;\nprint(x);".into(),EvalLanguage::Js),(format!("const x=({}","a + ".repeat(40)),EvalLanguage::Js),(format!("print({})","1 + ".repeat(40)),EvalLanguage::Js)] {
         assert_eq!(display_code(&code,language),code);
     }
 }

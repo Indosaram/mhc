@@ -31,8 +31,6 @@ pub fn require_codemode_runtime_asset(local_override: Option<&Path>, package_rel
 /// binary runs away from the build tree, so these are extracted on demand. Their upstream senpi provenance is
 /// recorded in `assets/UPSTREAM.json`; `scripts/codemode-upstream-diff.py` reports upstream drift.
 const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
-    ("kernels/jl/prelude.jl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/jl/prelude.jl"))),
-    ("kernels/jl/runner.jl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/jl/runner.jl"))),
     ("kernels/js/display-image.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/display-image.js"))),
     ("kernels/js/handles.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/handles.js"))),
     ("kernels/js/inline-worker-entry.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/inline-worker-entry.js"))),
@@ -53,10 +51,6 @@ const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
     ("kernels/js/worker-shadow-guard.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/worker-shadow-guard.js"))),
     ("kernels/js/worker-shell-capture.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/worker-shell-capture.js"))),
     ("kernels/js/workpool.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/workpool.js"))),
-    ("kernels/py/prelude.py", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/py/prelude.py"))),
-    ("kernels/rb/prelude.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/prelude.rb"))),
-    ("kernels/rb/runner.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/runner.rb"))),
-    ("kernels/rb/workpool.rb", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/workpool.rb"))),
     ("skill/bun-1-4/SKILL.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/SKILL.md"))),
     ("skill/bun-1-4/references/breaking-changes.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/breaking-changes.md"))),
     ("skill/bun-1-4/references/build.md", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/bun-1-4/references/build.md"))),
@@ -113,14 +107,6 @@ mod tests {
         for (path, content) in EMBEDDED_RUNTIME_ASSETS { assert_eq!(std::fs::read_to_string(root.join(path)).expect("extracted asset"), *content); }
         assert!(root.join("kernels/js/worker-core.js").is_file());
         assert_eq!(extract_embedded_runtime_assets(base.path()).expect("re-extract"), root);
-    }
-
-    #[test]
-    fn missing_override_falls_back_to_embedded_asset() {
-        let resolved = require_codemode_runtime_asset(Some(Path::new("/absent/runner.rb")), Path::new("kernels/rb/runner.rb")).expect("embedded runner");
-        assert!(resolved.ends_with("kernels/rb/runner.rb"));
-        assert_eq!(std::fs::read_to_string(&resolved).expect("runner"), include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/rb/runner.rb")));
-        assert!(resolved.with_file_name("prelude.rb").is_file());
     }
 
     #[test]

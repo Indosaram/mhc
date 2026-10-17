@@ -47,7 +47,7 @@ async fn truncation_metadata_distinguishes_columns_from_bytes() {
 async fn result_builder_finalizes_machine_details() {
     use maho_codemode::tool::{cell_runtime::{CellState, CellResultBuilder}, types::{EvalToolInput, EvalLanguage}};
     let state = CellState {
-        input:EvalToolInput {language:EvalLanguage::Py,code:"print(42)".into(),summary:"compute result".into(),action:None,timeout:None,on_timeout:None,reset:None},
+         input:EvalToolInput {language:EvalLanguage::Js,code:"print(42)".into(),summary:"compute result".into(),action:None,timeout:None,on_timeout:None,reset:None},
         runtime:None,started_at:0.0,run_started_at:Some(1.0),queued_behind:None,on_update:None,
         tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into(),
     };

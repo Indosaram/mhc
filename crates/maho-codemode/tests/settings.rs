@@ -27,12 +27,12 @@ async fn project_precedes_global() {
     let root = tempfile::tempdir().unwrap();
     let project = root.path().join("project");
     let home = root.path().join("home");
-    write_config(&project, r#"{"languages":{"py":false,"rb":true},"parallelPoolWidth":9,"maxDetachedCells":2}"#).await;
+    write_config(&project, r#"{"languages":{"js":true},"parallelPoolWidth":9,"maxDetachedCells":2}"#).await;
     tokio::fs::create_dir_all(home.join(".omo/agent")).await.unwrap();
     tokio::fs::write(home.join(".omo/agent/codemode.json"), r#"{"languages":{"js":false}}"#).await.unwrap();
     let result = load_codemode_settings(&project, &home).await.unwrap();
     assert_eq!(result.source, Some(project.join(".omo/codemode.json")));
-    assert_eq!(result.settings.languages, Languages { py: false, js: true, rb: true, jl: false });
+    assert_eq!(result.settings.languages, Languages { js: true });
     assert!((result.settings.parallel_pool_width - 9.0).abs() < f64::EPSILON);
 }
 
@@ -41,12 +41,18 @@ async fn global_fallback() {
     let root = tempfile::tempdir().unwrap();
     tokio::fs::create_dir_all(root.path().join(".omo/agent")).await.unwrap();
     let file = root.path().join(".omo/agent/codemode.json");
-    tokio::fs::write(&file, r#"{"languages":{"js":false,"jl":true},"cellTimeoutSeconds":12}"#).await.unwrap();
+    tokio::fs::write(&file, r#"{"languages":{"js":false},"cellTimeoutSeconds":12}"#).await.unwrap();
     let result = load_codemode_settings(&root.path().join("missing"), root.path()).await.unwrap();
     assert_eq!(result.source, Some(file));
     assert!(!result.settings.languages.js);
-    assert!(result.settings.languages.jl);
     assert!((result.settings.cell_timeout_seconds - 12.0).abs() < f64::EPSILON);
+}
+
+#[tokio::test]
+async fn legacy_language_keys_are_ignored() {
+    let result=loaded(json!({"languages":{"py":false,"js":true,"rb":true,"jl":false}})).await;
+    assert!(result.warnings.is_empty());
+    assert_eq!(result.settings.languages,Languages {js:true});
 }
 
 #[tokio::test]
@@ -66,12 +72,11 @@ async fn status_defaults_and_override() {
 
 #[tokio::test]
 async fn language_env_beats_file() {
-    let settings = loaded(json!({"languages":{"py":false,"js":true,"rb":true,"jl":false}})).await.settings;
+    let settings = loaded(json!({"languages":{"js":true}})).await.settings;
     let env = Environment::from([
-        ("SENPI_CODEMODE_PY".into(), "1".into()), ("SENPI_CODEMODE_JS".into(), "0".into()),
-        ("SENPI_CODEMODE_RB".into(), "false".into()), ("SENPI_CODEMODE_JL".into(), "true".into()),
+        ("SENPI_CODEMODE_JS".into(), "0".into()),
     ]);
-    assert_eq!(resolve_enabled_languages(&settings, &env), Languages { py: true, js: false, rb: false, jl: true });
+    assert_eq!(resolve_enabled_languages(&settings, &env), Languages { js: false });
 }
 
 #[tokio::test]
@@ -104,7 +109,7 @@ async fn malformed_json_defaults() {
 
 #[tokio::test]
 async fn invalid_language_and_timeout_rejected() {
-    assert_eq!(loaded(json!({"languages":{"py":"yes"},"cellTimeoutSeconds":0})).await.warnings.len(), 1);
+    assert_eq!(loaded(json!({"languages":{"js":"yes"},"cellTimeoutSeconds":0})).await.warnings.len(), 1);
 }
 
 #[tokio::test]
@@ -181,8 +186,8 @@ fn capacity_env_parse_int_contract() {
 
 #[test]
 fn language_env_case_whitespace_and_unknown() {
-    let env = Environment::from([("SENPI_CODEMODE_PY".into(), " FALSE ".into()), ("SENPI_CODEMODE_JS".into(), "unknown".into())]);
+    let env = Environment::from([("SENPI_CODEMODE_JS".into(), "unknown".into())]);
     let languages = resolve_enabled_languages(&CodemodeSettings::default(), &env);
-    assert!(!languages.py);
+    assert!(languages.js);
     assert!(languages.js);
 }

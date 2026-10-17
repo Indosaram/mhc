@@ -16,7 +16,7 @@ impl EvalBackgroundCapacityError {
 
 pub fn result_after_detach(snapshot: &EvalDetachedCellSnapshot, input: &super::types::EvalToolInput, other_live_cells: usize) -> AgentToolResult {
     if !matches!(snapshot.state, EvalDetachedCellState::Detached | EvalDetachedCellState::Running) { return create_detached_control_result(snapshot); }
-    let language = match input.language { super::types::EvalLanguage::Js => "js", super::types::EvalLanguage::Py => "py", super::types::EvalLanguage::Rb => "rb", super::types::EvalLanguage::Jl => "jl" };
+    let language = match input.language { super::types::EvalLanguage::Js => "js" };
     let text = match &snapshot.queued_behind {
         None => format!("Eval cell {} detached and is running in the {language} kernel ({other_live_cells} other live cells). Completion arrives as a notification; do not re-run it. eval({{ action: \"peek\" | \"stop\", cell_id }}) or eval({{ action: \"list\" }}).", snapshot.cell_id),
         Some(predecessors) => { let predecessors = predecessors.join(", "); format!("Eval cell {} is queued behind {predecessors} in the {language} kernel and detached; it runs after {predecessors} and completes as one notification. peek/stop/list with eval({{ action, cell_id }})", snapshot.cell_id) }
@@ -51,7 +51,7 @@ pub fn create_eval_list_result(live: &[EvalDetachedCellSnapshot], recent: &[Eval
     let mut cells = Vec::new();
     let mut lines = Vec::new();
     for snapshot in live.iter().chain(recent) {
-        let language = match snapshot.language { super::types::EvalLanguage::Js => "js", super::types::EvalLanguage::Py => "py", super::types::EvalLanguage::Rb => "rb", super::types::EvalLanguage::Jl => "jl" };
+        let language = match snapshot.language { super::types::EvalLanguage::Js => "js" };
         let state = snapshot.state.as_str();
         let mut cell = json!({"cellId":snapshot.cell_id,"language":language,"state":state,"startedAtMs":snapshot.started_at_ms});
         let queued = snapshot.queued_behind.as_ref().filter(|queued| !queued.is_empty());
@@ -79,7 +79,7 @@ pub fn create_eval_list_result(live: &[EvalDetachedCellSnapshot], recent: &[Eval
 }
 
 pub fn create_detached_control_result(snapshot: &EvalDetachedCellSnapshot) -> AgentToolResult {
-    let language = match snapshot.language { super::types::EvalLanguage::Js => "js", super::types::EvalLanguage::Py => "py", super::types::EvalLanguage::Rb => "rb", super::types::EvalLanguage::Jl => "jl" };
+    let language = match snapshot.language { super::types::EvalLanguage::Js => "js" };
     let output = snapshot.result.content.iter().filter_map(|part| match part { ContentBlock::Text(text) => Some(text.text.as_str()), _ => None }).collect::<Vec<_>>().join("\n");
     let mut lines = vec![format!("Eval cell {} ({language}) is {}.", snapshot.cell_id, snapshot.state.as_str()), if output.is_empty() { "(no buffered output)".into() } else { output }];
     if snapshot.state == EvalDetachedCellState::Cancelled && let Some(note) = interruption_state_note(snapshot.language, snapshot.state_retained) { lines.push(note); }

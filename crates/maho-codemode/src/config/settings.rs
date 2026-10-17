@@ -12,16 +12,32 @@ pub const RUN_BUDGET_ENVIRONMENT_FLAG: &str = "SENPI_CODEMODE_RUN_BUDGET_SECONDS
 pub const MAX_DETACHED_CELLS_ENVIRONMENT_FLAG: &str = "SENPI_CODEMODE_MAX_DETACHED_CELLS";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(from = "LanguagesFile")]
 pub struct Languages {
-    pub py: bool,
     pub js: bool,
-    pub rb: bool,
-    pub jl: bool,
 }
 
 impl Default for Languages {
-    fn default() -> Self { Self { py: true, js: true, rb: false, jl: false } }
+    fn default() -> Self { Self { js: true } }
+}
+
+/// On-disk shape of `languages`: older config files still name the removed py/rb/jl kernels,
+/// which parse and are discarded, while any other key is still rejected.
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LanguagesFile {
+    js: bool,
+    py: serde::de::IgnoredAny,
+    rb: serde::de::IgnoredAny,
+    jl: serde::de::IgnoredAny,
+}
+
+impl Default for LanguagesFile {
+    fn default() -> Self { Self { js: Languages::default().js, py: serde::de::IgnoredAny, rb: serde::de::IgnoredAny, jl: serde::de::IgnoredAny } }
+}
+
+impl From<LanguagesFile> for Languages {
+    fn from(file: LanguagesFile) -> Self { Self { js: file.js } }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -125,10 +141,7 @@ pub fn resolve_enabled_languages(settings: &CodemodeSettings, env: &Environment)
         }
     }
     Languages {
-        py: language(settings.languages.py, env.get("SENPI_CODEMODE_PY")),
         js: language(settings.languages.js, env.get("SENPI_CODEMODE_JS")),
-        rb: language(settings.languages.rb, env.get("SENPI_CODEMODE_RB")),
-        jl: language(settings.languages.jl, env.get("SENPI_CODEMODE_JL")),
     }
 }
 

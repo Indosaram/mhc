@@ -156,7 +156,7 @@ mod tests {
     async fn coalesced_frames_publish_on_flush_and_finish_always_emits() {
         let updates=Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let sink=updates.clone();
-        let state=CellState {input:EvalToolInput {language:EvalLanguage::Py,code:"print(1)".into(),summary:"burst".into(),action:None,timeout:None,on_timeout:None,reset:None},runtime:None,started_at:0.0,run_started_at:Some(0.0),queued_behind:None,on_update:Some(Arc::new(move |result:AgentToolResult|sink.lock().unwrap().push(result.details["cells"][0]["output"].as_str().unwrap_or("").to_owned()))),tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into()};
+        let state=CellState {input:EvalToolInput {language:EvalLanguage::Js,code:"print(1)".into(),summary:"burst".into(),action:None,timeout:None,on_timeout:None,reset:None},runtime:None,started_at:0.0,run_started_at:Some(0.0),queued_behind:None,on_update:Some(Arc::new(move |result:AgentToolResult|sink.lock().unwrap().push(result.details["cells"][0]["output"].as_str().unwrap_or("").to_owned()))),tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into()};
         let mut builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:None,head_bytes:20480,max_columns:768,provider:None,api:None,image_sdk:Arc::new(Sdk)});
         builder.coalesce_updates();
         builder.push("a\n").await.unwrap();builder.push("b\n").await.unwrap();builder.set_phase("p".into());

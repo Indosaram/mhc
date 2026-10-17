@@ -45,7 +45,7 @@ pub fn format_eval_cell_status(entries: &[EvalDetachedCellStatusEntry], now_ms: 
         if entry.queued_behind.is_some() { format!("queued {text}") } else { text.into() }
     };
     if entries.len() == 1 {
-        let language = match first.language { EvalLanguage::Js => "js", EvalLanguage::Py => "py", EvalLanguage::Rb => "rb", EvalLanguage::Jl => "jl" };
+        let language = match first.language { EvalLanguage::Js => "js" };
         let head = format!("↗ {language} · ");
         return Some(format!("{head}{}{suffix}", truncate_end(&label(first), 48usize.saturating_sub(head.encode_utf16().count() + suffix.len()))));
     }

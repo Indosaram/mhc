@@ -150,11 +150,3 @@ fn description_teaches_resolved_run_budget_and_detached_capacity() {
     assert!(tool.description.contains("up to 4 background cells per session"),"{}",tool.description);
 }
 
-#[tokio::test]
-async fn disabled_language_error_names_language_and_enabled_list() {
-    let mut settings=maho_codemode::config::settings::CodemodeSettings::default();
-    settings.languages=maho_codemode::config::settings::Languages {py:true,js:false,rb:false,jl:true};
-    let tool=capacity_tool(settings,1);
-    let error=(tool.execute)(ToolCall {id:"disabled-js",params:json!({"language":"js","code":"1","summary":"disabled"}),signal:AbortSignal::default(),on_update:None,context:None}).await.unwrap_err();
-    assert_eq!(error.to_string(),"Unsupported eval language \"js\". Enabled languages: py, jl");
-}
