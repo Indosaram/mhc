@@ -1,8 +1,24 @@
 //! Port of senpi packages/ai/src/utils/provider-failure-description.ts.
 
-use crate::utils::retry::{ProviderStallDescriptionOptions, StallRecovery, describe_provider_stall_for_user, format_stall_duration, retried_sentence};
+use crate::utils::retry::{
+    ProviderStallDescriptionOptions, StallRecovery, describe_provider_stall_for_user, format_stall_duration, is_anthropic_third_party_billing_message,
+    retried_sentence,
+};
 use regex::{Regex, RegexBuilder};
 use std::sync::LazyLock;
+
+const CLAUDE_EXTRA_USAGE_URL: &str = "https://claude.ai/settings/usage";
+
+/// senpi#3259: the billing path is the whole story. On the direct `anthropic` provider a Claude
+/// subscription token is billed as a third-party app; on the `anthropic-subscription` lane the
+/// request already ran through Claude Code, so only extra usage or another model can help.
+fn describe_anthropic_third_party_billing(provider: Option<&str>) -> String {
+    if provider == Some("anthropic-subscription") {
+        format!("Anthropic billed this Claude Code request to your extra usage instead of your plan limits, and your extra usage is used up. Add extra usage at {CLAUDE_EXTRA_USAGE_URL}, or switch to another model with /model.")
+    } else {
+        format!("Anthropic billed this request to your extra usage instead of your Claude plan limits, because a Claude subscription used directly through the Anthropic API counts as a third-party app. Run /login and choose \"Anthropic Subscription (Claude Pro/Max)\" so requests run through Claude Code and use your plan limits, add extra usage at {CLAUDE_EXTRA_USAGE_URL}, or switch to another model with /model.")
+    }
+}
 
 pub const TURN_RETRY_SUPPRESSION_PREFIX: &str = "senpi:no-turn-retry:";
 
@@ -50,6 +66,9 @@ pub fn describe_provider_failure_for_user(error_message: Option<&str>, options: 
     let message = crate::utils::js::trim(&stripped);
     if message.is_empty() {
         return None;
+    }
+    if is_anthropic_third_party_billing_message(Some(message)) {
+        return Some(describe_anthropic_third_party_billing(options.model.as_deref().and_then(|model| model.split('/').next())));
     }
     if let Some(stall) = describe_provider_stall_for_user(Some(message), options) {
         return Some(stall);
