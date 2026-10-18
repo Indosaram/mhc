@@ -98,9 +98,33 @@ pub fn measure_facts_payload_bytes(payload: &FactsPayload) -> usize {
 
 /// Select a size-capped batch of queue entries preserving prefix closure.
 pub fn select_capped_facts_batch(input: &CappedFactsBatchInput) -> CappedFactsBatch {
-    let max_bytes = input.max_bytes.unwrap_or(MAX_FACTS_PAYLOAD_BYTES);
-    let starvation_ms = input.starvation_ms.unwrap_or(FACTS_STARVATION_MS);
-    let envelope_bytes = measure_entries_bytes(&input.envelope, &[]);
+    select_capped_facts_batch_with(
+        &input.entries,
+        &input.envelope,
+        &input.now,
+        input.max_bytes,
+        input.starvation_ms,
+        |entry| Some(entry.clone()),
+    )
+}
+
+/// [`select_capped_facts_batch`] over payload-free headers: `load` returns the full entry for a
+/// header (or `None` to drop it) and is called only for candidates the selection inspects, so
+/// only the selected batch and oversize candidates stay resident.
+pub fn select_capped_facts_batch_with<H>(
+    headers: &[H],
+    envelope: &FactsPayloadEnvelope,
+    now: &str,
+    max_bytes: Option<usize>,
+    starvation_ms: Option<i64>,
+    mut load: impl FnMut(&H) -> Option<FactsQueueEntry>,
+) -> CappedFactsBatch
+where
+    H: AsRef<FactsQueueEntry>,
+{
+    let max_bytes = max_bytes.unwrap_or(MAX_FACTS_PAYLOAD_BYTES);
+    let starvation_ms = starvation_ms.unwrap_or(FACTS_STARVATION_MS);
+    let envelope_bytes = measure_entries_bytes(envelope, &[]);
     if envelope_bytes > max_bytes {
         return CappedFactsBatch {
             selected: Vec::new(),
@@ -109,19 +133,22 @@ pub fn select_capped_facts_batch(input: &CappedFactsBatchInput) -> CappedFactsBa
         };
     }
 
-    let groups = group_by_conversation(&input.entries);
-    let now_millis = parse_rfc3339(&input.now).unwrap_or(0);
+    let groups = group_by_conversation(headers);
+    let now_millis = parse_rfc3339(now).unwrap_or(0);
     let ordered_buckets = order_conversations(groups, now_millis, starvation_ms);
 
     let mut oversized = Vec::new();
-    let mut selected: Vec<&FactsQueueEntry> = Vec::new();
+    let mut selected: Vec<FactsQueueEntry> = Vec::new();
     let mut selected_bytes = envelope_bytes;
 
     for bucket in ordered_buckets {
         for candidate in bucket {
-            let single_bytes = measure_entries_bytes(&input.envelope, &[candidate]);
+            let Some(full) = load(candidate) else {
+                break;
+            };
+            let single_bytes = measure_entries_bytes(envelope, &[&full]);
             if single_bytes > max_bytes {
-                oversized.push(candidate.clone());
+                oversized.push(full);
                 break;
             }
             let next_bytes = next_selected_bytes(
@@ -133,12 +160,12 @@ pub fn select_capped_facts_batch(input: &CappedFactsBatchInput) -> CappedFactsBa
             if next_bytes > max_bytes {
                 break;
             }
-            selected.push(candidate);
+            selected.push(full);
             selected_bytes = next_bytes;
         }
     }
 
-    let ordered_selected = group_by_conversation(selected)
+    let ordered_selected = group_by_conversation(selected.iter())
         .into_iter()
         .flat_map(|(_, bucket)| bucket)
         .cloned()
@@ -214,15 +241,15 @@ fn next_selected_bytes(
     }
 }
 
-fn group_by_conversation<'a>(
-    entries: impl IntoIterator<Item = &'a FactsQueueEntry>,
-) -> Vec<(String, Vec<&'a FactsQueueEntry>)> {
+fn group_by_conversation<'a, T: AsRef<FactsQueueEntry>>(
+    entries: impl IntoIterator<Item = &'a T>,
+) -> Vec<(String, Vec<&'a T>)> {
     let mut order = Vec::new();
-    let mut map: std::collections::HashMap<String, Vec<&'a FactsQueueEntry>> =
+    let mut map: std::collections::HashMap<String, Vec<&'a T>> =
         std::collections::HashMap::new();
 
     for entry in entries {
-        let conv_id = entry.conversation_id.clone();
+        let conv_id = entry.as_ref().conversation_id.clone();
         if !map.contains_key(&conv_id) {
             order.push(conv_id.clone());
         }
@@ -232,7 +259,7 @@ fn group_by_conversation<'a>(
     let mut result = Vec::with_capacity(order.len());
     for conv_id in order {
         if let Some(mut bucket) = map.remove(&conv_id) {
-            bucket.sort_by_key(|e| e.range.end_snapshot_line);
+            bucket.sort_by_key(|e| e.as_ref().range.end_snapshot_line);
             result.push((conv_id, bucket));
         }
     }
@@ -246,15 +273,15 @@ fn waited_ms(entry: &FactsQueueEntry, now_millis: i64) -> i64 {
     }
 }
 
-fn order_conversations(
-    groups: Vec<(String, Vec<&FactsQueueEntry>)>,
+fn order_conversations<T: AsRef<FactsQueueEntry>>(
+    groups: Vec<(String, Vec<&T>)>,
     now_millis: i64,
     starvation_ms: i64,
-) -> Vec<Vec<&FactsQueueEntry>> {
-    let mut buckets: Vec<Vec<&FactsQueueEntry>> = groups.into_iter().map(|(_, b)| b).collect();
+) -> Vec<Vec<&T>> {
+    let mut buckets: Vec<Vec<&T>> = groups.into_iter().map(|(_, b)| b).collect();
     buckets.sort_by(|left, right| {
-        let left_wait = left.first().map(|e| waited_ms(e, now_millis)).unwrap_or(0);
-        let right_wait = right.first().map(|e| waited_ms(e, now_millis)).unwrap_or(0);
+        let left_wait = left.first().map(|e| waited_ms(e.as_ref(), now_millis)).unwrap_or(0);
+        let right_wait = right.first().map(|e| waited_ms(e.as_ref(), now_millis)).unwrap_or(0);
         let left_starved = left_wait >= starvation_ms;
         let right_starved = right_wait >= starvation_ms;
 

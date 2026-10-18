@@ -59,7 +59,7 @@ impl MemoryFactsWiring {
     }
     pub fn reconcile_pending(&self) -> Vec<FactsQueueEntry> {
         if !(self.options.facts_enabled)() { return vec![]; }
-        match self.queue.list_pending() { Ok(entries) => entries, Err(error) => { (self.options.warn)(&format!("facts queue reconcile failed: {error}")); vec![] } }
+        match self.queue.list_pending_files() { Ok(files) => files.into_iter().map(|file| file.header).collect(), Err(error) => { (self.options.warn)(&format!("facts queue reconcile failed: {error}")); vec![] } }
     }
     pub fn reconcile_extractor(&mut self) { self.reconcile_extractor_for(None); }
     pub fn reconcile_extractor_for(&mut self, conversation: Option<&str>) {

@@ -37,6 +37,12 @@ pub struct FactsQueueEntry {
     pub entries: Vec<TranscriptEntry>,
 }
 
+impl AsRef<FactsQueueEntry> for FactsQueueEntry {
+    fn as_ref(&self) -> &FactsQueueEntry {
+        self
+    }
+}
+
 /// Per-conversation watermark cursor for enqueued and consumed messages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactsCursor {

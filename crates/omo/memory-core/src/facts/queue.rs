@@ -167,6 +167,28 @@ struct PendingEntryWithFile {
     file_path: PathBuf,
 }
 
+/// One retained queue file listed without its transcript payload.
+#[derive(Debug, Clone)]
+pub struct FactsPendingFile {
+    /// Queue entry metadata; `entries` is always empty.
+    pub header: FactsQueueEntry,
+    file_path: PathBuf,
+}
+
+impl AsRef<FactsQueueEntry> for FactsPendingFile {
+    fn as_ref(&self) -> &FactsQueueEntry {
+        &self.header
+    }
+}
+
+impl FactsPendingFile {
+    /// Read the full entry back from disk; `None` once the file was consumed or became invalid.
+    pub fn load(&self) -> Option<FactsQueueEntry> {
+        let raw = fs::read_to_string(&self.file_path).ok()?;
+        parse_queue_entry(&raw).filter(|entry| entry_key(entry) == entry_key(&self.header))
+    }
+}
+
 /// Durable facts queue with monotonic watermarks and atomic publishing.
 pub struct FactsQueue {
     layout: FactsQueueLayout,
@@ -274,8 +296,22 @@ impl FactsQueue {
     /// Every retained queue file, oldest first.
     pub fn list_pending(&self) -> Result<Vec<FactsQueueEntry>, FactsQueueError> {
         self.locked(|| {
-            let pending = self.list_pending_unlocked()?;
+            let pending = self.list_pending_unlocked(true)?;
             Ok(pending.into_iter().map(|item| item.entry).collect())
+        })
+    }
+
+    /// Every retained queue file, oldest first, without loading transcript payloads into memory.
+    pub fn list_pending_files(&self) -> Result<Vec<FactsPendingFile>, FactsQueueError> {
+        self.locked(|| {
+            let pending = self.list_pending_unlocked(false)?;
+            Ok(pending
+                .into_iter()
+                .map(|item| FactsPendingFile {
+                    header: item.entry,
+                    file_path: item.file_path,
+                })
+                .collect())
         })
     }
 
@@ -289,7 +325,7 @@ impl FactsQueue {
             return Ok(Vec::new());
         }
         self.locked(|| {
-            let pending = self.list_pending_unlocked()?;
+            let pending = self.list_pending_unlocked(true)?;
             let mut claims = self.read_claims_unlocked()?;
             let requested: HashSet<String> = entries.iter().map(entry_key).collect();
             let reclaim_before = (self.now)() - 15 * 60_000;
@@ -344,7 +380,7 @@ impl FactsQueue {
             return Ok(());
         }
         self.locked(|| {
-            let pending = self.list_pending_unlocked()?;
+            let pending = self.list_pending_unlocked(false)?;
             let mut consumed_keys = HashSet::new();
             for entry in entries {
                 consumed_keys.insert(format!(
@@ -407,7 +443,7 @@ impl FactsQueue {
                 .get(conversation_id)
                 .map(|rec| rec.end_message_id.clone()),
         ];
-        for pending in self.list_pending_unlocked()? {
+        for pending in self.list_pending_unlocked(false)? {
             if pending.entry.conversation_id == conversation_id {
                 candidates.push(Some(pending.entry.range.end_message_id));
             }
@@ -450,7 +486,12 @@ impl FactsQueue {
         Ok(())
     }
 
-    fn list_pending_unlocked(&self) -> Result<Vec<PendingEntryWithFile>, FactsQueueError> {
+    /// Lists valid queue files; without `with_entries` each payload is dropped right after
+    /// validation so at most one file's transcript is resident at a time.
+    fn list_pending_unlocked(
+        &self,
+        with_entries: bool,
+    ) -> Result<Vec<PendingEntryWithFile>, FactsQueueError> {
         let read_dir = match fs::read_dir(&self.layout.queue_dir) {
             Ok(dir) => dir,
             Err(_) => return Ok(Vec::new()),
@@ -480,9 +521,12 @@ impl FactsQueue {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            let Some(parsed) = parse_queue_entry(&raw) else {
+            let Some(mut parsed) = parse_queue_entry(&raw) else {
                 continue;
             };
+            if !with_entries {
+                parsed.entries = Vec::new();
+            }
             entries.push(PendingEntryWithFile {
                 entry: parsed,
                 file_path,

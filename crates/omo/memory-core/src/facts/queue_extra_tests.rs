@@ -117,6 +117,24 @@ fn given_leftover_queue_file_with_no_completion_when_reconcile_runs_then_it_is_l
 }
 
 #[test]
+fn given_retained_entry_when_files_are_listed_then_headers_carry_no_payload_until_loaded() {
+    let (_dir, paths) = identity_fixture();
+    let queue = queue_with(&paths, 0);
+    queue.enqueue(request(journal(2), None)).expect("enqueue");
+
+    let files = queue.list_pending_files().expect("list files");
+
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].header.conversation_id, CONVERSATION);
+    assert!(files[0].header.entries.is_empty());
+    let loaded = files[0].load().expect("load");
+    assert_eq!(loaded.range, files[0].header.range);
+    assert_eq!(loaded.entries.len(), 4);
+    queue.mark_consumed(std::slice::from_ref(&loaded)).expect("consume");
+    assert!(files[0].load().is_none());
+}
+
+#[test]
 fn given_malformed_queue_file_when_list_pending_runs_then_it_is_ignored_instead_of_failing() {
     let (_dir, paths) = identity_fixture();
     let queue = queue_with(&paths, 0);
