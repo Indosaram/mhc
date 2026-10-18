@@ -81,7 +81,7 @@ scripts/gh-verify.sh --no-wait   # print the run URL and return
 ```
 
 - It snapshots HEAD plus staged, unstaged and untracked files into one commit with a temporary index; the local branch and working tree are untouched. It exits non-zero when any job fails and prints the failed step logs.
-- Pushes use the repo owner's gh token (`gh auth token --user Indosaram`), never the globally active gh account.
+- Pushes use the repo owner's gh account (`Indosaram`, the globally active gh account).
 - Tests that compare against upstream read a pinned senpi checkout at `~/code/senpi`. CI clones `code-yeongyu/senpi` at `SENPI_PIN` (must match `tools/golden/pin.mjs`) and runs `bun install`.
 - CI cannot reach the mahoquot gateway (tailnet only), so live model QA still runs locally.
 - GitHub Actions is the only remote build target; instabox is gone (keys revoked, `scripts/instabox-build.sh` removed). Do not build locally either: every cargo build/check/clippy/test goes through CI.

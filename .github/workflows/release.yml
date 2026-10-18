@@ -2,14 +2,17 @@ name: release
 
 # Pushing a `v<version>` tag builds release mhc binaries and publishes them as a GitHub Release.
 # The tag without its leading `v` becomes MHC_BUILD_VERSION (what `mhc --version` prints).
+# Cache warm-up: dispatching on main with no tag only builds, saving the release build cache on main.
+# A tag run can restore caches from main but not from another tag, so tag runs do not save.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to (re)build and publish, e.g. v2026.10.18
-        required: true
+        description: Existing tag to (re)build and publish, e.g. v2026.10.18. Empty = warm the build cache on the selected branch.
+        required: false
+        default: ""
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
@@ -20,7 +23,7 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
   PROTOC_VERSION: "29.3"
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  TAG: ${{ github.event.inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
 
 jobs:
   build:
@@ -39,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ env.TAG != '' && format('refs/tags/{0}', env.TAG) || github.sha }}
 
       - name: free disk
         if: runner.os == 'Linux'
@@ -55,7 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-${{ matrix.target }}
-          cache-on-failure: true
+          save-if: ${{ env.TAG == '' }}
 
       - name: protoc
         run: |
@@ -68,11 +71,13 @@ jobs:
 
       - name: build release binaries
         run: |
-          export MHC_BUILD_VERSION="${TAG#v}"
+          export MHC_BUILD_VERSION="${TAG:+${TAG#v}}"
+          export MHC_BUILD_VERSION="${MHC_BUILD_VERSION:-0.0.0-cache}"
           cargo build --release --locked -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
           test "$(./target/release/mhc --version)" = "$MHC_BUILD_VERSION"
 
       - name: materialize browser skill runtime
+        if: env.TAG != ''
         run: |
           commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)')
           git init -q "$RUNNER_TEMP/omowright"
@@ -82,6 +87,7 @@ jobs:
           node assets/omo-latest/stage-omowright-runtime.mjs --source "$RUNNER_TEMP/omowright" --target "$RUNNER_TEMP/omowright-runtime"
 
       - name: package
+        if: env.TAG != ''
         run: |
           name="mhc-${{ matrix.target }}"
           bun tools/package-native.mjs --binary target/release/mhc --output "dist/$name" --skill-source latest \
@@ -94,6 +100,7 @@ jobs:
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
 
       - uses: actions/upload-artifact@v7
+        if: env.TAG != ''
         with:
           name: mhc-${{ matrix.target }}
           path: dist/*.tar.gz*
@@ -101,6 +108,7 @@ jobs:
 
   publish:
     needs: build
+    if: github.event.inputs.tag != '' || github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
