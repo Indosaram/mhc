@@ -1,0 +1,39 @@
+name: mhc-binary
+
+# Release mhc binary for a local install. scripts/gh-install.sh pushes `build/<version>`;
+# the branch name after `build/` becomes MHC_BUILD_VERSION (what `mhc --version` prints).
+on:
+  push:
+    branches: ["build/**"]
+
+concurrency:
+  group: mhc-binary-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  PROTOC_VERSION: "29.3"
+  AST_GREP_VERSION: "0.45.0"
+  SENPI_PIN: cf69f5e72eb325219a93e17bb54bbd4ba787899e
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: release
+      - name: build release mhc
+        run: |
+          export MHC_BUILD_VERSION="${GITHUB_REF_NAME#build/}"
+          cargo build --release --locked -p maho-cli --bin mhc
+          ./target/release/mhc --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mhc-linux-x86_64
+          path: target/release/mhc
+          retention-days: 3
