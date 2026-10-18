@@ -74,7 +74,7 @@ impl FactsExtractorRunner{
         let aborted=||signal.is_some_and(FactsAbortSignal::is_aborted);
         if aborted(){return Ok(FactsLaunchResult::Skipped);}
         if reconcile()?{return Ok(FactsLaunchResult::Active);}
-        let pending=self.queue.list_pending().map_err(|error|error.to_string())?;
+        let files=self.queue.list_pending_files().map_err(|error|error.to_string())?;let pending:Vec<_>=files.iter().map(|file|file.header.clone()).collect();
         if aborted(){return Ok(FactsLaunchResult::Skipped);}
         if pending.is_empty(){return Ok(FactsLaunchResult::Empty);}
         let failures=match crate::facts_launch_selection::read_launchable_failures(&self.failures,|message,error,_|warn(&format!("{message}: {error}"))){crate::facts_launch_selection::FactsFailuresRead::Read{failures}=>failures,_=>return Ok(FactsLaunchResult::Skipped)};
@@ -85,7 +85,9 @@ impl FactsExtractorRunner{
         crate::engine_session::prepare_memory_engine_session(&self.identity.id,&self.identity.paths,Default::default()).map_err(|error|error.to_string())?;
         let people=crate::facts_people_payload::read_facts_people_payload(&self.identity.paths.repo);
         let envelope=memory_core::facts::FactsPayloadEnvelope{version:1,identity:self.identity.id.clone(),today:instant[..10].into(),known_people:people.known_people,primary_human:people.primary_human};
-        let capped=memory_core::facts::select_capped_facts_batch(&memory_core::facts::CappedFactsBatchInput{entries:selected.clone(),envelope:envelope.clone(),now:instant.clone(),max_bytes:None,starvation_ms:None});
+        let launchable:std::collections::HashSet<String>=selected.iter().map(|entry|memory_core::facts::facts_selection_key(&entry.conversation_id,&entry.range.end_message_id)).collect();
+        let launchable_files:Vec<_>=files.into_iter().filter(|file|launchable.contains(&memory_core::facts::facts_selection_key(&file.header.conversation_id,&file.header.range.end_message_id))).collect();
+        let capped=memory_core::facts::select_capped_facts_batch_with(&launchable_files,&envelope,&instant,None,None,memory_core::facts::queue::FactsPendingFile::load);
         let mut diagnostics=vec![];let refused={
             let mut io=FactsIo{queue:&self.queue,instant:&instant,warn,runtime_dir:Some(&self.identity.paths.runtime)};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};
             crate::facts_oversize::classify_oversize_payload(&mut terminal,&crate::facts_oversize::OversizeClassificationInput{envelope:&envelope,oversized:&capped.oversized,pending:&selected,envelope_oversized:capped.envelope_oversized,create_failure_id:None,max_bytes:None},&mut |message,fields|diagnostics.push(format!("{message}: {fields}")))
