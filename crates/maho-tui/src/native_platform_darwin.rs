@@ -15,6 +15,7 @@ use crate::native_platform::{ModifierKey, NativeClipboard, NativePlatformHelper}
 const TEXT_TYPE: &str = "public.utf8-plain-text";
 const PNG_TYPE: &str = "public.png";
 const TIFF_TYPE: &str = "public.tiff";
+const FILE_URL_TYPE: &str = "public.file-url";
 
 pub struct DarwinPlatformHelper;
 
@@ -83,18 +84,24 @@ impl NativeClipboard for DarwinPlatformHelper {
     fn get_file_paths(&self) -> Result<Option<Vec<String>>, String> {
         autoreleasepool(|_| {
             let pasteboard = NSPasteboard::generalPasteboard();
-            let classes = NSArray::from_slice(&[&*NSURL::class()]);
-            let options = objc2_foundation::NSDictionary::from_slices(
-                &[&*NSString::from_str("NSPasteboardURLReadingFileURLsOnlyKey")],
-                &[&*objc2_foundation::NSNumber::new_bool(true)],
-            );
-            let objects = pasteboard.readObjectsForClasses_options(&classes, &options);
-            Ok((!objects.is_empty()).then(|| {
-                objects.iter().filter_map(|object| {
-                    let url = object.downcast_ref::<NSURL>()?;
-                    url.path().map(|path| path.to_string())
-                }).collect()
-            }))
+            let file_url_type = NSString::from_str(FILE_URL_TYPE);
+            let paths: Vec<String> = pasteboard
+                .pasteboardItems()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            let url_string = item.stringForType(&file_url_type)?;
+                            let url = NSURL::URLWithString(&url_string)?;
+                            if !url.isFileURL() {
+                                return None;
+                            }
+                            url.path().map(|path| path.to_string())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok((!paths.is_empty()).then_some(paths))
         })
     }
 
