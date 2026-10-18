@@ -1,6 +1,6 @@
 pub const NATIVE_BADGE_STATUS_KEY: &str = "  omo-native";
-pub const NATIVE_BADGE_TEXT: &str = "(😺 OmO Native by Q Kim)";
-pub const NATIVE_BADGE_DEV_BUILD_TEXT: &str = "(☕ OmO Native by Q Kim)";
+pub const NATIVE_BADGE_TEXT: &str = "🌟 Maho Code";
+pub const NATIVE_BADGE_DEV_BUILD_TEXT: &str = "☕ Maho Code";
 
 pub fn package_dir_from_env(env:&std::collections::BTreeMap<String,String>)->Option<std::path::PathBuf>{env.get("OMO_PACKAGE_DIR").filter(|value|!value.trim().is_empty()).map(std::path::PathBuf::from)}
 
