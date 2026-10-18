@@ -59,9 +59,9 @@ impl ProcessGroupGuard {
         if let Some(pid) = self.pid.take() {
             #[cfg(unix)]
             {
-                let _ = std::process::Command::new("kill")
-                    .args(["-9", &format!("-{pid}")])
-                    .status();
+                if let Ok(raw) = i32::try_from(pid) {
+                    let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(raw), nix::sys::signal::Signal::SIGKILL);
+                }
             }
             #[cfg(windows)]
             {

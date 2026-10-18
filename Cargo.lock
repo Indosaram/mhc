@@ -4500,6 +4500,7 @@ dependencies = [
  "maho-senpi-desktop-tool",
  "maho-tools",
  "maho-tui",
+ "nix 0.28.0",
  "serde",
  "serde_json",
  "sha2",
