@@ -193,8 +193,63 @@ pub fn ask_user_renderers(tool_name: &str) -> Option<Rc<RefCell<dyn ToolRenderer
     })
 }
 
+/// A registered definition's `renderShell` applied over the renderers the card resolved. senpi reads
+/// the shell off the definition itself, so it holds even when the renderers came from elsewhere.
+struct WithRenderShell {
+    inner: Option<Rc<RefCell<dyn ToolRenderers>>>,
+    shell: RenderShell,
+}
+
+impl ToolRenderers for WithRenderShell {
+    fn render_shell(&self) -> RenderShell { self.shell }
+    fn is_built_in(&self) -> bool { self.inner.as_ref().is_some_and(|inner| inner.borrow().is_built_in()) }
+    fn rebuild_call_after_result(&self) -> bool { self.inner.as_ref().is_some_and(|inner| inner.borrow().rebuild_call_after_result()) }
+    fn has_result_renderer(&self) -> bool { self.inner.as_ref().is_some_and(|inner| inner.borrow().has_result_renderer()) }
+    fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
+        self.inner.as_ref()?.borrow_mut().render_call(theme, context)
+    }
+    fn render_result(&mut self, result: &ToolResult, options: ToolRenderResultOptions, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
+        self.inner.as_ref()?.borrow_mut().render_result(result, options, theme, context)
+    }
+}
+
+/// senpi's `hasRendererDefinition` is true for any registered definition, even one without
+/// `renderCall`/`renderResult`: the card still draws its shell with the call and result fallbacks.
+/// `registered` says whether the session holds a definition for the tool; `shell` is its `renderShell`.
+pub fn registered_definition_renderers(
+    resolved: Option<Rc<RefCell<dyn ToolRenderers>>>,
+    registered: bool,
+    shell: Option<RenderShell>,
+) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
+    match (resolved, shell) {
+        (resolved, Some(shell)) if shell != RenderShell::Default && (registered || resolved.is_some()) => {
+            Some(Rc::new(RefCell::new(WithRenderShell { inner: resolved, shell })))
+        }
+        (Some(resolved), _) => Some(resolved),
+        (None, _) if registered => Some(Rc::new(RefCell::new(WithRenderShell { inner: None, shell: RenderShell::Default }))),
+        (None, _) => None,
+    }
+}
+
 /// senpi's `getRegisteredToolDefinition` resolution order for a card: the registered definition,
 /// else the ask-user pair, else the built-in renderers for the tool name.
 pub fn card_renderers(tool_name: &str) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
     with_built_in_renderers(tool_name, ask_user_renderers(tool_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_definition_carries_its_render_shell_and_keeps_a_card_without_renderers() {
+        let own = registered_definition_renderers(None, true, Some(RenderShell::Own)).expect("shell-only definition");
+        assert_eq!(own.borrow().render_shell(), RenderShell::Own);
+        assert!(!own.borrow().has_result_renderer());
+        let plain = registered_definition_renderers(None, true, None).expect("definition without renderers");
+        assert_eq!(plain.borrow().render_shell(), RenderShell::Default);
+        assert!(registered_definition_renderers(None, false, None).is_none());
+        let built_in = registered_definition_renderers(create_all_tool_renderers().get("read").cloned(), true, None).expect("read");
+        assert!(built_in.borrow().is_built_in());
+    }
 }

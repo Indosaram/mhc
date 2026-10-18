@@ -5538,9 +5538,11 @@ impl InteractiveMode {
     /// tool name, else the ask-user pair, else the built-in renderers.
     fn tool_renderers(&self, tool_name: &str) -> Option<Rc<RefCell<dyn crate::tools::renderers::ToolRenderers>>> {
         let tool_name = self.session.resolve_tool_call_name(tool_name);
-        self.native_tool_renderer_snapshots.get(&tool_name).cloned()
+        let resolved = self.native_tool_renderer_snapshots.get(&tool_name).cloned()
             .or_else(|| self.tool_renderer_snapshots.get(&tool_name).cloned())
-            .or_else(|| crate::tools::renderers::card_renderers(&tool_name))
+            .or_else(|| crate::tools::renderers::card_renderers(&tool_name));
+        let definition = self.session.get_tool_definition(&tool_name);
+        crate::tools::renderers::registered_definition_renderers(resolved, definition.is_some(), definition.and_then(|definition| definition.render_shell))
     }
 
     /// Refresh the per-tool registered-renderer snapshots from the session's live runner. Run at async

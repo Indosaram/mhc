@@ -76,6 +76,7 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
         })
     }));
     memory.label = "Memory".into();
+    memory.render_shell = Some(maho_tools::definition::RenderShell::Own);
     memory.exposure = exposure;
     memory.execution_mode = Some(ToolExecutionMode::Sequential);
     memory.prompt_snippet = Some("memory - edit omo memory blocks (create/str_replace/insert/delete/rename/update_description); auto-commits each change".into());
@@ -105,7 +106,10 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
 }
 
 pub fn register_memory_tools_with_options(api: &mut ExtensionApi, resolve: MemoryContextResolver, options: MemoryToolsOptions) {
-    for tool in create_memory_tools_with_options(resolve, options) { api.register_tool(tool); }
+    let renderers = crate::memory_tool_renderers::memory_tool_renderers(options.write_notice.clone());
+    let [memory, patch] = create_memory_tools_with_options(resolve, options);
+    if let Err(error) = api.register_tool_with_renderers(memory, renderers) { std::panic::panic_any(error); }
+    api.register_tool(patch);
 }
 
 pub fn register_memory_tools(api: &mut ExtensionApi, resolve: MemoryContextResolver) {
@@ -159,6 +163,8 @@ mod tests {
         register_memory_tool_surface(&mut api, Arc::new(|| None), MemoryToolsOptions::default());
         assert!(api.registered.mcp_servers.is_empty());
         assert_eq!(api.registered.tools.iter().map(|tool| tool.definition.name.as_str()).collect::<Vec<_>>(), ["memory", "memory_apply_patch"]);
+        assert_eq!(api.registered.tools[0].definition.render_shell, Some(maho_tools::definition::RenderShell::Own));
+        assert!(api.registered.erased_tool_renderers.contains_key("memory"));
     }
     #[tokio::test] async fn unbound_tools_fail_before_storage() { for tool in create_memory_tools(Arc::new(|| None)) { assert!((tool.execute)(call(serde_json::json!({}))).await.is_err()); } }
     #[tokio::test] async fn real_create_and_patch_commit_clean_repo() {

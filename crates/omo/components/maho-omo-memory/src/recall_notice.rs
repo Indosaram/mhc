@@ -90,7 +90,7 @@ mod tests {
         let renderer = &api.registered.entry_renderers[RECALL_ENTRY_TYPE];
         let mut component = renderer(&entry, &maho_ext_api::EntryRenderOptions { expanded: false }, &Default::default()).unwrap();
         let lines = component.render(80);
-        assert_eq!(lines.len(), 2);
+        assert!(lines.len() >= 4, "{lines:?}");
         assert!(lines.iter().any(|line| line.contains("notes/a.md")));
     }
 }

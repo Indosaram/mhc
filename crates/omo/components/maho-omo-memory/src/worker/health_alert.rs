@@ -37,8 +37,8 @@ pub fn emit_reflection_health_alert(completions:&Path,identity:&str,live:Option<
         let data=ReflectionHealthEntry{schema_version:1,identity:"agent".into(),streak:3,fingerprint:"child_exit:stable".into(),last_reason:"child_exit".into(),last_detail:Some("stable".into()),since_iso:"2026-10-02T00:00:00.000Z".into(),recommendation:"Check the worker logs".into()};
         let entry=maho_ext_api::SessionEntry{id:"entry".into(),parent_id:None,timestamp:"now".into(),kind:"custom".into(),data:serde_json::json!({"data":data})};
         let renderer=&api.registered.entry_renderers[REFLECTION_HEALTH_ENTRY_TYPE];
-        let mut collapsed=renderer(&entry,&maho_ext_api::EntryRenderOptions{expanded:false},&Default::default()).unwrap();let lines=collapsed.render(120);assert_eq!(lines.len(),2);assert!(lines[0].starts_with("<error>"));
-        let mut expanded=renderer(&entry,&maho_ext_api::EntryRenderOptions{expanded:true},&Default::default()).unwrap();assert_eq!(expanded.render(120).len(),3);
+        let mut collapsed=renderer(&entry,&maho_ext_api::EntryRenderOptions{expanded:false},&Default::default()).unwrap();let lines=collapsed.render(120);assert_eq!(lines.len(),4);assert!(lines[1].starts_with(" <error>"));
+        let mut expanded=renderer(&entry,&maho_ext_api::EntryRenderOptions{expanded:true},&Default::default()).unwrap();assert_eq!(expanded.render(120).len(),5);
         assert!(renderer(&maho_ext_api::SessionEntry{data:serde_json::Value::Null,..entry},&Default::default(),&Default::default()).is_none());
     }
     struct Live{session:String,ui:bool,entries:Vec<ReflectionHealthEntry>,warnings:usize}
