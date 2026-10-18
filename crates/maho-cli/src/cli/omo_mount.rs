@@ -254,13 +254,10 @@ fn memory_for_parent(parent: super::default_extensions::TaskParent, cwd: &Path, 
 
 struct MemoryTheme(maho_ext_api::Theme);
 impl maho_omo_memory::worker::entry_renderers::EntryRenderTheme for MemoryTheme {
-    fn fg(&self, tone: &str, text: &str) -> String {
-        let color = self.0.colors.get(tone).map(String::as_str).unwrap_or("");
-        let prefix = color.strip_prefix('#').filter(|hex| hex.len() == 6).and_then(|hex| u32::from_str_radix(hex, 16).ok())
-            .map(|rgb| format!("\x1b[38;2;{};{};{}m", (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255)).unwrap_or_else(|| "\x1b[39m".into());
-        format!("{prefix}{text}\x1b[39m")
-    }
+    // The exported extension theme already carries ANSI SGR prefixes, so senpi's `fg`/`bg` apply them directly.
+    fn fg(&self, tone: &str, text: &str) -> String { self.0.fg(tone, text) }
     fn italic(&self, text: &str) -> String { format!("\x1b[3m{text}\x1b[23m") }
+    fn bg(&self, name: &str, text: &str) -> String { self.0.bg(name, text) }
 }
 
 pub fn memory_entry(build: impl Fn() -> maho_omo_memory::composition::MemoryExtensionOptions + Send + Sync + 'static) -> OmoSenpiComponent {

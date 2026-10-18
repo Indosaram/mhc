@@ -4688,6 +4688,7 @@ dependencies = [
  "maho-senpi-task",
  "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "nix 0.28.0",
  "notify",
  "regex",

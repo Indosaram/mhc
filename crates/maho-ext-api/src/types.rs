@@ -170,6 +170,9 @@ impl<TState, TArgs: Clone> ToolRendererSession<TState, TArgs> {
 /// erased at registration time so a host can render any card by tool name with JSON args and no
 /// type parameters.
 pub trait ErasedToolRenderers: Send + Sync {
+    /// senpi `renderCall`/`renderResult` are optional; a host draws its fallback for a missing half.
+    fn has_call_renderer(&self) -> bool { true }
+    fn has_result_renderer(&self) -> bool { true }
     fn render_call(&self, args: &JsonValue, theme: &Theme, width: usize) -> Option<Vec<String>>;
     fn render_result(&self, args: &JsonValue, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>>;
     /// senpi export `renderResult` with explicit `{ expanded, isPartial }` options and the
@@ -191,6 +194,8 @@ fn erased_render_context<TState, TArgs>(args: TArgs, state: TState, cwd: PathBuf
 }
 impl<TState, TArgs> ErasedToolRenderers for TypedErasedToolRenderers<TState, TArgs>
 where TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwned + Send + 'static {
+    fn has_call_renderer(&self) -> bool { self.renderers.render_call.is_some() }
+    fn has_result_renderer(&self) -> bool { self.renderers.render_result.is_some() }
     fn render_call(&self, args: &JsonValue, theme: &Theme, width: usize) -> Option<Vec<String>> {
         let renderer = self.renderers.render_call.as_ref()?;
         let typed: TArgs = serde_json::from_value(args.clone()).ok()?;

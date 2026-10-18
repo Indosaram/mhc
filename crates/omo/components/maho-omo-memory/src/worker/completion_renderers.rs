@@ -50,9 +50,9 @@ mod tests {
         let entry=maho_ext_api::SessionEntry{id:"entry".into(),parent_id:None,timestamp:"now".into(),kind:"custom".into(),data:serde_json::json!({"data":data})};
         let renderer=&api.registered.entry_renderers[REFLECTION_LAUNCHED_ENTRY_TYPE];
         let mut component=renderer(&entry,&maho_ext_api::EntryRenderOptions{expanded:false},&Default::default()).unwrap();
-        assert_eq!(component.render(120).len(),3);
-        let mut expanded=renderer(&entry,&maho_ext_api::EntryRenderOptions{expanded:true},&Default::default()).unwrap();assert_eq!(expanded.render(120).len(),4);
-        assert!(expanded.render(120)[0].starts_with("<accent>"));
+        assert_eq!(component.render(120).len(),5);
+        let mut expanded=renderer(&entry,&maho_ext_api::EntryRenderOptions{expanded:true},&Default::default()).unwrap();assert_eq!(expanded.render(120).len(),6);
+        assert!(expanded.render(120)[1].starts_with(" <accent>"));
     }
     #[test]
     fn duration_bounds_and_rounding(){assert_eq!(format_duration(f64::NAN),"unknown");assert_eq!(format_duration(-1.0),"unknown");assert_eq!(format_duration(999.5),"1000ms");assert_eq!(format_duration(1500.0),"1.5s");assert_eq!(format_duration(61_000.0),"1m01s");}
