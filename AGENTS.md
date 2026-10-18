@@ -84,21 +84,10 @@ scripts/gh-verify.sh --no-wait   # print the run URL and return
 - Pushes use the repo owner's gh token (`gh auth token --user Indosaram`), never the globally active gh account.
 - Tests that compare against upstream read a pinned senpi checkout at `~/code/senpi`. CI clones `code-yeongyu/senpi` at `SENPI_PIN` (must match `tools/golden/pin.mjs`) and runs `bun install`.
 - CI cannot reach the mahoquot gateway (tailnet only), so live model QA still runs locally.
+- GitHub Actions is the only remote build target; instabox is gone (keys revoked, `scripts/instabox-build.sh` removed). Do not build locally either: every cargo build/check/clippy/test goes through CI.
 
-## REMOTE BUILD ON INSTABOX
-When the user says "instabox에서 빌드" / "build on instabox" (or asks for check/clippy/test there), run cargo on an instabox sandbox instead of this machine:
+## INSTALLING mhc (dev build via CI)
+When the user asks to (re)install mhc, run `scripts/gh-install.sh` from the checkout to install. It snapshots HEAD plus local changes to a temporary `build/YYYY.MM.DD-N` branch, `.github/workflows/mhc-binary.yml` builds `cargo build --release -p maho-cli --bin mhc` with that version as `MHC_BUILD_VERSION`, and the script downloads the `mhc-linux-x86_64` artifact into `~/.local/share/mhc/mhc` (symlinked from `~/.local/bin/mhc`), checks `mhc --version`, and deletes the branch. N counts installs made that day. It blocks until the run finishes; run it in the background and wait on its exit. Linux x86_64 only; `scripts/install-dev.sh` is the local-build fallback, used only when the user asks for it.
 
-```bash
-scripts/instabox-build.sh                                   # cargo build -p maho-cli on bong-g-1
-scripts/instabox-build.sh -- check --workspace              # any cargo args after --
-scripts/instabox-build.sh -m bong-h-2 -k h -- clippy -p maho-ai --all-targets -- -D warnings
-```
-
-- Run it from the checkout/worktree whose code should be built. It resets the box clone to `merge-base HEAD origin/main`, then applies local commits after that, staged/unstaged edits and untracked files as one binary diff. Nothing is pushed. `instabox exec --stdin` caps one transfer at 1 MB, so the diff is sent in 900 KB chunks and reassembled on the box; untracked files over 1 MB (build output like `dist/`) are skipped.
-- Machines: `bong-g-1..5` use key `g`, `bong-h-1..5` use key `h` (`-m`, `-k`; default `bong-g-1`/`g`). Each box is 4 vCPU / 8 GB, Debian 13; repo at `/data/home/mhc`, log at `/data/home/instabox-run.log`. Give parallel jobs different machines.
-- Keys live only in `~/.config/instabox/keys.env` (`INSTABOX_KEY_G`, `INSTABOX_KEY_H`). Never write a key into the repo; it is public. Ad-hoc commands: `INSTABOX_API_KEY=$INSTABOX_KEY_G instabox exec <machine> -- <cmd>` (`instabox ls`, `resume`, `ssh`, `files`).
-- Boxes auto-pause after 30 min idle; the script runs `instabox start <machine>` first, because `exec` against a paused box fails with "sandbox is paused". First run on a fresh box installs rustup 1.95.0 into `~/.rustup` (`/opt/rust` is root-owned) and protoc 29.3 into `~/protoc` (needed by `maho-ai` build.rs; no apt/sudo).
-- `/data` is only 20 GB: a default debug build (full debuginfo + incremental) fills it. The script writes a box-side `~/.cargo/config.toml` (line-tables-only debuginfo, no debuginfo for deps, incremental off) and wipes `target/` when less than ~6 GB is free.
-- The script blocks until cargo finishes and exits non-zero on failure; run it in the background and wait on its completion. Cargo runs under `setsid nohup` on the box because `instabox exec` kills its children on return; `exec --timeout` is capped at 600 s.
-- Missing CLI: `npm i -g instabox@latest` (binary lands in `~/.local/bin/instabox`).
-
+## RELEASES
+Push a `v<version>` tag (e.g. `git tag v2026.10.18 && git push origin v2026.10.18`); `.github/workflows/release.yml` builds release `mhc` for linux-x86_64 and macos-aarch64 with `MHC_BUILD_VERSION=<version>`, checks `mhc --version`, and publishes `mhc-<tag>-<target>.tar.gz` plus `.sha256` as a GitHub Release with generated notes. Re-run for an existing tag with `gh workflow run release -f tag=<tag>` (assets are replaced).
