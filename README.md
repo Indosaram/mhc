@@ -21,6 +21,7 @@
 - **直接沿用现有配置。** 与 OmO 读取同一套 `~/.omo` 配置、模型、认证和智能体设置。
 - **功能开箱即全。** 子智能体、`ultrawork` / `ulw-loop` 工作流、长期记忆、LSP、ast-grep、MCP、网页搜索和内置技能都随发布包提供。
 - **支持各家模型。** Anthropic、OpenAI、Gemini、DeepSeek、通义千问、Kimi、智谱 ZAI、MiniMax、OpenRouter、Ollama、Bedrock、Azure 等。
+- **内存占用低得多。** 在同一个 `mass-ulw` 工作流（3 个并行子智能体 + 汇总）上，mhc 的匿名内存峰值为 83-86 MB，OmO 为 1356-1398 MB，约少 16 倍，耗时相同。测量方法、原始数据和复现步骤见 [docs/memory-benchmark.md](docs/memory-benchmark.md)（英文）。
 
 ## 安装
 
