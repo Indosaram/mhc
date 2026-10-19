@@ -9,6 +9,11 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::theme::{ColorMode, palette::rgb_to_256};
 
 const BREATH_SECONDS: f64 = 4.0;
+/// Breath steps per second. The interactive loop repaints only when the rendered lines change,
+/// so quantizing the clock here caps the ulw border at this many frames per second instead of
+/// one frame per loop tick (~50 fps of continuous full-width repaints). That stream outran
+/// terminals that relay output with bounded buffers and left stale prompt boxes behind.
+const BREATH_STEPS_PER_SECOND: f64 = 15.0;
 const BASE_LEVEL: f64 = 0.62;
 const PEAK_LEVEL: f64 = 1.0;
 const PEAK_LIFT: f64 = 0.4;
@@ -39,7 +44,7 @@ pub fn apply_neon_border(lines: &mut [String], now_ms: f64, mode: ColorMode) -> 
     }
     let (top_len, bottom_len) = (top_cells.len(), bottom_cells.len());
     let perimeter = (top_len + bottom_len) as f64;
-    let seconds = now_ms.max(0.0) / 1000.0;
+    let seconds = (now_ms.max(0.0) / 1000.0 * BREATH_STEPS_PER_SECOND).floor() / BREATH_STEPS_PER_SECOND;
     lines[0] = paint(&top_cells, |column| column as f64 / perimeter, seconds, mode);
     // The static gradient runs clockwise: top border left->right, then bottom border right->left.
     lines[bottom] = paint(&bottom_cells, |column| (top_len + (bottom_len - 1 - column)) as f64 / perimeter, seconds, mode);
@@ -158,6 +163,24 @@ mod tests {
             (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0)
         }).max().unwrap_or(0);
         assert!(step <= 3, "largest per-frame channel step at 60fps: {step}");
+    }
+
+    #[test]
+    fn border_repaints_at_most_fifteen_times_per_second() {
+        let render = |now_ms: f64| {
+            let mut lines = vec!["─".repeat(20), "❯ ulw".to_owned(), "─".repeat(20)];
+            assert!(apply_neon_border(&mut lines, now_ms, ColorMode::Truecolor));
+            lines
+        };
+        let distinct = |from_ms: u32, to_ms: u32| {
+            let mut frames: Vec<Vec<String>> = (from_ms..to_ms).map(|ms| render(f64::from(ms))).collect();
+            frames.dedup();
+            frames.len()
+        };
+        // One second sampled every millisecond yields at most 15 distinct frames (16 when the
+        // window straddles a step boundary), so an unchanged frame lets the loop skip the repaint.
+        assert!(distinct(1000, 2000) <= 16, "{} frames in one second", distinct(1000, 2000));
+        assert!(distinct(1000, 2000) >= 14, "the breath still animates");
     }
 
     #[test]
