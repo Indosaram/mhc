@@ -37,7 +37,7 @@ fn spawnable(path:impl AsRef<Path>)->std::io::Result<PathBuf> {
         let spelling=absolute.to_string_lossy();
         if spelling.starts_with(r"\\?\") {return Ok(absolute);}
         if let Some(unc)=spelling.strip_prefix(r"\\") {return Ok(PathBuf::from(format!(r"\\?\UNC\{unc}")));}
-        return Ok(PathBuf::from(format!(r"\\?\{spelling}")));
+        Ok(PathBuf::from(format!(r"\\?\{spelling}")))
     }
     #[cfg(not(windows))] Ok(absolute)
 }

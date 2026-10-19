@@ -5,7 +5,7 @@ pub const MAX_PENDING_SESSION_EVENT_BYTES:usize=1024*1024;
 #[cfg(unix)]
 pub struct RpcSocketClient{stream:tokio::net::UnixStream,pub frames:RpcClientFrames,reader:crate::jsonl::JsonlLineReader,lines:VecDeque<crate::jsonl::LineRecord>}
 #[cfg(not(unix))]
-pub struct RpcSocketClient{pub frames:RpcClientFrames,reader:crate::jsonl::JsonlLineReader,lines:VecDeque<crate::jsonl::LineRecord>}
+pub struct RpcSocketClient{pub frames:RpcClientFrames}
 #[cfg(unix)]
 pub type RpcStream=tokio::net::UnixStream;
 #[cfg(not(unix))]

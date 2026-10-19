@@ -3,7 +3,9 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
@@ -463,6 +465,7 @@ fn resolve_xdg_data_dir_cases() {
     );
 }
 
+#[cfg(unix)]
 fn expected_realpath(path: &Path) -> PathBuf {
     let real = fs::canonicalize(path).unwrap_or_else(|error| panic!("{error}"));
     match real.to_str().and_then(|text| text.strip_prefix("/private")) {

@@ -667,7 +667,7 @@ pub async fn run_multi_session_host(core:std::sync::Arc<HostCore>,listen:Option<
 /// Serve the shared host with explicit shutdown triggers: the seam the CLI entry and its tests use.
 pub async fn run_multi_session_host_with_signals(core:std::sync::Arc<HostCore>,listen:Option<String>,signals:HostShutdownSignals)->std::io::Result<()>{
     #[cfg(not(unix))]
-    { let _=signals; return match listen.as_deref(){None|Some("stdio://")=>run_stdio_host(core).await,Some(_)=>Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}; }
+    { let _=signals; match listen.as_deref(){None|Some("stdio://")=>run_stdio_host(core).await,Some(_)=>Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))} }
     #[cfg(unix)]
     {
     match listen.as_deref(){None|Some("stdio://")=>run_stdio_host(core).await,Some(path)=>run_socket_host(core,path.to_owned(),signals).await}
@@ -715,7 +715,9 @@ async fn run_stdio_host(core:std::sync::Arc<HostCore>)->std::io::Result<()>{
     let _=stop.send(true);observers.abort();empty_exit.abort();
     result
 }
+#[cfg(unix)]
 type HostCommand=std::pin::Pin<Box<dyn std::future::Future<Output=Result<(),String>>+Send>>;
+#[cfg(unix)]
 async fn poll_host_commands(commands:&mut Vec<HostCommand>)->Result<(),String>{
     let(index,result)=std::future::poll_fn(|cx|{
         for(index,command)in commands.iter_mut().enumerate(){if let std::task::Poll::Ready(result)=command.as_mut().poll(cx){return std::task::Poll::Ready((index,result));}}
@@ -841,6 +843,7 @@ async fn run_socket_host(core:std::sync::Arc<HostCore>,listen:String,signals:Hos
 /// Whether the endpoint this host serves is held by another socket entry now (senpi
 /// `runSocketHost`'s `endpointSuperseded`): a supervised host answers for the PUBLIC path its
 /// supervisor bound, a bare host for the path it bound itself.
+#[cfg(unix)]
 fn endpoint_superseded(own_path:&str,own:&Option<crate::socket_ownership::SocketFileIdentity>,public_socket:Option<&str>,public_owner:&std::sync::Mutex<Option<crate::socket_ownership::SocketFileIdentity>>)->bool{
     let platform=if cfg!(windows){"win32"}else{std::env::consts::OS};
     match public_socket{

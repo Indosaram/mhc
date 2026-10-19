@@ -17,6 +17,7 @@ mod git_command;
 mod git_detach;
 mod index;
 mod merge;
+#[cfg(unix)]
 mod merge_containment;
 mod merge_stash;
 mod owner;

@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::path::Path;
 #[cfg(unix)]
 fn kill(pid: i32, signal: nix::sys::signal::Signal) -> Result<(), String> {

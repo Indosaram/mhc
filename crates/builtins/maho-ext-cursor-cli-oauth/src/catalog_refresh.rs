@@ -76,6 +76,7 @@ mod tests {
         let directory=tempfile::tempdir().expect("directory");let settings=CursorCliOauthProviderSettings {enabled:false,..Default::default()};
         assert!(refresh_catalog(directory.path(),&settings,None,std::path::Path::new("/missing"),&Default::default(),1000.0,||async {Ok(())}).await.expect("disabled").is_none());
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn unknown_pin_falls_back_to_the_first_usable_account() {
         use std::os::unix::fs::PermissionsExt;

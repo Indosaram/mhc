@@ -1,11 +1,16 @@
 use super::*;
+#[cfg(unix)]
 use crate::lsp::manager::LspManagerOptions;
 use crate::request_context::StandaloneMcpRequestContextInput;
 use crate::request_context::create_standalone_mcp_request_context;
 use crate::request_context::run_with_request_context;
+#[cfg(unix)]
 use crate::request_context::scope_request_context;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::sync::atomic::AtomicUsize;
+#[cfg(unix)]
 use std::sync::atomic::Ordering;
 
 fn temp_root() -> tempfile::TempDir {
@@ -28,6 +33,7 @@ fn context_for(root: &Path) -> crate::request_context::LspRequestContext {
     .expect("context")
 }
 
+#[cfg(unix)]
 fn joined(root: &str, parts: &[&str]) -> String {
     let mut path = PathBuf::from(root);
     path.extend(parts);

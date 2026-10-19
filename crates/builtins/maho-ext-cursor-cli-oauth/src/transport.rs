@@ -50,6 +50,7 @@ pub fn spawn_cursor_cli(executable:&Path,args:CursorCliArgsInput<'_>,account_hom
         let mut out=[0u8;8192]; let mut err=[0u8;8192]; let mut out_open=true; let mut err_open=true;
         let mut aborted=false; let mut failure=None; let mut status=None;
         let mut deadline=Box::pin(tokio::time::sleep(Duration::from_millis(CURSOR_CLI_ABORT_GRACE_MS)));
+        #[cfg_attr(not(unix),allow(unused_mut))]
         let mut escalated=false;
         loop {
             tokio::select! {

@@ -130,6 +130,7 @@ fn handle_prompt(command: &Value, id: &Value) {
         }
         #[cfg(windows)]
         exit_now(1);
+        #[cfg(unix)]
         return;
     }
     if let Some(text) = message.strip_prefix("finish:") {
@@ -345,6 +346,8 @@ pub(super) fn fake_command(mode: &str, env: &BTreeMap<String, String>, own_group
         ])
         .envs(env)
         .env(MODE_ENV, mode);
+    #[cfg(not(unix))]
+    let _ = own_group;
     #[cfg(unix)]
     if own_group {
         use std::os::unix::process::CommandExt;
@@ -388,6 +391,7 @@ pub(super) fn wait_for(timeout: Duration, mut predicate: impl FnMut() -> bool) {
 }
 
 /// `ps -o stat= -p <pid>`: running and not a zombie.
+#[cfg(unix)]
 pub(super) fn is_running(pid: u32) -> bool {
     Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])

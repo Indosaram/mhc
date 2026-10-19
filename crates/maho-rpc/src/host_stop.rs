@@ -8,20 +8,19 @@ pub async fn stop_host(socket:&str,agent_dir:&std::path::Path,drain:bool,force:b
     let paths=crate::host_daemon_paths::create_host_daemon_paths(socket,agent_dir);
     let registered=crate::host_daemon_registration::read_host_registration(&paths)?;
     let Some(owner)=crate::host_daemon_registration::proven_owner(registered.as_ref(),socket)else{return Ok(StopHostResult::Refuse{reason:"unknown_owner"});};
+    #[cfg(not(unix))] let _=(&owner,&paths);
     let host=crate::host_probe::probe_protocol_info(socket,timeout_ms).await;
     let handoff=host.as_ref().is_some_and(|host|host.capabilities.iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));
     let sessions=if drain{None}else{crate::host_probe::probe_session_count(socket,timeout_ms).await};
     match stop_decision(true,drain,force,false,handoff,host.is_some(),sessions){
         StopDecision::Refuse(reason)=>Ok(StopHostResult::Refuse{reason}),
         StopDecision::Drain=>{
-            #[cfg(unix)] signal_generation(owner.pid,rustix::process::Signal::USR1).map_err(std::io::Error::from)?;
-            #[cfg(not(unix))] return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"draining hosts is unsupported on this platform"));
-            Ok(StopHostResult::Drained{pid:owner.pid})
+            #[cfg(unix)] { signal_generation(owner.pid,rustix::process::Signal::USR1).map_err(std::io::Error::from)?; Ok(StopHostResult::Drained{pid:owner.pid}) }
+            #[cfg(not(unix))] { Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"draining hosts is unsupported on this platform")) }
         },
         StopDecision::Stop=>{
-            #[cfg(unix)] signal_generation(owner.pid,rustix::process::Signal::TERM).map_err(std::io::Error::from)?;
-            #[cfg(not(unix))] return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"stopping hosts is unsupported on this platform"));
-            crate::host_daemon_registration::release_generation(&paths,&owner.instance_id,owner.pid)?;Ok(StopHostResult::Stopped{pid:owner.pid})
+            #[cfg(unix)] { signal_generation(owner.pid,rustix::process::Signal::TERM).map_err(std::io::Error::from)?; crate::host_daemon_registration::release_generation(&paths,&owner.instance_id,owner.pid)?;Ok(StopHostResult::Stopped{pid:owner.pid}) }
+            #[cfg(not(unix))] { Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"stopping hosts is unsupported on this platform")) }
         },
     }
 }

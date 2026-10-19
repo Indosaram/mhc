@@ -339,6 +339,7 @@ impl std::error::Error for TerminalError {}
 impl From<std::io::Error> for TerminalError {
     fn from(error: std::io::Error) -> Self {
         let message = error.to_string();
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut out = Self::new(message);
         #[cfg(unix)]
         if let Some(errno) = rustix::io::Errno::from_io_error(&error) {

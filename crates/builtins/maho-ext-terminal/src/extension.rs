@@ -208,7 +208,7 @@ impl Extension for TerminalExtension {
                 }
             }
             #[cfg(not(unix))]
-            {let _=(event,ctx,manager,monitors,configuration,sender);}
+            {let _=(event,ctx,state,manager,monitors,configuration,sender);}
             Ok(EventResult::None)
         })}));
         let shutdown_lifecycle=state_lifecycle.clone();let shutdown_monitors=monitors.clone();

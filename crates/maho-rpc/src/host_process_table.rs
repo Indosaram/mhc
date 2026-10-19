@@ -64,6 +64,7 @@ pub fn darwin_reader() -> Option<Vec<ProcessTableRow>> {
 }
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
     #[cfg(unix)]
     fn kernel_platform()->&'static str{if cfg!(target_os="macos"){"darwin"}else{"linux"}}

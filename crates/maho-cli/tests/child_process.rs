@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_cli::utils::child_process::*;
 #[cfg(unix)]
 #[tokio::test]

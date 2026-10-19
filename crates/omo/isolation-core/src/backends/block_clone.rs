@@ -217,9 +217,9 @@ pub fn duplicate_extents(
 pub fn default_load_windows() -> std::result::Result<Arc<dyn WindowsCloneApi>, NativeLoadError> {
     #[cfg(windows)]
     {
-        return Ok(create_windows_clone_api(Arc::new(
+        Ok(create_windows_clone_api(Arc::new(
             crate::backends::block_clone::kernel32::Kernel32,
-        )));
+        )))
     }
     #[cfg(not(windows))]
     {

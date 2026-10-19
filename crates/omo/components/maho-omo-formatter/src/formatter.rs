@@ -405,7 +405,6 @@ pub async fn format_one(
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         tokio_cmd.creation_flags(CREATE_NO_WINDOW);
     }

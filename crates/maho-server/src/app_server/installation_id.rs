@@ -66,6 +66,7 @@ pub async fn ensure_installation_id(agent_dir:&Path)->io::Result<String> {
     for _ in 0..100 {
         if let Some(id)=read_id(&path).await? {return Ok(id);}
         tokio::fs::create_dir_all(agent_dir.join("app-server")).await?;
+        #[cfg_attr(not(unix),allow(unused_mut))]
         let mut directory=tokio::fs::DirBuilder::new();
         #[cfg(unix)]
         directory.mode(0o700);

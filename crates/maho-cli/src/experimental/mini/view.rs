@@ -14,8 +14,10 @@ use std::rc::Rc;
 use maho_tui::components::input::{Input, InputOptions};
 use maho_tui::components::text::Text;
 use maho_tui::components::truncated_text::TruncatedText;
+#[cfg(unix)]
 use maho_tui::terminal::{ProcessTerminal, ProcessTerminalOptions, Terminal};
 use maho_tui::tui::{Component, Container, Focusable};
+#[cfg(unix)]
 use maho_tui::tui_alt_screen::TuiAltScreen;
 use serde_json::Value;
 

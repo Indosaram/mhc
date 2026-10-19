@@ -126,6 +126,7 @@ impl McpLogger {
     }
 }
 fn set_file_permissions(path:&Path)->std::io::Result<()> {
+    #[cfg(not(unix))] let _=path;
     #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(path,std::fs::Permissions::from_mode(0o600))?;}
     Ok(())
 }

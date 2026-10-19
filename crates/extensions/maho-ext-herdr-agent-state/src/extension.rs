@@ -1,7 +1,9 @@
 use crate::{State, session_reference};
 use maho_ext_api::{BusSubscription, EventKind, EventResult, Extension, ExtensionApi, ExtensionContext, ExtensionEvent, ExtensionMode};
 use serde_json::{Value, json};
-use std::{io::{Read, Write}, sync::{Arc, Mutex, Condvar}, thread::JoinHandle, time::{Duration, SystemTime, UNIX_EPOCH}};
+#[cfg(unix)]
+use std::io::{Read, Write};
+use std::{sync::{Arc, Mutex, Condvar}, thread::JoinHandle, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 struct Config { socket: String, pane: String }
 impl Config {

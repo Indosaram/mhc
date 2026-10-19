@@ -8,7 +8,7 @@
 //! pre-existing behavior and the fork-free port is a recorded platform blocker, not a silent
 //! degradation. Linux's `/proc` read is already in process and needs no FFI.
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 use std::path::Path;
 #[cfg(not(target_os = "linux"))]
 use std::process::{Command, Output, Stdio};

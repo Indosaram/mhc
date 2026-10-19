@@ -1,6 +1,8 @@
 //! Atomic filesystem operations for Git worktree state transitions.
 
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +25,8 @@ pub fn write_worktree_file(
     mode: u32,
     exclusive: bool,
 ) -> Result<bool, GitError> {
+    #[cfg(not(unix))]
+    let _ = mode;
     let target = root.join(path);
     assert_safe_parents(root, path)?;
     if !exclusive {
@@ -253,11 +257,11 @@ where
     let marker_path = target.join(".omo-reservation");
     fs::write(&marker_path, &marker).map_err(GitError::Io)?;
 
-    let reserved = fs::symlink_metadata(&target).map_err(GitError::Io)?;
     #[cfg(unix)]
-    let (res_dev, res_ino) = (reserved.dev(), reserved.ino());
-    #[cfg(not(unix))]
-    let (res_dev, res_ino) = (0u64, 0u64);
+    let (res_dev, res_ino) = {
+        let reserved = fs::symlink_metadata(&target).map_err(GitError::Io)?;
+        (reserved.dev(), reserved.ino())
+    };
 
     let moved_path = moved.to_path_buf();
     let root_path = root.to_path_buf();

@@ -1,21 +1,27 @@
+#[cfg(unix)]
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+#[cfg(unix)]
 use maho_omo_computer_use::engine_probe::{
     probe_computer_use_engine, EngineProbeResult, COMPUTER_USE_DOCTOR_TIMEOUT_MS,
 };
 use maho_omo_computer_use::engine_status::{
     engine_error_code, EngineState, TrackedDesktopService, TrackedDesktopServiceOptions,
 };
+#[cfg(unix)]
 use maho_omo_computer_use::permission_status::describe_engine_permissions;
+#[cfg(unix)]
 use senpi_desktop_core::protocol::{ABI as ENGINE_ABI, PROTOCOL_VERSION};
 use senpi_desktop_protocol::{
     EngineErrorData, ErrorCode, JsonRpcErrorData,
 };
 use senpi_desktop_service::rpc_client::{DesktopEngineRpcError, DesktopError};
 use senpi_desktop_service::service::DesktopServiceOptions;
+#[cfg(unix)]
 use tempfile::tempdir;
 
 #[cfg(unix)]

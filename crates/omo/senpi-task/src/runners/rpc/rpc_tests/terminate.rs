@@ -1,11 +1,18 @@
 //! `runners/rpc/terminate.test.ts`.
 
+#[cfg(unix)]
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::Duration;
 
-use super::fake_child::{ChildGuard, fake_command, is_running, spawn_fake_child, wait_for};
+use super::fake_child::spawn_fake_child;
+#[cfg(unix)]
+use super::fake_child::{ChildGuard, fake_command, is_running, wait_for};
+#[cfg(unix)]
 use crate::runners::rpc::process::RpcChildProcess;
 use crate::runners::rpc::terminate::terminate_rpc_child;
 use crate::runners::types::TerminateOptions;
@@ -16,6 +23,7 @@ fn delay(ms: u64) -> TerminateOptions {
     }
 }
 
+#[cfg(unix)]
 fn read_line_ending_with(child: &RpcChildProcess, marker: &str) -> String {
     let stdout = child.take_stdout().expect("piped stdout");
     let mut reader = BufReader::new(stdout);
@@ -33,6 +41,7 @@ fn read_line_ending_with(child: &RpcChildProcess, marker: &str) -> String {
     }
 }
 
+#[cfg(unix)]
 fn spawn_mode(mode: &str, own_group: bool) -> Arc<RpcChildProcess> {
     Arc::new(RpcChildProcess::spawn_command(fake_command(
         mode,

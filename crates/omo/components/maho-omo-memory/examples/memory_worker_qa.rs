@@ -40,10 +40,14 @@ async fn run() -> Result<i32, String> {
         Some("--fixture-supervisor-child") => fixtures::supervisor_child::run(required(&args, 1)?, Path::new(required(&args, 2)?), &env).await,
         Some("--fixture-taskkill") => {
             #[cfg(unix)]
-            fixtures::supervisor_taskkill::run(&args[1..], Path::new(env.get("OMO_MEMORY_SUPERVISOR_TASKKILL_RUN_DIR").ok_or("taskkill run directory missing")?))?;
+            {
+                fixtures::supervisor_taskkill::run(&args[1..], Path::new(env.get("OMO_MEMORY_SUPERVISOR_TASKKILL_RUN_DIR").ok_or("taskkill run directory missing")?))?;
+                Ok(0)
+            }
             #[cfg(not(unix))]
-            return Err("injected taskkill fixture requires Unix".into());
-            Ok(0)
+            {
+                Err("injected taskkill fixture requires Unix".into())
+            }
         }
         Some("--fixture-facts") => fixtures::facts_child::run(required(&args, 1)?, &env),
         Some("--fixture-reflection") => fixtures::reflection_child::run(required(&args, 1)?, &env).await,
