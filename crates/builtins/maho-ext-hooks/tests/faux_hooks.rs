@@ -19,7 +19,7 @@ struct ConfiguredHooks;
 impl Extension for ConfiguredHooks {
     fn register(&self,api:&mut ExtensionApi) {
         api.on(EventKind::SessionStart,Arc::new(|_,ctx|Box::pin(async move {
-            let config=json!({"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"printf '{\"additionalContext\":\"hooks-faux-context\"}'","commandWindows":"node -e \"process.stdout.write(JSON.stringify({additionalContext:'hooks-faux-context'}))\""}]}]}});
+            let config=json!({"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"printf '{\"additionalContext\":\"hooks-faux-context\"}'"}]}]}});
             install_hooks(ctx,config)?;
             Ok(EventResult::None)
         })));
@@ -31,7 +31,7 @@ struct StopHooks;
 impl Extension for StopHooks {
     fn register(&self,api:&mut ExtensionApi) {
         api.on(EventKind::SessionStart,Arc::new(|_,ctx|Box::pin(async move {
-            let config=json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"printf '{\"decision\":\"block\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"stop-hook-context\"}}'","commandWindows":"node -e \"process.stdout.write(JSON.stringify({decision:'block',hookSpecificOutput:{hookEventName:'Stop',additionalContext:'stop-hook-context'}}))\""}]}]}});
+            let config=json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"printf '{\"decision\":\"block\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"stop-hook-context\"}}'"}]}]}});
             install_hooks(ctx,config)?;
             Ok(EventResult::None)
         })));

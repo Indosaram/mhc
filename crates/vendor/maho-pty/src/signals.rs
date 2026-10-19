@@ -33,7 +33,50 @@ pub(crate) fn send_signal(
     fallback.kill().map_err(PtyError::from)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub(crate) fn send_signal(
+    process_group: Option<i32>,
+    _signal: i32,
+    fallback: &mut dyn ChildKiller,
+) -> PtyResult<()> {
+    if let Some(pid) = process_group.filter(|&pid| pid > 0) {
+        const PROCESS_TERMINATE: u32 = 0x0001;
+        extern "system" {
+            fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut std::ffi::c_void;
+            fn TerminateProcess(process: *mut std::ffi::c_void, exit_code: u32) -> i32;
+            fn CloseHandle(object: *mut std::ffi::c_void) -> i32;
+        }
+        // SAFETY: OpenProcess takes plain integers; a null handle is checked before any use.
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
+        if !handle.is_null() {
+            // SAFETY: `handle` is a live process handle opened with PROCESS_TERMINATE.
+            let res = unsafe { TerminateProcess(handle, 1) };
+            // SAFETY: `handle` came from OpenProcess and is closed exactly once.
+            unsafe { CloseHandle(handle) };
+            if res != 0 {
+                return Ok(());
+            }
+        }
+    }
+    match fallback.kill() {
+        Ok(()) => Ok(()),
+        Err(err)
+            if err.raw_os_error() == Some(5)
+                || err.raw_os_error() == Some(6)
+                || err.raw_os_error() == Some(2)
+                || err.to_string().contains("Access is denied")
+                || err.to_string().contains("No such process")
+                || err.to_string().contains("os error 5")
+                || err.to_string().contains("os error 6")
+                || err.to_string().contains("os error 2") =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(PtyError::from(err)),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn send_signal(
     _process_group: Option<i32>,
     _signal: i32,

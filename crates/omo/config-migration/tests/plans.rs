@@ -251,8 +251,15 @@ fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_
         user_document["legacy_migrations"][canonical_config_jsonc.as_str()],
         json!(["legacy-config-jsonc"])
     );
-    let user_backup =
-        format!("{canonical_home}/.omo/migration-backup-{timestamp}-opencode-config");
+    let user_backup = if cfg!(windows) {
+        Path::new(&canonical_home)
+            .join(".omo")
+            .join(format!("migration-backup-{timestamp}-opencode-config"))
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        format!("{canonical_home}/.omo/migration-backup-{timestamp}-opencode-config")
+    };
     let join_sub = |base: &str, sub: &str| -> String {
         if cfg!(windows) {
             Path::new(base).join(sub.replace('/', "\\")).to_string_lossy().into_owned()

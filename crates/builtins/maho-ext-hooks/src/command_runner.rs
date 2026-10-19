@@ -28,7 +28,16 @@ pub async fn run_command_hook(handler:&ExecutableHookHandler,input:&serde_json::
     if options.signal.is_some_and(AbortSignal::is_aborted) {return build_result(command,&options,start,None,None,false,true,timeout_seconds,Captured::default(),Captured::default());}
     let event:SupportedHookEvent=serde_json::from_value(input.get("event").cloned().unwrap_or(serde_json::Value::Null)).map_err(std::io::Error::other)?;
     let inherited=std::env::vars().collect::<BTreeMap<_,_>>();let env=build_hook_environment(handler,event,options.source_env.unwrap_or(&inherited),options.env_passthrough);
-    let mut process=if cfg!(windows) {let mut process=tokio::process::Command::new("cmd.exe");process.args(["/d","/s","/c",command]);process} else {let mut process=tokio::process::Command::new("/bin/sh");process.args(["-c",command]);process};
+    let mut process=if cfg!(windows) {
+        let shell=maho_tools::shell::get_shell_config(None).map_err(std::io::Error::other)?;
+        let mut process=tokio::process::Command::new(shell.shell);
+        process.args(shell.args).arg(command);
+        process
+    } else {
+        let mut process=tokio::process::Command::new("/bin/sh");
+        process.args(["-c",command]);
+        process
+    };
     process.current_dir(options.cwd).env_clear().envs(env).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     #[cfg(unix)]
     process.process_group(0);
@@ -78,9 +87,16 @@ async fn kill_child_tree(child:&mut tokio::process::Child,pid:Option<u32>)->std:
     }
     #[cfg(windows)]
     if let Some(pid)=pid {
-        let status=tokio::process::Command::new("taskkill.exe").args(["/PID",&pid.to_string(),"/T","/F"]).status().await;
-        let Ok(status)=status else {child.start_kill()?;return Ok(());};
-        if status.success() || status.code()==Some(128) {return Ok(());}
+        let env=std::env::vars().collect();
+        for taskkill in maho_tools::shell::windows_taskkill_candidates(&env) {
+            let status=tokio::process::Command::new(taskkill)
+                .args(["/PID",&pid.to_string(),"/T","/F"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status().await;
+            if matches!(status, Ok(status) if status.success() || status.code()==Some(128)) {return Ok(());}
+        }
         child.start_kill()?;
         return Ok(());
     }
@@ -113,9 +129,7 @@ mod tests {
     fn options(path:&Path)->CommandHookRunOptions<'_> {CommandHookRunOptions {cwd:path,env_passthrough:&[],output_policy:None,signal:None,source_env:None}}
     #[tokio::test] async fn stdin_stdout_stderr_exit_metadata()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;
-        let mut hook=handler("cat; printf stderr-marker >&2; exit 7");
-        hook.config.command_windows=Some("node -e \"const fs=require('fs');process.stdout.write(fs.readFileSync(0));process.stderr.write('stderr-marker');process.exit(7);\"".into());
-        let result=run_command_hook(&hook,&json!({"event":"PreToolUse","toolName":"Bash"}),options(dir.path())).await?;
+        let result=run_command_hook(&handler("cat; printf stderr-marker >&2; exit 7"),&json!({"event":"PreToolUse","toolName":"Bash"}),options(dir.path())).await?;
         assert_eq!(serde_json::from_str::<serde_json::Value>(&result.stdout).map_err(std::io::Error::other)?,json!({"event":"PreToolUse","toolName":"Bash"}));
         assert_eq!(result.stderr,"stderr-marker");
         assert_eq!(result.exit_code,Some(7));
@@ -125,7 +139,6 @@ mod tests {
     #[tokio::test] async fn invalid_timeout_prevents_spawn() {let mut hook=handler("exit 0");hook.config.timeout=Some(0.0);assert!(run_command_hook(&hook,&json!({"event":"SessionStart"}),options(Path::new("/tmp"))).await.is_err());}
     #[tokio::test] async fn timeout_kills_process_group()->std::io::Result<()> {
         let mut hook=handler("while :; do :; done");
-        hook.config.command_windows=Some("node -e \"for(;;);\"".into());
         hook.config.timeout=Some(0.02);
         let dir=tempfile::tempdir()?;
         let result=run_command_hook(&hook,&json!({"event":"SessionStart"}),options(dir.path())).await?;
@@ -136,7 +149,6 @@ mod tests {
     #[tokio::test]
     async fn timeout_interrupts_a_child_that_never_reads_large_stdin()->std::io::Result<()> {
         let mut hook=handler("while :; do :; done");
-        hook.config.command_windows=Some("node -e \"for(;;);\"".into());
         hook.config.timeout=Some(0.02);
         let dir=tempfile::tempdir()?;
         let result=tokio::time::timeout(Duration::from_secs(5),run_command_hook(&hook,&json!({"event":"UserPromptSubmit","prompt":"x".repeat(1_000_000)}),options(dir.path()))).await.map_err(std::io::Error::other)??;

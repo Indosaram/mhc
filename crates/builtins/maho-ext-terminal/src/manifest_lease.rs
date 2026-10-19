@@ -31,10 +31,49 @@ pub fn probe_alive(pid:f64)->std::io::Result<bool> {
         Ok(())|Err(nix::errno::Errno::EPERM)=>Ok(true),Err(nix::errno::Errno::ESRCH)=>Ok(false),Err(error)=>Err(std::io::Error::from_raw_os_error(error as i32)),
     }
 }
+#[cfg(windows)]
+pub fn probe_alive(pid:f64)->std::io::Result<bool> {
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_INVALID_PARAMETER: u32 = 87;
+
+    extern "system" {
+        fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut std::ffi::c_void;
+        fn GetExitCodeProcess(process: *mut std::ffi::c_void, exit_code: *mut u32) -> i32;
+        fn CloseHandle(object: *mut std::ffi::c_void) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    if !pid.is_finite() || pid <= 0.0 || pid > u32::MAX as f64 {
+        return Ok(false);
+    }
+    let pid = pid as u32;
+    // SAFETY: OpenProcess takes integer arguments; a null handle is checked before use.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        let error = unsafe { GetLastError() };
+        if error == ERROR_INVALID_PARAMETER {
+            return Ok(false);
+        }
+        if error == 5 {
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+    let mut exit_code = 0u32;
+    // SAFETY: handle is valid and exit_code is valid pointer.
+    let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+    // SAFETY: handle came from OpenProcess and is closed once.
+    unsafe { CloseHandle(handle) };
+    if queried != 0 && exit_code == STILL_ACTIVE {
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     #[test] fn default_probe_observes_current_process()->std::io::Result<()> {assert!(probe_alive(f64::from(std::process::id()))?);Ok(())}
     #[test] fn first_acquire_writes_pid()->std::io::Result<()> {let dir=tempfile::tempdir()?;let path=dir.path().join("nested/s.lease");assert_eq!(acquire_terminal_lease(&dir.path().join("nested"),"s",12.0,99.0,|_|Ok(true))?,AcquireTerminalLeaseResult::Acquired {path:path.clone(),pid:12.0});assert!(matches!(read_lease(&path)?,LeaseRead::Record(LeaseRecord {pid:12.0,started_at_ms:99.0})));Ok(())}
     #[test] fn second_acquire_retains_live_holder()->std::io::Result<()> {let dir=tempfile::tempdir()?;acquire_terminal_lease(dir.path(),"s",12.0,99.0,|_|Ok(true))?;assert_eq!(acquire_terminal_lease(dir.path(),"s",13.0,100.0,|_|Ok(true))?,AcquireTerminalLeaseResult::Held {holder:LeaseRecord {pid:12.0,started_at_ms:99.0}});Ok(())}

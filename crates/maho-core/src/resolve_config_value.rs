@@ -255,8 +255,16 @@ pub async fn run_config_command(command_config: &str, env: Option<&HashMap<Strin
 }
 
 async fn execute_command_once(command: &str, env: Option<&HashMap<String, String>>) -> Option<String> {
-    let mut process = tokio::process::Command::new("sh");
-    process.arg("-c").arg(command);
+    let mut process = if cfg!(windows) {
+        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+        let mut cmd = tokio::process::Command::new(comspec);
+        cmd.args(["/d", "/s", "/c"]).arg(command);
+        cmd
+    } else {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(command);
+        cmd
+    };
     process.stdin(std::process::Stdio::null());
     process.stdout(std::process::Stdio::piped());
     process.stderr(std::process::Stdio::null());

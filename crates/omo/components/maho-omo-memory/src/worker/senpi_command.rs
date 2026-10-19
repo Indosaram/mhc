@@ -57,7 +57,15 @@ mod tests {
         std::fs::write(&entry, content).unwrap();
         let lookup = || Some(entry.to_string_lossy().into_owned());
         let launcher = resolve_senpi_launch(&BTreeMap::from([("PATH".into(), "".into())]), &SenpiLaunchRuntime { is_bun_binary: false, is_compiled_engine: false, exec_path, platform, argv: &[], resolve_installed_cli: &lookup }).unwrap();
-        let output = std::process::Command::new(launcher.command).args(launcher.prefix_args).env_clear().output().unwrap();
+        let mut command = std::process::Command::new(launcher.command);
+        command.args(launcher.prefix_args).env_clear();
+        #[cfg(windows)]
+        for key in ["SystemRoot", "PATH", "PATHEXT"] {
+            if let Some(val) = std::env::var_os(key) {
+                command.env(key, val);
+            }
+        }
+        let output = command.output().unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "LAUNCH_OK");
     }
