@@ -93,9 +93,11 @@ const SKILLS_DIR = "skills";
 const CONDITIONAL_SKILLS_DIR = "skills-conditional";
 const X_SEARCH_SKILL_SOURCE = "crates/omo/components/maho-omo-x-search/skill/SKILL.md";
 const LICENSES_DIR = "licenses";
-const CLI_BINARY_NAME = "mhc";
-const AST_GREP_MCP_NAME = "ast-grep-mcp";
-const LSP_DAEMON_NAME = "lsp-daemon";
+// Windows executables carry `.exe`; the runtime resolves every sibling by that platform name.
+const EXE_SUFFIX = process.platform === "win32" ? ".exe" : "";
+const CLI_BINARY_NAME = `mhc${EXE_SUFFIX}`;
+const AST_GREP_MCP_NAME = `ast-grep-mcp${EXE_SUFFIX}`;
+const LSP_DAEMON_NAME = `lsp-daemon${EXE_SUFFIX}`;
 const SCHEMA_VERSION = 1;
 
 // The published config JSON Schema. `assets/omo.schema.json` is the native projection of the
@@ -110,7 +112,7 @@ const SCHEMA_ASSET_SOURCE = `assets/${SCHEMA_ASSET_NAME}`;
 // staged only from `--git-bash-binary` (the single git-bash flag, no aliases): the selected product
 // staging (`--skill-source latest`) requires it, the pinned baseline stages it optionally, and its
 // source path + sha256 are recorded in the manifest either way (no guess, no placeholder).
-const GIT_BASH_MCP_NAME = "omo-git-bash";
+const GIT_BASH_MCP_NAME = `omo-git-bash${EXE_SUFFIX}`;
 
 // Binary sibling: the native desktop engine. Upstream resolves it via desktop-service child
 // (`crates/omo/senpi-desktop-service/src/child.rs`), which looks for `senpi-desktop-engine` beside
@@ -118,7 +120,7 @@ const GIT_BASH_MCP_NAME = "omo-git-bash";
 // in the selected product staging (`--skill-source latest`) it is REQUIRED: an absent sibling refuses
 // the selected delivery, and verify() enforces the declared sibling in the staged manifest. In the
 // pinned baseline it stays optional (absent means no sibling and no placeholder).
-const DESKTOP_ENGINE_NAME = "senpi-desktop-engine";
+const DESKTOP_ENGINE_NAME = `senpi-desktop-engine${EXE_SUFFIX}`;
 
 // The browser skill's engine runtime. Upstream materializes it at build/prepack time from the root
 // `omowright` devDependency into `skills/browser/runtime/omowright/` (gitignored, shipped through the
