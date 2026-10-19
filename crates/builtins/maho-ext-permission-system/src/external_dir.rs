@@ -21,14 +21,28 @@ pub fn to_parent_directory_pattern(input:&str,directory:bool)->String {
     }
 }
 fn normalize(path:&Path)->PathBuf {
-    let mut result=PathBuf::from("/");
-    for part in path.to_string_lossy().split('/') {match part {""|"."=>{},".."=>{result.pop();},part=>result.push(part)}}
+    let mut result=PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {},
+            std::path::Component::ParentDir => { result.pop(); },
+            component => result.push(component.as_os_str()),
+        }
+    }
     result
 }
 pub fn resolve_without_open(path:&Path)->PathBuf {
     let absolute=if path.is_absolute(){path.to_owned()}else{std::env::current_dir().unwrap_or_else(|_|PathBuf::from("/")).join(path)};
-    let mut pending:VecDeque<String>=absolute.to_string_lossy().split('/').filter(|part|!part.is_empty()).map(str::to_owned).collect();
-    let mut resolved=PathBuf::from("/"); let mut hops=0;
+    let mut pending:VecDeque<String>=absolute.to_string_lossy().split(['/', '\\']).filter(|part|!part.is_empty()).map(str::to_owned).collect();
+    let mut resolved = if absolute.has_root() && !absolute.to_string_lossy().starts_with(['/', '\\']) {
+        let prefix = pending.pop_front().unwrap_or_default();
+        PathBuf::from(format!("{prefix}{}", std::path::MAIN_SEPARATOR))
+    } else if absolute.has_root() || absolute.to_string_lossy().starts_with(['/', '\\']) {
+        PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+    } else {
+        PathBuf::new()
+    };
+    let mut hops=0;
     while let Some(part)=pending.pop_front(){
         if part == "." {continue;}
         if part == ".." {resolved.pop();continue;}
@@ -38,7 +52,19 @@ pub fn resolve_without_open(path:&Path)->PathBuf {
                 hops+=1;
                 if hops>40{return normalize(&pending.iter().fold(candidate,|path,part|path.join(part)));}
                 match std::fs::read_link(&candidate){
-                    Ok(link)=>{if link.is_absolute(){resolved=PathBuf::from("/");} let parts:Vec<String>=link.to_string_lossy().split('/').filter(|part|!part.is_empty()).map(str::to_owned).collect();for part in parts.into_iter().rev(){pending.push_front(part);}}
+                    Ok(link)=>{
+                        if link.is_absolute() || link.to_string_lossy().starts_with(['/', '\\']) {
+                            resolved = if link.has_root() && !link.to_string_lossy().starts_with(['/', '\\']) {
+                                let mut parts: VecDeque<String> = link.to_string_lossy().split(['/', '\\']).filter(|p| !p.is_empty()).map(str::to_owned).collect();
+                                let prefix = parts.pop_front().unwrap_or_default();
+                                PathBuf::from(format!("{prefix}{}", std::path::MAIN_SEPARATOR))
+                            } else {
+                                PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+                            };
+                        }
+                        let parts:Vec<String>=link.to_string_lossy().split(['/', '\\']).filter(|part|!part.is_empty()).map(str::to_owned).collect();
+                        for part in parts.into_iter().rev(){pending.push_front(part);}
+                    }
                     Err(_)=>return normalize(&pending.iter().fold(candidate,|path,part|path.join(part))),
                 }
             }
@@ -66,7 +92,7 @@ pub fn extract_external_paths(command:&str,cwd:&Path,home:&Path)->Vec<String>{
     if !current.is_empty(){tokens.push(current);}
     tokens.into_iter().enumerate().filter_map(|(index,token)|{
         let token=if token.len()>=2&&((token.starts_with('"')&&token.ends_with('"'))||(token.starts_with('\'')&&token.ends_with('\''))){token[1..token.len()-1].to_owned()}else{token};
-        let pathlike=token.starts_with('/')||token.starts_with('~')||token.starts_with("$HOME")||token.starts_with("./")||token.starts_with("../")||token.contains('/');
+        let pathlike=token.starts_with('/')||token.starts_with('\\')||token.starts_with('~')||token.starts_with("$HOME")||token.starts_with("./")||token.starts_with(".\\")||token.starts_with("../")||token.starts_with("..\\")||token.contains('/')||token.contains('\\');
         if index==0&&!pathlike{return None;}
         let assignment=token.split_once('=').is_some_and(|(name,_)|{let mut chars=name.chars();chars.next().is_some_and(|ch|ch.is_ascii_alphabetic()||ch=='_')&&chars.all(|ch|ch.is_ascii_alphanumeric()||ch=='_')});
         if token.starts_with('-')||assignment||["|","||","&&",";","&","$(","${","`"].iter().any(|op|token.contains(op))||!pathlike{return None;}

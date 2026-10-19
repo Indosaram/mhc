@@ -118,7 +118,7 @@ mod tests {
     use super::*;
     #[test]
     fn parked_background_exit_republishes_state_and_flushes_to_new_owner() {
-        let mut bundle=TerminalSessionBundle::new(2);let id=bundle.manager.lock().unwrap().create("ready",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'")).unwrap();bundle.manager.lock().unwrap().get(&id).unwrap().wait(std::time::Duration::from_secs(5)).unwrap();
+        let mut bundle=TerminalSessionBundle::new(2);let id=bundle.manager.lock().unwrap().create("ready",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'")).unwrap();bundle.manager.lock().unwrap().get(&id).unwrap().wait(std::time::Duration::from_secs(5)).unwrap();
         bundle.notify_background_start(&id,"command",1.0);assert_eq!(bundle.background_snapshot()[0].id,id);bundle.park();bundle.notify_background_exit(&id);assert!(bundle.background_snapshot().is_empty());
         let (sender,receiver)=std::sync::mpsc::channel();let state_sender=sender.clone();bundle.bind_backgrounds(Arc::new(move |state| {state_sender.send(format!("state {}",state.len())).unwrap();}),Arc::new(move |id,runtime| {sender.send(format!("exit {id} {}",runtime.full_output().unwrap().trim())).unwrap();}));assert_eq!(receiver.try_recv().unwrap(),"state 0");assert_eq!(receiver.try_recv().unwrap(),format!("exit {id} ready"));assert!(receiver.try_recv().is_err());assert!(bundle.parked_exits.lock().unwrap().is_empty());bundle.teardown().unwrap();
     }
@@ -129,7 +129,7 @@ mod tests {
     }
     #[test]
     fn adopt_moves_live_state_between_generation_arcs() {
-        let mut source=TerminalSessionBundle::new(1);let id=source.manager.lock().unwrap().create("ready",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'")).unwrap();source.notify_background_start(&id,"command",1.0);
+        let mut source=TerminalSessionBundle::new(1);let id=source.manager.lock().unwrap().create("ready",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'")).unwrap();source.notify_background_start(&id,"command",1.0);
         let mut target=TerminalSessionBundle::new(4);target.adopt(&source);
         assert_eq!(target.manager.lock().unwrap().size(),1);assert_eq!(target.background_snapshot()[0].id,id);assert_eq!(source.manager.lock().unwrap().size(),0);assert!(source.background_snapshot().is_empty());
         target.teardown().unwrap();
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn adopt_same_bundle_keeps_live_sessions() {
         let mut live=TerminalSessionBundle::new(2);
-        let id=live.manager.lock().unwrap().create("sleeper",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read line")).unwrap();
+        let id=live.manager.lock().unwrap().create("sleeper",crate::shared::test_sh_options("read line")).unwrap();
         let parked=live.clone();
         live.adopt(&parked);
         let mut manager=live.manager.lock().unwrap();
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn park_same_bundle_twice_keeps_live_sessions() {
         let live=TerminalSessionBundle::new(2);
-        let id=live.manager.lock().unwrap().create("sleeper",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read line")).unwrap();
+        let id=live.manager.lock().unwrap().create("sleeper",crate::shared::test_sh_options("read line")).unwrap();
         park_bundle("park-twice-test",live.clone()).unwrap();
         park_bundle("park-twice-test",live.clone()).unwrap();
         assert!(!live.manager.lock().unwrap().get(&id).unwrap().exited().unwrap());
@@ -159,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn parked_monitor_completion_flushes_into_new_owner() {
         let mut bundle=TerminalSessionBundle::new(1);
-        let runtime=crate::runtime_session::TerminalRuntimeSession::start("ready",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'")).unwrap();
+        let runtime=crate::runtime_session::TerminalRuntimeSession::start("ready",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'")).unwrap();
         runtime.wait(std::time::Duration::from_secs(5)).unwrap();
         bundle.monitors.lock().unwrap().register(&runtime,crate::monitor_registry::CommandMonitor::new(crate::monitor_registry::MonitorSnapshotEntry {id:"bash_1".to_owned(),..Default::default()},None)).unwrap();
         let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();bundle.bind(Arc::new(move |event| {sender.send(event).unwrap();}));
@@ -168,7 +168,7 @@ mod tests {
     #[tokio::test]
     async fn parked_monitor_ending_flushes_to_new_owner_and_publishes_state() {
         let mut bundle=TerminalSessionBundle::new(1);
-        let runtime=crate::runtime_session::TerminalRuntimeSession::start("ready",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'")).unwrap();
+        let runtime=crate::runtime_session::TerminalRuntimeSession::start("ready",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'")).unwrap();
         runtime.wait(std::time::Duration::from_secs(5)).unwrap();
         let (ended_sender,mut ended)=tokio::sync::mpsc::unbounded_channel();let (state_sender,mut states)=tokio::sync::mpsc::unbounded_channel();
         bundle.park();

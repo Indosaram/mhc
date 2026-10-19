@@ -5,11 +5,34 @@ use maho_ext_compaction::openai_remote_model::*;
 fn live_codex_headers_include_the_running_kernel_and_native_architecture() {
     let m = model("chatgpt-subscription", "openai-codex-responses", "");
     let headers = create_live_openai_remote_compaction_headers(&m, Some("fixture"), &BTreeMap::new(), None).unwrap().unwrap();
-    let release = std::process::Command::new("uname").arg("-r").output().unwrap();
-    let release = String::from_utf8_lossy(&release.stdout);
+    #[cfg(unix)]
+    let release = {
+        let release = std::process::Command::new("uname").arg("-r").output().unwrap();
+        String::from_utf8_lossy(&release.stdout).trim().to_owned()
+    };
+    #[cfg(windows)]
+    let release = {
+        let release = std::process::Command::new("cmd").args(["/c", "ver"]).output().unwrap();
+        let text = String::from_utf8_lossy(&release.stdout);
+        let in_brackets = text
+            .find('[')
+            .and_then(|open| text.rfind(']').filter(|&close| close > open).map(|close| &text[open + 1..close]))
+            .unwrap_or(&text);
+        in_brackets
+            .split_whitespace()
+            .find(|word| word.chars().next().is_some_and(|c| c.is_ascii_digit()))
+            .and_then(|v| {
+                let parts: Vec<&str> = v.split('.').take(3).collect();
+                (!parts.is_empty() && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())))
+                    .then(|| parts.join("."))
+            })
+            .unwrap_or_else(|| "10.0.0".to_string())
+    };
+    #[cfg(not(any(unix, windows)))]
+    let release = String::new();
     let platform = if cfg!(target_os = "macos") { "darwin" } else if cfg!(target_os = "windows") { "win32" } else { std::env::consts::OS };
     let arch = match std::env::consts::ARCH { "x86_64" => "x64", "aarch64" => "arm64", "x86" => "ia32", arch => arch };
-    assert_eq!(headers["user-agent"], format!("senpi ({platform} {}; {arch})", release.trim()));
+    assert_eq!(headers["user-agent"], format!("senpi ({platform} {release}; {arch})"));
 }
 use serde_json::json;
 fn model(provider:&str,api:&str,base:&str)->Model {serde_json::from_value(json!({"id":"m","name":"m","api":api,"provider":provider,"baseUrl":base,"reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":4000})).expect("model")}

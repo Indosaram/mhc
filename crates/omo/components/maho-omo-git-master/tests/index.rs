@@ -88,7 +88,10 @@ fn project_config(root: &Path, body: &str) -> (PathBuf, BTreeMap<String, String>
     let project = home.join("project");
     std::fs::create_dir_all(project.join(".omo")).expect("project config dir");
     std::fs::write(project.join(".omo/omo.jsonc"), body).expect("project config");
-    let env = BTreeMap::from([("HOME".to_owned(), home.to_string_lossy().into_owned())]);
+    let env = BTreeMap::from([
+        ("HOME".to_owned(), home.to_string_lossy().into_owned()),
+        ("USERPROFILE".to_owned(), home.to_string_lossy().into_owned()),
+    ]);
     (project, env)
 }
 

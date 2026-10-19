@@ -482,7 +482,14 @@ async fn supports_shell_command_prefixes() {
 async fn prepares_command_cwd_and_explicit_environment() {
     let f = Fixture::new();
     std::fs::create_dir(f.dir.join("workspace")).expect("tool test operation must succeed");
-    let expected = std::fs::canonicalize(&f.dir).expect("canonical temp dir").join("workspace").to_string_lossy().into_owned();
+    let canonical = std::fs::canonicalize(&f.dir).expect("canonical temp dir");
+    let canonical_str = canonical.to_string_lossy();
+    let stripped = canonical_str
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| canonical_str.strip_prefix(r"\\?\").map(str::to_owned))
+        .unwrap_or_else(|| canonical_str.into_owned());
+    let expected = std::path::Path::new(&stripped).join("workspace").to_string_lossy().into_owned();
     let target = expected.clone();
     let prepare: BashPrepare<ExecutionToolContext> = Arc::new(move |execution, _, _| {
         execution.cwd = target.clone();
@@ -503,7 +510,26 @@ async fn prepares_command_cwd_and_explicit_environment() {
         )
         .await
         .expect("tool test operation must succeed");
-    assert_eq!(text(&result), format!("ready:explicit:{expected}"));
+    let output = text(&result);
+    if cfg!(windows) {
+        let parts: Vec<&str> = output.splitn(3, ':').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "ready");
+        assert_eq!(parts[1], "explicit");
+        let pwd = parts[2];
+        let win_pwd = if let Some(stripped) = pwd.strip_prefix('/') {
+            if let Some((drive, rest)) = stripped.split_once('/') {
+                format!("{}:\\{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"))
+            } else {
+                format!("{}:\\", stripped.to_ascii_uppercase())
+            }
+        } else {
+            pwd.replace('/', "\\")
+        };
+        assert_eq!(win_pwd.to_lowercase(), expected.replace('/', "\\").to_lowercase());
+    } else {
+        assert_eq!(output, format!("ready:explicit:{expected}"));
+    }
 }
 #[tokio::test]
 async fn coalesces_updates_and_spills_full_output() {

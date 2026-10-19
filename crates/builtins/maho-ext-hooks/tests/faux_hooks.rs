@@ -9,7 +9,8 @@ fn install_hooks(ctx:&ExtensionContext,config:serde_json::Value)->Result<(),Exte
     let source=maho_ext_hooks::types::HookSourceMetadata {scope:maho_ext_hooks::types::HookSourceScope::Global,source_path:path.to_string_lossy().into_owned(),display_order:0,discovered_at:maho_ext_hooks::types::HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None,plugin_env:None};
     let parsed=maho_ext_hooks::schema::parse_hook_config(&config,&source);
     let mut trust=maho_ext_hooks::trust_state_json::empty_hook_trust_state();
-    for handler in parsed.executable_handlers {trust.hooks.insert(maho_ext_hooks::trust::hook_trust_id(&handler),maho_ext_hooks::trust::create_hook_trust_entry(&handler,"linux","fixed").map_err(|error|ExtensionFailure::new(error.to_string()))?);}
+    let platform=if cfg!(windows) {"win32"} else {"linux"};
+    for handler in parsed.executable_handlers {trust.hooks.insert(maho_ext_hooks::trust::hook_trust_id(&handler),maho_ext_hooks::trust::create_hook_trust_entry(&handler,platform,"fixed").map_err(|error|ExtensionFailure::new(error.to_string()))?);}
     std::fs::write(ctx.cwd.join("hooks-state.json"),serde_json::to_vec(&trust).map_err(|error|ExtensionFailure::new(error.to_string()))?).map_err(|error|ExtensionFailure::new(error.to_string()))?;
     Ok(())
 }
@@ -18,7 +19,7 @@ struct ConfiguredHooks;
 impl Extension for ConfiguredHooks {
     fn register(&self,api:&mut ExtensionApi) {
         api.on(EventKind::SessionStart,Arc::new(|_,ctx|Box::pin(async move {
-            let config=json!({"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"printf '{\"additionalContext\":\"hooks-faux-context\"}'"}]}]}});
+            let config=json!({"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"printf '{\"additionalContext\":\"hooks-faux-context\"}'","commandWindows":"node -e \"process.stdout.write(JSON.stringify({additionalContext:'hooks-faux-context'}))\""}]}]}});
             install_hooks(ctx,config)?;
             Ok(EventResult::None)
         })));
@@ -30,7 +31,7 @@ struct StopHooks;
 impl Extension for StopHooks {
     fn register(&self,api:&mut ExtensionApi) {
         api.on(EventKind::SessionStart,Arc::new(|_,ctx|Box::pin(async move {
-            let config=json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"printf '{\"decision\":\"block\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"stop-hook-context\"}}'"}]}]}});
+            let config=json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"printf '{\"decision\":\"block\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"stop-hook-context\"}}'","commandWindows":"node -e \"process.stdout.write(JSON.stringify({decision:'block',hookSpecificOutput:{hookEventName:'Stop',additionalContext:'stop-hook-context'}}))\""}]}]}});
             install_hooks(ctx,config)?;
             Ok(EventResult::None)
         })));

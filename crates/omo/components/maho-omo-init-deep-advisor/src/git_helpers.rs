@@ -126,6 +126,7 @@ pub(crate) mod tests {
     #[test] fn head() { let (t,sha)=repo(); assert_eq!(git_head(t.path()).unwrap(),sha); }
     #[test] fn five_commits() { let (t,sha)=repo(); for n in 0..5 { fs::write(t.path().join("src/a.ts"),format!("change {n}\n")).unwrap(); commit(t.path()); } assert_eq!(git_commits_since(t.path(),&sha).unwrap(),5); }
     #[test] fn tracked_count() { let (t,_)=repo(); assert_eq!(git_tracked_file_count(t.path()).unwrap(),2); }
+    #[cfg(unix)]
     #[test] fn newline_filename() { let (t,_)=repo(); fs::write(t.path().join("we\nird.ts"),"a\nb").unwrap(); commit(t.path()); assert_eq!(git_tracked_file_count(t.path()).unwrap(),3); }
     #[test] fn touched() { let (t,sha)=repo(); fs::write(t.path().join("src/a.ts"),"changed").unwrap(); commit(t.path()); assert_eq!(git_touched_files_since(t.path(),&sha).unwrap(),vec!["src/a.ts"]); }
     #[test] fn documentation_excluded() { let (t,sha)=repo(); fs::create_dir(t.path().join(".omo")).unwrap(); for name in ["AGENTS.md","src/AGENTS.md",".omo/init-deep.json"] { fs::write(t.path().join(name),"docs").unwrap(); } commit(t.path()); assert!(git_touched_files_since(t.path(),&sha).unwrap().is_empty()); }

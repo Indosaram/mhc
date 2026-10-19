@@ -299,7 +299,8 @@ fn read_unread_message_by_id_finds_reserved_message_and_propagates_read_errors()
     fs::create_dir(&unread_path).expect("make unread path a directory");
     let error = read_unread_message_by_id(&team_run_id, "m1", "broken", &config)
         .expect_err("exact path read error must propagate");
-    assert!(error.to_string().contains("directory"));
+    let error_text = error.to_string().to_lowercase();
+    assert!(error_text.contains("directory") || error_text.contains("access is denied"));
     assert!(reservation.reserved_path.exists());
 }
 

@@ -32,7 +32,20 @@ fn file_settle_reason(summary:&str)->MonitorEndedReason {match summary {"watcher
 
 pub fn allocate_monitor_id()->std::io::Result<String> {
     use std::io::Read;
-    let mut bytes=[0u8;10];std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let mut bytes=[0u8;10];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).is_err() {
+        use sha2::Digest;
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let pid = std::process::id();
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(time.to_le_bytes());
+        hasher.update(pid.to_le_bytes());
+        hasher.update(count.to_le_bytes());
+        let hash = hasher.finalize();
+        bytes.copy_from_slice(&hash[..10]);
+    }
     Ok(monitor_id_from_bytes(bytes))
 }
 fn monitor_id_from_bytes(bytes:[u8;10])->String {
@@ -276,7 +289,7 @@ mod registry_tests {
     async fn disposed_registry_rejects_new_file_and_command_watches() {
         let dir=tempfile::tempdir().unwrap();let mut registry=MonitorRegistry::new(|_|{});registry.dispose();registry.dispose();
         assert_eq!(registry.register_file("file",&dir.path().join("file"),crate::terminal_manifest_model::FileEvent::Create,1000).unwrap_err().to_string(),"Cannot create file monitor: monitor registry is disposed.");
-        let runtime=crate::runtime_session::TerminalRuntimeSession::start("read",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read value")).unwrap();
+        let runtime=crate::runtime_session::TerminalRuntimeSession::start("read",crate::shared::test_sh_options("read value")).unwrap();
         assert!(matches!(registry.register(&runtime,CommandMonitor::new(MonitorSnapshotEntry::default(),None)),Err(crate::runtime_session::RuntimeError::RegistryDisposed)));assert!(registry.snapshot().is_empty());runtime.dispose().unwrap();
     }
     #[test]
@@ -356,7 +369,7 @@ mod registry_tests {
     async fn native_watch_emits_lines_then_exactly_one_completion() {
         let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();
         let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});
-        let runtime=crate::runtime_session::TerminalRuntimeSession::start("printf ready",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'")).unwrap();
+        let runtime=crate::runtime_session::TerminalRuntimeSession::start("printf ready",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'")).unwrap();
         registry.register(&runtime,CommandMonitor::new(MonitorSnapshotEntry {id:"bash_1".to_owned(),description:"ready".to_owned(),..Default::default()},None)).unwrap();
         let observed=tokio::time::timeout(std::time::Duration::from_secs(5),async {let line=events.recv().await.unwrap();let summary=events.recv().await.unwrap();(line,summary)}).await.unwrap();
         assert!(matches!(observed.0,MonitorEvent::Line {line,..} if line=="ready"));
@@ -367,7 +380,7 @@ mod registry_tests {
     async fn command_completion_emits_one_ended_event_with_exit_reason() {
         let (ended_sender,mut ended)=tokio::sync::mpsc::unbounded_channel();
         let mut registry=MonitorRegistry::new_with_ended(|_|{},move |event| {ended_sender.send(event).unwrap();});
-        let runtime=crate::runtime_session::TerminalRuntimeSession::start("printf ready",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'")).unwrap();
+        let runtime=crate::runtime_session::TerminalRuntimeSession::start("printf ready",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'")).unwrap();
         registry.register(&runtime,CommandMonitor::new(MonitorSnapshotEntry {id:"bash_1".to_owned(),description:"ready".to_owned(),..Default::default()},None)).unwrap();
         let event=tokio::time::timeout(std::time::Duration::from_secs(5),ended.recv()).await.unwrap().unwrap();
         assert_eq!((event.id.as_str(),event.description.as_str(),event.reason,event.exit_code),("bash_1","ready",MonitorEndedReason::Exit,Some(0)));assert!(event.fire_count>=1);assert!(ended.try_recv().is_err());registry.dispose();runtime.dispose().unwrap();
@@ -376,7 +389,7 @@ mod registry_tests {
     async fn dispose_emits_disposed_ending_for_every_live_record() {
         let (ended_sender,ended)=std::sync::mpsc::channel();
         let mut registry=MonitorRegistry::new_with_ended(|_|{},move |event| {ended_sender.send(event).unwrap();});
-        let runtime=crate::runtime_session::TerminalRuntimeSession::start("read value",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read value")).unwrap();
+        let runtime=crate::runtime_session::TerminalRuntimeSession::start("read value",crate::shared::test_sh_options("read value")).unwrap();
         registry.register(&runtime,CommandMonitor::new(MonitorSnapshotEntry {id:"bash_1".to_owned(),..Default::default()},None)).unwrap();
         let dir=tempfile::tempdir().unwrap();let (file_id,_)=registry.register_persistent_file("watch",&dir.path().join("file"),crate::terminal_manifest_model::FileEvent::Create).unwrap();
         registry.dispose();

@@ -27,7 +27,7 @@ async fn server_lists_real_repository_metadata_without_opening_agent_runtime() {
     let expected = session.metadata().id.clone();
     repo.close(&BACKGROUND_CONTEXT).await;
     let sessions = maho_cli::experimental::mini::server::list_sessions(&root, &cwd).await.unwrap();
-    assert_eq!(sessions.len(), 1); assert_eq!(sessions[0].id, expected); assert_eq!(sessions[0].cwd, cwd); assert_eq!(sessions[0].created_at, 42.0);
+    assert_eq!(sessions.len(), 1); assert_eq!(sessions[0].id, expected); assert_eq!(sessions[0].cwd.replace('\\', "/"), cwd.replace('\\', "/")); assert_eq!(sessions[0].created_at, 42.0);
     assert!(maho_cli::experimental::mini::server::list_sessions(&dir.path().join("missing").to_string_lossy(), &cwd).await.unwrap().is_empty());
 }
 #[tokio::test]

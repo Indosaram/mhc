@@ -27,11 +27,24 @@ fn restricted(target:&OmoConfigWatchTarget,protected:&[PathBuf])->bool {
         })
     })
 }
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => { normalized.pop(); },
+            std::path::Component::CurDir => {},
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
 pub fn resolve_omo_config_watch_target_resolution(cwd:&Path,home:&Path,env:&BTreeMap<String,String>)->OmoConfigWatchTargetResolution {
-    let cwd_path=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[&cwd.to_string_lossy()]));let cwd=cwd_path.as_path();
-    let home_path=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[&home.to_string_lossy()]));let home=home_path.as_path();
-    let mut loader_env=env.clone();loader_env.insert("HOME".into(),home.to_string_lossy().into_owned());
-    let configured=omo_config_core::resolve_omo_config_paths(&omo_config_core::ResolveOmoConfigPathsOptions{cwd:cwd.to_string_lossy().into_owned(),env:Some(loader_env),file_system:None,platform:Some("linux".into())});
+    let cwd_path=normalize_path(cwd);let cwd=cwd_path.as_path();
+    let home_path=normalize_path(home);let home=home_path.as_path();
+    let mut loader_env=env.clone();
+    loader_env.insert("HOME".into(),home.to_string_lossy().into_owned());
+    if cfg!(windows) { loader_env.insert("USERPROFILE".into(),home.to_string_lossy().into_owned()); }
+    let configured=omo_config_core::resolve_omo_config_paths(&omo_config_core::ResolveOmoConfigPathsOptions{cwd:cwd.to_string_lossy().into_owned(),env:Some(loader_env),file_system:None,platform:if cfg!(windows) { Some("win32".into()) } else { Some("linux".into()) }});
     let mut project_directories:std::collections::BTreeSet<PathBuf>=configured.into_iter().filter(|p|p.scope=="project").filter_map(|p|PathBuf::from(p.path).parent().map(Path::to_owned)).collect();
     project_directories.extend(omo_config_core::find_project_config_paths_farthest_first(&cwd.to_string_lossy(),&home.to_string_lossy(),&omo_config_core::StdReadFileSystem,None).into_iter().filter_map(|p|PathBuf::from(p).parent().map(Path::to_owned)));
     let user=home.join(".omo"); let mut targets=Vec::new();

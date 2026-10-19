@@ -152,7 +152,11 @@ fn resolve_in_package(child: &str) -> String {
 
 /// `homedir()`.
 pub fn home_dir() -> String {
-    std::env::var("HOME").ok().filter(|value| !value.is_empty()).unwrap_or_else(|| ".".to_owned())
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| ".".to_owned())
 }
 
 pub fn home_dir_path() -> PathBuf {
@@ -184,12 +188,14 @@ mod tests {
 
     #[test]
     fn resolves_the_default_agent_dir_under_the_config_dir() {
-        assert_eq!(resolve_agent_dir("/work/project", "/home/u", None), "/home/u/.omo/agent");
+        let expected = Path::new("/home/u").join(config_dir_name()).join("agent").to_string_lossy().into_owned();
+        assert_eq!(resolve_agent_dir("/work/project", "/home/u", None), expected);
     }
 
     #[test]
     fn an_env_override_wins_and_expands_tilde() {
-        assert_eq!(resolve_agent_dir("/work", "/home/u", Some("~/custom")), "/home/u/custom");
+        let expected = Path::new("/home/u").join("custom").to_string_lossy().into_owned();
+        assert_eq!(resolve_agent_dir("/work", "/home/u", Some("~/custom")), expected);
         assert_eq!(resolve_agent_dir("/work", "/home/u", Some("/abs/dir")), "/abs/dir");
     }
 
@@ -198,15 +204,15 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
         let project = tmp.path().join("proj");
-        std::fs::create_dir_all(project.join(".omo/agent")).expect("mkdir");
-        std::fs::create_dir_all(project.join("nested/deep")).expect("mkdir");
+        std::fs::create_dir_all(project.join(config_dir_name()).join("agent")).expect("mkdir");
+        std::fs::create_dir_all(project.join("nested").join("deep")).expect("mkdir");
         std::fs::create_dir_all(&home).expect("mkdir");
         let resolved = resolve_agent_dir(
-            &project.join("nested/deep").to_string_lossy(),
+            &project.join("nested").join("deep").to_string_lossy(),
             &home.to_string_lossy(),
             None,
         );
-        assert_eq!(resolved, project.join(".omo/agent").to_string_lossy());
+        assert_eq!(resolved, project.join(config_dir_name()).join("agent").to_string_lossy());
     }
 
     #[test]

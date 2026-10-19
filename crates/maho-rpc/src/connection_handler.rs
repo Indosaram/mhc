@@ -1099,10 +1099,11 @@ mod new_session_tests{
     #[tokio::test]
     async fn import_jsonl_reports_missing_file(){
         let session=session();
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"import_jsonl","inputPath":"/tmp/does-not-exist-4010.jsonl"})).expect("command");
+        let target = if cfg!(windows) { "C:\\tmp\\does-not-exist-4010.jsonl" } else { "/tmp/does-not-exist-4010.jsonl" };
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"import_jsonl","inputPath":target})).expect("command");
         let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
         assert_eq!(response["command"],"import_jsonl");
-        assert_eq!(response["error"],"File not found: /tmp/does-not-exist-4010.jsonl");
+        assert_eq!(response["error"],format!("File not found: {target}"));
     }
 
     #[tokio::test]
@@ -1334,7 +1335,7 @@ mod connection_events_tests{
         let replaced=of_type(&records,"session_replaced");
         assert_eq!(replaced.len(),1);
         assert_eq!(replaced[0]["durableSessionId"],session.session_id());
-        assert_eq!(replaced[0]["cwd"],"/tmp");
+        assert_eq!(replaced[0]["cwd"],if cfg!(windows) { "\\tmp" } else { "/tmp" });
         handler.release().await;
     }
 

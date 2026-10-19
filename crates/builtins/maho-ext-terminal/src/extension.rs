@@ -439,7 +439,8 @@ mod tests {
         }).await.unwrap();task.abort();assert!(task.await.unwrap_err().is_cancelled());
     }
     #[tokio::test] async fn registered_bash_runs_real_pty_and_companion_peeks()->Result<(),ToolError> {
-        let mut api=ExtensionApi::new(LoadedExtension::new("terminal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);
+        let tmp = std::env::temp_dir();
+        let mut api=ExtensionApi::new(LoadedExtension::new("terminal",tmp,SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);
         let result=(api.registered.tools[0].definition.execute)(maho_tools::definition::ToolCall {id:"c1",params:json!({"command":"stty -echo; printf 'ready\\n'"}),signal:Default::default(),on_update:None,context:None}).await?;
         assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text=="ready"));
         let id="bash_1";
@@ -447,7 +448,9 @@ mod tests {
         assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("status: completed exit_code: 0")));
         (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"c3",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;Ok(())
     }
-    #[test] fn native_companions_register_flat_schemas_and_shutdown() {let mut api=ExtensionApi::new(LoadedExtension::new("terminal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);assert_eq!(api.registered.tools.iter().map(|tool|tool.definition.name.as_str()).collect::<Vec<_>>(),vec!["bash","bash_output","bash_input","bash_resize","kill_bash","monitor"]);for tool in &api.registered.tools {assert_eq!(tool.definition.parameters["type"],"object");assert!(tool.definition.parameters.get("properties").is_some());}assert_eq!(api.registered.handlers[&EventKind::SessionShutdown].len(),5);}
+    #[test] fn native_companions_register_flat_schemas_and_shutdown() {
+        let tmp = std::env::temp_dir();
+        let mut api=ExtensionApi::new(LoadedExtension::new("terminal",tmp,SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);assert_eq!(api.registered.tools.iter().map(|tool|tool.definition.name.as_str()).collect::<Vec<_>>(),vec!["bash","bash_output","bash_input","bash_resize","kill_bash","monitor"]);for tool in &api.registered.tools {assert_eq!(tool.definition.parameters["type"],"object");assert!(tool.definition.parameters.get("properties").is_some());}assert_eq!(api.registered.handlers[&EventKind::SessionShutdown].len(),5);}
     #[tokio::test]
     async fn monitor_ending_reaches_native_event_bus_and_rpc() {
         let dir=tempfile::tempdir().unwrap();let bus=EventBus::default();let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let ended_sender=sender.clone();let rpc_sender=sender;

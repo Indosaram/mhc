@@ -303,6 +303,7 @@ async fn test_given_host_already_loaded_user_skill_when_discover_then_yields() {
 
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), home_dir.path().to_string_lossy().to_string());
+    env.insert("USERPROFILE".to_string(), home_dir.path().to_string_lossy().to_string());
 
     let existing_commands = vec![SlashCommandInfo {
         name: "skill:x-search".to_string(),
@@ -362,6 +363,7 @@ async fn test_given_disabled_skills_names_x_search_when_discover_then_not_contri
 
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), home_dir.path().to_string_lossy().to_string());
+    env.insert("USERPROFILE".to_string(), home_dir.path().to_string_lossy().to_string());
 
     let mut api = fake_api("test", Vec::new());
     let comp = create_x_search_component(XSearchComponentOptions {
@@ -407,6 +409,7 @@ async fn test_given_no_same_name_skill_and_empty_denylist_when_discover_then_con
 
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), home_dir.path().to_string_lossy().to_string());
+    env.insert("USERPROFILE".to_string(), home_dir.path().to_string_lossy().to_string());
 
     let existing_commands = vec![SlashCommandInfo {
         name: "skill:frontend".to_string(),
@@ -455,9 +458,13 @@ async fn test_given_stored_xai_oauth_entry_when_registering_then_tool_and_skill_
     write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "oauth", "refresh": "r" } }));
 
     let mut api = fake_api("test", Vec::new());
+    let test_env = BTreeMap::from([
+        ("HOME".to_string(), agent_dir.path().to_string_lossy().to_string()),
+        ("USERPROFILE".to_string(), agent_dir.path().to_string_lossy().to_string()),
+    ]);
     let comp = create_x_search_component(XSearchComponentOptions {
         agent_dir: Some(agent_dir.path().to_path_buf()),
-        env: Some(BTreeMap::new()),
+        env: Some(test_env),
         resolve_skill_path: Some(Arc::new(|| Some(PathBuf::from("/test/x-search/skill/SKILL.md")))),
         ..Default::default()
     });
@@ -473,9 +480,9 @@ async fn test_given_stored_xai_oauth_entry_when_registering_then_tool_and_skill_
         .expect("handlers registered");
     assert_eq!(handlers.len(), 1);
 
-    let ctx = make_context(None, None, PathBuf::from("/tmp"));
+    let ctx = make_context(None, None, agent_dir.path().to_path_buf());
     let mut event = maho_ext_api::ExtensionEvent::ResourcesDiscover(ResourcesDiscoverEvent {
-        cwd: PathBuf::from("/tmp"),
+        cwd: agent_dir.path().to_path_buf(),
         reason: SessionReason::Startup,
         scoped_entries: true,
     });

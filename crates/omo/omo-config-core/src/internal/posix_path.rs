@@ -1,63 +1,136 @@
-pub fn to_posix_path(path: &str) -> String {
-    path.replace('\\', "/")
+pub fn strip_verbatim_prefix(path: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        std::borrow::Cow::Owned(format!(r"\\{rest}"))
+    } else if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        std::borrow::Cow::Owned(format!("//{rest}"))
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        std::borrow::Cow::Borrowed(rest)
+    } else if let Some(rest) = path.strip_prefix("//?/") {
+        std::borrow::Cow::Borrowed(rest)
+    } else {
+        std::borrow::Cow::Borrowed(path)
+    }
 }
 
-fn split_segments(path: &str) -> (bool, Vec<String>) {
-    let mut segments: Vec<String> = Vec::new();
-    let mut absolute = false;
-    let mut index = 0usize;
-    let bytes: Vec<char> = path.chars().collect();
-    while index < bytes.len() {
-        while index < bytes.len() && bytes[index] == '/' {
-            index += 1;
+pub fn to_posix_path(path: &str) -> String {
+    let stripped = strip_verbatim_prefix(path);
+    stripped.replace('\\', "/")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PathRoot<'a> {
+    prefix: &'a str,
+    is_absolute: bool,
+    rest: &'a str,
+}
+
+fn parse_posix_root(path: &str) -> PathRoot<'_> {
+    let bytes = path.as_bytes();
+    // Drive letters and UNC shares are roots only on Windows; elsewhere `C:` and `//host` are
+    // ordinary POSIX segments.
+    if cfg!(windows) && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        if bytes.len() >= 3 && (bytes[2] == b'/' || bytes[2] == b'\\') {
+            return PathRoot {
+                prefix: &path[..2],
+                is_absolute: true,
+                rest: path[3..].trim_start_matches(['/', '\\']),
+            };
+        } else {
+            return PathRoot {
+                prefix: &path[..2],
+                is_absolute: false,
+                rest: &path[2..],
+            };
         }
-        if index == 0 {
-            continue;
-        }
-        if index == 1 && bytes[0] == '/' {
-            absolute = true;
-        }
-        let start = index;
-        while index < bytes.len() && bytes[index] != '/' {
-            index += 1;
-        }
-        if start != index {
-            segments.push(bytes[start..index].iter().collect());
+    }
+    if cfg!(windows)
+        && (path.starts_with("//") || path.starts_with(r"\\"))
+        && !path.starts_with("///")
+        && !path.starts_with(r"\\\")
+    {
+        let after_slashes = &path[2..];
+        if let Some(first_sep) = after_slashes.find(['/', '\\']) {
+            let server = &after_slashes[..first_sep];
+            let after_server = &after_slashes[first_sep + 1..];
+            if !server.is_empty() {
+                if let Some(second_sep) = after_server.find(['/', '\\']) {
+                    let share = &after_server[..second_sep];
+                    if !share.is_empty() {
+                        let consumed = 2 + server.len() + 1 + share.len();
+                        return PathRoot {
+                            prefix: &path[..consumed],
+                            is_absolute: true,
+                            rest: path[consumed..].trim_start_matches(['/', '\\']),
+                        };
+                    }
+                } else if !after_server.is_empty() {
+                    return PathRoot {
+                        prefix: path,
+                        is_absolute: true,
+                        rest: "",
+                    };
+                }
+            }
         }
     }
     if path.starts_with('/') || path.starts_with('\\') {
-        absolute = true;
+        let rest = path.trim_start_matches(['/', '\\']);
+        return PathRoot {
+            prefix: "",
+            is_absolute: true,
+            rest,
+        };
     }
-    (absolute, segments)
+    PathRoot {
+        prefix: "",
+        is_absolute: false,
+        rest: path,
+    }
 }
 
 fn normalize(path: &str) -> String {
-    let (absolute, segments) = split_segments(&to_posix_path(path));
-    let mut out: Vec<String> = Vec::new();
-    for segment in segments {
-        match segment.as_str() {
-            "." => {}
+    let posix = to_posix_path(path);
+    if posix.is_empty() {
+        return String::new();
+    }
+    let root = parse_posix_root(&posix);
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in root.rest.split('/') {
+        match segment {
+            "" | "." => {}
             ".." => {
-                if let Some(last) = out.last()
-                    && last != ".."
-                {
-                    out.pop();
-                    continue;
-                }
-                if !absolute {
-                    out.push(segment);
+                if segments.last().is_some_and(|last| *last != "..") {
+                    segments.pop();
+                } else if !root.is_absolute {
+                    segments.push("..");
                 }
             }
-            _ => out.push(segment),
+            other => segments.push(other),
         }
     }
-    let joined = out.join("/");
-    if absolute {
-        format!("/{joined}")
-    } else if joined.is_empty() {
-        String::new()
+    let tail = segments.join("/");
+    if !root.prefix.is_empty() {
+        if root.is_absolute {
+            if tail.is_empty() {
+                format!("{}/", root.prefix)
+            } else {
+                format!("{}/{tail}", root.prefix)
+            }
+        } else if tail.is_empty() {
+            root.prefix.to_string()
+        } else {
+            format!("{}/{tail}", root.prefix)
+        }
+    } else if root.is_absolute {
+        format!("/{tail}")
+    } else if tail.is_empty() {
+        if path.is_empty() {
+            String::new()
+        } else {
+            ".".to_string()
+        }
     } else {
-        joined
+        tail
     }
 }
 
@@ -83,40 +156,61 @@ pub fn posix_dirname(path: &str) -> String {
     if normalized.is_empty() {
         return ".".to_string();
     }
+    let root = parse_posix_root(&normalized);
     let trimmed = normalized.trim_end_matches('/');
     if trimmed.is_empty() {
         return "/".to_string();
     }
+    if !root.prefix.is_empty() && trimmed == root.prefix {
+        return if root.is_absolute {
+            format!("{}/", root.prefix)
+        } else {
+            root.prefix.to_string()
+        };
+    }
     match trimmed.rfind('/') {
-        None => ".".to_string(),
+        None => {
+            if root.is_absolute {
+                if !root.prefix.is_empty() {
+                    format!("{}/", root.prefix)
+                } else {
+                    "/".to_string()
+                }
+            } else {
+                ".".to_string()
+            }
+        }
         Some(0) => "/".to_string(),
-        Some(index) => trimmed[..index].to_string(),
+        Some(index) => {
+            if !root.prefix.is_empty() && index == root.prefix.len() {
+                format!("{}/", root.prefix)
+            } else {
+                trimmed[..index].to_string()
+            }
+        }
     }
 }
 
 pub fn posix_resolve(segments: &[&str]) -> String {
-    if segments.iter().any(|segment| segment.starts_with('/')) {
-        let joined = segments
-            .iter()
-            .filter(|segment| !segment.is_empty())
-            .copied()
-            .collect::<Vec<_>>()
-            .join("/");
-        return normalize(&joined);
+    let mut parts: Vec<String> = Vec::new();
+    for segment in segments.iter().rev().filter(|s| !s.is_empty()) {
+        let posix_seg = to_posix_path(segment);
+        let is_absolute = parse_posix_root(&posix_seg).is_absolute;
+        parts.push(posix_seg);
+        if is_absolute {
+            break;
+        }
     }
-    let mut parts: Vec<&str> = Vec::new();
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|path| path.to_str().map(str::to_string))
-        .unwrap_or_else(|| "/".to_string());
-    parts.push(cwd.as_str());
-    parts.extend(
-        segments
-            .iter()
-            .filter(|segment| !segment.is_empty())
-            .copied(),
-    );
-    normalize(&parts.join("/"))
+    if !parts.last().is_some_and(|p| parse_posix_root(p).is_absolute) {
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.to_str().map(to_posix_path))
+            .unwrap_or_else(|| "/".to_string());
+        parts.push(cwd);
+    }
+    parts.reverse();
+    let joined = parts.join("/");
+    normalize(&joined)
 }
 
 pub fn platform_join(segments: &[&str], windows: bool) -> String {
@@ -235,4 +329,54 @@ pub fn account_home_dir() -> String {
                 .and_then(|path| path.to_str().map(to_posix_path))
                 .unwrap_or_default()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_posix_path_operations() {
+        assert_eq!(to_posix_path(r"a\b\c"), "a/b/c");
+        assert_eq!(to_posix_path(r"\\?\C:\foo\bar"), "C:/foo/bar");
+        assert_eq!(to_posix_path("//?/C:/foo/bar"), "C:/foo/bar");
+        assert_eq!(to_posix_path(r"\\?\UNC\server\share\file"), "//server/share/file");
+
+        assert_eq!(normalize("/home/alice/../bob"), "/home/bob");
+        assert_eq!(normalize("/.."), "/");
+        assert_eq!(normalize("."), ".");
+        assert_eq!(normalize(""), "");
+
+        assert_eq!(posix_join(&["/home/alice", ".omo"]), "/home/alice/.omo");
+
+        assert_eq!(posix_dirname("/home/user/.omo/omo.jsonc"), "/home/user/.omo");
+        assert_eq!(posix_dirname("/home"), "/");
+        assert_eq!(posix_dirname("/"), "/");
+        assert_eq!(posix_dirname("file.txt"), ".");
+
+        assert_eq!(posix_resolve(&["/home/alice"]), "/home/alice");
+        assert_eq!(posix_resolve(&["/base", "sub"]), "/base/sub");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn drive_letters_and_double_slashes_are_plain_segments_off_windows() {
+        assert_eq!(normalize("C:/Users/alice/../bob"), "C:/Users/bob");
+        assert_eq!(normalize("//host/share/x"), "/host/share/x");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn drive_letters_and_unc_shares_are_roots_on_windows() {
+        assert_eq!(normalize("C:/Users/alice/../bob"), "C:/Users/bob");
+        assert_eq!(normalize("C:/.."), "C:/");
+        assert_eq!(posix_join(&["C:/Users/alice", ".omo", "omo.jsonc"]), "C:/Users/alice/.omo/omo.jsonc");
+        assert_eq!(posix_dirname("C:/Users/me/.omo/omo.jsonc"), "C:/Users/me/.omo");
+        assert_eq!(posix_dirname("C:/Users/me"), "C:/Users");
+        assert_eq!(posix_dirname("C:/Users"), "C:/");
+        assert_eq!(posix_dirname("C:/"), "C:/");
+        assert_eq!(posix_resolve(&["C:/Users/alice"]), "C:/Users/alice");
+        assert_eq!(posix_resolve(&[r"C:\Users\alice"]), "C:/Users/alice");
+        assert_eq!(posix_resolve(&["C:/base", "sub"]), "C:/base/sub");
+    }
 }

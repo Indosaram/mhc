@@ -54,7 +54,9 @@ pub fn classify_post_edit_file_location(
         return PostEditFileLocation::OutsideProject;
     };
 
-    let default_homes = vec![std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())];
+    let default_homes = vec![std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| if cfg!(windows) { "C:\\Users\\default".to_string() } else { "/root".to_string() })];
     let home_dirs = options.home_dirs.unwrap_or(&default_homes);
     let canonical_home_dirs = canonical_directories(home_dirs);
 

@@ -58,12 +58,17 @@ fn paths(dir: &tempfile::TempDir) -> DaemonPaths {
 
 #[test]
 fn removed_cached_node_falls_back_to_argv0() {
+    let (cached, argv0) = if cfg!(windows) {
+        ("C:\\Program Files\\node\\26.5.0\\node.exe", "C:\\Program Files\\nodejs\\node.exe")
+    } else {
+        ("/opt/homebrew/Cellar/node/26.5.0/bin/node", "/opt/homebrew/bin/node")
+    };
     let executable = resolve_daemon_node_executable(
-        "/opt/homebrew/Cellar/node/26.5.0/bin/node",
-        "/opt/homebrew/bin/node",
-        |path| path == "/opt/homebrew/bin/node",
+        cached,
+        argv0,
+        |path| path == argv0,
     );
-    assert_eq!(executable, "/opt/homebrew/bin/node");
+    assert_eq!(executable, argv0);
 }
 
 #[test]

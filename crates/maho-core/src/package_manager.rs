@@ -1741,7 +1741,7 @@ mod discovery_tests {
     fn the_extension_temp_folder_is_created_with_owner_only_permissions() {
         let dir = tempfile::tempdir().expect("tempdir");
         let folder = get_extension_temp_folder(&dir.path().to_string_lossy());
-        assert!(folder.ends_with("tmp/extensions"));
+        assert!(folder.replace('\\', "/").ends_with("tmp/extensions"));
         assert!(Path::new(&folder).is_dir());
         #[cfg(unix)]
         {
@@ -1760,7 +1760,7 @@ mod discovery_tests {
         std::fs::create_dir_all(repo.join(".git")).expect("mkdir");
         let dirs = collect_ancestor_agents_skill_dirs(&nested.to_string_lossy());
         assert_eq!(dirs.len(), 3);
-        assert!(dirs[0].ends_with("a/b/.agents/skills"));
-        assert!(dirs[2].ends_with("repo/.agents/skills"));
+        assert!(dirs[0].replace('\\', "/").ends_with("a/b/.agents/skills"));
+        assert!(dirs[2].replace('\\', "/").ends_with("repo/.agents/skills"));
     }
 }

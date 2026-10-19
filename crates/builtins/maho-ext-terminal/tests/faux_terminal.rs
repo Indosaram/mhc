@@ -8,7 +8,9 @@ impl maho_ext_api::types::Extension for ConfiguredTerminal {
     fn register(&self,api:&mut maho_ext_api::types::ExtensionApi) {
         api.on(maho_ext_api::types::EventKind::SessionStart,std::sync::Arc::new(|_,ctx|Box::pin(async move {
             std::fs::create_dir_all(&ctx.agent_dir).map_err(|error|maho_ext_api::types::ExtensionFailure::new(error.to_string()))?;
-            std::fs::write(ctx.agent_dir.join("settings.json"),json!({"terminal":{"defaultCols":91,"defaultRows":33,"notify":"off"},"shellPath":"/bin/bash"}).to_string()).map_err(|error|maho_ext_api::types::ExtensionFailure::new(error.to_string()))?;
+            let default_shell = maho_tools::shell::get_shell_config(None).ok().map(|s| s.shell);
+            let shell_path = if cfg!(windows) { default_shell.as_deref().unwrap_or("/bin/bash") } else { "/bin/bash" };
+            std::fs::write(ctx.agent_dir.join("settings.json"),json!({"terminal":{"defaultCols":91,"defaultRows":33,"notify":"off"},"shellPath":shell_path}).to_string()).map_err(|error|maho_ext_api::types::ExtensionFailure::new(error.to_string()))?;
             Ok(maho_ext_api::types::EventResult::None)
         })));
         maho_ext_terminal::extension::TerminalExtension.register(api);

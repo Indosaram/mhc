@@ -72,7 +72,7 @@ pub fn with_format_extension(path: &str, format: OutputFormat) -> String {
 }
 pub fn display_path(cwd: &Path, absolute: &Path) -> String {
     match absolute.strip_prefix(cwd) {
-        Ok(relative) if !relative.as_os_str().is_empty() && !relative.to_string_lossy().starts_with("..") => relative.to_string_lossy().into_owned(),
+        Ok(relative) if !relative.as_os_str().is_empty() && !relative.to_string_lossy().starts_with("..") => relative.to_string_lossy().replace('\\', "/"),
         _ => absolute.to_string_lossy().into_owned(),
     }
 }

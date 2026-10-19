@@ -31,7 +31,8 @@ fn fixture() -> Result<Fixture, std::io::Error> {
     std::fs::create_dir_all(&project)?;
     std::fs::create_dir_all(home.join(".omo"))?;
     std::fs::create_dir_all(project.join(".omo"))?;
-    let env = BTreeMap::from([("HOME".into(), home.to_string_lossy().into_owned())]);
+    let home_str = home.to_string_lossy().into_owned();
+    let env = BTreeMap::from([("HOME".into(), home_str.clone()), ("USERPROFILE".into(), home_str)]);
     Ok(Fixture { _root: root, home, project, env })
 }
 

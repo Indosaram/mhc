@@ -99,7 +99,9 @@ async fn a_resumed_session_resolves_no_model_and_keeps_no_origin() {
 }
 
 fn config(parsed: &Args) -> CliRuntimeConfiguration {
-    CliRuntimeConfiguration::from_parsed(parsed, "/tmp/project", "/tmp/agent", AppMode::Interactive)
+    let project = if cfg!(windows) { "C:\\tmp\\project" } else { "/tmp/project" };
+    let agent = if cfg!(windows) { "C:\\tmp\\agent" } else { "/tmp/agent" };
+    CliRuntimeConfiguration::from_parsed(parsed, project, agent, AppMode::Interactive)
 }
 
 #[tokio::test]
@@ -144,7 +146,7 @@ fn launch_profile_maps_provider_model_thinking_and_auto_title() {
         ..Default::default()
     };
     let profile = config(&parsed).launch_profile();
-    assert_eq!(profile.cwd, "/tmp/project");
+    assert_eq!(profile.cwd, if cfg!(windows) { "C:\\tmp\\project" } else { "/tmp/project" });
     assert_eq!(profile.creation_model, Some(("openai".to_owned(), "gpt-4o".to_owned())));
     assert_eq!(profile.initial_thinking_level.as_deref(), Some("high"));
     assert_eq!(profile.auto_title, Some(true));
@@ -173,23 +175,29 @@ fn metadata_launches_resolve_trust_as_a_print_run() {
 
 #[test]
 fn cli_paths_resolve_against_the_launch_cwd() {
-    assert_eq!(resolve_cli_path("/w", "/abs/x"), "/abs/x");
-    assert_eq!(resolve_cli_path("/w", "rel/x"), "/w/rel/x");
-    assert_eq!(resolve_cli_path("/w", "npm:@x/y"), "npm:@x/y");
-    assert_eq!(resolve_cli_path("/w", "git:github.com/a/b"), "git:github.com/a/b");
-    assert_eq!(resolve_cli_path("/w", "file:///abs/f"), "/abs/f");
+    let (w, abs_x, rel_x_expected, abs_f, abs_tpl) = if cfg!(windows) {
+        ("C:\\w", "C:\\abs\\x", "C:\\w\\rel\\x", "file:///C:/abs/f", "C:\\abs\\templates")
+    } else {
+        ("/w", "/abs/x", "/w/rel/x", "file:///abs/f", "/abs/templates")
+    };
+    assert_eq!(resolve_cli_path(w, abs_x), abs_x);
+    assert_eq!(resolve_cli_path(w, "rel/x"), rel_x_expected);
+    assert_eq!(resolve_cli_path(w, "npm:@x/y"), "npm:@x/y");
+    assert_eq!(resolve_cli_path(w, "git:github.com/a/b"), "git:github.com/a/b");
+    assert_eq!(resolve_cli_path(w, abs_f), if cfg!(windows) { "C:\\abs\\f" } else { "/abs/f" });
     let parsed = Args {
         skills: vec!["skills".to_owned()],
-        prompt_templates: vec!["/abs/templates".to_owned()],
+        prompt_templates: vec![abs_tpl.to_owned()],
         themes: vec!["themes".to_owned()],
         extensions: vec!["ext".to_owned()],
         ..Default::default()
     };
     let config = config(&parsed);
-    assert_eq!(config.resolved_skill_paths(), vec!["/tmp/project/skills".to_owned()]);
-    assert_eq!(config.resolved_prompt_template_paths(), vec!["/abs/templates".to_owned()]);
-    assert_eq!(config.resolved_theme_paths(), vec!["/tmp/project/themes".to_owned()]);
-    assert_eq!(config.resolved_extension_paths(), vec!["/tmp/project/ext".to_owned()]);
+    let project = if cfg!(windows) { "C:\\tmp\\project" } else { "/tmp/project" };
+    assert_eq!(config.resolved_skill_paths(), vec![std::path::Path::new(project).join("skills").to_string_lossy().into_owned()]);
+    assert_eq!(config.resolved_prompt_template_paths(), vec![abs_tpl.to_owned()]);
+    assert_eq!(config.resolved_theme_paths(), vec![std::path::Path::new(project).join("themes").to_string_lossy().into_owned()]);
+    assert_eq!(config.resolved_extension_paths(), vec![std::path::Path::new(project).join("ext").to_string_lossy().into_owned()]);
 }
 
 #[test]

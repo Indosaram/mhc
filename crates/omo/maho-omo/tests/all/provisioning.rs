@@ -64,7 +64,7 @@ fn a_bare_path_with_no_preset_bin_prepends_the_dir_and_sets_the_bin() {
     let base = fixture.base_dir().to_string_lossy().into_owned();
     assert_eq!(updates, vec![
         ("PATH".to_owned(), Some(format!("{base}{}/usr/bin:/bin", path_delimiter()))),
-        (TOOLKIT_BIN_ENV.to_owned(), Some(format!("{base}/cli.js"))),
+        (TOOLKIT_BIN_ENV.to_owned(), Some(fixture.base_dir().join("cli.js").to_string_lossy().into_owned())),
     ]);
 }
 
@@ -95,7 +95,7 @@ fn an_empty_preset_bin_is_treated_as_unset() {
     let base = fixture.base_dir().to_string_lossy().into_owned();
     assert_eq!(updates, vec![
         ("PATH".to_owned(), Some(format!("{base}{}/usr/bin", path_delimiter()))),
-        (TOOLKIT_BIN_ENV.to_owned(), Some(format!("{base}/cli.js"))),
+        (TOOLKIT_BIN_ENV.to_owned(), Some(fixture.base_dir().join("cli.js").to_string_lossy().into_owned())),
     ]);
 }
 

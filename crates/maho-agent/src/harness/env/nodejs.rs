@@ -48,11 +48,27 @@ fn resolve_timeout_ms(timeout: Option<f64>) -> Result<Option<u64>, ExecutionErro
 }
 
 fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/".to_string())
 }
 
 fn temp_dir() -> String {
-    std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string())
+    std::env::var("TMPDIR")
+        .or_else(|_| std::env::var("TEMP"))
+        .or_else(|_| std::env::var("TMP"))
+        .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned())
+}
+
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 /// `resolvePath(cwd, path)`.
@@ -75,14 +91,15 @@ fn resolve_path(cwd: &str, path: &str) -> String {
 
 /// Lexical normalization matching `path.resolve` (no symlink resolution, `..` folded away).
 fn normalize_path(path: &Path) -> String {
+    let unprefix = strip_verbatim_prefix(path);
     let mut parts: Vec<String> = Vec::new();
     let mut prefix = String::new();
-    for component in path.components() {
+    for component in unprefix.components() {
         match component {
             std::path::Component::Prefix(prefix_component) => {
                 prefix.push_str(&prefix_component.as_os_str().to_string_lossy());
             }
-            std::path::Component::RootDir => prefix.push('/'),
+            std::path::Component::RootDir => prefix.push(std::path::MAIN_SEPARATOR),
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
                 parts.pop();
@@ -91,9 +108,10 @@ fn normalize_path(path: &Path) -> String {
         }
     }
     let mut result = prefix;
-    result.push_str(&parts.join("/"));
+    let sep = std::path::MAIN_SEPARATOR.to_string();
+    result.push_str(&parts.join(&sep));
     if result.is_empty() {
-        "/".to_string()
+        sep
     } else {
         result
     }
@@ -535,7 +553,7 @@ impl FileSystem for NodeExecutionEnv {
     fn join_path<'a>(&'a self, parts: Vec<String>, _context: &'a Context) -> BoxFuture<'a, Result<String, FileError>> {
         Box::pin(async move {
             let joined = parts.iter().fold(PathBuf::new(), |acc, part| acc.join(part));
-            ok(joined.to_string_lossy().into_owned())
+            ok(normalize_path(&joined))
         })
     }
 
@@ -737,7 +755,7 @@ impl FileSystem for NodeExecutionEnv {
                     Ok(entry) => entry,
                     Err(error) => return err(to_file_error(&error, Some(&resolved))),
                 };
-                let entry_path = entry.path().to_string_lossy().into_owned();
+                let entry_path = normalize_path(&entry.path());
                 match std::fs::symlink_metadata(&entry_path) {
                     Ok(metadata) => {
                         if let Ok(info) = file_info_from_metadata(&entry_path, &metadata) {
@@ -759,7 +777,7 @@ impl FileSystem for NodeExecutionEnv {
                 return aborted;
             }
             match std::fs::canonicalize(&resolved) {
-                Ok(canonical) => ok(canonical.to_string_lossy().into_owned()),
+                Ok(canonical) => ok(normalize_path(&canonical)),
                 Err(error) => err(to_file_error(&error, Some(&resolved))),
             }
         })

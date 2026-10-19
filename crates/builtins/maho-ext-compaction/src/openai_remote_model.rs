@@ -73,7 +73,29 @@ fn kernel_release() -> std::io::Result<String> {
     }
     Ok(release)
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn kernel_release() -> std::io::Result<String> {
+    let output = std::process::Command::new("cmd").args(["/c", "ver"]).output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other("cmd /c ver failed"));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let in_brackets = text
+        .find('[')
+        .and_then(|open| text.rfind(']').filter(|&close| close > open).map(|close| &text[open + 1..close]))
+        .unwrap_or(&text);
+    let version = in_brackets
+        .split_whitespace()
+        .find(|word| word.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .and_then(|v| {
+            let parts: Vec<&str> = v.split('.').take(3).collect();
+            (!parts.is_empty() && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())))
+                .then(|| parts.join("."))
+        })
+        .unwrap_or_else(|| "10.0.0".to_string());
+    Ok(version)
+}
+#[cfg(not(any(unix, windows)))]
 fn kernel_release() -> std::io::Result<String> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,

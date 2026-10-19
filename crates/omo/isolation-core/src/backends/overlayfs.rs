@@ -48,10 +48,26 @@ impl OverlayfsBackend {
         let lower_text = lower.to_string_lossy().into_owned();
         let base_text = base.to_string_lossy().into_owned();
         // Commas/colons are option separators even without a shell; reject rather than mis-mount.
-        if [',', ':', '\n', '\\']
-            .iter()
-            .any(|separator| lower_text.contains(*separator) || base_text.contains(*separator))
-        {
+        let has_unsupported = |path: &str| {
+            let to_check = if cfg!(windows) {
+                if path.len() >= 2
+                    && path.as_bytes()[1] == b':'
+                    && path.as_bytes()[0].is_ascii_alphabetic()
+                {
+                    &path[2..]
+                } else {
+                    path
+                }
+            } else {
+                path
+            };
+            if cfg!(windows) {
+                [',', ':', '\n'].iter().any(|separator| to_check.contains(*separator))
+            } else {
+                [',', ':', '\n', '\\'].iter().any(|separator| to_check.contains(*separator))
+            }
+        };
+        if has_unsupported(&lower_text) || has_unsupported(&base_text) {
             return Err(IsolationError::unavailable(
                 "overlay paths contain unsupported mount-option separators",
             ));

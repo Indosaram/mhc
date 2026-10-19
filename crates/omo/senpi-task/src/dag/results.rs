@@ -163,7 +163,9 @@ fn artifact_ref_from(state_dir: &Path, path: &Path, contents: &[u8]) -> DagResul
 }
 
 fn relative_to(base: &Path, path: &Path) -> String {
-    pathdiff(base, path).to_string_lossy().into_owned()
+    pathdiff(base, path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// `node:path` `relative(from, to)`: both paths resolved beforehand by the store, so a plain

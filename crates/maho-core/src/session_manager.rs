@@ -2070,7 +2070,8 @@ mod tests {
         assert!(rewritten.contains("\"version\":3"));
         assert!(rewritten.contains("\"role\":\"custom\""));
         assert_eq!(manager.session_id(), "sess");
-        assert_eq!(manager.cwd(), "/w");
+        let expected_cwd = if cfg!(windows) { "W:\\" } else { "/w" };
+        assert_eq!(manager.cwd(), expected_cwd);
     }
 
     #[test]
@@ -2355,7 +2356,8 @@ mod tests {
 
     #[test]
     fn default_session_dir_encodes_the_cwd() {
-        assert_eq!(get_default_session_dir_path("/home/indo/piratetalk", "/home/indo/.omo/agent"), "/home/indo/.omo/agent/sessions/--home-indo-piratetalk--");
+        let expected = Path::new("/home/indo/.omo/agent").join("sessions").join("--home-indo-piratetalk--").to_string_lossy().into_owned();
+        assert_eq!(get_default_session_dir_path("/home/indo/piratetalk", "/home/indo/.omo/agent"), expected);
     }
 
     #[test]
