@@ -89,6 +89,14 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if cfg!(windows) {
+            for _ in 0..10 {
+                if std::fs::remove_dir_all(&self.dir).is_ok() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
         std::fs::remove_dir_all(&self.dir).expect("tool test operation must succeed");
     }
 }
@@ -517,7 +525,20 @@ async fn prepares_command_cwd_and_explicit_environment() {
         assert_eq!(parts[0], "ready");
         assert_eq!(parts[1], "explicit");
         let pwd = parts[2];
-        let win_pwd = if let Some(stripped) = pwd.strip_prefix('/') {
+        let win_pwd = if let Some(rest) = pwd.strip_prefix("/tmp/").or_else(|| pwd.strip_prefix("/tmp")) {
+            let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+            let temp_str = temp.to_string_lossy();
+            let stripped_temp = temp_str
+                .strip_prefix(r"\\?\UNC\")
+                .map(|rest| format!(r"\\{rest}"))
+                .or_else(|| temp_str.strip_prefix(r"\\?\").map(str::to_owned))
+                .unwrap_or_else(|| temp_str.into_owned());
+            if rest.is_empty() {
+                stripped_temp
+            } else {
+                std::path::Path::new(&stripped_temp).join(rest.replace('/', "\\")).to_string_lossy().into_owned()
+            }
+        } else if let Some(stripped) = pwd.strip_prefix('/') {
             if let Some((drive, rest)) = stripped.split_once('/') {
                 format!("{}:\\{}", drive.to_ascii_uppercase(), rest.replace('/', "\\"))
             } else {

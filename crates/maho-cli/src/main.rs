@@ -1,4 +1,24 @@
 fn main() {
+    #[cfg(windows)]
+    {
+        const STACK_SIZE: usize = 8 * 1024 * 1024;
+        let run_result = std::thread::Builder::new()
+            .name("mhc-main".into())
+            .stack_size(STACK_SIZE)
+            .spawn(run)
+            .expect("spawn runner thread")
+            .join();
+        match run_result {
+            Ok(Ok(())) => {},
+            Ok(Err(error)) => {
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr(), "{error}");
+                std::process::exit(1);
+            }
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+    #[cfg(not(windows))]
     if let Err(error) = run() {
         // `eprintln!` panics when stderr is gone (a hung-up terminal), turning exit 1 into a 101
         // panic; report best-effort instead.

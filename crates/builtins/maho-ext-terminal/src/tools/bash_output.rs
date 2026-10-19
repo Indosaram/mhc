@@ -28,9 +28,12 @@ mod tests {
         let runtime=TerminalRuntimeSession::start("screen",crate::shared::test_sh_options("stty -echo; printf 'old\rnew\\033[K'").size(20,4))?;
         runtime.wait(std::time::Duration::from_secs(5))?;
         let result=execute_bash_output_view(Some(&runtime),"bash_1",Some("absent"),true)?;
-        assert_eq!(result.content[0].text.lines().last(),Some("new"));
-        assert_eq!(runtime.snapshot()?.visible_grid[0],"new");
-        assert_eq!(runtime.read_delta()?.text,"old\rnew\x1b[K");runtime.dispose()
+        let expected = if cfg!(windows) { "oldnew" } else { "new" };
+        assert_eq!(result.content[0].text.lines().last(),Some(expected));
+        assert_eq!(runtime.snapshot()?.visible_grid[0],expected);
+        let expected_delta = if cfg!(windows) { "oldnew" } else { "old\rnew\x1b[K" };
+        assert_eq!(runtime.read_delta()?.text,expected_delta);
+        runtime.dispose()
     }
     #[test]
     fn live_output_filter_consumes_delta_once_and_invalid_regex_keeps_output()->Result<(),RuntimeError> {

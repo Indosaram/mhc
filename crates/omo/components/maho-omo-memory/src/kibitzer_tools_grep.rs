@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 use maho_tools::definition::AbortSignal;
 use memory_core::git::exec::{GitExec, GitExecOptions, system_git_exec};
+use memory_core::support::paths::strip_verbatim_prefix;
 use serde_json::{Value, json};
 
 use crate::kibitzer_tools_caps::KibitzerToolCaps;
@@ -163,6 +164,7 @@ pub fn execute_grep(
         path: workspace_root.to_string_lossy().into_owned(),
         message: error.to_string(),
     })?;
+    let root = strip_verbatim_prefix(&root);
     let context = ScanContext { caps, now, deadline: now() + caps.grep_scan_ms, signal };
     let candidates = if info.is_file() {
         Candidates { files: vec![resolved.clone()], stopped: None }
@@ -394,8 +396,11 @@ fn is_aborted(signal: Option<&AbortSignal>) -> bool {
 
 /// `path.relative(root, path)` for a path canonicalization already placed inside `root`.
 fn relative_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .map_or_else(|_| path.to_string_lossy().into_owned(), |relative| relative.to_string_lossy().into_owned())
+    let clean_root = strip_verbatim_prefix(root);
+    let clean_path = strip_verbatim_prefix(path);
+    clean_path
+        .strip_prefix(&clean_root)
+        .map_or_else(|_| clean_path.to_string_lossy().into_owned(), |relative| relative.to_string_lossy().into_owned())
 }
 
 /// The path reported for a match: relative to the root, with `\` folded to `/` as upstream does.
