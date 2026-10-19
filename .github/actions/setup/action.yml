@@ -1,5 +1,9 @@
 name: setup
 description: Free runner disk, install the pinned Rust toolchain, protoc, bun and the pinned senpi checkout.
+inputs:
+  cache-key:
+    description: Cargo cache key; each test shard needs its own, since their target dirs differ.
+    required: true
 runs:
   using: composite
   steps:
@@ -16,18 +20,11 @@ runs:
         rustup show active-toolchain || rustup toolchain install
         rustc --version
 
-    # Compile results go through sccache into the GitHub Actions cache, one entry per rustc output
-    # keyed by its inputs. Every job shares and dedupes them (the old per-job target/ tarballs were
-    # ~1 GB each and overflowed the 10 GB repo budget), and unchanged workspace crates are reused,
-    # which target/ caching skipped. Only main writes: entries from other refs are invisible to main.
-    - uses: mozilla-actions/sccache-action@v0.0.11
-
-    - name: enable sccache
-      shell: bash
-      run: |
-        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-        echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
-        if [ "$GITHUB_REF" != refs/heads/main ]; then echo "SCCACHE_GHA_RW_MODE=READ_ONLY" >> "$GITHUB_ENV"; fi
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/main' }}
 
     - name: protoc
       shell: bash
