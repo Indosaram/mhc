@@ -30,6 +30,12 @@ curl -fsSL https://raw.githubusercontent.com/Indosaram/mhc/main/install.sh | sh
 
 支持 Linux x86_64 和 macOS Apple Silicon。安装到 `~/.local/share/mhc`，并把 `mhc` 链接到 `~/.local/bin`；再次运行同一命令即可升级。指定版本：`MHC_VERSION=v2026.10.19`。
 
+Windows x86_64（PowerShell），安装到 `%LOCALAPPDATA%\mhc` 并加入用户 PATH：
+
+```powershell
+irm https://raw.githubusercontent.com/Indosaram/mhc/main/install.ps1 | iex
+```
+
 ## 快速开始
 
 ```bash
