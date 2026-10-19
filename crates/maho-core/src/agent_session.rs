@@ -1814,7 +1814,8 @@ impl AgentSession {
             custom_tools: config.custom_tools,
             initial_active_tool_names: config.initial_active_tool_names,
             default_tool_names: name_set(config.default_tool_names),
-            eval_only_tool_names: name_set(config.eval_only_tool_names.clone()),
+            eval_only_tool_names: Some(name_set(config.eval_only_tool_names.clone())
+                .unwrap_or_else(|| EVAL_ONLY_TOOL_NAMES.iter().map(|name| (*name).to_owned()).collect())),
             allowed_tool_names: name_set(config.allowed_tool_names),
             excluded_tool_names: name_set(config.excluded_tool_names),
             base_tools_override: config.base_tools_override,
@@ -5170,6 +5171,7 @@ impl AgentSession {
         self.model_runtime().clone().reload_config().await;
         self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
         self.load_resources_with_refresh(true).await?;
+        self.refresh_eval_only_tool_names();
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
         self.renew_extension_runtime(maho_ext_api::SessionReason::Reload).await?;
@@ -5961,6 +5963,13 @@ impl AgentSession {
         names
     }
 
+    /// Re-resolve the eval-only policy against the current registry (senpi re-resolves on every
+    /// registry rebuild and reload, so tools declaring `exposure: Eval` arm it by default).
+    fn refresh_eval_only_tool_names(&self) {
+        let names = self.resolve_eval_only_tool_names();
+        self.state().eval_only_tool_names = Some(names);
+    }
+
     fn publish_eval_only_tool_hints(&self) {
         let armed = self.is_eval_only_policy_armed();
         let registered: Option<BTreeSet<String>> = armed.then(|| {
@@ -6026,6 +6035,7 @@ impl AgentSession {
 
     /// Set active tools by name; only tools in the registry can be enabled.
     pub fn set_active_tools_by_name(&self, tool_names: Vec<String>) {
+        self.refresh_eval_only_tool_names();
         let policy_armed = self.is_eval_only_policy_armed();
         self.publish_eval_only_tool_hints();
         let policy_names = self.state().eval_only_tool_names.clone();
@@ -12262,6 +12272,22 @@ mod tests {
         assert_eq!(session.get_active_tool_names(), vec!["read".to_owned()]);
         assert!(session.requested_active_tool_names().unwrap().contains(&"workflow".to_owned()));
         assert!(session.agent().removed_tool_hints().contains_key("workflow"));
+    }
+
+    #[test]
+    fn eval_exposed_tools_are_withheld_by_default_once_eval_is_registered() {
+        let session = test_session();
+        let mut bash = test_definition("bash");
+        bash.exposure = Some(ToolExposure::Eval);
+        session.register_tool_definition(bash, empty_source_info(), test_tool("bash"));
+        session.register_tool_definition(test_definition("read"), empty_source_info(), test_tool("read"));
+        session.set_active_tools_by_name(vec!["bash".to_owned(), "read".to_owned()]);
+        assert_eq!(session.get_active_tool_names(), vec!["bash".to_owned(), "read".to_owned()]);
+
+        session.register_tool_definition(test_definition("eval"), empty_source_info(), test_tool("eval"));
+        session.set_active_tools_by_name(vec!["eval".to_owned(), "bash".to_owned(), "read".to_owned()]);
+        assert_eq!(session.get_active_tool_names(), vec!["eval".to_owned(), "read".to_owned()]);
+        assert!(session.agent().removed_tool_hints().contains_key("bash"));
     }
 
     #[test]
