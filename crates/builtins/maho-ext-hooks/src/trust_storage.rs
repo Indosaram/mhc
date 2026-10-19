@@ -55,13 +55,34 @@ impl FileHookStateStorage {
 }
 
 fn read_snapshot(path:&Path)->std::io::Result<Option<String>> {match std::fs::read(path) {Ok(bytes)=>Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error)}}
+
+#[cfg(windows)]
+fn open_directory_for_times(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const FILE_SHARE_DELETE: u32 = 4;
+    std::fs::OpenOptions::new()
+        .access_mode(FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+#[cfg(not(windows))]
+fn open_directory_for_times(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
 struct DirectoryLease {path:PathBuf,held:bool,heartbeat:Option<std::thread::JoinHandle<()>>,state:std::sync::Arc<(std::sync::Mutex<LeaseState>,std::sync::Condvar)>}
 struct LeaseState {released:bool,modified:std::time::SystemTime,compromised:Option<String>,second_precision:bool,last_update:std::time::Instant}
 fn refresh_lease(path:&Path,state:&mut LeaseState)->std::io::Result<()> {
     if std::fs::metadata(path)?.modified()?!=state.modified {return Err(std::io::Error::other("ECOMPROMISED: hook state lock modification time changed"));}
     let now=std::time::SystemTime::now();
     let modified=if state.second_precision {let elapsed=now.duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?;std::time::UNIX_EPOCH+std::time::Duration::from_secs(elapsed.as_secs()+u64::from(elapsed.subsec_nanos()>0))}else {now};
-    let file=std::fs::File::open(path)?;file.set_times(std::fs::FileTimes::new().set_modified(modified))?;
+    let file=open_directory_for_times(path)?;file.set_times(std::fs::FileTimes::new().set_modified(modified))?;
     state.modified=file.metadata()?.modified()?;state.last_update=std::time::Instant::now();Ok(())
 }
 impl DirectoryLease {
@@ -70,7 +91,7 @@ impl DirectoryLease {
         let path=PathBuf::from(format!("{}.lock",path.display()));
         retry_lock(||acquire_directory(&path,true),||std::thread::sleep(std::time::Duration::from_millis(20)))?;
         let probe_result=(|| {
-            let file=std::fs::File::open(&path)?;
+            let file=open_directory_for_times(&path)?;
             let millis=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?.as_millis();
             let probe=std::time::UNIX_EPOCH+std::time::Duration::from_millis(u64::try_from(millis.div_ceil(1000)*1000+5).map_err(std::io::Error::other)?);
             file.set_times(std::fs::FileTimes::new().set_modified(probe))?;file.metadata()?.modified()
@@ -141,7 +162,7 @@ mod tests {
     fn heartbeat_refreshes_and_detects_changed_lock_without_removing_it()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let lease=DirectoryLease::acquire(&dir.path().join("state"))?;
         {let mut state=lease.state.0.lock().unwrap();refresh_lease(&lease.path,&mut state)?;assert_eq!(state.modified,std::fs::metadata(&lease.path)?.modified()?);
-            std::fs::File::open(&lease.path)?.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;
+            open_directory_for_times(&lease.path)?.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;
             let error=refresh_lease(&lease.path,&mut state).unwrap_err();state.compromised=Some(error.to_string());}
         assert!(lease.release().unwrap_err().to_string().contains("ECOMPROMISED"));assert!(dir.path().join("state.lock").exists());Ok(())
     }
@@ -162,7 +183,7 @@ mod tests {
     #[test]
     fn stale_lock_directory_is_reclaimed_without_waiting()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let path=dir.path().join("state");let lock=dir.path().join("state.lock");std::fs::create_dir(&lock)?;
-        std::fs::File::open(&lock)?.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;let lease=DirectoryLease::acquire(&path)?;assert!(lock.is_dir());lease.release()?;assert!(!lock.exists());Ok(())
+        open_directory_for_times(&lock)?.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;let lease=DirectoryLease::acquire(&path)?;assert!(lock.is_dir());lease.release()?;assert!(!lock.exists());Ok(())
     }
     #[tokio::test]
     async fn asynchronous_missing_and_invalid_snapshots_do_not_create_locks()->std::io::Result<()> {

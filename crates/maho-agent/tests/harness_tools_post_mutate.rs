@@ -135,7 +135,7 @@ async fn hook_receives_absolute_path_and_appends_write_note() {
     assert_eq!(calls.len(), 1);
     assert_eq!(
         calls[0].path,
-        f.dir.join("nested/file.txt").to_string_lossy()
+        f.dir.join("nested").join("file.txt").to_string_lossy()
     );
     assert_eq!(calls[0].tool, MutationTool::Write);
     assert_eq!(

@@ -15,6 +15,8 @@ fn keybindings() -> std::sync::Arc<maho_tui::keybindings::KeybindingsManager> {
 fn helper_renders_equal_pinned_senpi_at_three_widths() {
     let fixture = if cfg!(target_os = "macos") {
         include_str!("golden/task35-helpers-darwin.json")
+    } else if cfg!(windows) {
+        include_str!("golden/task35-helpers-windows.json")
     } else {
         include_str!("golden/task35-helpers.json")
     };

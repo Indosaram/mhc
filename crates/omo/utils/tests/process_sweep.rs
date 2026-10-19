@@ -1223,7 +1223,8 @@ fn ambient_codegraph_install_dir_is_not_trusted() {
     });
     let expected = home
         .path()
-        .join(".omo/codegraph")
+        .join(".omo")
+        .join("codegraph")
         .to_string_lossy()
         .into_owned();
     assert_eq!(
@@ -1344,13 +1345,13 @@ fn windows_platform_and_provisioned_workers_are_matched() {
 
 #[test]
 fn default_home_roots_include_claude_omo_install() {
-    let home = PathBuf::from("/Users/yeongyu");
+    let home = if cfg!(windows) { PathBuf::from("C:\\Users\\yeongyu") } else { PathBuf::from("/Users/yeongyu") };
     let discovered = discover_codegraph_owned_roots(&CodegraphOwnedRootsOptions {
         codex_home: Some(home.join(".missing-codex")),
         home_dir: Some(home.clone()),
         ..Default::default()
     });
-    assert!(discovered.contains(&home.join(".claude/omo").to_string_lossy().into_owned()));
+    assert!(discovered.contains(&home.join(".claude").join("omo").to_string_lossy().into_owned()));
 }
 
 #[test]

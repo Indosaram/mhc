@@ -56,14 +56,15 @@ fn run_python_test(script: &str, responders: HashMap<String, String>) -> Value {
         "responders": responders,
     });
 
-    let mut child = Command::new("python3")
+    let python_cmd = if cfg!(windows) { "python" } else { "python3" };
+    let mut child = Command::new(python_cmd)
         .arg("-c")
         .arg(PYTHON_DRIVER)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("Failed to spawn python3");
+        .expect("Failed to spawn python runner");
 
     let input_bytes = serde_json::to_vec(&input).unwrap();
     child.stdin.as_mut().unwrap().write_all(&input_bytes).unwrap();

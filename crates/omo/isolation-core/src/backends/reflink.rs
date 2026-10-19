@@ -1,5 +1,7 @@
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -8,7 +10,6 @@ use crate::backend::{
     StartDetail,
 };
 use crate::backend_marker::mark_started;
-#[cfg(unix)]
 use crate::backends::copy_tree::{copy_budget, copy_tree};
 use crate::backends::runtime::{BackendRuntime, SystemRuntime};
 use crate::git::command::exists;
@@ -88,7 +89,6 @@ impl ReflinkBackend {
         }
     }
 
-    #[cfg(unix)]
     fn clone_file(
         &self,
         ffi: &Arc<dyn ReflinkIoctl>,
@@ -100,7 +100,13 @@ impl ReflinkBackend {
             .write(true)
             .create_new(true)
             .open(destination)?;
-        if ffi.ioctl(dst.as_raw_fd(), FICLONE, src.as_raw_fd()) != 0 {
+        #[cfg(unix)]
+        let (dst_fd, src_fd) = (dst.as_raw_fd(), src.as_raw_fd());
+        #[cfg(windows)]
+        let (dst_fd, src_fd) = (dst.as_raw_handle() as usize as i32, src.as_raw_handle() as usize as i32);
+        #[cfg(not(any(unix, windows)))]
+        let (dst_fd, src_fd) = (0, 0);
+        if ffi.ioctl(dst_fd, FICLONE, src_fd) != 0 {
             let errno = ffi.errno();
             if [18, 95, 9, 25, 38].contains(&errno) {
                 return Err(IsolationError::unavailable(format!(
@@ -173,11 +179,8 @@ impl ReflinkBackend {
         let outcome = (|| -> Result<ProbeResult> {
             std::fs::write(base.join("source"), "x")?;
             match &ffi {
-                #[cfg(unix)]
                 Some(ffi) => self.clone_file(ffi, &base.join("source"), &base.join("clone"))?,
                 None => self.cp(&base.join("source"), &base.join("clone"))?,
-                #[cfg(not(unix))]
-                Some(_) => self.cp(&base.join("source"), &base.join("clone"))?,
             }
             Ok(ProbeResult::available())
         })();
@@ -254,7 +257,6 @@ impl IsolationBackend for ReflinkBackend {
         }
         let result = (|| -> Result<()> {
             match &ffi {
-                #[cfg(unix)]
                 Some(ffi) => {
                     let mut budget = copy_budget(&ctx.base_dir, ctx.max_copy_bytes, None)?;
                     copy_tree(
@@ -266,10 +268,7 @@ impl IsolationBackend for ReflinkBackend {
                         &mut |size| budget.consume(size),
                     )?;
                 }
-                #[cfg(unix)]
                 None => self.cp(lower, merged)?,
-                #[cfg(not(unix))]
-                _ => self.cp(lower, merged)?,
             }
             Ok(())
         })();

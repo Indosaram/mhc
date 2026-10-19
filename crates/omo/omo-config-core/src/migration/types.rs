@@ -43,20 +43,28 @@ impl<F: Fn(u32) -> bool> ProcessLiveness for F {
 }
 
 pub fn default_is_process_alive(pid: u32) -> bool {
-    let output = std::process::Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .output();
-    match output {
-        Ok(out) => {
-            if out.status.success() {
-                true
-            } else {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                !stderr.contains("No such process") && !stderr.contains("ESRCH")
+    #[cfg(unix)]
+    {
+        let output = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output();
+        match output {
+            Ok(out) => {
+                if out.status.success() {
+                    true
+                } else {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    !stderr.contains("No such process") && !stderr.contains("ESRCH")
+                }
             }
+            Err(_) => false,
         }
-        Err(_) => false,
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
     }
 }
 

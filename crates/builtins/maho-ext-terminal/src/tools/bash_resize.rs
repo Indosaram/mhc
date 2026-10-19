@@ -12,7 +12,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn resized_geometry_is_visible_inside_live_pty()->Result<(),crate::runtime_session::RuntimeError> {
-        let mut runtime=TerminalRuntimeSession::start("geometry",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'; read value; stty size"))?;
+        let mut runtime=TerminalRuntimeSession::start("geometry",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'; read value; stty size"))?;
         let (history,mut output)=runtime.subscribe_output()?;let mut observed=history;
         tokio::time::timeout(std::time::Duration::from_secs(5),async {while !observed.contains("ready") {observed.push_str(&output.recv().await.unwrap());}}).await.unwrap();
         assert_eq!(execute_bash_resize(Some(&runtime),"bash_1",f64::NAN,24.0).is_error,Some(true));assert_eq!(execute_bash_resize(Some(&runtime),"bash_1",100.0,40.0).is_error,None);

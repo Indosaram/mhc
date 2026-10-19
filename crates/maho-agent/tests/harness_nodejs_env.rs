@@ -75,17 +75,22 @@ async fn expands_home_relative_paths_and_file_urls() {
     let dir = unique_dir("home");
     let env = env_for(&dir);
     let context = bg_context();
-    let home = std::env::var("HOME").expect("HOME");
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .expect("HOME or USERPROFILE");
 
     assert_eq!(env.absolute_path("~", &context).await.expect("home"), home);
-    assert_eq!(env.absolute_path("~/x", &context).await.expect("home x"), format!("{home}/x"));
+    assert_eq!(
+        env.absolute_path("~/x", &context).await.expect("home x"),
+        std::path::Path::new(&home).join("x").to_string_lossy()
+    );
     assert_eq!(
         env.absolute_path("file:///tmp/x", &context).await.expect("file url"),
-        "/tmp/x"
+        std::path::Path::new(if cfg!(windows) { r"C:\tmp\x" } else { "/tmp/x" }).to_string_lossy()
     );
     assert_eq!(
         env.absolute_path("rel/../other", &context).await.expect("relative"),
-        format!("{}/other", dir.to_string_lossy())
+        dir.join("other").to_string_lossy()
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

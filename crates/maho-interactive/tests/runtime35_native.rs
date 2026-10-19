@@ -1443,6 +1443,8 @@ async fn faux_screen_slash_hotkeys_matches_pinned_cells() {
     mounted.start(&mut terminal,false,false);
     let fixture = if cfg!(target_os = "macos") {
         include_str!("../../../.omo/evidence/task-35-slash/senpi-hotkeys-120-darwin.cells.json")
+    } else if cfg!(windows) {
+        include_str!("golden/senpi-hotkeys-120-windows.cells.json")
     } else {
         include_str!("../../../.omo/evidence/task-35-slash/senpi-hotkeys-120.cells.json")
     };
@@ -2319,7 +2321,7 @@ async fn alt_enter_when_idle_submits_like_enter() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
     mode.handle_input("hi");
-    mode.handle_runtime_input("\x1b\r", 0).await.expect("follow-up key");
+    mode.handle_runtime_input(if cfg!(windows) { "\x11" } else { "\x1b\r" }, 0).await.expect("follow-up key");
     assert!(mode.editor.editor.get_text().is_empty(), "the draft is cleared");
     assert_eq!(mode.submit_editor().await.expect("submit"), Some(maho_core::agent_session::PromptDisposition::Started));
     assert!(mode.render(80).join("\n").contains("hello"));
@@ -2333,7 +2335,7 @@ async fn alt_enter_while_streaming_queues_a_follow_up() {
     gated.mode.handle_input("\r");
     pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
     gated.mode.handle_input("later");
-    gated.mode.handle_runtime_input("\x1b\r", 0).await.expect("follow-up key");
+    gated.mode.handle_runtime_input(if cfg!(windows) { "\x11" } else { "\x1b\r" }, 0).await.expect("follow-up key");
     assert!(gated.mode.editor.editor.get_text().is_empty(), "the draft is cleared");
     assert_eq!(gated.session.get_follow_up_messages(), ["later"]);
     let _ = gated.gate.send(true);

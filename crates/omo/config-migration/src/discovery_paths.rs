@@ -40,11 +40,28 @@ fn comparison_path(path: String, options: &ConfigMigrationDiscoveryOptions<'_>) 
     }
 }
 
+pub(crate) fn strip_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        return format!("//{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    if let Some(rest) = path.strip_prefix("//?/") {
+        return rest.to_string();
+    }
+    path.to_string()
+}
+
 pub(crate) fn canonical_path(
     path: &str,
     options: &ConfigMigrationDiscoveryOptions<'_>,
 ) -> Result<String, DiscoveryFsError> {
-    let normalized = options.path_operations.normalize(path);
+    let clean = strip_verbatim_prefix(path);
+    let normalized = options.path_operations.normalize(&clean);
     let resolved =
         if uses_windows_path_semantics(options) && PathOperations::Win32.is_absolute(&normalized) {
             normalized
@@ -52,7 +69,7 @@ pub(crate) fn canonical_path(
             options.path_operations.resolve(&[&normalized])
         };
     match discovery_file_system(options).realpath(&resolved) {
-        Ok(real) => Ok(real),
+        Ok(real) => Ok(strip_verbatim_prefix(&real)),
         Err(error) if error.is_missing() => Ok(resolved),
         Err(error) => Err(error),
     }

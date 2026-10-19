@@ -445,7 +445,8 @@ mod tests {
     fn app_ids_are_all_present_with_their_defaults() {
         let definitions = keybindings();
         assert_eq!(definitions["app.interrupt"].default_keys, Keys::One("escape".to_string()));
-        assert_eq!(definitions["app.message.followUp"].default_keys, Keys::One("alt+enter".to_string()));
+        let expected_follow_up = if cfg!(windows) { "ctrl+q" } else { "alt+enter" };
+        assert_eq!(definitions["app.message.followUp"].default_keys, Keys::One(expected_follow_up.to_string()));
         assert_eq!(
             definitions["app.question.answer"].default_keys,
             Keys::Many(vec!["alt+up".to_string(), "alt+a".to_string()])

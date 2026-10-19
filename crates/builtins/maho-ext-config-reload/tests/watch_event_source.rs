@@ -45,7 +45,7 @@ fn worker_dispatch_crash_rebuilds_surviving_watchers() {
     let callbacks: Arc<Mutex<Vec<NativeEventCallback>>> = Arc::default();
     let listeners = Arc::clone(&callbacks);
     let (rebuilt, replacements) = mpsc::channel();
-    let source = FsWatchEventSource::with_factory(Arc::new(move |_, _, callback| {
+    let source = FsWatchEventSource::with_platform_factory("linux", Arc::new(move |_, _, callback| {
         listeners.lock().unwrap().push(callback);
         rebuilt.send(()).unwrap();
         Ok(Box::new(()))

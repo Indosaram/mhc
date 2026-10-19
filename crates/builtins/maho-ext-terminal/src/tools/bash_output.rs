@@ -25,7 +25,7 @@ mod tests {
     use super::*;
     #[test]
     fn screen_projection_applies_cursor_edits_without_consuming_log()->Result<(),RuntimeError> {
-        let runtime=TerminalRuntimeSession::start("screen",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'old\rnew\\033[K'").size(20,4))?;
+        let runtime=TerminalRuntimeSession::start("screen",crate::shared::test_sh_options("stty -echo; printf 'old\rnew\\033[K'").size(20,4))?;
         runtime.wait(std::time::Duration::from_secs(5))?;
         let result=execute_bash_output_view(Some(&runtime),"bash_1",Some("absent"),true)?;
         assert_eq!(result.content[0].text.lines().last(),Some("new"));
@@ -34,9 +34,9 @@ mod tests {
     }
     #[test]
     fn live_output_filter_consumes_delta_once_and_invalid_regex_keeps_output()->Result<(),RuntimeError> {
-        let runtime=TerminalRuntimeSession::start("output",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'keep\\ndrop\\n'"))?;runtime.wait(std::time::Duration::from_secs(5))?;
+        let runtime=TerminalRuntimeSession::start("output",crate::shared::test_sh_options("stty -echo; printf 'keep\\ndrop\\n'"))?;runtime.wait(std::time::Duration::from_secs(5))?;
         let result=execute_bash_output(Some(&runtime),"bash_1",Some("keep"))?;assert!(result.content[0].text.contains("keep"));assert!(!result.content[0].text.contains("drop"));assert!(execute_bash_output(Some(&runtime),"bash_1",None)?.content[0].text.contains("(no new output)"));runtime.dispose()?;
-        let runtime=TerminalRuntimeSession::start("output",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'unfiltered\\n'"))?;runtime.wait(std::time::Duration::from_secs(5))?;assert!(execute_bash_output(Some(&runtime),"bash_2",Some("["))?.content[0].text.contains("unfiltered"));runtime.dispose()
+        let runtime=TerminalRuntimeSession::start("output",crate::shared::test_sh_options("stty -echo; printf 'unfiltered\\n'"))?;runtime.wait(std::time::Duration::from_secs(5))?;assert!(execute_bash_output(Some(&runtime),"bash_2",Some("["))?.content[0].text.contains("unfiltered"));runtime.dispose()
     }
     #[test]
     fn muted_log_metadata_reports_burned_lines_only_while_paused() {

@@ -111,13 +111,35 @@ mod tests {
     use serde_json::json;
     fn handler(command:&str)->ExecutableHookHandler {parse_hook_config(&json!({"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":command}]}]}}),&HookSourceMetadata {scope:HookSourceScope::Project,source_path:"/repo/hooks.json".to_owned(),display_order:1,discovered_at:HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None,plugin_env:None}).executable_handlers.remove(0)}
     fn options(path:&Path)->CommandHookRunOptions<'_> {CommandHookRunOptions {cwd:path,env_passthrough:&[],output_policy:None,signal:None,source_env:None}}
-    #[tokio::test] async fn stdin_stdout_stderr_exit_metadata()->std::io::Result<()> {let dir=tempfile::tempdir()?;let result=run_command_hook(&handler("cat; printf stderr-marker >&2; exit 7"),&json!({"event":"PreToolUse","toolName":"Bash"}),options(dir.path())).await?;assert_eq!(serde_json::from_str::<serde_json::Value>(&result.stdout).map_err(std::io::Error::other)?,json!({"event":"PreToolUse","toolName":"Bash"}));assert_eq!(result.stderr,"stderr-marker");assert_eq!(result.exit_code,Some(7));assert!(!result.aborted && !result.timed_out);Ok(())}
+    #[tokio::test] async fn stdin_stdout_stderr_exit_metadata()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;
+        let mut hook=handler("cat; printf stderr-marker >&2; exit 7");
+        hook.config.command_windows=Some("node -e \"const fs=require('fs');process.stdout.write(fs.readFileSync(0));process.stderr.write('stderr-marker');process.exit(7);\"".into());
+        let result=run_command_hook(&hook,&json!({"event":"PreToolUse","toolName":"Bash"}),options(dir.path())).await?;
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&result.stdout).map_err(std::io::Error::other)?,json!({"event":"PreToolUse","toolName":"Bash"}));
+        assert_eq!(result.stderr,"stderr-marker");
+        assert_eq!(result.exit_code,Some(7));
+        assert!(!result.aborted && !result.timed_out);
+        Ok(())
+    }
     #[tokio::test] async fn invalid_timeout_prevents_spawn() {let mut hook=handler("exit 0");hook.config.timeout=Some(0.0);assert!(run_command_hook(&hook,&json!({"event":"SessionStart"}),options(Path::new("/tmp"))).await.is_err());}
-    #[tokio::test] async fn timeout_kills_process_group()->std::io::Result<()> {let mut hook=handler("while :; do :; done");hook.config.timeout=Some(0.02);let result=run_command_hook(&hook,&json!({"event":"SessionStart"}),options(Path::new("/tmp"))).await?;assert!(result.timed_out);assert_eq!(result.exit_code,None);Ok(())}
+    #[tokio::test] async fn timeout_kills_process_group()->std::io::Result<()> {
+        let mut hook=handler("while :; do :; done");
+        hook.config.command_windows=Some("node -e \"for(;;);\"".into());
+        hook.config.timeout=Some(0.02);
+        let dir=tempfile::tempdir()?;
+        let result=run_command_hook(&hook,&json!({"event":"SessionStart"}),options(dir.path())).await?;
+        assert!(result.timed_out);
+        assert_eq!(result.exit_code,None);
+        Ok(())
+    }
     #[tokio::test]
     async fn timeout_interrupts_a_child_that_never_reads_large_stdin()->std::io::Result<()> {
-        let mut hook=handler("while :; do :; done");hook.config.timeout=Some(0.02);
-        let result=tokio::time::timeout(Duration::from_secs(5),run_command_hook(&hook,&json!({"event":"UserPromptSubmit","prompt":"x".repeat(1_000_000)}),options(Path::new("/tmp")))).await.map_err(std::io::Error::other)??;
+        let mut hook=handler("while :; do :; done");
+        hook.config.command_windows=Some("node -e \"for(;;);\"".into());
+        hook.config.timeout=Some(0.02);
+        let dir=tempfile::tempdir()?;
+        let result=tokio::time::timeout(Duration::from_secs(5),run_command_hook(&hook,&json!({"event":"UserPromptSubmit","prompt":"x".repeat(1_000_000)}),options(dir.path()))).await.map_err(std::io::Error::other)??;
         assert!(result.timed_out);assert_eq!(result.exit_code,None);Ok(())
     }
     #[tokio::test] async fn already_aborted_never_spawns()->std::io::Result<()> {let signal=AbortSignal::default();signal.abort();let mut opts=options(Path::new("/tmp"));opts.signal=Some(&signal);let result=run_command_hook(&handler("exit 9"),&json!({"event":"SessionStart"}),opts).await?;assert!(result.aborted);assert_eq!(result.exit_code,None);Ok(())}

@@ -76,12 +76,13 @@ pub fn run_senpi_startup_migration_with_options<'a>(
                         home_dir,
                         path_operations: if options.platform
                             == Some(config_migration::Platform::Win32)
+                            || (options.platform.is_none() && cfg!(windows))
                         {
                             PathOperations::Win32
                         } else {
                             PathOperations::Posix
                         },
-                        platform: options.platform,
+                        platform: options.platform.or(if cfg!(windows) { Some(config_migration::Platform::Win32) } else { None }),
                         tauri_config_dirs: None,
                     },
                 },
@@ -360,12 +361,17 @@ pub struct ConfigStartupComponent {
 impl Extension for ConfigStartupComponent {
     fn register(&self, api: &mut ExtensionApi) {
         let cwd = api.cwd.to_string_lossy().into_owned();
-        let env: BTreeMap<_, _> = std::env::vars().collect();
+        let mut env: BTreeMap<_, _> = std::env::vars().collect();
         let home = env
             .get("HOME")
             .or_else(|| env.get("USERPROFILE"))
-            .map(String::as_str)
+            .cloned()
             .unwrap_or_default();
+        if !home.is_empty() {
+            env.entry("HOME".into()).or_insert_with(|| home.clone());
+            env.entry("USERPROFILE".into()).or_insert_with(|| home.clone());
+        }
+        let home = home.as_str();
         let migration = self
             .run_migration
             .as_ref()

@@ -25,5 +25,6 @@ mod tests {
     use super::*;
     #[test] fn includes_descendants_and_counts_partial_fd_reads(){let rows=vec![ProcessTableRow{pid:1,ppid:0,state:"U".into(),rss_kb:1024.},ProcessTableRow{pid:3,ppid:2,state:"Z".into(),rss_kb:0.},ProcessTableRow{pid:2,ppid:1,state:"U".into(),rss_kb:2048.},ProcessTableRow{pid:9,ppid:0,state:"U".into(),rss_kb:9999.}];let metrics=metrics_from_rows(&rows,1,Some(&mut |pid|if pid==2{None}else{Some(4)}));assert_eq!(metrics,HostProcessMetrics{rss_mb:Some(3),open_fds:Some(8),zombies:Some(1)});assert_eq!(metrics_from_rows(&rows,8,None),HostProcessMetrics::default());}
     #[test] fn unavailable_descriptor_reader_is_not_zero(){let row=ProcessTableRow{pid:1,ppid:0,state:"U".into(),rss_kb:0.};assert_eq!(metrics_from_rows(&[row],1,Some(&mut |_|None)).open_fds,None);assert_eq!(read_host_process_metrics(1,"win32"),HostProcessMetrics::default());}
+    #[cfg(unix)]
     #[test] fn real_process_surface_has_memory_and_fds(){let platform=if cfg!(target_os="macos"){"darwin"}else{"linux"};let metrics=read_host_process_metrics(std::process::id(),platform);assert!(metrics.rss_mb.is_some());assert_eq!(metrics.open_fds.is_some(),platform=="linux");assert_eq!(metrics.zombies,Some(0));}
 }

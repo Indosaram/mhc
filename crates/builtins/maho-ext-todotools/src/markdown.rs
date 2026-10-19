@@ -50,11 +50,19 @@ mod tests {
     #[test] fn astral_status_marker_is_not_a_single_javascript_code_unit() { let result=markdown_to_phases("- [\u{1f600}] task"); assert!(result.phases.is_empty()); assert_eq!(result.errors.len(),1); }
     #[test] fn javascript_regex_whitespace_accepts_bom_but_not_next_line() { let accepted=markdown_to_phases("#\u{feff}Tasks\n-\u{feff}[ ]\u{feff}one"); assert!(accepted.errors.is_empty()); assert_eq!(accepted.phases[0].tasks[0].content,"one"); assert_eq!(markdown_to_phases("#\u{0085}Tasks").errors.len(),1); }
     #[test] fn relative_cwd_resolves_against_process_cwd() { assert_eq!(resolve_todo_markdown_path("TODO.md",Path::new("relative")),std::env::current_dir().unwrap().join("relative/TODO.md")); }
-    #[test] fn absolute_user_paths_preserve_dot_segments() { assert_eq!(resolve_todo_markdown_path("/tmp/../TODO.md",Path::new("/other")),PathBuf::from("/tmp/../TODO.md")); }
+    #[test] fn absolute_user_paths_preserve_dot_segments() {
+        let (abs, other) = if cfg!(windows) { ("C:\\tmp\\..\\TODO.md", Path::new("C:\\other")) } else { ("/tmp/../TODO.md", Path::new("/other")) };
+        assert_eq!(resolve_todo_markdown_path(abs, other), PathBuf::from(abs));
+    }
     #[test] fn bom_wrapped_markdown_is_trimmed_like_javascript() { let result=markdown_to_phases("\u{feff}# Tasks\u{feff}\n\u{feff}- [ ] one\u{feff}"); assert!(result.errors.is_empty()); assert_eq!(result.phases[0].tasks[0].content,"one"); }
     #[test] fn checklist_roundtrip_keeps_all_statuses() { let p=vec![TodoPhase{name:"Foundation".into(),tasks:[TodoStatus::Completed,TodoStatus::InProgress,TodoStatus::Abandoned,TodoStatus::Pending].into_iter().enumerate().map(|(i,status)|TodoItem{content:format!("task {i}"),status}).collect()}]; let result=markdown_to_phases(&phases_to_markdown(&p)); assert_eq!(result.phases,p); assert!(result.errors.is_empty()); }
     #[test] fn headerless_checklist_uses_default_phase() { let result=markdown_to_phases("* [] first\n+ [X] second\n"); assert_eq!(result.phases[0].name,DEFAULT_INIT_PHASE); assert_eq!(result.phases[0].tasks[0].status,TodoStatus::InProgress); assert_eq!(result.phases[0].tasks[1].status,TodoStatus::Completed); }
     #[test] fn unknown_marker_and_unrecognized_syntax_report_lines() { let result=markdown_to_phases("# Tasks\n- [?] unknown\nordinary text\n"); assert_eq!(result.errors.len(),2); assert!(result.phases[0].tasks.is_empty()); }
-    #[test] fn quoted_paths_are_resolved_lexically() { assert_eq!(resolve_todo_markdown_path(" '../TODO.md' ",Path::new("/tmp/project")),PathBuf::from("/tmp/TODO.md")); assert_eq!(resolve_todo_markdown_path("",Path::new("/tmp/project")),PathBuf::from("/tmp/project/TODO.md")); }
+    #[test] fn quoted_paths_are_resolved_lexically() {
+        let tmp = if cfg!(windows) { Path::new("C:\\tmp") } else { Path::new("/tmp") };
+        let project = tmp.join("project");
+        assert_eq!(resolve_todo_markdown_path(" '../TODO.md' ", &project), tmp.join("TODO.md"));
+        assert_eq!(resolve_todo_markdown_path("", &project), project.join("TODO.md"));
+    }
     #[test] fn empty_export_keeps_default_heading() { assert_eq!(phases_to_markdown(&[]),"# Tasks\n"); }
 }

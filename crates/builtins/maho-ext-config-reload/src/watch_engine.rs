@@ -224,9 +224,17 @@ fn scan_path(target: &WatchTarget, absolute: &Path, relative: &Path, result: &mu
     }
     Ok(())
 }
+fn is_not_found(path: &Path, error: &std::io::Error) -> bool {
+    if error.kind() != std::io::ErrorKind::NotFound { return false; }
+    for ancestor in path.ancestors().skip(1) {
+        if let Ok(meta) = std::fs::metadata(ancestor)
+            && !meta.is_dir() { return false; }
+    }
+    true
+}
 fn scan_entry(target: &WatchTarget, absolute: &Path, relative: &Path, result: &mut ScanResult, on_error: Option<&WatchErrorListener>, hash_file: &HashFile) -> Result<(), std::io::Error> {
     if !relative.as_os_str().is_empty() && !matches(target, relative) { return Ok(()); }
-    let entry = match std::fs::symlink_metadata(absolute) { Ok(entry) => entry, Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()), Err(error) => return Err(error) };
+    let entry = match std::fs::symlink_metadata(absolute) { Ok(entry) => entry, Err(error) if is_not_found(absolute, &error) => return Ok(()), Err(error) => return Err(error) };
     if entry.is_symlink() { return Ok(()); }
     if entry.is_file() { result.hashes.insert(absolute.into(), hash_file(absolute)?); return Ok(()); }
     if !entry.is_dir() { return Ok(()); }

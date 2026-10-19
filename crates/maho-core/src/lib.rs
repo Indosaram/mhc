@@ -199,9 +199,12 @@ pub(crate) mod test_support {
     /// developer's home directory. `tempfile`'s default honours `TMPDIR`, which a verification
     /// harness may point inside HOME; anchoring on `/tmp` keeps every ancestor marker-free.
     pub(crate) fn isolated_tempdir() -> tempfile::TempDir {
-        tempfile::Builder::new()
-            .prefix("maho-core-isolated-")
-            .tempdir_in("/tmp")
-            .expect("isolated temp root under /tmp")
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("maho-core-isolated-");
+        if cfg!(windows) {
+            builder.tempdir().expect("isolated temp root")
+        } else {
+            builder.tempdir_in("/tmp").expect("isolated temp root under /tmp")
+        }
     }
 }

@@ -67,7 +67,7 @@ mod tests {
     #[test] fn default_config_uses_owner_resolver_and_reports_invalid_config() {
         let t=tempfile::tempdir().unwrap();std::fs::create_dir(t.path().join(".omo")).unwrap();let config=t.path().join(".omo/omo.json");
         let diagnostics=Arc::new(Mutex::new(Vec::new()));let observed=Arc::clone(&diagnostics);
-        let options=SenpiTelemetryOptions {env:Some(telemetry_core::TelemetryEnv::from([("HOME".into(),t.path().to_string_lossy().into_owned())])),diagnostics:Some(Arc::new(move |d|observed.lock().unwrap().push(d.clone()))),..Default::default()};
+        let options=SenpiTelemetryOptions {env:Some(telemetry_core::TelemetryEnv::from([("HOME".into(),t.path().to_string_lossy().into_owned()),("USERPROFILE".into(),t.path().to_string_lossy().into_owned())])),diagnostics:Some(Arc::new(move |d|observed.lock().unwrap().push(d.clone()))),..Default::default()};
         let component=OmoNativeTelemetryComponent::with_default_config(options,t.path().join("skills"));
         assert!((component.is_config_enabled)(t.path()));std::fs::write(&config,"{\"telemetry\":{\"enabled\":false}}").unwrap();assert!(!(component.is_config_enabled)(t.path()));
         std::fs::write(&config,"{bad").unwrap();assert!(!(component.is_config_enabled)(t.path()));let diagnostics=diagnostics.lock().unwrap();assert_eq!(diagnostics.len(),1);assert_eq!(diagnostics[0].event,TelemetryDiagnosticEvent::TelemetryCaptureFailed);assert_eq!(diagnostics[0].source,"omo-native-session");

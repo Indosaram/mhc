@@ -21,10 +21,17 @@ fn git(cwd: &Path, args: &[&str]) -> String {
 }
 
 fn normalize_git_path_text(value: &str) -> String {
-    value
+    let text = value
         .replace('\\', "/")
         .replace("/private/var/", "/var/")
-        .to_lowercase()
+        .to_lowercase();
+    if let Some(rest) = text.strip_prefix("//?/unc/") {
+        format!("//{rest}")
+    } else if let Some(rest) = text.strip_prefix("//?/") {
+        rest.to_string()
+    } else {
+        text
+    }
 }
 
 /// `initGitRepo`: the repo lives in `<tmp>/repo` so `../worktree-*` stays inside the temp dir.

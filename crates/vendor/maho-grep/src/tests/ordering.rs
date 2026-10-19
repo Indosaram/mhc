@@ -44,7 +44,14 @@ fn overlapping_roots_dedupe_by_canonical_identity() {
     #[cfg(unix)]
     std::os::unix::fs::symlink("src", c.0.join("alias")).unwrap();
     #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(c.0.join("src"), c.0.join("alias")).unwrap();
+    if std::os::windows::fs::symlink_dir(c.0.join("src"), c.0.join("alias")).is_err() {
+        let cmd = format!("mklink /J \"{}\" \"{}\"", c.0.join("alias").display(), c.0.join("src").display());
+        let ok = std::process::Command::new("cmd").args(["/C", &cmd]).status().map(|s| s.success()).unwrap_or(false);
+        if !ok {
+            eprintln!("skipping test: symlinks and junctions not supported without elevation on this Windows environment");
+            return;
+        }
+    }
     let mut o = c.options();
     for roots in [["src/nested", "src", "alias"], ["alias", "src", "src/nested"]] {
         o.paths = roots.into_iter().map(|root| c.path(root)).collect();

@@ -38,7 +38,8 @@ pub struct GitMemoryRepo {
 
 impl GitMemoryRepo {
     pub fn new(options: impl Into<GitMemoryRepoOptions>) -> Result<Self, GitError> {
-        let opts = options.into();
+        let mut opts = options.into();
+        opts.dir = crate::support::paths::strip_verbatim_prefix(&opts.dir);
         let exec = opts.exec.unwrap_or_else(system_git_exec);
         let path_state = GitPathStateStore::new(&opts.dir, Arc::clone(&exec));
         Ok(Self {
@@ -415,7 +416,8 @@ impl GitMemoryRepo {
         branch: &str,
         start_point: Option<&str>,
     ) -> Result<(), GitError> {
-        let path_str = path.as_ref().to_string_lossy().into_owned();
+        let clean_path = crate::support::paths::strip_verbatim_prefix(path.as_ref());
+        let path_str = clean_path.to_string_lossy().into_owned();
         let start = start_point.unwrap_or("HEAD");
         with_serialized_git_worktree_mutation(&self.dir, || {
             with_git_lock_retry(|| {
@@ -433,7 +435,8 @@ impl GitMemoryRepo {
     }
 
     pub fn worktree_remove(&self, path: impl AsRef<Path>, force: bool) -> Result<(), GitError> {
-        let path_str = path.as_ref().to_string_lossy().into_owned();
+        let clean_path = crate::support::paths::strip_verbatim_prefix(path.as_ref());
+        let path_str = clean_path.to_string_lossy().into_owned();
         with_serialized_git_worktree_mutation(&self.dir, || {
             with_git_lock_retry(|| {
                 let mut argv = vec!["worktree".to_string(), "remove".to_string()];

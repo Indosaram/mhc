@@ -243,7 +243,8 @@ mod tests {
     #[test]
     fn the_sidecar_path_uses_the_encoded_id() {
         let reference = SidecarStoreRef { base_dir: "/tmp/x".to_owned(), session_id: "a/b".to_owned() };
-        assert_eq!(sidecar_file_path(&reference), "/tmp/x/a%2Fb.json");
+        let expected = std::path::Path::new("/tmp/x").join("a%2Fb.json").to_string_lossy().into_owned();
+        assert_eq!(sidecar_file_path(&reference), expected);
     }
 
     #[tokio::test]

@@ -23,6 +23,7 @@ fn test_given_sidecar_when_described_then_status_names_source_without_starting()
 fn test_given_verified_cache_and_no_candidate_when_described_then_names_release_cache() {
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), "/tmp/test-home-cache".to_string());
+    env.insert("USERPROFILE".to_string(), "/tmp/test-home-cache".to_string());
     let options = DesktopEngineLocatorOptions {
         platform: Some("linux".to_string()),
         arch: Some("x64".to_string()),
@@ -143,7 +144,8 @@ fn test_installed_source_parity_explicit() {
         arch: Some("x64".to_string()),
         ..Default::default()
     };
-    let res = resolve_installed_engine(Some("/bin/sh"), &BTreeMap::new(), None, &options);
+    let current = std::env::current_exe().expect("current test exe");
+    let res = resolve_installed_engine(current.to_str(), &BTreeMap::new(), None, &options);
     assert!(matches!(res, InstalledEngine::Installed { source, .. } if source == "explicit"));
 }
 
@@ -199,6 +201,7 @@ fn test_installed_source_parity_dev_build() {
 fn test_installed_source_parity_cache() {
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), "/tmp/test-home-empty".to_string());
+    env.insert("USERPROFILE".to_string(), "/tmp/test-home-empty".to_string());
     let options = DesktopEngineLocatorOptions {
         platform: Some("linux".to_string()),
         arch: Some("x64".to_string()),

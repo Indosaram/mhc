@@ -156,6 +156,11 @@ pub(crate) fn run_git_with_input(
     command.current_dir(&options.cwd);
     for (key, value) in &options.env {
         command.env(key, value);
+        #[cfg(windows)]
+        if key.eq_ignore_ascii_case("PATH") {
+            command.env("Path", value);
+            command.env("PATH", value);
+        }
     }
     command.stdin(if input.is_some() {
         Stdio::piped()
