@@ -510,7 +510,12 @@ pub fn create_dag_tool(deps: DagToolDeps) -> ToolDefinition {
             let deps = deps.clone();
             Box::pin(async move {
                 let input: DagToolInput = serde_json::from_value(call.params)?;
-                run_dag_tool(&deps, input)
+                // TS awaits these actions; `wait` (and scheduler bookkeeping) block on condvars here, so run
+                // them off the async executor. Blocking a current-thread runtime stalls its I/O driver,
+                // which the in-process children's provider streams depend on, and deadlocks the run.
+                tokio::task::spawn_blocking(move || run_dag_tool(&deps, input))
+                    .await
+                    .map_err(|error| ToolError::Message(format!("workflow tool worker failed: {error}")))?
             })
         }),
     );
