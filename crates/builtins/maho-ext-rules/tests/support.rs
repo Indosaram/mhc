@@ -3,7 +3,9 @@ use maho_ext_api::ToolResultEvent;
 #[test]
 fn missing_root_marker_terminates_at_filesystem_root() { let dir = tempfile::tempdir().unwrap(); assert!(find_project_root(dir.path(), Some(&[".nonexistent-marker-senpi"])).is_none()); }
 #[test]
-fn root_discovery_finds_nearest_marker() { let dir = tempfile::tempdir().unwrap(); let nested = dir.path().join("nested"); std::fs::create_dir(&nested).unwrap(); std::fs::write(dir.path().join("Cargo.toml"), "").unwrap(); assert_eq!(find_project_root(&nested, None), Some(dir.path().to_path_buf())); }
+fn root_discovery_finds_nearest_marker() { let dir = tempfile::tempdir().unwrap(); let nested = dir.path().join("nested"); std::fs::create_dir(&nested).unwrap(); std::fs::write(dir.path().join("Cargo.toml"), "").unwrap(); assert_eq!(find_project_root(&nested, None), Some(canonical(dir.path()))); }
+/// Long-name canonical path without the Windows `\\?\` prefix, as `find_project_root` reports it.
+fn canonical(path: &std::path::Path) -> std::path::PathBuf { let path = std::fs::canonicalize(path).unwrap(); path.to_str().and_then(|text| text.strip_prefix(r"\\?\")).map(std::path::PathBuf::from).unwrap_or(path) }
 #[test]
 fn missing_start_returns_none() { let dir = tempfile::tempdir().unwrap(); assert!(find_project_root(&dir.path().join("missing"), None).is_none()); }
 #[test]

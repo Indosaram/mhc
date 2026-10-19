@@ -43,7 +43,7 @@ mod tests {
     #[tokio::test]
     async fn discovery_flags_filter_before_attempt_and_do_not_mutate_parent_env() {
         let launch = if cfg!(windows) {
-            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "if (process.env.SENPI_MEMORY_FACTS === '1' && process.env.SENPI_PTY_FORCE_PIPE === '1') console.log('builtin/fallback');".into()] }
+            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "if (process.env.SENPI_MEMORY_FACTS === '1' && process.env.SENPI_PTY_FORCE_PIPE === '1') console.log('builtin/fallback');".into(), "--".into()] }
         } else {
             Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "[ \"$SENPI_MEMORY_FACTS\" = 1 ] && [ \"$SENPI_PTY_FORCE_PIPE\" = 1 ] && printf 'builtin/fallback\\n'".into()] }
         };
@@ -59,7 +59,7 @@ mod tests {
     #[tokio::test]
     async fn foreign_package_directory_environment_is_removed_before_preflight() {
         let launch = if cfg!(windows) {
-            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "if (!process.env.NPM_PACKAGE_DIR && process.env.KEEP === 'yes') console.log('builtin/model');".into()] }
+            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "if (!process.env.NPM_PACKAGE_DIR && process.env.KEEP === 'yes') console.log('builtin/model');".into(), "--".into()] }
         } else {
             Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "[ -z \"$NPM_PACKAGE_DIR\" ] && [ \"$KEEP\" = yes ] && printf 'builtin/model\\n'".into()] }
         };
@@ -72,7 +72,7 @@ mod tests {
     #[tokio::test]
     async fn missing_catalog_models_retain_extension_enabled_reactive_attempt() {
         let launch = if cfg!(windows) {
-            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "console.log('other/model');".into()] }
+            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "console.log('other/model');".into(), "--".into()] }
         } else {
             Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "printf 'other/model\\n'".into()] }
         };
@@ -89,7 +89,7 @@ mod tests {
     #[tokio::test]
     async fn unavailable_catalog_warns_and_preserves_reactive_chain() {
         let launch = if cfg!(windows) {
-            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "process.exit(7);".into()] }
+            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "process.exit(7);".into(), "--".into()] }
         } else {
             Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "exit 7".into()] }
         };

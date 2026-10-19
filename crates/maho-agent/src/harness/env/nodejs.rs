@@ -332,6 +332,11 @@ fn get_shell_env(
 
 /// `killProcessTree(pid)`.
 fn kill_process_tree(pid: u32) {
+    if cfg!(windows) {
+        let env_map: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+        kill_windows_process_tree(pid, &windows_taskkill_candidates(&env_map));
+        return;
+    }
     let script = format!("kill -9 -{pid} 2>/dev/null || kill -9 {pid} 2>/dev/null || true");
     let _ = Command::new("sh").arg("-c").arg(script).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
@@ -350,7 +355,9 @@ pub fn kill_windows_process_tree(pid: u32, taskkill_paths: &[String]) {
             return;
         }
     }
-    kill_process_tree(pid);
+    if !cfg!(windows) {
+        kill_process_tree(pid);
+    }
 }
 
 /// Strict LF reader; the final line's termination is reported.
@@ -1124,12 +1131,16 @@ impl NodeExecutionEnv {
         };
         match outcome {
             ExecOutcome::TimedOut => {
+                let _ = tokio::time::timeout(Duration::from_millis(500), &mut status_rx).await;
                 err(ExecutionError::new(
                     ExecutionErrorCode::Timeout,
                     format!("timeout:{}", options.as_ref().and_then(|options| options.timeout).unwrap_or(0.0)),
                 ))
             }
-            ExecOutcome::Aborted => err(ExecutionError::new(ExecutionErrorCode::Aborted, "aborted")),
+            ExecOutcome::Aborted => {
+                let _ = tokio::time::timeout(Duration::from_millis(500), &mut status_rx).await;
+                err(ExecutionError::new(ExecutionErrorCode::Aborted, "aborted"))
+            }
             ExecOutcome::Exited(status) => {
                 let output = capture.snapshot();
                 let exit_code = status.code().unwrap_or(1);

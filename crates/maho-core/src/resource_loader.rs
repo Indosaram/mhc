@@ -513,8 +513,8 @@ mod tests {
         assert_eq!(package_skill.source_info.origin, SourceOrigin::Package);
         assert!(loaded.prompts.iter().any(|prompt| prompt.name == "pkg-prompt"));
         let hooks: Vec<&str> = loaded.hook_resources.iter().map(|resource| resource.path.as_str()).collect();
-        assert!(hooks.iter().any(|path| path.ends_with("pkg/hooks/hooks.json")), "{hooks:?}");
-        assert!(hooks.iter().any(|path| path.ends_with("agent/hooks/user.json")), "{hooks:?}");
+        assert!(hooks.iter().any(|path| path.replace('\\', "/").ends_with("pkg/hooks/hooks.json")), "{hooks:?}");
+        assert!(hooks.iter().any(|path| path.replace('\\', "/").ends_with("agent/hooks/user.json")), "{hooks:?}");
     }
 
     #[tokio::test]

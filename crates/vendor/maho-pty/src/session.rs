@@ -173,6 +173,8 @@ impl PtySession {
         let mut dsr_tail: Vec<u8> = Vec::new();
         #[cfg(windows)]
         let mut dsr_answered_initial = false;
+        #[cfg(windows)]
+        let mut conpty_filter = ConPtyFilter::new();
         let reader_thread = spawn_reader(reader, move |chunk| {
             #[cfg(windows)]
             answer_conpty_cursor_query(
@@ -182,7 +184,21 @@ impl PtySession {
                 &reader_writer,
                 &reader_user_wrote,
             );
-            on_chunk(chunk);
+            #[cfg(windows)]
+            {
+                let filtered = if chunk.is_empty() {
+                    conpty_filter.flush()
+                } else {
+                    conpty_filter.process(chunk)
+                };
+                if !filtered.is_empty() {
+                    on_chunk(&filtered);
+                }
+            }
+            #[cfg(not(windows))]
+            if !chunk.is_empty() {
+                on_chunk(chunk);
+            }
         });
 
         if let Some(timeout) = opts.timeout {
@@ -253,9 +269,27 @@ impl PtySession {
         match self.signal_number(kill_signal()) {
             Ok(()) => Ok(()),
             Err(error) if error.to_string().contains("No such process") => Ok(()),
+            #[cfg(windows)]
+            Err(error)
+                if error.to_string().contains("os error 6")
+                    || error.to_string().contains("os error 5")
+                    || error.to_string().contains("os error 2")
+                    || error.to_string().contains("Access is denied") =>
+            {
+                Ok(())
+            }
             Err(_) => match self.killer.kill().map_err(PtyError::from) {
                 Ok(()) => Ok(()),
                 Err(error) if error.to_string().contains("No such process") => Ok(()),
+                #[cfg(windows)]
+                Err(error)
+                    if error.to_string().contains("os error 6")
+                        || error.to_string().contains("os error 5")
+                        || error.to_string().contains("os error 2")
+                        || error.to_string().contains("Access is denied") =>
+                {
+                    Ok(())
+                }
                 Err(error) => Err(error),
             },
         }
@@ -391,4 +425,117 @@ fn answer_conpty_cursor_query(
             let _ = writer.flush();
         }
     }
+}
+
+#[cfg(windows)]
+struct ConPtyFilter {
+    in_preamble: bool,
+    buffer: Vec<u8>,
+}
+
+#[cfg(windows)]
+impl ConPtyFilter {
+    fn new() -> Self {
+        Self {
+            in_preamble: true,
+            buffer: Vec::new(),
+        }
+    }
+
+    fn process(&mut self, chunk: &[u8]) -> Vec<u8> {
+        self.buffer.extend_from_slice(chunk);
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.buffer.len() {
+            if self.buffer[i] == 0x1b {
+                let rem = &self.buffer[i..];
+                if let Some(consumed) = self.match_escape(rem) {
+                    if consumed == 0 {
+                        break;
+                    }
+                    i += consumed;
+                    continue;
+                }
+                if is_partial_conpty_escape(rem, self.in_preamble) {
+                    break;
+                }
+                self.in_preamble = false;
+                out.push(self.buffer[i]);
+                i += 1;
+            } else {
+                self.in_preamble = false;
+                out.push(self.buffer[i]);
+                i += 1;
+            }
+        }
+        self.buffer.drain(..i);
+        out
+    }
+
+    fn flush(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buffer)
+    }
+
+    fn match_escape(&self, rem: &[u8]) -> Option<usize> {
+        if rem.starts_with(b"\x1b[6n") {
+            return Some(4);
+        }
+        if rem.starts_with(b"\x1b[?9001h") || rem.starts_with(b"\x1b[?9001l") {
+            return Some(8);
+        }
+        if rem.starts_with(b"\x1b[?1004h") || rem.starts_with(b"\x1b[?1004l") {
+            return Some(8);
+        }
+        if self.in_preamble {
+            if rem.starts_with(b"\x1b[m") {
+                return Some(3);
+            }
+            if rem.starts_with(b"\x1b[?25h") {
+                return Some(6);
+            }
+            if rem.starts_with(b"\x1b]0;") {
+                let mut idx = 4;
+                while idx < rem.len() {
+                    if rem[idx] == 0x07 {
+                        return Some(idx + 1);
+                    }
+                    if rem[idx] == 0x1b && idx + 1 < rem.len() && rem[idx + 1] == b'\\' {
+                        return Some(idx + 2);
+                    }
+                    idx += 1;
+                }
+                return Some(0);
+            }
+        }
+        None
+    }
+}
+
+#[cfg(windows)]
+fn is_partial_conpty_escape(rem: &[u8], in_preamble: bool) -> bool {
+    const PREFIXES: &[&[u8]] = &[
+        b"\x1b[6n",
+        b"\x1b[?9001h",
+        b"\x1b[?9001l",
+        b"\x1b[?1004h",
+        b"\x1b[?1004l",
+    ];
+    for p in PREFIXES {
+        if rem.len() < p.len() && p.starts_with(rem) {
+            return true;
+        }
+    }
+    if in_preamble {
+        const PREAMBLE_PREFIXES: &[&[u8]] = &[
+            b"\x1b[m",
+            b"\x1b[?25h",
+            b"\x1b]0;",
+        ];
+        for p in PREAMBLE_PREFIXES {
+            if rem.len() < p.len() && p.starts_with(rem) {
+                return true;
+            }
+        }
+    }
+    false
 }

@@ -24,7 +24,10 @@ type ExitWatch=tokio::sync::watch::Receiver<Option<Result<maho_pty::PtyExit,Stri
 fn wait_for_terminal_session_exit(runtime:&TerminalRuntimeSession,grace:Duration)->Result<bool,RuntimeError> {
     match runtime.wait(grace) {
         Err(RuntimeError::WaitTimeout)=>Ok(false),
-        Err(RuntimeError::Pty(ref err)) if err.to_string().contains("258") =>Ok(false),
+        Err(RuntimeError::Pty(ref err)) if err.to_string().contains("258")
+            || err.to_string().contains("os error 6")
+            || err.to_string().contains("os error 5")
+            || err.to_string().contains("os error 2") =>Ok(false),
         Err(RuntimeError::Poisoned)=>Err(RuntimeError::Poisoned),
         _=>runtime.exited(),
     }

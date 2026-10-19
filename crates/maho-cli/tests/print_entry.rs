@@ -29,13 +29,17 @@ async fn real_print_entry_rejects_unknown_extension_flags_and_warns_on_unmatched
         "api":"openai-completions", "baseUrl":"http://127.0.0.1:9/v1", "apiKey":"offline-fixture",
         "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
     }}}).to_string()).expect("print-entry fixture operation");
-    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"));
+    command
         .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
         .env_remove("__PI_INTERNAL_SPAWN")
         .args(["-p", "--offline", "--no-session", "--no-tools", "--no-extensions", "--model", "offline/offline", "--models", "nomatch-fixture*", "--definitely-unknown-flag=1", "hello"])
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn().expect("print-entry fixture operation");
+        .kill_on_drop(true);
+    if cfg!(windows) {
+        command.env("USERPROFILE", dir.path());
+    }
+    let child = command.spawn().expect("print-entry fixture operation");
     let output = tokio::time::timeout(SAFETY_BOUND, child.wait_with_output()).await
         .expect("print entry finished within the safety bound").expect("print-entry fixture operation");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -67,7 +71,8 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
         "api":"openai-completions", "baseUrl":format!("http://{address}/v1"), "apiKey":"offline-fixture",
         "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
     }}}).to_string()).expect("print-entry fixture operation");
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"));
+    command
         .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
         .env_remove("__PI_INTERNAL_SPAWN")
         .args(["-p", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--prompt-template", "acceptance.md", "--model", "offline/offline", "/acceptance fixture"])
@@ -75,8 +80,11 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
         .args(if no_context_files { vec!["--no-context-files"] } else { Vec::new() })
         .stdin(if piped_stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn().expect("print-entry fixture operation");
+        .kill_on_drop(true);
+    if cfg!(windows) {
+        command.env("USERPROFILE", dir.path());
+    }
+    let mut child = command.spawn().expect("print-entry fixture operation");
     if let Some(text) = piped_stdin {
         let mut stdin = child.stdin.take().expect("print stdin");
         stdin.write_all(text.as_bytes()).await.expect("print-entry fixture operation");
@@ -120,9 +128,11 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
     let (output, payload) = match result {
         Ok(Ok(result)) => result,
         other => {
+            let mut err = Vec::new();
+            let _ = stderr.read_to_end(&mut err).await;
             child.kill().await.expect("kill print after failed bounded operation");
             child.wait().await.expect("reap print after failed bounded operation");
-            panic!("print operation failed: {other:?}");
+            panic!("print operation failed: {other:?}\nstderr: {}", String::from_utf8_lossy(&err));
         }
     };
     drop(listener);
