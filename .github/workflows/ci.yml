@@ -31,6 +31,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
+        with:
+          cache-key: clippy
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: disk usage
@@ -43,6 +45,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
+        with:
+          cache-key: build
       - name: build mhc binary
         run: cargo build -p maho-cli --locked
       - name: disk usage
@@ -61,6 +65,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
+        with:
+          cache-key: test-${{ matrix.shard }}
       - name: install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
