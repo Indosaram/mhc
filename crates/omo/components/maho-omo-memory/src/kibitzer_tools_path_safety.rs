@@ -40,13 +40,13 @@ pub fn normalize_memory_path(input: &str) -> PathCheck {
 /// rejection, never a silent lexical fallback: answering "inside" would fabricate containment.
 pub fn resolve_workspace_path(root: &Path, input: &str) -> PathCheck {
     let real_root = match std::fs::canonicalize(root) {
-        Ok(real_root) => real_root,
+        Ok(real_root) => memory_core::support::paths::strip_verbatim_prefix(&real_root),
         Err(error) => {
             return PathCheck::Rejected { code: KibitzerRejectionCode::PathEscape, message: format!("the workspace root could not be resolved: {error}") };
         }
     };
     let lexical = lexical_resolve(&real_root, input);
-    let target = canonicalize_existing_ancestor(&lexical);
+    let target = memory_core::support::paths::strip_verbatim_prefix(&canonicalize_existing_ancestor(&lexical));
     if target.starts_with(&real_root) {
         return PathCheck::Ok { path: target.to_string_lossy().into_owned() };
     }
@@ -78,30 +78,25 @@ fn canonicalize_existing_ancestor(path: &Path) -> PathBuf {
 /// `path.resolve(root, input)`'s lexical half: `.` and `..` fold BEFORE any realpath, so a
 /// non-existent `foo/../bar` resolves to `bar` instead of staying literal.
 fn lexical_resolve(root: &Path, input: &str) -> PathBuf {
-    let absolute = input.starts_with('/');
-    let mut resolved: Vec<std::ffi::OsString> = if absolute {
-        Vec::new()
+    let input_path = Path::new(input);
+    let joined = if input_path.is_absolute() {
+        input_path.to_path_buf()
     } else {
-        root.components().map(|component| component.as_os_str().to_os_string()).collect()
+        root.join(input_path)
     };
-    for component in Path::new(input).components() {
+    let mut resolved = PathBuf::new();
+    for component in joined.components() {
         match component {
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+            Component::RootDir => resolved.push(Component::RootDir.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
                 resolved.pop();
             }
-            Component::Normal(segment) => resolved.push(segment.to_os_string()),
-            Component::RootDir | Component::Prefix(_) => resolved.clear(),
+            Component::Normal(segment) => resolved.push(segment),
         }
     }
-    let mut path = PathBuf::new();
-    if absolute {
-        path.push(std::path::MAIN_SEPARATOR.to_string());
-    }
-    for segment in resolved {
-        path.push(segment);
-    }
-    path
+    resolved
 }
 
 #[cfg(test)]

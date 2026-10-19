@@ -10,7 +10,7 @@ use super::fake_child::{ChildGuard, spawn_fake_child, wait_for};
 use crate::manager::child_handle::ManagedChildHandle;
 use crate::runners::rpc::exit_mapping::map_exit_outcome_to_error;
 use crate::runners::rpc::handle::RpcChildHandle;
-use crate::runners::rpc::process::{RpcChildProcess, RpcSpawnDescriptor};
+use crate::runners::rpc::process::RpcSpawnDescriptor;
 use crate::runners::rpc_process::{RpcProcessRunner, RpcProcessRunnerOptions};
 use crate::runners::types::{ChildExitOutcome, RpcRunnerSpec};
 use crate::runners::{RunnerFailureKind, RunnerOutcome};
@@ -100,6 +100,7 @@ fn queued(events: &Mutex<Vec<Value>>, field: &str, text: &str) -> bool {
 }
 
 #[test]
+#[cfg(unix)]
 fn given_the_default_rpc_child_spawner_when_started_then_windows_hides_the_child_console() {
     let harness = Harness::new(None);
     let handle = harness.start("hold");
@@ -116,7 +117,7 @@ fn given_the_default_rpc_child_spawner_when_started_then_windows_hides_the_child
         pgid, child_pid,
         "the POSIX child must be detached into its own process group"
     );
-    let default_spawn = RpcChildProcess::spawn(&RpcSpawnDescriptor {
+    let default_spawn = crate::runners::rpc::process::RpcChildProcess::spawn(&RpcSpawnDescriptor {
         command: "/bin/sh".to_string(),
         args: vec!["-c".to_string(), "exit 0".to_string()],
         cwd: "/".to_string(),
@@ -161,6 +162,7 @@ fn given_a_busy_child_when_follow_up_is_sent_then_it_is_routed_as_a_prompt_with_
 }
 
 #[test]
+#[cfg(unix)]
 fn given_a_child_killed_by_signal_when_it_exits_then_the_outcome_is_killed_and_maps_to_status_error_with_killed_true()
  {
     let harness = Harness::new(None);

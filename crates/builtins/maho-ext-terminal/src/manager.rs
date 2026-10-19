@@ -22,7 +22,12 @@ pub fn session_id_prefix(command:&str)->String {
 type ExitWatch=tokio::sync::watch::Receiver<Option<Result<maho_pty::PtyExit,String>>>;
 /// Await the settled exit for at most `grace`; `false` means it did not settle in time.
 fn wait_for_terminal_session_exit(runtime:&TerminalRuntimeSession,grace:Duration)->Result<bool,RuntimeError> {
-    match runtime.wait(grace) {Err(RuntimeError::WaitTimeout)=>Ok(false),Err(RuntimeError::Poisoned)=>Err(RuntimeError::Poisoned),_=>runtime.exited()}
+    match runtime.wait(grace) {
+        Err(RuntimeError::WaitTimeout)=>Ok(false),
+        Err(RuntimeError::Pty(ref err)) if err.to_string().contains("258") =>Ok(false),
+        Err(RuntimeError::Poisoned)=>Err(RuntimeError::Poisoned),
+        _=>runtime.exited(),
+    }
 }
 #[derive(Debug,thiserror::Error)]
 pub enum ManagerError {#[error("Cannot create terminal session: all {0} registry slots are live.")] Capacity(usize),#[error(transparent)] Runtime(#[from] RuntimeError)}
@@ -157,19 +162,22 @@ mod tests {
     #[tokio::test]
     async fn configured_capacity_and_zero_scrollback_reach_new_sessions()->Result<(),ManagerError> {
         let mut manager=TerminalManager::default();let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.max_sessions=1.0;settings.scrollback=0.0;manager.configure(&settings);
-        let id=manager.create("read",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; read start; printf 'one\\r\\ntwo\\r\\nthree'; read end").size(20,2))?;
+        let id=manager.create("read",crate::shared::test_sh_options("stty -echo; read start; printf 'one\\r\\ntwo\\r\\nthree'; read end").size(20,2))?;
         assert!(manager.reserve()?.is_none());let runtime=manager.get(&id).unwrap();let (_,mut output)=runtime.subscribe_output()?;runtime.write(b"start\n")?;
         tokio::time::timeout(Duration::from_secs(5),async {let mut text=String::new();while !text.contains("three") {text.push_str(&output.recv().await.unwrap());}}).await.unwrap();
         assert!(manager.get(&id).unwrap().snapshot()?.scrollback.is_empty());manager.teardown()?;Ok(())
     }
     #[test] fn reservation_counts_until_release()->Result<(),RuntimeError> {let mut manager=TerminalManager::new(1);let reservation=manager.reserve()?.expect("capacity");assert_eq!(manager.active_size()?,1);assert!(manager.reserve()?.is_none());drop(reservation);assert_eq!(manager.active_size()?,0);assert!(manager.reserve()?.is_some());Ok(())}
-    #[test] fn capacity_stop_and_monitor_bindings()->Result<(),ManagerError> {let mut manager=TerminalManager::new(1);let id=manager.create("read",PtySessionOptions::new("/bin/sh").arg("-c").arg("read value"))?;manager.bind_monitor_id("mon_1",&id);assert_eq!(manager.resolve_id("mon_1"),Some(id.clone()));assert_eq!(manager.active_size()?,1);assert!(matches!(manager.create("read",PtySessionOptions::new("/bin/sh").arg("-c").arg("read value")),Err(ManagerError::Capacity(1))));assert!(manager.stop(&id)?);assert!(manager.get(&id).is_some());manager.teardown()?;assert_eq!(manager.size(),0);assert_eq!(manager.resolve_id("mon_1"),None);Ok(())}
+    #[test] fn capacity_stop_and_monitor_bindings()->Result<(),ManagerError> {let mut manager=TerminalManager::new(1);let id=manager.create("read",crate::shared::test_sh_options("read value"))?;manager.bind_monitor_id("mon_1",&id);assert_eq!(manager.resolve_id("mon_1"),Some(id.clone()));assert_eq!(manager.active_size()?,1);assert!(matches!(manager.create("read",crate::shared::test_sh_options("read value")),Err(ManagerError::Capacity(1))));assert!(manager.stop(&id)?);assert!(manager.get(&id).is_some());manager.teardown()?;assert_eq!(manager.size(),0);assert_eq!(manager.resolve_id("mon_1"),None);Ok(())}
     #[test] fn session_ids_use_the_shell_prefix_with_per_prefix_counters()->Result<(),ManagerError> {
         for (command,prefix) in [("/bin/bash","bash"),("C:\\Program Files\\Git\\bin\\bash.exe","bash"),("/bin/sh","sh"),("pwsh.exe","pwsh"),("cmd.exe","cmd"),("/usr/bin/my-Shell","my_shell"),("/","bash"),("--","session")] {assert_eq!(session_id_prefix(command),prefix);}
         let mut manager=TerminalManager::new(4);
-        let first=manager.create("a",PtySessionOptions::new("/bin/sh").arg("-c").arg("true"))?;let second=manager.create("b",PtySessionOptions::new("/bin/sh").arg("-c").arg("true"))?;
-        assert_eq!((first.as_str(),second.as_str()),("sh_1","sh_2"));manager.teardown()?;Ok(())
+        let options = crate::shared::test_sh_options("true");
+        let prefix = session_id_prefix(&options.command);
+        let first=manager.create("a",options.clone())?;let second=manager.create("b",options)?;
+        assert_eq!((first.as_str(),second.as_str()),(format!("{prefix}_1").as_str(),format!("{prefix}_2").as_str()));manager.teardown()?;Ok(())
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn stop_sends_sigterm_so_traps_clean_up_before_any_sigkill()->Result<(),ManagerError> {
         let mut manager=TerminalManager::new(1);

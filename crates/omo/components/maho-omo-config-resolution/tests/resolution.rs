@@ -9,9 +9,13 @@ fn resolve(config: Value, profile: Option<&str>) -> Result<maho_omo_config_resol
     std::fs::create_dir_all(home.join(".omo"))?;
     std::fs::create_dir_all(&project)?;
     std::fs::write(home.join(".omo/omo.jsonc"), config.to_string())?;
-    let mut env = std::collections::BTreeMap::from([("HOME".into(), home.to_string_lossy().into_owned())]);
+    let home_str = omo_config_core::to_posix_path(&home.to_string_lossy());
+    let mut env = std::collections::BTreeMap::from([
+        ("HOME".into(), home_str.clone()),
+        ("USERPROFILE".into(), home_str),
+    ]);
     if let Some(profile) = profile { env.insert("OMO_PROFILE".into(), profile.into()); }
-    Ok(load_senpi_omo_config(LoadOmoConfigOptions { cwd: Some(project.to_string_lossy().into_owned()), env: Some(env), platform: Some("linux".into()), ..Default::default() }))
+    Ok(load_senpi_omo_config(LoadOmoConfigOptions { cwd: Some(omo_config_core::to_posix_path(&project.to_string_lossy())), env: Some(env), platform: Some("linux".into()), ..Default::default() }))
 }
 
 #[test]
@@ -47,13 +51,18 @@ fn malformed_config_reports_diagnostic_without_panicking() -> Result<(), std::io
     std::fs::create_dir_all(project.join(".omo"))?;
     let config = project.join(".omo/omo.jsonc");
     std::fs::write(&config, "{\"task\":")?;
+    let home_str = omo_config_core::to_posix_path(&home.to_string_lossy());
+    let config_str = omo_config_core::to_posix_path(&config.to_string_lossy());
     let result = load_senpi_omo_config(LoadOmoConfigOptions {
-        cwd: Some(project.to_string_lossy().into_owned()),
-        env: Some(std::collections::BTreeMap::from([("HOME".into(), home.to_string_lossy().into_owned())])),
+        cwd: Some(omo_config_core::to_posix_path(&project.to_string_lossy())),
+        env: Some(std::collections::BTreeMap::from([
+            ("HOME".into(), home_str.clone()),
+            ("USERPROFILE".into(), home_str),
+        ])),
         platform: Some("linux".into()), ..Default::default()
     });
     assert!(result.diagnostics.iter().any(|diagnostic| matches!(diagnostic,
         maho_omo_config_resolution::SenpiConfigDiagnostic::Config(diagnostic)
-            if diagnostic.kind == "parse" && diagnostic.path == config.to_string_lossy())));
+            if diagnostic.kind == "parse" && diagnostic.path == config_str)));
     Ok(())
 }

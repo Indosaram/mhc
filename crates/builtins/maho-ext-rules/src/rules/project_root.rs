@@ -1,7 +1,23 @@
 use std::path::{Path, PathBuf};
 use super::constants::PROJECT_MARKERS;
+
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 pub fn find_project_root(start_path: &Path, markers: Option<&[&str]>) -> Option<PathBuf> {
   let resolved = std::fs::canonicalize(start_path).or_else(|_| std::path::absolute(start_path)).ok()?;
+  let resolved = strip_verbatim_prefix(resolved);
   let metadata = resolved.metadata().ok()?;
  let mut current = if metadata.is_dir() { resolved.as_path() } else { resolved.parent()? };
  loop {
@@ -14,8 +30,8 @@ pub fn find_project_root(start_path: &Path, markers: Option<&[&str]>) -> Option<
 
 pub fn widen_to_repository_root(project_root: Option<PathBuf>, home_dir: &Path) -> Option<PathBuf> {
  let project_root = project_root?;
- let home = std::fs::canonicalize(home_dir).unwrap_or_else(|_| super::finder::absolute(home_dir));
- let mut current = std::fs::canonicalize(&project_root).unwrap_or_else(|_| super::finder::absolute(&project_root));
+ let home = strip_verbatim_prefix(std::fs::canonicalize(home_dir).unwrap_or_else(|_| super::finder::absolute(home_dir)));
+ let mut current = strip_verbatim_prefix(std::fs::canonicalize(&project_root).unwrap_or_else(|_| super::finder::absolute(&project_root)));
  loop {
   if current == home { return Some(project_root); }
   if current.join(".git").exists() { return Some(current); }

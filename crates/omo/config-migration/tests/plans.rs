@@ -35,7 +35,21 @@ fn write(path: &Path, content: &str) {
 }
 
 fn home_env(home_dir: &str) -> BTreeMap<String, String> {
-    BTreeMap::from([("HOME".to_string(), home_dir.to_string())])
+    BTreeMap::from([
+        ("HOME".to_string(), home_dir.to_string()),
+        ("USERPROFILE".to_string(), home_dir.to_string()),
+    ])
+}
+
+fn canonical_text(path: &Path) -> String {
+    let canonical = fs::canonicalize(path).expect("canonicalize").to_string_lossy().into_owned();
+    if let Some(rest) = canonical.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = canonical.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        canonical
+    }
 }
 
 fn parse_jsonc(path: &Path) -> Value {
@@ -190,10 +204,10 @@ fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_
         r#"{"agents":{"oracle":{"model":"project-model"}}}"#,
     );
     write(&unrelated_path, "keep");
-    let canonical_home = text(&fs::canonicalize(&home).expect("home"));
-    let canonical_project = text(&fs::canonicalize(&project).expect("project"));
-    let canonical_root = text(&fs::canonicalize(&root_path).expect("root"));
-    let canonical_config_jsonc = text(&fs::canonicalize(&config_jsonc_path).expect("config"));
+    let canonical_home = canonical_text(&home);
+    let canonical_project = canonical_text(&project);
+    let canonical_root = canonical_text(&root_path);
+    let canonical_config_jsonc = canonical_text(&config_jsonc_path);
     let home_dir = text(&home);
     let xdg = text(&home.join(".config"));
 
@@ -239,27 +253,43 @@ fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_
     );
     let user_backup =
         format!("{canonical_home}/.omo/migration-backup-{timestamp}-opencode-config");
+    let join_sub = |base: &str, sub: &str| -> String {
+        if cfg!(windows) {
+            Path::new(base).join(sub.replace('/', "\\")).to_string_lossy().into_owned()
+        } else {
+            format!("{base}/{sub}")
+        }
+    };
     assert_eq!(
         backup_paths(opencode_user_plan),
         vec![
-            format!("{user_backup}/.config/opencode/oh-my-openagent.jsonc"),
-            format!("{user_backup}/.config/opencode/oh-my-openagent.jsonc.migrations.json"),
-            format!("{user_backup}/.config/opencode/profiles/kimi/oh-my-openagent.jsonc"),
+            join_sub(&user_backup, ".config/opencode/oh-my-openagent.jsonc"),
+            join_sub(&user_backup, ".config/opencode/oh-my-openagent.jsonc.migrations.json"),
+            join_sub(&user_backup, ".config/opencode/profiles/kimi/oh-my-openagent.jsonc"),
         ]
     );
     assert_eq!(
         backup_paths(config_jsonc_plan),
         vec![
-            format!("{user_backup}/.omo/config.jsonc"),
-            format!("{user_backup}/.omo/config.jsonc.migrations.json"),
+            join_sub(&user_backup, ".omo/config.jsonc"),
+            join_sub(&user_backup, ".omo/config.jsonc.migrations.json"),
         ]
     );
-    let project_backup =
-        format!("{canonical_project}/.omo/migration-backup-{timestamp}/oh-my-opencode.json");
+    let project_backup = if cfg!(windows) {
+        Path::new(&canonical_project)
+            .join(".omo")
+            .join(format!("migration-backup-{timestamp}"))
+            .join("oh-my-opencode.json")
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        format!("{canonical_project}/.omo/migration-backup-{timestamp}/oh-my-opencode.json")
+    };
     assert_eq!(backup_paths(project_plan), vec![project_backup.clone()]);
     assert!(
-        Path::new(&format!(
-            "{user_backup}/.config/opencode/oh-my-openagent.jsonc"
+        Path::new(&join_sub(
+            &user_backup,
+            ".config/opencode/oh-my-openagent.jsonc"
         ))
         .exists()
     );
@@ -476,7 +506,7 @@ fn since_pin_plans_are_registered_for_an_existing_omo_target() {
         &target,
         r#"{"categories":{"deep":{"model":"legacy/model"}},"[senpi]":{"model_profile":"kimi"},"default_model":"openai-codex/gpt-6-astra"}"#,
     );
-    let canonical_target = text(&fs::canonicalize(&target).expect("target"));
+    let canonical_target = canonical_text(&target);
     let home_dir = text(&home);
     let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
     for id in since_pin_ids() {

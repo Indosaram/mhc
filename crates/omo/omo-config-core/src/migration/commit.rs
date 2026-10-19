@@ -129,9 +129,10 @@ fn writer_input(
     // HOME may not be, so also accept a canonical match. With the COMP `.omo` home this case fell
     // through to the project `.omo` matcher below; the `.omo` home has no such fallback.
     let is_user_directory = dir_name == user_directory
+        || (cfg!(windows) && dir_name.eq_ignore_ascii_case(&user_directory))
         || matches!(
             (std::fs::canonicalize(&dir_name), std::fs::canonicalize(&user_directory)),
-            (Ok(a), Ok(b)) if a == b
+            (Ok(a), Ok(b)) if a == b || (cfg!(windows) && a.as_os_str().to_string_lossy().eq_ignore_ascii_case(&b.as_os_str().to_string_lossy()))
         );
     if is_user_directory && (file_name == "omo.json" || file_name == "omo.jsonc") {
         return Ok(WriterInput {
@@ -155,7 +156,9 @@ fn writer_input(
 }
 
 fn same_resolved_path(a: &str, b: &str) -> bool {
-    to_posix_path(&posix_resolve(&[a])) == to_posix_path(&posix_resolve(&[b]))
+    let resolved_a = to_posix_path(&posix_resolve(&[a]));
+    let resolved_b = to_posix_path(&posix_resolve(&[b]));
+    resolved_a == resolved_b || (cfg!(windows) && resolved_a.eq_ignore_ascii_case(&resolved_b))
 }
 
 pub fn write_omo_migration_target(

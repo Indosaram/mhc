@@ -121,11 +121,14 @@ fn root_profile_config_jsonc_and_project_sources_produce_golden_documents_that_p
         std::fs::write(path, "{}").expect("write");
     }
     let xdg = format!("{home_dir}/.config");
-    let environment: BTreeMap<String, String> =
-        [("HOME", home_dir.as_str()), ("XDG_CONFIG_HOME", &xdg)]
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value.to_string()))
-            .collect();
+    let environment: BTreeMap<String, String> = [
+        ("HOME", home_dir.as_str()),
+        ("USERPROFILE", home_dir.as_str()),
+        ("XDG_CONFIG_HOME", &xdg),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect();
     let groups = discover_legacy_config_groups(&ConfigMigrationDiscoveryOptions {
         cwd: &project_dir,
         environment: &environment,

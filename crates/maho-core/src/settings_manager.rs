@@ -1597,25 +1597,26 @@ mod tests {
         std::fs::create_dir_all(&agent).expect("mkdir");
         std::fs::create_dir_all(&project).expect("mkdir");
         let home = home.to_string_lossy().into_owned();
+        let agent_path = agent.clone();
         let agent = agent.to_string_lossy().into_owned();
         let project = project.to_string_lossy().into_owned();
 
         assert!(resolve_settings_source(&project, &agent, SettingsScope::Global, &home).is_none());
         assert_eq!(
             get_settings_path(&project, &agent, SettingsScope::Global, &home),
-            format!("{agent}/settings.json")
+            agent_path.join("settings.json").to_string_lossy()
         );
 
-        std::fs::write(format!("{agent}/settings.json"), "{}").expect("write");
+        std::fs::write(agent_path.join("settings.json"), "{}").expect("write");
         let source = resolve_settings_source(&project, &agent, SettingsScope::Global, &home).expect("source");
         assert_eq!(source.format, SettingsFormat::Json);
         assert_eq!(source.reason, SettingsSourceReason::JsonOnly);
 
-        std::fs::write(format!("{agent}/settings.jsonc"), "{}").expect("write");
+        std::fs::write(agent_path.join("settings.jsonc"), "{}").expect("write");
         let source = resolve_settings_source(&project, &agent, SettingsScope::Global, &home).expect("source");
         assert_eq!(source.format, SettingsFormat::Jsonc);
         assert_eq!(source.reason, SettingsSourceReason::ExplicitJsonc);
-        assert_eq!(get_settings_path(&project, &agent, SettingsScope::Global, &home), format!("{agent}/settings.jsonc"));
+        assert_eq!(get_settings_path(&project, &agent, SettingsScope::Global, &home), agent_path.join("settings.jsonc").to_string_lossy());
     }
 
     #[test]
@@ -1851,7 +1852,7 @@ mod tests {
     fn the_manager_merges_project_over_global_with_nested_objects() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
-        let agent = home.join(".omo/agent");
+        let agent = home.join(".omo").join("agent");
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(&agent).expect("mkdir");
         std::fs::create_dir_all(project.join(".omo")).expect("mkdir");
@@ -1876,7 +1877,7 @@ mod tests {
     fn an_untrusted_project_ignores_project_settings() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
-        let agent = home.join(".omo/agent");
+        let agent = home.join(".omo").join("agent");
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(&agent).expect("mkdir");
         std::fs::create_dir_all(project.join(".omo")).expect("mkdir");
@@ -2008,7 +2009,7 @@ mod tests {
     fn set_project_trusted_loads_and_drops_the_project_scope() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
-        let agent = home.join(".omo/agent");
+        let agent = home.join(".omo").join("agent");
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(&agent).expect("mkdir");
         std::fs::create_dir_all(project.join(".omo")).expect("mkdir");

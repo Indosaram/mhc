@@ -15,8 +15,9 @@ pub fn find_nearest_package_identity(resource_path: &str) -> Option<PackageIdent
     if resource_path.starts_with('<') {
         return None;
     }
-    let normalized_resource_path =
-        std::fs::canonicalize(resource_path).unwrap_or_else(|_| PathBuf::from(resource_path));
+    let normalized_resource_path = crate::paths::strip_verbatim_prefix(
+        std::fs::canonicalize(resource_path).unwrap_or_else(|_| PathBuf::from(resource_path)),
+    );
     let mut current_path = PathBuf::from(resource_path);
     match std::fs::metadata(&current_path) {
         Ok(metadata) if metadata.is_dir() => {}
@@ -32,8 +33,11 @@ pub fn find_nearest_package_identity(resource_path: &str) -> Option<PackageIdent
                 .ok()
                 .and_then(|content| serde_json::from_str(&content).ok())?;
             let name = parsed.get("name").and_then(serde_json::Value::as_str).filter(|name| !name.is_empty())?;
+            let canonical_current = crate::paths::strip_verbatim_prefix(
+                std::fs::canonicalize(&current_path).unwrap_or_else(|_| current_path.clone()),
+            );
             let relative = normalized_resource_path
-                .strip_prefix(&current_path)
+                .strip_prefix(&canonical_current)
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| normalized_resource_path.to_string_lossy().into_owned());
             return Some(PackageIdentity { key: format!("{name}:{relative}"), package_name: name.to_owned() });
@@ -81,7 +85,7 @@ mod tests {
         let identity = find_nearest_package_identity(&resource.to_string_lossy()).expect("identity");
         assert_eq!(identity.package_name, "@scope/pkg");
         assert!(identity.key.starts_with("@scope/pkg:"));
-        assert!(identity.key.ends_with("src/skills/a.md"));
+        assert!(identity.key.replace('\\', "/").ends_with("src/skills/a.md"));
     }
 
     #[test]

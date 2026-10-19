@@ -24,6 +24,10 @@ fn write_exec(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn node_bin(root: &Path, name: &str) -> std::path::PathBuf {
+    root.join("node_modules").join(".bin").join(name)
+}
+
 static TEST_CACHE_LOCK: Mutex<()> = Mutex::new(());
 
 struct StateGuard { _lock: std::sync::MutexGuard<'static, ()> }
@@ -46,7 +50,7 @@ fn test_install_node_marker_local_bin_with_empty_path() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-local-node-");
     write(root.path().join("package.json"), "{}\n").expect("write");
-    let bin = write_exec(&root.path().join("node_modules/.bin/biome"));
+    let bin = write_exec(&node_bin(root.path(), "biome"));
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
         ..Default::default()
@@ -64,8 +68,8 @@ fn test_install_nested_working_directory_walks_up_to_marker() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-local-nested-");
     write(root.path().join("package.json"), "{}\n").expect("write");
-    let bin = write_exec(&root.path().join("node_modules/.bin/biome"));
-    let nested = root.path().join("packages/deep/src");
+    let bin = write_exec(&node_bin(root.path(), "biome"));
+    let nested = root.path().join("packages").join("deep").join("src");
     create_dir_all(&nested).expect("mkdir");
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
@@ -83,7 +87,7 @@ fn test_install_nested_working_directory_walks_up_to_marker() {
 fn test_install_local_bin_without_marker_not_trusted() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-local-unmarked-");
-    write_exec(&root.path().join("node_modules/.bin/biome"));
+    write_exec(&node_bin(root.path(), "biome"));
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
         ..Default::default()
@@ -101,7 +105,7 @@ fn test_install_bun_lock_probes_node_bin() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-local-bunlock-");
     write(root.path().join("bun.lock"), "").expect("write");
-    let bin = write_exec(&root.path().join("node_modules/.bin/biome"));
+    let bin = write_exec(&node_bin(root.path(), "biome"));
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
         ..Default::default()
@@ -115,7 +119,7 @@ fn test_install_pyproject_venv_binary() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-local-python-");
     write(root.path().join("pyproject.toml"), "[project]\n").expect("write");
-    let bin = write_exec(&root.path().join(".venv/bin/ruff"));
+    let bin = write_exec(&root.path().join(".venv").join("bin").join("ruff"));
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
         ..Default::default()
@@ -129,7 +133,7 @@ fn test_install_gemfile_bundled_binary() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-local-ruby-");
     write(root.path().join("Gemfile"), "source 'https://rubygems.org'\n").expect("write");
-    let bin = write_exec(&root.path().join("vendor/bundle/bin/rubocop"));
+    let bin = write_exec(&root.path().join("vendor").join("bundle").join("bin").join("rubocop"));
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
         ..Default::default()
@@ -143,7 +147,7 @@ fn test_install_gomod_project_bin() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-local-go-");
     write(root.path().join("go.mod"), "module example.com/demo\n").expect("write");
-    let bin = write_exec(&root.path().join("bin/gopls"));
+    let bin = write_exec(&root.path().join("bin").join("gopls"));
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
         ..Default::default()
@@ -157,7 +161,7 @@ fn test_install_python_marker_does_not_borrow_node_bins() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-local-python-miss-");
     write(root.path().join("requirements.txt"), "ruff\n").expect("write");
-    write_exec(&root.path().join("node_modules/.bin/ruff"));
+    write_exec(&node_bin(root.path(), "ruff"));
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
         ..Default::default()
@@ -171,7 +175,7 @@ fn test_install_local_priority_over_path() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-local-priority-");
     write(root.path().join("package.json"), "{}\n").expect("write");
-    let local_bin = write_exec(&root.path().join("node_modules/.bin/biome"));
+    let local_bin = write_exec(&node_bin(root.path(), "biome"));
     let path_dir = temp_root("lsp-path-priority-");
     write_exec(&path_dir.path().join("biome"));
     let opts = ResolveServerBinaryOptions {
@@ -201,14 +205,14 @@ fn test_install_path_fallback() {
 fn test_install_explicit_path_validation() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-explicit-path-");
-    let bin = write_exec(&root.path().join("tools/custom-ls"));
+    let bin = write_exec(&root.path().join("tools").join("custom-ls"));
     let opts = ResolveServerBinaryOptions::default();
     assert_eq!(
         resolve_server_binary(&[bin.clone(), "--stdio".into()], Some(&root.path().to_string_lossy()), &opts),
         Some(bin)
     );
     assert_eq!(
-        resolve_server_binary(&[root.path().join("tools/absent-ls").to_string_lossy().into_owned()], Some(&root.path().to_string_lossy()), &opts),
+        resolve_server_binary(&[root.path().join("tools").join("absent-ls").to_string_lossy().into_owned()], Some(&root.path().to_string_lossy()), &opts),
         None
     );
 }
@@ -243,7 +247,7 @@ fn test_install_boundary_containment() {
     let _guard = StateGuard::new();
     let outer = temp_root("lsp-boundary-outer-");
     write(outer.path().join("package.json"), "{}\n").expect("write");
-    let bin = write_exec(&outer.path().join("node_modules/.bin/biome"));
+    let bin = write_exec(&node_bin(outer.path(), "biome"));
     let inner = outer.path().join("inner");
     create_dir_all(&inner).expect("mkdir");
     let opts = ResolveServerBinaryOptions {
@@ -264,7 +268,7 @@ fn test_install_git_boundary_stops_walk() {
     let _guard = StateGuard::new();
     let outer = temp_root("lsp-git-boundary-");
     write(outer.path().join("package.json"), "{}\n").expect("write");
-    write_exec(&outer.path().join("node_modules/.bin/biome"));
+    write_exec(&node_bin(outer.path(), "biome"));
     let repo = outer.path().join("repo");
     create_dir_all(repo.join(".git")).expect("mkdir");
     let opts = ResolveServerBinaryOptions {
@@ -279,7 +283,7 @@ fn test_install_windows_suffix_cmd_local() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-win-local-");
     write(root.path().join("package.json"), "{}\n").expect("write");
-    let bin = write_exec(&root.path().join("node_modules/.bin/biome.cmd"));
+    let bin = write_exec(&node_bin(root.path(), "biome.cmd"));
     let opts = ResolveServerBinaryOptions {
         platform: Some("win32"),
         path_ext: Some(".COM;.EXE;.CMD".into()),
@@ -308,7 +312,7 @@ fn test_install_caching_hit() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-cache-hit-");
     write(root.path().join("package.json"), "{}\n").expect("write");
-    let bin = write_exec(&root.path().join("node_modules/.bin/biome"));
+    let bin = write_exec(&node_bin(root.path(), "biome"));
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
         ..Default::default()
@@ -343,7 +347,7 @@ fn test_install_distinct_working_directories_separate_cache() {
     let _guard = StateGuard::new();
     let first = temp_root("lsp-cache-key-a-");
     write(first.path().join("package.json"), "{}\n").expect("write");
-    let bin1 = write_exec(&first.path().join("node_modules/.bin/biome"));
+    let bin1 = write_exec(&node_bin(first.path(), "biome"));
     let second = temp_root("lsp-cache-key-b-");
     write(second.path().join("package.json"), "{}\n").expect("write");
     let opts = ResolveServerBinaryOptions {
@@ -359,7 +363,7 @@ fn test_is_server_installed_with_options_compat_cases() {
     let _guard = StateGuard::new();
     let root = temp_root("lsp-compat-");
     write(root.path().join("package.json"), "{}\n").expect("write");
-    write_exec(&root.path().join("node_modules/.bin/biome"));
+    write_exec(&node_bin(root.path(), "biome"));
     let opts = ResolveServerBinaryOptions {
         path_env: Some(root.path().join("definitely-empty").to_string_lossy().into_owned()),
         ..Default::default()

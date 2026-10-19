@@ -16,8 +16,16 @@ fn malformed_wire_preserves_javascript_lone_surrogate_error(){
 
 #[test]
 fn deeply_nested_malformed_diagnostics_equal_bun_without_recursive_stack_growth(){
+    use std::io::Write;
     let inputs=[format!("{}@{}","[".repeat(20000),"]".repeat(20000)),format!("{}{{\"a\":}}{}","[".repeat(20000),"]".repeat(20000))];
-    let output=std::process::Command::new("bun").args(["-e","console.log(JSON.stringify(JSON.parse(process.argv[1]).map(input=>{try{JSON.parse(input)}catch(error){return error.message}})))",&serde_json::to_string(&inputs).unwrap()]).output().unwrap();
+    let mut child = std::process::Command::new("bun")
+        .args(["-e", "const fs=require('fs');console.log(JSON.stringify(JSON.parse(fs.readFileSync(0,'utf-8')).map(input=>{try{JSON.parse(input)}catch(error){return error.message}})))"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(serde_json::to_string(&inputs).unwrap().as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
     assert!(output.status.success());let expected:Vec<String>=serde_json::from_slice(&output.stdout).unwrap();
     for(input,expected)in inputs.iter().zip(expected){assert_eq!(maho_rpc::connection_handler::json_parse_error_message(input),expected);}
 }

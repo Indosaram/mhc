@@ -40,7 +40,10 @@ async fn loads_skill_through_execution_environment() {
             content: "Use this skill.".into(),
             file_path: f
                 .0
-                .join(".agents/skills/example/SKILL.md")
+                .join(".agents")
+                .join("skills")
+                .join("example")
+                .join("SKILL.md")
                 .to_string_lossy()
                 .into_owned(),
             disable_model_invocation: Some(true)
@@ -89,7 +92,7 @@ async fn preserves_source_info() {
     assert_eq!(result.skills[0].skill.content, "Use this skill.");
     assert_eq!(
         result.skills[0].skill.file_path,
-        f.0.join("user/example/SKILL.md").to_string_lossy()
+        f.0.join("user").join("example").join("SKILL.md").to_string_lossy()
     );
 }
 
@@ -116,7 +119,7 @@ async fn attaches_sources_to_diagnostics() {
     assert_eq!(d.diagnostic.message, "description is required");
     assert_eq!(
         d.diagnostic.path,
-        f.0.join("user/broken/SKILL.md").to_string_lossy()
+        f.0.join("user").join("broken").join("SKILL.md").to_string_lossy()
     );
 }
 

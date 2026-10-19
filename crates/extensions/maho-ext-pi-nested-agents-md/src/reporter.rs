@@ -39,10 +39,9 @@ pub fn build_debug_record(cache: &InjectionCache, session: &str, files: &[Inject
 }
 
 pub fn display_path(cwd: &Path, absolute_path: &Path) -> String {
-    if !absolute_path.is_absolute() { return absolute_path.to_string_lossy().into_owned(); }
     match absolute_path.strip_prefix(cwd) {
-        Ok(relative) if !relative.as_os_str().is_empty() => relative.to_string_lossy().into_owned(),
-        _ => absolute_path.to_string_lossy().into_owned(),
+        Ok(relative) if !relative.as_os_str().is_empty() && !matches!(relative.components().next(), None | Some(std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) => relative.to_string_lossy().replace('\\', "/"),
+        _ => absolute_path.to_string_lossy().replace('\\', "/"),
     }
 }
 

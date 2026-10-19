@@ -14,6 +14,21 @@ pub fn resolve_from(base: &Path, path: &Path) -> PathBuf {
 }
 
 /// Collapse `.`/`..` components. `..` at the root is dropped, never escaping it.
+pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else if let Some(rest) = s.strip_prefix("//?/UNC/") {
+        PathBuf::from(format!("//{rest}"))
+    } else if let Some(rest) = s.strip_prefix("//?/") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
+}
+
 pub fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -37,8 +52,9 @@ pub fn normalize(path: &Path) -> PathBuf {
 
 /// Convert an absolute or relative path to the forward-slash form git reports.
 pub fn to_git_path(path: &Path) -> String {
+    let stripped = strip_verbatim_prefix(path);
     let mut out = String::new();
-    for component in path.components() {
+    for component in stripped.components() {
         match component {
             Component::Prefix(prefix) => {
                 out.push_str(&prefix.as_os_str().to_string_lossy());

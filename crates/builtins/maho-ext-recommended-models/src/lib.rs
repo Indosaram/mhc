@@ -65,7 +65,7 @@ impl Extension for RecommendedModels{
                 let ExtensionEvent::SessionStart(event)=event else{return Ok(EventResult::None)};
                 let target={
                     let mut guard=state.lock().expect("recommendation state lock");if guard.initialized{return Ok(EventResult::None);}guard.initialized=true;
-                    let home=std::env::var("HOME").map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                    let home=std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                     let settings=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&home,ctx.is_project_trusted());
                     guard.disabled=runtime.get_flag("no-recommended-models")==Some(FlagValue::Boolean(true))||settings.get().get("warnings").and_then(|value|value.get("offRecommendedModel")).and_then(|value|value.as_bool())==Some(true);
                     let configured=settings.get().get("recommendedModels").and_then(|value|value.as_array()).map(|ids|ids.iter().filter_map(|id|id.as_str().map(str::to_owned)).collect::<Vec<_>>());

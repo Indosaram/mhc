@@ -138,5 +138,9 @@ pub fn write_skill(skills_dir: &Path, name: &str) {
 }
 
 pub fn env_for_home(home: &Path) -> std::collections::BTreeMap<String, String> {
-    std::collections::BTreeMap::from([("HOME".to_owned(), home.to_string_lossy().into_owned())])
+    let path = home.to_string_lossy().into_owned();
+    std::collections::BTreeMap::from([
+        ("HOME".to_owned(), path.clone()),
+        ("USERPROFILE".to_owned(), path),
+    ])
 }

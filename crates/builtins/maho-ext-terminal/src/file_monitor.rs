@@ -69,8 +69,22 @@ pub fn realpath_without_open(input:&Path)->PathBuf {
         }
         let mut resolved=std::fs::canonicalize(existing).unwrap_or_else(|_|existing.to_path_buf());
         for part in tail.into_iter().rev() {resolved.push(part);}
-        resolved
+        strip_verbatim_prefix(resolved)
     }
+}
+
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
 }
 
 pub struct FileMonitor {
@@ -92,11 +106,12 @@ impl FileMonitor {
         // Identity is derived without open(2), with the same walker the permission parser used, so
         // the two sides agree byte-for-byte and neither can block on a wedged mount.
         let parent=realpath_without_open(raw_parent);
-        if approved_parent.is_some_and(|approved|approved!=parent) {return Err(std::io::Error::other(format!("Cannot watch file: parent directory changed during permission approval: {}",raw_parent.display())));}
+        let approved_parent=approved_parent.map(|p| strip_verbatim_prefix(p.to_path_buf()));
+        if approved_parent.as_deref().is_some_and(|approved|approved!=parent) {return Err(std::io::Error::other(format!("Cannot watch file: parent directory changed during permission approval: {}",raw_parent.display())));}
         // Target identity: the resolved target must be exactly the approved parent plus the watched
         // basename, so a symlink or a swap during approval is refused instead of silently watched.
         let resolved_target=realpath_without_open(&path);
-        let expected_parent=approved_parent.unwrap_or(&parent);
+        let expected_parent=approved_parent.as_deref().unwrap_or(&parent);
         if resolved_target!=expected_parent.join(path.file_name().unwrap_or_default()) {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
         let checkpoint=crate::durable_file::file_checkpoint(&path)?;
         Ok(Self {id,description,path,parent,event,identity:(checkpoint.dev,checkpoint.ino),checkpoint,paused:false,settled:false,reservation:None})

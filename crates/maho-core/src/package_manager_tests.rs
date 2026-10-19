@@ -203,7 +203,7 @@ async fn missing_source_install_discovers_real_fake_installed_resources() {
     // When
     let paths = manager.resolve(Some(callback)).await.expect("resolve");
     // Then
-    assert_eq!(paths.prompts.len(), 1); assert!(paths.prompts[0].path.ends_with("prompts/npm.md"));
+    assert_eq!(paths.prompts.len(), 1); assert!(paths.prompts[0].path.replace('\\', "/").ends_with("prompts/npm.md"));
     assert!(runner.calls().iter().any(|command| command.args.first().is_some_and(|arg| arg == "install")));
 }
 
@@ -283,11 +283,11 @@ async fn extension_entries_resolve_like_upstream_with_override_patterns() {
     let paths = manager.resolve(None).await.expect("resolve");
     let cli = manager.resolve_extension_sources(&["./single.ts".into()], Some(ResolveSourcesOptions { temporary: true, local: false })).await.expect("cli");
     // Then
-    let state = |suffix: &str| paths.extensions.iter().find(|resource| resource.path.ends_with(suffix)).map(|resource| resource.enabled);
+    let state = |suffix: &str| paths.extensions.iter().find(|resource| resource.path.replace('\\', "/").ends_with(suffix)).map(|resource| resource.enabled);
     assert_eq!(state("extensions/a.ts"), Some(false));
     assert_eq!(state("extensions/b/index.ts"), Some(true));
     assert_eq!(state("pkg/src/index.ts"), Some(false));
-    assert_eq!(cli.extensions.len(), 1); assert!(cli.extensions[0].path.ends_with("single.ts")); assert!(cli.extensions[0].enabled);
+    assert_eq!(cli.extensions.len(), 1); assert!(cli.extensions[0].path.replace('\\', "/").ends_with("single.ts")); assert!(cli.extensions[0].enabled);
 }
 
 #[tokio::test]

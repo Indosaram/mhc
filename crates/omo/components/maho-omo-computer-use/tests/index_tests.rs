@@ -45,7 +45,7 @@ fn fake_engine_child() -> maho_omo_computer_use::runtime_loader::EngineChildFact
         let p = fake_engine_path.clone();
         senpi_desktop_service::child::engine_child_factory(Some(
             senpi_desktop_service::child::EngineSpawnConfig {
-                binary_path: PathBuf::from("python3"),
+                binary_path: PathBuf::from(if cfg!(windows) { "python" } else { "python3" }),
                 args: vec![p.to_string_lossy().to_string(), "--stdio".to_string()],
                 env: std::collections::HashMap::new(),
             },
@@ -618,6 +618,7 @@ async fn test_given_disabled_skills_names_computer_use_then_no_skill_contributed
     std::fs::write(home.join(".omo/omo.jsonc"), "{\"disabled_skills\":[\"computer-use\"]}").expect("config");
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), home.to_string_lossy().to_string());
+    env.insert("USERPROFILE".to_string(), home.to_string_lossy().to_string());
     let skill = maho_omo_bundled_skills::contributed_skill::resolve_contributed_skill(
         maho_omo_bundled_skills::contributed_skill::ResolveContributedSkillOptions {
             commands: None,

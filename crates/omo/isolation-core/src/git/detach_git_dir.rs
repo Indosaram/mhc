@@ -27,7 +27,15 @@ fn canonical(path: &Path) -> Result<PathBuf> {
     // back-pointer identity checks would never match on such paths.
     let value = std::fs::canonicalize(path)?;
     if cfg!(windows) {
-        Ok(PathBuf::from(value.to_string_lossy().to_lowercase()))
+        let text = value.to_string_lossy().to_lowercase();
+        let stripped = if let Some(rest) = text.strip_prefix(r"\\?\unc\") {
+            format!(r"\\{rest}")
+        } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+            rest.to_string()
+        } else {
+            text
+        };
+        Ok(PathBuf::from(stripped))
     } else {
         Ok(value)
     }

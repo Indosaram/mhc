@@ -130,12 +130,13 @@ mod tests {
             colors: [("toolDiffAdded".into(), "\x1b[38;2;0;255;0m".into()), ("toolDiffRemoved".into(), "\x1b[38;2;255;0;0m".into())].into(),
             ..Default::default()
         });
+        let work = if cfg!(windows) { "C:/work" } else { "/work" };
         let file = crate::types::ApplyPatchPreviewFile {
-            file_path: "/work/old.rs".into(), move_path: Some("/work/new.rs".into()),
+            file_path: format!("{work}/old.rs"), move_path: Some(format!("{work}/new.rs")),
             operation: crate::types::ApplyPatchOperation::Update, binary: None,
             diff: "-1 let value = 1;\n+1 let value = 2;".into(), patch: None, added: 1, removed: 1,
         };
-        let rendered = preview(&ApplyPatchPreview { files: vec![file.clone()], added: 1, removed: 1 }, "/work", &theme);
+        let rendered = preview(&ApplyPatchPreview { files: vec![file.clone()], added: 1, removed: 1 }, work, &theme);
         let shared = render_tool_diff(&file.diff, file.move_path.as_deref(), &theme);
         assert!(rendered.ends_with(&shared));
         assert!(rendered.contains("\u{1b}[7m"));

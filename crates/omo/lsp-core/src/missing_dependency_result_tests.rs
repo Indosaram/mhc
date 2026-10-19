@@ -9,7 +9,9 @@ use crate::request_context::run_with_request_context;
 use pretty_assertions::assert_eq;
 
 fn home() -> String {
-    std::env::var("HOME").expect("HOME")
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .expect("HOME or USERPROFILE")
 }
 
 fn details(value: Value) -> Map<String, Value> {

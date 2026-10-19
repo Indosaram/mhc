@@ -26,14 +26,26 @@ fn default_expand_tilde() -> bool {
     true
 }
 
+/// Strip the Windows `\\?\` or `\\?\UNC\` verbatim prefix.
+pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path
+    }
+}
+
 /// `canonicalizePath`: realpath, falling back to the raw path when resolution fails.
 pub fn canonicalize_path(path: &str) -> String {
-    std::fs::canonicalize(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_owned())
+    std::fs::canonicalize(path).map(strip_verbatim_prefix).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_owned())
 }
 
 /// `canonicalizePathStrict`: refuses to guess; an unresolvable path is an error.
 pub fn canonicalize_path_strict(path: &str) -> std::io::Result<String> {
-    std::fs::canonicalize(path).map(|p| p.to_string_lossy().into_owned())
+    std::fs::canonicalize(path).map(strip_verbatim_prefix).map(|p| p.to_string_lossy().into_owned())
 }
 
 /// `getFileRevision`: `dev:ino:size:mtimeNs:ctimeNs`, or `None` when stat fails.
@@ -109,7 +121,8 @@ pub fn normalize_path(input: &str, options: &PathInputOptions) -> String {
             return home;
         }
         if let Some(rest) = normalized.strip_prefix("~/") {
-            return join(&home, rest);
+            let rest = if cfg!(windows) { rest.replace('/', "\\") } else { rest.to_owned() };
+            return join(&home, &rest);
         }
         if cfg!(windows)
             && let Some(rest) = normalized.strip_prefix("~\\") {
@@ -192,10 +205,13 @@ mod tests {
 
     #[test]
     fn expands_tilde_against_the_given_home() {
-        let options = PathInputOptions::expanding_tilde("/home/u");
-        assert_eq!(normalize_path("~", &options), "/home/u");
-        assert_eq!(normalize_path("~/x/y", &options), "/home/u/x/y");
-        assert_eq!(normalize_path("/abs", &options), "/abs");
+        let home = if cfg!(windows) { "C:\\Users\\u" } else { "/home/u" };
+        let options = PathInputOptions::expanding_tilde(home);
+        assert_eq!(normalize_path("~", &options), home);
+        let expected_xy = Path::new(home).join("x").join("y").to_string_lossy().into_owned();
+        assert_eq!(normalize_path("~/x/y", &options), expected_xy);
+        let abs = if cfg!(windows) { "C:\\abs" } else { "/abs" };
+        assert_eq!(normalize_path(abs, &options), abs);
     }
 
     #[test]
@@ -207,9 +223,15 @@ mod tests {
     #[test]
     fn resolves_relative_against_a_base() {
         let options = PathInputOptions { expand_tilde: false, ..Default::default() };
-        assert_eq!(resolve_path("b/c", "/a", &options), "/a/b/c");
-        assert_eq!(resolve_path("../c", "/a/b", &options), "/a/c");
-        assert_eq!(resolve_path("/x/./y/../z", "/a", &options), "/x/z");
+        if cfg!(windows) {
+            assert_eq!(resolve_path("b/c", "/a", &options), "A:\\b\\c");
+            assert_eq!(resolve_path("../c", "/a/b", &options), "A:\\c");
+            assert_eq!(resolve_path("/x/./y/../z", "/a", &options), "X:\\z");
+        } else {
+            assert_eq!(resolve_path("b/c", "/a", &options), "/a/b/c");
+            assert_eq!(resolve_path("../c", "/a/b", &options), "/a/c");
+            assert_eq!(resolve_path("/x/./y/../z", "/a", &options), "/x/z");
+        }
     }
 
     #[test]
@@ -226,10 +248,11 @@ mod tests {
     fn cwd_relative_path_refuses_escapes() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cwd = tmp.path().to_string_lossy().into_owned();
-        let inside = tmp.path().join("a/b.txt");
+        let inside = tmp.path().join("a").join("b.txt");
         std::fs::create_dir_all(tmp.path().join("a")).expect("mkdir");
         std::fs::write(&inside, "x").expect("write");
-        assert_eq!(get_cwd_relative_path(&inside.to_string_lossy(), &cwd).as_deref(), Some("a/b.txt"));
+        let expected = Path::new("a").join("b.txt").to_string_lossy().into_owned();
+        assert_eq!(get_cwd_relative_path(&inside.to_string_lossy(), &cwd).as_deref(), Some(expected.as_str()));
         assert_eq!(get_cwd_relative_path(&cwd, &cwd).as_deref(), Some("."));
         assert!(get_cwd_relative_path("/etc/passwd", &cwd).is_none());
     }

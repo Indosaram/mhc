@@ -51,7 +51,11 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
     use super::*;
     #[tokio::test]
     async fn extension_catalog_routes_in_order_and_disables_omo_only_in_probe() {
-        let launch=Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"if [ \"$1\" = --no-extensions ]; then [ -z \"$OMO_SENPI_DISABLED\" ] || exit 8; printf 'builtin/fallback\\n'; else [ \"$OMO_SENPI_DISABLED\" = 1 ] || exit 9; printf 'extension-only/primary\\nbuiltin/fallback\\n'; fi".into(),"--".into()]};
+        let launch = if cfg!(windows) {
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"const args=process.argv; if(args.includes('--no-extensions')){if(process.env.OMO_SENPI_DISABLED)process.exit(8);console.log('builtin/fallback');}else{if(process.env.OMO_SENPI_DISABLED!=='1')process.exit(9);console.log('extension-only/primary\\nbuiltin/fallback');}".into()]}
+        } else {
+            Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"if [ \"$1\" = --no-extensions ]; then [ -z \"$OMO_SENPI_DISABLED\" ] || exit 8; printf 'builtin/fallback\\n'; else [ \"$OMO_SENPI_DISABLED\" = 1 ] || exit 9; printf 'extension-only/primary\\nbuiltin/fallback\\n'; fi".into(),"--".into()]}
+        };
         let env=BTreeMap::new();
         let (result,warning)=ModelPreflight::default().preflight(&candidates(),&launch,&env,&[],0,10000).await;
         assert!(warning.is_none());
@@ -65,7 +69,11 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
     }
     #[tokio::test]
     async fn core_visible_chain_never_probes_extensions() {
-        let launch=Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"[ \"$1\" = --no-extensions ] || exit 9; printf 'extension-only/primary\\nbuiltin/fallback\\n'".into(),"--".into()]};
+        let launch = if cfg!(windows) {
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"if(!process.argv.includes('--no-extensions'))process.exit(9);console.log('extension-only/primary\\nbuiltin/fallback');".into()]}
+        } else {
+            Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"[ \"$1\" = --no-extensions ] || exit 9; printf 'extension-only/primary\\nbuiltin/fallback\\n'".into(),"--".into()]}
+        };
         let (result,warning)=ModelPreflight::default().preflight(&candidates(),&launch,&BTreeMap::new(),&[],0,10000).await;
         assert!(warning.is_none());
         let PreflightResult::Filtered{candidates,rejected}=result else{panic!("expected filtered chain")};
@@ -74,7 +82,11 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
     }
     #[tokio::test]
     async fn failed_extension_catalog_keeps_core_candidate_and_reports_cause() {
-        let launch=Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"if [ \"$1\" = --no-extensions ]; then printf 'builtin/fallback\\n'; else printf 'extension boom' >&2; exit 3; fi".into(),"--".into()]};
+        let launch = if cfg!(windows) {
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"if(process.argv.includes('--no-extensions')){console.log('builtin/fallback');}else{process.stderr.write('extension boom');process.exit(3);}".into()]}
+        } else {
+            Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"if [ \"$1\" = --no-extensions ]; then printf 'builtin/fallback\\n'; else printf 'extension boom' >&2; exit 3; fi".into(),"--".into()]}
+        };
         let (result,warning)=ModelPreflight::default().preflight(&candidates(),&launch,&BTreeMap::new(),&[],0,10000).await;
         assert!(warning.unwrap().contains("extension boom"));
         let PreflightResult::Filtered{candidates,rejected}=result else{panic!("expected core candidate")};
@@ -84,15 +96,52 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
         assert_eq!(rejected,["extension-only/primary"]);
     }
     fn candidates()->Vec<ReflectionModelCandidate>{["extension-only/primary","builtin/fallback"].map(|model|ReflectionModelCandidate{model:model.into(),thinking:None, load_extensions: None }).into()}
-    fn launch(text:&str)->Launcher{Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),format!("printf '%s\\n' '{text}'")]}}
+    fn launch(text:&str)->Launcher{
+        if cfg!(windows) {
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),format!("console.log('{text}')")]}
+        } else {
+            Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),format!("printf '%s\\n' '{text}'")]}
+        }
+    }
     #[test]fn table_preserves_nested_model_ids(){assert_eq!(parse_model_catalog("\u{1b}[32mprovider  model  context\u{1b}[0m\nbuiltin  z-ai/glm  32000\n"),BTreeSet::from(["builtin/z-ai/glm".into()]));}
     #[test]fn malformed_and_duplicates(){assert_eq!(parse_model_catalog("bad\np/model\np/model\n/p\np/\np/model words"),BTreeSet::from(["p/model".into()]));}
     #[test]fn malformed_table_provider_is_rejected(){assert_eq!(parse_model_catalog("provider  model\nbad/provider  some-model\ngood  nested/model"),BTreeSet::from(["good/nested/model".into()]));}
     #[test]fn headerless_nested_ids_remain_visible(){assert_eq!(parse_model_catalog("provider/nested/model\nbuiltin/fallback"),BTreeSet::from(["provider/nested/model".into(),"builtin/fallback".into()]));}
-    #[tokio::test]async fn nonzero_catalog_exit_degrades(){let launcher=Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"printf failure >&2; exit 7".into()]};let (result,warn)=ModelPreflight::default().preflight(&candidates(),&launcher,&BTreeMap::new(),&[],0,10000).await;assert!(matches!(result,PreflightResult::Unavailable{..}));assert!(warn.unwrap().contains("7"));}
-    #[tokio::test]async fn failed_probe_retains_stdout_when_stderr_is_empty(){let launcher=Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"printf catalog-failure; exit 7".into()]};let error=probe_child_models(&launcher,&BTreeMap::new(),10000).await.unwrap_err();assert!(error.contains("catalog-failure"));}
-    #[tokio::test]async fn cache_hit_avoids_second_child(){let dir=tempfile::tempdir().unwrap();let log=dir.path().join("log");let launcher=Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),format!("printf x >> '{}'; printf 'builtin/fallback\\n'",log.display())]};let mut cache=ModelPreflight::default();for now in [0,1]{cache.preflight(&candidates(),&launcher,&BTreeMap::new(),&[],now,10000).await;}assert_eq!(std::fs::read_to_string(log).unwrap(),"xx");}
-    #[tokio::test]async fn changed_config_sources_invalidate_cache(){let dir=tempfile::tempdir().unwrap();let log=dir.path().join("log");let config=dir.path().join("config");let launcher=Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),format!("printf x >> '{}'; printf 'builtin/fallback\\n'",log.display())]};let sources=[ConfigSource{path:config.clone(),exists:true}];let mut cache=ModelPreflight::default();cache.preflight(&candidates(),&launcher,&BTreeMap::new(),&sources,0,10000).await;std::fs::write(config,b"{}").unwrap();cache.preflight(&candidates(),&launcher,&BTreeMap::new(),&sources,1,10000).await;assert_eq!(std::fs::read_to_string(log).unwrap(),"xxxx");}
+    #[tokio::test]async fn nonzero_catalog_exit_degrades(){
+        let launcher = if cfg!(windows) {
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"process.stderr.write('failure'); process.exit(7);".into()]}
+        } else {
+            Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"printf failure >&2; exit 7".into()]}
+        };
+        let (result,warn)=ModelPreflight::default().preflight(&candidates(),&launcher,&BTreeMap::new(),&[],0,10000).await;assert!(matches!(result,PreflightResult::Unavailable{..}));assert!(warn.unwrap().contains("7"));
+    }
+    #[tokio::test]async fn failed_probe_retains_stdout_when_stderr_is_empty(){
+        let launcher = if cfg!(windows) {
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"process.stdout.write('catalog-failure'); process.exit(7);".into()]}
+        } else {
+            Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"printf catalog-failure; exit 7".into()]}
+        };
+        let error=probe_child_models(&launcher,&BTreeMap::new(),10000).await.unwrap_err();assert!(error.contains("catalog-failure"));
+    }
+    #[tokio::test]async fn cache_hit_avoids_second_child(){
+        let dir=tempfile::tempdir().unwrap();let log=dir.path().join("log");
+        let launcher = if cfg!(windows) {
+            let log_escaped = log.to_string_lossy().replace('\\', "\\\\");
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),format!("require('fs').appendFileSync('{log_escaped}', 'x'); console.log('builtin/fallback');")]}
+        } else {
+            Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),format!("printf x >> '{}'; printf 'builtin/fallback\\n'",log.display())]}
+        };
+        let mut cache=ModelPreflight::default();for now in [0,1]{cache.preflight(&candidates(),&launcher,&BTreeMap::new(),&[],now,10000).await;}assert_eq!(std::fs::read_to_string(log).unwrap(),"xx");
+    }
+    #[tokio::test]async fn changed_config_sources_invalidate_cache(){
+        let dir=tempfile::tempdir().unwrap();let log=dir.path().join("log");let config=dir.path().join("config");
+        let launcher = if cfg!(windows) {
+            let log_escaped = log.to_string_lossy().replace('\\', "\\\\");
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),format!("require('fs').appendFileSync('{log_escaped}', 'x'); console.log('builtin/fallback');")]}
+        } else {
+            Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),format!("printf x >> '{}'; printf 'builtin/fallback\\n'",log.display())]}
+        };
+        let sources=[ConfigSource{path:config.clone(),exists:true}];let mut cache=ModelPreflight::default();cache.preflight(&candidates(),&launcher,&BTreeMap::new(),&sources,0,10000).await;std::fs::write(config,b"{}").unwrap();cache.preflight(&candidates(),&launcher,&BTreeMap::new(),&sources,1,10000).await;assert_eq!(std::fs::read_to_string(log).unwrap(),"xxxx");}
     #[tokio::test]async fn real_catalog_filters_candidates(){let (result,warn)=ModelPreflight::default().preflight(&candidates(),&launch("builtin/fallback"),&BTreeMap::new(),&[],0,10000).await;assert!(warn.is_none());match result{PreflightResult::Filtered{candidates,rejected}=>{assert_eq!(candidates[0].model,"builtin/fallback");assert_eq!(rejected,["extension-only/primary"]);},_=>panic!("not filtered")}}
     #[tokio::test]async fn cached_negative_retains_reactive_chain(){let mut cache=ModelPreflight::default();let launch=launch("other/model");let (fresh,_)=cache.preflight(&candidates(),&launch,&BTreeMap::new(),&[],1000,10000).await;assert!(matches!(fresh,PreflightResult::Unavailable{..}));let (cached,_)=cache.preflight(&candidates(),&launch,&BTreeMap::new(),&[],1001,10000).await;assert!(matches!(cached,PreflightResult::Unavailable{..}));let (expired,_)=cache.preflight(&candidates(),&launch,&BTreeMap::new(),&[],121000,10000).await;assert!(matches!(expired,PreflightResult::Unavailable{..}));}
     #[tokio::test]async fn probe_failure_keeps_candidates(){let (result,warn)=ModelPreflight::default().preflight(&candidates(),&launch("malformed"),&BTreeMap::new(),&[],0,10000).await;assert!(matches!(result,PreflightResult::Unavailable{..}));assert!(warn.is_some());}

@@ -10,7 +10,23 @@ pub fn candidates(platform:&str,arch:&str,prefer_musl:bool)->Vec<String> {
     let extension=if platform=="win32" {".exe"}else {""};let glibc=format!("@anthropic-ai/claude-agent-sdk-{platform}-{arch}/claude{extension}");
     if platform!="linux" {return vec![glibc];}let musl=format!("@anthropic-ai/claude-agent-sdk-linux-{arch}-musl/claude");if prefer_musl {vec![musl,glibc]}else {vec![glibc,musl]}
 }
-pub fn find_on_posix_path(name:&str,path:Option<&str>)->Option<PathBuf> {path?.split(':').filter(|directory|!directory.is_empty()).map(|directory|Path::new(directory).join(name)).find(|candidate|candidate.is_file())}
+pub fn find_on_posix_path(name:&str,path:Option<&str>)->Option<PathBuf> {
+    let path = path?;
+    let mut dirs = Vec::new();
+    let parts: Vec<&str> = path.split(':').collect();
+    let mut i = 0;
+    while i < parts.len() {
+        let part = parts[i];
+        if part.len() == 1 && part.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && i + 1 < parts.len() && (parts[i + 1].starts_with('\\') || parts[i + 1].starts_with('/')) {
+            dirs.push(format!("{}:{}", part, parts[i + 1]));
+            i += 2;
+        } else {
+            dirs.push(part.to_string());
+            i += 1;
+        }
+    }
+    dirs.into_iter().filter(|directory|!directory.is_empty()).map(|directory|Path::new(&directory).join(name)).find(|candidate|candidate.is_file())
+}
 pub fn find_on_path(name:&str,platform:&str,path:Option<&str>,pathext:Option<&str>,mut skipped:impl FnMut(&Path))->Option<PathBuf> {
     if platform!="win32" {return find_on_posix_path(name,path);}
     let names:Vec<_>=pathext.unwrap_or(".COM;.EXE;.BAT;.CMD").split(';').filter(|extension|!extension.is_empty()).map(|extension|format!("{name}{}",extension.to_lowercase())).collect();
@@ -32,14 +48,7 @@ pub fn find_on_path(name:&str,platform:&str,path:Option<&str>,pathext:Option<&st
 pub struct ResolveInput<'a> {pub platform:&'a str,pub arch:&'a str,pub prefer_musl:bool,pub override_path:Option<&'a Path>,pub path:Option<&'a str>}
 pub type VersionLookup<'a>=dyn Fn(&Path)->Option<String>+'a;
 fn spawnable(path:impl AsRef<Path>)->std::io::Result<PathBuf> {
-    let absolute=std::path::absolute(path)?;
-    #[cfg(windows)] {
-        let spelling=absolute.to_string_lossy();
-        if spelling.starts_with(r"\\?\") {return Ok(absolute);}
-        if let Some(unc)=spelling.strip_prefix(r"\\") {return Ok(PathBuf::from(format!(r"\\?\UNC\{unc}")));}
-        Ok(PathBuf::from(format!(r"\\?\{spelling}")))
-    }
-    #[cfg(not(windows))] Ok(absolute)
+    std::path::absolute(path)
 }
 pub fn describe(input:ResolveInput<'_>,resolve:impl Fn(&str)->Option<PathBuf>,version:Option<&VersionLookup<'_>>,bundled_version:Option<&str>)->std::io::Result<ExecutableResolution> {
     let mut resolution=ExecutableResolution {executable:None,source:None,tried:Vec::new()};

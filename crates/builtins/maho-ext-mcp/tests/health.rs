@@ -71,7 +71,10 @@ async fn killed_native_process_is_observed_and_renewed(){
     health.ensure_connection(&connection).await.unwrap();
     let first=connection.get_root_pid().unwrap();
     let mut states=connection.on_state_change();
+    #[cfg(unix)]
     assert!(std::process::Command::new("kill").args(["-KILL","--",&first.to_string()]).status().unwrap().success());
+    #[cfg(windows)]
+    assert!(std::process::Command::new("taskkill").args(["/F","/PID",&first.to_string()]).status().unwrap().success());
     tokio::time::timeout(Duration::from_secs(5),async{
         loop{if states.recv().await.unwrap().state==ServerConnectionState::Degraded{break;}}
     }).await.unwrap();

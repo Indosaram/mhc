@@ -43,7 +43,7 @@ fn externalize_block(cwd: &Path, image: CompletedNativeImage<'_>, response_id: O
         match OpenOptions::new().write(true).create_new(true).open(&target) {
             Ok(mut file) => {
                 file.write_all(&bytes).map_err(|e| e.to_string())?;
-                let mut text = format!("Generated image: {}", display_path(cwd, &target));
+                let mut text = format!("Generated image: {}", display_path(cwd, &target).replace('\\', "/"));
                 if let Some(prompt) = image.revised_prompt { text.push_str(&format!("\nRevised prompt: {prompt}")); }
                 return Ok(text);
             }

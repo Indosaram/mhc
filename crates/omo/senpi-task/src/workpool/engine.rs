@@ -127,11 +127,8 @@ impl WorkpoolEngine {
                     }
                     prior.clone()
                 } else {
-                    let mut bytes = [0u8; 16];
-                    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom").map_err(|error| WorkpoolError::new(super::types::WorkpoolErrorCode::StoreCorrupt, error.to_string()))?, &mut bytes)
-                        .map_err(|error| WorkpoolError::new(super::types::WorkpoolErrorCode::StoreCorrupt, error.to_string()))?;
                     let item = super::types::WorkpoolItem {
-                        key: key.to_owned(), input: value.input.clone(), item_id: format!("wi_{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+                        key: key.to_owned(), input: value.input.clone(), item_id: format!("wi_{}", uuid::Uuid::new_v4().simple()),
                         status: super::types::WorkpoolItemStatus::Queued, binding: None, delivery: None, data: None, error: None, yield_sha256: None,
                     };
                     next.items.push(item.clone());

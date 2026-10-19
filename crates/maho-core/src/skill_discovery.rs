@@ -332,7 +332,7 @@ mod tests {
 
         let entries = collect_skill_entries(&root.to_string_lossy(), SkillDiscoveryMode::Pi, None, None);
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].ends_with("pack/SKILL.md"));
+        assert!(entries[0].replace('\\', "/").ends_with("pack/SKILL.md"));
     }
 
     #[test]

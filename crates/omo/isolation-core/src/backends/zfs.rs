@@ -51,7 +51,9 @@ impl ZfsBackend {
             let mut parts = line.split('\t');
             let Some(name) = parts.next() else { continue };
             let Some(mount) = parts.next() else { continue };
-            if mount.starts_with('/') && resolve_path(Path::new(mount)) == target {
+            if (mount.starts_with('/') || Path::new(mount).is_absolute())
+                && resolve_path(Path::new(mount)) == target
+            {
                 return Ok(Some(name.to_string()));
             }
         }

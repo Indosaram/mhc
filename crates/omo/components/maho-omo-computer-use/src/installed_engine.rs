@@ -197,7 +197,11 @@ pub fn resolve_installed_engine(
     }
 
     if let Some(ver) = version {
-        let home = env.get("HOME").cloned().unwrap_or_else(|| "/tmp".to_string());
+        let home = env
+            .get("HOME")
+            .or_else(|| env.get("USERPROFILE"))
+            .cloned()
+            .unwrap_or_else(|| "/tmp".to_string());
         let cache_path = PathBuf::from(home)
             .join(".omo")
             .join("cache")

@@ -7,7 +7,8 @@ fn case_fold_collision_uses_last_inserted_root() {
     for object in [r#"{"LOCAL":"/tmp/first","local":"/tmp/last"}"#,r#"{"local":"/tmp/first","LOCAL":"/tmp/last"}"#] {
         let roots:LocalRoots=serde_json::from_str(object).unwrap();
         let options=LocalModuleLoaderOptions {cwd:"/tmp".into(),local_roots:Some(roots),artifacts_dir:None};
-        assert_eq!(runtime_context(&options).unwrap()["localRootUrls"]["local"],"file:///tmp/last/");
+        let expected = if cfg!(windows) { "file:///C:/tmp/last/" } else { "file:///tmp/last/" };
+        assert_eq!(runtime_context(&options).unwrap()["localRootUrls"]["local"], expected);
         let bridge=local_bridge_connection(&options);
         let wire=serde_json::to_value(bridge).unwrap();
         assert_eq!(wire["localRoots"]["local"],"/tmp/last");
@@ -18,8 +19,10 @@ fn case_fold_collision_uses_last_inserted_root() {
 fn context_normalizes_roots_and_preserves_explicit_local_root() {
     let options = LocalModuleLoaderOptions {cwd:PathBuf::from("/tmp/project/../with space"), local_roots:Some(LocalRoots::from([("LOCAL".into(), "/tmp/explicit".into())])), artifacts_dir:Some("/tmp/artifacts".into())};
     let context = runtime_context(&options).unwrap();
-    assert_eq!(context["cwdUrl"], "file:///tmp/with%20space/");
-    assert_eq!(context["localRootUrls"]["local"], "file:///tmp/explicit/");
+    let expected_cwd = if cfg!(windows) { "file:///C:/tmp/with%20space/" } else { "file:///tmp/with%20space/" };
+    let expected_explicit = if cfg!(windows) { "file:///C:/tmp/explicit/" } else { "file:///tmp/explicit/" };
+    assert_eq!(context["cwdUrl"], expected_cwd);
+    assert_eq!(context["localRootUrls"]["local"], expected_explicit);
     let bridge = local_bridge_connection(&options);
     assert_eq!(bridge.port, 1);
     assert_eq!(bridge.token, "local");
@@ -28,7 +31,8 @@ fn context_normalizes_roots_and_preserves_explicit_local_root() {
 #[test]
 fn cell_payload_contains_prepared_sentinel_and_rewritten_code() {
     let options = LocalModuleLoaderOptions {cwd:"/tmp/project".into(),local_roots:None,artifacts_dir:Some("/tmp/artifacts".into())};
-    assert_eq!(runtime_context(&options).unwrap()["localRootUrls"]["local"], "file:///tmp/artifacts/local/");
+    let expected = if cfg!(windows) { "file:///C:/tmp/artifacts/local/" } else { "file:///tmp/artifacts/local/" };
+    assert_eq!(runtime_context(&options).unwrap()["localRootUrls"]["local"], expected);
     let prepared = LocalModuleLoader::new(&options).unwrap().prepare_cell("import value from './value.mjs';", &[]);
     let payload:serde_json::Value = serde_json::from_str(prepared.strip_prefix(PREPARED_CELL_PREFIX).unwrap()).unwrap();
     assert_eq!(payload["code"], "const value = (await __senpi_import__(\"./value.mjs\")).default;");

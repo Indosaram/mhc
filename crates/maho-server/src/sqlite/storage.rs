@@ -10,8 +10,21 @@ use std::{
 };
 type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
+pub struct DbGuard<'a>(std::sync::MutexGuard<'a, Option<Connection>>);
+impl<'a> std::ops::Deref for DbGuard<'a> {
+    type Target = Connection;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("SqliteStorage is closed")
+    }
+}
+impl<'a> std::ops::DerefMut for DbGuard<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("SqliteStorage is closed")
+    }
+}
+
 pub struct SqliteStorage {
-    db: Mutex<Connection>,
+    db: Mutex<Option<Connection>>,
     session_id: String,
     closed: AtomicBool,
     now: Box<dyn Fn() -> i64 + Send + Sync>,
@@ -26,21 +39,28 @@ impl SqliteStorage {
         now: Box<dyn Fn() -> i64 + Send + Sync>,
     ) -> Self {
         Self {
-            db: Mutex::new(db),
+            db: Mutex::new(Some(db)),
             session_id,
             closed: AtomicBool::new(false),
             now,
         }
     }
-    fn db(&self) -> Result<std::sync::MutexGuard<'_, Connection>, SessionError> {
+    fn db(&self) -> Result<DbGuard<'_>, SessionError> {
         let db = self.db.lock().map_err(error)?;
-        if self.closed.load(Ordering::SeqCst) {
+        if self.closed.load(Ordering::SeqCst) || db.is_none() {
             return Err(SessionError::new(
                 SessionErrorKind::Closed,
                 "SqliteStorage is closed",
             ));
         }
-        Ok(db)
+        Ok(DbGuard(db))
+    }
+    pub fn close_sync(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let mut db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(conn) = db.take() {
+            let _ = conn.close();
+        }
     }
     fn stats(&self, db: &Connection) -> Result<SessionStats, SessionError> {
         let row = session_row::read_session(db, &self.session_id).map_err(error)?;
@@ -277,11 +297,7 @@ impl Storage for SqliteStorage {
     }
     fn close<'a>(&'a self, _context: &'a Context) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            let _db = self
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.closed.store(true, Ordering::SeqCst);
+            self.close_sync();
         })
     }
 }

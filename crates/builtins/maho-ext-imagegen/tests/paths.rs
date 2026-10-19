@@ -3,8 +3,13 @@ use std::path::Path;
 
 #[test]
 fn defaults_sanitize_utf16_and_number_multiple_images() {
-    let paths = resolve_targets(Path::new("/work"), "../a😀", 2, None, OutputFormat::Png).expect("targets");
-    assert_eq!(paths, vec!["/work/generated-images/___a__-01.png", "/work/generated-images/___a__-02.png"]);
+    let work = Path::new("/work");
+    let paths = resolve_targets(work, "../a😀", 2, None, OutputFormat::Png).expect("targets");
+    let expected = vec![
+        work.join("generated-images").join("___a__-01.png").to_string_lossy().into_owned(),
+        work.join("generated-images").join("___a__-02.png").to_string_lossy().into_owned(),
+    ];
+    assert_eq!(paths, expected);
 }
 #[test]
 fn incompatible_extension_rejects_before_generation() {
@@ -12,7 +17,11 @@ fn incompatible_extension_rejects_before_generation() {
 }
 #[test]
 fn explicit_targets_normalize_and_preserve_supported_extension_case() {
-    assert_eq!(resolve_targets(Path::new("/work"), "id", 1, Some("dir/../photo.JPEG"), OutputFormat::Jpeg).expect("targets"), vec!["/work/photo.JPEG"]);
+    let work = Path::new("/work");
+    assert_eq!(
+        resolve_targets(work, "id", 1, Some("dir/../photo.JPEG"), OutputFormat::Jpeg).expect("targets"),
+        vec![work.join("photo.JPEG").to_string_lossy().into_owned()]
+    );
 }
 #[test]
 fn returned_mime_controls_extension_without_changing_jpeg_alias() {

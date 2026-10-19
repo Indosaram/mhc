@@ -160,7 +160,7 @@ mod hook_behaviour {
 
     fn create_repo() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().expect("tempdir");
-        let dir = tmp.path().canonicalize().expect("canonical");
+        let dir = crate::support::paths::strip_verbatim_prefix(&tmp.path().canonicalize().expect("canonical"));
         for argv in [
             &["git", "init", "--quiet"][..],
             &["git", "symbolic-ref", "HEAD", "refs/heads/main"],
@@ -402,7 +402,7 @@ mod hook_behaviour {
 
     fn create_mirror() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().expect("tempdir");
-        let dir = tmp.path().canonicalize().expect("canonical");
+        let dir = crate::support::paths::strip_verbatim_prefix(&tmp.path().canonicalize().expect("canonical"));
         run(
             &["git", "init", "--bare", "--quiet", "--initial-branch=main"],
             &dir,
@@ -416,7 +416,8 @@ mod hook_behaviour {
     }
 
     fn configure_mirror(repo: &Path, mirror: &Path) {
-        let url = format!("file://{}", mirror.display());
+        let clean_mirror = crate::support::paths::strip_verbatim_prefix(mirror);
+        let url = format!("file://{}", clean_mirror.display());
         run(
             &["git", "config", "--local", "omo.memoryRepository.url", &url],
             repo,
@@ -542,6 +543,7 @@ mod hook_behaviour {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn given_hook_scripts_when_parsed_by_sh_then_syntax_check_passes() {
         let tmp = TempDir::new().expect("tempdir");

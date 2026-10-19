@@ -311,15 +311,22 @@ mod tests {
         assert_eq!(resolve_config_value("$MAHO_CORE_TEST_SCOPED", Some(&empty)).await, None);
         let process_visible = env_map(&[("HOME", "scoped-home")]);
         assert_eq!(resolve_config_value("$HOME", Some(&process_visible)).await.as_deref(), Some("scoped-home"));
-        assert!(resolve_config_value("$HOME", None).await.is_some());
+        let home_var = if cfg!(windows) { "$USERPROFILE" } else { "$HOME" };
+        assert!(resolve_config_value(home_var, None).await.is_some());
     }
 
     #[tokio::test]
     async fn executes_shell_commands_and_trims_their_output() {
         clear_config_value_cache();
-        assert_eq!(resolve_config_value("!echo '  spaced-key  '", None).await.as_deref(), Some("spaced-key"));
-        assert_eq!(resolve_config_value("!printf 'line1\nline2'", None).await.as_deref(), Some("line1\nline2"));
-        assert_eq!(resolve_config_value("!echo 'hello world' | tr ' ' '-'", None).await.as_deref(), Some("hello-world"));
+        if cfg!(windows) {
+            assert_eq!(resolve_config_value("!node -e \"process.stdout.write('  spaced-key  ')\"", None).await.as_deref(), Some("spaced-key"));
+            assert_eq!(resolve_config_value("!node -e \"process.stdout.write('line1\\nline2')\"", None).await.as_deref(), Some("line1\nline2"));
+            assert_eq!(resolve_config_value("!node -e \"process.stdout.write('hello world'.replace(/ /g, '-'))\"", None).await.as_deref(), Some("hello-world"));
+        } else {
+            assert_eq!(resolve_config_value("!echo '  spaced-key  '", None).await.as_deref(), Some("spaced-key"));
+            assert_eq!(resolve_config_value("!printf 'line1\nline2'", None).await.as_deref(), Some("line1\nline2"));
+            assert_eq!(resolve_config_value("!echo 'hello world' | tr ' ' '-'", None).await.as_deref(), Some("hello-world"));
+        }
         clear_config_value_cache();
     }
 
@@ -334,7 +341,12 @@ mod tests {
         clear_config_value_cache();
         let dir = tempfile::tempdir().expect("tempdir");
         let counter = dir.path().join("counter");
-        let script = format!("!n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; echo $n", c = counter.display());
+        let script = if cfg!(windows) {
+            let c = counter.to_string_lossy().replace('\\', "/");
+            format!("!node -e \"const fs=require('fs'); let n=0; try{{n=parseInt(fs.readFileSync('{c}','utf8'))||0}}catch(e){{}} n++; fs.writeFileSync('{c}',String(n)); console.log(n);\"")
+        } else {
+            format!("!n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; echo $n", c = counter.display())
+        };
         assert_eq!(resolve_config_value(&script, None).await.as_deref(), Some("1"));
         assert_eq!(resolve_config_value(&script, None).await.as_deref(), Some("1"));
         assert_eq!(resolve_config_value_uncached(&script, None).await.as_deref(), Some("2"));

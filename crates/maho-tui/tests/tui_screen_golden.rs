@@ -174,8 +174,15 @@ fn trim_viewport(mut screen: Value) -> Value {
 
 fn assert_case(name: &str) {
     let (stream, columns, rows) = replay(name);
-    let expected_stream = std::fs::read_to_string(fixture_path(&format!("{name}.ansi")))
-        .unwrap_or_else(|error| panic!("{name}.ansi: {error}"));
+    let expected_stream = {
+        let raw = std::fs::read_to_string(fixture_path(&format!("{name}.ansi")))
+            .unwrap_or_else(|error| panic!("{name}.ansi: {error}"));
+        if cfg!(windows) {
+            raw.replace("\x1b[3J", "")
+        } else {
+            raw
+        }
+    };
     if stream != expected_stream {
         let at = stream
             .char_indices()

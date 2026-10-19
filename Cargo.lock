@@ -5204,6 +5204,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "unicode-width",
+ "uuid",
 ]
 
 [[package]]
@@ -8279,6 +8280,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

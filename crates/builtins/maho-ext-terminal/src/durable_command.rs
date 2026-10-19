@@ -23,11 +23,17 @@ pub fn restore_configured_command(monitor:&ManifestMonitor,manager:&mut Terminal
 mod tests {
     use super::*;
     use serde_json::json;
-    fn monitor()->ManifestMonitor {crate::restore::parse_terminal_manifest(&json!({"monitors":[{"monitorId":"mon_saved","sessionId":"s","description":"watch","runtimeKind":"command","durabilityClass":"restartable-command","command":"stty -echo; printf 'restored\\n'","cwd":"/tmp","createdAt":1,"expiresAt":null,"persistent":true,"suspended":false,"lastCheckpoint":null,"deliveryPaused":true,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap().monitors.remove(0)}
+    fn monitor()->ManifestMonitor {
+        let tmp = std::env::temp_dir();
+        let tmp_str = tmp.to_str().unwrap();
+        crate::restore::parse_terminal_manifest(&json!({"monitors":[{"monitorId":"mon_saved","sessionId":"s","description":"watch","runtimeKind":"command","durabilityClass":"restartable-command","command":"stty -echo; printf 'restored\\n'","cwd":tmp_str,"createdAt":1,"expiresAt":null,"persistent":true,"suspended":false,"lastCheckpoint":null,"deliveryPaused":true,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap().monitors.remove(0)
+    }
     #[test]
     fn configured_restore_preserves_shell_and_geometry() {
         let mut saved=monitor();saved.command=Some("stty -echo; stty size; printf 'shell:%s\\n' \"${BASH_VERSION:+bash}\"".to_owned());let mut manager=TerminalManager::default();let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_rows=33.0;settings.default_cols=91.0;
-        assert_eq!(restore_configured_command(&saved,&mut manager,Some("/bin/bash"),&settings,|_,_,_|Ok(())),RestoreOutcome::Muted);
+        let default_shell=maho_tools::shell::get_shell_config(None).ok().map(|s| s.shell);
+        let shell=if cfg!(windows) {default_shell.as_deref()} else {Some("/bin/bash")};
+        assert_eq!(restore_configured_command(&saved,&mut manager,shell,&settings,|_,_,_|Ok(())),RestoreOutcome::Muted);
         let runtime=manager.get("bash_1").unwrap();runtime.wait(std::time::Duration::from_secs(5)).unwrap();assert_eq!(runtime.full_output().unwrap(),"33 91\r\nshell:bash\r\n");manager.teardown().unwrap();
     }
     #[test]
@@ -41,7 +47,8 @@ mod tests {
     fn invalid_targets_do_not_spawn() {
         let mut saved=monitor();let mut manager=TerminalManager::default();saved.cwd=Some("relative".to_owned());
         assert_eq!(restore_command(&saved,&mut manager,|_,_,_|panic!("invalid target registered")),RestoreOutcome::Lost);assert_eq!(manager.size(),0);
-        saved.cwd=Some("/tmp".to_owned());saved.persistent=false;
+        let tmp = std::env::temp_dir();
+        saved.cwd=Some(tmp.to_str().unwrap().to_owned());saved.persistent=false;
         assert_eq!(restore_command(&saved,&mut manager,|_,_,_|panic!("ephemeral target registered")),RestoreOutcome::Lost);assert_eq!(manager.size(),0);
     }
     #[tokio::test]

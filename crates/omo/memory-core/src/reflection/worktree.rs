@@ -105,7 +105,8 @@ pub fn create_reflection_worktree(
     exec: &dyn GitExec,
     before_create: Option<&dyn Fn(&ReflectionWorktreeIdentity)>,
 ) -> Result<ReflectionWorktree, WorktreeError> {
-    if !worktrees_dir.is_absolute() {
+    let clean_worktrees_dir = crate::support::paths::strip_verbatim_prefix(worktrees_dir);
+    if !clean_worktrees_dir.is_absolute() {
         return Err(WorktreeError::InvalidPath(
             "worktrees_dir must be absolute".to_string(),
         ));
@@ -123,7 +124,7 @@ pub fn create_reflection_worktree(
     let sanitized_id = sanitize_run_id(run_id)?;
     let suffix = format!("{}-{}", crate::support::time::now_millis(), sanitized_id);
     let branch = format!("memory/reflection-{suffix}");
-    let dir = worktrees_dir.join(&suffix);
+    let dir = clean_worktrees_dir.join(&suffix);
 
     let identity = ReflectionWorktreeIdentity {
         dir: dir.clone(),
@@ -297,7 +298,7 @@ fn remove_worktree_and_branch(
         .run_in(&repo.dir, &["worktree", "list", "--porcelain"])
         .map(|r| r.stdout)
         .unwrap_or_default();
-    let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let canonical = crate::support::paths::strip_verbatim_prefix(&dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()));
     let listed_has_dir = listed.lines().any(|line| {
         line.starts_with("worktree ") && line.contains(&canonical.to_string_lossy().to_string())
     });

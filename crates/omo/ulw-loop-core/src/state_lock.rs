@@ -70,7 +70,26 @@ fn is_pid_alive(pid: u32) -> bool {
             Err(error) => error == rustix::io::Errno::PERM,
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: OpenProcess takes plain integers; a null handle is checked before any use.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0u32;
+        // SAFETY: `handle` is a live process handle and `exit_code` outlives the call.
+        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+        // SAFETY: `handle` came from OpenProcess and is closed exactly once.
+        unsafe { CloseHandle(handle) };
+        queried != 0 && exit_code == STILL_ACTIVE as u32
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         true
     }

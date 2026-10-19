@@ -35,21 +35,25 @@ fn manifest_entry_paths(extensions_dir: &Path, package_name: &str) -> Vec<PathBu
     }).collect()
 }
 
+fn split_path_segments(path: &str) -> Vec<&str> {
+    path.split(['/', '\\']).filter(|s| !s.is_empty()).collect()
+}
+
 pub fn is_loadable_extension_entry(extensions_dir: &Path, relative_path: &str) -> bool {
-    let segments: Vec<_> = relative_path.split(std::path::MAIN_SEPARATOR).filter(|segment| !segment.is_empty()).collect();
+    let segments = split_path_segments(relative_path);
     let Some(first) = segments.first() else { return false; };
     if segments.len() == 1 { return first.ends_with(".ts") || first.ends_with(".js"); }
     if segments.len() == 2 && segments.get(1).is_some_and(|name| ["index.ts", "index.js", "package.json"].contains(name)) { return true; }
-    manifest_entry_paths(extensions_dir, first).iter().any(|path| path.to_string_lossy() == relative_path)
+    let relative: PathBuf = segments.iter().collect();
+    manifest_entry_paths(extensions_dir, first).iter().any(|path| path == &relative)
 }
 
 pub fn is_scannable_extension_directory(extensions_dir: &Path, relative_path: &str) -> bool {
-    if relative_path.is_empty() { return true; }
-    let segments: Vec<_> = relative_path.split(std::path::MAIN_SEPARATOR).filter(|segment| !segment.is_empty()).collect();
-    let Some(first) = segments.first() else { return false; };
+    let segments = split_path_segments(relative_path);
+    let Some(first) = segments.first() else { return true; };
     if segments.len() == 1 { return true; }
+    let relative: PathBuf = segments.iter().collect();
     manifest_entry_paths(extensions_dir, first).iter().any(|path| {
-        let entry = path.to_string_lossy();
-        entry == relative_path || entry.starts_with(&format!("{relative_path}{}", std::path::MAIN_SEPARATOR))
+        path == &relative || path.starts_with(&relative)
     })
 }

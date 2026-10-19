@@ -21,8 +21,14 @@ fn resolve_windows_patch_path(cwd:&Path,file_path:&Path)->PathBuf {
 mod tests {
     use super::*;
     #[test] fn relative_cwd_resolves_against_process_directory() { assert_eq!(resolve_patch_path(Path::new("relative"),Path::new("../file")),std::env::current_dir().unwrap().join("file")); }
-    #[test] fn relative_parent_is_resolved() { assert_eq!(resolve_patch_path(Path::new("/project/src"),Path::new("../file")),PathBuf::from("/project/file")); }
-    #[test] fn absolute_path_ignores_cwd() { assert_eq!(resolve_patch_path(Path::new("/project"),Path::new("/elsewhere/file")),PathBuf::from("/elsewhere/file")); }
+    #[test] fn relative_parent_is_resolved() {
+        let (project, file) = if cfg!(windows) { (Path::new(r"C:\project\src"), PathBuf::from(r"C:\project\file")) } else { (Path::new("/project/src"), PathBuf::from("/project/file")) };
+        assert_eq!(resolve_patch_path(project, Path::new("../file")), file);
+    }
+    #[test] fn absolute_path_ignores_cwd() {
+        let (project, elsewhere) = if cfg!(windows) { (Path::new(r"C:\project"), PathBuf::from(r"C:\elsewhere\file")) } else { (Path::new("/project"), PathBuf::from("/elsewhere/file")) };
+        assert_eq!(resolve_patch_path(project, &elsewhere), elsewhere);
+    }
     #[cfg(windows)]
     #[test] fn windows_resolution_preserves_drive_prefix_and_clamps_parent_at_root() { assert_eq!(resolve_patch_path(Path::new(r"C:\project\src"),Path::new(r"..\..\file")),PathBuf::from(r"C:\file")); }
 }

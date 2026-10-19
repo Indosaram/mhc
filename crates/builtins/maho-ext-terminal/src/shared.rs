@@ -52,6 +52,11 @@ pub fn encode_keys(keys: &[String]) -> EncodedKeys {
 pub fn safe_reg_exp(pattern: &str) -> Option<fancy_regex::Regex> { fancy_regex::Regex::new(pattern).ok() }
 
 #[cfg(test)]
+pub fn test_sh_options(command: &str) -> maho_pty::PtySessionOptions {
+    crate::tools::spawn::command_options(command, None, None).unwrap().0
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

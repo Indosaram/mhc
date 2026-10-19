@@ -1,3 +1,4 @@
+#[cfg(unix)]
 #[test]
 fn role_consumption_does_not_leak_to_ordinary_descendants() {
     const PROBE: &str = "MAHO_PARENT_ROLE_PROBE";
@@ -26,6 +27,7 @@ fn role_consumption_does_not_leak_to_ordinary_descendants() {
     assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
 }
 
+#[cfg(unix)]
 #[test]
 fn intentional_internal_spawns_keep_only_the_requested_role() {
     use maho_cli::experimental::process::{InternalProcessRole, spawn_internal_process};

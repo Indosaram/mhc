@@ -1,6 +1,6 @@
 use maho_ext_pi_rules::rules::{finder::*,types::RuleCandidate};
 use std::{path::{Path,PathBuf},collections::BTreeSet};
-fn write(root:&Path,name:&str)->PathBuf{let p=root.join(name);let parent=p.parent().unwrap_or_else(||panic!("fixture parent"));std::fs::create_dir_all(parent).unwrap_or_else(|e|panic!("mkdir: {e}"));std::fs::write(&p,"rule").unwrap_or_else(|e|panic!("write: {e}"));p}
+fn write(root:&Path,name:&str)->PathBuf{let p=name.split('/').fold(root.to_path_buf(),|acc,part|acc.join(part));let parent=p.parent().unwrap_or_else(||panic!("fixture parent"));std::fs::create_dir_all(parent).unwrap_or_else(|e|panic!("mkdir: {e}"));std::fs::write(&p,"rule").unwrap_or_else(|e|panic!("write: {e}"));p}
 fn find(root:Option<&Path>,target:Option<&Path>,home:&Path)->Vec<RuleCandidate>{find_rule_candidates(FinderOptions{project_root:root,target_file:target,home_dir:Some(home),disabled_sources:None,skip_user_home:false,cache:None})}
 fn by<'a>(r:&'a[RuleCandidate],path:&str)->&'a RuleCandidate{r.iter().find(|r|r.relative_path==path).unwrap_or_else(||panic!("missing {path}"))}
 #[test]

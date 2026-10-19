@@ -1,5 +1,6 @@
 use maho_codemode::interpreters::resolve_command::*;
 
+#[cfg(unix)]
 #[test]
 fn ignores_non_executable_and_directories() {
     let root = tempfile::tempdir().unwrap();

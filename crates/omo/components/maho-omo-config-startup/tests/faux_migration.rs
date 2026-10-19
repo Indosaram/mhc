@@ -10,7 +10,7 @@ async fn real_startup_migration_matches_reference_document() {
     std::fs::create_dir(home.path().join(".omo")).expect("config dir");
     std::fs::write(home.path().join(".omo/config.jsonc"), r#"{"codegraph":{"daemon":false}}"#).expect("legacy config");
     let home_path = home.path().to_string_lossy().into_owned();
-    let env = BTreeMap::from([("HOME".into(), home_path.clone())]);
+    let env = BTreeMap::from([("HOME".into(), home_path.clone()), ("USERPROFILE".into(), home_path.clone())]);
     let loader_env = env.clone();
     let component = maho_omo_config_startup::ConfigStartupComponent {
         run_migration: Some(Arc::new(move |cwd| maho_omo_config_startup::run_senpi_startup_migration(cwd, &env, &home_path))),

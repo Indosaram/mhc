@@ -21,12 +21,15 @@ uuid = { workspace = true, features = ["v4"] }
 [target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
 rustix = { version = "=1.1.4", features = ["process"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [dev-dependencies]
 filetime.workspace = true
 tempfile.workspace = true
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "allow"
 
 [lints.clippy]
 unwrap_used = "deny"

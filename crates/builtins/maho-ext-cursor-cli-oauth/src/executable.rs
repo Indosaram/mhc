@@ -18,9 +18,15 @@ pub fn resolve_cursor_agent_executable(
         if executable(Path::new(path)) { return Ok(path.into()); }
     }
     if let Some(path) = environment.get("PATH") {
-        for directory in path.split(':').filter(|v| !v.is_empty()) {
+        let sep = if path.contains(';') { ';' } else { ':' };
+        for directory in path.split(sep).filter(|v| !v.is_empty()) {
             let candidate = Path::new(directory).join("cursor-agent");
             if executable(&candidate) { return Ok(candidate.to_string_lossy().into_owned()); }
+            #[cfg(windows)]
+            {
+                let candidate = Path::new(directory).join("cursor-agent.exe");
+                if executable(&candidate) { return Ok(candidate.to_string_lossy().into_owned()); }
+            }
         }
     }
     let versions = home.join(".local/share/cursor-agent/versions");
@@ -62,8 +68,11 @@ mod tests {
     use super::*;
     fn resolve(env: &[(&str,&str)],settings:Option<&str>,available:&[&str]) -> Result<String,CursorAgentNotInstalledError> {
         let env = env.iter().map(|(k,v)| (k.to_string(),v.to_string())).collect();
-        resolve_cursor_agent_executable(&env,settings,Path::new("/home/tester"),|path| available.contains(&path.to_str().unwrap()),
-            |_| Ok(vec![("2026.08.10-old".into(),true),("2026.08.11-new".into(),true),("README".into(),false)]))
+        resolve_cursor_agent_executable(&env,settings,Path::new("/home/tester"),|path| {
+            let normalized = path.to_string_lossy().replace('\\', "/");
+            available.contains(&normalized.as_str())
+        }, |_| Ok(vec![("2026.08.10-old".into(),true),("2026.08.11-new".into(),true),("README".into(),false)]))
+        .map(|s| s.replace('\\', "/"))
     }
     #[test]
     fn provider_override_first() {

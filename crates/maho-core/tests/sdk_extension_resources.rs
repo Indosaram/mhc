@@ -221,10 +221,10 @@ async fn discovered_skill_and_prompt_name_clashes_report_collision_diagnostics()
         std::fs::write(&path, content).expect("write");
         path.to_string_lossy().into_owned()
     };
-    let cli_skill = write(dir.path().join("cli/same/SKILL.md"), "---\nname: same\ndescription: CLI skill\n---\nCLI.");
-    let cli_prompt = write(dir.path().join("cli/clash.md"), "---\ndescription: CLI prompt\n---\nCLI");
-    let discovered_skill = write(dir.path().join("ext/same/SKILL.md"), "---\nname: same\ndescription: Discovered skill\n---\nExt.");
-    let discovered_prompt = write(dir.path().join("ext/clash.md"), "---\ndescription: Discovered prompt\n---\nExt");
+    let cli_skill = write(dir.path().join("cli").join("same").join("SKILL.md"), "---\nname: same\ndescription: CLI skill\n---\nCLI.");
+    let cli_prompt = write(dir.path().join("cli").join("clash.md"), "---\ndescription: CLI prompt\n---\nCLI");
+    let discovered_skill = write(dir.path().join("ext").join("same").join("SKILL.md"), "---\nname: same\ndescription: Discovered skill\n---\nExt.");
+    let discovered_prompt = write(dir.path().join("ext").join("clash.md"), "---\ndescription: Discovered prompt\n---\nExt");
     let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
         path: "sdk-collision-fixture".to_owned(), source_info: Default::default(),
         factory: Arc::new(move |api| {

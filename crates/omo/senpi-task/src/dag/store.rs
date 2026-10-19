@@ -737,7 +737,7 @@ impl DagFileStore {
     fn fsync_parent_directory_after_rename(&self, path: &Path) -> Result<(), DagStoreError> {
         // Directory fsync makes the rename durable on POSIX. Windows rejects fsync on directory
         // handles with EPERM, and its MoveFileEx-backed rename uses different durability semantics.
-        if self.platform == "win32" {
+        if cfg!(windows) || self.platform == "win32" {
             return Ok(());
         }
         let Some(parent) = path.parent() else {

@@ -56,7 +56,8 @@ impl SpawnLog {
             Box::pin(async move {
                 let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("tests/fixtures/fake_engine.py");
-                let mut cmd = Command::new("python3");
+                let python_cmd = if cfg!(windows) { "python" } else { "python3" };
+                let mut cmd = Command::new(python_cmd);
                 cmd.arg(&script_path).arg("--stdio");
                 for (k, v) in &envs {
                     cmd.env(k, v);

@@ -177,7 +177,8 @@ pub(crate) mod tests {
     async fn live_command_snapshot_records_registration_epoch() {
         let mut manager=TerminalManager::default();let mut registry=MonitorRegistry::new(|_|{});
         let before=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64()*1000.0;
-        let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"live","command":"read value"}),std::path::Path::new("/tmp"),None);assert!(result.is_error.is_none());
+        let tmp = std::env::temp_dir();
+        let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"live","command":"read value"}),&tmp,None);assert!(result.is_error.is_none());
         let after=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64()*1000.0;
         let snapshot=registry.snapshot();assert_eq!(snapshot.len(),1);assert!(snapshot[0].started_at_ms>=before&&snapshot[0].started_at_ms<=after);let deadline=snapshot[0].deadline_ms.unwrap();assert!(deadline>=before+DEFAULT_MONITOR_TIMEOUT_MS as f64&&deadline<=after+DEFAULT_MONITOR_TIMEOUT_MS as f64);
         registry.dispose();manager.teardown().unwrap();
@@ -186,7 +187,10 @@ pub(crate) mod tests {
     async fn configured_monitor_geometry_reaches_real_shell() {
         let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=TerminalManager::default();
         let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_cols=91.0;settings.default_rows=33.0;
-        let result=execute_configured_monitor(&mut manager,&mut registry,&json!({"description":"geometry","command":"stty size","filter":"^33 91$"}),std::path::Path::new("/tmp"),None,Some("/bin/bash"),&settings);assert!(result.is_error.is_none());
+        let tmp = std::env::temp_dir();
+        let default_shell=maho_tools::shell::get_shell_config(None).ok().map(|s| s.shell);
+        let shell=if cfg!(windows) {default_shell.as_deref()} else {Some("/bin/bash")};
+        let result=execute_configured_monitor(&mut manager,&mut registry,&json!({"description":"geometry","command":"stty size","filter":"^33 91$"}),&tmp,None,shell,&settings);assert!(result.is_error.is_none());
         tokio::time::timeout(std::time::Duration::from_secs(5),async {assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line=="33 91"));assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Summary {..})));}).await.unwrap();registry.dispose();manager.teardown().unwrap();
     }
     #[tokio::test]
@@ -213,9 +217,10 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn tool_spawns_and_delivers_native_monitor_completion() {
         let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=TerminalManager::default();
-        let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"ready","command":"stty -echo; printf 'ready\\n'","filter":"^ready$"}),std::path::Path::new("/tmp"),None);
+        let tmp = std::env::temp_dir();
+        let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"ready","command":"stty -echo; printf 'ready\\n'","filter":"^ready$"}),&tmp,None);
         assert!(result.is_error.is_none());let id=result.details.as_ref().unwrap()["monitor_id"].as_str().unwrap();assert_eq!(manager.resolve_id(id),Some("bash_1".to_owned()));
         tokio::time::timeout(std::time::Duration::from_secs(5),async {assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line=="ready"));assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Summary {summary,..}) if summary=="watcher completed (exit code 0)"));}).await.unwrap();manager.teardown().unwrap();
     }
-    #[test] fn schema_is_flat_and_invalid_branch_does_not_spawn() {assert!(monitor_schema().get("properties").is_some());let mut manager=TerminalManager::default();let mut registry=MonitorRegistry::new(|_|{});let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"both","command":"true","path":"file"}),std::path::Path::new("/tmp"),None);assert_eq!(result.is_error,Some(true));assert_eq!(manager.size(),0);}
+    #[test] fn schema_is_flat_and_invalid_branch_does_not_spawn() {assert!(monitor_schema().get("properties").is_some());let mut manager=TerminalManager::default();let mut registry=MonitorRegistry::new(|_|{});let tmp = std::env::temp_dir();let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"both","command":"true","path":"file"}),&tmp,None);assert_eq!(result.is_error,Some(true));assert_eq!(manager.size(),0);}
 }

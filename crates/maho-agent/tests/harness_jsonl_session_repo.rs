@@ -64,10 +64,11 @@ async fn persists_metadata_and_filters_discovery_by_cwd() {
     let session = repo.create(options, &context).await.expect("create");
     let metadata = session.metadata().clone();
 
+    let expected_cwd = file_system.absolute_path("/workspace", &context).await.expect("cwd");
     assert_eq!(metadata.id, "child");
     assert_eq!(metadata.created_at, NOW);
     assert_eq!(metadata.storage_version, JSONL_STORAGE_VERSION);
-    assert_eq!(metadata.cwd.as_deref(), Some("/workspace"));
+    assert_eq!(metadata.cwd.as_deref(), Some(expected_cwd.as_str()));
     assert_eq!(metadata.parent_session_id.as_deref(), Some("parent"));
     session.close(&context).await;
 
@@ -82,7 +83,9 @@ async fn persists_metadata_and_filters_discovery_by_cwd() {
         .expect("list workspace");
     assert_eq!(workspace.len(), 1);
     assert_eq!(workspace[0].id, "child");
-    assert!(workspace[0].path.contains("/sessions/--workspace--/"), "{}", workspace[0].path);
+    let safe_cwd = expected_cwd.trim_start_matches(['/', '\\']).chars().map(|c| match c { '/' | '\\' | ':' => '-', other => other }).collect::<String>();
+    let expected_dir_part = format!("sessions{}--{safe_cwd}--{}", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR);
+    assert!(workspace[0].path.contains(&expected_dir_part), "{}", workspace[0].path);
     assert!(workspace[0].path.ends_with("_child.jsonl"), "{}", workspace[0].path);
     assert!(workspace[0].modified_at > 0);
 
@@ -110,7 +113,7 @@ async fn persists_metadata_and_filters_discovery_by_cwd() {
     assert_eq!(header["id"], "child");
     assert_eq!(header["storageVersion"], JSONL_STORAGE_VERSION);
     assert_eq!(header["createdAt"], NOW);
-    assert_eq!(header["cwd"], "/workspace");
+    assert_eq!(header["cwd"], expected_cwd);
     assert_eq!(header["parentSessionId"], "parent");
     repo.close(&context).await;
     std::fs::remove_dir_all(&root).expect("cleanup");
@@ -328,13 +331,16 @@ async fn rejects_concurrent_creates_for_the_same_working_directory_id() {
 async fn allows_the_same_id_to_be_active_in_different_working_directories() {
     let root = temp_root("same-id");
     let context = BACKGROUND_CONTEXT.clone();
-    let repo = repo(node_env(&root));
+    let file_system = node_env(&root);
+    let cwd_a = file_system.absolute_path("/workspace-a", &context).await.expect("cwd a");
+    let cwd_b = file_system.absolute_path("/workspace-b", &context).await.expect("cwd b");
+    let repo = repo(file_system);
     let first = repo
-        .create(create_options("shared", "/workspace-a"), &context)
+        .create(create_options("shared", &cwd_a), &context)
         .await
         .expect("first");
     let second = repo
-        .create(create_options("shared", "/workspace-b"), &context)
+        .create(create_options("shared", &cwd_b), &context)
         .await
         .expect("second");
 
@@ -345,13 +351,13 @@ async fn allows_the_same_id_to_be_active_in_different_working_directories() {
             .map(|metadata| (metadata.cwd.clone(), metadata.id.clone()))
             .collect::<Vec<(String, String)>>(),
         vec![
-            ("/workspace-a".to_owned(), "shared".to_owned()),
-            ("/workspace-b".to_owned(), "shared".to_owned()),
+            (cwd_a.clone(), "shared".to_owned()),
+            (cwd_b.clone(), "shared".to_owned()),
         ]
     );
     assert_ne!(listing[0].path, listing[1].path);
     let duplicate = repo
-        .create(create_options("shared", "/workspace-a"), &context)
+        .create(create_options("shared", &cwd_a), &context)
         .await
         .err()
         .expect("duplicate");

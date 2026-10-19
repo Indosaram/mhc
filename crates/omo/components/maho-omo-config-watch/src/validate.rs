@@ -8,10 +8,21 @@ fn fingerprint(d:&SenpiConfigDiagnostic)->String { let (kind,path,message)=parts
 // one alias rewrites the whole notice, and its new fingerprint would otherwise block the reload.
 fn is_rejectable_diagnostic(d:&SenpiConfigDiagnostic)->bool { parts(d).0!="deprecated-keys" }
 fn config_directory(path:&Path,user:&Path)->Option<PathBuf> { if path.starts_with(user) { return Some(user.to_owned()); } path.ancestors().find(|p|p.file_name().is_some_and(|s|s==".omo")).map(Path::to_owned) }
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => { normalized.pop(); },
+            std::path::Component::CurDir => {},
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
 fn attributable(d:&SenpiConfigDiagnostic,changed:&[PathBuf],user:&Path)->bool {
     let (kind,path,_)=parts(d);if path==MERGED_OMO_CONFIG_DIAGNOSTIC_PATH||kind=="model_catalog_cycle" { return true; }
-    let path=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[path]));let directory=config_directory(&path,user);
-    changed.iter().any(|changed| { let changed=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[&changed.to_string_lossy()]));path.starts_with(&changed)||(directory.is_some()&&config_directory(&changed,user)==directory) })
+    let path=normalize_path(Path::new(path));let directory=config_directory(&path,user);
+    changed.iter().any(|changed| { let changed=normalize_path(changed);path.starts_with(&changed)||(directory.is_some()&&config_directory(&changed,user)==directory) })
 }
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub enum ConfigWatchValidation { Ok,Rejected{errors:Vec<String>} }
@@ -21,8 +32,11 @@ impl OmoConfigValidator {
     pub fn new(cwd:String,env:BTreeMap<String,String>)->Self {
         Self::with_loader(cwd,env,Box::new(|cwd,env|load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions{cwd:Some(cwd.into()),env:Some(env.clone()),..Default::default()}).diagnostics))
     }
-    pub fn with_loader(cwd:String,env:BTreeMap<String,String>,load_config:ConfigDiagnosticLoader)->Self {
-        let user=PathBuf::from(omo_config_core::resolve_user_omo_config_directory(&env));
+    pub fn with_loader(cwd:String,mut env:BTreeMap<String,String>,load_config:ConfigDiagnosticLoader)->Self {
+        if cfg!(windows) && !env.contains_key("HOME") && let Some(home) = env.get("USERPROFILE").cloned() {
+            env.insert("HOME".into(), home);
+        }
+        let user=normalize_path(&PathBuf::from(omo_config_core::resolve_user_omo_config_directory(&env)));
         let diagnostics:Vec<_>=load_config(&cwd,&env).into_iter().filter(is_rejectable_diagnostic).collect();
         Self{cwd,env,user,baseline:diagnostics.iter().map(fingerprint).collect(),unresolved:Vec::new(),load_config}
     }

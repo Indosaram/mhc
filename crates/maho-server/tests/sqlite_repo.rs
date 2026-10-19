@@ -2,6 +2,7 @@ use maho_agent::harness::{context::background_context, session::*};
 use maho_server::sqlite::SqliteSessionRepo;
 use serde_json::json;
 use std::sync::Arc;
+#[cfg(unix)]
 #[tokio::test]
 async fn active_source_fork_uses_storage_connection_after_path_is_renamed() {
     let directory=tempfile::tempdir().unwrap();

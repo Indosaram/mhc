@@ -12,7 +12,11 @@ use maho_omo_config_startup::run_senpi_startup_migration;
 use omo_config_core::{LoadOmoConfigOptions, MigrationStatus, load_omo_config};
 
 fn home_env(home: &Path) -> BTreeMap<String, String> {
-    BTreeMap::from([("HOME".into(), home.to_string_lossy().into_owned())])
+    let home_path = home.to_string_lossy().into_owned();
+    BTreeMap::from([
+        ("HOME".into(), home_path.clone()),
+        ("USERPROFILE".into(), home_path),
+    ])
 }
 
 fn migrated_document(home: &Path) -> serde_json::Value {

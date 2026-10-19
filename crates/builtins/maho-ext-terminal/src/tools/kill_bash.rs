@@ -22,7 +22,7 @@ mod tests {
     use super::*;
     #[test]
     fn stable_monitor_id_kills_live_runtime_and_all_clears_bindings() {
-        let mut manager=TerminalManager::default();let id=manager.create("read",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read value")).unwrap();manager.bind_monitor_id("mon_saved",&id);
+        let mut manager=TerminalManager::default();let id=manager.create("read",crate::shared::test_sh_options("read value")).unwrap();manager.bind_monitor_id("mon_saved",&id);
         assert_eq!(execute_kill_bash(&mut manager,None,false).is_error,Some(true));assert_eq!(execute_kill_bash(&mut manager,Some("missing"),false).is_error,Some(true));
         assert_eq!(execute_kill_bash(&mut manager,Some("mon_saved"),false).is_error,None);assert!(manager.get(&id).unwrap().exited().unwrap());assert_eq!(manager.active_size().unwrap(),0);
         assert_eq!(execute_kill_bash(&mut manager,None,true).is_error,None);assert_eq!(manager.size(),0);assert_eq!(manager.resolve_id("mon_saved"),None);
@@ -30,7 +30,7 @@ mod tests {
     #[tokio::test]
     async fn shared_kill_awaits_stop_without_holding_the_manager_lock() {
         let manager=std::sync::Arc::new(std::sync::Mutex::new(TerminalManager::default()));
-        let id=manager.lock().unwrap().create("read",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read value")).unwrap();manager.lock().unwrap().bind_monitor_id("mon_saved",&id);
+        let id=manager.lock().unwrap().create("read",crate::shared::test_sh_options("read value")).unwrap();manager.lock().unwrap().bind_monitor_id("mon_saved",&id);
         assert_eq!(execute_kill_bash_shared(&manager,Some("missing"),false).await.is_error,Some(true));
         assert_eq!(execute_kill_bash_shared(&manager,Some("mon_saved"),false).await.is_error,None);assert!(manager.lock().unwrap().get(&id).unwrap().exited().unwrap());
         assert_eq!(execute_kill_bash_shared(&manager,None,true).await.is_error,None);assert_eq!(manager.lock().unwrap().size(),0);

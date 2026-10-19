@@ -108,7 +108,7 @@ pub async fn discover_ttsr_rules(cwd:&Path,home:&Path)->TtsrDiscoveryResult {
     #[tokio::test] async fn upstream_nearest_ancestor_wins() {
         let temp=tempfile::tempdir().unwrap(); let outer=temp.path().join("outer"); let inner=outer.join("inner"); let cwd=inner.join("src/pkg"); std::fs::create_dir_all(&cwd).unwrap();
         write(&outer.join(".senpi/ttsr"),"outer.md","outer"); write(&inner.join(".senpi/ttsr"),"inner.md","inner");
-        let result=discover_ttsr_rules(&cwd,&temp.path().join("home")).await; assert_eq!(result.rules.len(),1); assert_eq!(result.rules[0].name,"inner"); assert_eq!(result.rules[0].path.as_deref(),inner.join(".senpi/ttsr/inner.md").to_str());
+        let result=discover_ttsr_rules(&cwd,&temp.path().join("home")).await; assert_eq!(result.rules.len(),1); assert_eq!(result.rules[0].name,"inner"); assert_eq!(result.rules[0].path.as_deref(),inner.join(".senpi").join("ttsr").join("inner.md").to_str());
     }
     #[tokio::test] async fn upstream_global_then_project_alphabetical_order() {
         let temp=tempfile::tempdir().unwrap(); let home=temp.path().join("home"); let project=temp.path().join("project");

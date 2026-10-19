@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].diagnostic_type, ResourceDiagnosticType::Warning);
         assert!(!result.diagnostics[0].message.is_empty());
-        assert_eq!(result.diagnostics[0].path.as_deref(), Some(dir.path().join("bad/SKILL.md").to_string_lossy().as_ref()));
+        assert_eq!(result.diagnostics[0].path.as_deref(), Some(dir.path().join("bad").join("SKILL.md").to_string_lossy().as_ref()));
     }
 
     #[test]
@@ -673,8 +673,8 @@ mod tests {
         let collision = result.diagnostics[0].collision.as_ref().expect("collision");
         assert_eq!(collision.resource_type, ResourceCollisionType::Skill);
         assert_eq!(collision.name, "same");
-        assert!(collision.winner_path.ends_with("a/SKILL.md"));
-        assert!(collision.loser_path.ends_with("b/SKILL.md"));
+        assert!(collision.winner_path.replace('\\', "/").ends_with("a/SKILL.md"));
+        assert!(collision.loser_path.replace('\\', "/").ends_with("b/SKILL.md"));
     }
 
     #[test]

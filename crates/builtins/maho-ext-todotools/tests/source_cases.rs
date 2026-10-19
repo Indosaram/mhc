@@ -35,6 +35,16 @@ fn source_headerless_active_tasks_normalize() {
     assert!(parsed.errors.is_empty());
     assert_eq!(parsed.phases,vec![TodoPhase{name:"Tasks".into(),tasks:vec![TodoItem{content:"First".into(),status:TodoStatus::InProgress},TodoItem{content:"Second".into(),status:TodoStatus::Pending}]}]);
 }
-#[test] fn source_default_markdown_path(){assert_eq!(resolve_todo_markdown_path("",std::path::Path::new("/work")),std::path::Path::new("/work/TODO.md"));}
-#[test] fn source_relative_markdown_path(){assert_eq!(resolve_todo_markdown_path("notes/plan.md",std::path::Path::new("/work")),std::path::Path::new("/work/notes/plan.md"));}
-#[test] fn source_quoted_absolute_markdown_path(){assert_eq!(resolve_todo_markdown_path("\"/abs/plan.md\"",std::path::Path::new("/work")),std::path::Path::new("/abs/plan.md"));}
+#[test] fn source_default_markdown_path(){
+    let work = if cfg!(windows) { std::path::Path::new("C:\\work") } else { std::path::Path::new("/work") };
+    assert_eq!(resolve_todo_markdown_path("", work), work.join("TODO.md"));
+}
+#[test] fn source_relative_markdown_path(){
+    let work = if cfg!(windows) { std::path::Path::new("C:\\work") } else { std::path::Path::new("/work") };
+    assert_eq!(resolve_todo_markdown_path("notes/plan.md", work), work.join("notes/plan.md"));
+}
+#[test] fn source_quoted_absolute_markdown_path(){
+    let work = if cfg!(windows) { std::path::Path::new("C:\\work") } else { std::path::Path::new("/work") };
+    let abs = if cfg!(windows) { "C:\\abs\\plan.md" } else { "/abs/plan.md" };
+    assert_eq!(resolve_todo_markdown_path(&format!("\"{abs}\""), work), std::path::PathBuf::from(abs));
+}

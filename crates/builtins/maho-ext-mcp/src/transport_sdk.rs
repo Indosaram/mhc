@@ -61,7 +61,7 @@ impl McpClient {
     pub async fn materialize_stdio(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
         let McpTransportSpec::Stdio {command,args,cwd,env}=spec else{return Err(failure(server,McpErrorKind::Connect,"HTTP transport not materialized","create"));};
         let mut process=Command::new(command);process.args(args).env_clear();
-        for key in ["HOME","LOGNAME","PATH","SHELL","TERM","USER"] {if let Some(value)=std::env::var_os(key) && !value.to_string_lossy().starts_with("()"){process.env(key,value);}}
+        for key in ["HOME","LOGNAME","PATH","SHELL","TERM","USER","USERPROFILE","SystemRoot","ComSpec","PATHEXT","TEMP","TMP","USERNAME"] {if let Some(value)=std::env::var_os(key) && !value.to_string_lossy().starts_with("()"){process.env(key,value);}}
         process.envs(env).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         if let Some(cwd)=cwd {process.current_dir(cwd);}
         let mut child=process.spawn().map_err(|e|failure(server,McpErrorKind::Connect,e.to_string(),"create"))?;let root_pid=child.id();

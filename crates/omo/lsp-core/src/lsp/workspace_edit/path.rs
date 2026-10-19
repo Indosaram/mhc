@@ -20,7 +20,19 @@ pub type WorkspacePathResult = Result<WorkspacePath, String>;
 
 /// TS `isPathInsideWorkspace` (lexical).
 pub fn is_path_inside_workspace(file_path: &str, workspace_root: &str) -> bool {
-    Path::new(file_path).starts_with(workspace_root)
+    let file = crate::request_context::strip_verbatim_prefix(file_path);
+    let root = crate::request_context::strip_verbatim_prefix(workspace_root);
+    #[cfg(windows)]
+    {
+        if Path::new(&file).starts_with(&root) {
+            return true;
+        }
+        Path::new(&file.to_lowercase()).starts_with(Path::new(&root.to_lowercase()))
+    }
+    #[cfg(not(windows))]
+    {
+        Path::new(&file).starts_with(&root)
+    }
 }
 
 fn is_symlink(path: &str) -> bool {
@@ -35,24 +47,26 @@ fn canonicalize_missing_path(file_path: &str) -> Result<String, String> {
         }
     }
     let canonical = std::fs::canonicalize(&ancestor).map_err(|error| error.to_string())?;
+    let cleaned = crate::request_context::strip_verbatim_prefix(&canonical.to_string_lossy());
     let suffix = Path::new(file_path)
         .strip_prefix(&ancestor)
         .map_err(|error| error.to_string())?;
-    Ok(resolve(&canonical.join(suffix).to_string_lossy()))
+    Ok(resolve(&Path::new(&cleaned).join(suffix).to_string_lossy()))
 }
 
 /// TS `canonicalWorkspaceRoot`.
 pub fn canonical_workspace_root(workspace_root: &str) -> WorkspacePathResult {
     let requested = resolve(workspace_root);
     let canonical = std::fs::canonicalize(&requested)
+        .map(|p| crate::request_context::strip_verbatim_prefix(&p.to_string_lossy()))
         .map_err(|error| format!("workspace root {workspace_root}: {error}"))?;
-    if !canonical.is_dir() {
+    if !Path::new(&canonical).is_dir() {
         return Err(format!(
             "workspace root is not a directory: {workspace_root}"
         ));
     }
     Ok(WorkspacePath {
-        path: canonical.to_string_lossy().into_owned(),
+        path: canonical,
         followed_symbolic_link: is_symlink(&requested),
         requested_path: requested,
     })
@@ -89,10 +103,17 @@ fn file_url_to_path(parsed: &url::Url) -> Result<String, String> {
             index += 1;
         }
     }
-    percent_decode_str(raw)
+    let decoded = percent_decode_str(raw)
         .decode_utf8()
         .map(|decoded| decoded.into_owned())
-        .map_err(|_| "URI malformed".to_string())
+        .map_err(|_| "URI malformed".to_string())?;
+    if cfg!(windows) {
+        let bytes = decoded.as_bytes();
+        if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+            return Ok(decoded[1..].to_string());
+        }
+    }
+    Ok(decoded)
 }
 
 /// TS `uriToCanonicalWorkspacePath`.
@@ -111,7 +132,7 @@ pub fn uri_to_canonical_workspace_path(uri: &str, workspace_root: &str) -> Works
 
     let canonical = if Path::new(&requested_path).exists() {
         std::fs::canonicalize(&requested_path)
-            .map(|path| path.to_string_lossy().into_owned())
+            .map(|path| crate::request_context::strip_verbatim_prefix(&path.to_string_lossy()))
             .map_err(|error| format!("{requested_path}: {error}"))?
     } else {
         canonicalize_missing_path(&requested_path)

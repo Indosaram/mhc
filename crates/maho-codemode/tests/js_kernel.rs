@@ -231,6 +231,7 @@ async fn forced_worker_retirement_settles_nested_host_wait_as_stale() {
     assert_eq!(recovered.unwrap()["valueRepr"],"42");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn forced_retirement_retires_tracked_child_outside_worker_group() {
     use maho_codemode::kernels::js::process_tree_host::*;

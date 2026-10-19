@@ -16,10 +16,19 @@ fn pointer_routing_selects_the_deepest_enabled_child_window() {
     // SAFETY: [Category 8 - FFI boundary] the owned parent's child is live
     // and rect is a writable output slot.
     assert_ne!(unsafe { wm::GetWindowRect(child, &raw mut rect) }, 0);
-    let point = POINT {
+    let mut point = POINT {
         x: rect.left + (rect.right - rect.left) / 2,
         y: rect.top + (rect.bottom - rect.top) / 2,
     };
+    // SAFETY: [Category 8 - FFI boundary] point is writable and child is live.
+    // deepest_child expects physical coordinates, so convert the logical
+    // rect center to physical for per-monitor DPI setups.
+    unsafe {
+        windows_sys::Win32::UI::HiDpi::LogicalToPhysicalPointForPerMonitorDPI(
+            child,
+            &raw mut point,
+        );
+    }
 
     let routed = Window::from_hwnd(root.hwnd)
         .unwrap()

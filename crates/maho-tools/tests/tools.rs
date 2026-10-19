@@ -143,7 +143,9 @@ async fn exec_local(command: &str, env: std::collections::BTreeMap<String,String
 #[tokio::test]
 async fn local_bash_uses_pipes_and_exactly_the_given_env() {
     let env = std::env::vars().filter(|(key,_)| key == "PATH").chain([("ONLY_VAR".to_owned(),"set".to_owned())]).collect();
-    let (result, text) = exec_local("[ -t 1 ] && printf tty || printf pipe; printf ' %s %s' \"${ONLY_VAR-unset}\" \"${HOME-unset}\"", env).await;
+    // A variable the parent always carries must not leak into the explicit environment.
+    let command = if cfg!(windows) { "[ -t 1 ] && printf tty || printf pipe; printf ' %s %s' \"${ONLY_VAR-unset}\" \"${USERPROFILE-unset}\"" } else { "[ -t 1 ] && printf tty || printf pipe; printf ' %s %s' \"${ONLY_VAR-unset}\" \"${HOME-unset}\"" };
+    let (result, text) = exec_local(command, env).await;
     assert_eq!(result.unwrap().exit_code, Some(0)); assert_eq!(text, "pipe set unset");
 }
 #[cfg(unix)]

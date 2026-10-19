@@ -279,7 +279,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("nested/deep")).expect("mkdir");
         let paths = find_git_paths(&tmp.path().join("nested/deep").to_string_lossy()).expect("paths");
         assert_eq!(paths.repo_dir, tmp.path().to_string_lossy());
-        assert!(paths.head_path.ends_with(".git/HEAD"));
+        assert!(paths.head_path.replace('\\', "/").ends_with(".git/HEAD"));
     }
 
     #[test]

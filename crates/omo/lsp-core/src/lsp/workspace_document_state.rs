@@ -142,7 +142,10 @@ impl std::fmt::Debug for WorkspaceDocumentState {
 
 pub fn canonical_path(file_path: &str) -> String {
     let absolute = resolve(file_path);
-    std::fs::canonicalize(&absolute).map_or(absolute, |path| path.to_string_lossy().into_owned())
+    std::fs::canonicalize(&absolute).map_or_else(
+        |_| crate::request_context::strip_verbatim_prefix(&absolute),
+        |path| crate::request_context::strip_verbatim_prefix(&path.to_string_lossy()),
+    )
 }
 
 fn is_same_or_descendant(candidate: &str, parent: &str) -> bool {
@@ -158,7 +161,8 @@ fn moved_path(candidate: &str, old_path: &str, new_path: &str) -> String {
 }
 
 pub fn file_uri(path: &str) -> String {
-    url::Url::from_file_path(path).map_or_else(|()| format!("file://{path}"), |url| url.to_string())
+    let clean = crate::request_context::strip_verbatim_prefix(path);
+    url::Url::from_file_path(&clean).map_or_else(|()| format!("file://{clean}"), |url| url.to_string())
 }
 
 fn system_now_ms() -> f64 {

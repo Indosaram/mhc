@@ -43,6 +43,7 @@ fn mtime_of(metadata: &std::fs::Metadata) -> DateTime<Utc> {
 /// unchanged since it was read. A file that cannot be stat'ed or read drops its cache entry.
 pub fn read_cached_session_summary(file_path: &str) -> Option<CachedSessionSummary> {
     let key = std::fs::canonicalize(file_path)
+        .map(crate::paths::strip_verbatim_prefix)
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|_| Path::new(file_path).to_string_lossy().into_owned());
 

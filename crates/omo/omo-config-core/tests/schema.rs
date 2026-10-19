@@ -1225,13 +1225,14 @@ fn load_user_config(
     std::fs::create_dir_all(home.join(".omo")).expect("config dir");
     std::fs::create_dir_all(home.join("project")).expect("project dir");
     std::fs::write(home.join(".omo/omo.jsonc"), config).expect("write config");
-    let home_dir = home.to_string_lossy().into_owned();
+    let home_dir = omo_config_core::to_posix_path(&home.to_string_lossy());
+    let cwd_dir = omo_config_core::to_posix_path(&home.join("project").to_string_lossy());
     omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions {
-        cwd: Some(home.join("project").to_string_lossy().into_owned()),
-        env: Some(std::collections::BTreeMap::from([(
-            "HOME".to_string(),
-            home_dir,
-        )])),
+        cwd: Some(cwd_dir),
+        env: Some(std::collections::BTreeMap::from([
+            ("HOME".to_string(), home_dir.clone()),
+            ("USERPROFILE".to_string(), home_dir),
+        ])),
         harness: harness.map(str::to_string),
         platform: Some("linux".to_string()),
         ..Default::default()

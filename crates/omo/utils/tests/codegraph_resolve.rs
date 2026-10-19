@@ -108,7 +108,8 @@ fn resolve_command_bundled_package() {
     let bundled_shim = package_root.join("bin").join("codegraph.js");
     let package_json = package_root.join("package.json");
 
-    let file_exists = move |p: &Path| p == bundled_shim;
+    let shim_for_exists = bundled_shim.clone();
+    let file_exists = move |p: &Path| p == shim_for_exists;
     let node_runtime = || Some("/usr/local/bin/node".to_string());
     let provisioned = || None;
     let req_resolve = move |_spec: &str| Some(package_json.clone());
@@ -126,9 +127,7 @@ fn resolve_command_bundled_package() {
     assert_eq!(
         result,
         CodegraphCommandResolution {
-            args_prefix: vec![
-                "/bundle/node_modules/@colbymchenry/codegraph/bin/codegraph.js".to_string()
-            ],
+            args_prefix: vec![bundled_shim.to_string_lossy().into_owned()],
             command: "/usr/local/bin/node".to_string(),
             exists: true,
             source: CodegraphCommandSource::Bundled,
@@ -149,7 +148,8 @@ fn resolve_command_bundled_with_codegraph_node_bin_override() {
         node_bin.to_string_lossy().into_owned(),
     );
 
-    let file_exists = move |p: &Path| p == bundled_shim || p == node_bin;
+    let shim_for_exists = bundled_shim.clone();
+    let file_exists = move |p: &Path| p == shim_for_exists || p == node_bin;
     let node_ver = |candidate: &str| {
         if candidate == "/opt/node22/bin/node" {
             Some("v22.22.3".to_string())
@@ -174,9 +174,7 @@ fn resolve_command_bundled_with_codegraph_node_bin_override() {
     assert_eq!(
         result,
         CodegraphCommandResolution {
-            args_prefix: vec![
-                "/bundle/node_modules/@colbymchenry/codegraph/bin/codegraph.js".to_string()
-            ],
+            args_prefix: vec![bundled_shim.to_string_lossy().into_owned()],
             command: "/opt/node22/bin/node".to_string(),
             exists: true,
             source: CodegraphCommandSource::Bundled,
@@ -191,7 +189,8 @@ fn resolve_command_bundled_selects_node22_on_path() {
     let package_json = package_root.join("package.json");
     let node22 = PathBuf::from("/usr/local/bin/node22");
 
-    let file_exists = move |p: &Path| p == bundled_shim || p == node22;
+    let shim_for_exists = bundled_shim.clone();
+    let file_exists = move |p: &Path| p == shim_for_exists || p == node22;
     let node_ver = |candidate: &str| {
         if candidate == "/usr/local/bin/node22" {
             Some("22.14.0".to_string())
@@ -221,9 +220,7 @@ fn resolve_command_bundled_selects_node22_on_path() {
     assert_eq!(
         result,
         CodegraphCommandResolution {
-            args_prefix: vec![
-                "/bundle/node_modules/@colbymchenry/codegraph/npm-shim.js".to_string()
-            ],
+            args_prefix: vec![bundled_shim.to_string_lossy().into_owned()],
             command: "/usr/local/bin/node22".to_string(),
             exists: true,
             source: CodegraphCommandSource::Bundled,

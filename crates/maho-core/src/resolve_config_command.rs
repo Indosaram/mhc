@@ -22,8 +22,16 @@ pub struct CommandOutcome {
 }
 
 async fn run_command_process(command: &str, env: &[(String, String)]) -> CommandOutcome {
-    let mut process = tokio::process::Command::new("/bin/sh");
-    process.arg("-c").arg(command);
+    let mut process = if cfg!(windows) {
+        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+        let mut cmd = tokio::process::Command::new(comspec);
+        cmd.args(["/d", "/s", "/c"]).arg(command);
+        cmd
+    } else {
+        let mut cmd = tokio::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(command);
+        cmd
+    };
     process.stdout(Stdio::piped()).stderr(Stdio::null()).stdin(Stdio::null());
     for (key, value) in env {
         process.env(key, value);
@@ -103,7 +111,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_that_prints_nothing_returns_none() {
-        assert_eq!(run_config_command("!true", &[]).await, None);
+        let cmd = if cfg!(windows) { "!rem" } else { "!true" };
+        assert_eq!(run_config_command(cmd, &[]).await, None);
     }
 
     #[tokio::test]
@@ -114,6 +123,7 @@ mod tests {
     #[tokio::test]
     async fn a_command_reads_the_passed_environment() {
         let env = vec![("MAHO_TEST_KEY".to_owned(), "env-value".to_owned())];
-        assert_eq!(run_config_command("!printenv MAHO_TEST_KEY", &env).await.as_deref(), Some("env-value"));
+        let cmd = if cfg!(windows) { "!echo %MAHO_TEST_KEY%" } else { "!printenv MAHO_TEST_KEY" };
+        assert_eq!(run_config_command(cmd, &env).await.as_deref(), Some("env-value"));
     }
 }

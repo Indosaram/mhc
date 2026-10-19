@@ -2,18 +2,18 @@
 
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use super::fake_child::spawn_fake_child;
 use crate::runners::rpc::model_admission::{
     MODEL_CATALOG_CACHE_TTL_MS, ModelCatalogProbeResult, RpcModelAdmissionOptions,
-    create_rpc_model_admission, parse_model_catalog, probe_model_catalog,
+    create_rpc_model_admission, parse_model_catalog,
 };
 use crate::runners::rpc::process::{RpcChildProcess, RpcSpawnDescriptor};
 use crate::runners::rpc_process::{RpcProcessRunner, RpcProcessRunnerOptions};
 use crate::runners::types::{RpcRunnerSpec, TerminateOptions};
 use crate::runners::{RunnerFailure, RunnerFailureKind};
 
+#[cfg(unix)]
 fn shell_descriptor(script: &str) -> RpcSpawnDescriptor {
     RpcSpawnDescriptor {
         command: "/bin/sh".to_string(),
@@ -38,8 +38,9 @@ fn spec(model: &str, state_dir: &str) -> RpcRunnerSpec {
 }
 
 #[test]
+#[cfg(unix)]
 fn given_a_catalog_probe_when_spawned_then_it_is_hidden_and_owns_its_posix_process_tree() {
-    let result = probe_model_catalog(
+    let result = crate::runners::rpc::model_admission::probe_model_catalog(
         &shell_descriptor("ps -o pgid= -p $$; ps -o pid= -p $$"),
         None,
     );
@@ -52,10 +53,11 @@ fn given_a_catalog_probe_when_spawned_then_it_is_hidden_and_owns_its_posix_proce
 }
 
 #[test]
+#[cfg(unix)]
 fn given_a_timed_out_catalog_probe_when_tree_cleanup_is_pending_then_the_timeout_result_waits_for_cleanup()
  {
-    let started = Instant::now();
-    let result = probe_model_catalog(&shell_descriptor("trap '' TERM; sleep 30"), Some(0));
+    let started = std::time::Instant::now();
+    let result = crate::runners::rpc::model_admission::probe_model_catalog(&shell_descriptor("trap '' TERM; sleep 30"), Some(0));
     assert!(result.timed_out);
     assert_eq!(result.code, None);
     assert!(

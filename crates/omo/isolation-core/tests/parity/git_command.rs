@@ -41,6 +41,11 @@ fn a_missing_git_binary_is_typed_unavailable_not_a_generic_spawn_failure() {
         "PATH".to_string(),
         f.root.join("no-git-here").to_string_lossy().into_owned(),
     ));
+    #[cfg(windows)]
+    options.env.push((
+        "Path".to_string(),
+        f.root.join("no-git-here").to_string_lossy().into_owned(),
+    ));
     let error = run_git(&str_args(&["status"]), &options).expect_err("must fail");
     assert!(error.is_unavailable());
 }

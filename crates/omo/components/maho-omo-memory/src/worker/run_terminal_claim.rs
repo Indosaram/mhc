@@ -12,6 +12,10 @@ pub fn run_terminal_claim_matches(claim:&RunTerminalClaim,run_id:&str,attempt:i6
 impl std::fmt::Display for TerminalClaimError{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{match self{Self::Io(error)=>error.fmt(f),Self::Invalid(error)=>error.fmt(f),Self::InvalidClaim=>f.write_str("Invalid run terminal claim")}}}
 impl std::error::Error for TerminalClaimError{}
 pub fn read_run_terminal_claim(run_dir:&Path)->Result<RunTerminalClaim,TerminalClaimError>{let bytes=std::fs::read(run_terminal_claim_path(run_dir)).map_err(TerminalClaimError::Io)?;let claim:RunTerminalClaim=serde_json::from_slice(&bytes).map_err(TerminalClaimError::Invalid)?;if claim.version!=1||claim.claimant_pid==0{return Err(TerminalClaimError::InvalidClaim);}Ok(claim)}
+fn sync_dir(dir:&Path)->std::io::Result<()>{
+    #[cfg(unix)]{std::fs::File::open(dir).and_then(|d|d.sync_all())}
+    #[cfg(not(unix))]{let _=dir;Ok(())}
+}
 /// Publishes a complete fsynced claim through a filesystem-exclusive hard link.
 /// Existing claims are returned unchanged; recovering invalid/dead publishers requires the
 /// core's unbounded recovery-lock contract before this can serve the full terminal pipeline.
@@ -24,7 +28,7 @@ pub fn claim_run_terminal(run_dir:&Path,run_id:&str,attempt:i64,kind:RunTerminal
     let write=(||{let mut bytes=serde_json::to_vec_pretty(&requested).map_err(TerminalClaimError::Invalid)?;bytes.push(b'\n');file.write_all(&bytes).map_err(TerminalClaimError::Io)?;file.sync_all().map_err(TerminalClaimError::Io)})();drop(file);
     if let Err(error)=write{std::fs::remove_file(&candidate).map_err(TerminalClaimError::Io)?;return Err(error);}
     let linked=std::fs::hard_link(&candidate,&path);std::fs::remove_file(&candidate).map_err(TerminalClaimError::Io)?;
-    match linked{Ok(())=>{std::fs::File::open(run_dir).and_then(|dir|dir.sync_all()).map_err(TerminalClaimError::Io)?;Ok(requested)},Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>read_run_terminal_claim(run_dir),Err(error)=>Err(TerminalClaimError::Io(error))}
+    match linked{Ok(())=>{sync_dir(run_dir).map_err(TerminalClaimError::Io)?;Ok(requested)},Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>read_run_terminal_claim(run_dir),Err(error)=>Err(TerminalClaimError::Io(error))}
 }
 /// Recovery uses the caller's unbounded cross-process recovery lock. Inspection
 /// and the recovery hook occur before the gate, then raw bytes are rechecked
@@ -58,7 +62,7 @@ pub fn claim_run_terminal_with_recovery(
                 if claim.kind!=RunTerminalClaimKind::Publish||liveness(claim.claimant_pid)!=memory_core::locks::ProcessLiveness::Dead{return Ok(Some(claim));}
             }
             match std::fs::remove_file(&path){Ok(())=>{},Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(TerminalClaimError::Io(error))};
-            std::fs::File::open(run_dir).and_then(|directory|directory.sync_all()).map_err(TerminalClaimError::Io)?;Ok(None)
+            sync_dir(run_dir).map_err(TerminalClaimError::Io)?;Ok(None)
         })?;if let Some(claim)=recovered{return Ok(claim);}
     }
 }

@@ -18,10 +18,14 @@ fn write_file(path: &str, content: &str) {
 }
 
 fn env_of(pairs: &[(&str, &str)]) -> omo_config_core::OmoConfigEnv {
-    pairs
+    let mut map: omo_config_core::OmoConfigEnv = pairs
         .iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
+        .collect();
+    if let Some(home) = map.get("HOME").cloned() {
+        map.entry("USERPROFILE".to_string()).or_insert(home);
+    }
+    map
 }
 
 #[derive(Default, Clone)]
@@ -492,7 +496,7 @@ fn empty_options() -> LoadOmoConfigOptions<'static> {
 #[test]
 fn load_walks_user_and_project_configs_with_the_nearest_project_winning() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let work = format!("{home}/work");
     let project = format!("{work}/project");
@@ -578,7 +582,7 @@ fn load_walks_user_and_project_configs_with_the_nearest_project_winning() {
 #[test]
 fn load_merges_partial_team_layers() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let project = format!("{home}/project");
     let cwd = format!("{project}/child");
@@ -615,7 +619,7 @@ fn load_merges_partial_team_layers() {
 #[cfg(unix)]
 fn load_ignores_a_project_omo_directory_that_is_a_symlink() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let project = format!("{home}/project");
     let cwd = format!("{project}/child");
@@ -650,7 +654,7 @@ fn load_ignores_a_project_omo_directory_that_is_a_symlink() {
 fn load_ignores_a_symlinked_project_config_file() {
     for extension in ["jsonc", "json"] {
         let root = tempfile::tempdir().expect("tempdir");
-        let root_path = root.path().to_string_lossy().to_string();
+        let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
         let home = format!("{root_path}/home");
         let project = format!("{home}/project");
         let cwd = format!("{project}/child");
@@ -688,7 +692,7 @@ fn load_ignores_a_symlinked_project_config_file() {
 #[test]
 fn load_survives_malformed_and_unreadable_configs_with_typed_diagnostics() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let project = format!("{home}/project");
     let cwd = format!("{project}/child");
@@ -742,7 +746,7 @@ fn load_survives_malformed_and_unreadable_configs_with_typed_diagnostics() {
 #[test]
 fn load_reads_the_user_json_and_prefers_jsonc_when_both_exist() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(&cwd).expect("cwd");
@@ -762,7 +766,7 @@ fn load_reads_the_user_json_and_prefers_jsonc_when_both_exist() {
     assert!(json_only.sources[0].exists && json_only.sources[0].loaded);
 
     let second_root = tempfile::tempdir().expect("tempdir");
-    let second_root_path = second_root.path().to_string_lossy().to_string();
+    let second_root_path = omo_config_core::to_posix_path(&second_root.path().to_string_lossy());
     let second_home = format!("{second_root_path}/home");
     let second_cwd = format!("{second_home}/project");
     std::fs::create_dir_all(&second_cwd).expect("cwd");
@@ -789,7 +793,7 @@ fn load_tolerates_a_schema_key_without_diagnostics() {
     let schema_url =
         "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json";
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(&cwd).expect("cwd");
@@ -815,7 +819,7 @@ fn load_tolerates_a_schema_key_without_diagnostics() {
 #[test]
 fn load_reads_ancestor_project_configs_when_cwd_is_outside_home() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let outside_project = format!("{root_path}/elsewhere/project");
     std::fs::create_dir_all(&outside_project).expect("cwd");
@@ -852,7 +856,7 @@ fn load_reads_ancestor_project_configs_when_cwd_is_outside_home() {
 #[test]
 fn load_resolution_contributes_every_layer_in_precedence_order() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let project = format!("{home}/project");
     let cwd = format!("{project}/child");
@@ -890,7 +894,7 @@ fn load_resolution_contributes_every_layer_in_precedence_order() {
 #[test]
 fn load_keeps_raw_layer_provenance_for_user_and_project() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let project = format!("{home}/project");
     let cwd = format!("{project}/child");
@@ -939,7 +943,7 @@ fn load_keeps_raw_layer_provenance_for_user_and_project() {
 #[test]
 fn load_codex_view_does_not_let_defaults_overwrite_base_telemetry() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(&cwd).expect("cwd");
@@ -963,7 +967,7 @@ fn load_codex_view_does_not_let_defaults_overwrite_base_telemetry() {
 #[test]
 fn load_reports_an_unknown_activated_profile_and_skips_its_overlay() {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(&cwd).expect("cwd");
@@ -989,7 +993,7 @@ fn load_reports_an_unknown_activated_profile_and_skips_its_overlay() {
 
 fn telemetry_fixture(content: &str) -> (tempfile::TempDir, String, String) {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(format!("{home}/.omo")).expect("omo dir");
@@ -1171,7 +1175,7 @@ EVAL-FIRST: `eval` is your default execution surface. Before acting, ask "how do
     });
 
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(format!("{home}/.omo")).expect("omo dir");
@@ -1311,7 +1315,7 @@ fn diagnostic_lines_reset_the_merged_config_and_read_unreadable_files() {
 #[test]
 fn diagnostic_lines_render_a_dropped_invalid_leaf() {
     let root = tempfile::tempdir().expect("tempdir");
-    let home = format!("{}/home", root.path().to_string_lossy());
+    let home = format!("{}/home", omo_config_core::to_posix_path(&root.path().to_string_lossy()));
     let cwd = format!("{home}/project");
     std::fs::create_dir_all(format!("{home}/.omo")).expect("config dir");
     std::fs::create_dir_all(&cwd).expect("cwd");
@@ -1516,7 +1520,7 @@ fn disabled_skills_ignores_another_harness_scope() {
 
 fn prune_fixture() -> (tempfile::TempDir, String, String) {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let cwd = format!("{home}/project/child");
     std::fs::create_dir_all(format!("{home}/.omo")).expect("config dir");

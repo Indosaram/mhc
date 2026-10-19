@@ -24,16 +24,19 @@ pub fn classify_endpoint_ownership(path:&str,identity:Option<SocketFileIdentity>
 }
 pub fn socket_entry_replaced(path:&str,identity:Option<SocketFileIdentity>,platform:&str)->bool{classify_endpoint_ownership(path,identity,platform)==EndpointOwnership::Replaced}
 pub fn write_socket_identity_file(path:&Path,identity:SocketFileIdentity)->io::Result<()>{
-    #[cfg(unix)]
-    {
-    use std::os::unix::fs::DirBuilderExt;
-    if let Some(parent)=path.parent(){fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;}
+    if let Some(parent)=path.parent(){
+        let mut builder=fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(parent)?;
+    }
     let temporary=path.with_file_name(format!("{}.{}.tmp",path.file_name().unwrap_or_default().to_string_lossy(),std::process::id()));
     crate::host_daemon_state::write_state_file(&temporary,&identity).map_err(|error|error.source)?;
     fs::rename(temporary,path)
-    }
-    #[cfg(not(unix))]
-    { let _=(path,identity); Ok(()) }
 }
 pub fn read_socket_identity_file(path:&Path)->io::Result<Option<SocketFileIdentity>>{
     let raw=match fs::read_to_string(path){Ok(raw)=>raw,Err(error) if error.kind()==io::ErrorKind::NotFound=>return Ok(None),Err(error)=>return Err(error)};

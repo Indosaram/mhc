@@ -17,10 +17,9 @@ pub fn update_status(ctx: &ExtensionContext, cache: &InjectionCache, key: &str, 
 pub fn clear_status(ctx: &ExtensionContext) { if ctx.has_ui { ctx.ui.set_status(STATUS_KEY, None); } }
 /// Mirrors `displayPath` in the pinned reporter: only paths strictly below cwd render relative.
 pub fn display_path(cwd: &Path, absolute_path: &Path) -> String {
- if !absolute_path.is_absolute() { return absolute_path.to_string_lossy().into_owned(); }
  match absolute_path.strip_prefix(cwd) {
-  Ok(relative) if !matches!(relative.components().next(), None | Some(std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) => relative.to_string_lossy().into_owned(),
-  _ => absolute_path.to_string_lossy().into_owned(),
+  Ok(relative) if !matches!(relative.components().next(), None | Some(std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) => relative.to_string_lossy().replace('\\', "/"),
+  _ => absolute_path.to_string_lossy().replace('\\', "/"),
  }
 }
 pub fn update_widget(ctx: &ExtensionContext, visible: bool, files: &[InjectedFileInfo]) {

@@ -27,7 +27,7 @@ impl Extension for PermissionSystem{
         api.on(EventKind::SessionStart,Arc::new(move|_,ctx|{
             let state=Arc::clone(&start_state);let runtime=runtime.clone();let bus=bus.clone();
             Box::pin(async move{
-                let home=std::env::var("HOME").map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                let home=std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                 let manager=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&home,ctx.is_project_trusted());
                 let cli=match runtime.get_flag("permission"){Some(FlagValue::String(value))=>cli::parse_permission_flag(&value),_=>Vec::new()};
                 let preset=match runtime.get_flag("permission-preset"){
@@ -48,7 +48,7 @@ impl Extension for PermissionSystem{
             let state=Arc::clone(&call_state);let counter=Arc::clone(&call_counter);let bus=bus.clone();
             Box::pin(async move{
                 let ExtensionEvent::ToolCall(event)=event else{return Ok(EventResult::None)};
-                let home=std::env::var("HOME").map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                let home=std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                 let requests={let guard=state.lock().expect("permission state lock");let Some(policy)=guard.as_ref()else{return Ok(EventResult::None)};policy.registry.parse(&event.tool_name,&event.input,(&ctx.cwd,std::path::Path::new(&home)))};
                 for parsed in requests{
                     let mut metadata=event.input.as_object().cloned().unwrap_or_default();metadata.insert("toolName".into(),event.tool_name.clone().into());

@@ -662,7 +662,7 @@ mod tests {
             assert_eq!(manager.current_branch().iter().filter(|entry| entry["type"] == "message").count(), 2);
         });
         assert!(matches!(runtime.import_from_jsonl("/missing-import-fixture.jsonl", None).await.unwrap_err(),
-            AgentSessionRuntimeError::ImportFileNotFound(error) if error.to_string() == "File not found: /missing-import-fixture.jsonl"));
+            AgentSessionRuntimeError::ImportFileNotFound(error) if error.to_string().contains("missing-import-fixture.jsonl")));
         let source = dir.path().join("import-fixture.jsonl");
         runtime.session().export_to_jsonl(source.to_str()).expect("export fixture");
         let import_directory = dir.path().join("imported");

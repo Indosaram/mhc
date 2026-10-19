@@ -57,7 +57,7 @@ fn native_child_transcript_preserves_exact_locator_on_create_and_resume() {
         runner::ChildSpec, session_manager::ChildSessionManager};
     let dir = tempfile::tempdir().expect("isolated child transcript");
     let cwd = dir.path().to_string_lossy().into_owned();
-    let session_dir = dir.path().join("children/child").to_string_lossy().into_owned();
+    let session_dir = dir.path().join("children").join("child").to_string_lossy().into_owned();
     let spec = ChildSpec { cwd: cwd.clone(), session_dir: Some(session_dir.clone()), ..Default::default() };
     let locator = ChildSessionManager::create(&cwd, &session_dir).expect("child locator");
     let path = locator.session_file().to_path_buf();
@@ -182,7 +182,7 @@ fn native_child_settings_project_optional_retry_budgets_independently() {
 #[test]
 fn native_rpc_spawn_preserves_isolation_and_explicit_member_profile() {
     let dir = tempfile::tempdir().expect("isolated task state");
-    let executable = dir.path().join("mhc");
+    let executable = if cfg!(windows) { dir.path().join("mhc.exe") } else { dir.path().join("mhc") };
     let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
     let options = native_rpc_options(executable.clone(), &agent_dir, BTreeMap::from([
         ("SENPI_TASK_MEMBER".into(), "stale-parent".into()),
@@ -216,7 +216,7 @@ async fn converted_child_options_drive_native_provider_and_restore_exact_transcr
         runner::ChildSpec, session_manager::ChildSessionManager};
     let dir = tempfile::tempdir().expect("isolated native child");
     let cwd = dir.path().to_string_lossy().into_owned();
-    let session_dir = dir.path().join("children/child").to_string_lossy().into_owned();
+    let session_dir = dir.path().join("children").join("child").to_string_lossy().into_owned();
     let provider = maho_ai::providers::faux::faux_provider(Default::default());
     provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("native child response", Default::default()).into()]);
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
@@ -254,7 +254,8 @@ async fn converted_child_options_drive_native_provider_and_restore_exact_transcr
 #[test]
 fn native_rpc_spawn_removes_inherited_member_identity() {
     let dir = tempfile::tempdir().expect("isolated task state");
-    let options = native_rpc_options(dir.path().join("mhc"), "native-agent", BTreeMap::from([
+    let executable = if cfg!(windows) { dir.path().join("mhc.exe") } else { dir.path().join("mhc") };
+    let options = native_rpc_options(executable, "native-agent", BTreeMap::from([
         ("SENPI_TASK_MEMBER".into(), "parent-member".into()),
         ("SENPI_TASK_MEMBER_TASK_ID".into(), "parent-task".into()),
         ("SENPI_TASK_TEAM_CONFIG".into(), "parent-config".into()),

@@ -9,10 +9,14 @@ use omo_config_core::{
 use serde_json::json;
 
 fn env_of(pairs: &[(&str, &str)]) -> OmoConfigEnv {
-    pairs
+    let mut map: OmoConfigEnv = pairs
         .iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect::<BTreeMap<_, _>>()
+        .collect::<BTreeMap<_, _>>();
+    if let Some(home) = map.get("HOME").cloned() {
+        map.entry("USERPROFILE".to_string()).or_insert(home);
+    }
+    map
 }
 
 fn write_file(path: &str, content: &str) {
@@ -50,7 +54,7 @@ fn user_options<'a>(env: &OmoConfigEnv) -> UpdateOmoConfigOptions<'a> {
 
 fn fixture() -> (tempfile::TempDir, String, String) {
     let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
     let home = format!("{root_path}/home");
     let project = format!("{home}/project");
     std::fs::create_dir_all(&project).expect("project");
@@ -362,7 +366,7 @@ fn the_user_write_target_never_leaves_the_dot_omo_directory() {
     assert_eq!(
         std::path::Path::new(&edited.path)
             .parent()
-            .map(|parent| parent.to_string_lossy().to_string()),
+            .map(|parent| omo_config_core::to_posix_path(&parent.to_string_lossy())),
         Some(format!("{second_home}/.omo"))
     );
 }

@@ -303,8 +303,9 @@ fn test_stale_lock_is_reclaimed_and_task_runs_when_lock_file_left_by_dead_proces
     let temp_dir = tempfile::tempdir().unwrap();
     let lock_path = temp_dir.path().join("state.lock");
 
-    let mut child = std::process::Command::new("/bin/sh")
-        .args(["-c", "exit 0"])
+    let mut child = std::process::Command::new("git")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
     let dead_pid = child.id();
@@ -340,9 +341,7 @@ fn test_artifact_is_reclaimed_by_age_when_payload_free_lock_file_abandoned_mid_a
     let file = File::create(&lock_path).unwrap();
     drop(file);
 
-    let _ = std::process::Command::new("touch")
-        .args(["-t", "202001010000", lock_path.to_str().unwrap()])
-        .status();
+    filetime::set_file_mtime(&lock_path, filetime::FileTime::from_unix_time(1577836800, 0)).unwrap();
 
     // when
     let mut task_runs = 0;
@@ -506,6 +505,7 @@ fn test_every_contender_still_runs_serialized_when_holder_outlasts_acquisition_w
     assert_eq!(lock_path.exists(), false);
 }
 
+#[cfg(unix)]
 #[test]
 fn test_reused_pid_lock_is_reclaimed_when_stale_lock_whose_live_pid_belongs_to_different_process() {
     // given
@@ -571,7 +571,7 @@ fn qualified_zero_wait_journal_lock_skips_live_foreign_owner_without_running_tas
 fn zero_wait_journal_lock_reclaims_stale_owner_and_runs_task() {
     let temp_dir = tempfile::tempdir().unwrap();
     let lock_path = temp_dir.path().join("state.lock");
-    let mut child = std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
+    let mut child = std::process::Command::new("git").arg("--version").stdout(std::process::Stdio::null()).spawn().unwrap();
     let dead_pid = child.id();
     let _ = child.wait();
     std::fs::write(&lock_path, format!("{dead_pid}\n")).unwrap();

@@ -50,8 +50,8 @@ fn create_mock_server_script(
     };
     let (mutate_path_val, mutate_content_val) = match mutate_on_format {
         Some((path, content)) => (
-            format!("\"{}\"", path.to_string_lossy()),
-            format!("\"{}\"", content.replace('\n', "\\n")),
+            serde_json::to_string(&path.to_string_lossy()).expect("serialize mutate path"),
+            serde_json::to_string(content).expect("serialize mutate content"),
         ),
         None => ("None".to_string(), "None".to_string()),
     };

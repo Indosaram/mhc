@@ -30,8 +30,13 @@ fn args(values: &[&str]) -> Vec<String> { values.iter().map(|v| (*v).to_owned())
 }
 #[tokio::test] async fn clipboard_command_reads_and_enforces_maximum_without_desktop_access() {
     use maho_cli::utils::clipboard_command::*;
-    assert_eq!(run_clipboard_command("printf", &["abc"], Default::default()).await, Some(b"abc".to_vec()));
-    assert!(run_clipboard_command("printf", &["abcd"], ClipboardCommandOptions { max_buffer_bytes: Some(3), ..Default::default() }).await.is_none());
+    let (cmd, args_abc, args_abcd): (&str, &[&str], &[&str]) = if cfg!(windows) {
+        ("node", &["-e", "process.stdout.write(process.argv[1])", "abc"], &["-e", "process.stdout.write(process.argv[1])", "abcd"])
+    } else {
+        ("printf", &["abc"], &["abcd"])
+    };
+    assert_eq!(run_clipboard_command(cmd, args_abc, Default::default()).await, Some(b"abc".to_vec()));
+    assert!(run_clipboard_command(cmd, args_abcd, ClipboardCommandOptions { max_buffer_bytes: Some(3), ..Default::default() }).await.is_none());
 }
 #[test] fn auth_help_recognizes_help_before_kind_validation() {
     use maho_cli::cli::auth_command::*;

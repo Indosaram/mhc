@@ -440,7 +440,17 @@ mod tests {
             }
             if buffer.ends_with(b"\r\n\r\n") { break; }
         }
-        String::from_utf8_lossy(&buffer).into_owned()
+        let head = String::from_utf8_lossy(&buffer).into_owned();
+        let content_length = head.lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("content-length:"))
+            .and_then(|line| line.split(':').nth(1))
+            .and_then(|val| val.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        if content_length > 0 {
+            let mut body = vec![0u8; content_length];
+            let _ = stream.read_exact(&mut body).await;
+        }
+        head
     }
 
     fn http_ok(body: &str) -> String {
@@ -538,9 +548,13 @@ mod tests {
                     } else if line.starts_with("POST /models/load") {
                         order.lock().unwrap().push("load".to_owned());
                         let _ = stream.write_all(http_ok("{}").as_bytes()).await;
+                        let _ = stream.flush().await;
+                        let _ = stream.shutdown().await;
                     } else if line.starts_with("GET /models") {
                         order.lock().unwrap().push("list".to_owned());
                         let _ = stream.write_all(http_ok(r#"{"data":[{"id":"m","status":{"value":"loaded"}}]}"#).as_bytes()).await;
+                        let _ = stream.flush().await;
+                        let _ = stream.shutdown().await;
                     }
                 });
             }
@@ -596,8 +610,12 @@ mod tests {
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     } else if line.starts_with("POST /models/load") {
                         let _ = stream.write_all(http_ok("{}").as_bytes()).await;
+                        let _ = stream.flush().await;
+                        let _ = stream.shutdown().await;
                     } else if line.starts_with("GET /models") {
                         let _ = stream.write_all(http_ok(r#"{"data":[]}"#).as_bytes()).await;
+                        let _ = stream.flush().await;
+                        let _ = stream.shutdown().await;
                     }
                 });
             }

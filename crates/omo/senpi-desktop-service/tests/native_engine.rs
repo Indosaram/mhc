@@ -3,7 +3,8 @@ use senpi_desktop_service::{DesktopService, DesktopServiceOptions, EngineSpawnCo
 #[tokio::test]
 async fn native_engine_opens_fake_backend_and_closes_at_stdin_eof() {
     let executable = std::env::current_exe().expect("test executable");
-    let binary = executable.parent().expect("deps directory").parent().expect("target profile").join("senpi-desktop-engine");
+    let binary_name = format!("senpi-desktop-engine{}", std::env::consts::EXE_SUFFIX);
+    let binary = executable.parent().expect("deps directory").parent().expect("target profile").join(binary_name);
     assert!(binary.is_file(), "build maho-senpi-desktop-engine before the service acceptance gate");
     let scenario = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../senpi-desktop-backend-fake/fixtures/two-displays-one-window.json");
     let mut config = EngineSpawnConfig::new(binary);

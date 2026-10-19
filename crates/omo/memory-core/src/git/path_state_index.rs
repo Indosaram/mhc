@@ -47,11 +47,12 @@ where
     }
 
     let raw_path = res.stdout.trim();
-    let index_path = if Path::new(raw_path).is_absolute() {
-        PathBuf::from(raw_path)
+    let joined = dir.join(raw_path);
+    let index_path = crate::support::paths::strip_verbatim_prefix(if Path::new(raw_path).is_absolute() {
+        Path::new(raw_path)
     } else {
-        dir.join(raw_path)
-    };
+        &joined
+    });
 
     let lock_path = PathBuf::from(format!("{}.lock", index_path.display()));
     let temp_name = format!(
@@ -60,7 +61,7 @@ where
         std::process::id(),
         random_uuid()
     );
-    let temp_path = PathBuf::from(temp_name);
+    let temp_path = crate::support::paths::strip_verbatim_prefix(&PathBuf::from(temp_name));
 
     let mut lock_opts = OpenOptions::new();
     lock_opts.write(true).create_new(true);

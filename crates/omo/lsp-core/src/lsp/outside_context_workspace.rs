@@ -10,7 +10,7 @@ pub fn find_workspace_root_outside_context(directory: &str) -> String {
     }
     let fallback = nearest_existing_ancestor(directory);
     std::fs::canonicalize(&fallback)
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| crate::request_context::strip_verbatim_prefix(&p.to_string_lossy()))
         .unwrap_or(fallback)
 }
 
@@ -20,7 +20,7 @@ pub fn nearest_marked_ancestor(directory: &str) -> Option<String> {
         if current.exists() && WORKSPACE_MARKERS.iter().any(|m| current.join(m).exists()) {
             return std::fs::canonicalize(&current)
                 .ok()
-                .map(|p| p.to_string_lossy().into_owned());
+                .map(|p| crate::request_context::strip_verbatim_prefix(&p.to_string_lossy()));
         }
         if !current.pop() {
             return None;

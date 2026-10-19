@@ -87,9 +87,15 @@ fn given_live_pid_with_different_process_start_when_acquisition_attempted_then_r
     let lock_path = temp_dir.path().join("resource.lock");
     let mut reused_pid_owner =
         create_lock_record("memory-write", CreateLockRecordOptions::default()).unwrap();
-    let actual_start = get_process_start_identity(reused_pid_owner.pid)
-        .expect("the current process start identity is available");
-    let actual_scheme = actual_start.split_once(':').map(|(scheme, _)| scheme).unwrap_or("legacy");
+    let actual_start = get_process_start_identity(reused_pid_owner.pid);
+    #[cfg(target_os = "windows")]
+    assert!(actual_start.is_none());
+    #[cfg(not(target_os = "windows"))]
+    assert!(actual_start.is_some());
+    let actual_scheme = actual_start
+        .as_deref()
+        .and_then(|s| s.split_once(':').map(|(scheme, _)| scheme))
+        .unwrap_or("legacy");
     reused_pid_owner.process_start = format!("{actual_scheme}:different-process-start");
     fs::write(
         &lock_path,

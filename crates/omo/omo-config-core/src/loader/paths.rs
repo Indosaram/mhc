@@ -126,8 +126,12 @@ pub fn find_project_config_paths_farthest_first(
     for _ in 0..MAX_PROJECT_CONFIG_DIRECTORY_DEPTH {
         let is_home_dir = boundary_dirs
             .iter()
-            .any(|boundary| boundary == &current_dir)
-            || real_boundary_dirs.contains(&realpath_or_self(&current_dir, file_system));
+            .any(|boundary| {
+                boundary == &current_dir
+                    || (cfg!(windows) && boundary.eq_ignore_ascii_case(&current_dir))
+            })
+            || real_boundary_dirs.contains(&realpath_or_self(&current_dir, file_system))
+            || (cfg!(windows) && real_boundary_dirs.iter().any(|boundary| boundary.eq_ignore_ascii_case(&realpath_or_self(&current_dir, file_system))));
         let config_path = if is_home_dir {
             None
         } else {

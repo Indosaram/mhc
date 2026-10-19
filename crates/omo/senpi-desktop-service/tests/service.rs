@@ -368,7 +368,8 @@ async fn test_12_acquiring_reacquires_before_every_engine_spawn() {
         }),
         spawn_engine: Some(Arc::new(move |path| {
             spawn_log.lock().unwrap().push(path.clone());
-            let child = tokio::process::Command::new("python3")
+            let python_cmd = if cfg!(windows) { "python" } else { "python3" };
+            let child = tokio::process::Command::new(python_cmd)
                 .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_engine.py"))
                 .arg("--stdio").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
                 .spawn().expect("fake engine");
