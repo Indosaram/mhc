@@ -16,13 +16,20 @@ fn flat_brand_startup_copies_engine_state_once() {
     }
     let target = home.path().join(".qa");
     for iteration in 0..2 {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mhc"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mhc"));
+        command
             .env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", home.path()).env("MAHO_BRAND", r#"{"name":"qa","configDir":".qa","flatLayout":true}"#)
             .current_dir(home.path())
             .args(["--mode", "rpc", "--offline", "--no-session", "--model", "openai/gpt-4o"])
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn().expect("real mhc");
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        if cfg!(windows) {
+            command.env("USERPROFILE", home.path());
+            if let Some(sysroot) = std::env::var_os("SystemRoot") {
+                command.env("SystemRoot", sysroot);
+            }
+        }
+        let mut child = command.spawn().expect("real mhc");
         let mut stdin = child.stdin.take().expect("stdin");
         stdin.write_all(b"{\"id\":\"brand-probe\",\"type\":\"get_messages\"}\n").expect("query");
         drop(stdin);

@@ -151,7 +151,38 @@ pub(crate) fn run_git_with_input(
     options: &GitOptions,
     input: Option<Arc<[u8]>>,
 ) -> Result<GitOutput> {
-    let mut command = Command::new("git");
+    #[cfg(windows)]
+    let git_program = {
+        let custom_path = options.env.iter().find_map(|(k, v)| {
+            if k.eq_ignore_ascii_case("PATH") {
+                Some(v.as_str())
+            } else {
+                None
+            }
+        });
+        if let Some(path_val) = custom_path {
+            let found_exe = std::env::split_paths(path_val).find_map(|dir| {
+                [".exe", ".cmd", ".bat", ""].iter().find_map(|ext| {
+                    let candidate = dir.join(format!("git{ext}"));
+                    if candidate.is_file() {
+                        Some(candidate)
+                    } else {
+                        None
+                    }
+                })
+            });
+            match found_exe {
+                Some(path) => path,
+                None => return Err(IsolationError::unavailable("git not on PATH")),
+            }
+        } else {
+            PathBuf::from("git")
+        }
+    };
+    #[cfg(not(windows))]
+    let git_program = PathBuf::from("git");
+
+    let mut command = Command::new(&git_program);
     command.args(args);
     command.current_dir(&options.cwd);
     for (key, value) in &options.env {
@@ -177,6 +208,10 @@ pub(crate) fn run_git_with_input(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(IsolationError::unavailable("git not on PATH"));
+        }
+        #[cfg(windows)]
+        Err(error) if error.raw_os_error() == Some(2) || error.raw_os_error() == Some(3) => {
             return Err(IsolationError::unavailable("git not on PATH"));
         }
         Err(error) => return Err(error.into()),

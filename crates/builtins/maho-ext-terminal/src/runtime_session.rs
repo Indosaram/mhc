@@ -239,7 +239,11 @@ impl TerminalRuntimeSession {
             Ok(())=>Ok(()),
             Err(error) if error.to_string()=="pty session is closed"
                 || error.to_string().contains("No such process")
-                || (cfg!(windows) && (error.to_string().contains("Access is denied") || error.to_string().contains("os error 5") || error.to_string().contains("os error 258"))) =>Ok(()),
+                || (cfg!(windows) && (error.to_string().contains("Access is denied")
+                    || error.to_string().contains("os error 5")
+                    || error.to_string().contains("os error 6")
+                    || error.to_string().contains("os error 2")
+                    || error.to_string().contains("os error 258"))) =>Ok(()),
             Err(_) if self.exited()? =>Ok(()),
             Err(error)=>Err(error.into())
         }

@@ -31,10 +31,14 @@ pub fn probe_alive(pid:f64)->std::io::Result<bool> {
         Ok(())|Err(nix::errno::Errno::EPERM)=>Ok(true),Err(nix::errno::Errno::ESRCH)=>Ok(false),Err(error)=>Err(std::io::Error::from_raw_os_error(error as i32)),
     }
 }
+#[cfg(windows)]
+pub fn probe_alive(pid:f64)->std::io::Result<bool> {
+    if !pid.is_finite()||pid<=0.0||pid>f64::from(u32::MAX) {return Ok(false);}
+    Ok(maho_pty::process_alive(pid as u32))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     #[test] fn default_probe_observes_current_process()->std::io::Result<()> {assert!(probe_alive(f64::from(std::process::id()))?);Ok(())}
     #[test] fn first_acquire_writes_pid()->std::io::Result<()> {let dir=tempfile::tempdir()?;let path=dir.path().join("nested/s.lease");assert_eq!(acquire_terminal_lease(&dir.path().join("nested"),"s",12.0,99.0,|_|Ok(true))?,AcquireTerminalLeaseResult::Acquired {path:path.clone(),pid:12.0});assert!(matches!(read_lease(&path)?,LeaseRead::Record(LeaseRecord {pid:12.0,started_at_ms:99.0})));Ok(())}
     #[test] fn second_acquire_retains_live_holder()->std::io::Result<()> {let dir=tempfile::tempdir()?;acquire_terminal_lease(dir.path(),"s",12.0,99.0,|_|Ok(true))?;assert_eq!(acquire_terminal_lease(dir.path(),"s",13.0,100.0,|_|Ok(true))?,AcquireTerminalLeaseResult::Held {holder:LeaseRecord {pid:12.0,started_at_ms:99.0}});Ok(())}

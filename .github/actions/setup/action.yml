@@ -1,5 +1,5 @@
 name: setup
-description: Free runner disk, install the pinned Rust toolchain, protoc, bun and the pinned senpi checkout.
+description: Free runner disk, install the pinned Rust toolchain, protoc, bun and the pinned senpi checkout (Linux, macOS, Windows).
 inputs:
   cache-key:
     description: Cargo cache key; each test shard needs its own, since their target dirs differ.
@@ -8,6 +8,7 @@ runs:
   using: composite
   steps:
     - name: free disk
+      if: runner.os == 'Linux'
       shell: bash
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost
@@ -29,9 +30,15 @@ runs:
     - name: protoc
       shell: bash
       run: |
-        curl -sSLo /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-        sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
-        protoc --version
+        case "$RUNNER_OS" in
+          Linux) asset=linux-x86_64 ;;
+          macOS) asset=osx-aarch_64 ;;
+          Windows) asset=win64 ;;
+        esac
+        curl -sSLo "$RUNNER_TEMP/protoc.zip" "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${asset}.zip"
+        unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+        echo "PROTOC=$RUNNER_TEMP/protoc/bin/protoc$([ "$RUNNER_OS" = Windows ] && echo .exe)" >> "$GITHUB_ENV"
+        "$RUNNER_TEMP/protoc/bin/protoc" --version
 
     - uses: oven-sh/setup-bun@v2
 
@@ -43,9 +50,25 @@ runs:
     - name: search tools
       shell: bash
       run: |
-        sudo apt-get install -y -qq ripgrep fd-find >/dev/null
+        case "$RUNNER_OS" in
+          Linux) sudo apt-get install -y -qq ripgrep fd-find >/dev/null; fd=fdfind ;;
+          macOS) brew install --quiet ripgrep fd >/dev/null; fd=fd ;;
+          Windows)
+            choco install -y --no-progress ripgrep fd >/dev/null
+            # choco's shims dir reaches PATH only in later steps.
+            export PATH="/c/ProgramData/chocolatey/bin:$PATH"
+            echo 'C:\ProgramData\chocolatey\bin' >> "$GITHUB_PATH"
+            fd=fd ;;
+        esac
         npm install -g --silent "@ast-grep/cli@${AST_GREP_VERSION}"
-        rg --version | head -1 && fdfind --version && sg --version
+        if [ "$RUNNER_OS" = Windows ]; then
+          # npm's sg.cmd shim cannot take quoted/multi-line arguments (Rust rejects them for batch
+          # files); put the native ast-grep.exe / sg.exe that postinstall placed on PATH first.
+          sgdir="$(npm root -g)/@ast-grep/cli"
+          export PATH="$sgdir:$PATH"
+          cygpath -w "$sgdir" >> "$GITHUB_PATH"
+        fi
+        rg --version | head -1 && "$fd" --version && sg --version
 
     - name: cache senpi checkout
       id: senpi-cache

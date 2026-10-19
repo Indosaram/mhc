@@ -56,19 +56,16 @@ fn tool_result(result:TerminalToolResult)->Result<ToolResult,ToolError> {
     if result.is_error==Some(true) {return Err(ToolError::Message(result.content.into_iter().map(|part|part.text).collect::<Vec<_>>().join("\n")));}
     Ok(ToolResult {content:result.content.into_iter().map(|part|ToolContent::Text {text:part.text,audience:part.audience.map(|_|"model".to_owned())}).collect(),details:result.details.map(Value::Object), structured_content: None })
 }
-#[cfg(unix)]
 fn terminal_now_ms()->f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|elapsed|elapsed.as_secs_f64()*1000.0)}
 /// Upstream `terminalStateDir`: `(sessionDir, join(sessionDir, "extensions/terminal"))`, or `None`
 /// when the host exposes no durable session dir. The lease lives in the terminal dir; the
 /// manifest writer derives its own `extensions/terminal` base from the session dir.
-#[cfg(unix)]
 fn terminal_state_dir(ctx:&maho_ext_api::types::ExtensionContext)->Option<(std::path::PathBuf,std::path::PathBuf)> {
     let session_dir=ctx.session_manager.get_session_dir()?;
     if session_dir.as_os_str().is_empty()||!session_dir.is_absolute() {return None;}
     Some((session_dir.clone(),session_dir.join("extensions/terminal")))
 }
 /// Upstream `restoreDigestSentence`: ONE coalesced sentence with empty clauses omitted.
-#[cfg(unix)]
 fn restore_digest_sentence(digest:&crate::restore::RestoreDigest)->Option<String> {
     let mut clauses=Vec::new();
     for (label,count) in [("restored",digest.restored),("lost",digest.lost)] {if count>0 {clauses.push(format!("{label} {count}"));}}
@@ -79,7 +76,6 @@ fn restore_digest_sentence(digest:&crate::restore::RestoreDigest)->Option<String
     (!clauses.is_empty()).then(||format!("Terminal state after restart: {}.",clauses.join("; ")))
 }
 /// Upstream `sendTerminalReminder`: a `<system-reminder>` through the terminal notification delivery.
-#[cfg(unix)]
 fn send_terminal_reminder(sender:&ExtensionApi,delivery:Option<crate::notify::NotificationDelivery>,sentence:&str) {
     use maho_ext_api::types::{CustomMessage,SendMessageOptions,DeliverAs};
     let Some(delivery)=delivery else {return;};
@@ -180,59 +176,49 @@ impl Extension for TerminalExtension {
         // sessions. A reload generation keeps the lease: the same pid still owns it.
         let start_lifecycle=state_lifecycle.clone();let lifecycle_manager=manager.clone();let lifecycle_monitors=monitors.clone();let lifecycle_settings=configuration.clone();let lifecycle_sender=sender.clone();
         api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();Box::pin(async move {
-            #[cfg(unix)]
-            {
-                let Some((session_dir,terminal_dir))=terminal_state_dir(ctx) else {return Ok(EventResult::None);};
-                let session_id=ctx.session_manager.session_id().to_owned();
-                let encoded=maho_core::session_sidecar_store::encoded_session_id(&session_id);
-                let reload=matches!(event,maho_ext_api::types::ExtensionEvent::SessionStart(event) if event.reason==maho_ext_api::types::SessionReason::Reload);
-                let now=terminal_now_ms();
-                // A reload generation inherits the lease (same pid) and only rebinds the recorder so
-                // manifest coverage continues; a fresh generation acquires the lease and restores.
-                let mut lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
-                if reload {
-                    *state.lock().await=Some(lifecycle);
-                } else {
-                    let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
-                    let delivery=crate::notify::get_terminal_notification_delivery(settings.notify,Some(match ctx.mode {maho_ext_api::types::ExtensionMode::Print=>"print",maho_ext_api::types::ExtensionMode::Json=>"json",_=>"interactive"}),ctx.model.is_some(),false);
-                    match lifecycle.acquire(&terminal_dir,&encoded,f64::from(std::process::id()),now) {
-                        Ok(crate::terminal_state::TerminalStateAdoption::Acquired)=>{
-                            let restore_state=lifecycle.read_restore_state().await;
-                            let digest={let mut manager=manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?;let mut monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;lifecycle.apply_restore(restore_state,&mut manager,&mut monitors,now,shell.as_deref(),&settings)};
-                            if let Some(sentence)=restore_digest_sentence(&digest) {send_terminal_reminder(&sender,delivery,&sentence);}
-                            *state.lock().await=Some(lifecycle);
-                        }
-                        Ok(crate::terminal_state::TerminalStateAdoption::AttachedElsewhere {pid})=>send_terminal_reminder(&sender,delivery,&format!("Terminal monitors for this session are attached in another live process (pid {pid}); nothing was restored here.")),
-                        Err(error)=>send_terminal_reminder(&sender,delivery,&format!("Terminal state after restart: the session lease could not be acquired ({error}); nothing was restored.")),
+            let Some((session_dir,terminal_dir))=terminal_state_dir(ctx) else {return Ok(EventResult::None);};
+            let session_id=ctx.session_manager.session_id().to_owned();
+            let encoded=maho_core::session_sidecar_store::encoded_session_id(&session_id);
+            let reload=matches!(event,maho_ext_api::types::ExtensionEvent::SessionStart(event) if event.reason==maho_ext_api::types::SessionReason::Reload);
+            let now=terminal_now_ms();
+            // A reload generation inherits the lease (same pid) and only rebinds the recorder so
+            // manifest coverage continues; a fresh generation acquires the lease and restores.
+            let mut lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
+            if reload {
+                *state.lock().await=Some(lifecycle);
+            } else {
+                let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
+                let delivery=crate::notify::get_terminal_notification_delivery(settings.notify,Some(match ctx.mode {maho_ext_api::types::ExtensionMode::Print=>"print",maho_ext_api::types::ExtensionMode::Json=>"json",_=>"interactive"}),ctx.model.is_some(),false);
+                match lifecycle.acquire(&terminal_dir,&encoded,f64::from(std::process::id()),now) {
+                    Ok(crate::terminal_state::TerminalStateAdoption::Acquired)=>{
+                        let restore_state=lifecycle.read_restore_state().await;
+                        let digest={let mut manager=manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?;let mut monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;lifecycle.apply_restore(restore_state,&mut manager,&mut monitors,now,shell.as_deref(),&settings)};
+                        if let Some(sentence)=restore_digest_sentence(&digest) {send_terminal_reminder(&sender,delivery,&sentence);}
+                        *state.lock().await=Some(lifecycle);
                     }
+                    Ok(crate::terminal_state::TerminalStateAdoption::AttachedElsewhere {pid})=>send_terminal_reminder(&sender,delivery,&format!("Terminal monitors for this session are attached in another live process (pid {pid}); nothing was restored here.")),
+                    Err(error)=>send_terminal_reminder(&sender,delivery,&format!("Terminal state after restart: the session lease could not be acquired ({error}); nothing was restored.")),
                 }
             }
-            #[cfg(not(unix))]
-            {let _=(event,ctx,state,manager,monitors,configuration,sender);}
             Ok(EventResult::None)
         })}));
         let shutdown_lifecycle=state_lifecycle.clone();let shutdown_monitors=monitors.clone();
         api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let monitors=shutdown_monitors.clone();Box::pin(async move {
-            #[cfg(unix)]
-            {
-                if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {return Ok(EventResult::None);}
-                let Some(mut lifecycle)=state.lock().await.take() else {return Ok(EventResult::None);};
-                // Upstream `suspendAndFlushManifest`: a final live-state sync so the shutdown write
-                // carries each watch's burned fire window and mute state.
-                let snapshot=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.snapshot();
-                if let Err(error)=lifecycle.writer.observe_monitor_state(&snapshot,terminal_now_ms()).await {maho_ext_api::diagnostic(&format!("terminal manifest monitor sync failed: {error}"));}
-                lifecycle.record_shutdown(terminal_now_ms()).await;
-                if lifecycle.is_owner() {
-                    if let Err(error)=lifecycle.release() {maho_ext_api::diagnostic(&format!("terminal lease release failed: {error}"));}
-                } else if let Some((_session_dir,terminal_dir))=terminal_state_dir(ctx) {
-                    // A reload generation inherited the lease instead of acquiring it, so it releases
-                    // by (path, own pid) - which removes exactly that file and no foreign holder's.
-                    let encoded=maho_core::session_sidecar_store::encoded_session_id(ctx.session_manager.session_id());
-                    if let Err(error)=crate::terminal_state::release_lease_at(&terminal_dir,&encoded,f64::from(std::process::id())) {maho_ext_api::diagnostic(&format!("terminal lease release failed: {error}"));}
-                }
+            if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {return Ok(EventResult::None);}
+            let Some(mut lifecycle)=state.lock().await.take() else {return Ok(EventResult::None);};
+            // Upstream `suspendAndFlushManifest`: a final live-state sync so the shutdown write
+            // carries each watch's burned fire window and mute state.
+            let snapshot=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.snapshot();
+            if let Err(error)=lifecycle.writer.observe_monitor_state(&snapshot,terminal_now_ms()).await {maho_ext_api::diagnostic(&format!("terminal manifest monitor sync failed: {error}"));}
+            lifecycle.record_shutdown(terminal_now_ms()).await;
+            if lifecycle.is_owner() {
+                if let Err(error)=lifecycle.release() {maho_ext_api::diagnostic(&format!("terminal lease release failed: {error}"));}
+            } else if let Some((_session_dir,terminal_dir))=terminal_state_dir(ctx) {
+                // A reload generation inherited the lease instead of acquiring it, so it releases
+                // by (path, own pid) - which removes exactly that file and no foreign holder's.
+                let encoded=maho_core::session_sidecar_store::encoded_session_id(ctx.session_manager.session_id());
+                if let Err(error)=crate::terminal_state::release_lease_at(&terminal_dir,&encoded,f64::from(std::process::id())) {maho_ext_api::diagnostic(&format!("terminal lease release failed: {error}"));}
             }
-            #[cfg(not(unix))]
-            {let _=(event,ctx,state,monitors);}
             Ok(EventResult::None)
         })}));
         let bash_sender=sender.clone();let lifecycle_delivery=completion_delivery.clone();

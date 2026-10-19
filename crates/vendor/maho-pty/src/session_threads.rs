@@ -18,6 +18,7 @@ pub(crate) fn spawn_reader(
             }
             on_chunk(&buffer[..count]);
         }
+        on_chunk(&[]);
     })
 }
 

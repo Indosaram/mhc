@@ -302,6 +302,8 @@ mod tests {
         let details = warnings[0].1.as_ref().expect("receipt details");
         assert_eq!(details.kind, Some(OrphanKind::Worktree));
         let canonical_worktrees = std::fs::canonicalize(&fixture.worktrees).expect("canonical worktrees");
+        #[cfg(windows)]
+        let canonical_worktrees = std::path::PathBuf::from(canonical_worktrees.to_string_lossy().trim_start_matches(r"\\?\"));
         let orphan_name = orphan.dir.file_name().expect("orphan dir name");
         assert_eq!(
             details.target.as_deref(),
