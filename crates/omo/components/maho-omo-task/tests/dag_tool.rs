@@ -2191,3 +2191,29 @@ fn workflow_tool_schema_offers_control_verbs() {
     assert!(desc.contains("send"));
     assert!(desc.contains("amend"));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn blocking_wait_does_not_starve_the_executor_that_drives_the_run() {
+    let f = fixture();
+    let started = run_dag_tool(&deps(&f.manager), DagToolInput {
+        action: "start".into(), definition: Some(default_definition()), run_id: None,
+        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
+    }).expect("start");
+    let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
+    // The run settles only when a task on this same current-thread executor makes progress, the way
+    // in-process children stream their provider responses on the CLI runtime.
+    let (settle, settled) = std::sync::mpsc::channel::<()>();
+    let settled = Mutex::new(settled);
+    let mut dependencies = deps(&f.manager);
+    dependencies.wait = Some(Arc::new(move |run, _| {
+        settled.lock().expect("settle receiver").recv_timeout(std::time::Duration::from_secs(10)).map_err(|_| ToolError::Message("executor starved".into()))?;
+        Ok(json!({"runId": run, "status": "completed"}))
+    }));
+    tokio::spawn(async move { settle.send(()).expect("waiter alive") });
+    let tool = create_dag_tool(dependencies);
+    let result = (tool.execute)(maho_ext_api::ToolCall {
+        id: "wait", params: json!({"action": "wait", "run_id": run_id, "detach": false}),
+        signal: Default::default(), on_update: None, context: None,
+    }).await.expect("wait settles while the executor keeps running");
+    assert_eq!(result.details.expect("details")["result"]["status"], "completed");
+}
