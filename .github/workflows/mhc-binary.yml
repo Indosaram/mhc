@@ -25,8 +25,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
-        with:
-          cache-key: release
       - name: build release mhc
         run: |
           export MHC_BUILD_VERSION="${GITHUB_REF_NAME#build/}"

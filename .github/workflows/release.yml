@@ -2,8 +2,8 @@ name: release
 
 # Pushing a `v<version>` tag builds release mhc binaries and publishes them as a GitHub Release.
 # The tag without its leading `v` becomes MHC_BUILD_VERSION (what `mhc --version` prints).
-# Cache warm-up: dispatching on main with no tag only builds, saving the release build cache on main.
-# A tag run can restore caches from main but not from another tag, so tag runs do not save.
+# Build cache: compile results go through sccache into the Actions cache. Only main writes it (tag
+# runs can read main's entries but not another tag's), so dispatching with no tag on main warms it.
 on:
   push:
     tags: ["v*"]
@@ -55,10 +55,13 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc --version
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-${{ matrix.target }}
-          save-if: ${{ env.TAG == '' }}
+      - uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: enable sccache
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
+          if [ -n "$TAG" ] || [ "$GITHUB_REF" != refs/heads/main ]; then echo "SCCACHE_GHA_RW_MODE=READ_ONLY" >> "$GITHUB_ENV"; fi
 
       - name: protoc
         run: |
@@ -75,6 +78,7 @@ jobs:
           export MHC_BUILD_VERSION="${MHC_BUILD_VERSION:-0.0.0-cache}"
           cargo build --release --locked -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
           test "$(./target/release/mhc --version)" = "$MHC_BUILD_VERSION"
+          "$SCCACHE_PATH" --show-stats
 
       - name: materialize browser skill runtime
         if: env.TAG != ''
