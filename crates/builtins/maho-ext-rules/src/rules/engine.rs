@@ -149,14 +149,29 @@ pub fn relative_path(base: &Path, target: &Path) -> String {
     let shared = base.iter().zip(&target).take_while(|(base, target)| base == target).count();
     std::iter::repeat_n("..".to_owned(), base.len() - shared).chain(target[shared..].iter().map(|component| component.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>().join("/")
 }
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
 fn canonicalize_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| super::finder::absolute(path))
+    let p = std::fs::canonicalize(path).unwrap_or_else(|_| super::finder::absolute(path));
+    strip_verbatim_prefix(p)
 }
 fn load_candidate_cached(candidate: RuleCandidate, root: Option<&Path>, diagnostics: &mut Vec<RuleDiagnostic>, caches: &mut LoadCaches, deps: &dyn EngineDeps) -> Option<LoadedRule> {
     let key = (root.map(Path::to_path_buf), candidate.real_path.clone());
     let within = candidate.is_global || *caches.membership.entry(key).or_insert_with(|| root.is_some_and(|root| {
-        let root = caches.real_paths.entry(root.into()).or_insert_with(|| std::fs::canonicalize(root).unwrap_or_else(|_| super::finder::absolute(root)));
-        Path::new(&candidate.real_path).strip_prefix(root).is_ok_and(|relative| !relative.to_string_lossy().starts_with(".."))
+        let root = caches.real_paths.entry(root.into()).or_insert_with(|| canonicalize_path(root));
+        let candidate_path = canonicalize_path(Path::new(&candidate.real_path));
+        candidate_path.strip_prefix(root).is_ok_and(|relative| !relative.to_string_lossy().starts_with(".."))
     }));
     if !within { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: "Rule file resolves outside project root".into() }); return None; }
     let loaded = caches.contents.entry(candidate.real_path.clone()).or_insert_with(|| deps.read_file(Path::new(&candidate.path)).map(|content| (parse_rule(&content), hash_content(&content))));

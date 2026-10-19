@@ -11,7 +11,7 @@ fn context(root:&Path)->LspRequestContext {
 fn local_binary_substitution_preserves_arguments_environment_and_initialization() {
     let root=tempfile::tempdir().unwrap();
     fs::write(root.path().join("package.json"),"{}").unwrap();
-    let dir=root.path().join("node_modules/.bin");
+    let dir=root.path().join("node_modules").join(".bin");
     fs::create_dir_all(&dir).unwrap();
     let binary=dir.join("native-parity-test-lsp");
     fs::write(&binary,"#!/bin/sh\nexit 0\n").unwrap();

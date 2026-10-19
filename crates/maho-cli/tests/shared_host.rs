@@ -33,7 +33,7 @@ fn socket_falls_back_to_the_agent_rpc_socket() {
     let resolved = shared_host_socket("/tmp/agent");
     match configured {
         Some(value) => assert_eq!(resolved, value),
-        None => assert_eq!(resolved, "/tmp/agent/rpc/rpc.sock"),
+        None => assert_eq!(resolved, std::path::Path::new("/tmp/agent").join("rpc").join("rpc.sock").to_string_lossy()),
     }
 }
 

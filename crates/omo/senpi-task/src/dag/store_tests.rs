@@ -465,6 +465,7 @@ fn given_a_future_schema_event_file_when_a_store_opens_then_it_fails_closed_with
 // createDagFileStore checkpoints and layout
 
 #[test]
+#[cfg(unix)]
 fn given_posix_checkpoint_persistence_when_an_existing_checkpoint_is_replaced_then_readers_see_the_old_complete_file_until_rename_and_both_file_and_directory_are_fsynced() {
     // given
     let project = temp_project();
@@ -592,6 +593,7 @@ fn given_a_future_schema_checkpoint_when_it_is_opened_then_it_fails_closed_with_
 }
 
 #[test]
+#[cfg(unix)]
 fn given_an_existing_node_result_when_it_is_replaced_then_readers_see_the_old_complete_file_until_rename_and_both_file_and_directory_are_fsynced() {
     // given
     let project = temp_project();

@@ -88,8 +88,9 @@ pub fn bind_failure_code(error: &std::io::Error) -> Option<&'static str> {
     }
 
     match error.raw_os_error()? {
-        13 => Some("EACCES"),
+        13 | 10013 => Some("EACCES"),
         1 => Some("EPERM"),
+        10048 => Some("EADDRINUSE"),
         _ => None,
     }
 }

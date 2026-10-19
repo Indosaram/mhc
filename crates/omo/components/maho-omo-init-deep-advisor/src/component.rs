@@ -6,7 +6,8 @@ pub fn advisor_preflight(has_ui:bool,disabled:bool,cwd:&Path,onboarding_state_di
     if !has_ui || disabled || !git_is_repo(cwd) {return Ok(None);}
     let root=run(cwd,&["rev-parse","--show-toplevel"])?;
     if marker_mtime.is_none_or(|mtime|mtime>=process_start) {return Ok(None);}
-    Ok(Some(AdvisorPreflight {root:root.trim().into(),state_dir:onboarding_state_dir.join("init-deep-advisor-state")}))
+    let root_path=std::path::PathBuf::from(root.trim().replace('/',std::path::MAIN_SEPARATOR_STR));
+    Ok(Some(AdvisorPreflight {root:root_path,state_dir:onboarding_state_dir.join("init-deep-advisor-state")}))
 }
 pub type OnboardingMarkerMtime=std::sync::Arc<dyn Fn(&Path)->Option<f64>+Send+Sync>;
 pub struct InitDeepAdvisorComponent {pub state_dir:std::path::PathBuf,pub skills_root:std::path::PathBuf,pub marker_mtime:OnboardingMarkerMtime,pub process_start:f64}
@@ -43,6 +44,12 @@ mod tests {
     #[test] fn non_ui_gate_preserves_state() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(false,false,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());assert!(!t.path().join("init-deep-advisor-state").exists());}
     #[test] fn disabled_gate_preserves_state() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(true,true,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());assert!(!t.path().join("init-deep-advisor-state").exists());}
     #[test] fn missing_onboarding_marker_suppresses() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(true,false,t.path(),t.path(),None,2.0).unwrap().is_none());}
-    #[test] fn onboarding_must_predate_process() {let (t,_)=crate::git_helpers::tests::repo();let root=t.path().canonicalize().unwrap();for marker in [Some(2.0),Some(3.0)] {assert!(advisor_preflight(true,false,&root,&root,marker,2.0).unwrap().is_none());}let p=advisor_preflight(true,false,&root,&root,Some(1.0),2.0).unwrap().unwrap();assert_eq!(p.root,root);assert_eq!(p.state_dir,root.join("init-deep-advisor-state"));}
+    #[test] fn onboarding_must_predate_process() {let (t,_)=crate::git_helpers::tests::repo();let root=t.path().canonicalize().map(|p| {
+        #[cfg(windows)] {
+            let s = p.to_string_lossy();
+            if let Some(rest) = s.strip_prefix(r"\\?\") { return std::path::PathBuf::from(rest); }
+        }
+        p
+    }).unwrap();for marker in [Some(2.0),Some(3.0)] {assert!(advisor_preflight(true,false,&root,&root,marker,2.0).unwrap().is_none());}let p=advisor_preflight(true,false,&root,&root,Some(1.0),2.0).unwrap().unwrap();assert_eq!(p.root,root);assert_eq!(p.state_dir,root.join("init-deep-advisor-state"));}
     #[test] fn nonrepo_skips() {let t=tempfile::tempdir().unwrap();assert!(advisor_preflight(true,false,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());}
 }

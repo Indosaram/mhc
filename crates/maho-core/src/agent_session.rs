@@ -10141,13 +10141,21 @@ mod tests {
         let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
         let signal = maho_ext_api::AbortSignal::default();
         signal.abort();
-        let killed = actions.exec("sh", &["-c".to_owned(), "exit 99".to_owned()], std::path::Path::new("/tmp"),
+        let temp_dir = std::env::temp_dir();
+        let (cmd, args_exit, args_out) = if cfg!(windows) {
+            ("node", vec!["-e".to_owned(), "process.exit(99)".to_owned()],
+             vec!["-e".to_owned(), "process.stdout.write('out'); process.stderr.write('err'); process.exit(3)".to_owned()])
+        } else {
+            ("sh", vec!["-c".to_owned(), "exit 99".to_owned()],
+             vec!["-c".to_owned(), "printf out; printf err >&2; exit 3".to_owned()])
+        };
+        let killed = actions.exec(cmd, &args_exit, &temp_dir,
             maho_ext_api::ExecOptions { signal: Some(signal), ..Default::default() }).await.unwrap();
         assert!(killed.killed);
-        let result = actions.exec("sh", &["-c".to_owned(), "printf out; printf err >&2; exit 3".to_owned()],
-            std::path::Path::new("/tmp"), Default::default()).await.unwrap();
+        let result = actions.exec(cmd, &args_out, &temp_dir, Default::default()).await.unwrap();
         assert_eq!((result.stdout.as_str(), result.stderr.as_str(), result.code, result.killed), ("out", "err", 3, false));
-        let missing = actions.exec("/definitely/missing", &[], std::path::Path::new("/tmp"), Default::default()).await.unwrap();
+        let missing_cmd = if cfg!(windows) { r"C:\definitely\missing.exe" } else { "/definitely/missing" };
+        let missing = actions.exec(missing_cmd, &[], &temp_dir, Default::default()).await.unwrap();
         assert_eq!(missing.code, 1);
         assert!(!missing.stderr.is_empty());
     }

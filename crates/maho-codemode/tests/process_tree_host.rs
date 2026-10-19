@@ -8,6 +8,7 @@ fn descendants_preserve_breadth_order_and_ignore_cycles() {
     assert_eq!(owned_roots(&table, 1, &[2,5,3]), [2,3]);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn owned_child_is_retired_and_unowned_root_is_not_signalled() {
     let mut child = tokio::process::Command::new("sleep").arg("3600").kill_on_drop(true).spawn().unwrap();

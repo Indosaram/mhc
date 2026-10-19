@@ -1,7 +1,7 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
-const DEFAULT_CLI: &str = "/packaged/cli.js";
+const DEFAULT_CLI: &str = if cfg!(windows) { "C:\\packaged\\cli.js" } else { "/packaged/cli.js" };
 
 fn default_runtime() -> DaemonRuntimeDefaults {
     DaemonRuntime {

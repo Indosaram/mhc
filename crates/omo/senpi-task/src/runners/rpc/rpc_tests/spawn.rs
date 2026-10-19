@@ -13,10 +13,11 @@ use crate::runners::types::RpcRunnerSpec;
 const SESSION_DIR_ENV: &str = "SENPI_CODING_AGENT_SESSION_DIR";
 
 fn base_spec() -> RpcRunnerSpec {
+    let tmp = std::env::temp_dir();
     RpcRunnerSpec {
         task_id: "st_1a2b3c4d".to_string(),
-        cwd: "/tmp/project".to_string(),
-        state_dir: "/tmp/project/.omo/senpi-task".to_string(),
+        cwd: tmp.join("project").to_string_lossy().into_owned(),
+        state_dir: tmp.join("project").join(".omo").join("senpi-task").to_string_lossy().into_owned(),
         prompt: "do the work".to_string(),
         ..RpcRunnerSpec::default()
     }
@@ -520,7 +521,7 @@ fn given_senpi_hides_rpc_entry_from_node_exports_when_building_a_fallback_spawn_
     let descriptor = build_rpc_spawn(&spec, &fallback);
     let entry = descriptor.args.first().expect("rpc entry argument");
     assert!(
-        entry.ends_with(&format!("dist{MAIN_SEPARATOR}rpc-entry.js")),
+        entry.replace('\\', "/").ends_with("dist/rpc-entry.js"),
         "expected the physical dist entry, got {entry}"
     );
 }

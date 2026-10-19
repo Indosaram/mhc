@@ -85,13 +85,13 @@ fn given_absent_malformed_invalid_or_non_file_parent_provenance_when_fork_is_res
     for (name, bytes) in [("absent", None), ("malformed", Some(b"{broken\n".as_slice())), ("empty-id", Some(br#"{"type":"session","id":" "}"#.as_slice())), ("wrong-type", Some(br#"{"type":"message","id":"A"}"#.as_slice())), ("oversized", Some(format!(r#"{{"type":"session","id":"A","padding":"{}"}}"#, "x".repeat(128 * 1024)).as_bytes()))] {
         let _ = std::fs::remove_file(&parent);
         if let Some(bytes) = bytes { std::fs::write(&parent, bytes).expect("write parent fixture"); }
-        std::fs::write(&current, format!(r#"{{"type":"session","id":"C","parentSession":"{}"}}"#, parent.display())).expect("write current fixture");
+        std::fs::write(&current, json!({"type":"session","id":"C","parentSession":parent.to_string_lossy()}).to_string()).expect("write current fixture");
         let result = resolve_dag_fork_source(ResolveDagForkSourceInput { event: json!({"reason":"fork","previousSessionFile":parent.to_string_lossy()}), current_session_id:"C".into(), current_session_file:Some(current.to_string_lossy().into_owned()) });
         assert!(matches!(result, DagForkSourceResolution::OwnOnly { diagnostic:Some(_) }), "{name}");
     }
     let _ = std::fs::remove_file(&parent);
     std::fs::create_dir(&parent).expect("directory as parent");
-    std::fs::write(&current, format!(r#"{{"type":"session","id":"C","parentSession":"{}"}}"#, parent.display())).expect("write current fixture");
+    std::fs::write(&current, json!({"type":"session","id":"C","parentSession":parent.to_string_lossy()}).to_string()).expect("write current fixture");
     let result = resolve_dag_fork_source(ResolveDagForkSourceInput { event:json!({"reason":"fork"}), current_session_id:"C".into(), current_session_file:Some(current.to_string_lossy().into_owned()) });
     assert!(matches!(result, DagForkSourceResolution::OwnOnly { diagnostic:Some(_) }));
     std::fs::remove_dir_all(root).expect("remove fixture root");
@@ -105,7 +105,7 @@ fn given_long_transcript_after_valid_header_when_fork_is_resolved_then_header_re
     let parent = root.join("parent.jsonl");
     let current = root.join("current.jsonl");
     std::fs::write(&parent, b"{\"type\":\"session\",\"id\":\"A\"}\n").expect("write parent");
-    std::fs::write(&current, format!(r#"{{"type":"session","id":"C","parentSession":"{}"}}"#, parent.display())).expect("write current");
+    std::fs::write(&current, json!({"type":"session","id":"C","parentSession":parent.to_string_lossy()}).to_string()).expect("write current");
     let transcript = format!("{{\"type\":\"message\",\"text\":\"{}\"}}\n", "x".repeat(1000)).repeat(1024);
     use std::io::Write as _;
     std::fs::OpenOptions::new().append(true).open(&parent).expect("open transcript").write_all(transcript.as_bytes()).expect("append transcript");

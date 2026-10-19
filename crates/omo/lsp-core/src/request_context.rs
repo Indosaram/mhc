@@ -140,7 +140,8 @@ pub fn create_standalone_mcp_request_context(
         .home_dir
         .clone()
         .or_else(|| std::env::var("HOME").ok())
-        .unwrap_or_default();
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .unwrap_or_else(|| if cfg!(windows) { "C:\\".to_string() } else { "/".to_string() });
     let project_config_paths =
         translate_project_config_env(env_value("LSP_TOOLS_MCP_PROJECT_CONFIG"), &cwd);
     let user_config_path = translate_home_config_env(
@@ -255,8 +256,19 @@ fn canonical_cwd(cwd: &str) -> Result<String, LspRequestContextParseError> {
         return Err(invalid());
     }
     std::fs::canonicalize(&resolved)
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(|path| strip_verbatim_prefix(&path.to_string_lossy()))
         .map_err(|_| invalid())
+}
+
+/// Strips Windows extended-length path prefix (`\\?\` or `\\?\UNC\`).
+pub fn strip_verbatim_prefix(path: &str) -> String {
+    if let Some(stripped) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{stripped}")
+    } else if let Some(stripped) = path.strip_prefix(r"\\?\") {
+        stripped.to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 /// TS `canonicalizeExistingOrNearestAncestor`: realpath of the nearest existing ancestor
@@ -266,7 +278,8 @@ pub fn canonicalize_existing_or_nearest_ancestor(path: &str) -> std::io::Result<
     let mut suffix: Vec<std::ffi::OsString> = Vec::new();
     loop {
         match std::fs::canonicalize(&current) {
-            Ok(mut existing) => {
+            Ok(existing) => {
+                let mut existing = PathBuf::from(strip_verbatim_prefix(&existing.to_string_lossy()));
                 for part in suffix.iter().rev() {
                     existing.push(part);
                 }
@@ -274,6 +287,7 @@ pub fn canonicalize_existing_or_nearest_ancestor(path: &str) -> std::io::Result<
             }
             Err(error) => {
                 let missing = error.kind() == std::io::ErrorKind::NotFound
+                    || error.kind() == std::io::ErrorKind::NotADirectory
                     || error.raw_os_error() == Some(libc::ENOTDIR);
                 if !missing {
                     return Err(error);

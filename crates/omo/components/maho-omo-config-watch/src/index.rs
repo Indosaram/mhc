@@ -90,7 +90,7 @@ impl Extension for ConfigWatchComponent {
             let resolve_targets=self.options.resolve_targets.clone();
             Arc::new(move |cwd:&str|match &resolve_targets {
                 Some(resolve)=>OmoConfigWatchTargetResolution{targets:resolve(cwd),user_config_creation_watched:true,user_config_creation_discovery:"watched"},
-                None=>{ let home=std::env::var("HOME").unwrap_or_default(); resolve_omo_config_watch_target_resolution(PathBuf::from(cwd).as_path(),PathBuf::from(&home).as_path(),&std::env::vars().collect()) }
+                None=>{ let home=std::env::var("HOME").or_else(|_|std::env::var("USERPROFILE")).unwrap_or_default(); resolve_omo_config_watch_target_resolution(PathBuf::from(cwd).as_path(),PathBuf::from(&home).as_path(),&std::env::vars().collect()) }
             })
         });
         let create_validator=self.options.create_validator.clone().unwrap_or_else(||Arc::new(|cwd:&str|OmoConfigValidator::new(cwd.to_owned(),std::env::vars().collect())));

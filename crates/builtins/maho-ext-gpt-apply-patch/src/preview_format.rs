@@ -52,7 +52,7 @@ pub fn display_path(file_path:&str,cwd:&str)->String {
     let path=std::path::Path::new(file_path); if !path.is_absolute() { return file_path.into(); }
     let base=resolve_patch_path(std::path::Path::new(cwd),std::path::Path::new(""));
     let normalized=resolve_patch_path(std::path::Path::new(""),path);
-    match normalized.strip_prefix(&base) { Ok(relative)=>if relative.as_os_str().is_empty() { ".".into() } else { relative.to_string_lossy().into_owned() },Err(_)=>file_path.into() }
+    match normalized.strip_prefix(&base) { Ok(relative)=>if relative.as_os_str().is_empty() { ".".into() } else { relative.to_string_lossy().replace('\\', "/") },Err(_)=>file_path.into() }
 }
 fn file_path(file:&ApplyPatchPreviewFile,cwd:&str)->String {
     let path=display_path(&file.file_path,cwd); match file.move_path.as_deref().filter(|path|!path.is_empty()) { Some(destination)=>format!("{path} → {}",display_path(destination,cwd)),None=>path }
@@ -103,11 +103,20 @@ mod tests {
         let next=get_apply_patch_render_state("cache-identity","/other",patch); assert!(!std::sync::Arc::ptr_eq(&first,&next)); assert_eq!(next.lock().unwrap().streaming.lock().unwrap().hunks.len(),1); assert_eq!(first.lock().unwrap().streaming.lock().unwrap().hunks.len(),1);
         RENDER_STATES.lock().unwrap().remove("cache-identity");
     }
-    #[test] fn absolute_dot_segments_are_normalized_only_inside_cwd() { assert_eq!(display_path("/root/other/../src/a","/root"),"src/a"); assert_eq!(display_path("/root/../elsewhere/a","/root"),"/root/../elsewhere/a"); }
+    #[test] fn absolute_dot_segments_are_normalized_only_inside_cwd() {
+        let root = if cfg!(windows) { "C:/root" } else { "/root" };
+        assert_eq!(display_path(&format!("{root}/other/../src/a"), root), "src/a");
+        assert_eq!(display_path(&format!("{root}/../elsewhere/a"), root), format!("{root}/../elsewhere/a"));
+    }
     #[test] fn changed_hunk_is_kept_in_line_window() { let lines=(1..=40).map(|i|format!("{}{:2} line",if i==30 { '+' } else { ' ' },i)).collect::<Vec<_>>().join("\n"); let preview=truncate_preview(&lines); assert!(preview.contains("+30 line")); assert_eq!(preview.lines().count(),16); assert!(preview.starts_with('…')); }
     #[test] fn plain_text_uses_head_and_tail() { let lines=(0..20).map(|i|i.to_string()).collect::<Vec<_>>().join("\n"); let preview=truncate_preview(&lines); assert_eq!(preview.lines().count(),16); assert!(preview.contains("7\n…\n13")); }
     #[test] fn character_limit_counts_javascript_utf16_units() { let preview=truncate_preview(&"😀".repeat(3000)); assert_eq!(preview.encode_utf16().count(),4000); assert!(preview.ends_with('…')); }
-    #[test] fn path_inside_cwd_becomes_relative() { assert_eq!(display_path("/root/src/a","/root"),"src/a"); assert_eq!(display_path("/other/a","/root"),"/other/a"); assert_eq!(display_path("/root","/root"),"."); }
+    #[test] fn path_inside_cwd_becomes_relative() {
+        let (root, other) = if cfg!(windows) { ("C:/root", "C:/other") } else { ("/root", "/other") };
+        assert_eq!(display_path(&format!("{root}/src/a"), root), "src/a");
+        assert_eq!(display_path(&format!("{other}/a"), root), format!("{other}/a"));
+        assert_eq!(display_path(root, root), ".");
+    }
     struct PlainTheme;
     impl crate::types::ApplyPatchTheme for PlainTheme {
         fn fg(&self,_:crate::types::ApplyPatchThemeColor,text:&str)->String { text.into() }

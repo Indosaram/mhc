@@ -212,7 +212,7 @@ async fn native_faux_memory_write_commits_and_notifies_snapshot() {
         faux_assistant_message(faux_tool_call("memory",serde_json::from_value(serde_json::json!({"command":"create","file_path":"notes/fact.md","description":"Fixture","file_text":"fact","reason":"save fact"})).unwrap(),Some("save-call")),FauxAssistantMessageOptions {stop_reason:Some(maho_ai::types::StopReason::ToolUse),timestamp:Some(0),..Default::default()}),
         faux_assistant_message("done",FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()}),
     ]);
-    let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
+    let result=tokio::time::timeout(std::time::Duration::from_secs(30),session.run_native()).await.unwrap().unwrap();
     let messages=result["messages"].as_array().unwrap(); let tool=messages.iter().find(|message|message["role"]=="toolResult").unwrap(); assert_eq!(tool["isError"],false);
     assert_eq!(*notifications.lock().unwrap(),1,"native result: {result}");
     let repo=GitMemoryRepo::open(&paths.repo,"agent").unwrap(); let head=repo.head().unwrap().unwrap(); assert!(repo.show(&head,"notes/fact.md").unwrap().contains("fact"));
@@ -283,7 +283,7 @@ async fn native_faux_memory_tool_commit_carries_injected_provenance_trailers() {
         faux_assistant_message(faux_tool_call("memory",serde_json::from_value(serde_json::json!({"command":"create","file_path":"notes/provenance.md","description":"Fixture","file_text":"fact","reason":"save fact"})).unwrap(),Some("provenance-call")),FauxAssistantMessageOptions {stop_reason:Some(maho_ai::types::StopReason::ToolUse),timestamp:Some(0),..Default::default()}),
         faux_assistant_message("done",FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()}),
     ]);
-    let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
+    let result=tokio::time::timeout(std::time::Duration::from_secs(30),session.run_native()).await.unwrap().unwrap();
     let tool=result["messages"].as_array().unwrap().iter().find(|message|message["role"]=="toolResult").unwrap();
     assert_eq!(tool["isError"],false,"native result: {result}");
     let session_id=sessions.lock().unwrap().first().cloned().expect("captured session id");

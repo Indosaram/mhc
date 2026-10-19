@@ -14,7 +14,20 @@ pub fn normalize_path(input: &str, options: &PathInputOptions) -> Result<String,
         if let Some(rest) = normalized.strip_prefix("~/").or_else(|| if cfg!(windows) { normalized.strip_prefix("~\\") } else { None }) { return Ok(Path::new(&home).join(rest).to_string_lossy().into_owned()); }
     }
     if normalized.starts_with("file://") {
-        return url::Url::parse(&normalized).map_err(|error| error.to_string())?.to_file_path().map(|path| path.to_string_lossy().into_owned()).map_err(|()| "Invalid file URL path".to_owned());
+        let parsed = url::Url::parse(&normalized).map_err(|error| error.to_string())?;
+        if let Some(host) = parsed.host_str()
+            && !host.is_empty()
+            && host != "localhost"
+        {
+            return Err("Invalid file URL path".to_owned());
+        }
+        if let Ok(path) = parsed.to_file_path() {
+            return Ok(path.to_string_lossy().into_owned());
+        }
+        let decoded = percent_encoding::percent_decode_str(parsed.path())
+            .decode_utf8()
+            .map_err(|error| error.to_string())?;
+        return Ok(decoded.into_owned());
     }
     Ok(normalized)
 }

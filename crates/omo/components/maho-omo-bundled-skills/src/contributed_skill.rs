@@ -120,11 +120,22 @@ pub fn read_discover_cwd(event: &ResourcesDiscoverEvent) -> Option<PathBuf> {
 }
 
 fn canonical_path(path: &Path) -> PathBuf {
-    if path.exists() {
+    let canonical = if path.exists() {
         std::fs::canonicalize(path).unwrap_or_else(|_| absolute_path(path))
     } else {
         absolute_path(path)
+    };
+    #[cfg(windows)]
+    {
+        let s = canonical.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            PathBuf::from(stripped)
+        } else {
+            canonical
+        }
     }
+    #[cfg(not(windows))]
+    canonical
 }
 
 fn absolute_path(path: &Path) -> PathBuf {

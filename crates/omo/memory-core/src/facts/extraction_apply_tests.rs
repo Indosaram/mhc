@@ -40,7 +40,7 @@ fn author() -> GitCommitAuthor {
 
 fn fixture_with(exec: Option<Arc<dyn GitExec>>) -> (TempDir, PathBuf, GitMemoryRepo) {
     let tmp = TempDir::new().expect("tempdir");
-    let dir = tmp.path().canonicalize().expect("canonical");
+    let dir = crate::support::paths::strip_verbatim_prefix(&tmp.path().canonicalize().expect("canonical"));
     let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
         exec,
         ..GitMemoryRepoOptions::new(&dir, "facts-agent")

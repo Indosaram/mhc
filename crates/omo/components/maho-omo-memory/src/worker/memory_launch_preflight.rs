@@ -42,7 +42,11 @@ mod tests {
     fn success() -> ReflectionChildResult { ReflectionChildResult { code: Some(0), signal: None, stdout: String::new(), stderr: String::new(), timed_out: false } }
     #[tokio::test]
     async fn discovery_flags_filter_before_attempt_and_do_not_mutate_parent_env() {
-        let launch = Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "[ \"$SENPI_MEMORY_FACTS\" = 1 ] && [ \"$SENPI_PTY_FORCE_PIPE\" = 1 ] && printf 'builtin/fallback\\n'".into()] };
+        let launch = if cfg!(windows) {
+            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "if (process.env.SENPI_MEMORY_FACTS === '1' && process.env.SENPI_PTY_FORCE_PIPE === '1') console.log('builtin/fallback');".into()] }
+        } else {
+            Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "[ \"$SENPI_MEMORY_FACTS\" = 1 ] && [ \"$SENPI_PTY_FORCE_PIPE\" = 1 ] && printf 'builtin/fallback\\n'".into()] }
+        };
         let env = BTreeMap::new();
         let rest = [candidate("builtin/fallback")];
         let input = MemoryLaunchPreflightInput { first: candidate("extension/primary"), rest: &rest, launch: &launch, env: &env, env_flag: "SENPI_MEMORY_FACTS", config_sources: &[], surface_name: "facts", now_ms: 0 };
@@ -54,7 +58,11 @@ mod tests {
     }
     #[tokio::test]
     async fn foreign_package_directory_environment_is_removed_before_preflight() {
-        let launch = Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "[ -z \"$NPM_PACKAGE_DIR\" ] && [ \"$KEEP\" = yes ] && printf 'builtin/model\\n'".into()] };
+        let launch = if cfg!(windows) {
+            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "if (!process.env.NPM_PACKAGE_DIR && process.env.KEEP === 'yes') console.log('builtin/model');".into()] }
+        } else {
+            Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "[ -z \"$NPM_PACKAGE_DIR\" ] && [ \"$KEEP\" = yes ] && printf 'builtin/model\\n'".into()] }
+        };
         let env = BTreeMap::from([("NPM_PACKAGE_DIR".into(), "/foreign/package".into()), ("KEEP".into(), "yes".into())]);
         let input = MemoryLaunchPreflightInput { first: candidate("builtin/model"), rest: &[], launch: &launch, env: &env, env_flag: "SENPI_MEMORY_FACTS", config_sources: &[], surface_name: "facts", now_ms: 0 };
         let result = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |error| panic!("{error}"), |_, _, _| std::future::ready(Ok(success()))).await.unwrap();
@@ -63,7 +71,11 @@ mod tests {
     }
     #[tokio::test]
     async fn missing_catalog_models_retain_extension_enabled_reactive_attempt() {
-        let launch = Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "printf 'other/model\\n'".into()] };
+        let launch = if cfg!(windows) {
+            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "console.log('other/model');".into()] }
+        } else {
+            Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "printf 'other/model\\n'".into()] }
+        };
         let env = BTreeMap::new();
         let input = MemoryLaunchPreflightInput { first: candidate("builtin/model"), rest: &[], launch: &launch, env: &env, env_flag: "SENPI_MEMORY_REFLECTION", config_sources: &[], surface_name: "reflection", now_ms: 0 };
         let mut warning = String::new();
@@ -76,7 +88,11 @@ mod tests {
     }
     #[tokio::test]
     async fn unavailable_catalog_warns_and_preserves_reactive_chain() {
-        let launch = Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "exit 7".into()] };
+        let launch = if cfg!(windows) {
+            Launcher { command: "node".into(), prefix_args: vec!["-e".into(), "process.exit(7);".into()] }
+        } else {
+            Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "exit 7".into()] }
+        };
         let env = BTreeMap::new();
         let input = MemoryLaunchPreflightInput { first: candidate("builtin/model"), rest: &[], launch: &launch, env: &env, env_flag: "SENPI_MEMORY_FACTS", config_sources: &[], surface_name: "facts", now_ms: 0 };
         let mut warning = String::new();

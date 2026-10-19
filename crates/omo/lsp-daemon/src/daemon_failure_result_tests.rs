@@ -8,17 +8,19 @@ fn paths() -> DaemonPaths {
 
 #[test]
 fn caller_cancelled_request_reports_cancellation() {
-    let result = daemon_failure_result(&paths(), &DaemonRequestError::cancelled(true).into());
+    let p = paths();
+    let result = daemon_failure_result(&p, &DaemonRequestError::cancelled(true).into());
     assert!(result.is_error);
     assert_eq!(
         result.text(),
-        "LSP daemon request cancelled: the caller aborted this request (for example, the turn was interrupted).\nThe daemon stays available; no LSP work was applied. Retry when you are ready.\nSocket: /tmp/omo-lsp-test/v1/daemon.sock"
+        format!("LSP daemon request cancelled: the caller aborted this request (for example, the turn was interrupted).\nThe daemon stays available; no LSP work was applied. Retry when you are ready.\nSocket: {}", p.socket.display())
     );
 }
 
 #[test]
 fn timed_out_request_reports_the_timeout_budget() {
-    let result = daemon_failure_result(&paths(), &DaemonRequestError::timed_out(true, 1234).into());
+    let p = paths();
+    let result = daemon_failure_result(&p, &DaemonRequestError::timed_out(true, 1234).into());
     assert!(result.text().starts_with(
         "LSP daemon request timed out after 1234ms: the daemon did not respond in time.\n"
     ));
@@ -26,19 +28,20 @@ fn timed_out_request_reports_the_timeout_budget() {
     assert!(
         result
             .text()
-            .ends_with("Logs: /tmp/omo-lsp-test/v1/daemon.log")
+            .ends_with(&format!("Logs: {}", p.log.display()))
     );
 }
 
 #[test]
 fn genuine_transport_failure_reports_unreachable() {
+    let p = paths();
     let result = daemon_failure_result(
-        &paths(),
+        &p,
         &DaemonRequestError::new("connect ENOENT", false).into(),
     );
     assert_eq!(
         result.text(),
-        "LSP daemon unreachable: connect ENOENT.\nThe MCP server is a thin proxy and never runs language servers in-process.\nSocket: /tmp/omo-lsp-test/v1/daemon.sock\nLogs: /tmp/omo-lsp-test/v1/daemon.log\nThe daemon is auto-started on demand and will be retried on the next request."
+        format!("LSP daemon unreachable: connect ENOENT.\nThe MCP server is a thin proxy and never runs language servers in-process.\nSocket: {}\nLogs: {}\nThe daemon is auto-started on demand and will be retried on the next request.", p.socket.display(), p.log.display())
     );
 }
 

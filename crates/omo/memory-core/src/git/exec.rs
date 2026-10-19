@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -191,12 +191,59 @@ fn windows_git_candidates(options: &GitExecOptions) -> Vec<String> {
     candidates
 }
 
+fn resolve_executable_path(executable: &str, custom_path: &str, cwd: &Path) -> Option<PathBuf> {
+    if executable.contains('/') || executable.contains('\\') {
+        let p = PathBuf::from(executable);
+        return if p.is_absolute() {
+            Some(p)
+        } else {
+            Some(cwd.join(p))
+        };
+    }
+    for dir in std::env::split_paths(custom_path) {
+        let candidate = dir.join(executable);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            for ext in [".exe", ".cmd", ".bat"] {
+                let candidate_ext = dir.join(format!("{executable}{ext}"));
+                if candidate_ext.is_file() {
+                    return Some(candidate_ext);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn spawn_and_capture(
     executable: &str,
     argv: &[String],
     options: &GitExecOptions,
 ) -> std::io::Result<GitExecResult> {
-    let mut cmd = Command::new(executable);
+    let explicit_path = options
+        .env
+        .iter()
+        .find(|(k, v)| k.eq_ignore_ascii_case("PATH") && !v.trim().is_empty())
+        .map(|(_, v)| v.clone());
+
+    let resolved_exe = if let Some(ref path_var) = explicit_path {
+        match resolve_executable_path(executable, path_var, &options.cwd) {
+            Some(path) => path.to_string_lossy().into_owned(),
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("program not found: {executable}"),
+                ));
+            }
+        }
+    } else {
+        executable.to_string()
+    };
+
+    let mut cmd = Command::new(&resolved_exe);
     cmd.args(argv);
     cmd.current_dir(&options.cwd);
 
@@ -204,6 +251,11 @@ fn spawn_and_capture(
         for (key, val) in &options.env {
             cmd.env(key, val);
         }
+    }
+    #[cfg(windows)]
+    if let Some(ref path_var) = explicit_path {
+        cmd.env("PATH", path_var);
+        cmd.env("Path", path_var);
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
 

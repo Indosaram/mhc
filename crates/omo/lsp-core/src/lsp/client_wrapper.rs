@@ -40,7 +40,7 @@ fn outside_cwd_error(file_path: &str) -> LspError {
 fn realpath(path: &str) -> Option<String> {
     std::fs::canonicalize(path)
         .ok()
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(|path| crate::request_context::strip_verbatim_prefix(&path.to_string_lossy()))
 }
 
 pub fn is_directory_path(file_path: &str) -> bool {

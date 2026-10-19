@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use super::*;
 use crate::identity::layout::{AGENTS_DIRNAME, MEMORY_ROOT_ENV_VAR, default_memory_root};
+use crate::support::paths::resolve_from;
 use crate::support::sha256::sha256_hex;
 
 fn env_with(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -107,12 +108,14 @@ fn test_resolve_memory_identity_when_cwd_spelling_varies_then_normalization_yiel
 
 #[test]
 fn test_resolve_memory_identity_when_auto_then_the_id_is_slug_plus_sha256_of_the_full_path() {
+    let cwd = Path::new("/x/My Proj");
     let identity =
-        resolve_memory_identity(Some("auto"), Path::new("/x/My Proj"), &BTreeMap::new()).unwrap();
+        resolve_memory_identity(Some("auto"), cwd, &BTreeMap::new()).unwrap();
+    let normalized = resolve_from(Path::new("."), cwd);
     assert_eq!(identity.safe_slug, "my-proj");
     assert_eq!(
         identity.id,
-        format!("my-proj-{}", expected_hash("/x/My Proj"))
+        format!("my-proj-{}", expected_hash(&normalized.to_string_lossy()))
     );
 }
 
@@ -165,13 +168,15 @@ fn test_resolve_memory_identity_when_explicit_has_whitespace_then_it_matches_the
 
 #[test]
 fn test_resolve_memory_identity_when_value_is_auto_cased_then_only_lowercase_triggers_auto() {
+    let cwd = Path::new("/repo/alpha");
     let keyword =
-        resolve_memory_identity(Some("auto"), Path::new("/repo/alpha"), &BTreeMap::new()).unwrap();
+        resolve_memory_identity(Some("auto"), cwd, &BTreeMap::new()).unwrap();
     let named =
-        resolve_memory_identity(Some("Auto"), Path::new("/repo/alpha"), &BTreeMap::new()).unwrap();
+        resolve_memory_identity(Some("Auto"), cwd, &BTreeMap::new()).unwrap();
+    let normalized = resolve_from(Path::new("."), cwd);
     assert_eq!(
         keyword.id,
-        format!("alpha-{}", expected_hash("/repo/alpha"))
+        format!("alpha-{}", expected_hash(&normalized.to_string_lossy()))
     );
     assert_eq!(named.safe_slug, "auto");
     assert_eq!(named.id, format!("auto-{}", expected_hash("Auto")));

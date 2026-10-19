@@ -166,12 +166,20 @@ fn same_record(a: &WorkpoolRecord,b: &WorkpoolRecord) -> bool {
         && canonical(&serde_json::to_value(&a.worker_spec.start).unwrap_or(Value::Null))==canonical(&serde_json::to_value(&b.worker_spec.start).unwrap_or(Value::Null))
         && canonical(&serde_json::to_value(&a.worker_spec.plan).unwrap_or(Value::Null))==canonical(&serde_json::to_value(&b.worker_spec.plan).unwrap_or(Value::Null))
 }
-fn random_hex() -> Result<String, WorkpoolError> { let mut bytes=[0u8;16]; let mut file=File::open("/dev/urandom").map_err(|e|io_error("Could not obtain random pool id.",e))?;file.read_exact(&mut bytes).map_err(|e|io_error("Could not obtain random pool id.",e))?;Ok(bytes.iter().map(|b|format!("{b:02x}")).collect()) }
+fn random_hex() -> Result<String, WorkpoolError> { Ok(uuid::Uuid::new_v4().simple().to_string()) }
 fn write_record(path: &Path, record: &DiskRecord) -> Result<(), WorkpoolError> {
     let parent=path.parent().ok_or_else(||corrupt("Pool path has no parent."))?;
     let temp=parent.join(format!(".tmp-{}",random_hex()?));
     let bytes=serde_json::to_vec(record).map_err(|e|corrupt(e.to_string()))?;
-    let result=(|| { let mut file=OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|e|io_error("Could not create temporary pool record.",e))?;file.write_all(&bytes).map_err(|e|io_error("Could not write pool record.",e))?;file.sync_all().map_err(|e|io_error("Could not sync pool record.",e))?;fs::rename(&temp,path).map_err(|e|io_error("Could not replace pool record.",e))?;File::open(parent).and_then(|f|f.sync_all()).map_err(|e|io_error("Could not sync pool directory.",e)) })();
+    let result=(|| {
+        let mut file=OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|e|io_error("Could not create temporary pool record.",e))?;
+        file.write_all(&bytes).map_err(|e|io_error("Could not write pool record.",e))?;
+        file.sync_all().map_err(|e|io_error("Could not sync pool record.",e))?;
+        fs::rename(&temp,path).map_err(|e|io_error("Could not replace pool record.",e))?;
+        #[cfg(unix)]
+        File::open(parent).and_then(|f|f.sync_all()).map_err(|e|io_error("Could not sync pool directory.",e))?;
+        Ok::<(), WorkpoolError>(())
+    })();
     if result.is_err(){let _=fs::remove_file(temp);} result
 }
 fn open_lock(path:&Path)->Result<File,WorkpoolError>{OpenOptions::new().create(true).truncate(false).read(true).write(true).open(path).map_err(|e|io_error("Could not open workpool lock.",e))}

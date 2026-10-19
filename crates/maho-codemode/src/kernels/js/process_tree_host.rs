@@ -178,11 +178,25 @@ mod tests {
 
     #[tokio::test]
     async fn process_output_is_bounded_and_preserves_nonzero_partial_output() {
-        let mut command=tokio::process::Command::new("sh");
-        command.args(["-c","printf 123456789"]);
+        let mut command = if cfg!(windows) {
+            let mut cmd = tokio::process::Command::new("node");
+            cmd.args(["-e", "process.stdout.write('123456789')"]);
+            cmd
+        } else {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.args(["-c", "printf 123456789"]);
+            cmd
+        };
         assert_eq!(bounded_process_output(&mut command,8).await,"12345678");
-        let mut command=tokio::process::Command::new("sh");
-        command.args(["-c","printf '42 1'; exit 1"]);
+        let mut command = if cfg!(windows) {
+            let mut cmd = tokio::process::Command::new("node");
+            cmd.args(["-e", "process.stdout.write('42 1'); process.exit(1)"]);
+            cmd
+        } else {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.args(["-c", "printf '42 1'; exit 1"]);
+            cmd
+        };
         assert_eq!(bounded_process_output(&mut command,8).await,"42 1");
     }
 }

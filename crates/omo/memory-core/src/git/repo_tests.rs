@@ -332,7 +332,7 @@ fn test_supports_worktrees_and_merges() {
 
     assert_eq!(merged_sha.len(), 40);
     assert_eq!(
-        fs::read_to_string(repo.dir.join("feature.md")).expect("read"),
+        fs::read_to_string(repo.dir.join("feature.md")).expect("read").replace("\r\n", "\n"),
         "feature\n"
     );
 }

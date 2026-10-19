@@ -13,6 +13,20 @@ fn error(error: impl std::fmt::Display) -> SessionError {
     SessionError::io(error.to_string())
 }
 
+fn remove_file_retry(path: &Path) -> std::io::Result<()> {
+    for attempt in 0..10 {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if attempt < 9 && cfg!(windows) && e.raw_os_error() == Some(32) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 pub const SQLITE_STORAGE_VERSION: u32 = 1;
 pub const SQLITE_SESSION_EXTENSION: &str = ".sqlite";
 pub struct SqliteSessionRepo {
@@ -113,6 +127,8 @@ impl SqliteSessionRepo {
         let close_id_on_facade_close = close_id.clone();
         self.storages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(),storage.clone());
         let session_tracking = Arc::downgrade(&self.sessions);
+        let storage_for_session_close = storage.clone();
+        let storage_for_facade_close = storage.clone();
         let session = Arc::new(StorageBackedSession::new(
             metadata,
             storage,
@@ -126,6 +142,7 @@ impl SqliteSessionRepo {
                     }
                     if let Some(tracking)=facade_tracking_on_session_close.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_session_close);}
                     if let Some(tracking)=storage_tracking_on_session_close.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_session_close);}
+                    storage_for_session_close.close_sync();
                 })),
                 ..Default::default()
             },
@@ -142,6 +159,7 @@ impl SqliteSessionRepo {
             if let Some(tracking) = storage_tracking_on_facade_close.upgrade() {
                 tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_facade_close);
             }
+            storage_for_facade_close.close_sync();
         })));
         facade.attach();
         self.facades.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, facade.clone());
@@ -333,10 +351,10 @@ impl SessionRepo for SqliteSessionRepo {
                 session_row::delete_session_rows(&tx, &metadata.id).map_err(error)?;
                 tx.commit().map_err(error)?;
             } else {
-                drop(db);
-                std::fs::remove_file(&path).map_err(error)?;
+                let _ = db.close();
+                remove_file_retry(&path).map_err(error)?;
                 for suffix in ["-wal", "-shm"] {
-                    match std::fs::remove_file(format!("{}{suffix}", path.display())) {
+                    match remove_file_retry(Path::new(&format!("{}{suffix}", path.display()))) {
                         Ok(()) => {}
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                         Err(e) => return Err(error(e)),

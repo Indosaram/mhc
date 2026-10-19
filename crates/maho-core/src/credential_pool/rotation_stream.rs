@@ -602,7 +602,8 @@ mod tests {
         let mut sources = sources(&repository, None, &env, 1_000);
         sources.policy.slots.insert("named".to_owned(), PolicySlotRef { env: Some("CUSTOM_KEY".to_owned()), value: None });
         sources.policy.slots.insert("missing".to_owned(), PolicySlotRef { env: Some("NOT_SET".to_owned()), value: None });
-        sources.policy.slots.insert("literal".to_owned(), PolicySlotRef { env: None, value: Some("$HOME".to_owned()) });
+        let home_var = if cfg!(windows) { "$USERPROFILE" } else { "$HOME" };
+        sources.policy.slots.insert("literal".to_owned(), PolicySlotRef { env: None, value: Some(home_var.to_owned()) });
         let slots = list_rotation_slots(&sources, true).await.expect("slots");
         let names: Vec<&str> = slots.iter().map(|slot| slot.slot.name.as_str()).collect();
         assert!(names.contains(&"named"));

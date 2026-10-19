@@ -4,7 +4,9 @@ use serde_json::json;
 use tempfile::TempDir;
 
 fn home() -> String {
-    std::env::var("HOME").expect("HOME")
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .expect("HOME or USERPROFILE")
 }
 
 fn temp_home_root(prefix: &str) -> (TempDir, String) {
@@ -12,7 +14,9 @@ fn temp_home_root(prefix: &str) -> (TempDir, String) {
         .prefix(prefix)
         .tempdir_in(home())
         .expect("tempdir");
-    let path = dir.path().to_string_lossy().into_owned();
+    let path = std::fs::canonicalize(dir.path())
+        .map(|p| strip_verbatim_prefix(&p.to_string_lossy()))
+        .unwrap_or_else(|_| dir.path().to_string_lossy().into_owned());
     (dir, path)
 }
 
@@ -106,9 +110,8 @@ fn equivalent_macos_var_spelling_canonicalizes_to_one_identity() {
         .expect("tempdir");
     let system_root = dir.path().to_string_lossy().into_owned();
     let canonical_root = std::fs::canonicalize(&system_root)
-        .expect("canonical")
-        .to_string_lossy()
-        .into_owned();
+        .map(|p| strip_verbatim_prefix(&p.to_string_lossy()))
+        .expect("canonical");
     let alias_root = match canonical_root.strip_prefix("/private/var/") {
         Some(rest) => format!("/var/{rest}"),
         None => system_root,

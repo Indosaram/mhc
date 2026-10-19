@@ -45,8 +45,8 @@ fn forks_history_into_new_session_with_parent_source() {
 #[test]
 fn session_dir_prefers_flag_then_env_then_setting_and_expands_tilde() {
     let home = maho_core::config::home_dir();
-    assert_eq!(resolve_session_dir(Some("~/flag"), Some("/env"), Some("/setting")), Some(format!("{}/flag", home.trim_end_matches('/'))));
-    assert_eq!(resolve_session_dir(None, Some("~/env"), Some("/setting")), Some(format!("{}/env", home.trim_end_matches('/'))));
+    assert_eq!(resolve_session_dir(Some("~/flag"), Some("/env"), Some("/setting")), Some(std::path::Path::new(&home).join("flag").to_string_lossy().into_owned()));
+    assert_eq!(resolve_session_dir(None, Some("~/env"), Some("/setting")), Some(std::path::Path::new(&home).join("env").to_string_lossy().into_owned()));
     assert_eq!(resolve_session_dir(None, Some(""), Some("/setting")).as_deref(), Some("/setting"));
     assert_eq!(resolve_session_dir(None, None, None), None);
 }

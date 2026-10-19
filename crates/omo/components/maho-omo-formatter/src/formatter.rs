@@ -590,9 +590,10 @@ impl FormatterStep {
 
             if result.status == FormatStatus::Formatted {
                 let rel_path = file_path.strip_prefix(cwd).unwrap_or(&file_path);
+                let rel_display = rel_path.to_string_lossy().replace('\\', "/");
                 let text = format!(
                     "\n\n(OmO) auto-formatted {} with {} (+{}/-{} lines). File content changed; re-read before exact-text edits.",
-                    rel_path.display(),
+                    rel_display,
                     marker.tool,
                     result.added,
                     result.removed

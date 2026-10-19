@@ -185,7 +185,7 @@ pub fn export_session_to_html_with_tools(session: &crate::session_manager::Sessi
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn tilde_path_expands_home() { assert!(expand_tilde("~/x").to_string_lossy().ends_with("/x")); }
+    #[test] fn tilde_path_expands_home() { assert!(expand_tilde("~/x").to_string_lossy().replace('\\', "/").ends_with("/x")); }
 
     #[test]
     fn default_export_name_strips_only_a_jsonl_suffix() {

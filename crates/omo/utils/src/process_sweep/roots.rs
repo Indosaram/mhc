@@ -92,6 +92,15 @@ fn add_root(roots: &mut Vec<String>, root: Option<&str>) {
     };
     let resolved = std::path::absolute(root).unwrap_or_else(|_| PathBuf::from(root));
     let real = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+    #[cfg(windows)]
+    let real = {
+        let s = real.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            PathBuf::from(stripped)
+        } else {
+            real
+        }
+    };
     for candidate in [resolved, real] {
         let value = candidate.to_string_lossy().into_owned();
         if !roots.contains(&value) {

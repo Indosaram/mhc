@@ -40,7 +40,8 @@ fn given_non_fork_reason_when_resolved_then_own_only_without_diagnostic() {
 #[test]
 fn given_fork_header_declaring_parent_when_resolved_then_source_identity_returned() {
     let parent = temp_file("parent", br#"{"type":"session","id":"parent"}"#);
-    let current = temp_file("current", format!(r#"{{"type":"session","id":"child","parentSession":"{}"}}"#, parent.display()).as_bytes());
+    let current_header = json!({"type":"session","id":"child","parentSession":parent.to_string_lossy()});
+    let current = temp_file("current", current_header.to_string().as_bytes());
     let result = resolve_dag_fork_source(ResolveDagForkSourceInput {
         event: json!({"reason":"fork","previousSessionFile":parent.to_string_lossy()}),
         current_session_id: "child".into(),
@@ -55,7 +56,8 @@ fn given_fork_header_declaring_parent_when_resolved_then_source_identity_returne
 fn given_offered_path_not_matching_declared_parent_when_resolved_then_source_is_rejected() {
     let parent = temp_file("parent-mismatch", br#"{"type":"session","id":"parent"}"#);
     let other = temp_file("other-mismatch", br#"{"type":"session","id":"other"}"#);
-    let current = temp_file("current-mismatch", format!(r#"{{"type":"session","id":"child","parentSession":"{}"}}"#, parent.display()).as_bytes());
+    let current_header = json!({"type":"session","id":"child","parentSession":parent.to_string_lossy()});
+    let current = temp_file("current-mismatch", current_header.to_string().as_bytes());
     let result = resolve_dag_fork_source(ResolveDagForkSourceInput {
         event: json!({"reason":"fork","previousSessionFile":other.to_string_lossy()}),
         current_session_id: "child".into(),

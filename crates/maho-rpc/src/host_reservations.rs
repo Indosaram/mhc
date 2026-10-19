@@ -14,11 +14,50 @@ pub fn read_process_start_time(pid:u32)->Option<String>{let stat=fs::read_to_str
 #[cfg(target_os="macos")]
 pub fn read_process_start_time(pid:u32)->Option<String>{let info=libproc::proc_pid::pidinfo::<libproc::bsd_info::BSDInfo>(i32::try_from(pid).ok()?,1).ok()?;Some(format!("{}.{:06}",info.pbi_start_tvsec,info.pbi_start_tvusec))}
 #[cfg(not(unix))]
-pub fn read_process_start_time(_pid:u32)->Option<String>{None}
+pub fn read_process_start_time(pid:u32)->Option<String>{
+    if pid == std::process::id() {
+        static OWN_START: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        Some(OWN_START.get_or_init(|| {
+            std::process::Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command",
+                    &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate.ToFileTimeUtc().ToString()")])
+                .output()
+                .ok()
+                .and_then(|output| {
+                    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() { Some(s) } else { None }
+                })
+                .unwrap_or_else(|| {
+                    format!("{:?}", std::time::SystemTime::UNIX_EPOCH.elapsed().unwrap_or_default().as_millis())
+                })
+        }).clone())
+    } else {
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command",
+                &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate.ToFileTimeUtc().ToString()")])
+            .output()
+            .ok()
+            .and_then(|output| {
+                let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() { Some(s) } else { None }
+            })
+    }
+}
 #[cfg(unix)]
 pub fn process_is_live(pid:u32)->bool{let Some(pid)=i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw)else{return false;};match rustix::process::test_kill_process(pid){Ok(())=>true,Err(error)=>error==rustix::io::Errno::PERM}}
 #[cfg(not(unix))]
-pub fn process_is_live(_pid:u32)->bool{false}
+pub fn process_is_live(pid:u32)->bool{
+    if pid == 0 { return false; }
+    if pid == std::process::id() { return true; }
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}")])
+        .output()
+        .map(|output| {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout.contains(&pid.to_string()) && !stdout.contains("No tasks are running") && !stdout.contains("INFO:")
+        })
+        .unwrap_or(false)
+}
 pub fn claim_owner_is_live(owner:&SessionPathOwner)->bool{if !process_is_live(owner.pid){return false;}match (&owner.process_start_time,read_process_start_time(owner.pid)){(Some(recorded),Some(current))=>recorded==&current,_=>true}}
 fn read_owner(file:&Path)->Option<SessionPathOwner>{let value:serde_json::Value=serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;Some(SessionPathOwner{instance_id:value["instanceId"].as_str()?.into(),pid:u32::try_from(value["pid"].as_u64()?).ok()?,session_path:value["sessionPath"].as_str()?.into(),process_start_time:value["processStartTime"].as_str().map(str::to_owned),attached:value["attached"].as_bool(),current:None})}
 pub fn read_session_path_claims(dir:&Path)->Vec<SessionPathClaim>{let Ok(entries)=fs::read_dir(dir)else{return vec![];};entries.filter_map(Result::ok).filter(|entry|entry.file_name().to_string_lossy().ends_with(".json")).filter_map(|entry|read_owner(&entry.path()).map(|owner|SessionPathClaim{file:entry.path(),owner})).collect()}

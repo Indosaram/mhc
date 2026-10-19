@@ -51,7 +51,10 @@ impl ChildReaperSyscalls for KernelChildReaperSyscalls {
     #[cfg(not(unix))]
     fn is_waitable(&mut self,_pid:i32) -> bool { false }
     #[cfg(not(unix))]
-    fn reap_exited(&mut self,_pid:i32) -> bool { false }
+    fn reap_exited(&mut self,pid:i32) -> bool {
+        assert!(pid>0,"child reaper refuses to wait on pid {pid}");
+        false
+    }
     #[cfg(target_os="linux")]
     fn describe(&mut self,pid:i32) -> String { linux_stat(pid).as_deref().map(name_of_stat).unwrap_or("").into() }
     #[cfg(not(unix))]

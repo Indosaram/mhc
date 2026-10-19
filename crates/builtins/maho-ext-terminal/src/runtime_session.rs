@@ -140,7 +140,28 @@ impl TerminalRuntimeSession {
         let release_screen=screen.clone();let released_snapshot=final_screen.clone();
         let exit_thread=std::thread::spawn(move || {
             // session-exit.ts `normalizeTerminalExit`: any requested kill (SIGTERM included) marks the exit cancelled.
-            let result=match waiter.join() {Ok(result)=>result.map(|mut exit|{exit.cancelled|=exit_kill_requested.load(Ordering::SeqCst);exit}).map_err(|e|e.to_string()),Err(_)=>Err("terminal exit waiter panicked".to_owned())};
+            let result = match waiter.join() {
+                Ok(Ok(mut exit)) => {
+                    exit.cancelled |= exit_kill_requested.load(Ordering::SeqCst);
+                    Ok(exit)
+                }
+                Ok(Err(_)) if exit_kill_requested.load(Ordering::SeqCst) => {
+                    Ok(PtyExit {
+                        exit_code: None,
+                        cancelled: true,
+                        timed_out: false,
+                    })
+                }
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) if exit_kill_requested.load(Ordering::SeqCst) => {
+                    Ok(PtyExit {
+                        exit_code: None,
+                        cancelled: true,
+                        timed_out: false,
+                    })
+                }
+                Err(_) => Err("terminal exit waiter panicked".to_owned()),
+            };
             if let Ok(mut guard)=release_screen.lock() && let Some(mut parser)=guard.take() {
                 let mut snapshot=parser_snapshot(&mut parser).unwrap_or(TerminalScreenSnapshot {cols:0,rows:0,visible_grid:vec![],scrollback:vec![],cursor:(0,0)});snapshot.scrollback.clear();
                 if let Ok(mut final_guard)=released_snapshot.lock(){*final_guard=Some(snapshot);}
@@ -214,7 +235,14 @@ impl TerminalRuntimeSession {
         self.kill_requested.store(true,Ordering::SeqCst);
         let result=match &mut self.session {TerminalSessionBackend::Native(session) if signal=="SIGKILL"=>session.kill(),TerminalSessionBackend::Native(session)=>session.signal(signal),TerminalSessionBackend::PipeFallback(session)=>session.kill(signal)};
         // A session that exited between the state check and the signal is already stopped.
-        match result {Ok(())=>Ok(()),Err(error) if error.to_string()=="pty session is closed"||error.to_string().contains("No such process") =>Ok(()),Err(_) if self.exited()? =>Ok(()),Err(error)=>Err(error.into())}
+        match result {
+            Ok(())=>Ok(()),
+            Err(error) if error.to_string()=="pty session is closed"
+                || error.to_string().contains("No such process")
+                || (cfg!(windows) && (error.to_string().contains("Access is denied") || error.to_string().contains("os error 5") || error.to_string().contains("os error 258"))) =>Ok(()),
+            Err(_) if self.exited()? =>Ok(()),
+            Err(error)=>Err(error.into())
+        }
     }
     pub fn dispose(mut self)->Result<(),RuntimeError> {
         if !self.exited()? {self.kill()?;}
@@ -239,7 +267,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn resize_preserves_screen_history_even_when_log_buffer_is_empty()->Result<(),RuntimeError> {
-        let mut runtime=TerminalRuntimeSession::start("resize",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; read start; printf 'screen-kept'; read end"))?;
+        let mut runtime=TerminalRuntimeSession::start("resize",crate::shared::test_sh_options("stty -echo; read start; printf 'screen-kept'; read end"))?;
         let (_,mut output)=runtime.subscribe_output()?;runtime.write(b"begin\n")?;
         tokio::time::timeout(Duration::from_secs(5),async {let mut observed=String::new();while !observed.contains("screen-kept") {observed.push_str(&output.recv().await.unwrap());}}).await.unwrap();
         runtime.output.lock().unwrap().buffer.clear();runtime.resize(100,30)?;
@@ -247,14 +275,14 @@ mod tests {
     }
     #[test]
     fn snapshot_exposes_scrollback_and_restores_visible_view()->Result<(),RuntimeError> {
-        let runtime=TerminalRuntimeSession::start("screen",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'one\r\ntwo\r\nthree'").size(20,2))?;
+        let runtime=TerminalRuntimeSession::start("screen",crate::shared::test_sh_options("stty -echo; printf 'one\r\ntwo\r\nthree'").size(20,2))?;
         runtime.wait(Duration::from_secs(5))?;let snapshot=runtime.snapshot()?;
         assert!(snapshot.scrollback.is_empty());assert_eq!(snapshot.visible_grid,["two","three"]);assert_eq!(runtime.snapshot()?,snapshot);runtime.dispose()
     }
 
     #[test]
     fn resize_updates_geometry_and_retains_prior_screen_content()->Result<(),RuntimeError> {
-        let runtime=TerminalRuntimeSession::start("screen",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'one\r\ntwo\r\nthree'").size(20,2))?;
+        let runtime=TerminalRuntimeSession::start("screen",crate::shared::test_sh_options("stty -echo; printf 'one\r\ntwo\r\nthree'").size(20,2))?;
         runtime.wait(Duration::from_secs(5))?;
         let before=runtime.snapshot()?;runtime.resize(40,6)?;let after=runtime.snapshot()?;
         assert_eq!(after,before);assert!(runtime.full_output()?.contains("one"));
@@ -263,7 +291,7 @@ mod tests {
 
     #[test]
     fn resize_preserves_operation_history_at_the_new_geometry()->Result<(),RuntimeError> {
-        let runtime=TerminalRuntimeSession::start("wrap",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'").size(20,10))?;
+        let runtime=TerminalRuntimeSession::start("wrap",crate::shared::test_sh_options("stty -echo; printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'").size(20,10))?;
         runtime.wait(Duration::from_secs(5))?;
         let before=runtime.snapshot()?;assert_eq!(before.cols,20);assert!(before.visible_grid.iter().filter(|line|line.contains('A')).count()>=3);
         runtime.resize(60,10)?;let after=runtime.snapshot()?;
@@ -273,7 +301,7 @@ mod tests {
 
     #[test]
     fn exited_session_retains_final_screen_without_scrollback()->Result<(),RuntimeError> {
-        let runtime=TerminalRuntimeSession::start("screen",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'one\\r\\ntwo\\r\\nthree'").size(20,2))?;
+        let runtime=TerminalRuntimeSession::start("screen",crate::shared::test_sh_options("stty -echo; printf 'one\\r\\ntwo\\r\\nthree'").size(20,2))?;
         runtime.wait(Duration::from_secs(5))?;let snapshot=runtime.snapshot()?;
         assert!(snapshot.scrollback.is_empty());assert!(snapshot.visible_grid.iter().any(|line|line.contains("three")));
         assert_eq!(runtime.snapshot()?,snapshot);runtime.dispose()
@@ -293,7 +321,7 @@ mod tests {
 
     #[test]
     fn real_pty_output_exit_and_delta_are_observable()->Result<(),RuntimeError> {
-        let runtime=TerminalRuntimeSession::start("printf ready",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'").timeout(Duration::from_secs(5)))?;
+        let runtime=TerminalRuntimeSession::start("printf ready",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'").timeout(Duration::from_secs(5)))?;
         assert_eq!(runtime.wait(Duration::from_secs(10))?.exit_code,Some(0));assert!(runtime.exited()?);
         assert_eq!(runtime.full_output()?,"ready\r\n");assert_eq!(runtime.read_delta()?.text,"ready\r\n");assert!(runtime.read_delta()?.text.is_empty());runtime.dispose()
     }
@@ -308,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn atomic_subscription_covers_history_and_future_without_cursor_interference()->Result<(),RuntimeError> {
-        let mut runtime=TerminalRuntimeSession::start("read input",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'; read value; printf '%s\\n' \"$value\"").timeout(Duration::from_secs(5)))?;
+        let mut runtime=TerminalRuntimeSession::start("read input",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'; read value; printf '%s\\n' \"$value\"").timeout(Duration::from_secs(5)))?;
         let (mut output,mut receiver)=runtime.subscribe_output()?;
         tokio::time::timeout(Duration::from_secs(5),async {while !output.contains("ready\r\n") {output.push_str(&receiver.recv().await.expect("output sender"));}}).await.map_err(|_|RuntimeError::WaitTimeout)?;
         runtime.write(b"next\n")?;
@@ -320,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn disposed_output_observer_stops_receiving_after_history_drain()->Result<(),RuntimeError> {
-        let mut runtime=TerminalRuntimeSession::start("read input",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'; read value; printf '%s\\n' \"$value\"").timeout(Duration::from_secs(5)))?;
+        let mut runtime=TerminalRuntimeSession::start("read input",crate::shared::test_sh_options("stty -echo; printf 'ready\\n'; read value; printf '%s\\n' \"$value\"").timeout(Duration::from_secs(5)))?;
         let (mut output,mut receiver,guard)=runtime.subscribe_output_guarded()?;
         tokio::time::timeout(Duration::from_secs(5),async {while !output.contains("ready\r\n") {output.push_str(&receiver.recv().await.expect("output sender"));}}).await.map_err(|_|RuntimeError::WaitTimeout)?;
         while receiver.try_recv().is_ok() {}

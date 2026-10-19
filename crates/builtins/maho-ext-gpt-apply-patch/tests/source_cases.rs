@@ -26,10 +26,14 @@ fn pinned_heredoc_regex_whitespace_and_quote_boundaries() {
 
 #[test]
 fn workspace_resolves_root_parent_empty_and_absolute_segments() {
+    let root_work = if cfg!(windows) { "C:\\root\\work" } else { "/root/work" };
+    let file = if cfg!(windows) { "C:\\file" } else { "/file" };
+    let elsewhere_file = if cfg!(windows) { "C:\\elsewhere\\file" } else { "/elsewhere/file" };
+    let elsewhere_input = if cfg!(windows) { "C:\\elsewhere\\.\\child\\..\\file" } else { "/elsewhere/./child/../file" };
     for (cwd, path, expected) in [
-        ("/root/work", "../../../../file", "/file"),
-        ("/root/work", "", "/root/work"),
-        ("/root/work", "/elsewhere/./child/../file", "/elsewhere/file"),
+        (root_work, "../../../../file", file),
+        (root_work, "", root_work),
+        (root_work, elsewhere_input, elsewhere_file),
     ] {
         assert_eq!(resolve_patch_path(Path::new(cwd), Path::new(path)), PathBuf::from(expected));
     }

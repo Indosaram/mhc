@@ -23,10 +23,13 @@ fn repo(f: Arc<dyn FileSystem>) -> JsonlSessionRepo { JsonlSessionRepo::new(Json
 fn iso(t: i64) -> String { if t == NOW { "2023-11-14T22:13:20.000Z".into() } else { format!("2023-11-14T22:13:{}.{:03}Z", 20 + ((t-NOW)/1000), (t-NOW)%1000) } }
 
 async fn fixture(f: &Arc<dyn FileSystem>, records: &[Value], parent: Option<&str>) -> (String, String) {
-    let dir = f.join_path(vec!["sessions".into(), "--workspace--".into()], &BACKGROUND_CONTEXT).await.expect("join");
+    let cwd = f.absolute_path("/workspace", &BACKGROUND_CONTEXT).await.expect("abs cwd");
+    let safe_cwd = cwd.trim_start_matches(['/', '\\']).chars().map(|c| match c { '/' | '\\' | ':' => '-', other => other }).collect::<String>();
+    let session_dir = format!("--{safe_cwd}--");
+    let dir = f.join_path(vec!["sessions".into(), session_dir], &BACKGROUND_CONTEXT).await.expect("join");
     f.create_dir(&dir, None, &BACKGROUND_CONTEXT).await.expect("dir");
-    let path = f.absolute_path(&format!("{dir}/legacy.jsonl"), &BACKGROUND_CONTEXT).await.expect("path");
-    let mut all = vec![json!({"type":"session","version":3,"id":"legacy","timestamp":iso(NOW),"cwd":"/workspace"})];
+    let path = f.join_path(vec![dir, "legacy.jsonl".into()], &BACKGROUND_CONTEXT).await.expect("path");
+    let mut all = vec![json!({"type":"session","version":3,"id":"legacy","timestamp":iso(NOW),"cwd":cwd})];
     if let Some(p) = parent { all[0]["parentSession"] = json!(p); }
     all.extend_from_slice(records);
     let content = all.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
@@ -43,7 +46,8 @@ fn thinking(id: &str, parent: &str, level: &str, timestamp: i64) -> Value { json
 
 #[tokio::test] async fn discovers_legacy_v3_without_rewriting() {
     let r=root("discover"); let f=fs(&r); let (path, content)=fixture(&f,&[],Some("/old-session.jsonl")).await; let m=metadata(&repo(f.clone())).await;
-    assert_eq!(m.id,"legacy"); assert_eq!(m.created_at,NOW); assert_eq!(m.storage_version,JSONL_STORAGE_VERSION); assert_eq!(m.cwd,"/workspace"); assert_eq!(m.path,path); assert_eq!(m.legacy_parent_session_path.as_deref(),Some("/old-session.jsonl")); assert!(m.modified_at>0); assert_eq!(f.read_text_file(&path,&BACKGROUND_CONTEXT).await.expect("read"),content); std::fs::remove_dir_all(r).expect("cleanup");
+    let expected_cwd = f.absolute_path("/workspace", &BACKGROUND_CONTEXT).await.expect("cwd");
+    assert_eq!(m.id,"legacy"); assert_eq!(m.created_at,NOW); assert_eq!(m.storage_version,JSONL_STORAGE_VERSION); assert_eq!(m.cwd,expected_cwd); assert_eq!(m.path,path); assert_eq!(m.legacy_parent_session_path.as_deref(),Some("/old-session.jsonl")); assert!(m.modified_at>0); assert_eq!(f.read_text_file(&path,&BACKGROUND_CONTEXT).await.expect("read"),content); std::fs::remove_dir_all(r).expect("cleanup");
 }
 
 async fn parent_case(label:&str, header:Value, expected:&str) { let r=root(label); let f=fs(&r); let p=f.absolute_path(&format!("parent-{label}.jsonl"),&BACKGROUND_CONTEXT).await.expect("path"); f.write_file(&p,format!("{}\n",header).as_bytes(),&BACKGROUND_CONTEXT).await.expect("parent"); fixture(&f,&[],Some(&p)).await; let m=metadata(&repo(f.clone())).await; assert_eq!(m.parent_session_id.as_deref(),Some(expected)); assert!(m.legacy_parent_session_path.is_none()); std::fs::remove_dir_all(r).expect("cleanup"); }

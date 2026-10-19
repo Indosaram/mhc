@@ -117,11 +117,15 @@ fn real_session()->maho_core::agent_session::AgentSession {
     controller.event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None })).await.unwrap();
 }
 #[tokio::test] async fn unreadable_store_fails_closed_without_dispatch() {
-    let dir=tempfile::tempdir().unwrap(); let base=dir.path().join("file"); std::fs::write(&base,"not a directory").unwrap();
+    let dir=tempfile::tempdir().unwrap();
+    let session=real_session();
+    let store_file = dir.path().join(format!("{}.json", crate::store::encoded_session_id(&crate::types::LoopStoreRef { base_dir: dir.path().into(), session_id: session.session_id() })));
+    std::fs::create_dir_all(&store_file).unwrap();
+    let base = dir.path().to_path_buf();
     let ready=Arc::new(Mutex::new(None)); let capture=ready.clone();
     let mut extension=LoopExtension::new(Arc::new(move |ctx|crate::types::LoopStoreRef { base_dir:base.clone(),session_id:ctx.session_manager.session_id().into() }));
     extension.on_controller_ready=Some(Arc::new(move |controller|*capture.lock().unwrap()=Some(controller)));
-    let session=real_session(); let runner=maho_ext_host::ExtensionRunner::from_static(vec![Box::new(extension)],context());
+    let runner=maho_ext_host::ExtensionRunner::from_static(vec![Box::new(extension)],context());
     session.set_extension_runner(runner).await; session.bind_extensions(Default::default()).await;
     let controller=ready.lock().unwrap().clone().unwrap();
     assert!(controller.last_store_failure().is_some());

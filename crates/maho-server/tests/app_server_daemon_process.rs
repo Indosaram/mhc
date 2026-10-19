@@ -8,6 +8,7 @@ fn pidfile_requires_positive_integer_and_explicit_identity_guard() {
     assert_eq!(parse_daemon_pid_file(r#"{"pid":1,"processStartTime":" time "}"#), Some(DaemonPidFile { pid: 1, process_start_time: Some(" time ".into()) }));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn identity_guard_matches_current_process_and_never_signals_mismatched_child() {
     let pid = u64::from(std::process::id());

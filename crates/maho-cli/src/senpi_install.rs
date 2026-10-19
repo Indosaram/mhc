@@ -156,7 +156,11 @@ mod tests {
         let root = tempfile::tempdir().expect("temp");
         let home = root.path().join("home"); let agent = root.path().join("agent"); let plugin = root.path().join("plugin");
         fs::create_dir_all(&agent).expect("agent");
-        fs::write(agent.join("settings.json"), format!(r#"{{"theme":"dark","packages":["keep","keep","{}"]}}"#, plugin.display())).expect("settings");
+        let initial_settings = serde_json::json!({
+            "theme": "dark",
+            "packages": ["keep", "keep", plugin.to_string_lossy()]
+        });
+        fs::write(agent.join("settings.json"), serde_json::to_string(&initial_settings).expect("settings json")).expect("settings");
         let options = InstallOptions { home_dir: home, agent_dir: agent.clone(), repo_root: root.path().into(), plugin_path: plugin.clone(), cli_path: root.path().join("cli.js"), validate_artifacts: false };
         install(&options).expect("install");
         let value: Value = serde_json::from_slice(&fs::read(agent.join("settings.json")).expect("written")).expect("json");
