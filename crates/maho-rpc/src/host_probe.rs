@@ -1,4 +1,5 @@
 use serde_json::Value;
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
 use crate::host_protocol_info::{HostProtocolInfo,parse_host_protocol_info};
 pub const DEFAULT_PROBE_TIMEOUT_MS:u64=10000;

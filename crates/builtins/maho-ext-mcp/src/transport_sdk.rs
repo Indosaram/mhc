@@ -36,7 +36,7 @@ pub struct McpClient {
     pub resource_subscriptions:tokio::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 enum ClientTransport {
-    Stdio {input:tokio::sync::Mutex<Option<ChildStdin>>,child:tokio::sync::Mutex<Child>,reader:JoinHandle<()>,stderr:JoinHandle<()>},
+    Stdio {input:tokio::sync::Mutex<Option<ChildStdin>>,child:Box<tokio::sync::Mutex<Child>>,reader:JoinHandle<()>,stderr:JoinHandle<()>},
     Http {client:reqwest::Client,url:url::Url,headers:BTreeMap<String,String>,session:tokio::sync::RwLock<Option<String>>},
 }
 fn take_sse_line(buffer:&mut Vec<u8>,skip_lf:&mut bool,first_line:&mut bool)->Option<String> {
@@ -89,7 +89,7 @@ impl McpClient {
         let stderr=tokio::spawn(async move {
             let mut lines=BufReader::new(errors).lines();while let Ok(Some(line))=lines.next_line().await {if !line.is_empty(){let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("info",&line,None,Some("stderr"));}}
         });
-        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(Some(input)),child:tokio::sync::Mutex::new(child),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(Some(input)),child:Box::new(tokio::sync::Mutex::new(child)),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
     }
     pub async fn materialize(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
         match spec {

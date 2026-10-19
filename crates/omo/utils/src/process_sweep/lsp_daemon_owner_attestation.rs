@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -40,6 +41,7 @@ pub struct LspDaemonOwnerTarget {
 
 const OWNER_PING_REQUEST_ID: &str = "process-sweep-owner-attestation";
 const OMO_DAEMON_PROTOCOL_VERSION: u32 = 1;
+#[cfg(unix)]
 const OWNER_PING_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub type LspDaemonOwnerPing<'a> =

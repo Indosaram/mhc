@@ -98,6 +98,7 @@ impl SessionEntry {
 }
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
     #[cfg(unix)]
     #[tokio::test]

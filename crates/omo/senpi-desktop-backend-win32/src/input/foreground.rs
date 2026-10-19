@@ -102,8 +102,8 @@ fn activate(id: &str, window: Window) -> CoreResult<()> {
     if native::foreground() == Some(window) {
         return Ok(());
     }
-    if !native::set_foreground(window)
-        && !(system::claim_last_input().is_ok() && native::set_foreground(window))
+    if !(native::set_foreground(window)
+        || system::claim_last_input().is_ok() && native::set_foreground(window))
     {
         return Err(DesktopError::input_failed(format!(
             "SetForegroundWindow failed for window {id}"

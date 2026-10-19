@@ -10,8 +10,10 @@ use maho_agent::harness::context::{Context, background_context, with_abort_signa
 use maho_agent::harness::env::nodejs::{
     NodeExecutionEnv, get_bash_shell_config, is_legacy_wsl_bash_path, windows_taskkill_candidates,
 };
+#[cfg(unix)]
+use maho_agent::harness::types::FileKind;
 use maho_agent::harness::types::{
-    ExecutionErrorCode, FileErrorCode, FileKind, FileSystem, Shell, ShellExecOptions, ShellOutputCaptureOptions,
+    ExecutionErrorCode, FileErrorCode, FileSystem, Shell, ShellExecOptions, ShellOutputCaptureOptions,
     ShellOutputLimits, ShellOutputRetention, ShellOutputUpdate, TextLineReader,
 };
 use maho_ai::utils::abort::{AbortController, AbortReason};

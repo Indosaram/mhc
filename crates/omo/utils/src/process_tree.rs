@@ -1,6 +1,8 @@
 //! Run a child with a byte-capped capture and a whole-tree timeout (SIGTERM, then SIGKILL survivors).
 
-use std::collections::{BTreeSet, HashMap};
+#[cfg(unix)]
+use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

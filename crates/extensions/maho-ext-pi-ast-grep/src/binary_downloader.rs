@@ -60,6 +60,8 @@ pub fn cleanup_archive(archive: &Path) -> std::io::Result<()> {
     Ok(())
 }
 pub fn ensure_executable(binary: &Path) -> std::io::Result<()> {
+    #[cfg(not(unix))]
+    let _ = binary;
     #[cfg(unix)]
     if binary.exists() {
         use std::os::unix::fs::PermissionsExt;

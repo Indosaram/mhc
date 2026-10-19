@@ -208,6 +208,8 @@ fn extract_zip_archive(archive: &Path, destination: &Path) -> io::Result<()> {
 }
 
 fn ensure_executable(path: &Path) -> io::Result<()> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     if path.exists() {
         use std::os::unix::fs::PermissionsExt;

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crate::lock::{is_process_alive, read_lock_pid};
 use crate::ownership::{DaemonOwner, read_daemon_owner};
 use crate::paths::DaemonPaths;
+#[cfg(unix)]
 use crate::platform;
 
 const TERM_GRACE_MS: u64 = 5_000;

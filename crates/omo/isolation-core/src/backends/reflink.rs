@@ -8,6 +8,7 @@ use crate::backend::{
     StartDetail,
 };
 use crate::backend_marker::mark_started;
+#[cfg(unix)]
 use crate::backends::copy_tree::{copy_budget, copy_tree};
 use crate::backends::runtime::{BackendRuntime, SystemRuntime};
 use crate::git::command::exists;

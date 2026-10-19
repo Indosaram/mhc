@@ -118,6 +118,8 @@ impl SubprocessProcess {
         self.terminate("TERM", Duration::from_millis(1500)).await
     }
     async fn signal(&mut self, signal: &str) -> Result<(), ProcessError> {
+        #[cfg(not(unix))]
+        let _ = signal;
         #[cfg(unix)]
         if let Some(pid) = self.child.id() {
             let status = tokio::process::Command::new("kill").args([format!("-{signal}"), "--".into(), format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status().await?;

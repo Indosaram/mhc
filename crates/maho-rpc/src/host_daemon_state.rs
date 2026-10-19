@@ -1,7 +1,9 @@
 use std::{fs,io,path::Path};
 use serde::{Deserialize,Serialize};
 use serde_json::{Map,Value};
-use crate::host_daemon_paths::{HostDaemonPaths,HostDaemonStateError,HOST_STATE_FILE_MODE,create_generation_directory,generation_paths};
+use crate::host_daemon_paths::{HostDaemonPaths,HostDaemonStateError,create_generation_directory,generation_paths};
+#[cfg(unix)]
+use crate::host_daemon_paths::HOST_STATE_FILE_MODE;
 #[derive(Debug,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct HostDaemonSettings { pub socket:String,pub capabilities:Vec<String>,pub cold_start:String,pub idle_exit_ms:f64,pub generation:f64,pub instance_id:String }

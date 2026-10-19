@@ -2,6 +2,7 @@ use std::path::{Path,PathBuf};
 use crate::{terminal_manifest_model::{FileEvent,TerminalManifestCheckpoint},monitor_registry::MonitorEvent};
 
 /// Symlink hop budget for `realpath_without_open` (upstream `MAX_SYMLINK_HOPS`).
+#[cfg(unix)]
 const MAX_SYMLINK_HOPS:usize=40;
 
 /// Resolves symlinks without open(2)-ing a component (upstream `resolveWithoutOpen` /

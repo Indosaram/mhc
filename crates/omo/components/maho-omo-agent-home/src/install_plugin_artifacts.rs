@@ -225,6 +225,8 @@ pub fn verify_ast_grep_runtime(
     platform: &str,
     manifest: &AstGrepRuntimeManifest,
 ) -> Result<(), PluginArtifactError> {
+    #[cfg(not(unix))]
+    let _ = platform;
     let runtime = plugin_path.join("runtime/ast-grep-mcp/cli.js");
     let metadata = fs::metadata(&runtime).map_err(|error| integrity(&runtime, error.to_string()))?;
     if !metadata.is_file() {

@@ -7,8 +7,11 @@ use super::errors::GitError;
 use super::exec::{GitExecOptions, system_git_exec};
 use super::path_state::{GitIndexIdentity, GitWorktreeFileIdentity, GitWorktreeIdentity};
 use super::repo::GitMemoryRepo;
-use super::repo_types::{GitCommitAuthor, GitSeedFile, InitializeGitRepoOptions};
+#[cfg(unix)]
+use super::repo_types::GitCommitAuthor;
+use super::repo_types::{GitSeedFile, InitializeGitRepoOptions};
 
+#[cfg(unix)]
 fn author() -> GitCommitAuthor {
     GitCommitAuthor {
         agent_id: "path-state-agent".to_string(),

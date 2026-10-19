@@ -115,6 +115,7 @@ pub fn prepare_reflection_spawn(input: PrepareReflectionSpawnInput<'_>) -> Resul
     let memory_usage = is_dream.then(|| session_dir.join("memory-usage.json"));
     let system_tokens = is_dream.then(|| session_dir.join("system-tokens.json"));
     let audit = is_dream.then(|| session_dir.join("audit.json"));
+    #[cfg(unix)]
     let payload_paths: Vec<&Path> = [&transcript, &persona, &prompt].into_iter().map(PathBuf::as_path)
         .chain(skills_usage.as_deref()).chain(memory_usage.as_deref()).chain(dream_state.as_deref()).chain(dream_policy.as_deref()).chain(system_tokens.as_deref()).chain(audit.as_deref()).collect();
     #[cfg(unix)] {

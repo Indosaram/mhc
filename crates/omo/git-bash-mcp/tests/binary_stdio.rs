@@ -1,5 +1,6 @@
 //! Drives the real `omo-git-bash` binary over stdio, the way the MCP client registers it.
 
+#[cfg(not(windows))]
 use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;

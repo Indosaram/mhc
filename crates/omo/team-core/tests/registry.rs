@@ -1,10 +1,12 @@
 //! Translated from src/team-registry/*.test.ts.
 
 use std::fs;
+#[cfg(unix)]
 use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,9 +15,10 @@ use serde_json::{Value, json};
 use team_core::TeamCoreError;
 use team_core::TeamModeConfig;
 use team_core::resolve_caller_team_lead::resolve_caller_team_lead;
+#[cfg(unix)]
+use team_core::team_registry::{PathDeps, ensure_base_dirs, ensure_base_dirs_with};
 use team_core::team_registry::{
-    NormalizeTeamSpecInputOptions, PathDeps, TeamSpecEntry, discover_team_specs_with,
-    ensure_base_dirs, ensure_base_dirs_with, get_inbox_dir, get_runtime_state_dir, get_tasks_dir,
+    NormalizeTeamSpecInputOptions, TeamSpecEntry, discover_team_specs_with, get_inbox_dir, get_runtime_state_dir, get_tasks_dir,
     get_worktree_dir, load_all_team_specs, load_team_spec, normalize_team_spec_input,
     resolve_base_dir, validate_dual_support, validate_member_eligibility, validate_spec,
 };
@@ -129,6 +132,7 @@ fn discover_team_specs_prefers_project_scope() {
     );
 }
 
+#[cfg(unix)]
 fn base_directories(base: &Path) -> [PathBuf; 4] {
     [
         base.to_path_buf(),

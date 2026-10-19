@@ -31,10 +31,10 @@ pub fn mtime_ms(path: &Path) -> std::io::Result<u64> {
 }
 
 pub fn random_hex(bytes: usize) -> String {
-    let mut buffer = vec![0u8; bytes];
     #[cfg(unix)]
     {
         use std::io::Read;
+        let mut buffer = vec![0u8; bytes];
         if let Ok(mut file) = std::fs::File::open("/dev/urandom") && file.read_exact(&mut buffer).is_ok() {
             return hex::encode(buffer);
         }

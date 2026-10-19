@@ -1,4 +1,5 @@
 use isolation_core::backends::git_fixture::{git, repo};
+#[cfg(unix)]
 use isolation_core::test_support::fixture;
 use isolation_core::{IsolationBackend, IsolationContext, RcopyBackend};
 

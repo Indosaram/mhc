@@ -249,6 +249,8 @@ impl FactsFailureStore {
 }
 
 fn sync_dir(path: &Path) -> io::Result<()> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         if let Ok(file) = fs::File::open(path) {

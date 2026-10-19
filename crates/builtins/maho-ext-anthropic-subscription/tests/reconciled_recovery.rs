@@ -1,5 +1,7 @@
+#[cfg(unix)]
+use maho_ext_anthropic_subscription::availability::probe_ambient_claude_auth_status;
 use maho_ext_anthropic_subscription::{
-    availability::{probe_ambient_claude_auth_status, AMBIENT_PROBE_TIMEOUT_MS, AMBIENT_STATUS_TTL_MS},
+    availability::{AMBIENT_PROBE_TIMEOUT_MS, AMBIENT_STATUS_TTL_MS},
     custom_tools::deny_custom_tool_execution,
     executable::{candidates, find_on_path, find_on_posix_path, ExecutableSource, ResolveInput},
     options::{build_query_configuration, QueryOptionsInput},

@@ -2,12 +2,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use isolation_core::test_support::fixture;
-use isolation_core::{
-    IsolationBackend, IsolationContext, IsolationError, LoadReflink, ReflinkBackend, ReflinkIoctl,
-    FICLONE,
-};
+use isolation_core::{IsolationBackend, IsolationContext, LoadReflink, ReflinkBackend, ReflinkIoctl};
+#[cfg(unix)]
+use isolation_core::{IsolationError, FICLONE};
 
-use crate::fake::{record, FakeRuntime};
+use crate::fake::FakeRuntime;
+#[cfg(unix)]
+use crate::fake::record;
 
 struct FakeIoctl {
     ioctl: Arc<dyn Fn(i32, u64, i32) -> i32 + Send + Sync>,

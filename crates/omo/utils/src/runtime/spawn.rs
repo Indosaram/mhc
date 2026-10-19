@@ -313,7 +313,7 @@ mod windows_child {
         pub fn kill(&self) -> io::Result<()> {
             // SAFETY: self.handle holds an owned duplicate of the process HANDLE.
             let ret = unsafe {
-                TerminateProcess(self.handle.as_raw_handle() as *mut std::ffi::c_void, 1)
+                TerminateProcess(self.handle.as_raw_handle(), 1)
             };
             if ret == 0 {
                 let err = io::Error::last_os_error();
@@ -321,7 +321,7 @@ mod windows_child {
                     // Check if the process has actually terminated or is still active.
                     // On Windows, a signaled process object (WAIT_OBJECT_0) authoritatively proves
                     // termination regardless of whether its exit code is STILL_ACTIVE (259).
-                    let raw = self.handle.as_raw_handle() as *mut std::ffi::c_void;
+                    let raw = self.handle.as_raw_handle();
                     let wait_res = unsafe { WaitForSingleObject(raw, 0) };
                     if wait_res == WAIT_OBJECT_0 {
                         return Ok(());

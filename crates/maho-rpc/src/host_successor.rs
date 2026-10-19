@@ -15,9 +15,8 @@ pub async fn start_successor(context:&crate::host_handoff::HandoffContext,socket
         loop{
             if let Some(answer)=crate::host_probe::probe_protocol_info(socket,2000).await&&successor_answered(&context.host,&answer){
                 crate::host_daemon_registration::write_host_registration(&context.paths,&crate::host_daemon_registration::HostRegistration{pid,process_start_time:crate::host_reservations::read_process_start_time(pid),socket:socket.into(),instance_id:options.instance_id,generation:options.generation as f64,launch_profile_id:options.launch_profile_id}).map_err(|error|error.source)?;
-                #[cfg(unix)] crate::host_stop::signal_generation(context.owner.pid,rustix::process::Signal::USR1).map_err(std::io::Error::from)?;
-                #[cfg(not(unix))] return Ok(None);
-                return Ok(Some(answer));
+                #[cfg(unix)] { crate::host_stop::signal_generation(context.owner.pid,rustix::process::Signal::USR1).map_err(std::io::Error::from)?; return Ok(Some(answer)); }
+                #[cfg(not(unix))] { let _=answer; return Ok(None); }
             }
             if child.try_wait()?.is_some()||tokio::time::Instant::now()>=deadline{return Ok(None);}
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;

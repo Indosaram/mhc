@@ -11,24 +11,33 @@ use maho_ai::auth::oauth::chatgpt_subscription::ChatGptSubscriptionOAuth;
 use maho_ai::auth::oauth::transport::{HttpRequest, HttpResponse, OAuthTransport};
 use maho_ai::auth::resolve::{ModelsError, resolve_stored_oauth};
 use maho_ai::auth::types::{
-    AccountLoginReceipt, AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, Credential, CredentialStore, OAuthAuth,
-    OAuthCredential, ProviderAuthInteraction,
+    Credential, CredentialStore, OAuthAuth,
+    OAuthCredential,
+};
+#[cfg(unix)]
+use maho_ai::auth::types::{
+    AccountLoginReceipt, AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, ProviderAuthInteraction,
 };
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+#[cfg(unix)]
 use std::time::Duration;
 
 const PROVIDER_ID: &str = "chatgpt-subscription";
 const ACCOUNT_ID: &str = "acct_qa_13";
+#[cfg(unix)]
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+#[cfg(unix)]
 const POLL_ATTEMPTS: usize = 1000;
 
 /// senpi writes these five keys for a stored OAuth credential:
 /// `packages/ai/src/auth/types.ts` (`OAuthCredential extends OAuthCredentials`) plus the
 /// `accountId` that chatgpt-subscription's `credentialsFromToken` adds.
+#[cfg(unix)]
 const SENPI_OAUTH_CREDENTIAL_KEYS: [&str; 5] = ["access", "accountId", "expires", "refresh", "type"];
 
 /// senpi's `AUTH_FILE_WRITE_OPTIONS` staging from `packages/coding-agent/src/core/auth-storage.ts`:
@@ -148,6 +157,7 @@ impl OAuthTransport for MockServerTransport {
     }
 }
 
+#[cfg(unix)]
 struct BrowserInteraction {
     signal: AbortSignal,
     authorize_url: Arc<Mutex<Option<String>>>,
@@ -155,6 +165,7 @@ struct BrowserInteraction {
 }
 
 #[async_trait]
+#[cfg(unix)]
 impl AuthInteraction for BrowserInteraction {
     fn signal(&self) -> Option<AbortSignal> {
         Some(self.signal.clone())
@@ -185,6 +196,7 @@ impl AuthInteraction for BrowserInteraction {
     }
 }
 
+#[cfg(unix)]
 async fn wait_for_authorize_url(url: &Arc<Mutex<Option<String>>>) -> String {
     for _ in 0..POLL_ATTEMPTS {
         if let Some(value) = url.lock().unwrap_or_else(|p| p.into_inner()).clone() {
