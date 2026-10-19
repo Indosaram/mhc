@@ -56,7 +56,7 @@ mod tests {
   fs::create_dir_all(home.join("project")).expect("create home project");
   fs::create_dir_all(repository.join(".git")).expect("create repository marker");
   fs::create_dir_all(home.join(".git")).expect("create home repository marker");
-  assert_eq!(widen_to_repository_root(Some(nested), &home), Some(repository));
+  assert_eq!(widen_to_repository_root(Some(nested), &home), Some(strip_verbatim_prefix(fs::canonicalize(&repository).expect("canonical repository"))));
   let home_project = home.join("project");
   assert_eq!(widen_to_repository_root(Some(home_project.clone()), &home), Some(home_project));
   let _ = fs::remove_dir_all(base);

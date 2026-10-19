@@ -3,6 +3,8 @@ mod session_threads;
 mod signals;
 
 pub use session::{PtyError, PtyExit, PtyResult, PtySession, PtySessionOptions};
+#[cfg(windows)]
+pub use signals::process_alive;
 
 /// Native ABI version. This is INTENTIONALLY decoupled from the package/CalVer
 /// version: it identifies the shape of the native surface (exports + signatures)

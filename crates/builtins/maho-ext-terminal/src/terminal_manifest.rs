@@ -30,14 +30,12 @@ impl TerminalManifestWriter {
     }
     pub fn adopt_restored(&mut self,mut entry:ManifestMonitor) {entry.suspended=false;self.entries.insert(entry.monitor_id.clone(),entry);}
     pub fn durable_count(&self)->usize {self.entries.values().filter(|entry|entry.durability_class!=MonitorDurabilityClass::Ephemeral).count()}
-    #[cfg(unix)]
     pub async fn restore_live(&mut self,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64)->crate::restore::RestoreDigest {
         self.restore_configured_live(manager,registry,now,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS).await
     }
     /// Reads and parses the persisted manifest with no locks held, so a caller that owns the
     /// manager/registry mutexes can acquire them only for the synchronous apply below (a
     /// `std::sync::MutexGuard` must never be held across this await).
-    #[cfg(unix)]
     pub async fn read_restore_state(&self) -> std::result::Result<Option<crate::terminal_manifest_model::TerminalManifest>, ()> {
         match self.store.read().await {
             Ok(None) => Ok(None),
@@ -45,12 +43,10 @@ impl TerminalManifestWriter {
             Err(_) => Err(()),
         }
     }
-    #[cfg(unix)]
     pub async fn restore_configured_live(&mut self,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64,shell:Option<&str>,settings:&crate::settings::ResolvedTerminalSettings)->crate::restore::RestoreDigest {
         let state=self.read_restore_state().await;
         self.apply_restore_state(state,manager,registry,now,shell,settings)
     }
-    #[cfg(unix)]
     pub fn apply_restore_state(&mut self,state:std::result::Result<Option<crate::terminal_manifest_model::TerminalManifest>,()>,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64,shell:Option<&str>,settings:&crate::settings::ResolvedTerminalSettings)->crate::restore::RestoreDigest {
         use crate::restore::{RestoreDigest,RestoreOutcome};
         let mut digest=RestoreDigest::default();

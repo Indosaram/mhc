@@ -82,6 +82,20 @@ impl TurnBarrier {
         body()
     }
 
+    /// Holds the turn through a future's synchronous prefix (its first poll), then releases it
+    /// before waiting on asynchronous work. This matches JavaScript's turn boundary: a handler may
+    /// enqueue several injections before its first `await`, but a slow awaited operation must not
+    /// starve every deferred injection in the session.
+    pub async fn first_poll<F: Future>(self: &Arc<Self>, future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut guard = Some(self.enter());
+        std::future::poll_fn(|cx| {
+            let result = future.as_mut().poll(cx);
+            guard.take();
+            result
+        }).await
+    }
+
     /// Resolves once no turn scope is open. `enable()` registers the waiter before the check, so a
     /// release between the check and the await cannot be lost.
     pub async fn wait_for_quiet(&self) {

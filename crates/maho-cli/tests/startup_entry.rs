@@ -30,14 +30,18 @@ async fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
     let state = dir.path().join("agent").join("omo-senpi").join("omo-native");
     std::fs::create_dir_all(&state).expect("isolated omo state");
     std::fs::write(state.join("onboarding-completed"), "{}\n").expect("onboarding already complete");
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"));
+    command
         .current_dir(dir.path()).env("HOME", dir.path())
         .env("MAHO_CODING_AGENT_DIR", dir.path().join("agent"))
         .env_remove("__PI_INTERNAL_SPAWN")
         .args(["--mode", "rpc", "--offline", "--no-session", "--model", "openai/gpt-4o"])
         .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn().expect("real RPC process");
+        .kill_on_drop(true);
+    if cfg!(windows) {
+        command.env("USERPROFILE", dir.path());
+    }
+    let mut child = command.spawn().expect("real RPC process");
     let mut input = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
     let mut stderr = child.stderr.take().expect("stderr");

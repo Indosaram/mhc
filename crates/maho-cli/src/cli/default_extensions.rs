@@ -434,7 +434,6 @@ impl Extension for Task {
             let shared = shared.clone(); let engine_slot = engine_slot.clone();
             let coordinator = coordinator.clone(); let environment = environment.clone();
             Box::pin(async move {
-                let _turn = shared.enter_turn();
                 let mut bound_context = ctx.clone(); shared.bind(&mut bound_context);
                 let ctx = &bound_context;
                 let Some(parent) = parent.get().and_then(|parent| parent()) else { return Ok(maho_ext_api::EventResult::None); };
@@ -591,7 +590,10 @@ impl Extension for Task {
                             api.on(kind, Arc::new(move |event, context| {
                                 let original = original.clone(); let runtime = runtime.clone();
                                 let mut context = context.clone(); runtime.bind(&mut context);
-                                Box::pin(async move { let _turn = runtime.enter_turn(); original(event, &context).await })
+                                Box::pin(async move {
+                                    let future = original(event, &context);
+                                    runtime.first_poll_in_turn(future).await
+                                })
                             }));
                         }
                     }
