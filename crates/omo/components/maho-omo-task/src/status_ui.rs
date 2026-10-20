@@ -80,7 +80,8 @@ impl TaskStatusUi {
     fn render_cached_records(self: &Arc<Self>) {
         let Some(ui) = self.ui() else { self.clear_live_refresh(); return };
         let (records, activity) = { let state = self.state.lock().unwrap_or_else(PoisonError::into_inner); (state.records.clone(), state.activity.clone()) };
-        let background: Vec<_> = records.iter().filter(|record| self.manager.was_background(&record.task_id)).cloned().collect();
+        // DAG node tasks are spawned in the background but already render in the omo-dag widget.
+        let background: Vec<_> = records.iter().filter(|record| record.owner.is_none() && self.manager.was_background(&record.task_id)).cloned().collect();
         let rows = if self.manager.has_background_surface() { background_widget_rows(&background, &activity, (self.now)(), &|id| self.manager.run_stats_snapshot(id), (self.terminal_width)()) } else { build_widget_rows(&records) };
         if rows.is_empty() { self.clear_live_refresh(); ui.set_widget(UI_KEY, None, ExtensionWidgetOptions::default()); return }
         ui.set_widget(UI_KEY, Some(WidgetContent::Lines(rows)), ExtensionWidgetOptions { placement: WidgetPlacement::BelowEditor });
