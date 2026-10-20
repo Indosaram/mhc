@@ -300,7 +300,12 @@ fn read_unread_message_by_id_finds_reserved_message_and_propagates_read_errors()
     let error = read_unread_message_by_id(&team_run_id, "m1", "broken", &config)
         .expect_err("exact path read error must propagate");
     let error_text = error.to_string().to_lowercase();
-    assert!(error_text.contains("directory") || error_text.contains("access is denied"));
+    assert!(
+        error_text.contains("directory")
+            || error_text.contains("access is denied")
+            || error_text.contains("os error 5")
+            || matches!(&error, TeamCoreError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied || e.kind() == std::io::ErrorKind::IsADirectory)
+    );
     assert!(reservation.reserved_path.exists());
 }
 

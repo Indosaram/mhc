@@ -22,12 +22,16 @@ pub struct CommandOutcome {
 }
 
 async fn run_command_process(command: &str, env: &[(String, String)]) -> CommandOutcome {
-    let mut process = if cfg!(windows) {
+    // cmd.exe takes the command verbatim; Rust's argv quoting (`\"`) would corrupt inner quotes.
+    #[cfg(windows)]
+    let mut process = {
         let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
         let mut cmd = tokio::process::Command::new(comspec);
-        cmd.args(["/d", "/s", "/c"]).arg(command);
+        cmd.args(["/d", "/s", "/c"]).raw_arg(format!("\"{command}\""));
         cmd
-    } else {
+    };
+    #[cfg(not(windows))]
+    let mut process = {
         let mut cmd = tokio::process::Command::new("/bin/sh");
         cmd.arg("-c").arg(command);
         cmd
