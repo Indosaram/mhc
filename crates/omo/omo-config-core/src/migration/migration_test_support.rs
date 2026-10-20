@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
@@ -10,6 +10,7 @@ use crate::writer::types::{FsError, OmoConfigWriteFileSystem};
 
 #[derive(Debug, Default)]
 pub struct MemoryMigrationFileSystem {
+    pub fail_replace: Cell<bool>,
     pub directories: RefCell<BTreeSet<String>>,
     pub files: RefCell<BTreeMap<String, String>>,
     pub operations: RefCell<Vec<String>>,
@@ -127,6 +128,9 @@ impl MigrationFileSystem for MemoryMigrationFileSystem {
         expected: &str,
         content: &str,
     ) -> Result<bool, FsError> {
+        if self.fail_replace.get() {
+            return Err(FsError::other("injected replace failure"));
+        }
         let key = self.key(path);
         let mut files = self.files.borrow_mut();
         if files.get(&key).map(String::as_str) != Some(expected) {

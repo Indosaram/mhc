@@ -60,6 +60,7 @@ pub fn execute_legacy_config_migration_plan(
         return Ok(MigrationRunResult {
             diagnostics: Vec::new(),
             journal_resumed: false,
+            target_backup_path: None,
             preview: None,
             status: MigrationStatus::Locked,
         });
@@ -72,6 +73,7 @@ pub fn execute_legacy_config_migration_plan(
         .unwrap_or(MigrationRunResult {
             diagnostics: Vec::new(),
             journal_resumed,
+            target_backup_path: None,
             preview: None,
             status: MigrationStatus::Skipped,
         }))

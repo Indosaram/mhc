@@ -1,6 +1,6 @@
 //! Port of `core/tools/diff-render.ts`.
 use crate::jsdiff::diff_words;
-use crate::theme::{get_language_from_path, highlight_code, Theme, ThemeBg, ThemeColor};
+use crate::theme::{Theme, ThemeBg, ThemeColor, get_language_from_path, highlight_code};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiffKind {
@@ -20,6 +20,13 @@ pub struct RenderableDiffLine {
 }
 
 fn parse_renderable_diff_line(line: &str) -> RenderableDiffLine {
+    // ECMAScript whitespace excludes U+0085 and includes U+FEFF, unlike Rust's \s.
+    static LINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        #[expect(clippy::expect_used, reason = "the upstream diff-line grammar is a valid static regex")]
+        regex::Regex::new(
+            r"\A([+\- ])([\t-\r \x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]*[0-9]*)[\t-\r \x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]([^\r\n\x{2028}\x{2029}]*)\z",
+        ).expect("static diff-line grammar")
+    });
     let meta = || RenderableDiffLine {
         kind: DiffKind::Meta,
         content: String::new(),
@@ -27,29 +34,26 @@ fn parse_renderable_diff_line(line: &str) -> RenderableDiffLine {
         sign: ' ',
         text: line.to_owned(),
     };
-    let mut chars = line.chars();
-    let Some(sign) = chars.next() else {
+    let Some(captures) = LINE.captures(line) else {
         return meta();
     };
-    if sign != '+' && sign != '-' && sign != ' ' {
-        return meta();
-    }
-    let rest: String = chars.collect();
-    let digits_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-    let line_number = &rest[..digits_end];
-    let Some(remainder) = rest.get(digits_end..) else {
+    let Some(sign) = captures[1].chars().next() else {
         return meta();
     };
-    if !remainder.starts_with(' ') {
-        return meta();
-    }
-    let content = remainder[1..].to_owned();
+    let line_number = &captures[2];
+    let content = captures[3].to_owned();
     let kind = match sign {
         '+' => DiffKind::Added,
         '-' => DiffKind::Removed,
         _ => DiffKind::Context,
     };
-    RenderableDiffLine { kind, content, line_number: line_number.to_owned(), sign, text: String::new() }
+    RenderableDiffLine {
+        kind,
+        content,
+        line_number: line_number.to_owned(),
+        sign,
+        text: String::new(),
+    }
 }
 
 fn replace_tabs(text: &str) -> String {
@@ -131,13 +135,26 @@ fn render_tool_diff_line(
         );
     }
 
-    let diff_color = if line.kind == DiffKind::Added { ThemeColor::ToolDiffAdded } else { ThemeColor::ToolDiffRemoved };
-    let background = if line.kind == DiffKind::Added { ThemeBg::ToolSuccessBg } else { ThemeBg::ToolErrorBg };
+    let diff_color = if line.kind == DiffKind::Added {
+        ThemeColor::ToolDiffAdded
+    } else {
+        ThemeColor::ToolDiffRemoved
+    };
+    let background = if line.kind == DiffKind::Added {
+        ThemeBg::ToolSuccessBg
+    } else {
+        ThemeBg::ToolErrorBg
+    };
     let content = match content_override {
         None => highlight_diff_content(&line.content, file_path, theme),
         Some(override_content) => theme.fg(diff_color, &replace_tabs(override_content)),
     };
-    let rendered = format!("{}{} {}", theme.fg(diff_color, &line.sign.to_string()), line_number, content);
+    let rendered = format!(
+        "{}{} {}",
+        theme.fg(diff_color, &line.sign.to_string()),
+        line_number,
+        content
+    );
     theme.bg(background, &rendered)
 }
 
@@ -158,7 +175,10 @@ pub fn count_diff_changes(diff_text: &str) -> (usize, usize) {
 }
 
 pub fn render_tool_diff(diff_text: &str, file_path: Option<&str>, theme: &Theme) -> String {
-    let parsed_lines: Vec<RenderableDiffLine> = diff_text.split('\n').map(parse_renderable_diff_line).collect();
+    let parsed_lines: Vec<RenderableDiffLine> = diff_text
+        .split('\n')
+        .map(parse_renderable_diff_line)
+        .collect();
     let mut rendered: Vec<String> = Vec::new();
     let mut index = 0;
 
@@ -175,7 +195,10 @@ pub fn render_tool_diff(diff_text: &str, file_path: Option<&str>, theme: &Theme)
         }
 
         let mut removed_lines: Vec<&RenderableDiffLine> = Vec::new();
-        while parsed_lines.get(index).is_some_and(|line| line.kind == DiffKind::Removed) {
+        while parsed_lines
+            .get(index)
+            .is_some_and(|line| line.kind == DiffKind::Removed)
+        {
             if let Some(line) = parsed_lines.get(index) {
                 removed_lines.push(line);
             }
@@ -183,7 +206,10 @@ pub fn render_tool_diff(diff_text: &str, file_path: Option<&str>, theme: &Theme)
         }
 
         let mut added_lines: Vec<&RenderableDiffLine> = Vec::new();
-        while parsed_lines.get(index).is_some_and(|line| line.kind == DiffKind::Added) {
+        while parsed_lines
+            .get(index)
+            .is_some_and(|line| line.kind == DiffKind::Added)
+        {
             if let Some(line) = parsed_lines.get(index) {
                 added_lines.push(line);
             }
@@ -194,9 +220,20 @@ pub fn render_tool_diff(diff_text: &str, file_path: Option<&str>, theme: &Theme)
         for pair_index in 0..paired_count {
             let removed_line = removed_lines[pair_index];
             let added_line = added_lines[pair_index];
-            let (added, removed) = render_inline_diff(&removed_line.content, &added_line.content, theme);
-            rendered.push(render_tool_diff_line(removed_line, file_path, theme, Some(&removed)));
-            rendered.push(render_tool_diff_line(added_line, file_path, theme, Some(&added)));
+            let (added, removed) =
+                render_inline_diff(&removed_line.content, &added_line.content, theme);
+            rendered.push(render_tool_diff_line(
+                removed_line,
+                file_path,
+                theme,
+                Some(&removed),
+            ));
+            rendered.push(render_tool_diff_line(
+                added_line,
+                file_path,
+                theme,
+                Some(&added),
+            ));
         }
 
         for removed_line in removed_lines.iter().skip(paired_count) {
@@ -212,10 +249,56 @@ pub fn render_tool_diff(diff_text: &str, file_path: Option<&str>, theme: &Theme)
 
 #[cfg(test)]
 mod tests {
-    use super::count_diff_changes;
+    use super::{DiffKind, count_diff_changes, parse_renderable_diff_line};
 
     #[test]
     fn counts_changed_lines_without_diff_headers() {
-        assert_eq!(count_diff_changes("--- old\n+++ new\n-removed\n+added\n context"), (1, 1));
+        assert_eq!(
+            count_diff_changes("--- old\n+++ new\n-removed\n+added\n context"),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn parses_padded_line_numbers_without_consuming_source_indentation() {
+        for (line, kind, number, content) in [
+            ("+ 9 code", DiffKind::Added, " 9", "code"),
+            ("-  10   old", DiffKind::Removed, "  10", "  old"),
+            ("   11 context", DiffKind::Context, "  11", "context"),
+            ("+\t12\tcode", DiffKind::Added, "\t12", "code"),
+            ("+\u{feff}9\u{a0}code", DiffKind::Added, "\u{feff}9", "code"),
+            ("+9 code", DiffKind::Added, "9", "code"),
+            ("+   code", DiffKind::Added, "  ", "code"),
+            ("+   ", DiffKind::Added, "  ", ""),
+            ("+ code", DiffKind::Added, "", "code"),
+            ("+ 9", DiffKind::Added, "", "9"),
+        ] {
+            let parsed = parse_renderable_diff_line(line);
+            assert_eq!(
+                (
+                    parsed.kind,
+                    parsed.line_number.as_str(),
+                    parsed.content.as_str()
+                ),
+                (kind, number, content),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_nonmatching_diff_lines_as_metadata() {
+        for line in [
+            "",
+            "@@ -1 +1 @@",
+            "+++ file",
+            "+9code",
+            "+\u{85}9 code",
+            "+9 code\rmore",
+        ] {
+            let parsed = parse_renderable_diff_line(line);
+            assert_eq!(parsed.kind, DiffKind::Meta, "{line:?}");
+            assert_eq!(parsed.text, line);
+        }
     }
 }

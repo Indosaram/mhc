@@ -4,7 +4,10 @@ use crate::auth::oauth::device_code::{
     OAuthDeviceCodePollOptions, OAuthDeviceCodePollResult, poll_oauth_device_code_flow,
 };
 use crate::auth::oauth::transport::{HttpRequest, HttpResponse, OAuthTransport, default_transport};
-use crate::auth::types::{AuthEvent, AuthPrompt, AuthPromptKind, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction};
+use crate::auth::types::{
+    AuthEvent, AuthPrompt, AuthPromptKind, ModelAuth, OAuthAuth, OAuthCredential,
+    ProviderAuthInteraction,
+};
 use crate::utils::abort::AbortSignal;
 use crate::utils::sleep::sleep;
 use async_trait::async_trait;
@@ -65,8 +68,14 @@ pub fn normalize_domain(input: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let candidate = if trimmed.contains("://") { trimmed.to_string() } else { format!("https://{trimmed}") };
-    Url::parse(&candidate).ok().and_then(|url| url.host_str().map(str::to_string))
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    Url::parse(&candidate)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
 }
 
 pub fn get_base_url_from_token(token: &str) -> Option<String> {
@@ -78,15 +87,19 @@ pub fn get_base_url_from_token(token: &str) -> Option<String> {
     if proxy_host.is_empty() {
         return None;
     }
-    let api_host = proxy_host.strip_prefix("proxy.").map(|rest| format!("api.{rest}")).unwrap_or_else(|| proxy_host.to_string());
+    let api_host = proxy_host
+        .strip_prefix("proxy.")
+        .map(|rest| format!("api.{rest}"))
+        .unwrap_or_else(|| proxy_host.to_string());
     Some(format!("https://{api_host}"))
 }
 
 pub fn get_github_copilot_base_url(token: Option<&str>, enterprise_domain: Option<&str>) -> String {
     if let Some(token) = token
-        && let Some(url) = get_base_url_from_token(token) {
-            return url;
-        }
+        && let Some(url) = get_base_url_from_token(token)
+    {
+        return url;
+    }
     match enterprise_domain {
         Some(domain) => format!("https://copilot-api.{domain}"),
         None => "https://api.individual.githubcopilot.com".to_string(),
@@ -97,72 +110,9 @@ fn as_record(value: &Value) -> Option<&Map<String, Value>> {
     value.as_object()
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct GitHubCopilotModelCatalog {
-    pub available_model_ids: Vec<String>,
-    pub policy_model_ids: Vec<String>,
-}
-
-fn is_known_model(model_id: &str) -> bool {
-    crate::models_generated::MODELS
-        .get("github-copilot")
-        .is_some_and(|models| models.contains_key(model_id))
-}
-
-pub fn parse_github_copilot_model_catalog(raw: &Value, allow_policy_fallback: bool) -> anyhow::Result<GitHubCopilotModelCatalog> {
-    let data = as_record(raw)
-        .and_then(|record| record.get("data"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("Invalid Copilot models response"))?;
-
-    let mut account_models: Vec<(String, bool, Option<String>)> = Vec::new();
-    for raw_item in data {
-        let Some(item) = as_record(raw_item) else { continue };
-        let Some(id) = item.get("id").and_then(Value::as_str) else { continue };
-        let supports = item
-            .get("capabilities")
-            .and_then(as_record)
-            .and_then(|capabilities| capabilities.get("supports"))
-            .and_then(as_record);
-        if supports.and_then(|supports| supports.get("tool_calls")) == Some(&Value::Bool(false)) {
-            continue;
-        }
-        let picker_enabled = item.get("model_picker_enabled") == Some(&Value::Bool(true));
-        let policy_state = item
-            .get("policy")
-            .and_then(as_record)
-            .and_then(|policy| policy.get("state"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        account_models.push((id.to_string(), picker_enabled, policy_state));
-    }
-
-    let picker_model_ids: Vec<String> = account_models
-        .iter()
-        .filter(|(_, picker_enabled, policy_state)| *picker_enabled && policy_state.as_deref() != Some("disabled"))
-        .map(|(id, _, _)| id.clone())
-        .collect();
-    let use_policy_fallback = allow_policy_fallback && picker_model_ids.is_empty();
-    let available_model_ids = if !picker_model_ids.is_empty() || !allow_policy_fallback {
-        picker_model_ids
-    } else {
-        account_models
-            .iter()
-            .filter(|(_, _, policy_state)| policy_state.as_deref() == Some("enabled"))
-            .map(|(id, _, _)| id.clone())
-            .collect()
-    };
-    let policy_model_ids = account_models
-        .iter()
-        .filter(|(id, picker_enabled, policy_state)| {
-            policy_state.as_deref() == Some("unconfigured")
-                && is_known_model(id)
-                && (*picker_enabled || use_policy_fallback)
-        })
-        .map(|(id, _, _)| id.clone())
-        .collect();
-    Ok(GitHubCopilotModelCatalog { available_model_ids, policy_model_ids })
-}
+pub use super::github_copilot_model_catalog::{
+    GitHubCopilotModelCatalog, parse_github_copilot_model_catalog,
+};
 
 fn status_text(status: u16) -> &'static str {
     match status {
@@ -197,12 +147,23 @@ async fn fetch_json(
 ) -> anyhow::Result<Value> {
     let response = execute(
         transport,
-        HttpRequest { method: method.into(), url: url.into(), headers, body, timeout_ms: None },
+        HttpRequest {
+            method: method.into(),
+            url: url.into(),
+            headers,
+            body,
+            timeout_ms: None,
+        },
         signal,
     )
     .await?;
     if !response.ok() {
-        anyhow::bail!("{} {}: {}", response.status, status_text(response.status), response.body);
+        anyhow::bail!(
+            "{} {}: {}",
+            response.status,
+            status_text(response.status),
+            response.body
+        );
     }
     Ok(serde_json::from_str(&response.body).unwrap_or(Value::Null))
 }
@@ -258,10 +219,13 @@ async fn fetch_with_rate_limit_retry(
         }
         delay_ms = delay_ms.max(0.0);
         if let Some(deadline) = budget_deadline
-            && delay_ms >= deadline - transport.now_ms() {
-                return Ok(response);
-            }
-        sleep(delay_ms as u64, signal).await.map_err(|reason| anyhow::anyhow!("{reason}"))?;
+            && delay_ms >= deadline - transport.now_ms()
+        {
+            return Ok(response);
+        }
+        sleep(delay_ms as u64, signal)
+            .await
+            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
         retry += 1;
     }
 }
@@ -295,7 +259,12 @@ async fn fetch_github_copilot_models(
     )
     .await?;
     if !response.ok() {
-        anyhow::bail!("{} {}: {}", response.status, status_text(response.status), response.body);
+        anyhow::bail!(
+            "{} {}: {}",
+            response.status,
+            status_text(response.status),
+            response.body
+        );
     }
     let raw: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
     parse_github_copilot_model_catalog(&raw, allow_policy_fallback)
@@ -316,7 +285,10 @@ async fn start_device_flow(
         &urls.device_code_url,
         vec![
             ("Accept".into(), "application/json".into()),
-            ("Content-Type".into(), "application/x-www-form-urlencoded".into()),
+            (
+                "Content-Type".into(),
+                "application/x-www-form-urlencoded".into(),
+            ),
             ("User-Agent".into(), COPILOT_USER_AGENT.into()),
         ],
         "POST",
@@ -387,7 +359,10 @@ async fn poll_for_github_access_token(
                     &urls.access_token_url,
                     vec![
                         ("Accept".into(), "application/json".into()),
-                        ("Content-Type".into(), "application/x-www-form-urlencoded".into()),
+                        (
+                            "Content-Type".into(),
+                            "application/x-www-form-urlencoded".into(),
+                        ),
                         ("User-Agent".into(), COPILOT_USER_AGENT.into()),
                     ],
                     "POST",
@@ -398,15 +373,25 @@ async fn poll_for_github_access_token(
                 {
                     Ok(raw) => raw,
                     Err(error) => {
-                        return Ok(OAuthDeviceCodePollResult::Failed { message: error.to_string() });
+                        return Ok(OAuthDeviceCodePollResult::Failed {
+                            message: error.to_string(),
+                        });
                     }
                 };
 
-                if let Some(access_token) = as_record(&raw).and_then(|record| record.get("access_token")).and_then(Value::as_str) {
-                    return Ok(OAuthDeviceCodePollResult::Complete(access_token.to_string()));
+                if let Some(access_token) = as_record(&raw)
+                    .and_then(|record| record.get("access_token"))
+                    .and_then(Value::as_str)
+                {
+                    return Ok(OAuthDeviceCodePollResult::Complete(
+                        access_token.to_string(),
+                    ));
                 }
 
-                if let Some(error) = as_record(&raw).and_then(|record| record.get("error")).and_then(Value::as_str) {
+                if let Some(error) = as_record(&raw)
+                    .and_then(|record| record.get("error"))
+                    .and_then(Value::as_str)
+                {
                     let record = as_record(&raw).expect("checked above");
                     let description = record.get("error_description").and_then(Value::as_str);
                     if error == "authorization_pending" {
@@ -417,13 +402,17 @@ async fn poll_for_github_access_token(
                             interval_seconds: record.get("interval").and_then(Value::as_f64),
                         });
                     }
-                    let suffix = description.map(|description| format!(": {description}")).unwrap_or_default();
+                    let suffix = description
+                        .map(|description| format!(": {description}"))
+                        .unwrap_or_default();
                     return Ok(OAuthDeviceCodePollResult::Failed {
                         message: format!("Device flow failed: {error}{suffix}"),
                     });
                 }
 
-                Ok(OAuthDeviceCodePollResult::Failed { message: "Invalid device token response".into() })
+                Ok(OAuthDeviceCodePollResult::Failed {
+                    message: "Invalid device token response".into(),
+                })
             })
         }),
     })
@@ -444,7 +433,15 @@ async fn refresh_github_copilot_access_token(
     ];
     headers.extend(copilot_headers());
 
-    let raw = fetch_json(transport, &urls.copilot_token_url, headers, "GET", None, signal).await?;
+    let raw = fetch_json(
+        transport,
+        &urls.copilot_token_url,
+        headers,
+        "GET",
+        None,
+        signal,
+    )
+    .await?;
     let Some(record) = as_record(&raw) else {
         anyhow::bail!("Invalid Copilot token response");
     };
@@ -454,8 +451,15 @@ async fn refresh_github_copilot_access_token(
         anyhow::bail!("Invalid Copilot token response fields");
     };
 
-    let mut credential = OAuthCredential::new(token, refresh_token, expires_at * 1000.0 - 5.0 * 60.0 * 1000.0);
-    credential = credential.with_extra("enterpriseUrl", serde_json::to_value(enterprise_domain).unwrap_or(Value::Null));
+    let mut credential = OAuthCredential::new(
+        token,
+        refresh_token,
+        expires_at * 1000.0 - 5.0 * 60.0 * 1000.0,
+    );
+    credential = credential.with_extra(
+        "enterpriseUrl",
+        serde_json::to_value(enterprise_domain).unwrap_or(Value::Null),
+    );
     Ok(credential)
 }
 
@@ -465,9 +469,27 @@ async fn refresh_github_copilot_token(
     enterprise_domain: Option<&str>,
     signal: &AbortSignal,
 ) -> anyhow::Result<OAuthCredential> {
-    let credentials = refresh_github_copilot_access_token(transport, refresh_token, enterprise_domain, signal).await?;
-    let catalog = fetch_github_copilot_models(transport, &credentials.access, enterprise_domain, signal, 0, 0.0).await?;
-    Ok(credentials.with_extra("availableModelIds", serde_json::to_value(catalog.available_model_ids).unwrap_or(Value::Null)))
+    let credentials =
+        refresh_github_copilot_access_token(transport, refresh_token, enterprise_domain, signal)
+            .await?;
+    let catalog = fetch_github_copilot_models(
+        transport,
+        &credentials.access,
+        enterprise_domain,
+        signal,
+        0,
+        0.0,
+    )
+    .await?;
+    Ok(credentials
+        .with_extra(
+            "availableModelIds",
+            serde_json::to_value(catalog.available_model_ids)?,
+        )
+        .with_extra(
+            "copilotModelLimits",
+            serde_json::to_value(catalog.model_limits)?,
+        ))
 }
 
 async fn enable_github_copilot_model(
@@ -508,7 +530,12 @@ async fn enable_github_copilot_model(
         }
     };
     if response.status == 429 {
-        anyhow::bail!("{} {}: {}", response.status, status_text(response.status), response.body);
+        anyhow::bail!(
+            "{} {}: {}",
+            response.status,
+            status_text(response.status),
+            response.body
+        );
     }
     Ok(response.ok())
 }
@@ -522,7 +549,9 @@ async fn enable_github_copilot_models(
 ) -> anyhow::Result<Vec<String>> {
     let mut enabled_model_ids = Vec::new();
     for model_id in model_ids {
-        match enable_github_copilot_model(transport, token, model_id, enterprise_domain, signal).await {
+        match enable_github_copilot_model(transport, token, model_id, enterprise_domain, signal)
+            .await
+        {
             Ok(true) => enabled_model_ids.push(model_id.clone()),
             Ok(false) => {}
             Err(error) => {
@@ -549,7 +578,10 @@ impl GitHubCopilotOAuth {
         &self.transport
     }
 
-    async fn login_github_copilot(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+    async fn login_github_copilot(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<OAuthCredential> {
         let input = interaction
             .prompt(AuthPrompt {
                 kind: AuthPromptKind::Text {
@@ -568,9 +600,12 @@ impl GitHubCopilotOAuth {
         if !trimmed.is_empty() && enterprise_domain.is_none() {
             anyhow::bail!("Invalid GitHub Enterprise URL/domain");
         }
-        let domain = enterprise_domain.clone().unwrap_or_else(|| "github.com".to_string());
+        let domain = enterprise_domain
+            .clone()
+            .unwrap_or_else(|| "github.com".to_string());
 
-        let device = start_device_flow(self.transport.as_ref(), &domain, &interaction.signal).await?;
+        let device =
+            start_device_flow(self.transport.as_ref(), &domain, &interaction.signal).await?;
         interaction.notify(AuthEvent::DeviceCode {
             user_code: device.user_code.clone(),
             verification_uri: device.verification_uri.clone(),
@@ -578,8 +613,13 @@ impl GitHubCopilotOAuth {
             expires_in_seconds: Some(device.expires_in),
         });
 
-        let github_access_token =
-            poll_for_github_access_token(self.transport.clone(), domain, device, &interaction.signal).await?;
+        let github_access_token = poll_for_github_access_token(
+            self.transport.clone(),
+            domain,
+            device,
+            &interaction.signal,
+        )
+        .await?;
         let credentials = refresh_github_copilot_access_token(
             self.transport.as_ref(),
             &github_access_token,
@@ -598,7 +638,9 @@ impl GitHubCopilotOAuth {
         .await?;
         let mut enabled_model_ids: Vec<String> = Vec::new();
         if !models.policy_model_ids.is_empty() {
-            interaction.notify(AuthEvent::Progress { message: "Enabling models...".into() });
+            interaction.notify(AuthEvent::Progress {
+                message: "Enabling models...".into(),
+            });
             enabled_model_ids = enable_github_copilot_models(
                 self.transport.as_ref(),
                 &credentials.access,
@@ -615,7 +657,12 @@ impl GitHubCopilotOAuth {
                 combined.push(model_id);
             }
         }
-        Ok(credentials.with_extra("availableModelIds", serde_json::to_value(combined).unwrap_or(Value::Null)))
+        Ok(credentials
+            .with_extra("availableModelIds", serde_json::to_value(combined)?)
+            .with_extra(
+                "copilotModelLimits",
+                serde_json::to_value(models.model_limits)?,
+            ))
     }
 }
 
@@ -647,11 +694,18 @@ impl OAuthAuth for GitHubCopilotOAuth {
         &[401, 403]
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<OAuthCredential> {
         self.login_github_copilot(interaction).await
     }
 
-    async fn refresh(&self, credential: &OAuthCredential, signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        signal: &AbortSignal,
+    ) -> anyhow::Result<OAuthCredential> {
         refresh_github_copilot_token(
             self.transport.as_ref(),
             &credential.refresh,
@@ -681,7 +735,8 @@ mod tests {
     use crate::utils::abort::AbortController;
     use std::sync::Mutex;
 
-    const TEST_ACCESS_TOKEN: &str = "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;";
+    const TEST_ACCESS_TOKEN: &str =
+        "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;";
     const TEST_MODELS_URL: &str = "https://api.individual.githubcopilot.com/models";
 
     fn json(status: u16, body: Value) -> ScriptedResponse {
@@ -694,8 +749,14 @@ mod tests {
 
     #[test]
     fn normalize_domain_accepts_bare_and_schemed_hosts() {
-        assert_eq!(normalize_domain("company.ghe.com").as_deref(), Some("company.ghe.com"));
-        assert_eq!(normalize_domain("  https://company.ghe.com/path  ").as_deref(), Some("company.ghe.com"));
+        assert_eq!(
+            normalize_domain("company.ghe.com").as_deref(),
+            Some("company.ghe.com")
+        );
+        assert_eq!(
+            normalize_domain("  https://company.ghe.com/path  ").as_deref(),
+            Some("company.ghe.com")
+        );
         assert_eq!(normalize_domain(""), None);
         assert_eq!(normalize_domain("   "), None);
     }
@@ -718,7 +779,10 @@ mod tests {
 
     #[test]
     fn rejected_token_statuses_match_copilot_contract() {
-        assert_eq!(GitHubCopilotOAuth::new(default_transport()).rejected_token_statuses(), &[401, 403]);
+        assert_eq!(
+            GitHubCopilotOAuth::new(default_transport()).rejected_token_statuses(),
+            &[401, 403]
+        );
     }
 
     #[test]
@@ -754,15 +818,49 @@ mod tests {
 
     #[test]
     fn catalog_rejects_a_non_object_data_field() {
-        let error = parse_github_copilot_model_catalog(&serde_json::json!({"data": "nope"}), false).unwrap_err();
+        let error = parse_github_copilot_model_catalog(&serde_json::json!({"data": "nope"}), false)
+            .unwrap_err();
         assert_eq!(error.to_string(), "Invalid Copilot models response");
     }
 
     async fn refresh_with(transport: Arc<ScriptedTransport>) -> anyhow::Result<OAuthCredential> {
         let oauth = GitHubCopilotOAuth::new(transport);
         oauth
-            .refresh(&OAuthCredential::new("old-access-token", "ghu_refresh_token", 0.0), &signal())
+            .refresh(
+                &OAuthCredential::new("old-access-token", "ghu_refresh_token", 0.0),
+                &signal(),
+            )
             .await
+    }
+
+    #[tokio::test]
+    async fn refresh_persists_account_catalog_limits() {
+        let transport = Arc::new(ScriptedTransport::new(vec![
+            (
+                Some("/copilot_internal/v2/token"),
+                json(
+                    200,
+                    serde_json::json!({"token": TEST_ACCESS_TOKEN, "expires_at": 9_999_999_999i64}),
+                ),
+            ),
+            (
+                Some("/models"),
+                json(
+                    200,
+                    serde_json::json!({"data": [
+                        {"id":"gpt-4.1", "model_picker_enabled":true, "capabilities":{"limits":{"max_context_window_tokens":8192,"max_prompt_tokens":4096,"max_output_tokens":512}}},
+                        {"id":"no-tools", "capabilities":{"supports":{"tool_calls":false}, "limits":{"max_prompt_tokens":1}}}
+                    ]}),
+                ),
+            ),
+        ]));
+        let credential = refresh_with(transport).await.unwrap();
+        assert_eq!(
+            credential.get_extra("copilotModelLimits"),
+            Some(&serde_json::json!([
+                {"id":"gpt-4.1", "maxContextWindowTokens":8192,"maxPromptTokens":4096,"maxOutputTokens":512}
+            ]))
+        );
     }
 
     #[tokio::test]
@@ -770,7 +868,10 @@ mod tests {
         let transport = Arc::new(ScriptedTransport::new(vec![
             (
                 Some("/copilot_internal/v2/token"),
-                json(200, serde_json::json!({"token": "tid=test;exp=9999999999;proxy-ep=proxy.business.githubcopilot.com;", "expires_at": 9_999_999_999i64})),
+                json(
+                    200,
+                    serde_json::json!({"token": "tid=test;exp=9999999999;proxy-ep=proxy.business.githubcopilot.com;", "expires_at": 9_999_999_999i64}),
+                ),
             ),
             (
                 Some("api.business.githubcopilot.com/models"),
@@ -781,7 +882,10 @@ mod tests {
             ),
         ]));
         let credential = refresh_with(transport.clone()).await.unwrap();
-        assert_eq!(credential.get_extra("availableModelIds"), Some(&serde_json::json!([])));
+        assert_eq!(
+            credential.get_extra("availableModelIds"),
+            Some(&serde_json::json!([]))
+        );
     }
 
     #[tokio::test]
@@ -789,16 +893,29 @@ mod tests {
         let transport = Arc::new(ScriptedTransport::new(vec![
             (
                 Some("/copilot_internal/v2/token"),
-                json(200, serde_json::json!({"token": TEST_ACCESS_TOKEN, "expires_at": 9_999_999_999i64})),
+                json(
+                    200,
+                    serde_json::json!({"token": TEST_ACCESS_TOKEN, "expires_at": 9_999_999_999i64}),
+                ),
             ),
             (
                 Some(TEST_MODELS_URL),
-                ScriptedResponse::Text { status: 429, body: "{\"error\":\"too many requests\"}".into() },
+                ScriptedResponse::Text {
+                    status: 429,
+                    body: "{\"error\":\"too many requests\"}".into(),
+                },
             ),
         ]));
         let error = refresh_with(transport.clone()).await.unwrap_err();
         assert!(error.to_string().contains("429"), "{error}");
-        assert_eq!(transport.requests().iter().filter(|request| request.url == TEST_MODELS_URL).count(), 1);
+        assert_eq!(
+            transport
+                .requests()
+                .iter()
+                .filter(|request| request.url == TEST_MODELS_URL)
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -806,34 +923,59 @@ mod tests {
         let transport = Arc::new(ScriptedTransport::new(vec![
             (
                 Some("/copilot_internal/v2/token"),
-                json(200, serde_json::json!({"token": "new-token", "expires_at": 9_999_999_999i64})),
+                json(
+                    200,
+                    serde_json::json!({"token": "new-token", "expires_at": 9_999_999_999i64}),
+                ),
             ),
             (Some("/models"), json(200, serde_json::json!({"data": []}))),
         ]));
         let oauth = GitHubCopilotOAuth::new(transport.clone());
-        let credential = OAuthCredential::new("old", "gh-token", 0.0).with_extra("enterpriseUrl", serde_json::json!("company.ghe.com"));
+        let credential = OAuthCredential::new("old", "gh-token", 0.0)
+            .with_extra("enterpriseUrl", serde_json::json!("company.ghe.com"));
         let refreshed = oauth.refresh(&credential, &signal()).await.unwrap();
         assert_eq!(refreshed.access, "new-token");
-        assert_eq!(refreshed.get_extra_str("enterpriseUrl"), Some("company.ghe.com"));
-        assert!(transport.requests()[0].url.contains("api.company.ghe.com"), "{:?}", transport.requests()[0].url);
+        assert_eq!(
+            refreshed.get_extra_str("enterpriseUrl"),
+            Some("company.ghe.com")
+        );
+        assert!(
+            transport.requests()[0].url.contains("api.company.ghe.com"),
+            "{:?}",
+            transport.requests()[0].url
+        );
     }
 
     #[tokio::test]
     async fn to_auth_derives_the_base_url_from_the_token_then_the_enterprise_domain() {
         let oauth = GitHubCopilotOAuth::new(Arc::new(ScriptedTransport::default()));
         let access = "tid=abc;exp=123;proxy-ep=proxy.enterprise.example;rest";
-        let auth = oauth.to_auth(&OAuthCredential::new(access, "r", 0.0)).await.unwrap();
+        let auth = oauth
+            .to_auth(&OAuthCredential::new(access, "r", 0.0))
+            .await
+            .unwrap();
         assert_eq!(auth.api_key.as_deref(), Some(access));
-        assert_eq!(auth.base_url.as_deref(), Some("https://api.enterprise.example"));
+        assert_eq!(
+            auth.base_url.as_deref(),
+            Some("https://api.enterprise.example")
+        );
 
-        let enterprise = OAuthCredential::new("no-proxy-ep", "r", 0.0)
-            .with_extra("enterpriseUrl", serde_json::json!("https://company.ghe.com"));
+        let enterprise = OAuthCredential::new("no-proxy-ep", "r", 0.0).with_extra(
+            "enterpriseUrl",
+            serde_json::json!("https://company.ghe.com"),
+        );
         let auth = oauth.to_auth(&enterprise).await.unwrap();
-        assert_eq!(auth.base_url.as_deref(), Some("https://copilot-api.company.ghe.com"));
+        assert_eq!(
+            auth.base_url.as_deref(),
+            Some("https://copilot-api.company.ghe.com")
+        );
 
         let individual = OAuthCredential::new("no-proxy-ep", "r", 0.0);
         let auth = oauth.to_auth(&individual).await.unwrap();
-        assert_eq!(auth.base_url.as_deref(), Some("https://api.individual.githubcopilot.com"));
+        assert_eq!(
+            auth.base_url.as_deref(),
+            Some("https://api.individual.githubcopilot.com")
+        );
     }
 
     type CapturedEvents = Arc<Mutex<Vec<AuthEvent>>>;
@@ -858,19 +1000,23 @@ mod tests {
         fn notify(&self, event: AuthEvent) {
             match event {
                 AuthEvent::DeviceCode { .. } => {
-                    self.device_codes.lock().unwrap_or_else(|p| p.into_inner()).push(event);
+                    self.device_codes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(event);
                 }
                 AuthEvent::Progress { message } => {
-                    self.progress.lock().unwrap_or_else(|p| p.into_inner()).push(message);
+                    self.progress
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(message);
                 }
                 _ => {}
             }
         }
     }
 
-    fn interaction(
-        answer: &str,
-    ) -> (ProviderAuthInteraction, CapturedEvents, CapturedMessages) {
+    fn interaction(answer: &str) -> (ProviderAuthInteraction, CapturedEvents, CapturedMessages) {
         let signal = signal();
         let device_codes = Arc::new(Mutex::new(Vec::new()));
         let progress = Arc::new(Mutex::new(Vec::new()));
@@ -880,7 +1026,11 @@ mod tests {
             progress: progress.clone(),
             answer: answer.to_string(),
         });
-        (ProviderAuthInteraction::new(signal, inner), device_codes, progress)
+        (
+            ProviderAuthInteraction::new(signal, inner),
+            device_codes,
+            progress,
+        )
     }
 
     #[tokio::test]
@@ -898,10 +1048,19 @@ mod tests {
                     serde_json::json!({"device_code": "device-code", "user_code": "ABCD-EFGH", "verification_uri": "https://github.com/login/device", "interval": 1, "expires_in": 900}),
                 ),
             ),
-            (Some("/login/oauth/access_token"), json(200, serde_json::json!({"access_token": "ghu_refresh_token"}))),
+            (
+                Some("/login/oauth/access_token"),
+                json(
+                    200,
+                    serde_json::json!({"access_token": "ghu_refresh_token"}),
+                ),
+            ),
             (
                 Some("/copilot_internal/v2/token"),
-                json(200, serde_json::json!({"token": TEST_ACCESS_TOKEN, "expires_at": 9_999_999_999i64})),
+                json(
+                    200,
+                    serde_json::json!({"token": TEST_ACCESS_TOKEN, "expires_at": 9_999_999_999i64}),
+                ),
             ),
             (
                 Some(TEST_MODELS_URL),
@@ -913,14 +1072,23 @@ mod tests {
                     ]}),
                 ),
             ),
-            (Some("/policy"), ScriptedResponse::Text { status: 200, body: String::new() }),
+            (
+                Some("/policy"),
+                ScriptedResponse::Text {
+                    status: 200,
+                    body: String::new(),
+                },
+            ),
         ]));
         let oauth = GitHubCopilotOAuth::new(transport.clone());
         let (interaction, device_codes, progress) = interaction("");
         let credential = oauth.login(&interaction).await.unwrap();
 
         assert_eq!(credential.access, TEST_ACCESS_TOKEN);
-        let device_codes = device_codes.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let device_codes = device_codes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         assert_eq!(
             device_codes,
             vec![AuthEvent::DeviceCode {
@@ -930,12 +1098,21 @@ mod tests {
                 expires_in_seconds: Some(900.0),
             }]
         );
-        assert_eq!(*progress.lock().unwrap_or_else(|p| p.into_inner()), vec!["Enabling models...".to_string()]);
+        assert_eq!(
+            *progress.lock().unwrap_or_else(|p| p.into_inner()),
+            vec!["Enabling models...".to_string()]
+        );
         let requests = transport.requests();
-        let policy_requests: Vec<&HttpRequest> =
-            requests.iter().filter(|request| request.url.ends_with("/policy")).collect();
+        let policy_requests: Vec<&HttpRequest> = requests
+            .iter()
+            .filter(|request| request.url.ends_with("/policy"))
+            .collect();
         assert_eq!(policy_requests.len(), 1);
-        assert!(policy_requests[0].url.contains(&known), "{}", policy_requests[0].url);
+        assert!(
+            policy_requests[0].url.contains(&known),
+            "{}",
+            policy_requests[0].url
+        );
     }
 
     #[tokio::test]
@@ -950,8 +1127,16 @@ mod tests {
         let oauth = GitHubCopilotOAuth::new(transport);
         let (interaction, device_codes, _) = interaction("");
         let error = oauth.login(&interaction).await.unwrap_err();
-        assert!(error.to_string().contains("Untrusted verification_uri"), "{error}");
-        assert!(device_codes.lock().unwrap_or_else(|p| p.into_inner()).is_empty());
+        assert!(
+            error.to_string().contains("Untrusted verification_uri"),
+            "{error}"
+        );
+        assert!(
+            device_codes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -968,7 +1153,14 @@ mod tests {
     async fn continues_policy_updates_after_a_transport_failure() {
         let known: Vec<String> = crate::models_generated::MODELS
             .get("github-copilot")
-            .map(|models| models.keys().filter(|id| !id.is_empty()).take(2).cloned().collect())
+            .map(|models| {
+                models
+                    .keys()
+                    .filter(|id| !id.is_empty())
+                    .take(2)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         assert!(known.len() == 2, "copilot catalog needs two model ids");
 
@@ -980,10 +1172,19 @@ mod tests {
                     serde_json::json!({"device_code": "device-code", "user_code": "ABCD-EFGH", "verification_uri": "https://github.com/login/device", "interval": 1, "expires_in": 900}),
                 ),
             ),
-            (Some("/login/oauth/access_token"), json(200, serde_json::json!({"access_token": "ghu_refresh_token"}))),
+            (
+                Some("/login/oauth/access_token"),
+                json(
+                    200,
+                    serde_json::json!({"access_token": "ghu_refresh_token"}),
+                ),
+            ),
             (
                 Some("/copilot_internal/v2/token"),
-                json(200, serde_json::json!({"token": TEST_ACCESS_TOKEN, "expires_at": 9_999_999_999i64})),
+                json(
+                    200,
+                    serde_json::json!({"token": TEST_ACCESS_TOKEN, "expires_at": 9_999_999_999i64}),
+                ),
             ),
             (
                 Some(TEST_MODELS_URL),
@@ -995,17 +1196,35 @@ mod tests {
                     ]}),
                 ),
             ),
-            (Some("/policy"), ScriptedResponse::Failure { message: "fetch failed".into() }),
-            (Some("/policy"), ScriptedResponse::Text { status: 200, body: String::new() }),
+            (
+                Some("/policy"),
+                ScriptedResponse::Failure {
+                    message: "fetch failed".into(),
+                },
+            ),
+            (
+                Some("/policy"),
+                ScriptedResponse::Text {
+                    status: 200,
+                    body: String::new(),
+                },
+            ),
         ]));
         let oauth = GitHubCopilotOAuth::new(transport.clone());
         let (interaction, _, _) = interaction("");
         let credential = oauth.login(&interaction).await.unwrap();
-        let policy_urls: Vec<String> =
-            transport.requests().iter().filter(|request| request.url.ends_with("/policy")).map(|r| r.url.clone()).collect();
+        let policy_urls: Vec<String> = transport
+            .requests()
+            .iter()
+            .filter(|request| request.url.ends_with("/policy"))
+            .map(|r| r.url.clone())
+            .collect();
         assert_eq!(policy_urls.len(), 2, "{policy_urls:?}");
         assert!(policy_urls[0].contains(&known[0]));
         assert!(policy_urls[1].contains(&known[1]));
-        assert_eq!(credential.get_extra("availableModelIds"), Some(&serde_json::json!(known)));
+        assert_eq!(
+            credential.get_extra("availableModelIds"),
+            Some(&serde_json::json!(known))
+        );
     }
 }

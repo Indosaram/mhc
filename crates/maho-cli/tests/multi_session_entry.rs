@@ -89,7 +89,7 @@ async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
     let cwd = temp.path().to_string_lossy().into_owned();
     let socket = temp.path().join("rpc.sock");
     let socket_text = socket.to_string_lossy().into_owned();
-    let core = create_host_core(rpc_config(&cwd, &cwd), &cwd, Some(socket_text.as_str()));
+    let core = create_host_core(rpc_config(&cwd, &cwd), &cwd, Some(socket_text.as_str())).expect("host core");
     let signals = HostShutdownSignals { watchdog: None, empty_exit_ms: Some(2_000.0) };
     let served = tokio::spawn(run_multi_session_host_with_signals(core, Some(socket_text.clone()), signals));
     // Subscribe to the host's answer, then to its exit; the retry is bounded, never a fixed sleep.

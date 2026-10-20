@@ -34,6 +34,7 @@ fn error_result(id: String, name: String, message: impl Into<String>) -> ToolRes
         details: None,
         usage: None,
         added_tool_names: None,
+        nested_calls: None,
         is_error: true,
         timestamp: now_ms(),
     }
@@ -47,7 +48,7 @@ fn is_record(value: &Value) -> bool { value.is_object() }
 
 fn empty_result(id: String, name: String) -> ToolResultMessage {
     ToolResultMessage { tool_call_id: id, tool_name: name, content: vec![ContentBlock::text("")], details: None,
-        usage: None, added_tool_names: None, is_error: false, timestamp: now_ms() }
+        usage: None, added_tool_names: None, nested_calls: None, is_error: false, timestamp: now_ms() }
 }
 
 fn map_cursor_pi_grep_args(args: &PiGrepExecArgs) -> Value {
@@ -73,6 +74,7 @@ fn text_result(id: String, name: String, result: maho_agent::types::AgentToolRes
         details: Some(result.details),
         usage: result.usage,
         added_tool_names: result.added_tool_names,
+        nested_calls: result.nested_calls,
         is_error: result.is_error.unwrap_or(false),
         timestamp: now_ms(),
     }
@@ -98,10 +100,16 @@ async fn execute_tool(options: &CursorExecBridgeOptions, name: &str, id: String,
     let tool_call = maho_ai::types::ToolCall { id: id.clone(), name: name.to_owned(), arguments: clean_args.clone(), ..Default::default() };
     let args = Value::Object(clean_args);
     let prepared = match maho_ai::utils::validation::validate_tool_arguments(&tool.tool, &tool_call) {
-        Ok(params) => tool.prepare_arguments.as_ref().map(|prepare| prepare(params.clone())).unwrap_or(params),
+        Ok(params) => match &tool.prepare_arguments {
+            Some(prepare) => match prepare(params) {
+                Ok(params) => params,
+                Err(error) => return error_result(id, name.to_owned(), error),
+            },
+            None => params,
+        },
         Err(error) => return error_result(id, name.to_owned(), error.to_string()),
     };
-    (options.emit_event)(AgentEvent::ToolExecutionStart { tool_call_id: id.clone(), tool_name: name.to_owned(), args: args.clone() }, signal.clone()).await;
+    (options.emit_event)(AgentEvent::ToolExecutionStart { tool_call_id: id.clone(), tool_name: name.to_owned(), args: args.clone(), parent_tool_call_id: None }, signal.clone()).await;
     let result = async {
         if !is_record(&prepared) { return error_result(id.clone(), name.to_owned(), format!("Tool \"{name}\" prepared non-object arguments")); }
         if let Some(preflight) = &options.preflight_tool_call
@@ -113,11 +121,11 @@ async fn execute_tool(options: &CursorExecBridgeOptions, name: &str, id: String,
         }
         text_result(id.clone(), name.to_owned(), (tool.execute)(id.clone(), prepared.clone(), Some(signal.clone()), None).await)
     }.await;
-    (options.emit_event)(AgentEvent::ToolExecutionEnd { tool_call_id: id.clone(), tool_name: name.to_owned(), result: serde_json::to_value(&result).unwrap_or(Value::Null), is_error: result.is_error }, signal.clone()).await;
+    (options.emit_event)(AgentEvent::ToolExecutionEnd { tool_call_id: id.clone(), tool_name: name.to_owned(), result: serde_json::to_value(&result).unwrap_or(Value::Null), is_error: result.is_error, parent_tool_call_id: None }, signal.clone()).await;
     if let Some(emit) = &options.emit_tool_result {
         emit(id, name.to_owned(), prepared, maho_agent::types::AgentToolResult {
             content: result.content.clone(), details: result.details.clone().unwrap_or(Value::Null), structured_content: None, usage: result.usage,
-            is_error: Some(result.is_error), added_tool_names: result.added_tool_names.clone(), terminate: None,
+            is_error: Some(result.is_error), added_tool_names: result.added_tool_names.clone(), nested_calls: result.nested_calls.clone(), terminate: None,
         }, result.is_error).await;
     }
     result
@@ -221,7 +229,12 @@ mod tests {
                 assert_eq!(id, "call-identity");
                 assert_eq!(args, json!({"path":"sample"}));
                 assert!(!signal.expect("active signal").aborted());
-                maho_agent::types::AgentToolResult::text("file contents")
+                let mut result = maho_agent::types::AgentToolResult::text("file contents");
+                result.nested_calls = Some(maho_ai::types::NestedToolCalls { calls: vec![maho_ai::types::NestedToolCallRecord {
+                    id: "call-identity/1".into(), name: "read".into(), arguments: Some(Default::default()), arguments_bytes: None,
+                    status: maho_ai::types::NestedToolCallStatus::Ok, duration_ms: Some(0), error: None,
+                }], complete: true });
+                result
             })),
         };
         let handlers = create_cursor_exec_bridge(CursorExecBridgeOptions {
@@ -243,6 +256,8 @@ mod tests {
         assert_eq!(results[0].1, "read");
         assert_eq!(results[0].2, json!({"path":"sample"}));
         assert_eq!(results[0].3.content, result.content);
+        assert!(result.nested_calls.is_some());
+        assert_eq!(results[0].3.nested_calls, result.nested_calls);
         assert!(!results[0].4);
     }
 
@@ -292,7 +307,7 @@ mod tests {
         let results = observed.clone();
         let tool = AgentTool {
             label: "grep".into(), replay: None, execution_mode: None,
-            prepare_arguments: Some(Arc::new(|mut args: Value| { args["prepared"] = json!(true); args })),
+            prepare_arguments: Some(Arc::new(|mut args: Value| { args["prepared"] = json!(true); Ok(args) })),
             tool: maho_ai::types::Tool { name: "grep".into(), description: String::new(), parameters: json!({"type":"object"}), output_schema: None, freeform: None, constrained_sampling: None },
             execute: Arc::new(|_, args, _, _| Box::pin(async move {
                 assert_eq!(args, json!({"pattern":"needle","prepared":true}));

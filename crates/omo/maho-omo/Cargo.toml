@@ -12,6 +12,7 @@ path = "tests/all/main.rs"
 [lints]
 workspace = true
 [dependencies]
+claude-code-compat-core = { path = "../claude-code-compat-core" }
 maho-omo-task = { path = "../components/maho-omo-task" }
 senpi-task = { package = "maho-senpi-task", path = "../senpi-task" }
 maho-ext-api = { path = "../../maho-ext-api" }
@@ -29,8 +30,10 @@ maho-omo-gateway = { path = "../components/maho-omo-gateway" }
 maho-omo-config-watch = { path = "../components/maho-omo-config-watch" }
 maho-omo-fallback-architect = { path = "../components/maho-omo-fallback-architect" }
 maho-omo-init-deep-advisor = { path = "../components/maho-omo-init-deep-advisor" }
+maho-omo-side-panel = { path = "../components/maho-omo-side-panel" }
 maho-omo-lsp = { path = "../components/maho-omo-lsp" }
 maho-omo-skill-pointers = { path = "../components/maho-omo-skill-pointers" }
+maho-omo-question-gates = { path = "../components/maho-omo-question-gates" }
 maho-omo-memory = { path = "../components/maho-omo-memory" }
 maho-omo-onboarding = { path = "../components/maho-omo-onboarding" }
 maho-omo-start-work-continuation = { path = "../components/maho-omo-start-work-continuation" }

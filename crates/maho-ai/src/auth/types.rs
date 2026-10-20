@@ -33,6 +33,9 @@ pub struct ApiKeyCredential {
     pub key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<ProviderEnv>,
+    /// Pool bookkeeping and provider fields are siblings of `key` and `env` on disk.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// OAuth token data returned by extension compatibility flows / stored on disk.
@@ -51,7 +54,12 @@ pub struct OAuthCredential {
 
 impl OAuthCredential {
     pub fn new(access: impl Into<String>, refresh: impl Into<String>, expires: f64) -> Self {
-        Self { refresh: refresh.into(), access: access.into(), expires, extra: Map::new() }
+        Self {
+            refresh: refresh.into(),
+            access: access.into(),
+            expires,
+            extra: Map::new(),
+        }
     }
 
     pub fn get_extra(&self, key: &str) -> Option<&Value> {
@@ -134,7 +142,7 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// App-owned credential storage, keyed by `Provider.id`, one entry per provider.
 ///
-/// `modify` is the only write path, so every mutation is a serialized read-modify-write.
+/// Mutations are serialized per provider, including conditional deletion.
 /// Error semantics: `read` resolves `None` for missing entries. Methods reject only on storage
 /// failure.
 #[async_trait]
@@ -147,18 +155,41 @@ pub trait CredentialStore: Send + Sync {
     ) -> anyhow::Result<Option<Credential>>;
 
     /// List stored credential metadata without resolving or exposing secrets.
-    async fn list(&self, options: Option<AuthOperationOptions>) -> anyhow::Result<Vec<CredentialInfo>>;
+    async fn list(
+        &self,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Vec<CredentialInfo>>;
 
     /// Serialized write - the only write path. Mutual exclusion per provider id.
     async fn modify(
         &self,
         provider_id: &str,
-        f: Box<dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>> + Send>,
+        f: Box<
+            dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>>
+                + Send,
+        >,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>>;
+
+    /// Serialized read-modify-write with deletion: `Some` replaces the entry and `None`
+    /// removes it. The latest read, callback, and write/delete share the same store lock
+    /// as `modify` and `delete`. Callback failure leaves the entry unchanged.
+    async fn modify_or_delete(
+        &self,
+        provider_id: &str,
+        f: Box<
+            dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>>
+                + Send,
+        >,
         options: Option<AuthOperationOptions>,
     ) -> anyhow::Result<Option<Credential>>;
 
     /// Remove a credential (logout). Implementations serialize this against `modify`.
-    async fn delete(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<()>;
+    async fn delete(
+        &self,
+        provider_id: &str,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<()>;
 }
 
 /// Environment access for auth resolution. Injectable for tests and browsers.
@@ -172,6 +203,8 @@ pub trait AuthContext: Send + Sync {
 /// Result of resolving auth for a model.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AuthResult {
+    /// Auth came only from a shared cloud credential chain, not provider configuration.
+    pub ambient: bool,
     pub auth: ModelAuth,
     /// Provider-scoped environment/config values resolved from credentials and ambient context.
     pub env: Option<ProviderEnv>,
@@ -181,6 +214,8 @@ pub struct AuthResult {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthCheck {
+    /// Same classification as `AuthResult::ambient`.
+    pub ambient: bool,
     pub source: Option<String>,
     #[allow(clippy::struct_field_names)]
     pub auth_type: AuthType,
@@ -202,10 +237,22 @@ pub struct AuthPromptOption {
 /// Prompt shown to the user during login.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthPromptKind {
-    Text { message: String, placeholder: Option<String> },
-    Secret { message: String, placeholder: Option<String> },
-    Select { message: String, options: Vec<AuthPromptOption> },
-    ManualCode { message: String, placeholder: Option<String> },
+    Text {
+        message: String,
+        placeholder: Option<String>,
+    },
+    Secret {
+        message: String,
+        placeholder: Option<String>,
+    },
+    Select {
+        message: String,
+        options: Vec<AuthPromptOption>,
+    },
+    ManualCode {
+        message: String,
+        placeholder: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -222,15 +269,23 @@ pub struct AuthInfoLink {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthEvent {
-    Info { message: String, links: Option<Vec<AuthInfoLink>> },
-    AuthUrl { url: String, instructions: Option<String> },
+    Info {
+        message: String,
+        links: Option<Vec<AuthInfoLink>>,
+    },
+    AuthUrl {
+        url: String,
+        instructions: Option<String>,
+    },
     DeviceCode {
         user_code: String,
         verification_uri: String,
         interval_seconds: Option<f64>,
         expires_in_seconds: Option<f64>,
     },
-    Progress { message: String },
+    Progress {
+        message: String,
+    },
 }
 
 /// Secret-free receipt emitted only after the account write succeeds.
@@ -260,11 +315,27 @@ pub trait AuthInteraction: Send + Sync {
 pub struct ProviderAuthInteraction {
     pub signal: crate::utils::abort::AbortSignal,
     inner: Arc<dyn AuthInteraction>,
+    device_id: Option<String>,
 }
 
 impl ProviderAuthInteraction {
     pub fn new(signal: crate::utils::abort::AbortSignal, inner: Arc<dyn AuthInteraction>) -> Self {
-        Self { signal, inner }
+        Self {
+            signal,
+            inner,
+            device_id: None,
+        }
+    }
+
+    /// App-owned, stable installation UUID (upstream LoginOptions.getDeviceId).
+    /// Never generate a fresh identity for each login.
+    pub fn with_device_id(mut self, device_id: impl Into<String>) -> Self {
+        self.device_id = Some(device_id.into());
+        self
+    }
+
+    pub fn device_id(&self) -> Option<&str> {
+        self.device_id.as_deref()
     }
 
     pub async fn prompt(&self, prompt: AuthPrompt) -> anyhow::Result<String> {
@@ -285,7 +356,10 @@ pub trait ApiKeyAuth: Send + Sync {
         false
     }
 
-    async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<ApiKeyCredential> {
+    async fn login(
+        &self,
+        _interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<ApiKeyCredential> {
         anyhow::bail!("login not supported")
     }
 
@@ -330,7 +404,8 @@ pub trait OAuthAuth: Send + Sync {
         &[]
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential>;
+    async fn login(&self, interaction: &ProviderAuthInteraction)
+    -> anyhow::Result<OAuthCredential>;
 
     /// Exchange the refresh token. Network call; errors on failure (invalid_grant etc.).
     async fn refresh(
@@ -345,7 +420,11 @@ pub trait OAuthAuth: Send + Sync {
         credential: Option<&OAuthCredential>,
         _signal: &crate::utils::abort::AbortSignal,
     ) -> anyhow::Result<Option<AuthCheck>> {
-        Ok(credential.map(|_| AuthCheck { source: Some("OAuth".to_owned()), auth_type: AuthType::OAuth }))
+        Ok(credential.map(|_| AuthCheck {
+            ambient: false,
+            source: Some("OAuth".to_owned()),
+            auth_type: AuthType::OAuth,
+        }))
     }
 
     /// Side-effect-free derivation of request auth from a valid credential.
@@ -381,7 +460,11 @@ mod tests {
 
     #[test]
     fn credential_json_tag_matches_ts() {
-        let api_key = Credential::ApiKey(ApiKeyCredential { key: Some("sk".into()), env: None });
+        let api_key = Credential::ApiKey(ApiKeyCredential {
+            key: Some("sk".into()),
+            env: None,
+            ..Default::default()
+        });
         let json = serde_json::to_value(&api_key).unwrap();
         assert_eq!(json["type"], "api_key");
         assert_eq!(json["key"], "sk");
@@ -396,7 +479,8 @@ mod tests {
 
     #[test]
     fn oauth_credential_preserves_extra_fields() {
-        let cred = OAuthCredential::new("a", "r", 1.0).with_extra("enterpriseUrl", Value::String("x.example.com".into()));
+        let cred = OAuthCredential::new("a", "r", 1.0)
+            .with_extra("enterpriseUrl", Value::String("x.example.com".into()));
         let json = serde_json::to_value(&cred).unwrap();
         assert_eq!(json["enterpriseUrl"], "x.example.com");
         let back: OAuthCredential = serde_json::from_value(json).unwrap();

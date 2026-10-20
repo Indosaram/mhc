@@ -1,58 +1,142 @@
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PackageCommand { Install, Remove, Update, List }
+pub enum PackageCommand {
+    Install,
+    Remove,
+    Update,
+    List,
+}
 #[derive(Debug, PartialEq, Eq)]
-pub enum UpdateTarget { SelfOnly, Extensions { source: Option<String> }, Models, All }
+pub enum UpdateTarget {
+    SelfOnly,
+    Extensions { source: Option<String> },
+    Models,
+    All,
+}
 pub fn package_command_usage(command: PackageCommand) -> &'static str {
     match command {
         PackageCommand::Install => "mhc install <source> [-l] [--approve|--no-approve]",
         PackageCommand::Remove => "mhc remove <source> [-l] [--approve|--no-approve]",
-        PackageCommand::Update => "mhc update [source|self|mhc] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]",
+        PackageCommand::Update => {
+            "mhc update [source|self|mhc] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]"
+        }
         PackageCommand::List => "mhc list [--approve|--no-approve]",
     }
 }
 pub fn package_command_name(command: PackageCommand) -> &'static str {
-    match command { PackageCommand::Install => "install", PackageCommand::Remove => "remove", PackageCommand::Update => "update", PackageCommand::List => "list" }
+    match command {
+        PackageCommand::Install => "install",
+        PackageCommand::Remove => "remove",
+        PackageCommand::Update => "update",
+        PackageCommand::List => "list",
+    }
 }
 pub const CONFIG_COMMAND_USAGE: &str = "mhc config [-l] [--approve|--no-approve]";
 pub fn package_command_help(command: PackageCommand) -> String {
     let body = match command {
-        PackageCommand::Install => "Install a package and add it to settings.\n\nOptions:\n  -l, --local       Install project-locally (.omo/settings.json)\n  -a, --approve     Trust project-local files for this command\n  -na, --no-approve Ignore project-local files for this command\n\nExamples:\n  mhc install npm:@foo/bar\n  mhc install git:github.com/user/repo\n  mhc install git:git@github.com:user/repo\n  mhc install https://github.com/user/repo\n  mhc install ssh://git@github.com/user/repo\n  mhc install ./local/path\n",
-        PackageCommand::Remove => "Remove a package and its source from settings.\nAlias: mhc uninstall <source> [-l]\n\nOptions:\n  -l, --local       Remove from project settings (.omo/settings.json)\n  -a, --approve     Trust project-local files for this command\n  -na, --no-approve Ignore project-local files for this command\n\nExamples:\n  mhc remove npm:@foo/bar\n  mhc uninstall npm:@foo/bar\n",
-        PackageCommand::Update => "Update resource packages or model catalogs.\n\nOptions:\n  --extensions            Update installed packages only\n  --models                Refresh model catalogs only\n  --extension <source>    Update one package only\n  -a, --approve           Trust project-local files for this command\n  -na, --no-approve       Ignore project-local files for this command\n\nNative self-update is replaced by mhc import-omo.\n",
-        PackageCommand::List => "List installed packages from user and project settings.\n\nOptions:\n  -a, --approve      Trust project-local files for this command\n  -na, --no-approve  Ignore project-local files for this command\n",
+        PackageCommand::Install => {
+            "Install a package and add it to settings.\n\nOptions:\n  -l, --local       Install project-locally (.omo/settings.json)\n  -a, --approve     Trust project-local files for this command\n  -na, --no-approve Ignore project-local files for this command\n\nExamples:\n  mhc install npm:@foo/bar\n  mhc install git:github.com/user/repo\n  mhc install git:git@github.com:user/repo\n  mhc install https://github.com/user/repo\n  mhc install ssh://git@github.com/user/repo\n  mhc install ./local/path\n"
+        }
+        PackageCommand::Remove => {
+            "Remove a package and its source from settings.\nAlias: mhc uninstall <source> [-l]\n\nOptions:\n  -l, --local       Remove from project settings (.omo/settings.json)\n  -a, --approve     Trust project-local files for this command\n  -na, --no-approve Ignore project-local files for this command\n\nExamples:\n  mhc remove npm:@foo/bar\n  mhc uninstall npm:@foo/bar\n"
+        }
+        PackageCommand::Update => {
+            "Update the native application, resource packages, or model catalogs.\n\nOptions:\n  --self                  Update the application only (default)\n  --extensions            Update installed packages only\n  --models                Refresh model catalogs only\n  --all                   Update the application and installed packages\n  --extension <source>    Update one package only\n  -a, --approve           Trust project-local files for this command\n  -na, --no-approve       Ignore project-local files for this command\n\nBranded distributions report their own update command.\n"
+        }
+        PackageCommand::List => {
+            "List installed packages from user and project settings.\n\nOptions:\n  -a, --approve      Trust project-local files for this command\n  -na, --no-approve  Ignore project-local files for this command\n"
+        }
     };
     format!("Usage:\n  {}\n\n{body}\n", package_command_usage(command))
 }
 pub fn config_command_help() -> &'static str {
-    "Usage:\n  mhc config [-l] [--approve|--no-approve]\n\nOpen the resource configuration TUI to enable or disable package resources.\nWithout -l, starts in global settings (~/.omo/agent/settings.json).\nPress Tab in the TUI to switch between global and project-local modes.\n\nOptions:\n  -l, --local       Edit project overrides (.omo/settings.json)\n  -a, --approve     Trust project-local files for this command with -l\n  -na, --no-approve Ignore project-local files for this command with -l\n\n"
+    "Usage:\n  mhc config [-l] [--approve|--no-approve]\n  mhc config import-pi [auth.json|keybindings.json|models.json|settings.json ...]\n\nOpen the resource configuration TUI to enable or disable package resources.\nWithout -l, starts in global settings (~/.omo/agent/settings.json).\nPress Tab in the TUI to switch between global and project-local modes.\n\nimport-pi copies selected Pi config files, or all changed files when none are named.\nExisting destination files are backed up before import.\n\nOptions:\n  -l, --local       Edit project overrides (.omo/settings.json)\n  -a, --approve     Trust project-local files for this command with -l\n  -na, --no-approve Ignore project-local files for this command with -l\n\n"
 }
-pub struct ConfigCommandOptions { pub local: bool, pub project_trust_override: Option<bool>, pub help: bool }
+pub struct ConfigCommandOptions {
+    pub local: bool,
+    pub import_pi: Option<Vec<String>>,
+    pub project_trust_override: Option<bool>,
+    pub help: bool,
+}
 pub fn parse_config_command(args: &[String]) -> Result<Option<ConfigCommandOptions>, String> {
-    if args.first().map(String::as_str) != Some("config") { return Ok(None); }
-    let mut options = ConfigCommandOptions { local: false, project_trust_override: None, help: args[1..].iter().any(|argument| matches!(argument.as_str(), "-h" | "--help")) };
-    if options.help { return Ok(Some(options)); }
+    if args.first().map(String::as_str) != Some("config") {
+        return Ok(None);
+    }
+    let mut options = ConfigCommandOptions {
+        local: false,
+        import_pi: None,
+        project_trust_override: None,
+        help: args[1..]
+            .iter()
+            .any(|argument| matches!(argument.as_str(), "-h" | "--help")),
+    };
+    if options.help {
+        return Ok(Some(options));
+    }
+    if args.get(1).map(String::as_str) == Some("import-pi") {
+        options.import_pi = Some(args[2..].to_vec());
+        return Ok(Some(options));
+    }
     for argument in &args[1..] {
         match argument.as_str() {
             "-l" | "--local" => options.local = true,
             "-a" | "--approve" => options.project_trust_override = Some(true),
             "-na" | "--no-approve" => options.project_trust_override = Some(false),
-            _ if argument.starts_with('-') => return Err(format!("Unknown option {argument} for \"config\".\nUse \"mhc --help\" or \"{CONFIG_COMMAND_USAGE}\".")),
-            _ => return Err(format!("Unexpected argument {argument}.\nUsage: {CONFIG_COMMAND_USAGE}")),
+            _ if argument.starts_with('-') => {
+                return Err(format!(
+                    "Unknown option {argument} for \"config\".\nUse \"mhc --help\" or \"{CONFIG_COMMAND_USAGE}\"."
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "Unexpected argument {argument}.\nUsage: {CONFIG_COMMAND_USAGE}"
+                ));
+            }
         }
     }
     Ok(Some(options))
 }
+
 pub struct PackageCommandOptions {
-    pub command: PackageCommand, pub source: Option<String>, pub local: bool,
-    pub update_target: Option<UpdateTarget>, pub show_extensions_skipped_note: bool,
-    pub force: bool, pub omo_local_update_worker: bool,
-    pub project_trust_override: Option<bool>, pub help: bool,
-    pub invalid_option: Option<String>, pub invalid_argument: Option<String>,
-    pub missing_option_value: Option<String>, pub conflicting_options: Option<String>,
+    pub command: PackageCommand,
+    pub source: Option<String>,
+    pub local: bool,
+    pub update_target: Option<UpdateTarget>,
+    pub show_extensions_skipped_note: bool,
+    pub force: bool,
+    pub omo_local_update_worker: bool,
+    pub project_trust_override: Option<bool>,
+    pub help: bool,
+    pub invalid_option: Option<String>,
+    pub invalid_argument: Option<String>,
+    pub missing_option_value: Option<String>,
+    pub conflicting_options: Option<String>,
 }
 pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
-    let command = match args.first()?.as_str() { "install" => PackageCommand::Install, "remove" | "uninstall" => PackageCommand::Remove, "update" => PackageCommand::Update, "list" => PackageCommand::List, _ => return None };
-    let mut parsed = PackageCommandOptions { command, source: None, local: false, update_target: None, show_extensions_skipped_note: false, force: false, omo_local_update_worker: false, project_trust_override: None, help: false, invalid_option: None, invalid_argument: None, missing_option_value: None, conflicting_options: None };
+    parse_package_command_for_app(args, &maho_core::config::app_name())
+}
+fn parse_package_command_for_app(args: &[String], app_name: &str) -> Option<PackageCommandOptions> {
+    let command = match args.first()?.as_str() {
+        "install" => PackageCommand::Install,
+        "remove" | "uninstall" => PackageCommand::Remove,
+        "update" => PackageCommand::Update,
+        "list" => PackageCommand::List,
+        _ => return None,
+    };
+    let mut parsed = PackageCommandOptions {
+        command,
+        source: None,
+        local: false,
+        update_target: None,
+        show_extensions_skipped_note: false,
+        force: false,
+        omo_local_update_worker: false,
+        project_trust_override: None,
+        help: false,
+        invalid_option: None,
+        invalid_argument: None,
+        missing_option_value: None,
+        conflicting_options: None,
+    };
     let mut index = 1;
     let mut extensions_flag = false;
     let mut self_flag = false;
@@ -65,63 +149,138 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
             "--help" | "-h" => parsed.help = true,
             "--approve" | "-a" => parsed.project_trust_override = Some(true),
             "--no-approve" | "-na" => parsed.project_trust_override = Some(false),
-            "--local" | "-l" if matches!(command, PackageCommand::Install | PackageCommand::Remove) => parsed.local = true,
+            "--local" | "-l"
+                if matches!(command, PackageCommand::Install | PackageCommand::Remove) =>
+            {
+                parsed.local = true
+            }
             "--extensions" if command == PackageCommand::Update => extensions_flag = true,
             "--self" if command == PackageCommand::Update => self_flag = true,
             "--models" if command == PackageCommand::Update => models_flag = true,
             "--all" if command == PackageCommand::Update => all_flag = true,
             "--force" if command == PackageCommand::Update => parsed.force = true,
-            "--omo-local-update-worker" if command == PackageCommand::Update => parsed.omo_local_update_worker = true,
-            "--extension" if command == PackageCommand::Update => {
-                if let Some(value) = args.get(index + 1).filter(|value| !value.is_empty() && !value.starts_with('-')) {
-                    if extension_source.is_some() { parsed.conflicting_options.get_or_insert_with(|| "--extension can only be provided once".to_owned()); }
-                    else { extension_source = Some(value.clone()); }
-                    index += 1;
-                } else { parsed.missing_option_value.get_or_insert_with(|| argument.clone()); }
+            "--omo-local-update-worker" if command == PackageCommand::Update => {
+                parsed.omo_local_update_worker = true
             }
-            _ if argument.starts_with('-') => { parsed.invalid_option.get_or_insert_with(|| argument.clone()); }
+            "--extension" if command == PackageCommand::Update => {
+                if let Some(value) = args
+                    .get(index + 1)
+                    .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                {
+                    if extension_source.is_some() {
+                        parsed.conflicting_options.get_or_insert_with(|| {
+                            "--extension can only be provided once".to_owned()
+                        });
+                    } else {
+                        extension_source = Some(value.clone());
+                    }
+                    index += 1;
+                } else {
+                    parsed
+                        .missing_option_value
+                        .get_or_insert_with(|| argument.clone());
+                }
+            }
+            _ if argument.starts_with('-') => {
+                parsed
+                    .invalid_option
+                    .get_or_insert_with(|| argument.clone());
+            }
             _ => {
-                if parsed.source.as_deref().is_none_or(str::is_empty) { parsed.source = Some(argument.clone()); }
-                else { parsed.invalid_argument.get_or_insert_with(|| argument.clone()); }
+                if parsed.source.as_deref().is_none_or(str::is_empty) {
+                    parsed.source = Some(argument.clone());
+                } else {
+                    parsed
+                        .invalid_argument
+                        .get_or_insert_with(|| argument.clone());
+                }
             }
         }
         index += 1;
     }
     if command == PackageCommand::Update {
-        let source_present = parsed.source.as_ref().is_some_and(|source| !source.is_empty());
+        let source_present = parsed
+            .source
+            .as_ref()
+            .is_some_and(|source| !source.is_empty());
         if all_flag && (self_flag || extensions_flag || models_flag || extension_source.is_some()) {
-            parsed.conflicting_options.get_or_insert_with(|| "--all cannot be combined with --self, --extensions, --models, or --extension".to_owned());
+            parsed.conflicting_options.get_or_insert_with(|| {
+                "--all cannot be combined with --self, --extensions, --models, or --extension"
+                    .to_owned()
+            });
         }
-        if all_flag && source_present { parsed.conflicting_options.get_or_insert_with(|| "--all cannot be combined with a positional source".to_owned()); }
+        if all_flag && source_present {
+            parsed.conflicting_options.get_or_insert_with(|| {
+                "--all cannot be combined with a positional source".to_owned()
+            });
+        }
         parsed.update_target = Some(if models_flag {
-            if self_flag || extensions_flag || all_flag || extension_source.is_some() { parsed.conflicting_options.get_or_insert_with(|| "--models cannot be combined with --self, --extensions, --all, or --extension".to_owned()); }
-            if source_present { parsed.conflicting_options.get_or_insert_with(|| "--models cannot be combined with a positional source".to_owned()); }
+            if self_flag || extensions_flag || all_flag || extension_source.is_some() {
+                parsed.conflicting_options.get_or_insert_with(|| "--models cannot be combined with --self, --extensions, --all, or --extension".to_owned());
+            }
+            if source_present {
+                parsed.conflicting_options.get_or_insert_with(|| {
+                    "--models cannot be combined with a positional source".to_owned()
+                });
+            }
             UpdateTarget::Models
         } else if let Some(source) = extension_source {
-            if self_flag || extensions_flag || all_flag { parsed.conflicting_options.get_or_insert_with(|| "--extension cannot be combined with --self, --extensions, or --all".to_owned()); }
-            if source_present { parsed.conflicting_options.get_or_insert_with(|| "--extension cannot be combined with a positional source".to_owned()); }
-            UpdateTarget::Extensions { source: Some(source) }
+            if self_flag || extensions_flag || all_flag {
+                parsed.conflicting_options.get_or_insert_with(|| {
+                    "--extension cannot be combined with --self, --extensions, or --all".to_owned()
+                });
+            }
+            if source_present {
+                parsed.conflicting_options.get_or_insert_with(|| {
+                    "--extension cannot be combined with a positional source".to_owned()
+                });
+            }
+            UpdateTarget::Extensions {
+                source: Some(source),
+            }
         } else if source_present {
             let source = parsed.source.clone().expect("source present");
-            if matches!(source.as_str(), "self" | "pi" | "mhc") {
-                if extensions_flag { UpdateTarget::All } else { UpdateTarget::SelfOnly }
+            if matches!(source.as_str(), "self" | "pi" | "mhc") || source == app_name {
+                if extensions_flag {
+                    UpdateTarget::All
+                } else {
+                    UpdateTarget::SelfOnly
+                }
             } else {
-                if extensions_flag || self_flag || all_flag { parsed.conflicting_options.get_or_insert_with(|| "positional update targets cannot be combined with --self, --extensions, or --all".to_owned()); }
-                UpdateTarget::Extensions { source: Some(source) }
+                if extensions_flag || self_flag || all_flag {
+                    parsed.conflicting_options.get_or_insert_with(|| "positional update targets cannot be combined with --self, --extensions, or --all".to_owned());
+                }
+                UpdateTarget::Extensions {
+                    source: Some(source),
+                }
             }
-        } else if all_flag || (self_flag && extensions_flag) { UpdateTarget::All }
-        else if self_flag { UpdateTarget::SelfOnly }
-        else if extensions_flag { UpdateTarget::Extensions { source: None } }
-        else { parsed.show_extensions_skipped_note = true; UpdateTarget::SelfOnly });
+        } else if all_flag || (self_flag && extensions_flag) {
+            UpdateTarget::All
+        } else if self_flag {
+            UpdateTarget::SelfOnly
+        } else if extensions_flag {
+            UpdateTarget::Extensions { source: None }
+        } else {
+            parsed.show_extensions_skipped_note = true;
+            UpdateTarget::SelfOnly
+        });
     }
     Some(parsed)
 }
 
-async fn command_settings(trust_override: Option<bool>, saved_only: bool, context: &str) -> Result<(String, String, maho_core::settings_manager::SettingsManager), String> {
-    let cwd = std::env::current_dir().map_err(|error| error.to_string())?.to_string_lossy().into_owned();
+async fn command_settings(
+    trust_override: Option<bool>,
+    saved_only: bool,
+    context: &str,
+) -> Result<(String, String, maho_core::settings_manager::SettingsManager), String> {
+    let cwd = std::env::current_dir()
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .into_owned();
     let agent_dir = maho_core::config::get_agent_dir();
     let home = maho_core::config::home_dir();
-    let global = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &home, false);
+    let global =
+        maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &home, false);
     let store = maho_core::trust_manager::ProjectTrustStore::new(&agent_dir);
     let trusted = if saved_only {
         trust_override.unwrap_or(store.get(&cwd)? == Some(true))
@@ -130,54 +289,115 @@ async fn command_settings(trust_override: Option<bool>, saved_only: bool, contex
         use std::io::IsTerminal;
         let mode = if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
             maho_core::project_trust::AppMode::Interactive
-        } else { maho_core::project_trust::AppMode::Print };
-        let startup_ui = (global.get_string("theme"), global.get_show_hardware_cursor(), global.get_clear_on_shrink());
+        } else {
+            maho_core::project_trust::AppMode::Print
+        };
+        let startup_ui = (
+            global.get_string("theme"),
+            global.get_show_hardware_cursor(),
+            global.get_clear_on_shrink(),
+        );
         let select_ui = startup_ui.clone();
-        let selector: std::sync::Arc<crate::cli::project_trust::Selector> = std::sync::Arc::new(move |title: &str, options: &[String]| {
-            match crate::cli::startup_ui::show_startup_selector(select_ui.0.as_deref(), select_ui.1, select_ui.2, title, options) {
-                Ok(selected) => selected,
-                Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
-            }
-        });
+        let selector: std::sync::Arc<crate::cli::project_trust::Selector> =
+            std::sync::Arc::new(move |title: &str, options: &[String]| {
+                match crate::cli::startup_ui::show_startup_selector(
+                    select_ui.0.as_deref(),
+                    select_ui.1,
+                    select_ui.2,
+                    title,
+                    options,
+                ) {
+                    Ok(selected) => selected,
+                    Err(error) => {
+                        maho_core::output_guard::maho_write_stderr(&format!("{error}\n"));
+                        None
+                    }
+                }
+            });
         // senpi package-manager-cli.ts:788-818: the pre-trust extensions decide first; their load
         // and handler failures are reported as `projectTrustWarnings`.
         let mut project_trust_warnings = Vec::new();
-        let extension_trust = if trust_override.is_none() && maho_core::trust_manager::has_trust_requiring_project_resources(&cwd, None) {
+        let extension_trust = if trust_override.is_none()
+            && maho_core::trust_manager::has_trust_requiring_project_resources(&cwd, None)
+        {
             let ui = std::sync::Arc::new(crate::cli::project_trust::ProjectTrustUi {
-                mode, has_ui: mode == maho_core::project_trust::AppMode::Interactive, select: selector.clone(),
+                mode,
+                has_ui: mode == maho_core::project_trust::AppMode::Interactive,
+                select: selector.clone(),
                 input: std::sync::Arc::new(move |title: &str, placeholder: Option<&str>| {
-                    match crate::cli::startup_ui::show_startup_input(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, placeholder) {
+                    match crate::cli::startup_ui::show_startup_input(
+                        startup_ui.0.as_deref(),
+                        startup_ui.1,
+                        startup_ui.2,
+                        title,
+                        placeholder,
+                    ) {
                         Ok(value) => value,
-                        Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+                        Err(error) => {
+                            maho_core::output_guard::maho_write_stderr(&format!("{error}\n"));
+                            None
+                        }
                     }
                 }),
             });
-            let resolved = crate::cli::project_trust::resolve_extension_project_trust(&cwd, &agent_dir, &[], false, mode, ui).await;
+            let resolved = crate::cli::project_trust::resolve_extension_project_trust(
+                &cwd,
+                &agent_dir,
+                &[],
+                false,
+                mode,
+                ui,
+            )
+            .await;
             project_trust_warnings.extend(resolved.load_warnings);
             project_trust_warnings.extend(resolved.trust_warnings);
             resolved.result
-        } else { None };
-        let emit = move |_: &str| -> Result<Option<maho_ext_api::ProjectTrustEventResult>, maho_ext_api::ExtensionFailure> { Ok(extension_trust.clone()) };
+        } else {
+            None
+        };
+        let emit = move |_: &str| -> Result<
+            Option<maho_ext_api::ProjectTrustEventResult>,
+            maho_ext_api::ExtensionFailure,
+        > { Ok(extension_trust.clone()) };
         let context_selector = selector.clone();
         let context = crate::cli::project_trust::CliProjectTrustContext {
-            cwd: cwd.clone(), mode,
+            cwd: cwd.clone(),
+            mode,
             ui_available: mode == maho_core::project_trust::AppMode::Interactive,
-            selector: Box::new(move |title: &str, options: &[String]| context_selector(title, options)),
+            selector: Box::new(move |title: &str, options: &[String]| {
+                context_selector(title, options)
+            }),
         };
-        let trusted = maho_core::project_trust::resolve_project_trusted(maho_core::project_trust::ResolveProjectTrustedOptions {
-            cwd: &cwd, trust_store: &store, trust_override,
-            default_project_trust: global.get_string("defaultProjectTrust").as_deref().and_then(maho_core::project_trust::DefaultProjectTrust::parse),
-            emit_project_trust: Some(&emit), project_trust_context: &context, on_extension_error: None,
-        }).await;
+        let trusted = maho_core::project_trust::resolve_project_trusted(
+            maho_core::project_trust::ResolveProjectTrustedOptions {
+                cwd: &cwd,
+                trust_store: &store,
+                trust_override,
+                default_project_trust: global
+                    .get_string("defaultProjectTrust")
+                    .as_deref()
+                    .and_then(maho_core::project_trust::DefaultProjectTrust::parse),
+                emit_project_trust: Some(&emit),
+                project_trust_context: &context,
+                on_extension_error: None,
+            },
+        )
+        .await;
         // senpi `reportProjectTrustWarnings`.
-        for warning in project_trust_warnings { eprintln!("\x1b[33mWarning: {warning}\x1b[39m"); }
+        for warning in project_trust_warnings {
+            eprintln!("\x1b[33mWarning: {warning}\x1b[39m");
+        }
         trusted
     };
-    let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &home, trusted);
+    let settings =
+        maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &home, trusted);
     // senpi package-manager-cli.ts `reportSettingsErrors`: settings errors are warnings, labelled with
     // the command context and the settings scope.
     for error in settings.errors() {
-        let scope = match error.scope { maho_core::settings_manager::SettingsScope::Global => "global", maho_core::settings_manager::SettingsScope::Project => "project" };
+        let scope = match error.scope {
+            maho_core::settings_manager::SettingsScope::Global => "global",
+            maho_core::settings_manager::SettingsScope::Project => "project",
+        };
         eprintln!("Warning ({context}, {scope} settings): {}", error.error);
     }
     Ok((cwd, agent_dir, settings))
@@ -186,91 +406,253 @@ async fn command_settings(trust_override: Option<bool>, saved_only: bool, contex
 /// senpi package-manager-cli.ts: a handled failure (`console.error(...)`, exit 1) prints its message
 /// as is, while a thrown error is caught at `:1131-1133` and printed as `Error: <message>`.
 #[derive(Debug, PartialEq, Eq)]
-pub enum PackageCommandError { Reported(String), Failed(String) }
+pub enum PackageCommandError {
+    Reported(String),
+    Failed(String),
+}
 impl std::fmt::Display for PackageCommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { Self::Reported(message) => f.write_str(message), Self::Failed(message) => write!(f, "Error: {message}") }
+        match self {
+            Self::Reported(message) => f.write_str(message),
+            Self::Failed(message) => write!(f, "Error: {message}"),
+        }
     }
 }
-impl From<String> for PackageCommandError { fn from(message: String) -> Self { Self::Failed(message) } }
-impl From<&str> for PackageCommandError { fn from(message: &str) -> Self { Self::Failed(message.to_owned()) } }
+impl From<String> for PackageCommandError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+impl From<&str> for PackageCommandError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.to_owned())
+    }
+}
 
-pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), PackageCommandError> {
-    if options.command == PackageCommand::Update && options.update_target == Some(UpdateTarget::Models) {
+pub async fn run_package_command(
+    options: PackageCommandOptions,
+) -> Result<(), PackageCommandError> {
+    if options.command == PackageCommand::Update && options.omo_local_update_worker {
+        return Err("Legacy update workers are unsupported; run mhc update directly".into());
+    }
+    if options.command == PackageCommand::Update
+        && matches!(options.update_target, None | Some(UpdateTarget::SelfOnly))
+    {
+        if options.show_extensions_skipped_note {
+            maho_core::output_guard::maho_write_stdout(&format!(
+                "Extensions are skipped. Run {} update --extensions to update extensions.\n",
+                maho_core::config::app_name(),
+            ));
+        }
+        return run_self_update(maho_core::brand::brand_profile().update.as_ref()).await;
+    }
+    if options.command == PackageCommand::Update
+        && options.update_target == Some(UpdateTarget::Models)
+    {
         let agent_dir = std::path::PathBuf::from(maho_core::config::get_agent_dir());
-        let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-            auth_path: Some(agent_dir.join("auth.json")), models_path: Some(agent_dir.join("models.json")), ..Default::default()
-        });
-        let result = tokio::time::timeout(std::time::Duration::from_secs(15), runtime.refresh(maho_ai::models::ModelsRefreshOptions {
-            allow_network: Some(true), force: Some(true), ..Default::default()
-        })).await.map_err(|_| "Model catalog refresh timed out.".to_owned())?;
-        if result.aborted { return Err("Model catalog refresh timed out.".into()); }
+        let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                auth_path: Some(agent_dir.join("auth.json")),
+                models_path: Some(agent_dir.join("models.json")),
+                ..Default::default()
+            },
+        ).map_err(|error| error.to_string())?;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            runtime.refresh(maho_ai::models::ModelsRefreshOptions {
+                allow_network: Some(true),
+                force: Some(true),
+                ..Default::default()
+            }),
+        )
+        .await
+        .map_err(|_| "Model catalog refresh timed out.".to_owned())?;
+        if result.aborted {
+            return Err("Model catalog refresh timed out.".into());
+        }
         if !result.errors.is_empty() {
-            return Err(format!("Could not refresh model catalogs: {}", result.errors.iter().map(|(provider, error)| format!("{provider}: {error}")).collect::<Vec<_>>().join("; ")).into());
+            return Err(format!(
+                "Could not refresh model catalogs: {}",
+                result
+                    .errors
+                    .iter()
+                    .map(|(provider, error)| format!("{provider}: {error}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+            .into());
         }
         maho_core::output_guard::maho_write_stdout("Model catalogs refreshed\n");
         return Ok(());
     }
-    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, options.command == PackageCommand::Update, "package command").await?;
-    let writes_project_package_config = matches!(options.command, PackageCommand::Install | PackageCommand::Remove) && options.local;
+    let (cwd, agent_dir, mut settings) = command_settings(
+        options.project_trust_override,
+        options.command == PackageCommand::Update,
+        "package command",
+    )
+    .await?;
+    let writes_project_package_config = matches!(
+        options.command,
+        PackageCommand::Install | PackageCommand::Remove
+    ) && options.local;
     if writes_project_package_config && !settings.is_project_trusted() {
-        return Err(PackageCommandError::Reported("Project is not trusted. Use --approve to modify local package config.".into()));
+        return Err(PackageCommandError::Reported(
+            "Project is not trusted. Use --approve to modify local package config.".into(),
+        ));
     }
-    let mut manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
-        cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
-    });
+    let mut manager = maho_core::package_manager::DefaultPackageManager::new(
+        maho_core::package_manager::PackageManagerOptions {
+            cwd: &cwd,
+            agent_dir: &agent_dir,
+            settings_manager: &mut settings,
+        },
+    );
     manager.set_progress_callback(Some(std::sync::Arc::new(|event| {
         if event.event_type == maho_core::package_manager::ProgressEventType::Start
-            && let Some(message) = event.message { maho_core::output_guard::maho_write_stdout(&format!("{message}\n")); }
+            && let Some(message) = event.message
+        {
+            maho_core::output_guard::maho_write_stdout(&format!("{message}\n"));
+        }
     })));
     execute_package_command(&options, &mut manager).await
 }
 
+async fn run_self_update(
+    brand_update: Option<&maho_core::brand::BrandUpdateChannel>,
+) -> Result<(), PackageCommandError> {
+    if let Some(update) = brand_update {
+        maho_core::output_guard::maho_write_stdout(&format!(
+            "{} ships inside {}. Update it with:\n  {}\n",
+            maho_core::config::app_name(),
+            update.package_name,
+            update.command,
+        ));
+        return Ok(());
+    }
+    crate::native_update::update().await.map_err(Into::into)
+}
+
 /// The caller's settings manager is borrowed by the real resource manager throughout execution.
-pub async fn execute_package_command(options: &PackageCommandOptions, manager: &mut maho_core::package_manager::DefaultPackageManager<'_>) -> Result<(), PackageCommandError> {
+pub async fn execute_package_command(
+    options: &PackageCommandOptions,
+    manager: &mut maho_core::package_manager::DefaultPackageManager<'_>,
+) -> Result<(), PackageCommandError> {
     use maho_core::package_manager::{InstalledSourceScope, PackageOptions};
     let text = match options.command {
         PackageCommand::Install => {
             let source = options.source.as_deref().ok_or("Missing install source.")?;
-            manager.install_and_persist(source, Some(PackageOptions { local: options.local })).await.map_err(|error| error.to_string())?;
+            manager
+                .install_and_persist(
+                    source,
+                    Some(PackageOptions {
+                        local: options.local,
+                    }),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
             format!("Installed {source}\n")
         }
         PackageCommand::Remove => {
             let source = options.source.as_deref().ok_or("Missing remove source.")?;
-            if !manager.remove_and_persist(source, Some(PackageOptions { local: options.local })).await.map_err(|error| error.to_string())? {
-                return Err(PackageCommandError::Reported(format!("No matching package found for {source}")));
+            if !manager
+                .remove_and_persist(
+                    source,
+                    Some(PackageOptions {
+                        local: options.local,
+                    }),
+                )
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                return Err(PackageCommandError::Reported(format!(
+                    "No matching package found for {source}"
+                )));
             }
             format!("Removed {source}\n")
         }
         PackageCommand::List => {
-            let packages = manager.list_configured_packages().map_err(|error| error.to_string())?;
+            let packages = manager
+                .list_configured_packages()
+                .map_err(|error| error.to_string())?;
             let mut text = String::new();
-            for (scope, title) in [(InstalledSourceScope::User, "User packages:"), (InstalledSourceScope::Project, "Project packages:")] {
-                let entries = packages.iter().filter(|package| package.scope == scope).collect::<Vec<_>>();
-                if entries.is_empty() { continue; }
-                if !text.is_empty() { text.push('\n'); }
+            for (scope, title) in [
+                (InstalledSourceScope::User, "User packages:"),
+                (InstalledSourceScope::Project, "Project packages:"),
+            ] {
+                let entries = packages
+                    .iter()
+                    .filter(|package| package.scope == scope)
+                    .collect::<Vec<_>>();
+                if entries.is_empty() {
+                    continue;
+                }
+                if !text.is_empty() {
+                    text.push('\n');
+                }
                 text.push_str(&format!("{title}\n"));
                 for package in entries {
-                    text.push_str(&format!("  {}{}\n", package.source, if package.filtered { " (filtered)" } else { "" }));
-                    if let Some(path) = &package.installed_path { text.push_str(&format!("    {path}\n")); }
+                    text.push_str(&format!(
+                        "  {}{}\n",
+                        package.source,
+                        if package.filtered { " (filtered)" } else { "" }
+                    ));
+                    if let Some(path) = &package.installed_path {
+                        text.push_str(&format!("    {path}\n"));
+                    }
                 }
             }
-            if text.is_empty() { text.push_str("No packages installed.\n"); }
+            if text.is_empty() {
+                text.push_str("No packages installed.\n");
+            }
             text
         }
         PackageCommand::Update => {
-            if options.omo_local_update_worker { return Err("Native self-update is replaced by mhc import-omo".into()); }
-            match options.update_target.as_ref().unwrap_or(&UpdateTarget::SelfOnly) {
+            if options.omo_local_update_worker {
+                return Err(
+                    "The local JavaScript plugin update worker is not supported by the native CLI"
+                        .into(),
+                );
+            }
+            if options.show_extensions_skipped_note {
+                maho_core::output_guard::maho_write_stdout(&format!(
+                    "Extensions are skipped. Run {} update --extensions to update extensions.\n",
+                    maho_core::config::app_name(),
+                ));
+            }
+            match options
+                .update_target
+                .as_ref()
+                .unwrap_or(&UpdateTarget::SelfOnly)
+            {
                 UpdateTarget::Extensions { source } => {
-                    manager.update(source.as_deref()).await.map_err(|error| error.to_string())?;
-                    source.as_ref().map_or_else(|| "Updated packages\n".into(), |source| format!("Updated {source}\n"))
+                    manager
+                        .update(source.as_deref())
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    source.as_ref().map_or_else(
+                        || "Updated packages\n".into(),
+                        |source| format!("Updated {source}\n"),
+                    )
                 }
                 UpdateTarget::All => {
-                    manager.update(None).await.map_err(|error| error.to_string())?;
-                    return Err("Updated resource packages; native self-update is replaced by mhc import-omo".into());
+                    manager
+                        .update(None)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    maho_core::output_guard::maho_write_stdout("Updated packages\n");
+                    return run_self_update(maho_core::brand::brand_profile().update.as_ref())
+                        .await;
                 }
-                UpdateTarget::SelfOnly => return Err("Native self-update is replaced by mhc import-omo".into()),
-                UpdateTarget::Models => return Err("Model catalog refresh requires the model-runtime owner's refresh API".into()),
+                UpdateTarget::SelfOnly => {
+                    return run_self_update(maho_core::brand::brand_profile().update.as_ref())
+                        .await;
+                }
+                UpdateTarget::Models => {
+                    return Err(
+                        "Model catalog refresh requires the model-runtime owner's refresh API"
+                            .into(),
+                    );
+                }
             }
         }
     };
@@ -279,57 +661,148 @@ pub async fn execute_package_command(options: &PackageCommandOptions, manager: &
 }
 
 pub async fn run_config_command(options: ConfigCommandOptions) -> Result<(), String> {
+    if let Some(files) = options.import_pi {
+        return crate::cli::config_import_pi::run_config_import_pi(&files);
+    }
     use maho_core::package_manager::{DefaultPackageManager, PackageManagerOptions};
-    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, false, "config command").await?;
-    if options.local && !settings.is_project_trusted() { return Err("Project is not trusted. Use --approve to modify local resource config.".into()); }
-    let mut global_settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &maho_core::config::home_dir(), false);
-    let global = DefaultPackageManager::new(PackageManagerOptions { cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut global_settings }).resolve(None).await.map_err(|error| error.to_string())?;
+    let (cwd, agent_dir, mut settings) =
+        command_settings(options.project_trust_override, false, "config command").await?;
+    if options.local && !settings.is_project_trusted() {
+        return Err(
+            "Project is not trusted. Use --approve to modify local resource config.".into(),
+        );
+    }
+    let mut global_settings = maho_core::settings_manager::SettingsManager::create(
+        &cwd,
+        &agent_dir,
+        &maho_core::config::home_dir(),
+        false,
+    );
+    let global = DefaultPackageManager::new(PackageManagerOptions {
+        cwd: &cwd,
+        agent_dir: &agent_dir,
+        settings_manager: &mut global_settings,
+    })
+    .with_builtin_extensions(&crate::cli::extension_registry::BUILTIN_EXTENSION_IDS)
+    .resolve(None)
+    .await
+    .map_err(|error| error.to_string())?;
     let project = if settings.is_project_trusted() {
-        DefaultPackageManager::new(PackageManagerOptions { cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings }).resolve(None).await.map_err(|error| error.to_string())?
-    } else { global.clone() };
+        DefaultPackageManager::new(PackageManagerOptions {
+            cwd: &cwd,
+            agent_dir: &agent_dir,
+            settings_manager: &mut settings,
+        })
+        .with_builtin_extensions(&crate::cli::extension_registry::BUILTIN_EXTENSION_IDS)
+        .resolve(None)
+        .await
+        .map_err(|error| error.to_string())?
+    } else {
+        global.clone()
+    };
     select_config(settings, cwd, agent_dir, options.local, global, project)
 }
 
-fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: String, agent_dir: String, local: bool, global: maho_core::package_manager::ResolvedPaths, project: maho_core::package_manager::ResolvedPaths) -> Result<(), String> {
-    use std::{cell::{Cell, RefCell}, rc::Rc};
-    use maho_interactive::{components::config_selector::{ConfigSelectorComponent, ConfigWriteScope}, tui_renderer::{create_interactive_tui, InteractiveTuiOptions}};
+fn select_config(
+    settings: maho_core::settings_manager::SettingsManager,
+    cwd: String,
+    agent_dir: String,
+    local: bool,
+    global: maho_core::package_manager::ResolvedPaths,
+    project: maho_core::package_manager::ResolvedPaths,
+) -> Result<(), String> {
+    use maho_interactive::{
+        components::config_selector::{ConfigSelectorComponent, ConfigWriteScope},
+        tui_renderer::{InteractiveTuiOptions, create_interactive_tui},
+    };
     use maho_tui::{terminal::Terminal, tui::Component};
-    let theme = crate::cli::startup_ui::resolve_startup_theme(settings.get_string("theme").as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    let theme = crate::cli::startup_ui::resolve_startup_theme(
+        settings.get_string("theme").as_deref(),
+        std::env::var("COLORFGBG").ok().as_deref(),
+    )?;
     let show_hardware_cursor = settings.get_show_hardware_cursor();
     let clear_on_shrink = settings.get_clear_on_shrink();
     let available = settings.is_project_trusted();
-    let closed = Rc::new(Cell::new(false)); let close = closed.clone(); let exit = closed.clone();
-    let switch = Rc::new(Cell::new(false)); let toggle = switch.clone();
-    let host = ConfigSettings { settings, error: Rc::new(RefCell::new(None)) }; let write_error = host.error.clone();
+    let closed = Rc::new(Cell::new(false));
+    let close = closed.clone();
+    let exit = closed.clone();
+    let switch = Rc::new(Cell::new(false));
+    let toggle = switch.clone();
+    let host = ConfigSettings {
+        settings,
+        error: Rc::new(RefCell::new(None)),
+    };
+    let write_error = host.error.clone();
     let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
-    let selector = Rc::new(RefCell::new(ConfigSelectorComponent::new(&theme,
-        std::collections::BTreeMap::from([(ConfigWriteScope::Global, global), (ConfigWriteScope::Project, project)]),
-        Box::new(host), &cwd, &agent_dir, &maho_core::config::config_dir_name(),
-        Box::new(move || close.set(true)), Box::new(move || exit.set(true)), Box::new(|| {}),
-        Some(usize::from(terminal.rows())), if local { ConfigWriteScope::Project } else { ConfigWriteScope::Global }, available)));
-    selector.borrow_mut().set_switch_mode(Box::new(move || toggle.set(true)));
+    let selector = Rc::new(RefCell::new(ConfigSelectorComponent::new(
+        &theme,
+        std::collections::BTreeMap::from([
+            (ConfigWriteScope::Global, global),
+            (ConfigWriteScope::Project, project),
+        ]),
+        Box::new(host),
+        &cwd,
+        &agent_dir,
+        &maho_core::config::config_dir_name(),
+        Box::new(move || close.set(true)),
+        Box::new(move || exit.set(true)),
+        Box::new(|| {}),
+        Some(usize::from(terminal.rows())),
+        if local {
+            ConfigWriteScope::Project
+        } else {
+            ConfigWriteScope::Global
+        },
+        available,
+    )));
+    selector
+        .borrow_mut()
+        .set_switch_mode(Box::new(move || toggle.set(true)));
     let component: Rc<RefCell<dyn Component>> = selector.clone();
-    let mut screen = create_interactive_tui(InteractiveTuiOptions {
-        tui_mode: maho_interactive::tui_renderer::TuiMode::Regular,
-        show_hardware_cursor, bottom_shortcut: String::new(),
-    }, theme);
+    let mut screen = create_interactive_tui(
+        InteractiveTuiOptions {
+            tui_mode: maho_interactive::tui_renderer::TuiMode::Regular,
+            show_hardware_cursor,
+            bottom_shortcut: String::new(),
+        },
+        theme,
+    );
     screen.base_mut().set_clear_on_shrink(clear_on_shrink);
-    screen.base_mut().add_child(component.clone()); screen.base_mut().set_focus(Some(component));
-    let input = Rc::new(RefCell::new(Vec::<String>::new())); let captured = input.clone();
+    screen.base_mut().add_child(component.clone());
+    screen.base_mut().set_focus(Some(component));
+    let input = Rc::new(RefCell::new(Vec::<String>::new()));
+    let captured = input.clone();
     screen.base_mut().prepare_start();
     screen.before_terminal_start(&mut terminal, false, false);
-    terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+    terminal.start(
+        Box::new(move |chunk| captured.borrow_mut().push(chunk.into())),
+        Box::new(|| {}),
+    );
     screen.base_mut().after_terminal_start(&mut terminal);
     let clock = std::time::Instant::now();
     let result = (|| {
         while !closed.get() {
             // senpi `TuiBase.handleTerminalInput`: protocol replies (e.g. the cell-size answer to
             // the start-up query) are consumed before the focused selector sees input.
-            for chunk in std::mem::take(&mut *input.borrow_mut()) { screen.base_mut().handle_terminal_input(&chunk, maho_tui::keys::is_key_release(&chunk)); }
-            if switch.replace(false) && available { selector.borrow_mut().switch_write_scope(); }
-            if let Some(error) = write_error.borrow_mut().take() { return Err(error); }
-            let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
-            screen.base_mut().request_render(false, now); screen.do_render(&mut terminal);
+            for chunk in std::mem::take(&mut *input.borrow_mut()) {
+                screen
+                    .base_mut()
+                    .handle_terminal_input(&chunk, maho_tui::keys::is_key_release(&chunk));
+            }
+            if switch.replace(false) && available {
+                selector.borrow_mut().switch_write_scope();
+            }
+            if let Some(error) = write_error.borrow_mut().take() {
+                return Err(error);
+            }
+            let now =
+                u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
+            screen.base_mut().request_render(false, now);
+            screen.do_render(&mut terminal);
             terminal.pump(16).map_err(|error| error.to_string())?;
         }
         Ok(())
@@ -348,23 +821,186 @@ struct ConfigSettings {
     error: std::rc::Rc<std::cell::RefCell<Option<String>>>,
 }
 impl ConfigSettings {
-    fn write(&mut self, scope: maho_core::settings_manager::SettingsScope, key: &str, value: serde_json::Value) {
-        if let Err(error) = self.settings.set(scope, &maho_core::settings_manager::Settings::from(serde_json::Map::from_iter([(key.into(), value)]))) {
+    fn write(
+        &mut self,
+        scope: maho_core::settings_manager::SettingsScope,
+        key: &str,
+        value: serde_json::Value,
+    ) {
+        if let Err(error) = self.settings.set(
+            scope,
+            &maho_core::settings_manager::Settings::from(serde_json::Map::from_iter([(
+                key.into(),
+                value,
+            )])),
+        ) {
             *self.error.borrow_mut() = Some(error);
         }
     }
 }
 impl maho_interactive::components::config_selector::ConfigSettingsHost for ConfigSettings {
-    fn get_global_settings(&self) -> serde_json::Value { serde_json::json!(self.settings.get_global()) }
-    fn get_project_settings(&self) -> serde_json::Value { serde_json::json!(self.settings.get_project()) }
-    fn set_packages(&mut self, values: &[serde_json::Value]) { self.write(maho_core::settings_manager::SettingsScope::Global, "packages", serde_json::json!(values)); }
-    fn set_project_packages(&mut self, values: &[serde_json::Value]) { self.write(maho_core::settings_manager::SettingsScope::Project, "packages", serde_json::json!(values)); }
-    fn set_extension_paths(&mut self, values: &[String]) { self.write(maho_core::settings_manager::SettingsScope::Global, "extensions", serde_json::json!(values)); }
-    fn set_project_extension_paths(&mut self, values: &[String]) { self.write(maho_core::settings_manager::SettingsScope::Project, "extensions", serde_json::json!(values)); }
-    fn set_skill_paths(&mut self, values: &[String]) { self.write(maho_core::settings_manager::SettingsScope::Global, "skills", serde_json::json!(values)); }
-    fn set_project_skill_paths(&mut self, values: &[String]) { self.write(maho_core::settings_manager::SettingsScope::Project, "skills", serde_json::json!(values)); }
-    fn set_prompt_template_paths(&mut self, values: &[String]) { self.write(maho_core::settings_manager::SettingsScope::Global, "prompts", serde_json::json!(values)); }
-    fn set_project_prompt_template_paths(&mut self, values: &[String]) { self.write(maho_core::settings_manager::SettingsScope::Project, "prompts", serde_json::json!(values)); }
-    fn set_theme_paths(&mut self, values: &[String]) { self.write(maho_core::settings_manager::SettingsScope::Global, "themes", serde_json::json!(values)); }
-    fn set_project_theme_paths(&mut self, values: &[String]) { self.write(maho_core::settings_manager::SettingsScope::Project, "themes", serde_json::json!(values)); }
+    fn get_global_settings(&self) -> serde_json::Value {
+        serde_json::json!(self.settings.get_global())
+    }
+    fn get_project_settings(&self) -> serde_json::Value {
+        serde_json::json!(self.settings.get_project())
+    }
+    fn set_packages(&mut self, values: &[serde_json::Value]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Global,
+            "packages",
+            serde_json::json!(values),
+        );
+    }
+    fn set_project_packages(&mut self, values: &[serde_json::Value]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Project,
+            "packages",
+            serde_json::json!(values),
+        );
+    }
+    fn set_extension_paths(&mut self, values: &[String]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Global,
+            "extensions",
+            serde_json::json!(values),
+        );
+    }
+    fn set_project_extension_paths(&mut self, values: &[String]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Project,
+            "extensions",
+            serde_json::json!(values),
+        );
+    }
+    fn set_skill_paths(&mut self, values: &[String]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Global,
+            "skills",
+            serde_json::json!(values),
+        );
+    }
+    fn set_project_skill_paths(&mut self, values: &[String]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Project,
+            "skills",
+            serde_json::json!(values),
+        );
+    }
+    fn set_prompt_template_paths(&mut self, values: &[String]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Global,
+            "prompts",
+            serde_json::json!(values),
+        );
+    }
+    fn set_project_prompt_template_paths(&mut self, values: &[String]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Project,
+            "prompts",
+            serde_json::json!(values),
+        );
+    }
+    fn set_theme_paths(&mut self, values: &[String]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Global,
+            "themes",
+            serde_json::json!(values),
+        );
+    }
+    fn set_project_theme_paths(&mut self, values: &[String]) {
+        self.write(
+            maho_core::settings_manager::SettingsScope::Project,
+            "themes",
+            serde_json::json!(values),
+        );
+    }
+}
+
+#[cfg(test)]
+mod update_target_tests {
+    use super::{UpdateTarget, parse_package_command_for_app, run_self_update};
+
+    #[tokio::test]
+    async fn self_update_when_brand_owns_distribution() {
+        // Given a branded channel whose command is guidance, not an executable to spawn.
+        let profile = maho_core::brand::parse_brand_profile(Some(
+            r#"{"name":"custom-agent","update":{"packageName":"custom-package","command":"nonexistent-brand-installer --update"}}"#,
+        ))
+        .expect("brand profile");
+        // When updating the embedded application.
+        let result = run_self_update(profile.update.as_ref()).await;
+        // Then guidance succeeds without running that command or the native release transport.
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn self_update_when_target_is_active_brand() {
+        // Given a brand distinct from the standalone name and command.
+        let args = ["update".to_owned(), "custom-agent".to_owned()];
+        // When the positional target names that brand.
+        let parsed = parse_package_command_for_app(&args, "custom-agent").expect("update command");
+        // Then it updates the application rather than an extension source.
+        assert_eq!(parsed.update_target, Some(UpdateTarget::SelfOnly));
+    }
+
+    #[test]
+    fn all_update_when_brand_target_includes_extensions() {
+        // Given the standalone application name and the extensions flag.
+        let args = [
+            "update".to_owned(),
+            "maho".to_owned(),
+            "--extensions".to_owned(),
+        ];
+        // When the positional target names the application.
+        let parsed = parse_package_command_for_app(&args, "maho").expect("update command");
+        // Then both application and resources are selected without conflict.
+        assert_eq!(parsed.update_target, Some(UpdateTarget::All));
+        assert!(parsed.conflicting_options.is_none());
+    }
+
+    #[test]
+    fn extension_update_when_target_is_not_active_brand() {
+        // Given a source that is not the active brand.
+        let args = ["update".to_owned(), "other-agent".to_owned()];
+        // When parsing the target.
+        let parsed = parse_package_command_for_app(&args, "custom-agent").expect("update command");
+        // Then the source remains an extension target.
+        assert_eq!(
+            parsed.update_target,
+            Some(UpdateTarget::Extensions {
+                source: Some("other-agent".to_owned())
+            })
+        );
+    }
+}
+
+#[cfg(test)]
+mod config_import_tests {
+    use super::parse_config_command;
+
+    #[test]
+    fn import_route_keeps_requested_files_instead_of_parsing_tui_flags() {
+        // Given
+        let args = ["config", "import-pi", "settings.json", "--local"].map(str::to_owned);
+        // When
+        let options = parse_config_command(&args).expect("parse").expect("config");
+        // Then
+        assert_eq!(
+            options.import_pi,
+            Some(vec!["settings.json".to_owned(), "--local".to_owned()])
+        );
+        assert!(!options.local);
+    }
+
+    #[test]
+    fn help_takes_priority_over_import() {
+        // Given
+        let args = ["config", "import-pi", "--help"].map(str::to_owned);
+        // When
+        let options = parse_config_command(&args).expect("parse").expect("config");
+        // Then
+        assert!(options.help);
+        assert!(options.import_pi.is_none());
+    }
 }

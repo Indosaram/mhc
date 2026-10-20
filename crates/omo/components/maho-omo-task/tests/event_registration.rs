@@ -20,7 +20,7 @@ async fn dag_shutdown_pauses_before_task_teardown_then_disposes() {
 #[tokio::test]
 async fn usage_guidance_is_hidden_and_delivered_once_per_session() {
     let mut api=support::api(); wire_task_usage_guidance(&mut api,Arc::new(|| true)); let context=support::context();
-    let mut event=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt:"work".into(),images:None,system_prompt:String::new(),system_prompt_options:Default::default() });
+    let mut event=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt:"work".into(),trigger:"prompt".into(),preview:false,images:None,system_prompt:String::new(),system_prompt_options:Default::default() });
     let handler=&api.registered.handlers[&EventKind::BeforeAgentStart][0];
     let EventResult::BeforeAgentStart(result)=handler(&mut event,&context).await.expect("event") else { panic!("guidance"); }; let message=result.message.expect("message"); assert_eq!(message.custom_type,"senpi-task.usage"); assert!(!message.display);
     assert!(matches!(handler(&mut event,&context).await.expect("repeat"),EventResult::None));

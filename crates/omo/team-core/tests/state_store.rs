@@ -234,12 +234,15 @@ fn lock_open_rethrows_windows_eperm_when_lock_parent_does_not_exist() {
 fn lock_release_retries_transient_eperm_before_removing_the_lock_file() {
     let root = temp("locks-release-eperm-");
     let lock_path = root.path().join("lock");
-    fs::write(&lock_path, "owner\n123\n456\n").expect("lock");
+    fs::write(&lock_path, "owner\n2147483647\n456\n").expect("lock");
     let delay_calls = RefCell::new(Vec::new());
     let unlink_calls = RefCell::new(0);
     let deps = LockReleaseDeps {
         delay: Some(Box::new(|ms| delay_calls.borrow_mut().push(ms))),
         unlink: Some(Box::new(|path: &Path| {
+            if path != lock_path {
+                return fs::remove_file(path);
+            }
             *unlink_calls.borrow_mut() += 1;
             if *unlink_calls.borrow() < 3 {
                 return Err(eperm());
@@ -247,7 +250,7 @@ fn lock_release_retries_transient_eperm_before_removing_the_lock_file() {
             fs::remove_file(path)
         })),
     };
-    reap_stale_lock_with(&lock_path, &deps);
+    reap_stale_lock_with(&lock_path, &deps).expect("reap stale lock");
     assert_eq!(*unlink_calls.borrow(), 3);
     assert_eq!(*delay_calls.borrow(), vec![25, 25]);
     assert!(fs::read_to_string(&lock_path).is_err());
@@ -283,7 +286,7 @@ fn detects_and_reaps_stale_lock_entries() {
     )
     .expect("lock");
     let stale = detect_stale_lock(&lock_path, 300_000);
-    reap_stale_lock(&lock_path);
+    reap_stale_lock(&lock_path).expect("reap stale lock");
     assert!(stale);
     assert!(fs::read_to_string(&lock_path).is_err());
 }
