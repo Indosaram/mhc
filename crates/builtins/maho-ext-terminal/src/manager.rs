@@ -135,7 +135,7 @@ async fn wait_exit_watches(pending:Vec<(String,ExitWatch)>,grace:Duration)->Vec<
 /// SIGTERM wait, then SIGKILL wait for the survivors; the manager lock is only held to signal.
 async fn settle_signalled_shared(manager:&Arc<Mutex<TerminalManager>>,(pending,mut first_error):(Vec<(String,ExitWatch)>,Option<RuntimeError>))->Result<(),RuntimeError> {
     let survivors=wait_exit_watches(pending,Duration::from_millis(DEFAULT_STOP_EXIT_GRACE_MS)).await;
-    let (pending,error)=manager.lock().map_err(|_|RuntimeError::Poisoned)?.signal_force_kill_entries(&survivors);
+    let (pending,error)=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).signal_force_kill_entries(&survivors);
     if let Some(error)=error {first_error.get_or_insert(error);}
     wait_exit_watches(pending,Duration::from_millis(DEFAULT_FORCED_EXIT_GRACE_MS)).await;
     first_error.map_or(Ok(()),Err)
@@ -143,18 +143,18 @@ async fn settle_signalled_shared(manager:&Arc<Mutex<TerminalManager>>,(pending,m
 /// registry.ts `stop` for a shared manager: awaits the SIGTERM/SIGKILL graces on the exit watches
 /// without holding the manager lock or blocking the async runtime thread.
 pub async fn stop_shared(manager:&Arc<Mutex<TerminalManager>>,id:&str)->Result<bool,RuntimeError> {
-    let pending={let mut manager=manager.lock().map_err(|_|RuntimeError::Poisoned)?;if !manager.entries.contains_key(id) {return Ok(false);}manager.signal_stop_entries(&[id.to_owned()])};
+    let pending={let mut manager=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if !manager.entries.contains_key(id) {return Ok(false);}manager.signal_stop_entries(&[id.to_owned()])};
     settle_signalled_shared(manager,pending).await?;Ok(true)
 }
 /// registry.ts `teardown` for a shared manager: stop every session, SIGKILL every survivor, then
 /// forget all entries, awaiting each grace off the lock.
 pub async fn teardown_shared(manager:&Arc<Mutex<TerminalManager>>)->Result<(),RuntimeError> {
-    let (ids,pending)={let mut manager=manager.lock().map_err(|_|RuntimeError::Poisoned)?;let ids=manager.entries.keys().cloned().collect::<Vec<_>>();let pending=manager.signal_stop_entries(&ids);(ids,pending)};
+    let (ids,pending)={let mut manager=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let ids=manager.entries.keys().cloned().collect::<Vec<_>>();let pending=manager.signal_stop_entries(&ids);(ids,pending)};
     let mut first_error=settle_signalled_shared(manager,pending).await.err();
-    let (pending,error)=manager.lock().map_err(|_|RuntimeError::Poisoned)?.signal_force_kill_entries(&ids);
+    let (pending,error)=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).signal_force_kill_entries(&ids);
     if let Some(error)=error {first_error.get_or_insert(error);}
     wait_exit_watches(pending,Duration::from_millis(DEFAULT_FORCED_EXIT_GRACE_MS)).await;
-    let mut manager=manager.lock().map_err(|_|RuntimeError::Poisoned)?;
+    let mut manager=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     for (_,entry) in std::mem::take(&mut manager.entries) {if let Err(error)=entry.runtime.dispose() {first_error.get_or_insert(error);}}
     manager.monitor_ids.clear();manager.id_counters.clear();
     first_error.map_or(Ok(()),Err)

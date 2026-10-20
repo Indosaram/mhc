@@ -30,15 +30,15 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
     }
     options=options.env("OMO_BROWSER_ENGINE", "");
     if !background {for (key,value) in FOREGROUND_ENV_OVERRIDES {options=options.env(*key,*value);}if let Some(timeout)=call.params.get("timeout").and_then(Value::as_f64) {options=options.timeout(Duration::try_from_secs_f64(timeout).map_err(|error|error.to_string())?);}}
-    let (id,exit)={let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let id=manager.create(command,options).map_err(|error|error.to_string())?;let runtime=manager.get(&id).ok_or("created terminal session missing")?;if let Some(stdin)=&stdin {runtime.write(stdin.as_bytes()).map_err(|error|error.to_string())?;}(id,runtime.subscribe_exit())};
-    if background {tokio::select! {_=wait_exit(exit)=>{},_=tokio::time::sleep(Duration::from_millis(250))=>{}}let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let early=format_terminal_tool_output(&manager.get(&id).ok_or("terminal session missing")?.read_delta().map_err(|error|error.to_string())?.text).text;let backend_note=if manager.get(&id).ok_or("terminal session missing")?.backend()=="pipe-fallback" {"\n(native PTY unavailable \u{2014} running via pipe fallback; bash_input/bash_resize are limited.)"} else {""};let mut result=text_result(format!("Command running in background with ID: {id}{backend_note}{}",if early.is_empty() {String::new()} else {format!("\n\n{early}")}));result.details=Some(json!({"bash_id":id,"background":true}).as_object().ok_or("background details missing")?.clone());return Ok(result);}
+    let (id,exit)={let mut manager=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let id=manager.create(command,options).map_err(|error|error.to_string())?;let runtime=manager.get(&id).ok_or("created terminal session missing")?;if let Some(stdin)=&stdin {runtime.write(stdin.as_bytes()).map_err(|error|error.to_string())?;}(id,runtime.subscribe_exit())};
+    if background {tokio::select! {_=wait_exit(exit)=>{},_=tokio::time::sleep(Duration::from_millis(250))=>{}}let mut manager=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let early=format_terminal_tool_output(&manager.get(&id).ok_or("terminal session missing")?.read_delta().map_err(|error|error.to_string())?.text).text;let backend_note=if manager.get(&id).ok_or("terminal session missing")?.backend()=="pipe-fallback" {"\n(native PTY unavailable \u{2014} running via pipe fallback; bash_input/bash_resize are limited.)"} else {""};let mut result=text_result(format!("Command running in background with ID: {id}{backend_note}{}",if early.is_empty() {String::new()} else {format!("\n\n{early}")}));result.details=Some(json!({"bash_id":id,"background":true}).as_object().ok_or("background details missing")?.clone());return Ok(result);}
     let sleep_wait=super::sleep_wait::classify_sleep_wait(command).map_err(|error|error.to_string())?;
     let window=super::foreground_window::resolve_foreground_window_seconds(foreground_window);
     let window=if sleep_wait.is_some() {window.min(super::foreground_window::SLEEP_WAIT_WINDOW_SECONDS)} else {window};
     let detach_delay=if settings.timeout_action==crate::settings::TimeoutAction::Kill||call.params.get("timeout").and_then(Value::as_f64).is_some_and(|timeout|timeout<=window) {Duration::MAX} else {Duration::from_secs_f64(window)};
     let timeout_grace=call.params.get("timeout").and_then(Value::as_f64).filter(|timeout|timeout.is_finite()&&*timeout>=0.0).map(|timeout|Duration::from_secs_f64(timeout)+Duration::from_millis(crate::shared::KILLED_SESSION_EXIT_GRACE_MS));
     let outcome=super::foreground_detach::foreground_outcome(exit,&call.signal,detach_delay,timeout_grace);tokio::pin!(outcome);
-    let mut updates=if call.on_update.is_some() {Some(manager.lock().map_err(|_|"terminal manager state poisoned")?.get(&id).ok_or("terminal session missing")?.subscribe_output().map_err(|error|error.to_string())?.1)}else {None};
+    let mut updates=if call.on_update.is_some() {Some(manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id).ok_or("terminal session missing")?.subscribe_output().map_err(|error|error.to_string())?.1)}else {None};
     let started_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error|error.to_string())?.as_secs_f64()*1000.0;
     let activity=format!("running {}",String::from_utf16_lossy(&command.encode_utf16().take(80).collect::<Vec<_>>()));
     let emit=||->Result<(),String> {
@@ -46,7 +46,7 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
         // buffer): the last 2000 body units equal those of formatting the full retained output.
         let mut window=64*1024usize;
         let body=loop {
-            let (raw,whole)=manager.lock().map_err(|_|"terminal manager state poisoned")?.get(&id).ok_or("terminal session missing")?.tail_output(window).map_err(|error|error.to_string())?;
+            let (raw,whole)=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id).ok_or("terminal session missing")?.tail_output(window).map_err(|error|error.to_string())?;
             let body=format_terminal_tool_output(&raw).body;
             if whole||body.encode_utf16().count()>=2000 {break body;}
             window=window.saturating_mul(2);
@@ -79,8 +79,8 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
     // Interrupt is "stop now": SIGKILL the whole process group in one shot (upstream). The exited
     // session is reaped by its own exit waiter and pruned by the manager, so no blocking exit wait
     // runs on the async runtime here (upstream never calls manager.stop on the abort path).
-    if sweep && let Ok(mut state)=manager.lock() && let Some(runtime)=state.get(&id) {let _=runtime.kill();}
-    let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let runtime=manager.get(&id).ok_or("terminal session missing")?;
+    if sweep && let Some(runtime)=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {let _=runtime.kill();}
+    let mut manager=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let runtime=manager.get(&id).ok_or("terminal session missing")?;
     let formatted=format_terminal_tool_output(&runtime.full_output().map_err(|error|error.to_string())?);
     if call.signal.is_aborted() {return Ok(error_result(format!("{}Command aborted",if formatted.text.is_empty() {String::new()} else {format!("{}\n\n",formatted.text)})));}
     if timed_out_grace {return Ok(error_result(format!("{}\n\nCommand timed out after {} seconds",formatted.text,call.params.get("timeout").unwrap_or(&Value::Null))));}

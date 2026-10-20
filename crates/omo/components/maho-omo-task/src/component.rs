@@ -205,6 +205,9 @@ impl TaskComponent {
         for id in finished { if let Some(waiter) = waiters.remove(&id) && waiter.thread.join().is_err() { maho_ext_api::diagnostic("task completion waiter panicked"); } }
         for entry in self.engine.manager.list(&ListScope::All) {
             if entry.record.status.is_terminal() {
+                // A task settled by another process never wakes this process's in-memory waiter, so
+                // release it here and let the terminal delivery below run (the notifier dedupes epochs).
+                if let Some(waiter) = waiters.remove(&entry.record.task_id) { waiter.signal.abort(); }
                 self.notify_owned_terminal(&entry.record);
                 let parent_state = self.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).parent_state();
                 let delivery = self.delivery.lock().unwrap_or_else(PoisonError::into_inner);
