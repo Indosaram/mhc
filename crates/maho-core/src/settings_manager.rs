@@ -1592,7 +1592,7 @@ mod tests {
     fn prefers_jsonc_over_json_when_both_exist() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
-        let agent = home.join(".omo/agent");
+        let agent = home.join(".omo").join("agent");
         let project = tmp.path().join("proj");
         std::fs::create_dir_all(&agent).expect("mkdir");
         std::fs::create_dir_all(&project).expect("mkdir");

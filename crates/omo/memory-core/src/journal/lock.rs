@@ -42,50 +42,14 @@ impl std::fmt::Display for JournalLockTimeoutError {
 impl std::error::Error for JournalLockTimeoutError {}
 
 /// Process liveness status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessLiveness {
-    Alive,
-    Dead,
-    Unknown,
-}
+pub use crate::locks::process_identity::ProcessLiveness;
 
 /// Check whether a process ID is currently alive.
 pub fn get_pid_liveness(pid: u32) -> ProcessLiveness {
     if pid == 0 {
         return ProcessLiveness::Dead;
     }
-    #[cfg(target_os = "linux")]
-    {
-        let proc_path = format!("/proc/{pid}");
-        if std::path::Path::new(&proc_path).exists() {
-            ProcessLiveness::Alive
-        } else {
-            ProcessLiveness::Dead
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        match std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .output()
-        {
-            Ok(output) => {
-                if output.status.success() {
-                    ProcessLiveness::Alive
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if stderr.contains("No such process") {
-                        ProcessLiveness::Dead
-                    } else if output.status.code() == Some(1) {
-                        ProcessLiveness::Alive
-                    } else {
-                        ProcessLiveness::Unknown
-                    }
-                }
-            }
-            Err(_) => ProcessLiveness::Unknown,
-        }
-    }
+    crate::locks::process_identity::get_pid_liveness(pid)
 }
 
 /// Read an OS-specific start identity for process reuse detection.

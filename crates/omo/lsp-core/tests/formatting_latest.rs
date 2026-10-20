@@ -35,6 +35,10 @@ impl TestWorkspace {
     }
 }
 
+fn python_cmd() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
 /// Helper that creates a Python-based mock LSP server responding to initialize and formatting requests.
 fn create_mock_server_script(
     dir: &Path,
@@ -104,7 +108,7 @@ while True:
         pass
     elif method == "textDocument/formatting":
         if mutate_path is not None:
-            with open(mutate_path, "w", encoding="utf-8") as f:
+            with open(mutate_path, "w", newline="", encoding="utf-8") as f:
                 f.write(mutate_content)
         send_msg({"jsonrpc": "2.0", "id": msg_id, "result": edits})
     elif method == "shutdown":
@@ -178,7 +182,7 @@ async fn given_a_server_returning_text_edits_when_the_document_is_formatted_then
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec!["python3".to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -232,7 +236,7 @@ async fn given_a_server_returning_an_edit_that_adds_lines_when_the_document_is_f
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec!["python3".to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -284,7 +288,7 @@ async fn given_a_server_that_does_not_advertise_document_formatting_when_the_doc
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec!["python3".to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -329,7 +333,7 @@ async fn given_a_server_returning_no_edits_when_the_document_is_formatted_then_t
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec!["python3".to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -380,7 +384,7 @@ async fn given_edits_that_reproduce_the_current_bytes_when_the_document_is_forma
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec!["python3".to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -428,7 +432,7 @@ async fn given_the_file_shrinks_after_the_server_computed_its_edits_when_the_edi
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec!["python3".to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,
@@ -449,7 +453,7 @@ async fn given_the_file_shrinks_after_the_server_computed_its_edits_when_the_edi
     .expect_err("should reject stale edit");
 
     assert!(err.to_string().contains("outside line"), "{}", err);
-    assert_eq!(fs::read_to_string(&file_path).unwrap(), "short\n");
+    assert_eq!(fs::read_to_string(&file_path).unwrap().replace("\r\n", "\n"), "short\n");
     client.stop().await;
 }
 
@@ -476,7 +480,7 @@ async fn given_a_formatted_document_when_the_write_completes_then_no_temporary_f
         file_path.parent().unwrap().to_string_lossy().to_string(),
         ResolvedServer {
             id: "mock-fmt".to_string(),
-            command: vec!["python3".to_string(), script_path.to_string_lossy().to_string()],
+            command: vec![python_cmd().to_string(), script_path.to_string_lossy().to_string()],
             extensions: vec![".ts".to_string()],
             priority: 1.0,
             env: None,

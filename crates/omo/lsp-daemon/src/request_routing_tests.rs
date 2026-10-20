@@ -11,6 +11,7 @@ fn temp_project() -> (tempfile::TempDir, String) {
         .unwrap()
         .to_string_lossy()
         .into_owned();
+    let root = lsp_core::request_context::strip_verbatim_prefix(&root);
     (dir, root)
 }
 

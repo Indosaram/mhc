@@ -15,7 +15,7 @@ fn candidate_names(name: &str) -> Vec<String> {
     if !cfg!(windows) || Path::new(name).extension().is_some() {
         return vec![name.to_string()];
     }
-    ["", ".exe", ".cmd", ".bat", ".com"]
+    [".exe", ".cmd", ".bat", ".com"]
         .iter()
         .map(|ext| format!("{name}{ext}"))
         .collect()

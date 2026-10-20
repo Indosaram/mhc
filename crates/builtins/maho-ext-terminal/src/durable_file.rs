@@ -9,7 +9,6 @@ pub fn classify_detached_change(saved:&TerminalManifestCheckpoint,live:&Terminal
     None
 }
 pub fn remaining_ms(monitor:&ManifestMonitor,now:f64)->f64 {monitor.expires_at.map_or(300_000.0,|expiry|(expiry-now).max(1.0))}
-#[cfg(unix)]
 pub fn restore_file(monitor:&ManifestMonitor,registry:&mut crate::monitor_registry::MonitorRegistry,manager:&mut crate::manager::TerminalManager,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>,now:f64)->crate::restore::RestoreOutcome {
     use crate::{restore::RestoreOutcome,terminal_manifest_model::MonitorRuntimeKind};
     if monitor.runtime_kind!=MonitorRuntimeKind::File {return RestoreOutcome::Lost;}

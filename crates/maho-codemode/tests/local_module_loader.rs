@@ -2,12 +2,24 @@ use std::path::PathBuf;
 use maho_codemode::bridge::protocol::LocalRoots;
 use maho_codemode::kernels::js::local_module_loader::*;
 
+/// `file://` URL for a rooted test path: a drive-less root resolves against the current drive on
+/// Windows (`/tmp` -> `file:///D:/tmp/` when the cwd is on `D:`).
+fn root_url(path: &str) -> String {
+    if cfg!(windows) {
+        let cwd = std::env::current_dir().expect("cwd");
+        let drive = cwd.to_string_lossy().chars().next().expect("drive letter");
+        format!("file:///{drive}:{path}")
+    } else {
+        format!("file://{path}")
+    }
+}
+
 #[test]
 fn case_fold_collision_uses_last_inserted_root() {
     for object in [r#"{"LOCAL":"/tmp/first","local":"/tmp/last"}"#,r#"{"local":"/tmp/first","LOCAL":"/tmp/last"}"#] {
         let roots:LocalRoots=serde_json::from_str(object).unwrap();
         let options=LocalModuleLoaderOptions {cwd:"/tmp".into(),local_roots:Some(roots),artifacts_dir:None};
-        let expected = if cfg!(windows) { "file:///C:/tmp/last/" } else { "file:///tmp/last/" };
+        let expected = root_url("/tmp/last/");
         assert_eq!(runtime_context(&options).unwrap()["localRootUrls"]["local"], expected);
         let bridge=local_bridge_connection(&options);
         let wire=serde_json::to_value(bridge).unwrap();
@@ -19,8 +31,8 @@ fn case_fold_collision_uses_last_inserted_root() {
 fn context_normalizes_roots_and_preserves_explicit_local_root() {
     let options = LocalModuleLoaderOptions {cwd:PathBuf::from("/tmp/project/../with space"), local_roots:Some(LocalRoots::from([("LOCAL".into(), "/tmp/explicit".into())])), artifacts_dir:Some("/tmp/artifacts".into())};
     let context = runtime_context(&options).unwrap();
-    let expected_cwd = if cfg!(windows) { "file:///C:/tmp/with%20space/" } else { "file:///tmp/with%20space/" };
-    let expected_explicit = if cfg!(windows) { "file:///C:/tmp/explicit/" } else { "file:///tmp/explicit/" };
+    let expected_cwd = root_url("/tmp/with%20space/");
+    let expected_explicit = root_url("/tmp/explicit/");
     assert_eq!(context["cwdUrl"], expected_cwd);
     assert_eq!(context["localRootUrls"]["local"], expected_explicit);
     let bridge = local_bridge_connection(&options);
@@ -31,7 +43,7 @@ fn context_normalizes_roots_and_preserves_explicit_local_root() {
 #[test]
 fn cell_payload_contains_prepared_sentinel_and_rewritten_code() {
     let options = LocalModuleLoaderOptions {cwd:"/tmp/project".into(),local_roots:None,artifacts_dir:Some("/tmp/artifacts".into())};
-    let expected = if cfg!(windows) { "file:///C:/tmp/artifacts/local/" } else { "file:///tmp/artifacts/local/" };
+    let expected = root_url("/tmp/artifacts/local/");
     assert_eq!(runtime_context(&options).unwrap()["localRootUrls"]["local"], expected);
     let prepared = LocalModuleLoader::new(&options).unwrap().prepare_cell("import value from './value.mjs';", &[]);
     let payload:serde_json::Value = serde_json::from_str(prepared.strip_prefix(PREPARED_CELL_PREFIX).unwrap()).unwrap();

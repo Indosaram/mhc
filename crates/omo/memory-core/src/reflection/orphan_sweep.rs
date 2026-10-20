@@ -330,7 +330,8 @@ fn git(exec: &dyn GitExec, cwd: &Path, argv: &[&str]) -> Result<String, String> 
 }
 
 fn resolve(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    crate::support::paths::strip_verbatim_prefix(&resolved)
 }
 
 fn basename(path: &Path) -> String {

@@ -2356,7 +2356,8 @@ mod tests {
 
     #[test]
     fn default_session_dir_encodes_the_cwd() {
-        let expected = Path::new("/home/indo/.omo/agent").join("sessions").join("--home-indo-piratetalk--").to_string_lossy().into_owned();
+        let agent_dir = resolve_path("/home/indo/.omo/agent", "/home/indo/.omo/agent", &PathInputOptions::default());
+        let expected = Path::new(&agent_dir).join("sessions").join("--home-indo-piratetalk--").to_string_lossy().into_owned();
         assert_eq!(get_default_session_dir_path("/home/indo/piratetalk", "/home/indo/.omo/agent"), expected);
     }
 

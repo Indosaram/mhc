@@ -49,7 +49,7 @@ mod adapter_tests {
         ExecutableHookHandler {event,matcher:None,group_index:0,handler_index:0,config:CommandHookConfig {kind:"command".to_owned(),command:"exit 0".to_owned(),command_windows:None,timeout:None,status_message:None},source:HookSourceMetadata {scope:HookSourceScope::Project,source_path:"/repo/hooks.json".to_owned(),display_order:0,discovered_at:HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None,plugin_env:None}}
     }
     async fn run_result(stdout:&str,stderr:&str,exit_code:i32)->CommandHookRunResult {
-        let options=CommandHookRunOptions {cwd:std::path::Path::new("/tmp"),env_passthrough:&[],output_policy:None,signal:None,source_env:None};
+        let temp=std::env::temp_dir();let options=CommandHookRunOptions {cwd:&temp,env_passthrough:&[],output_policy:None,signal:None,source_env:None};
         let mut result=run_command_hook(&handler(SupportedHookEvent::PostCompact),&json!({"event":"PostCompact"}),options).await.unwrap();
         result.stdout=stdout.to_owned();result.stderr=stderr.to_owned();result.exit_code=Some(exit_code);result
     }

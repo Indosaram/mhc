@@ -51,9 +51,20 @@ fn linked_worktree_detach_uses_private_metadata_and_alternates_and_removes_own_r
     ));
     assert_eq!(resolved, merged.join(".git"));
     assert_eq!(git(&merged, &["log", "-1", "--format=%s"]).expect("log"), "fixture");
-    let worktrees = git(&source, &["worktree", "list", "--porcelain"]).expect("worktrees");
-    assert!(!worktrees.contains(&merged.to_string_lossy().into_owned()));
-    assert!(worktrees.contains(&lower.to_string_lossy().into_owned()));
+    let worktrees = git(&source, &["worktree", "list", "--porcelain"])
+        .expect("worktrees")
+        .replace('\\', "/");
+    // Git reports long path names; a Windows temp dir can be an 8.3 short name, so both paths
+    // are rebuilt on the canonical fixture root (which still exists).
+    let root = std::fs::canonicalize(&f.root).expect("canonical root");
+    let display = |name: &str| {
+        let text = root.join(name).to_string_lossy().replace('\\', "/");
+        text.strip_prefix("//?/").map(str::to_owned).unwrap_or(text)
+    };
+    let merged_str = display("merged");
+    let lower_str = display("linked");
+    assert!(!worktrees.contains(&merged_str));
+    assert!(worktrees.contains(&lower_str));
     assert!(!admin.exists());
     let config = std::fs::read_to_string(merged.join(".git/config")).expect("config");
     assert!(!config.contains("origin"));

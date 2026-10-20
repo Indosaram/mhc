@@ -1170,12 +1170,18 @@ fn shown(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn normalize_path_str(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 fn read_diagnostic_at<'a>(result: &'a LoadAgentsResult, path: &Path) -> &'a AgentLoaderDiagnostic {
+    let expected = normalize_path_str(&shown(path));
     result
         .diagnostics
         .iter()
         .find(|diagnostic| {
-            diagnostic.kind == AgentLoaderDiagnosticKind::Read && diagnostic.path == shown(path)
+            diagnostic.kind == AgentLoaderDiagnosticKind::Read
+                && normalize_path_str(&diagnostic.path) == expected
         })
         .unwrap_or_else(|| panic!("no read diagnostic at {path:?}: {:?}", result.diagnostics))
 }
@@ -1271,10 +1277,10 @@ fn loader_omo_overlay_wins_last() {
 #[test]
 fn loader_malformed_frontmatter_is_per_file() {
     let fixture = fixture();
-    let bad_path = fixture.project.join(".senpi/agent/broken.md");
+    let bad_path = fixture.project.join(".senpi").join("agent").join("broken.md");
     write_text(&bad_path, "---\nmodel: [unterminated\n---\nBad");
     write_text(
-        &fixture.project.join(".senpi/agent/valid.md"),
+        &fixture.project.join(".senpi").join("agent").join("valid.md"),
         &agent_markdown("valid-model", "Valid"),
     );
     let result = load(&fixture, &AgentRegistry::new(), None);
@@ -1375,10 +1381,16 @@ fn loader_omo_json_directory_reports_read_diagnostic() {
             .and_then(|agent| agent.model.as_deref()),
         Some("valid-model")
     );
+    let diagnostic = read_diagnostic_at(&result, &config_path);
+    let expected_in_message = if cfg!(windows) {
+        normalize_path_str(&shown(&config_path))
+    } else {
+        shown(&config_path)
+    };
     assert!(
-        read_diagnostic_at(&result, &config_path)
+        diagnostic
             .message
-            .contains(&shown(&config_path))
+            .contains(&expected_in_message)
     );
 }
 

@@ -1,13 +1,10 @@
 //! The multi-session RPC entry (senpi `main.ts` `appMode === "rpc" && parsed.multiSession`): the
 //! CLI configuration it is built from, the per-open profile mapping the host factory applies, and
 //! the shared host the entry actually serves.
-use std::time::Duration;
-
 use maho_cli::cli::args::{Args, Mode};
-use maho_cli::cli::host_runtime::{create_host_core, open_profile_session_manager, CliRuntimeConfiguration};
+use maho_cli::cli::host_runtime::{open_profile_session_manager, CliRuntimeConfiguration};
 use maho_core::agent_session_runtime::AgentSessionLaunchProfile;
 use maho_core::project_trust::AppMode;
-use maho_rpc::multi_session_host::{run_multi_session_host_with_signals, HostShutdownSignals};
 use maho_rpc::session_registry::RpcSessionLaunchProfile;
 
 fn rpc_config(cwd: &str, agent_dir: &str) -> CliRuntimeConfiguration {
@@ -82,8 +79,12 @@ fn a_profile_session_path_opens_that_session_with_the_profile_cwd() {
     assert_eq!(manager.cwd(), cwd.as_str());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
+    use std::time::Duration;
+    use maho_cli::cli::host_runtime::create_host_core;
+    use maho_rpc::multi_session_host::{run_multi_session_host_with_signals, HostShutdownSignals};
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().to_string_lossy().into_owned();
     let socket = temp.path().join("rpc.sock");

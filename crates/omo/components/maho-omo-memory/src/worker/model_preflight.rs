@@ -33,6 +33,12 @@ pub async fn probe_child_models(launch:&Launcher,env:&BTreeMap<String,String>,ti
 async fn probe_child_models_mode(launch:&Launcher,env:&BTreeMap<String,String>,timeout_ms:u64,extensions:bool)->Result<BTreeSet<String>,String>{
     let mut command=tokio::process::Command::new(&launch.command);
     command.args(&launch.prefix_args).args(if extensions{&EXTENSION_MODEL_LIST_ARGS[..]}else{&MODEL_LIST_ARGS[..]}).env_clear().envs(env).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    #[cfg(windows)]
+    for key in ["SystemRoot", "PATH", "PATHEXT"] {
+        if let Some(val) = std::env::var_os(key).filter(|_| !env.contains_key(key)) {
+            command.env(key, val);
+        }
+    }
     if extensions{command.env("OMO_SENPI_DISABLED","1");}
     let output=tokio::time::timeout(Duration::from_millis(timeout_ms),command.output()).await.map_err(|_|format!("model catalog probe timed out after {timeout_ms}ms"))?.map_err(|e|e.to_string())?;
     if !output.status.success(){let stderr=String::from_utf8_lossy(&output.stderr);let stdout=String::from_utf8_lossy(&output.stdout);let detail=if stderr.trim().is_empty(){stdout.trim()}else{stderr.trim()};let code=output.status.code().map_or_else(||"null".into(),|code|code.to_string());return Err(format!("model catalog probe exited with code {code}: {detail}"));}
@@ -52,7 +58,7 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
     #[tokio::test]
     async fn extension_catalog_routes_in_order_and_disables_omo_only_in_probe() {
         let launch = if cfg!(windows) {
-            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"const args=process.argv; if(args.includes('--no-extensions')){if(process.env.OMO_SENPI_DISABLED)process.exit(8);console.log('builtin/fallback');}else{if(process.env.OMO_SENPI_DISABLED!=='1')process.exit(9);console.log('extension-only/primary\\nbuiltin/fallback');}".into()]}
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"const args=process.argv; if(args.includes('--no-extensions')){if(process.env.OMO_SENPI_DISABLED)process.exit(8);console.log('builtin/fallback');}else{if(process.env.OMO_SENPI_DISABLED!=='1')process.exit(9);console.log('extension-only/primary\\nbuiltin/fallback');}".into(),"--".into()]}
         } else {
             Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"if [ \"$1\" = --no-extensions ]; then [ -z \"$OMO_SENPI_DISABLED\" ] || exit 8; printf 'builtin/fallback\\n'; else [ \"$OMO_SENPI_DISABLED\" = 1 ] || exit 9; printf 'extension-only/primary\\nbuiltin/fallback\\n'; fi".into(),"--".into()]}
         };
@@ -70,7 +76,7 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
     #[tokio::test]
     async fn core_visible_chain_never_probes_extensions() {
         let launch = if cfg!(windows) {
-            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"if(!process.argv.includes('--no-extensions'))process.exit(9);console.log('extension-only/primary\\nbuiltin/fallback');".into()]}
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"if(!process.argv.includes('--no-extensions'))process.exit(9);console.log('extension-only/primary\\nbuiltin/fallback');".into(),"--".into()]}
         } else {
             Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"[ \"$1\" = --no-extensions ] || exit 9; printf 'extension-only/primary\\nbuiltin/fallback\\n'".into(),"--".into()]}
         };
@@ -83,7 +89,7 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
     #[tokio::test]
     async fn failed_extension_catalog_keeps_core_candidate_and_reports_cause() {
         let launch = if cfg!(windows) {
-            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"if(process.argv.includes('--no-extensions')){console.log('builtin/fallback');}else{process.stderr.write('extension boom');process.exit(3);}".into()]}
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"if(process.argv.includes('--no-extensions')){console.log('builtin/fallback');}else{process.stderr.write('extension boom');process.exit(3);}".into(),"--".into()]}
         } else {
             Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"if [ \"$1\" = --no-extensions ]; then printf 'builtin/fallback\\n'; else printf 'extension boom' >&2; exit 3; fi".into(),"--".into()]}
         };
@@ -98,7 +104,7 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
     fn candidates()->Vec<ReflectionModelCandidate>{["extension-only/primary","builtin/fallback"].map(|model|ReflectionModelCandidate{model:model.into(),thinking:None, load_extensions: None }).into()}
     fn launch(text:&str)->Launcher{
         if cfg!(windows) {
-            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),format!("console.log('{text}')")]}
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),format!("console.log('{text}')"),"--".into()]}
         } else {
             Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),format!("printf '%s\\n' '{text}'")]}
         }
@@ -109,7 +115,7 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
     #[test]fn headerless_nested_ids_remain_visible(){assert_eq!(parse_model_catalog("provider/nested/model\nbuiltin/fallback"),BTreeSet::from(["provider/nested/model".into(),"builtin/fallback".into()]));}
     #[tokio::test]async fn nonzero_catalog_exit_degrades(){
         let launcher = if cfg!(windows) {
-            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"process.stderr.write('failure'); process.exit(7);".into()]}
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"process.stderr.write('failure'); process.exit(7);".into(),"--".into()]}
         } else {
             Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"printf failure >&2; exit 7".into()]}
         };
@@ -117,7 +123,7 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
     }
     #[tokio::test]async fn failed_probe_retains_stdout_when_stderr_is_empty(){
         let launcher = if cfg!(windows) {
-            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"process.stdout.write('catalog-failure'); process.exit(7);".into()]}
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),"process.stdout.write('catalog-failure'); process.exit(7);".into(),"--".into()]}
         } else {
             Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),"printf catalog-failure; exit 7".into()]}
         };
@@ -127,7 +133,7 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
         let dir=tempfile::tempdir().unwrap();let log=dir.path().join("log");
         let launcher = if cfg!(windows) {
             let log_escaped = log.to_string_lossy().replace('\\', "\\\\");
-            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),format!("require('fs').appendFileSync('{log_escaped}', 'x'); console.log('builtin/fallback');")]}
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),format!("require('fs').appendFileSync('{log_escaped}', 'x'); console.log('builtin/fallback');"),"--".into()]}
         } else {
             Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),format!("printf x >> '{}'; printf 'builtin/fallback\\n'",log.display())]}
         };
@@ -137,7 +143,7 @@ pub fn parse_model_catalog(output:&str)->BTreeSet<String>{
         let dir=tempfile::tempdir().unwrap();let log=dir.path().join("log");let config=dir.path().join("config");
         let launcher = if cfg!(windows) {
             let log_escaped = log.to_string_lossy().replace('\\', "\\\\");
-            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),format!("require('fs').appendFileSync('{log_escaped}', 'x'); console.log('builtin/fallback');")]}
+            Launcher{command:"node".into(),prefix_args:vec!["-e".into(),format!("require('fs').appendFileSync('{log_escaped}', 'x'); console.log('builtin/fallback');"),"--".into()]}
         } else {
             Launcher{command:"/bin/sh".into(),prefix_args:vec!["-c".into(),format!("printf x >> '{}'; printf 'builtin/fallback\\n'",log.display())]}
         };

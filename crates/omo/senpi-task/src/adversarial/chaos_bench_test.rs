@@ -18,10 +18,7 @@ use super::chaos_harness::{ChaosHarnessOptions, build_harness};
 use super::prng::{derive_seed, hash_seed};
 
 const DEFAULT_SEED: &str = "senpi-task-w1-chaos";
-#[cfg(not(windows))]
 const ITERATIONS: u32 = 200;
-#[cfg(windows)]
-const ITERATIONS: u32 = 40;
 const INVARIANT_IDS: [u8; 13] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
 
 #[test]

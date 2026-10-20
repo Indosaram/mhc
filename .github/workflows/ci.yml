@@ -84,8 +84,17 @@ jobs:
         if: always()
         run: df -h / && du -sh target 2>/dev/null || true
 
-  # Windows: clippy and the mhc build. The test suite still assumes POSIX in many places
-  # (/bin/sh, HOME, `/` paths), so it is not run here yet.
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: macos
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   windows:
     runs-on: windows-2025
     timeout-minutes: 120
@@ -95,34 +104,40 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v7
-      - name: rust toolchain
-        run: |
-          rustup show active-toolchain || rustup toolchain install
-          rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup
         with:
-          shared-key: windows
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: protoc
-        run: |
-          curl -sSLo "$RUNNER_TEMP/protoc.zip" "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-win64.zip"
-          unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
-          echo "PROTOC=$RUNNER_TEMP/protoc/bin/protoc.exe" >> "$GITHUB_ENV"
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-      - name: search tools
-        run: |
-          choco install -y --no-progress ripgrep fd >/dev/null
-          npm install -g --silent "@ast-grep/cli@${AST_GREP_VERSION}"
-          rg --version | head -1 && fd --version && sg --version
-      - name: git identity for tests
-        run: |
-          git config --global user.name ci
-          git config --global user.email ci@example.invalid
+          cache-key: windows
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: build mhc binary
         run: cargo build -p maho-cli --locked
+
+  windows-test:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: windows-test-${{ matrix.shard }}
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: select crates
+        run: echo "CRATES=$(python scripts/ci-shard.py 3 ${{ matrix.shard }})" >> "$GITHUB_ENV"
+      - name: build tests (shard ${{ matrix.shard }}/3)
+        run: |
+          cargo nextest run --locked --no-run $CRATES
+          cargo build --locked -p maho-senpi-desktop-engine
+      - name: run tests (shard ${{ matrix.shard }}/3)
+        timeout-minutes: 40
+        run: cargo nextest run --locked --no-fail-fast --tool-config-file "ci:$GITHUB_WORKSPACE/.github/nextest.toml" $CRATES

@@ -307,7 +307,9 @@ pub async fn resolve_runtime_project_trust_with_warnings(
 /// verbatim; local values go through `resolvePath` (`~` and `file://` expansion) against the cwd.
 pub fn resolve_cli_path(cwd: &str, path: &str) -> String {
     if !maho_core::paths::is_local_path(path) { return path.to_owned(); }
-    maho_core::paths::resolve_path(path, cwd, &maho_core::paths::PathInputOptions::default())
+    let normalized = crate::utils::paths::normalize_path(path, &crate::utils::paths::PathInputOptions::default())
+        .unwrap_or_else(|_| path.to_owned());
+    maho_core::paths::resolve_path(&normalized, cwd, &maho_core::paths::PathInputOptions::default())
 }
 
 /// The per-runtime inputs a mode supplies when it mounts a session runtime.

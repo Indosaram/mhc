@@ -12,7 +12,19 @@ pub fn resolve_hook_timeout_seconds(handler:&ExecutableHookHandler)->Result<f64,
 }
 pub fn build_hook_environment(handler:&ExecutableHookHandler,event:SupportedHookEvent,source_env:&BTreeMap<String,String>,passthrough:&[String])->BTreeMap<String,String> {
     let mut env=BTreeMap::new();
-    for key in ["PATH","HOME","USER","USERNAME","LOGNAME","SHELL","TMPDIR","TMP","TEMP","SystemRoot","ComSpec","PATHEXT"].into_iter().chain(passthrough.iter().map(String::as_str)) {if let Some(value)=source_env.get(key) {env.insert(key.to_owned(),value.clone());}}
+    let keys=["PATH","HOME","USER","USERNAME","LOGNAME","SHELL","TMPDIR","TMP","TEMP","SystemRoot","SystemDrive","ComSpec","PATHEXT","USERPROFILE"];
+    for key in keys.into_iter().chain(passthrough.iter().map(String::as_str)) {
+        let value=if cfg!(windows) {
+            source_env.iter().find(|(k,_)|k.eq_ignore_ascii_case(key)).map(|(_,v)|v)
+        } else {
+            source_env.get(key)
+        };
+        if let Some(value)=value {env.insert(key.to_owned(),value.clone());}
+    }
+    #[cfg(windows)]
+    if let Some((_,v))=source_env.iter().find(|(k,_)|k.eq_ignore_ascii_case("USERPROFILE")) {
+        env.entry("HOME".to_owned()).or_insert_with(||v.clone());
+    }
     if let Some(plugin)=&handler.source.plugin_env {for key in ["PLUGIN_ROOT","PLUGIN_DATA","CLAUDE_PLUGIN_ROOT","CLAUDE_PLUGIN_DATA"] {if let Some(value)=plugin.get(key) {env.insert(key.to_owned(),value.clone());}}}
     env.insert("SENPI_HOOK_SOURCE".to_owned(),handler.source.source_path.clone());env.insert("SENPI_HOOK_EVENT".to_owned(),event.as_str().to_owned());env
 }
@@ -89,8 +101,7 @@ mod tests {
     async fn command_runner_redacts_tokens_before_spill_and_truncation()->std::io::Result<()> {
         let root=tempfile::tempdir()?;let classic="ghp_0123456789abcdef0123456789abcdef0123";let fine="github_pat_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let command=format!("printf '%s\\n' 'SECRET_TOKEN=stdout-secret' '{classic}' 'ghp_short' '{}'; printf '%s\\n' 'Authorization: Bearer stderr-secret' '{fine}' 'github_pat_short' '{}' >&2","o".repeat(200),"e".repeat(200));
-        let windows_cmd=format!("node -e \"process.stdout.write('SECRET_TOKEN=stdout-secret\\n{classic}\\nghp_short\\n{}\\n'); process.stderr.write('Authorization: Bearer stderr-secret\\n{fine}\\ngithub_pat_short\\n{}\\n');\"","o".repeat(200),"e".repeat(200));
-        let handler=plugin_handler(root.path(),&command,Some(&windows_cmd));let policy=HookOutputPolicy {max_stdout_bytes:Some(192),max_stderr_bytes:Some(192),spill_dir:Some(root.path().join("spill"))};
+        let handler=plugin_handler(root.path(),&command,None);let policy=HookOutputPolicy {max_stdout_bytes:Some(192),max_stderr_bytes:Some(192),spill_dir:Some(root.path().join("spill"))};
         let result=crate::command_runner::run_command_hook(&handler,&serde_json::json!({"event":"PreToolUse"}),crate::command_runner::CommandHookRunOptions {cwd:root.path(),env_passthrough:&[],output_policy:Some(&policy),signal:None,source_env:None}).await?;
         for (text,metadata,secret,token,short) in [(&result.stdout,&result.output_safety.stdout,"stdout-secret",classic,"ghp_short"),(&result.stderr,&result.output_safety.stderr,"stderr-secret",fine,"github_pat_short")] {
             assert!(text.contains("[REDACTED]"));assert!(text.contains(short));assert!(!text.contains(secret));assert!(!text.contains(token));assert!(metadata.redacted&&metadata.spilled&&metadata.truncated);

@@ -18,10 +18,11 @@ fn temp_root() -> tempfile::TempDir {
 }
 
 fn real(path: &Path) -> String {
-    std::fs::canonicalize(path)
+    let canonical = std::fs::canonicalize(path)
         .expect("realpath")
         .to_string_lossy()
-        .into_owned()
+        .into_owned();
+    crate::request_context::strip_verbatim_prefix(&canonical)
 }
 
 fn context_for(root: &Path) -> crate::request_context::LspRequestContext {

@@ -204,7 +204,7 @@ pub fn revive_claimed(
             "session_unavailable",
         ));
     }
-    if session_path.is_none() && !fresh.spawn_spec.as_ref().is_some_and(is_spawn_spec_v1) {
+    if session_path.is_none() {
         if is_terminal(fresh.status) {
             dispose(context, &fresh.task_id)?;
             return Ok(outcome(
@@ -213,16 +213,18 @@ pub fn revive_claimed(
                 TERMINAL_DISPOSED,
             ));
         }
-        mark_lost(
-            context,
-            &fresh,
-            "record has neither a session transcript nor a persisted v1 spawn spec",
-        )?;
-        return Ok(outcome(
-            &fresh.task_id,
-            ReconcileOutcomeKind::Lost,
-            "spawn spec unavailable",
-        ));
+        if !fresh.spawn_spec.as_ref().is_some_and(is_spawn_spec_v1) {
+            mark_lost(
+                context,
+                &fresh,
+                "record has neither a session transcript nor a persisted v1 spawn spec",
+            )?;
+            return Ok(outcome(
+                &fresh.task_id,
+                ReconcileOutcomeKind::Lost,
+                "spawn spec unavailable",
+            ));
+        }
     }
     // Everything above can wait on the old child's termination: a stop or another owner that landed
     // meanwhile ends this revival here, so two owners never both respawn the same record.
