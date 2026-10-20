@@ -48,6 +48,13 @@ fn claude_config_requires_opt_in() {
     assert!(load(root.path(), true, &BTreeMap::new()).unwrap().servers.is_empty());
 }
 #[test]
+fn explicit_sse_configuration_resolves_to_http() {
+    let root = tempfile::tempdir().unwrap();
+    write(&root.path().join("agent/mcp.json"), json!({"mcpServers":{"events":{"type":"sse","url":"https://example.test/mcp","command":"ignored"}}}));
+    let result = load(root.path(), true, &BTreeMap::new()).unwrap();
+    assert_eq!(result.servers["events"].transport, Some(Transport::Http));
+}
+#[test]
 fn invalid_arrays_are_rejected() {
     assert_eq!(validate_raw(json!({"mcpServers":{"x":{"command":"node","args":"not-array"}}})).unwrap_err().to_string(), "Invalid MCP config at mcpServers.x.args: Expected array");
 }

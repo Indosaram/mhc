@@ -88,6 +88,7 @@ fn synthetic_message(
         details: checkpoint.map(|result| result.details.clone()),
         usage: checkpoint.and_then(|result| result.usage),
         added_tool_names: None,
+        nested_calls: checkpoint.and_then(|result| result.nested_calls.clone()),
         is_error: true,
         timestamp,
     }

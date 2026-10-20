@@ -10,7 +10,7 @@ async fn fresh_session_reports_the_origin_its_model_came_from() {
     let cwd = dir.path().to_string_lossy();
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent.to_string_lossy(), &cwd, false);
     let pinned = resolve_cli_initial_model(
         Some(("faux".to_owned(), "faux-1".to_owned())), None, false, &settings, &runtime, &[]).await;
@@ -37,13 +37,13 @@ fn scoped_fixture() -> (
             id: id.to_owned(), reasoning: Some(true), ..Default::default()
         }).to_vec()),
         ..Default::default()
-    });
+    }).expect("valid faux provider");
     std::fs::write(agent.join("settings.json"), "{\"defaultProvider\":\"faux\",\"defaultModel\":\"qa-beta\"}\n")
         .expect("settings fixture");
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(dir.path().join("models.json")), auth_path: Some(dir.path().join("auth.json")),
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("fixture-key".into()), ..Default::default() },
@@ -113,11 +113,11 @@ async fn a_mounted_session_is_bound_to_the_per_runtime_cwd() {
     for path in [&launch, &project, &agent] { std::fs::create_dir_all(path).expect("fixture directory"); }
     let launch_text = launch.to_string_lossy().into_owned();
     let project_text = project.to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")),
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("fixture-key".into()), ..Default::default() },

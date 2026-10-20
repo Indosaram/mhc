@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use crate::tool_call_middleware::protocols::anthropic_xml::recovery_stream::RecoveryStreamParser;
 use crate::tool_call_middleware::protocols::antml::recovery_stream::create_antml_invoke_recovery_stream_parser;
-use crate::tool_call_middleware::recovery_code_mask::{create_recovery_code_mask, RecoveryCodeMask, RecoveryCodeMaskFeedOptions, RecoveryCodeMaskSegment};
+use crate::tool_call_middleware::recovery_code_mask::{
+    RecoveryCodeMask, RecoveryCodeMaskFeedOptions, RecoveryCodeMaskSegment,
+    create_recovery_code_mask,
+};
 use crate::tool_call_middleware::recovery_diagnostics::append_recovery_diagnostic;
 use crate::tool_call_middleware::recovery_native_projection::RecoveryNativeProjection;
 use crate::tool_call_middleware::stream_wrapper_shared::StreamMessageProjection;
@@ -20,7 +23,10 @@ pub struct RecoveryTextProjectionOptions {
 
 impl Default for RecoveryTextProjectionOptions {
     fn default() -> Self {
-        Self { create_parser: None, protocol: ToolCallFormat::Antml }
+        Self {
+            create_parser: None,
+            protocol: ToolCallFormat::Antml,
+        }
     }
 }
 
@@ -36,22 +42,48 @@ pub struct RecoveryTextProjection {
 }
 
 impl RecoveryTextProjection {
-    pub fn new(tools: Vec<Tool>, inner_index: usize, options: RecoveryTextProjectionOptions) -> Self {
+    pub fn new(
+        tools: Vec<Tool>,
+        inner_index: usize,
+        options: RecoveryTextProjectionOptions,
+    ) -> Self {
         let parser = match options.create_parser {
             Some(create_parser) => create_parser(tools),
             None => create_antml_invoke_recovery_stream_parser(tools, None::<ParserOptions>),
         };
-        Self { inner_index, parser, protocol: options.protocol, mask: create_recovery_code_mask(), active_invoke: false, text_buffer: String::new(), saw_tool_call: false, finished: false }
+        Self {
+            inner_index,
+            parser,
+            protocol: options.protocol,
+            mask: create_recovery_code_mask(),
+            active_invoke: false,
+            text_buffer: String::new(),
+            saw_tool_call: false,
+            finished: false,
+        }
     }
 
-    pub fn start(&self, projection: &mut StreamMessageProjection, native_projection: &mut RecoveryNativeProjection, source: &AssistantMessage) -> bool {
-        let outer_index = projection.start_text(self.inner_index, source.content.get(self.inner_index));
+    pub fn start(
+        &self,
+        projection: &mut StreamMessageProjection,
+        native_projection: &mut RecoveryNativeProjection,
+        source: &AssistantMessage,
+    ) -> bool {
+        let outer_index =
+            projection.start_text(self.inner_index, source.content.get(self.inner_index));
         native_projection.start_text(&projection.message, self.inner_index, outer_index)
     }
 
-    pub fn feed(&mut self, projection: &mut StreamMessageProjection, native_projection: &mut RecoveryNativeProjection, text: &str) -> bool {
+    pub fn feed(
+        &mut self,
+        projection: &mut StreamMessageProjection,
+        native_projection: &mut RecoveryNativeProjection,
+        text: &str,
+    ) -> bool {
         for character in text.chars() {
-            let options = self.active_invoke.then_some(RecoveryCodeMaskFeedOptions { active_invoke: true });
+            let options = self.active_invoke.then_some(RecoveryCodeMaskFeedOptions {
+                active_invoke: true,
+            });
             let mut utf8 = [0u8; 4];
             let segments = self.mask.feed(character.encode_utf8(&mut utf8), options);
             for segment in segments {
@@ -62,7 +94,11 @@ impl RecoveryTextProjection {
         self.saw_tool_call
     }
 
-    pub fn finish(&mut self, projection: &mut StreamMessageProjection, native_projection: &mut RecoveryNativeProjection) -> bool {
+    pub fn finish(
+        &mut self,
+        projection: &mut StreamMessageProjection,
+        native_projection: &mut RecoveryNativeProjection,
+    ) -> bool {
         if self.finished {
             return self.saw_tool_call;
         }
@@ -78,7 +114,12 @@ impl RecoveryTextProjection {
         self.saw_tool_call
     }
 
-    fn process_segment(&mut self, projection: &mut StreamMessageProjection, native_projection: &mut RecoveryNativeProjection, segment: RecoveryCodeMaskSegment) {
+    fn process_segment(
+        &mut self,
+        projection: &mut StreamMessageProjection,
+        native_projection: &mut RecoveryNativeProjection,
+        segment: RecoveryCodeMaskSegment,
+    ) {
         if segment.recovery_boundary {
             let events = self.parser.interrupt();
             self.project_parser_events(projection, native_projection, events);
@@ -91,7 +132,12 @@ impl RecoveryTextProjection {
         }
     }
 
-    fn project_parser_events(&mut self, projection: &mut StreamMessageProjection, native_projection: &mut RecoveryNativeProjection, events: Vec<StreamParserEvent>) {
+    fn project_parser_events(
+        &mut self,
+        projection: &mut StreamMessageProjection,
+        native_projection: &mut RecoveryNativeProjection,
+        events: Vec<StreamParserEvent>,
+    ) {
         for event in native_projection.assign_recovered_ids(events) {
             if let StreamParserEvent::Text { text } = event {
                 self.text_buffer.push_str(&text);
@@ -134,11 +180,20 @@ mod tests {
     use crate::utils::event_stream::AssistantMessageEventStream;
 
     fn tool(name: &str) -> Tool {
-        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: name.into(),
+            description: "d".into(),
+            parameters: json!({"type": "object"}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn message(content: Vec<ContentBlock>) -> AssistantMessage {
         AssistantMessage {
+            thinking_level: None,
+            provider_diagnostic: None,
             content,
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -163,12 +218,24 @@ mod tests {
     fn feed_recovers_a_leaked_invoke_and_marks_saw_tool_call() {
         let stream = AssistantMessageEventStream::assistant();
         let source = message(vec![]);
-        let mut projection = StreamMessageProjection::new(stream.clone(), source.clone(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(
+            stream.clone(),
+            source.clone(),
+            StreamMessageProjectionOptions::default(),
+        );
         let mut native_projection = RecoveryNativeProjection::new(stream, ToolCallFormat::Antml);
-        let mut text_projection = RecoveryTextProjection::new(vec![tool("get_weather")], 0, RecoveryTextProjectionOptions::default());
+        let mut text_projection = RecoveryTextProjection::new(
+            vec![tool("get_weather")],
+            0,
+            RecoveryTextProjectionOptions::default(),
+        );
 
         assert!(text_projection.start(&mut projection, &mut native_projection, &source));
-        let saw = text_projection.feed(&mut projection, &mut native_projection, r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#);
+        let saw = text_projection.feed(
+            &mut projection,
+            &mut native_projection,
+            r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#,
+        );
         let finished = text_projection.finish(&mut projection, &mut native_projection);
         assert!(saw || finished);
     }

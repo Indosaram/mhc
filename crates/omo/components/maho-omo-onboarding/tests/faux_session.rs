@@ -55,14 +55,14 @@ async fn interactive_prompt_claims_without_bootstrap() {
     use std::sync::Arc;
     use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions, faux_assistant_message, FauxAssistantMessageOptions};
     let cwd=root.path().to_string_lossy().into_owned();
-    let provider=faux_provider(RegisterFauxProviderOptions { tokens_per_second:Some(0.0), ..Default::default() });
+    let provider=faux_provider(RegisterFauxProviderOptions { tokens_per_second:Some(0.0), ..Default::default() }).expect("valid faux provider");
     provider.set_responses(["Welcome.","Hello."].into_iter().map(|text| faux_assistant_message(text,FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()}).into()).collect());
     let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path:Some(root.path().join("models.json")),auth_path:Some(root.path().join("auth.json")),
         credentials:Some(Arc::new(maho_core::auth_storage::AuthStorage::in_memory([("faux".into(),serde_json::json!({"type":"api_key","key":"fixture"}))].into_iter().collect()))),
         providers:Some(vec![provider.provider.clone()]),
             ..Default::default()
-        });
+        }).expect("valid model runtime");
     let loaded=maho_ext_host::loader::load_extensions(vec![NativeExtensionFactory {
         path:"<onboarding>".into(),source_info:Default::default(),extension:Box::new(maho_omo_onboarding::OnboardingComponent {state_dir:root.path().into(),skills_root:"<skills>".into()}),
     }],root.path(),Default::default());

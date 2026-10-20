@@ -24,13 +24,13 @@ async fn execute(project: &Path, allow: bool, tool: &str, input: Value, permissi
     execute_mode(project, allow, tool, input, permission, if allow { ExtensionMode::Tui } else { ExtensionMode::Print }).await
 }
 async fn execute_mode(project: &Path, allow: bool, tool: &str, input: Value, permission: &str, mode: ExtensionMode) -> Result<Value, Failure> {
-    let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+    let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() })?;
     let model = provider.get_model(Some("faux-1")).ok_or("Missing faux model")?;
     let streams = faux_streams(provider.core.clone());
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(project.join("models.json")), auth_path: Some(project.join("auth.json")),
         providers: Some(vec![provider.provider.clone()]), ..Default::default()
-    });
+    })?;
     let cwd = project.to_string_lossy().into_owned();
     let session = AgentSession::new(AgentSessionConfig {
         agent: maho_agent::Agent::new(maho_agent::AgentOptions {

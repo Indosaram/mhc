@@ -1,5 +1,8 @@
 //! Runtime state persistence, locks, and crash/restart resume.
 
+pub mod lock_publish;
+pub mod lock_reclaim;
+pub mod lock_record;
 pub mod locks;
 pub mod resume;
 pub mod store;

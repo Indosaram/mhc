@@ -52,9 +52,9 @@ pub struct ModelsService {
 }
 
 impl ModelsService {
-    pub async fn new(runtime: Arc<ModelRuntimeHandle>, publish: Arc<dyn Fn(ModelsEvent) + Send + Sync>) -> Self {
-        let state = read_state(&runtime, false).await;
-        Self { runtime, publish, pending_auth: Arc::new(Mutex::new(HashMap::new())), state: Mutex::new(state) }
+    pub async fn new(runtime: Arc<ModelRuntimeHandle>, publish: Arc<dyn Fn(ModelsEvent) + Send + Sync>) -> Result<Self, maho_ai::models::ModelsError> {
+        let state = read_state(&runtime, false).await?;
+        Ok(Self { runtime, publish, pending_auth: Arc::new(Mutex::new(HashMap::new())), state: Mutex::new(state) })
     }
 
     pub fn state(&self) -> ModelsState {
@@ -62,9 +62,9 @@ impl ModelsService {
     }
 
     pub async fn refresh(&self) -> CommandResult {
-        self.update(true).await;
+        if let Err(error) = self.update(true).await { return CommandResult::Error(error.to_string()); }
         let result = self.runtime.refresh(ModelsRefreshOptions::default()).await;
-        self.update(false).await;
+        if let Err(error) = self.update(false).await { return CommandResult::Error(error.to_string()); }
         if result.errors.is_empty() {
             CommandResult::Ok
         } else {
@@ -79,7 +79,7 @@ impl ModelsService {
         let interaction = Arc::new(ServiceAuthInteraction { publish: self.publish.clone(), pending: self.pending_auth.clone() });
         let provider_auth_type = match auth_type { AuthType::Oauth => ProviderAuthType::OAuth, AuthType::ApiKey => ProviderAuthType::ApiKey };
         let result = self.runtime.login(provider_id, provider_auth_type, interaction).await;
-        self.update(false).await;
+        if let Err(error) = self.update(false).await { return CommandResult::Error(error.to_string()); }
         match result {
             Ok(_) => CommandResult::Ok,
             Err(error) => CommandResult::Error(error.message),
@@ -88,7 +88,7 @@ impl ModelsService {
 
     pub async fn logout(&self, provider_id: &str) -> CommandResult {
         let result = self.runtime.logout(provider_id, AuthOperationOptions::default()).await;
-        self.update(false).await;
+        if let Err(error) = self.update(false).await { return CommandResult::Error(error.to_string()); }
         match result {
             Ok(()) => CommandResult::Ok,
             Err(error) => CommandResult::Error(error.message),
@@ -102,15 +102,16 @@ impl ModelsService {
         }
     }
 
-    pub async fn update(&self, refreshing: bool) {
-        let state = read_state(&self.runtime, refreshing).await;
+    pub async fn update(&self, refreshing: bool) -> Result<(), maho_ai::models::ModelsError> {
+        let state = read_state(&self.runtime, refreshing).await?;
         *self.state.lock().unwrap_or_else(|error| error.into_inner()) = state.clone();
         (self.publish)(ModelsEvent::State { state });
+        Ok(())
     }
 }
 
-pub async fn read_state(runtime: &ModelRuntimeHandle, refreshing: bool) -> ModelsState {
-    let oauth: HashSet<String> = oauth_provider_infos().into_iter().map(|info| info.id).collect();
+pub async fn read_state(runtime: &ModelRuntimeHandle, refreshing: bool) -> Result<ModelsState, maho_ai::models::ModelsError> {
+    let oauth: HashSet<String> = oauth_provider_infos()?.into_iter().map(|info| info.id).collect();
     let models = runtime
         .available()
         .await
@@ -134,5 +135,5 @@ pub async fn read_state(runtime: &ModelRuntimeHandle, refreshing: bool) -> Model
         });
     }
     accounts.sort_by(|left, right| left.name.cmp(&right.name));
-    ModelsState { models, accounts, refreshing }
+    Ok(ModelsState { models, accounts, refreshing })
 }

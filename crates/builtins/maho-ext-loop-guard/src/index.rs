@@ -15,7 +15,7 @@ fn handle(state:&mut State,api:&ExtensionApi,event:&ExtensionEvent,ctx:&Extensio
     match event {
         ExtensionEvent::SessionStart(_) | ExtensionEvent::SessionShutdown(_)=>state.reset(&api.events),
         ExtensionEvent::Input(input) if input.source!=InputSource::Extension=>state.reset(&api.events),
-        ExtensionEvent::ToolExecutionStart { tool_call_id,tool_name,args }=>{
+        ExtensionEvent::ToolExecutionStart { tool_call_id,tool_name,args,.. }=>{
             let record=state.tracker.record(tool_name,Some(args));
             if state.escalation.observe_attempt(tool_call_id,record) { state.pending_recovery_tool_name=None; state.set_wake(&api.events,false); state.set_hold(&api.events,false); }
             if let Some(detection)=detect_loop(state.tracker.records(),&mut state.gate) { state.escalation.observe_notice(&detection); send(api,LOOP_GUARD_NOTICE_CUSTOM_TYPE,build_loop_guard_reminder(&detection),true,Some(detection_details(&detection)),false,Some(DeliverAs::Steer))?; }

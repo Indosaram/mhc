@@ -1,8 +1,6 @@
 //! `Date.toISOString()`-shaped UTC formatting and ISO-8601 parsing.
 //!
-//! `chrono`/`time` are not dependencies of this crate, and the TypeScript package only
-//! needs the two operations below: formatting the current instant as
-//! `YYYY-MM-DDTHH:MM:SS.mmmZ`, and `Date.parse` for ISO-8601 input.
+//! Date-only values use UTC; unzoned date-times use the system time zone.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,21 +34,26 @@ pub(crate) fn format_iso_millis(millis: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis_part:03}Z")
 }
 
-/// Parse an ISO-8601 timestamp into Unix milliseconds.
+/// Parse an ISO-8601 or RFC 2822 timestamp into Unix milliseconds.
 ///
-/// Accepts `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM`, `YYYY-MM-DDTHH:MM:SS[.fff]` and the `Z`,
-/// `+HH:MM`, `-HH:MM`, `+HHMM` and `+HH` zone forms. Anything else — including the
+/// Accepts `YYYY-MM-DD`, `YYYY-MM-DD[T ]HH:MM`, `YYYY-MM-DD[T ]HH:MM:SS[.fff]` and the `Z`,
+/// `+HH:MM`, `-HH:MM`, `+HHMM` and `+HH` zone forms. Unzoned times use local time.
+/// Unsupported values — including the
 /// non-date strings callers store to opt out of timing — yields `None` rather than a
 /// panic.
 pub(crate) fn parse_iso_to_millis(value: &str) -> Option<i64> {
     let text = value.trim();
-    let (date_text, time_text) = match text.split_once(['T', 't']) {
+    if let Ok(date) = chrono::DateTime::parse_from_rfc2822(text) {
+        return Some(date.timestamp_millis());
+    }
+    // `Date.parse` also accepts a space between the date and the clock (`2026-10-20 12:00:00`).
+    let (date_text, time_text) = match text.split_once(['T', 't', ' ']) {
         Some((date, time)) => (date, time),
         None => (text, ""),
     };
 
     let (year, month, day) = parse_date(date_text)?;
-    if month == 0 || month > 12 || day == 0 || day > days_in_month(year, month) {
+    if month == 0 || month > 12 || day == 0 || day > 31 {
         return None;
     }
 
@@ -61,7 +64,20 @@ pub(crate) fn parse_iso_to_millis(value: &str) -> Option<i64> {
         + i64::from(seconds) * 1_000
         + i64::from(millis)
         - i64::from(offset_minutes) * MILLIS_PER_MINUTE;
-    Some(days * MILLIS_PER_DAY + millis_of_day)
+    let millis = days * MILLIS_PER_DAY + millis_of_day;
+    let has_zone = time_text.ends_with(['Z', 'z']) || time_text.contains(['+', '-']);
+    if !time_text.is_empty() && !has_zone {
+        return local_wall_time_millis(millis, jiff::tz::TimeZone::system());
+    }
+    Some(millis)
+}
+
+fn local_wall_time_millis(millis: i64, zone: jiff::tz::TimeZone) -> Option<i64> {
+    jiff::Timestamp::from_millisecond(millis).ok()?
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .datetime()
+        .to_zoned(zone).ok()
+        .map(|date| date.timestamp().as_millisecond())
 }
 
 fn parse_date(text: &str) -> Option<(i64, u32, u32)> {
@@ -95,7 +111,9 @@ fn parse_time(text: &str) -> Option<(u32, u32, u32, u32, i32)> {
         Some((seconds, fraction)) => (parse_digits(seconds, 2)?, parse_fraction(fraction)?),
         None => (parse_digits(seconds_field, 2)?, 0),
     };
-    if hours > 23 || minutes > 59 || seconds > 59 {
+    if hours > 24 || minutes > 59 || seconds > 59
+        || (hours == 24 && (minutes != 0 || seconds != 0 || millis != 0))
+    {
         return None;
     }
     Some((hours, minutes, seconds, millis, offset_minutes))
@@ -152,20 +170,6 @@ fn parse_digits(text: &str, expected_len: usize) -> Option<u32> {
         return None;
     }
     text.parse().ok()
-}
-
-fn days_in_month(year: i64, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-fn is_leap_year(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's algorithm).

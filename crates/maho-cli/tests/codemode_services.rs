@@ -15,7 +15,7 @@ async fn configured_completion_callback_consumes_native_sdk_context() {
     provider.set_responses((0..3).map(|_| maho_ai::providers::faux::faux_assistant_message("native completion", Default::default()).into()).collect());
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider {
             api_key: Some("fixture-key".into()), api: Some(provider.api.clone()), base_url: Some(provider.models[0].base_url.clone()),

@@ -169,7 +169,7 @@ impl FauxSession {
             ].into_iter().collect()))),
             providers: Some(vec![provider.provider.clone()]),
             ..Default::default()
-        });
+        })?;
         Ok(AgentSession::new(AgentSessionConfig {
             agent: maho_agent::Agent::new(maho_agent::AgentOptions {
                 initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
@@ -201,7 +201,7 @@ impl FauxSession {
             api: Some("faux".to_owned()), tokens_per_second: Some(0.0),
             models: (!self.faux_models.is_empty()).then(|| self.faux_models.clone()),
             ..Default::default()
-        });
+        })?;
         let model = provider.get_model(Some("faux-1")).ok_or("Missing faux-1 model")?;
         let script = self.scripted_messages()?;
         let calls = Arc::new(Mutex::new(Vec::new()));
