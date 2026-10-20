@@ -453,7 +453,7 @@ async fn acceptance_after_close_returns_expected_closed_rejection() {
 async fn acceptance_commits_exact_write_families_and_event_context() {
     use maho_agent::harness::session::testing::InstrumentedStorage;
     use maho_agent::harness::context::{create_context_key, with_context_value};
-    static KEY: maho_agent::harness::context::ContextKey<String> = create_context_key("accept.context");
+    static KEY: std::sync::LazyLock<maho_agent::harness::context::ContextKey<String>> = std::sync::LazyLock::new(|| create_context_key("accept.context"));
     let storage = Arc::new(InstrumentedStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
     let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "instrumented-accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));
     session.attach();

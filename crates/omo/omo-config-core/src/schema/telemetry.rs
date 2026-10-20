@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::internal::validate::{Field, Node, boolean, defaulted, strict_object};
 
-pub const TELEMETRY_HARNESS_SUPPORT: [(&str, &[&str]); 1] = [("telemetry.enabled", &["senpi"])];
+pub const TELEMETRY_HARNESS_SUPPORT: [(&str, &[&str]); 1] = [("telemetry.enabled", &["native"])];
 
 fn default_true() -> Value {
     Value::Bool(true)

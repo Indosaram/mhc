@@ -4,7 +4,7 @@ use maho_core::{agent_session::{AgentSession,AgentSessionConfig},model_runtime::
 use maho_rpc::{connection_handler::handle_session_command,rpc_types::RpcCommand};
 #[tokio::test]async fn real_session_queue_commands_preserve_recovery_order(){
     let temp=tempfile::tempdir().unwrap();let cwd=temp.path().to_string_lossy().into_owned();
-    let runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions{models_path:Some(temp.path().join("models.json")),auth_path:Some(temp.path().join("auth.json")),providers:Some(vec![]),..Default::default()});
+    let runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions{models_path:Some(temp.path().join("models.json")),auth_path:Some(temp.path().join("auth.json")),providers:Some(vec![]),..Default::default()}).expect("valid model runtime");
     let session=AgentSession::new(AgentSessionConfig{
         agent:maho_agent::Agent::new(maho_agent::AgentOptions{stream_fn:Some(Arc::new(|_,_,_|maho_ai::types::AssistantMessageEventStream::assistant())),..Default::default()}),
         session_manager:SessionManager::in_memory(&cwd,None,None),settings_manager:SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()),false),

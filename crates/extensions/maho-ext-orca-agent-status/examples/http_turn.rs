@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = maho_ext_host::ExtensionRunner::from_static(vec![Box::new(maho_ext_orca_agent_status::OrcaAgentStatus)], context());
     let events = [
         ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None }),
-        ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: "faux prompt".into(), images: None, system_prompt: String::new(), system_prompt_options: Default::default() }),
+        ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: "faux prompt".into(), trigger: "prompt".into(), preview: false, images: None, system_prompt: String::new(), system_prompt_options: Default::default() }),
         ExtensionEvent::AgentStart,
         if std::env::var("ORCA_QA_LEGACY_END").ok().as_deref() == Some("1") { ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: None, will_retry: None, abort_source: None } } else { ExtensionEvent::AgentSettled },
     ];

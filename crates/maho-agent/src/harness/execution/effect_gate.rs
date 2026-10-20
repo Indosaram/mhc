@@ -22,14 +22,22 @@ impl Cancellation {
 
     pub fn resolve(&self) {
         {
-            let mut resolved = self.inner.resolved.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut resolved = self
+                .inner
+                .resolved
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             *resolved = true;
         }
         self.inner.notify.notify_waiters();
     }
 
     pub fn is_resolved(&self) -> bool {
-        *self.inner.resolved.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        *self
+            .inner
+            .resolved
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub async fn wait(&self) {
@@ -56,7 +64,9 @@ impl Eq for Cancellation {}
 
 impl std::fmt::Debug for Cancellation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Cancellation").field("resolved", &self.is_resolved()).finish()
+        f.debug_struct("Cancellation")
+            .field("resolved", &self.is_resolved())
+            .finish()
     }
 }
 
@@ -127,12 +137,16 @@ impl Gate {
     }
 
     fn check(&self) -> Result<(), GateRefusal> {
-        let state = self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match &*state {
             GateState::Open => Ok(()),
-            GateState::Aborting(cancellation) => {
-                Err(GateRefusal::Abort(AbortRequested::new(cancellation.clone())))
-            }
+            GateState::Aborting(cancellation) => Err(GateRefusal::Abort(AbortRequested::new(
+                cancellation.clone(),
+            ))),
             GateState::Closed(message) => Err(GateRefusal::Closed(message.clone())),
         }
     }
@@ -140,7 +154,11 @@ impl Gate {
 
 impl GateControl {
     pub fn begin_abort(&self, cancellation: Cancellation) {
-        let mut state = self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if matches!(*state, GateState::Open) {
             *state = GateState::Aborting(cancellation);
         }
@@ -148,7 +166,11 @@ impl GateControl {
 
     pub fn signal_abort(&self) {
         let cancellation = {
-            let state = self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             match &*state {
                 GateState::Aborting(cancellation) => Some(cancellation.clone()),
                 _ => None,
@@ -161,16 +183,20 @@ impl GateControl {
         if signal.aborted() {
             return;
         }
-        self.inner
-            .controller
-            .abort(Some(maho_ai::utils::abort::AbortReason::new("AbortRequested", "Abort requested")));
-        let _ = cancellation;
+        self.inner.controller.abort(Some(
+            maho_ai::utils::abort::AbortReason::new("AbortRequested", "Abort requested")
+                .with_payload(AbortRequested::new(cancellation)),
+        ));
     }
 
     pub fn close(&self, error: impl Into<String>) {
         let message = error.into();
         {
-            let mut state = self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if matches!(*state, GateState::Closed(_)) {
                 return;
             }
@@ -179,12 +205,63 @@ impl GateControl {
         if !self.inner.controller.signal().aborted() {
             self.inner
                 .controller
-                .abort(Some(maho_ai::utils::abort::AbortReason::new("Error", message)));
+                .abort(Some(maho_ai::utils::abort::AbortReason::new(
+                    "Error", message,
+                )));
         }
     }
 }
 
 pub fn create_gate() -> (Gate, GateControl) {
-    let inner = Arc::new(GateInner { state: Mutex::new(GateState::Open), controller: AbortController::new() });
-    (Gate { inner: inner.clone() }, GateControl { inner })
+    let inner = Arc::new(GateInner {
+        state: Mutex::new(GateState::Open),
+        controller: AbortController::new(),
+    });
+    (
+        Gate {
+            inner: inner.clone(),
+        },
+        GateControl { inner },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn signal_abort_retains_the_admission_cancellation() {
+        // Given an aborting gate with one durable cancellation handle.
+        let (gate, control) = create_gate();
+        let cancellation = Cancellation::new();
+        control.begin_abort(cancellation.clone());
+        let Err(GateRefusal::Abort(refusal)) = gate.admit(|| ()) else {
+            panic!("aborting gate must refuse admission");
+        };
+
+        // When signal cancellation is delivered and the gate is subsequently closed.
+        control.signal_abort();
+        control.close("closed");
+
+        // Then the signal reason retains the same pending completion as admission.
+        let reason = gate.signal().reason().expect("signal aborted");
+        let requested = reason.payload::<AbortRequested>().expect("typed abort");
+        assert_eq!(requested.cancellation, refusal.cancellation);
+        let completion = requested.cancellation.wait();
+        tokio::pin!(completion);
+        assert!(futures::poll!(completion.as_mut()).is_pending());
+        cancellation.resolve();
+        tokio::time::timeout(Duration::from_secs(1), completion)
+            .await
+            .expect("original cancellation resolves signal reason");
+    }
+
+    #[test]
+    fn signal_abort_does_not_abort_an_open_gate() {
+        let (gate, control) = create_gate();
+        control.signal_abort();
+        assert!(!gate.signal().aborted());
+        assert!(gate.admit(|| ()).is_ok());
+    }
 }

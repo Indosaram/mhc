@@ -80,12 +80,12 @@ async fn rpc_fast_mode_switches_persists_and_refuses_unsupported_models() -> Res
         api: Some(CODEX_RESPONSES_API.into()), provider: Some("chatgpt-subscription".into()),
         models: Some(["codex", "codex-fast"].into_iter().map(|id| maho_ai::providers::faux::FauxModelDefinition { id: id.into(), reasoning: Some(true), context_window:Some(128000), ..Default::default() }).collect()),
         ..Default::default()
-    });
-    let unsupported_provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions::default());
+    }).expect("valid faux provider");
+    let unsupported_provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions::default()).expect("valid faux provider");
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(models_path), auth_path: Some(agent_dir.join("auth.json")),
         providers: Some(vec![provider.provider, unsupported_provider.provider]), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let base = runtime.get_model("chatgpt-subscription", "codex").expect("base catalog model");
     let factory = NativeAsyncExtensionFactory {
         path: "<builtin:service-tier>".into(), source_info: Default::default(),

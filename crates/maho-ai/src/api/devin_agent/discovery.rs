@@ -115,6 +115,8 @@ fn to_model(config: &ClientModelConfig, uid: &str, base_url: &str, is_router: bo
         reasoning: false,
         default_thinking_level: None,
         thinking_level_map: None,
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         input: if supports_images {
             vec![crate::types::InputModality::Text, crate::types::InputModality::Image]
         } else {

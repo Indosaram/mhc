@@ -8815,7 +8815,8 @@
 			"compat": {
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
-				"supportsToolSearch": true
+				"supportsToolSearch": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-6-astra-fast": {
@@ -8858,7 +8859,8 @@
 			"compat": {
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
-				"supportsToolSearch": true
+				"supportsToolSearch": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-6-astra",
 			"serviceTier": "priority"
@@ -19374,7 +19376,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-5.6-luna-fast": {
@@ -19419,7 +19422,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-5.6-luna",
 			"serviceTier": "priority"
@@ -19466,7 +19470,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-5.6-sol-fast": {
@@ -19511,7 +19516,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-5.6-sol",
 			"serviceTier": "priority"
@@ -19558,7 +19564,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-5.6-terra-fast": {
@@ -19603,7 +19610,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-5.6-terra",
 			"serviceTier": "priority"
@@ -19650,7 +19658,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-6-astra-fast": {
@@ -19695,7 +19704,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-6-astra",
 			"serviceTier": "priority"
@@ -19742,7 +19752,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-6-luna-fast": {
@@ -19787,7 +19798,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-6-luna",
 			"serviceTier": "priority"
@@ -19834,7 +19846,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-6-sol-fast": {
@@ -19879,7 +19892,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-6-sol",
 			"serviceTier": "priority"

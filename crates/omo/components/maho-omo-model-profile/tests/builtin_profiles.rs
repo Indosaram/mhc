@@ -2,12 +2,12 @@ pub mod support;
 
 use indexmap::IndexMap;
 use maho_omo_model_profile::builtin_profiles::{
-    BuiltinModelProfile, DEFAULT_MODEL_PROFILE_ID, ModelProfileFamily, ModelProfileTier,
+    BuiltinModelProfile, DEFAULT_MODEL_PROFILE_ID, DEFAULT_MODEL_PROFILE_ORDER, RETIRED_MODEL_PROFILE_IDS,
     builtin_model_profiles,
 };
 
 const LANE_IDS: [&str; 4] = ["daily-normal", "daily-heavy", "geeky-normal", "geeky-heavy"];
-const EXPECTED_IDS: [&str; 5] = ["recommended", "daily-normal", "daily-heavy", "geeky-normal", "geeky-heavy"];
+const EXPECTED_IDS: [&str; 4] = LANE_IDS;
 const BANNED_VENDOR_TOKENS: [&str; 2] = ["minimax", "gemini"];
 
 fn profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
@@ -35,7 +35,7 @@ fn rungs() -> Vec<(&'static str, Vec<&'static str>, &'static str)> {
 }
 
 #[test]
-fn ships_the_recommended_default_then_the_four_lane_profiles_in_picker_order() {
+fn ships_exactly_the_four_lane_profiles_in_picker_order() {
     let ids: Vec<&str> = profiles().keys().copied().collect();
     assert_eq!(ids, EXPECTED_IDS);
 }
@@ -49,7 +49,7 @@ fn labels_each_profile_by_lane_and_gives_every_profile_a_distinct_family_tier_pa
     assert_eq!(profiles["geeky-heavy"].display_name, "Geeky · Heavy");
     let pairs: Vec<String> = LANE_IDS
         .iter()
-        .map(|id| format!("{}:{}", profiles[*id].family.unwrap().as_str(), profiles[*id].tier.unwrap().as_str()))
+        .map(|id| format!("{}:{}", profiles[*id].family.as_str(), profiles[*id].tier.as_str()))
         .collect();
     assert_eq!(pairs, ["daily:normal", "daily:heavy", "geeky:normal", "geeky:heavy"]);
     for id in EXPECTED_IDS {
@@ -58,50 +58,19 @@ fn labels_each_profile_by_lane_and_gives_every_profile_a_distinct_family_tier_pa
 }
 
 #[test]
-fn uses_recommended_which_is_not_a_lane_as_the_unset_config_default_id() {
-    assert_eq!(DEFAULT_MODEL_PROFILE_ID, "recommended");
-    let recommended = &profiles()[DEFAULT_MODEL_PROFILE_ID];
-    assert_eq!(recommended.display_name, "Recommended");
-    assert_eq!(recommended.family, None);
-    assert_eq!(recommended.tier, None);
-}
-
-// Mirrors senpi's RECOMMENDED_DEFAULT_MODELS, so the TUI and the desktop start from one order.
-#[test]
-fn orders_recommended_opus_medium_fable_xhigh_kimi_max_astra_xhigh_61_sol_medium_6_sol_medium_glm_max() {
-    assert_eq!(
-        chain_of("recommended"),
-        ["claude-opus-5-5 medium", "claude-fable-5-1 xhigh", "kimi-k3 max", "gpt-6-astra xhigh", "gpt-6.1-sol medium", "gpt-6-sol medium", "glm-5.3 max"]
-    );
+fn starts_unset_on_daily_normal_and_retires_recommended() {
+    assert_eq!(DEFAULT_MODEL_PROFILE_ID, "daily-normal");
+    assert_eq!(DEFAULT_MODEL_PROFILE_ORDER, LANE_IDS);
+    assert_eq!(RETIRED_MODEL_PROFILE_IDS, &["recommended"]);
+    assert!(!profiles().contains_key("recommended"));
 }
 
 #[test]
-fn serves_recommendeds_gpt_61_sol_rung_on_the_oi_lanes_and_its_gpt_6_sol_rung_on_every_gpt_lane() {
-    let sol: Vec<(Vec<&str>, &str, Option<&str>)> = profiles()["recommended"]
-        .models
-        .iter()
-        .filter(|rung| rung.model.contains("-sol"))
-        .map(|rung| (rung.providers.to_vec(), rung.model, rung.variant))
-        .collect();
-    assert_eq!(
-        sol,
-        [
-            (vec!["chatgpt-subscription", "openai"], "gpt-6.1-sol", Some("medium")),
-            (vec!["chatgpt-subscription", "openai", "github-copilot", "opencode"], "gpt-6-sol", Some("medium")),
-        ]
-    );
-}
-
-#[test]
-fn never_lists_a_gateway_aggregator_on_a_recommended_rung() {
+fn never_lists_a_gateway_aggregator_on_a_builtin_rung() {
     let gateways = ["opengateway", "openrouter", "vercel-ai-gateway", "cloudflare-ai-gateway"];
-    let offenders: Vec<&str> = profiles()["recommended"]
-        .models
-        .iter()
-        .flat_map(|rung| rung.providers.iter().copied())
-        .filter(|provider| gateways.contains(provider))
-        .collect();
-    assert_eq!(offenders, Vec::<&str>::new());
+    for (_, providers, _) in rungs() {
+        assert!(providers.iter().all(|provider| !gateways.contains(provider)));
+    }
 }
 
 #[test]
@@ -236,15 +205,4 @@ fn runs_geeky_heavy_as_astra_high_with_the_same_provider_ranking_as_deep_high() 
         models,
         [(vec!["chatgpt-subscription", "openai", "github-copilot", "opencode"], "gpt-6-astra", Some("high"))]
     );
-}
-
-#[test]
-fn keeps_recommended_off_both_picker_axes_and_every_lane_on_both() {
-    let profiles = profiles();
-    assert_eq!(profiles["recommended"].family, None);
-    assert_eq!(profiles["recommended"].tier, None);
-    assert_eq!(profiles["daily-normal"].family, Some(ModelProfileFamily::Daily));
-    assert_eq!(profiles["daily-normal"].tier, Some(ModelProfileTier::Normal));
-    assert_eq!(profiles["geeky-heavy"].family, Some(ModelProfileFamily::Geeky));
-    assert_eq!(profiles["geeky-heavy"].tier, Some(ModelProfileTier::Heavy));
 }

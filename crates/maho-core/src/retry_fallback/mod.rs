@@ -9,6 +9,7 @@ pub mod probe_scheduler;
 pub mod profile_override;
 pub mod settings;
 pub mod validate;
+pub mod usage_limit;
 
 #[cfg(test)]
 mod hint_policy_tests;

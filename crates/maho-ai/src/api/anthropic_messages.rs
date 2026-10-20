@@ -9,55 +9,160 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
+#[cfg(test)]
+#[path = "anthropic_audit_tests.rs"]
+mod audit_tests;
+#[cfg(test)]
+#[path = "anthropic_recovery_tests.rs"]
+mod recovery_tests;
+
+#[cfg(test)]
+mod forced_choice_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn shared_fallback_preserves_replay_and_thinking_sensitive_memory() -> anyhow::Result<()> {
+        // Given
+        for (refusal, accepts_forced, expected_requests, remembered) in [
+            ("'lookup' schema invalid", true, 3, true),
+            ("Thinking mode does not support this tool_choice", true, 4, false),
+            ("tool_choice not supported", false, 2, false),
+        ] {
+            let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
+            let requests = captured.clone();
+            let app = axum::Router::new().route("/v1/messages", axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                let requests = requests.clone();
+                async move {
+                    let forced = body.get("tool_choice").is_some();
+                    requests.lock().expect("requests").push(body);
+                    if forced {
+                        (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({"error":{"type":"invalid_request_error","message":refusal}})))
+                    } else {
+                        (axum::http::StatusCode::OK, axum::Json(json!({})))
+                    }
+                }
+            }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let (shutdown, closed) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).with_graceful_shutdown(async { let _closed = closed.await; }).await
+            });
+            let mut model = crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone();
+            model.base_url = format!("http://{address}");
+            model.id = format!("forced-choice-{accepts_forced}-{remembered}");
+            model.compat = Some(crate::model::ModelCompat(serde_json::from_value(json!({"supportsForcedToolChoice":accepts_forced})).expect("compat")));
+            let mut options = StreamOptions::default();
+            options.request.fetch = Some(reqwest::Client::builder().no_proxy().build()?);
+            options.request.on_payload = Some(Arc::new(|payload, _, _| {
+                let mut payload = payload.clone();
+                payload["tool_choice"] = json!({"type":"tool","name":"lookup"});
+                payload["tools"] = json!([{"name":"lookup","input_schema":{"type":"object"}}]);
+                Some(payload)
+            }));
+            let context = Context::default();
+            let client = create_client(&model, &context, &options, Some("key"), None, None);
+            let replay = Mutex::new("text");
+            let omitted = Mutex::new(0);
+
+            // When
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                for _ in 0..2 {
+                    let (prepared, _) = attempt_request(&model, &context, &client, &options, Some("key"), RequestReplay { unsigned_thinking: &replay, fallback_key: None, omitted_tools: &omitted }).await.map_err(|error| anyhow::anyhow!("{error}"))?;
+                    assert!(!prepared.params.contains_key("tool_choice"));
+                }
+                Ok::<_, anyhow::Error>(())
+            }).await;
+            shutdown.send(()).map_err(|_| anyhow::anyhow!("server shutdown receiver dropped"))?;
+            tokio::time::timeout(std::time::Duration::from_secs(5), server).await???;
+            result??;
+
+            // Then
+            assert_eq!(captured.lock().expect("requests").len(), expected_requests);
+            assert_eq!(crate::utils::tool_choice_fallback::has_refused_forced_tool_choice(&model), remembered);
+        }
+        Ok(())
+    }
+}
+
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::api::anthropic_tool_pairs::sanitize_anthropic_tool_pairs_if_changed;
-use crate::api::anthropic_tool_references::demote_unavailable_tool_references_if_changed;
+use crate::api::anthropic_tool_references::{
+    demote_tool_reference_replay, demote_unavailable_tool_references_if_changed,
+};
+#[path = "anthropic_federation.rs"]
+mod anthropic_federation;
+#[path = "anthropic_web_search_expiry.rs"]
+mod anthropic_web_search_expiry;
+use crate::api::github_copilot_errors;
 use crate::api::cloudflare::resolve_cloudflare_base_url;
-use crate::api::constrained_sampling::{get_json_schema_tool_parameters, resolve_json_schema_strict_sampling};
+use crate::api::constrained_sampling::{
+    get_json_schema_tool_parameters, resolve_json_schema_strict_sampling_with_keyword_check,
+};
 use crate::api::github_copilot_headers::{build_copilot_dynamic_headers, has_copilot_vision_input};
 use crate::api::simple_options::{
-    ANTHROPIC_RESERVED_BODY_KEYS, adjust_max_tokens_for_thinking, build_base_options, clamp_max_tokens_to_context,
+    ANTHROPIC_RESERVED_BODY_KEYS, adjust_max_tokens_for_thinking, build_base_options,
+    clamp_max_tokens_to_context,
 };
-use crate::api::transform_messages::{transform_messages, TransformMessagesOptions};
+use crate::api::transform_messages::{TransformMessagesOptions, transform_messages};
 use crate::models::calculate_cost;
 use crate::session_resources::register_session_resource_cleanup;
 use crate::types::{
-    AllowedFallbackModel, AssistantMessage, AssistantMessageEvent, AssistantStopDetails, CacheRetention, ContentBlock,
-    Context, DoneReason, ErrorReason, Message, Model, ModelThinkingLevel, ProviderEnv, SimpleStreamOptions, StopReason,
-    StreamOptions, TextContent, ThinkingLevel, Tool, ToolCall, ToolResultMessage, UserContent, UserMessage,
+    AllowedFallbackModel, AssistantMessage, AssistantMessageEvent, AssistantStopDetails,
+    CacheRetention, ContentBlock, Context, DoneReason, ErrorReason, Message, Model,
+    ModelThinkingLevel, ProviderEnv, SimpleStreamOptions, StopReason, StreamOptions, TextContent,
+    ThinkingLevel, Tool, ToolCall, ToolResultMessage, UserContent, UserMessage,
 };
 use crate::utils::abort::{AbortController, AbortSignal};
 use crate::utils::abort_signals::combine_abort_signals;
+use crate::utils::claude_code_version::{
+    claude_code_version_too_old_hint, get_claude_code_version,
+    is_claude_code_version_too_old_error, recover_claude_code_version,
+};
 use crate::utils::deferred_tools::split_deferred_tools;
 use crate::utils::diagnostics::{
     AssistantMessageDiagnostic, append_assistant_message_diagnostic, now_ms,
 };
-use crate::utils::event_stream::{create_assistant_message_event_stream, AssistantMessageEventStream};
+use crate::utils::event_stream::{
+    AssistantMessageEventStream, create_assistant_message_event_stream,
+};
 use crate::utils::headers::{headers_to_record, provider_headers_to_record};
 use crate::utils::json_parse::{parse_json_with_repair, parse_streaming_json};
 use crate::utils::pi_user_agent::get_pi_user_agent;
 use crate::utils::prompt_cache_ttl::{get_anthropic_compat, is_anthropic_api_base_url};
 use crate::utils::provider_env::get_provider_env_value;
-use crate::utils::provider_retry::{retry_provider_request, ProviderErrorStatus, ProviderRequestError, ProviderRetryError, ProviderRetryOptions};
-use crate::utils::retry_hint::{append_retry_after_ms_marker, extract_429_retry_after_ms, RetryHintInput};
-use crate::utils::retry_profile::failure::{normalize_anthropic_retry_failure, RetryErrorShape};
+use crate::utils::provider_retry::{
+    ProviderErrorStatus, ProviderRequestError, ProviderRetryError, ProviderRetryOptions,
+    retry_provider_request,
+};
+use crate::utils::retry_hint::{
+    RetryHintInput, append_retry_after_ms_marker, extract_429_retry_after_ms,
+};
+use crate::utils::retry_profile::failure::{RetryErrorShape, normalize_anthropic_retry_failure};
 use crate::utils::retry_profile::types::{RetryFailure, RetryFailureKind};
 use crate::utils::sanitize_unicode::sanitize_surrogates;
 use crate::utils::server_fallback_receipt::{
-    apply_server_fallback_abort, apply_server_fallback_continuation, parse_server_fallback_receipt,
-    parse_sticky_fallback_receipt, ServerFallbackReceipt,
+    ServerFallbackReceipt, apply_server_fallback_abort, apply_server_fallback_continuation,
+    parse_server_fallback_receipt, parse_sticky_fallback_receipt,
 };
 use crate::utils::tool_call_id::normalize_tool_call_id;
-use crate::utils::tool_choice_fallback::{is_forced_tool_choice_unsupported_error, omit_tool_choice_param, HttpFailure};
+use crate::utils::tool_choice_fallback::{
+    HttpFailure, send_with_forced_tool_choice_fallback_classified,
+};
 use crate::utils::tool_schema_compat::resolve_root_object_schema;
+use anthropic_web_search_expiry::{
+    demote_expired_web_search_replay, expired_web_search_replay_ids,
+    is_expired_web_search_content_error,
+};
 
 pub use crate::utils::prompt_cache_ttl::get_anthropic_compat as anthropic_compat;
 
 /// Stealth mode: Mimic Claude Code's tool naming exactly.
-const CLAUDE_CODE_VERSION: &str = "2.1.280";
+const CLAUDE_CODE_VERSION: &str = "2.1.296";
 
 /// Claude Code 2.x tool names (canonical casing).
 const CLAUDE_CODE_TOOLS: [&str; 17] = [
@@ -117,29 +222,49 @@ const SERVER_SIDE_FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 const MID_CONVERSATION_OUTPUT_CONFIG_BETA: &str = "mid-conversation-output-config-2026-07-01";
 const THINKING_BINDING_CONTROLS_BETA: &str = "thinking-binding-controls-2026-08-01";
 
-const ADAPTIVE_THINKING_MODEL_MARKERS: [&str; 8] = [
+const ADAPTIVE_THINKING_MODEL_MARKERS: [&str; 9] = [
     "opus-4-6",
     "opus-4-7",
     "opus-4-8",
     "opus-5",
     "sonnet-4-6",
     "sonnet-5",
+    "haiku-5-5",
     "fable-5",
     "mythos-5",
 ];
 
-const NATIVE_XHIGH_EFFORT_MODEL_MARKERS: [&str; 6] = ["opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "fable-5", "mythos-5"];
+const NATIVE_XHIGH_EFFORT_MODEL_MARKERS: [&str; 7] = [
+    "opus-4-7",
+    "opus-4-8",
+    "opus-5",
+    "sonnet-5",
+    "haiku-5-5",
+    "fable-5",
+    "mythos-5",
+];
 
-const DISABLED_THINKING_REJECTING_MODEL_MARKERS: [&str; 4] = ["fable-5", "mythos-5", "opus-5-5", "opus-5.5"];
+const DISABLED_THINKING_REJECTING_MODEL_MARKERS: [&str; 8] = [
+    "fable-5",
+    "mythos-5",
+    "opus-5-5",
+    "opus-5.5",
+    "sonnet-5-5",
+    "sonnet-5.5",
+    "haiku-5-5",
+    "haiku-5.5",
+];
 
-const UNSUPPORTED_NATIVE_COMPUTER_TOOL_MODEL_MARKERS: [&str; 6] =
-    ["opus-4-6", "opus-4.6", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8"];
+const UNSUPPORTED_NATIVE_COMPUTER_TOOL_MODEL_MARKERS: [&str; 6] = [
+    "opus-4-6", "opus-4.6", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
+];
 
 /// Provider-native block types that replay verbatim on the same model. The server-side fallback
 /// marker (`fallback`) is deliberately absent: the Messages API rejects it as an input tag.
-const REPLAYABLE_ANTHROPIC_PROVIDER_NATIVE_TYPES: [&str; 8] = [
+const REPLAYABLE_ANTHROPIC_PROVIDER_NATIVE_TYPES: [&str; 9] = [
     "server_tool_use",
     "web_search_tool_result",
+    "tool_result",
     "web_fetch_tool_result",
     "code_execution_tool_result",
     "bash_code_execution_tool_result",
@@ -153,7 +278,11 @@ const DEFAULT_TIMEOUT_MS: u64 = 600_000;
 
 /// TS `AnthropicOptions extends StreamOptions`: the API-specific fields ride on `StreamOptions.extra`.
 fn option_value(options: &StreamOptions, key: &str) -> Option<Value> {
-    options.extra.get(key).cloned().filter(|value| !value.is_null())
+    options
+        .extra
+        .get(key)
+        .cloned()
+        .filter(|value| !value.is_null())
 }
 
 fn option_bool(options: &StreamOptions, key: &str) -> Option<bool> {
@@ -184,9 +313,11 @@ fn effort_option(options: &StreamOptions) -> Option<String> {
     option_string(options, "effort")
 }
 
-
 /// Resolve cache retention preference; `PI_CACHE_RETENTION` is the backward-compatible override.
-fn resolve_cache_retention(cache_retention: Option<CacheRetention>, env: Option<&ProviderEnv>) -> CacheRetention {
+fn resolve_cache_retention(
+    cache_retention: Option<CacheRetention>,
+    env: Option<&ProviderEnv>,
+) -> CacheRetention {
     if let Some(cache_retention) = cache_retention {
         return cache_retention;
     }
@@ -224,7 +355,6 @@ fn get_cache_control(
     (retention, Some(Value::Object(cache_control)))
 }
 
-
 fn get_model_match_candidates(model: &Model) -> Vec<String> {
     let mut candidates = Vec::new();
     for value in [&model.id, &model.name] {
@@ -233,7 +363,13 @@ fn get_model_match_candidates(model: &Model) -> Vec<String> {
         candidates.push(
             lower
                 .chars()
-                .map(|character| if matches!(character, ' ' | '_' | '.' | ':') { '-' } else { character })
+                .map(|character| {
+                    if matches!(character, ' ' | '_' | '.' | ':') {
+                        '-'
+                    } else {
+                        character
+                    }
+                })
                 .collect(),
         );
     }
@@ -241,7 +377,9 @@ fn get_model_match_candidates(model: &Model) -> Vec<String> {
 }
 
 fn matches_model_marker(model: &Model, markers: &[&str]) -> bool {
-    get_model_match_candidates(model).iter().any(|candidate| markers.iter().any(|marker| candidate.contains(marker)))
+    get_model_match_candidates(model)
+        .iter()
+        .any(|candidate| markers.iter().any(|marker| candidate.contains(marker)))
 }
 
 fn supports_native_xhigh_effort(model: &Model) -> bool {
@@ -256,7 +394,11 @@ fn cannot_disable_thinking(model: &Model, supports_disabled_thinking: bool) -> b
     matches_model_marker(model, &DISABLED_THINKING_REJECTING_MODEL_MARKERS)
 }
 
-fn disable_thinking_for_request(params: &mut Map<String, Value>, model: &Model, supports_disabled_thinking: bool) {
+fn disable_thinking_for_request(
+    params: &mut Map<String, Value>,
+    model: &Model,
+    supports_disabled_thinking: bool,
+) {
     // A degraded/disabled turn must not retain the caller's higher effort.
     params.remove("output_config");
     if cannot_disable_thinking(model, supports_disabled_thinking) {
@@ -270,7 +412,11 @@ fn disable_thinking_for_request(params: &mut Map<String, Value>, model: &Model, 
 }
 
 pub(crate) fn supports_adaptive_thinking(model: &Model) -> bool {
-    if let Some(forced) = model.compat.as_ref().and_then(|compat| compat.anthropic_messages().force_adaptive_thinking) {
+    if let Some(forced) = model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.anthropic_messages().force_adaptive_thinking)
+    {
         return forced;
     }
     matches_model_marker(model, &ADAPTIVE_THINKING_MODEL_MARKERS)
@@ -278,7 +424,12 @@ pub(crate) fn supports_adaptive_thinking(model: &Model) -> bool {
 
 fn map_thinking_level_to_effort(model: &Model, level: Option<ThinkingLevel>) -> String {
     if let Some(mapped) = level
-        .and_then(|level| model.thinking_level_map.as_ref().and_then(|map| map.get(&ModelThinkingLevel::from(level))))
+        .and_then(|level| {
+            model
+                .thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get(&ModelThinkingLevel::from(level)))
+        })
         .and_then(|mapped| mapped.clone())
     {
         return mapped;
@@ -289,7 +440,11 @@ fn map_thinking_level_to_effort(model: &Model, level: Option<ThinkingLevel>) -> 
         Some(ThinkingLevel::High) => "high",
         Some(ThinkingLevel::Xhigh) => {
             // Only called for adaptive models, so the floor is the adaptive ladder's top tier.
-            if supports_native_xhigh_effort(model) { "xhigh" } else { "max" }
+            if supports_native_xhigh_effort(model) {
+                "xhigh"
+            } else {
+                "max"
+            }
         }
         Some(ThinkingLevel::Max) => "max",
         None => "high",
@@ -301,8 +456,9 @@ fn is_anthropic_effort(value: Option<&str>) -> bool {
     matches!(value, Some("low" | "medium" | "high" | "xhigh" | "max"))
 }
 
-
-fn merge_headers(sources: &[Option<&BTreeMap<String, Option<String>>>]) -> BTreeMap<String, Option<String>> {
+fn merge_headers(
+    sources: &[Option<&BTreeMap<String, Option<String>>>],
+) -> BTreeMap<String, Option<String>> {
     let mut merged: BTreeMap<String, Option<String>> = BTreeMap::new();
     for source in sources.iter().flatten() {
         for (key, value) in source.iter() {
@@ -314,7 +470,10 @@ fn merge_headers(sources: &[Option<&BTreeMap<String, Option<String>>>]) -> BTree
 }
 
 fn nullable_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, Option<String>> {
-    headers.iter().map(|(key, value)| (key.clone(), Some(value.clone()))).collect()
+    headers
+        .iter()
+        .map(|(key, value)| (key.clone(), Some(value.clone())))
+        .collect()
 }
 
 fn has_header(headers: Option<&BTreeMap<String, String>>, name: &str) -> bool {
@@ -322,7 +481,9 @@ fn has_header(headers: Option<&BTreeMap<String, String>>, name: &str) -> bool {
         return false;
     };
     let expected = name.to_lowercase();
-    headers.iter().any(|(key, value)| key.to_lowercase() == expected && !value.trim().is_empty())
+    headers
+        .iter()
+        .any(|(key, value)| key.to_lowercase() == expected && !value.trim().is_empty())
 }
 
 fn assert_request_auth(
@@ -362,8 +523,16 @@ fn remove_anthropic_beta_headers(
             next_headers.insert(key.clone(), Some(value.clone()));
             continue;
         }
-        let betas: Vec<&str> = value.split(',').map(str::trim).filter(|beta| !beta.is_empty()).collect();
-        let supported: Vec<&str> = betas.iter().copied().filter(|beta| !should_remove_beta(beta)).collect();
+        let betas: Vec<&str> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|beta| !beta.is_empty())
+            .collect();
+        let supported: Vec<&str> = betas
+            .iter()
+            .copied()
+            .filter(|beta| !should_remove_beta(beta))
+            .collect();
         changed = changed || supported.len() != betas.len();
         if !supported.is_empty() {
             next_headers.insert(key.clone(), Some(supported.join(", ")));
@@ -373,7 +542,14 @@ fn remove_anthropic_beta_headers(
     if !changed {
         return (false, Some(headers.clone()));
     }
-    (true, if next_headers.is_empty() { None } else { Some(next_headers) })
+    (
+        true,
+        if next_headers.is_empty() {
+            None
+        } else {
+            Some(next_headers)
+        },
+    )
 }
 
 fn remove_computer_use_beta_header(
@@ -389,8 +565,13 @@ fn sanitize_adaptive_thinking_headers(
     if !supports_adaptive_thinking(model) {
         return headers;
     }
-    let (changed, sanitized) = remove_anthropic_beta_headers(Some(&headers), |beta| beta == INTERLEAVED_THINKING_BETA);
-    if changed { sanitized.unwrap_or_default() } else { headers }
+    let (changed, sanitized) =
+        remove_anthropic_beta_headers(Some(&headers), |beta| beta == INTERLEAVED_THINKING_BETA);
+    if changed {
+        sanitized.unwrap_or_default()
+    } else {
+        headers
+    }
 }
 
 fn rejects_native_computer_tool(model: &Model, tool_type: &str) -> bool {
@@ -418,7 +599,6 @@ fn string_record(value: Option<&Value>) -> Option<BTreeMap<String, String>> {
     }
     Some(record)
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerSentEvent {
@@ -483,10 +663,14 @@ fn next_line_break_index(text: &str) -> Option<usize> {
 fn consume_line(text: &str) -> Option<(String, String)> {
     let line_break_index = next_line_break_index(text)?;
     let mut next_index = line_break_index + 1;
-    if text.as_bytes()[line_break_index] == b'\r' && text.as_bytes().get(next_index) == Some(&b'\n') {
+    if text.as_bytes()[line_break_index] == b'\r' && text.as_bytes().get(next_index) == Some(&b'\n')
+    {
         next_index += 1;
     }
-    Some((text[..line_break_index].to_owned(), text[next_index..].to_owned()))
+    Some((
+        text[..line_break_index].to_owned(),
+        text[next_index..].to_owned(),
+    ))
 }
 
 /// The incremental SSE decoder `iterateSseMessages` drives: feed bytes, take whole events.
@@ -544,7 +728,6 @@ fn is_anthropic_message_event(event: Option<&str>) -> bool {
     event.is_some_and(|event| ANTHROPIC_MESSAGE_EVENTS.contains(&event))
 }
 
-
 fn is_replayable_anthropic_provider_native_block(raw: &Value) -> bool {
     raw.get("type")
         .and_then(Value::as_str)
@@ -558,7 +741,8 @@ fn is_same_anthropic_model(message: &AssistantMessage, model: &Model) -> bool {
 fn is_anthropic_fallback_marker_block(block: &ContentBlock) -> bool {
     match block {
         ContentBlock::ProviderNative(native) => {
-            native.subtype == "fallback" && native.raw.get("type").and_then(Value::as_str) == Some("fallback")
+            native.subtype == "fallback"
+                && native.raw.get("type").and_then(Value::as_str) == Some("fallback")
         }
         _ => false,
     }
@@ -582,12 +766,15 @@ fn is_anthropic_server_tool_use_block(raw: &Value) -> bool {
 
 /// Only tool_use-shaped provider-native blocks stream their input via `input_json_delta`.
 fn is_provider_native_tool_use_block(raw: &Value) -> bool {
-    matches!(raw.get("type").and_then(Value::as_str), Some("server_tool_use" | "mcp_tool_use"))
+    matches!(
+        raw.get("type").and_then(Value::as_str),
+        Some("server_tool_use" | "mcp_tool_use")
+    )
 }
 
 fn is_anthropic_web_search_replay_block(raw: &Value) -> bool {
     match raw.get("type").and_then(Value::as_str) {
-        Some("web_search_tool_result") => true,
+        Some("web_search_tool_result" | "tool_result") => true,
         Some("server_tool_use") => raw.get("name").and_then(Value::as_str) == Some("web_search"),
         _ => false,
     }
@@ -632,7 +819,9 @@ fn collect_provider_native_tool_pairing(
                     continue;
                 }
                 for block in &assistant.content {
-                    let ContentBlock::ProviderNative(native) = block else { continue };
+                    let ContentBlock::ProviderNative(native) = block else {
+                        continue;
+                    };
                     let raw = &native.raw;
                     if !is_replayable_anthropic_provider_native_block(raw) {
                         continue;
@@ -644,13 +833,18 @@ fn collect_provider_native_tool_pairing(
                     }
                 }
                 for block in &assistant.content {
-                    let ContentBlock::ProviderNative(native) = block else { continue };
+                    let ContentBlock::ProviderNative(native) = block else {
+                        continue;
+                    };
                     let raw = &native.raw;
                     if !is_replayable_anthropic_provider_native_block(raw) {
                         continue;
                     }
-                    let Some(tool_use_id) = raw.get("tool_use_id").and_then(Value::as_str) else { continue };
-                    if prior_use_ids.contains(tool_use_id) || pending_use_ids.contains(tool_use_id) {
+                    let Some(tool_use_id) = raw.get("tool_use_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    if prior_use_ids.contains(tool_use_id) || pending_use_ids.contains(tool_use_id)
+                    {
                         resolved_use_ids.insert(tool_use_id.to_owned());
                         valid_result_ids.insert(tool_use_id.to_owned());
                     }
@@ -663,7 +857,8 @@ fn collect_provider_native_tool_pairing(
                 let mut emits_references = false;
                 for name in result.added_tool_names.iter().flatten() {
                     let normalized_name = normalize_tool_name(name);
-                    if !deferred_tool_names.contains(&normalized_name) || loaded_reference_names.contains(&normalized_name)
+                    if !deferred_tool_names.contains(&normalized_name)
+                        || loaded_reference_names.contains(&normalized_name)
                     {
                         continue;
                     }
@@ -679,18 +874,27 @@ fn collect_provider_native_tool_pairing(
                     pending_use_ids = HashSet::new();
                 }
             }
-            Message::ConfigurationUpdate(_) => {}
+            Message::System(_) | Message::ConfigurationUpdate(_) => {}
         }
     }
 
-    ProviderNativeToolPairing { resolved_use_ids, live_use_ids: pending_use_ids, valid_result_ids }
+    ProviderNativeToolPairing {
+        resolved_use_ids,
+        live_use_ids: pending_use_ids,
+        valid_result_ids,
+    }
 }
 
 /// True for a server-tool block whose counterpart can never arrive.
-fn is_unpaired_provider_native_tool_block(raw: &Value, pairing: &ProviderNativeToolPairing) -> bool {
+fn is_unpaired_provider_native_tool_block(
+    raw: &Value,
+    pairing: &ProviderNativeToolPairing,
+) -> bool {
     if is_provider_native_tool_use_block(raw) {
         return match raw.get("id").and_then(Value::as_str) {
-            Some(id) => !(pairing.resolved_use_ids.contains(id) || pairing.live_use_ids.contains(id)),
+            Some(id) => {
+                !(pairing.resolved_use_ids.contains(id) || pairing.live_use_ids.contains(id))
+            }
             None => true,
         };
     }
@@ -700,10 +904,15 @@ fn is_unpaired_provider_native_tool_block(raw: &Value, pairing: &ProviderNativeT
 }
 
 /// `tool_use` ids referenced by server-tool result blocks in `content[0, boundary)`.
-fn paired_server_tool_use_ids_before_boundary(content: &[ContentBlock], boundary: usize) -> HashSet<String> {
+fn paired_server_tool_use_ids_before_boundary(
+    content: &[ContentBlock],
+    boundary: usize,
+) -> HashSet<String> {
     let mut paired = HashSet::new();
     for block in content.iter().take(boundary) {
-        let ContentBlock::ProviderNative(native) = block else { continue };
+        let ContentBlock::ProviderNative(native) = block else {
+            continue;
+        };
         if let Some(tool_use_id) = native.raw.get("tool_use_id").and_then(Value::as_str) {
             paired.insert(tool_use_id.to_owned());
         }
@@ -712,14 +921,21 @@ fn paired_server_tool_use_ids_before_boundary(content: &[ContentBlock], boundary
 }
 
 /// Tool-call ids emitted by a discarded pre-fallback attempt on a same-model assistant turn.
-fn collect_discarded_fallback_tool_call_ids(messages: &[Message], model: &Model) -> HashSet<String> {
+fn collect_discarded_fallback_tool_call_ids(
+    messages: &[Message],
+    model: &Model,
+) -> HashSet<String> {
     let mut discarded = HashSet::new();
     for message in messages {
-        let Message::Assistant(assistant) = message else { continue };
+        let Message::Assistant(assistant) = message else {
+            continue;
+        };
         if !is_same_anthropic_model(assistant, model) {
             continue;
         }
-        let Some(boundary) = last_anthropic_fallback_boundary(&assistant.content) else { continue };
+        let Some(boundary) = last_anthropic_fallback_boundary(&assistant.content) else {
+            continue;
+        };
         for block in assistant.content.iter().take(boundary) {
             if let ContentBlock::ToolCall(call) = block {
                 discarded.insert(call.id.clone());
@@ -729,10 +945,11 @@ fn collect_discarded_fallback_tool_call_ids(messages: &[Message], model: &Model)
     discarded
 }
 
-
 /// Convert text/image content to Anthropic API format (a joined string, or content blocks).
 fn convert_content_blocks(content: &[ContentBlock]) -> Value {
-    let has_images = content.iter().any(|block| matches!(block, ContentBlock::Image(_)));
+    let has_images = content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image(_)));
     if !has_images {
         let text = content
             .iter()
@@ -761,14 +978,19 @@ fn convert_content_blocks(content: &[ContentBlock]) -> Value {
         })
         .collect();
 
-    let has_text = blocks.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("text"));
+    let has_text = blocks
+        .iter()
+        .any(|block| block.get("type").and_then(Value::as_str) == Some("text"));
     if !has_text {
         blocks.insert(0, json!({ "type": "text", "text": "(see attached image)" }));
     }
     Value::Array(blocks)
 }
 
-fn apply_extra_body_to_anthropic_params(params: &mut Map<String, Value>, extra_body: Option<&Map<String, Value>>) {
+fn apply_extra_body_to_anthropic_params(
+    params: &mut Map<String, Value>,
+    extra_body: Option<&Map<String, Value>>,
+) {
     let Some(extra_body) = extra_body else { return };
     for (key, value) in extra_body {
         if ANTHROPIC_RESERVED_BODY_KEYS.contains(key.as_str()) {
@@ -778,7 +1000,9 @@ fn apply_extra_body_to_anthropic_params(params: &mut Map<String, Value>, extra_b
     }
 }
 
-fn extract_payload_request_metadata(params: &mut Map<String, Value>) -> Option<BTreeMap<String, String>> {
+fn extract_payload_request_metadata(
+    params: &mut Map<String, Value>,
+) -> Option<BTreeMap<String, String>> {
     let headers = string_record(params.get("headers"));
     if !params.contains_key("headers") && !params.contains_key("extra_body") {
         return headers;
@@ -797,11 +1021,19 @@ fn should_use_server_side_fallback_beta(model: &Model) -> bool {
 }
 
 fn should_use_fine_grained_tool_streaming_beta(model: &Model, context: &Context) -> bool {
-    context.tools.as_ref().is_some_and(|tools| !tools.is_empty())
+    context
+        .tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
         && !get_anthropic_compat(model).supports_eager_tool_input_streaming
 }
 
-fn get_beta_features(model: &Model, context: &Context, is_oauth_token: bool, options: &StreamOptions) -> Vec<String> {
+fn get_beta_features(
+    model: &Model,
+    context: &Context,
+    is_oauth_token: bool,
+    options: &StreamOptions,
+) -> Vec<String> {
     let mut configured: Option<Option<String>> = None;
     if let Some(headers) = &model.headers {
         for (name, value) in headers {
@@ -821,7 +1053,11 @@ fn get_beta_features(model: &Model, context: &Context, is_oauth_token: bool, opt
         Some(None) => return Vec::new(),
         Some(Some(text)) => {
             let mut features: Vec<String> = Vec::new();
-            for feature in text.split(',').map(str::trim).filter(|feature| !feature.is_empty()) {
+            for feature in text
+                .split(',')
+                .map(str::trim)
+                .filter(|feature| !feature.is_empty())
+            {
                 if !features.iter().any(|existing| existing == feature) {
                     features.push(feature.to_owned());
                 }
@@ -854,7 +1090,12 @@ fn get_beta_features(model: &Model, context: &Context, is_oauth_token: bool, opt
     if should_use_server_side_fallback_beta(model) {
         push(SERVER_SIDE_FALLBACK_BETA);
     }
-    if model.compat.as_ref().and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort) == Some(true) {
+    if model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort)
+        == Some(true)
+    {
         push(MID_CONVERSATION_OUTPUT_CONFIG_BETA);
         push(THINKING_BINDING_CONTROLS_BETA);
     }
@@ -862,7 +1103,12 @@ fn get_beta_features(model: &Model, context: &Context, is_oauth_token: bool, opt
 }
 
 fn is_cacheable_user_content_block(block: Option<&Value>) -> bool {
-    matches!(block.and_then(|block| block.get("type")).and_then(Value::as_str), Some("text" | "image" | "tool_result"))
+    matches!(
+        block
+            .and_then(|block| block.get("type"))
+            .and_then(Value::as_str),
+        Some("text" | "image" | "tool_result")
+    )
 }
 
 fn append_user_blocks(params: &mut Vec<Value>, new_blocks: Vec<Value>) {
@@ -877,7 +1123,9 @@ fn append_user_blocks(params: &mut Vec<Value>, new_blocks: Vec<Value>) {
     if last_role == Some("user")
         && let Some(last_param) = last_index.and_then(|index| params.get_mut(index))
     {
-        let Some(object) = last_param.as_object_mut() else { return };
+        let Some(object) = last_param.as_object_mut() else {
+            return;
+        };
         match object.get_mut("content") {
             Some(Value::String(text)) => {
                 let mut blocks = vec![json!({ "type": "text", "text": text.clone() })];
@@ -894,26 +1142,39 @@ fn append_user_blocks(params: &mut Vec<Value>, new_blocks: Vec<Value>) {
 
 fn is_tool_loop_continuation(messages: &[Value]) -> bool {
     let tail = messages.last();
-    let preceding = messages.len().checked_sub(2).and_then(|index| messages.get(index));
+    let preceding = messages
+        .len()
+        .checked_sub(2)
+        .and_then(|index| messages.get(index));
     let tail_is_user_with_tool_result = tail.is_some_and(|tail| {
         tail.get("role").and_then(Value::as_str) == Some("user")
             && tail
                 .get("content")
                 .and_then(Value::as_array)
-                .is_some_and(|content| content.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("tool_result")))
+                .is_some_and(|content| {
+                    content.iter().any(|block| {
+                        block.get("type").and_then(Value::as_str) == Some("tool_result")
+                    })
+                })
     });
     let preceding_is_assistant_with_tool_use = preceding.is_some_and(|preceding| {
         preceding.get("role").and_then(Value::as_str) == Some("assistant")
             && preceding
                 .get("content")
                 .and_then(Value::as_array)
-                .is_some_and(|content| content.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use")))
+                .is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+                })
     });
     tail_is_user_with_tool_result && preceding_is_assistant_with_tool_use
 }
 
 fn mark_user_message_cache_checkpoint(message: &mut Value, cache_control: &Value) -> bool {
-    let Some(object) = message.as_object_mut() else { return false };
+    let Some(object) = message.as_object_mut() else {
+        return false;
+    };
     if object.get("role").and_then(Value::as_str) != Some("user") {
         return false;
     }
@@ -942,7 +1203,9 @@ fn mark_user_message_cache_checkpoint(message: &mut Value, cache_control: &Value
 
 fn final_assistant_turn_is_foreign(messages: &[Message]) -> bool {
     for message in messages.iter().rev() {
-        let Message::Assistant(assistant) = message else { continue };
+        let Message::Assistant(assistant) = message else {
+            continue;
+        };
         return assistant.api != "anthropic-messages";
     }
     false
@@ -953,12 +1216,21 @@ fn final_assistant_turn_starts_with_tool_use(messages: &[Value]) -> bool {
         if message.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
-        let Some(content) = message.get("content").and_then(Value::as_array) else { return false };
-        let Some(first) = content.first() else { return false };
-        if matches!(first.get("type").and_then(Value::as_str), Some("thinking" | "redacted_thinking")) {
+        let Some(content) = message.get("content").and_then(Value::as_array) else {
+            return false;
+        };
+        let Some(first) = content.first() else {
+            return false;
+        };
+        if matches!(
+            first.get("type").and_then(Value::as_str),
+            Some("thinking" | "redacted_thinking")
+        ) {
             return false;
         }
-        return content.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"));
+        return content
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"));
     }
     false
 }
@@ -973,7 +1245,9 @@ fn convert_tool_result(
     let mut references: Vec<Value> = Vec::new();
     for name in message.added_tool_names.iter().flatten() {
         let normalized_name = normalize_tool_name(name);
-        if !deferred_tool_names.contains(&normalized_name) || loaded_tool_names.contains(&normalized_name) {
+        if !deferred_tool_names.contains(&normalized_name)
+            || loaded_tool_names.contains(&normalized_name)
+        {
             continue;
         }
         loaded_tool_names.insert(normalized_name);
@@ -981,7 +1255,11 @@ fn convert_tool_result(
     }
 
     let converted_content = convert_content_blocks(&message.content);
-    let content = if references.is_empty() { converted_content.clone() } else { Value::Array(references.clone()) };
+    let content = if references.is_empty() {
+        converted_content.clone()
+    } else {
+        Value::Array(references.clone())
+    };
     let sibling_content = if references.is_empty() {
         Vec::new()
     } else {
@@ -1014,11 +1292,14 @@ fn convert_messages(
     deferred_tool_names: &HashSet<String>,
     normalize_tool_name: &dyn Fn(&str) -> String,
     managed_provider: Option<&str>,
+    native_tool_changes: bool,
 ) -> (Vec<Value>, BTreeMap<usize, String>) {
     let mut params: Vec<Value> = Vec::new();
+    let mut pending_system_messages = Vec::new();
     let mut assistant_levels: BTreeMap<usize, String> = BTreeMap::new();
     let mut loaded_tool_names: HashSet<String> = HashSet::new();
-    let discarded_fallback_tool_call_ids = collect_discarded_fallback_tool_call_ids(transformed_messages, model);
+    let discarded_fallback_tool_call_ids =
+        collect_discarded_fallback_tool_call_ids(transformed_messages, model);
     let rejects_native_web_search_replay = !get_anthropic_compat(model).supports_web_search;
     let provider_native_tool_pairing = collect_provider_native_tool_pairing(
         transformed_messages,
@@ -1031,15 +1312,24 @@ fn convert_messages(
     let mut index = 0;
     while index < transformed_messages.len() {
         let message = &transformed_messages[index];
+        if matches!(message, Message::Assistant(_)) {
+            params.append(&mut pending_system_messages);
+        }
         match message {
             Message::User(user) => match &user.content {
                 UserContent::Text(text) => {
                     if !crate::utils::js::trim(text).is_empty() {
                         let content = sanitize_surrogates(text);
-                        let last_is_user =
-                            params.last().and_then(|param| param.get("role")).and_then(Value::as_str) == Some("user");
+                        let last_is_user = params
+                            .last()
+                            .and_then(|param| param.get("role"))
+                            .and_then(Value::as_str)
+                            == Some("user");
                         if last_is_user {
-                            append_user_blocks(&mut params, vec![json!({ "type": "text", "text": content })]);
+                            append_user_blocks(
+                                &mut params,
+                                vec![json!({ "type": "text", "text": content })],
+                            );
                         } else {
                             params.push(json!({ "role": "user", "content": content }));
                         }
@@ -1085,7 +1375,9 @@ fn convert_messages(
                     None
                 };
                 let pre_boundary_paired_server_tool_use_ids = fallback_boundary
-                    .map(|boundary| paired_server_tool_use_ids_before_boundary(&assistant.content, boundary))
+                    .map(|boundary| {
+                        paired_server_tool_use_ids_before_boundary(&assistant.content, boundary)
+                    })
                     .unwrap_or_default();
 
                 for (block_index, block) in assistant.content.iter().enumerate() {
@@ -1101,7 +1393,9 @@ fn convert_messages(
                                 .raw
                                 .get("id")
                                 .and_then(Value::as_str)
-                                .is_some_and(|id| pre_boundary_paired_server_tool_use_ids.contains(id))
+                                .is_some_and(|id| {
+                                    pre_boundary_paired_server_tool_use_ids.contains(id)
+                                })
                         {
                             continue;
                         }
@@ -1111,7 +1405,9 @@ fn convert_messages(
                             if crate::utils::js::trim(&text.text).is_empty() {
                                 continue;
                             }
-                            blocks.push(json!({ "type": "text", "text": sanitize_surrogates(&text.text) }));
+                            blocks.push(
+                                json!({ "type": "text", "text": sanitize_surrogates(&text.text) }),
+                            );
                         }
                         ContentBlock::Thinking(thinking) => {
                             if thinking.redacted == Some(true) {
@@ -1121,9 +1417,13 @@ fn convert_messages(
                                 }));
                                 continue;
                             }
-                            let thinking_signature = thinking.thinking_signature.clone().unwrap_or_default();
-                            let has_thinking_signature = !crate::utils::js::trim(&thinking_signature).is_empty();
-                            if crate::utils::js::trim(&thinking.thinking).is_empty() && !has_thinking_signature {
+                            let thinking_signature =
+                                thinking.thinking_signature.clone().unwrap_or_default();
+                            let has_thinking_signature =
+                                !crate::utils::js::trim(&thinking_signature).is_empty();
+                            if crate::utils::js::trim(&thinking.thinking).is_empty()
+                                && !has_thinking_signature
+                            {
                                 continue;
                             }
                             if !has_thinking_signature {
@@ -1158,8 +1458,12 @@ fn convert_messages(
                         ContentBlock::ProviderNative(native) => {
                             if is_same_model
                                 && is_replayable_anthropic_provider_native_block(&native.raw)
-                                && !(rejects_native_web_search_replay && is_anthropic_web_search_replay_block(&native.raw))
-                                && !is_unpaired_provider_native_tool_block(&native.raw, &provider_native_tool_pairing)
+                                && !(rejects_native_web_search_replay
+                                    && is_anthropic_web_search_replay_block(&native.raw))
+                                && !is_unpaired_provider_native_tool_block(
+                                    &native.raw,
+                                    &provider_native_tool_pairing,
+                                )
                             {
                                 blocks.push(native.raw.clone());
                             }
@@ -1179,7 +1483,13 @@ fn convert_messages(
                     && assistant.provider == managed_provider
                     && is_anthropic_effort(assistant.provider_thinking_level.as_deref())
                 {
-                    assistant_levels.insert(message_index, assistant.provider_thinking_level.clone().unwrap_or_default());
+                    assistant_levels.insert(
+                        message_index,
+                        assistant
+                            .provider_thinking_level
+                            .clone()
+                            .unwrap_or_default(),
+                    );
                 }
             }
             Message::ToolResult(_) => {
@@ -1187,7 +1497,9 @@ fn convert_messages(
                 let mut sibling_content: Vec<Value> = Vec::new();
                 let mut next = index;
                 while next < transformed_messages.len() {
-                    let Message::ToolResult(result) = &transformed_messages[next] else { break };
+                    let Message::ToolResult(result) = &transformed_messages[next] else {
+                        break;
+                    };
                     if !discarded_fallback_tool_call_ids.contains(&result.tool_call_id) {
                         let (tool_result, siblings) = convert_tool_result(
                             result,
@@ -1211,11 +1523,33 @@ fn convert_messages(
                 blocks.extend(sibling_content);
                 append_user_blocks(&mut params, blocks);
             }
+            Message::System(system) => {
+                let text = crate::utils::text::render_system_message_update(
+                    &system.content,
+                    &system.sections,
+                );
+                let mut blocks = Vec::new();
+                if !text.is_empty() {
+                    blocks.push(json!({"type":"text","text":sanitize_surrogates(&text)}));
+                }
+                if native_tool_changes {
+                    for tool in &system.tools_removed {
+                        blocks.push(json!({"type":"tool_removal","tool":{"type":"tool_reference","name":normalize_tool_name(&tool.name)}}));
+                    }
+                    for tool in &system.tools_added {
+                        blocks.push(json!({"type":"tool_addition","tool":{"type":"tool_reference","name":normalize_tool_name(&tool.name)}}));
+                    }
+                }
+                if !blocks.is_empty() {
+                    pending_system_messages.push(json!({"role":"system","content":blocks}));
+                }
+            }
             Message::ConfigurationUpdate(_) => {}
         }
         index += 1;
     }
 
+    params.append(&mut pending_system_messages);
     if let Some(cache_control) = cache_control
         && !params.is_empty()
     {
@@ -1237,7 +1571,11 @@ fn convert_messages(
     (params, assistant_levels)
 }
 
-fn insert_thinking_level_messages(messages: Vec<Value>, assistant_levels: &BTreeMap<usize, String>, active_effort: &str) -> Vec<Value> {
+fn insert_thinking_level_messages(
+    messages: Vec<Value>,
+    assistant_levels: &BTreeMap<usize, String>,
+    active_effort: &str,
+) -> Vec<Value> {
     let mut result: Vec<Value> = Vec::new();
     for (index, message) in messages.into_iter().enumerate() {
         if let Some(historical_effort) = assistant_levels.get(&index) {
@@ -1245,8 +1583,35 @@ fn insert_thinking_level_messages(messages: Vec<Value>, assistant_levels: &BTree
         }
         result.push(message);
     }
-    result.push(json!({ "role": "system", "content": [], "output_config": { "effort": active_effort } }));
+    result.push(
+        json!({ "role": "system", "content": [], "output_config": { "effort": active_effort } }),
+    );
     result
+}
+
+fn is_anthropic_strict_unsupported_keyword(key: &str, value: &Value) -> bool {
+    match key {
+        "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "multipleOf"
+        | "maxItems" | "uniqueItems" | "minContains" | "maxContains" | "minProperties"
+        | "maxProperties" => true,
+        "minItems" => !matches!(value.as_f64(), Some(0.0 | 1.0)),
+        "format" => !matches!(
+            value.as_str(),
+            Some(
+                "date-time"
+                    | "time"
+                    | "date"
+                    | "duration"
+                    | "email"
+                    | "hostname"
+                    | "uri"
+                    | "ipv4"
+                    | "ipv6"
+                    | "uuid"
+            )
+        ),
+        _ => false,
+    }
 }
 
 fn convert_tools(
@@ -1259,8 +1624,13 @@ fn convert_tools(
 ) -> Result<Vec<Value>, String> {
     let mut result = Vec::with_capacity(tools.len());
     for (index, tool) in tools.iter().enumerate() {
-        let strict = resolve_json_schema_strict_sampling(tool, supports_strict_tools)?;
-        let parameters = get_json_schema_tool_parameters(tool, strict).map_err(|error| error.to_string())?;
+        let strict = resolve_json_schema_strict_sampling_with_keyword_check(
+            tool,
+            supports_strict_tools,
+            Some(is_anthropic_strict_unsupported_keyword),
+        )?;
+        let parameters =
+            get_json_schema_tool_parameters(tool, strict).map_err(|error| error.to_string())?;
         let schema = resolve_root_object_schema(parameters.as_object().unwrap_or(&Map::new()));
         let legacy_input_schema = json!({
             "type": "object",
@@ -1280,7 +1650,14 @@ fn convert_tools(
         };
 
         let mut converted = Map::new();
-        converted.insert("name".into(), Value::from(if is_oauth_token { to_claude_code_name(&tool.name) } else { tool.name.clone() }));
+        converted.insert(
+            "name".into(),
+            Value::from(if is_oauth_token {
+                to_claude_code_name(&tool.name)
+            } else {
+                tool.name.clone()
+            }),
+        );
         converted.insert("description".into(), Value::from(tool.description.clone()));
         if supports_eager_tool_input_streaming {
             converted.insert("eager_input_streaming".into(), Value::from(true));
@@ -1316,7 +1693,11 @@ fn map_stop_reason(
         "tool_use" => Ok((StopReason::ToolUse, None, None)),
         "refusal" => Ok((
             StopReason::Error,
-            Some(explanation.clone().unwrap_or_else(|| "The model refused to complete the request".to_owned())),
+            Some(
+                explanation
+                    .clone()
+                    .unwrap_or_else(|| "The model refused to complete the request".to_owned()),
+            ),
             Some(AssistantStopDetails::Refusal { explanation }),
         )),
         "pause_turn" => Ok((StopReason::Stop, None, None)),
@@ -1332,7 +1713,10 @@ fn map_stop_reason(
 
 fn sanitize_unsupported_native_tools(model: &Model, params: &mut Map<String, Value>) {
     let headers = string_record(params.get("headers")).map(|record| {
-        record.into_iter().map(|(key, value)| (key, Some(value))).collect::<BTreeMap<_, _>>()
+        record
+            .into_iter()
+            .map(|(key, value)| (key, Some(value)))
+            .collect::<BTreeMap<_, _>>()
     });
     let header_sanitization = if rejects_computer_use_beta(model) {
         remove_computer_use_beta_header(headers.as_ref())
@@ -1345,10 +1729,14 @@ fn sanitize_unsupported_native_tools(model: &Model, params: &mut Map<String, Val
     if let Some(Value::Array(tools)) = params.get("tools").cloned().as_ref() {
         let mut supported_tools: Vec<Value> = Vec::new();
         for tool in tools {
-            let rejected = tool.get("type").and_then(Value::as_str).is_some_and(|tool_type| {
-                rejects_native_computer_tool(model, tool_type)
-                    || (rejects_native_web_search && is_anthropic_web_search_tool_type(tool_type))
-            });
+            let rejected = tool
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|tool_type| {
+                    rejects_native_computer_tool(model, tool_type)
+                        || (rejects_native_web_search
+                            && is_anthropic_web_search_tool_type(tool_type))
+                });
             if rejected {
                 changed = true;
                 continue;
@@ -1380,43 +1768,68 @@ fn sanitize_unsupported_native_tools(model: &Model, params: &mut Map<String, Val
         }
     }
 
-    if changed
-        && let Some(tool_choice) = params.get("tool_choice").and_then(Value::as_object)
-    {
+    if changed && let Some(tool_choice) = params.get("tool_choice").and_then(Value::as_object) {
         let tool_choice_name = tool_choice.get("name").and_then(Value::as_str);
         let has_selected_tool = tool_choice_name.is_some_and(|name| {
             params
                 .get("tools")
                 .and_then(Value::as_array)
-                .is_some_and(|tools| tools.iter().any(|tool| tool.get("name").and_then(Value::as_str) == Some(name)))
+                .is_some_and(|tools| {
+                    tools
+                        .iter()
+                        .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+                })
         });
-        let should_remove_tool_choice = !params.contains_key("tools")
-            || (tool_choice_name.is_some() && !has_selected_tool);
+        let should_remove_tool_choice =
+            !params.contains_key("tools") || (tool_choice_name.is_some() && !has_selected_tool);
         if should_remove_tool_choice {
             params.remove("tool_choice");
         }
     }
 }
 
-fn sanitize_adaptive_thinking_payload(model: &Model, params: &mut Map<String, Value>, options: &StreamOptions) {
+fn sanitize_adaptive_thinking_payload(
+    model: &Model,
+    params: &mut Map<String, Value>,
+    options: &StreamOptions,
+) {
     if !supports_adaptive_thinking(model) {
         return;
     }
     let headers = string_record(params.get("headers")).map(|record| {
-        record.into_iter().map(|(key, value)| (key, Some(value))).collect::<BTreeMap<_, _>>()
+        record
+            .into_iter()
+            .map(|(key, value)| (key, Some(value)))
+            .collect::<BTreeMap<_, _>>()
     });
-    let header_sanitization = remove_anthropic_beta_headers(headers.as_ref(), |beta| beta == INTERLEAVED_THINKING_BETA);
+    let header_sanitization =
+        remove_anthropic_beta_headers(headers.as_ref(), |beta| beta == INTERLEAVED_THINKING_BETA);
     let mut changed = false;
 
     let thinking = params.get("thinking").and_then(Value::as_object).cloned();
-    if thinking.as_ref().and_then(|thinking| thinking.get("type")).and_then(Value::as_str) == Some("enabled") {
-        let display = match thinking.as_ref().and_then(|thinking| thinking.get("display")).and_then(Value::as_str) {
+    if thinking
+        .as_ref()
+        .and_then(|thinking| thinking.get("type"))
+        .and_then(Value::as_str)
+        == Some("enabled")
+    {
+        let display = match thinking
+            .as_ref()
+            .and_then(|thinking| thinking.get("display"))
+            .and_then(Value::as_str)
+        {
             Some(display @ ("omitted" | "summarized")) => display.to_owned(),
             _ => thinking_display(options).unwrap_or_else(|| "summarized".to_owned()),
         };
-        params.insert("thinking".into(), json!({ "type": "adaptive", "display": display }));
+        params.insert(
+            "thinking".into(),
+            json!({ "type": "adaptive", "display": display }),
+        );
         if let Some(effort) = effort_option(options)
-            && params.get("output_config").and_then(Value::as_object).is_none()
+            && params
+                .get("output_config")
+                .and_then(Value::as_object)
+                .is_none()
         {
             params.insert("output_config".into(), json!({ "effort": effort }));
         }
@@ -1449,6 +1862,32 @@ fn build_params(
     options: &StreamOptions,
     unsigned_thinking_replay: &str,
 ) -> Result<Map<String, Value>, String> {
+    let transcript = crate::types::transcript::normalize_context(context);
+    let native_compat = model
+        .compat
+        .as_ref()
+        .map(|compat| compat.anthropic_messages())
+        .unwrap_or_default();
+    let supports_system = native_compat.supports_mid_convo_system_messages == Some(true);
+    let betas_suppressed = options.request.headers.as_ref().is_some_and(|headers| {
+        headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("anthropic-beta") && value.is_none())
+    });
+    let native_tool_changes = supports_system
+        && native_compat.supports_mid_convo_tool_changes == Some(true)
+        && !betas_suppressed
+        && crate::types::transcript::get_initial_system_message(&transcript.messages)
+            .is_some_and(|message| !message.tools_added.is_empty())
+        && !crate::types::transcript::has_tool_redefinitions(&transcript.messages);
+    let mut resolved_context =
+        crate::types::transcript::resolve_provider_context(context, supports_system);
+    if !native_tool_changes {
+        resolved_context.tools = Some(crate::types::transcript::get_current_tools(
+            &transcript.messages,
+        ));
+    }
+    let context = &resolved_context;
     let compat = get_anthropic_compat(model);
     let (_, cache_control) = get_cache_control(
         model,
@@ -1466,9 +1905,14 @@ fn build_params(
         },
     );
     let normalize_tool_name = |name: &str| {
-        if is_oauth_token { to_claude_code_name(name) } else { name.to_owned() }
+        if is_oauth_token {
+            to_claude_code_name(name)
+        } else {
+            name.to_owned()
+        }
     };
-    let discarded_fallback_tool_call_ids = collect_discarded_fallback_tool_call_ids(&transformed_messages, model);
+    let discarded_fallback_tool_call_ids =
+        collect_discarded_fallback_tool_call_ids(&transformed_messages, model);
     let partition_messages: Vec<Message> = transformed_messages
         .iter()
         .filter(|message| {
@@ -1477,18 +1921,40 @@ fn build_params(
         .cloned()
         .collect();
     let placement = split_deferred_tools(
-        &Context { system_prompt: context.system_prompt.clone(), messages: partition_messages, tools: context.tools.clone() },
+        &Context {
+            active_tool_names: None,
+            system_prompt: context.system_prompt.clone(),
+            messages: partition_messages,
+            tools: context.tools.clone(),
+        },
         compat.supports_tool_references,
         Some(&normalize_tool_name),
     );
     let mut immediate_tools = placement.immediate;
     let mut deferred_tools: Vec<Tool> = placement.deferred.into_values().collect();
+    if native_tool_changes {
+        immediate_tools = context.tools.clone().unwrap_or_default();
+        deferred_tools = crate::types::transcript::get_declared_tools(&transcript.messages)
+            .into_iter()
+            .filter(|tool| {
+                !immediate_tools
+                    .iter()
+                    .any(|initial| initial.name == tool.name)
+            })
+            .collect();
+    }
     if immediate_tools.is_empty() && !deferred_tools.is_empty() {
         immediate_tools = std::mem::take(&mut deferred_tools);
     }
-    let deferred_tool_names: HashSet<String> = deferred_tools.iter().map(|tool| normalize_tool_name(&tool.name)).collect();
+    let deferred_tool_names: HashSet<String> = deferred_tools
+        .iter()
+        .map(|tool| normalize_tool_name(&tool.name))
+        .collect();
     let active_effort = effort_option(options).unwrap_or_else(|| "high".to_owned());
-    let beta_features = get_beta_features(model, context, is_oauth_token, options);
+    let mut beta_features = get_beta_features(model, context, is_oauth_token, options);
+    if native_tool_changes {
+        beta_features.push("mid-conversation-tool-changes-2026-07-01".into());
+    }
     let (converted_messages, assistant_levels) = convert_messages(
         &transformed_messages,
         model,
@@ -1497,15 +1963,30 @@ fn build_params(
         unsigned_thinking_replay,
         &deferred_tool_names,
         &normalize_tool_name,
-        model.compat.as_ref().and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort).filter(|supported| *supported).map(|_| model.provider.as_str()),
+        model
+            .compat
+            .as_ref()
+            .and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort)
+            .filter(|supported| *supported)
+            .map(|_| model.provider.as_str()),
+        native_tool_changes,
     );
-    let mut messages = if model.compat.as_ref().and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort) == Some(true) {
+    let mut messages = if model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort)
+        == Some(true)
+    {
         insert_thinking_level_messages(converted_messages, &assistant_levels, &active_effort)
     } else {
         converted_messages
     };
 
-    if model.compat.as_ref().and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort) == Some(true)
+    if model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort)
+        == Some(true)
         && let Some(cache_control) = cache_control.as_ref()
     {
         let mut index = messages.len() as i64 - 1;
@@ -1521,7 +2002,10 @@ fn build_params(
     let mut params = Map::new();
     params.insert("model".into(), Value::from(model.id.clone()));
     params.insert("messages".into(), Value::Array(messages));
-    params.insert("max_tokens".into(), Value::from(options.max_tokens.unwrap_or(model.max_tokens)));
+    params.insert(
+        "max_tokens".into(),
+        Value::from(options.max_tokens.unwrap_or(model.max_tokens)),
+    );
     params.insert("stream".into(), Value::from(true));
     if !beta_features.is_empty() {
         params.insert("betas".into(), json!(beta_features));
@@ -1541,7 +2025,10 @@ fn build_params(
         if let Some(system_prompt) = &context.system_prompt {
             let mut block = Map::new();
             block.insert("type".into(), Value::from("text"));
-            block.insert("text".into(), Value::from(sanitize_surrogates(system_prompt)));
+            block.insert(
+                "text".into(),
+                Value::from(sanitize_surrogates(system_prompt)),
+            );
             if let Some(cache_control) = cache_control.as_ref() {
                 block.insert("cache_control".into(), cache_control.clone());
             }
@@ -1551,7 +2038,10 @@ fn build_params(
     } else if let Some(system_prompt) = &context.system_prompt {
         let mut block = Map::new();
         block.insert("type".into(), Value::from("text"));
-        block.insert("text".into(), Value::from(sanitize_surrogates(system_prompt)));
+        block.insert(
+            "text".into(),
+            Value::from(sanitize_surrogates(system_prompt)),
+        );
         if let Some(cache_control) = cache_control.as_ref() {
             block.insert("cache_control".into(), cache_control.clone());
         }
@@ -1571,9 +2061,16 @@ fn build_params(
             is_oauth_token,
             compat.supports_eager_tool_input_streaming,
             compat.supports_strict_tools,
-            if compat.supports_cache_control_on_tools { cache_control.as_ref() } else { None },
+            if compat.supports_cache_control_on_tools {
+                cache_control.as_ref()
+            } else {
+                None
+            },
             false,
         )?;
+        if native_tool_changes {
+            tools.push(json!({"name":"__pi_deferred_placeholder__","description":"Reserved placeholder. Never available. Never call this.","input_schema":{"type":"object","properties":{},"required":[]},"defer_loading":true}));
+        }
         tools.extend(convert_tools(
             &deferred_tools,
             is_oauth_token,
@@ -1585,7 +2082,11 @@ fn build_params(
         params.insert("tools".into(), Value::Array(tools));
     }
 
-    let managed_effort = model.compat.as_ref().and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort) == Some(true);
+    let managed_effort = model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.anthropic_messages().supports_mid_convo_effort)
+        == Some(true);
     if managed_effort && thinking_enabled(options) != Some(false) {
         params.insert(
             "thinking".into(),
@@ -1600,12 +2101,17 @@ fn build_params(
         if thinking_enabled(options) == Some(true) {
             let display = thinking_display(options).unwrap_or_else(|| "summarized".to_owned());
             if supports_adaptive_thinking(model) {
-                params.insert("thinking".into(), json!({ "type": "adaptive", "display": display }));
+                params.insert(
+                    "thinking".into(),
+                    json!({ "type": "adaptive", "display": display }),
+                );
                 if let Some(effort) = effort_option(options) {
                     params.insert("output_config".into(), json!({ "effort": effort }));
                 }
             } else {
-                let budget_tokens = option_u64(options, "thinkingBudgetTokens").filter(|budget| *budget != 0).unwrap_or(1024);
+                let budget_tokens = option_u64(options, "thinkingBudgetTokens")
+                    .filter(|budget| *budget != 0)
+                    .unwrap_or(1024);
                 params.insert(
                     "thinking".into(),
                     json!({ "type": "enabled", "budget_tokens": budget_tokens, "display": display }),
@@ -1616,9 +2122,19 @@ fn build_params(
         }
     }
 
-    if params.get("thinking").and_then(|thinking| thinking.get("type")).and_then(Value::as_str) == Some("enabled")
+    if params
+        .get("thinking")
+        .and_then(|thinking| thinking.get("type"))
+        .and_then(Value::as_str)
+        == Some("enabled")
         && final_assistant_turn_is_foreign(&context.messages)
-        && final_assistant_turn_starts_with_tool_use(&params.get("messages").and_then(Value::as_array).cloned().unwrap_or_default())
+        && final_assistant_turn_starts_with_tool_use(
+            &params
+                .get("messages")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        )
     {
         disable_thinking_for_request(&mut params, model, compat.supports_disabled_thinking);
     }
@@ -1661,8 +2177,16 @@ fn build_params(
 
 #[derive(Debug, Clone)]
 pub(crate) enum AnthropicStreamError {
-    Http { status: u16, message: String, headers: Box<HeaderMap>, parsed_body: Option<Box<Value>> },
-    Network { message: String, timeout: bool },
+    Http {
+        status: u16,
+        message: String,
+        headers: Box<HeaderMap>,
+        parsed_body: Option<Box<Value>>,
+    },
+    Network {
+        message: String,
+        timeout: bool,
+    },
     Message(String),
     Aborted,
 }
@@ -1696,7 +2220,13 @@ impl AnthropicStreamError {
     /// The error shape the TS `normalizeAnthropicRetryFailure` duck-types on a thrown error.
     fn retry_error_shape(&self) -> RetryErrorShape {
         match self {
-            Self::Http { status, message, parsed_body, headers, .. } => RetryErrorShape {
+            Self::Http {
+                status,
+                message,
+                parsed_body,
+                headers,
+                ..
+            } => RetryErrorShape {
                 is_error: true,
                 name: "Error".into(),
                 class_name: Some(sdk_error_class_name(*status).to_owned()),
@@ -1709,7 +2239,12 @@ impl AnthropicStreamError {
                 is_error: true,
                 name: "Error".into(),
                 class_name: Some(
-                    if *timeout { "APIConnectionTimeoutError" } else { "APIConnectionError" }.to_owned(),
+                    if *timeout {
+                        "APIConnectionTimeoutError"
+                    } else {
+                        "APIConnectionError"
+                    }
+                    .to_owned(),
                 ),
                 message: message.clone(),
                 status: None,
@@ -1741,10 +2276,16 @@ impl AnthropicStreamError {
 impl ProviderRequestError for AnthropicStreamError {
     fn provider_status(&self) -> Option<ProviderErrorStatus<'_>> {
         match self {
-            Self::Http { status, headers, .. } => {
-                Some(ProviderErrorStatus { status: Some(*status), headers: Some(headers.as_ref()) })
-            }
-            Self::Network { .. } => Some(ProviderErrorStatus { status: None, headers: None }),
+            Self::Http {
+                status, headers, ..
+            } => Some(ProviderErrorStatus {
+                status: Some(*status),
+                headers: Some(headers.as_ref()),
+            }),
+            Self::Network { .. } => Some(ProviderErrorStatus {
+                status: None,
+                headers: None,
+            }),
             _ => None,
         }
     }
@@ -1765,10 +2306,13 @@ fn sdk_error_class_name(status: u16) -> &'static str {
 
 /// The `@anthropic-ai/sdk` `APIError.makeMessage` text for a failed response.
 fn sdk_api_error_message(status: u16, parsed_body: Option<&Value>, text: &str) -> String {
-    let body_message = parsed_body.and_then(|body| body.get("message")).map(|message| match message {
-        Value::String(message) => message.clone(),
-        other => other.to_string(),
-    });
+    let body_message =
+        parsed_body
+            .and_then(|body| body.get("message"))
+            .map(|message| match message {
+                Value::String(message) => message.clone(),
+                other => other.to_string(),
+            });
     let message = match body_message {
         Some(message) => Some(message),
         None => match parsed_body {
@@ -1800,7 +2344,10 @@ fn retry_failure_kind_str(kind: RetryFailureKind) -> &'static str {
 
 fn retry_failure_details(failure: &RetryFailure) -> Option<Map<String, Value>> {
     let mut details = Map::new();
-    details.insert("kind".into(), Value::from(retry_failure_kind_str(failure.kind)));
+    details.insert(
+        "kind".into(),
+        Value::from(retry_failure_kind_str(failure.kind)),
+    );
     if let Some(status_code) = failure.status_code {
         details.insert("statusCode".into(), Value::from(status_code));
     }
@@ -1821,13 +2368,27 @@ fn retry_failure_details(failure: &RetryFailure) -> Option<Map<String, Value>> {
 static UNSIGNED_THINKING_TEXT_REPLAY_FALLBACKS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
+static TOOL_REFERENCE_REPLAY_FALLBACKS: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+static EXPIRED_WEB_SEARCH_REPLAYS: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
 static UNSIGNED_THINKING_CLEANUP: LazyLock<()> = LazyLock::new(|| {
-    let _ = register_session_resource_cleanup(std::sync::Arc::new(|session_id: Option<&str>| {        let mut fallbacks = UNSIGNED_THINKING_TEXT_REPLAY_FALLBACKS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        match session_id {
-            None => fallbacks.clear(),
-            Some(session_id) => {
-                let prefix = format!("{session_id}\u{0}");
-                fallbacks.retain(|key| !key.starts_with(&prefix));
+    let _ = register_session_resource_cleanup(std::sync::Arc::new(|session_id: Option<&str>| {
+        for fallbacks in [
+            &*UNSIGNED_THINKING_TEXT_REPLAY_FALLBACKS,
+            &*TOOL_REFERENCE_REPLAY_FALLBACKS,
+            &*EXPIRED_WEB_SEARCH_REPLAYS,
+        ] {
+            let mut fallbacks = fallbacks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match session_id {
+                None => fallbacks.clear(),
+                Some(session_id) => {
+                    let prefix = format!("{session_id}\u{0}");
+                    fallbacks.retain(|key| !key.starts_with(&prefix));
+                }
             }
         }
         Ok(())
@@ -1840,12 +2401,16 @@ fn unsigned_thinking_fallback_key(model: &Model, session_id: Option<&str>) -> Op
 
 fn is_invalid_unsigned_thinking_signature_error(error: &AnthropicStreamError) -> bool {
     match error {
-        AnthropicStreamError::Http { status, message, .. } => *status == 400 && message.contains("Invalid signature in thinking block"),
+        AnthropicStreamError::Http {
+            status, message, ..
+        } => *status == 400 && message.contains("Invalid signature in thinking block"),
         _ => false,
     }
 }
 
-fn unsigned_thinking_replay_value(value: Option<&crate::types::UnsignedThinkingReplay>) -> &'static str {
+fn unsigned_thinking_replay_value(
+    value: Option<&crate::types::UnsignedThinkingReplay>,
+) -> &'static str {
     match value {
         Some(crate::types::UnsignedThinkingReplay::EmptySignature) => "empty-signature",
         _ => "text",
@@ -1855,7 +2420,9 @@ fn unsigned_thinking_replay_value(value: Option<&crate::types::UnsignedThinkingR
 /// The TS fallback flips a shared mutable variable that the retry closure reads on its next call;
 /// a `Mutex` gives the same cross-call mutation while staying `Sync` for the spawned stream task.
 fn replay_mode(replay: &Mutex<&'static str>) -> &'static str {
-    *replay.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    *replay
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 // --- Request creation.
@@ -1876,7 +2443,8 @@ fn create_client(
 ) -> AnthropicClient {
     let compat = get_anthropic_compat(model);
     let is_oauth_token = api_key.is_some_and(|key| key.contains("sk-ant-oat"));
-    let needs_interleaved_beta = interleaved_thinking(options) && !supports_adaptive_thinking(model);
+    let needs_interleaved_beta =
+        interleaved_thinking(options) && !supports_adaptive_thinking(model);
     let mut beta_features: Vec<String> = Vec::new();
     if should_use_fine_grained_tool_streaming_beta(model, context) {
         beta_features.push(FINE_GRAINED_TOOL_STREAMING_BETA.to_owned());
@@ -1892,8 +2460,14 @@ fn create_client(
     let mut base: BTreeMap<String, Option<String>> = BTreeMap::new();
     let base_url = if model.provider == "cloudflare-ai-gateway" {
         base.insert("accept".into(), Some("application/json".into()));
-        base.insert("anthropic-dangerous-direct-browser-access".into(), Some("true".into()));
-        base.insert("cf-aig-authorization".into(), Some(format!("Bearer {}", api_key.unwrap_or_default())));
+        base.insert(
+            "anthropic-dangerous-direct-browser-access".into(),
+            Some("true".into()),
+        );
+        base.insert(
+            "cf-aig-authorization".into(),
+            Some(format!("Bearer {}", api_key.unwrap_or_default())),
+        );
         base.insert("x-api-key".into(), None);
         base.insert("Authorization".into(), None);
         if let Some(beta_header) = &beta_header {
@@ -1903,7 +2477,10 @@ fn create_client(
     } else if model.provider == "github-copilot" {
         base.insert("User-Agent".into(), Some(get_pi_user_agent()));
         base.insert("accept".into(), Some("application/json".into()));
-        base.insert("anthropic-dangerous-direct-browser-access".into(), Some("true".into()));
+        base.insert(
+            "anthropic-dangerous-direct-browser-access".into(),
+            Some("true".into()),
+        );
         if let Some(beta_header) = &beta_header {
             base.insert("anthropic-beta".into(), Some(beta_header.clone()));
         }
@@ -1911,22 +2488,39 @@ fn create_client(
     } else if is_oauth_token {
         base.insert("User-Agent".into(), Some(get_pi_user_agent()));
         base.insert("accept".into(), Some("application/json".into()));
-        base.insert("anthropic-dangerous-direct-browser-access".into(), Some("true".into()));
-        let mut oauth_betas = vec!["claude-code-20250219".to_owned(), "oauth-2025-04-20".to_owned()];
+        base.insert(
+            "anthropic-dangerous-direct-browser-access".into(),
+            Some("true".into()),
+        );
+        let mut oauth_betas = vec![
+            "claude-code-20250219".to_owned(),
+            "oauth-2025-04-20".to_owned(),
+        ];
         oauth_betas.extend(beta_features.clone());
         base.insert("anthropic-beta".into(), Some(oauth_betas.join(",")));
-        base.insert("user-agent".into(), Some(format!("claude-cli/{CLAUDE_CODE_VERSION}")));
+        base.insert(
+            "user-agent".into(),
+            Some(format!(
+                "claude-cli/{}",
+                get_claude_code_version(CLAUDE_CODE_VERSION, options.request.env.as_ref())
+            )),
+        );
         base.insert("x-app".into(), Some("cli".into()));
         model.base_url.clone()
     } else {
         base.insert("User-Agent".into(), Some(get_pi_user_agent()));
         base.insert("accept".into(), Some("application/json".into()));
-        base.insert("anthropic-dangerous-direct-browser-access".into(), Some("true".into()));
+        base.insert(
+            "anthropic-dangerous-direct-browser-access".into(),
+            Some("true".into()),
+        );
         if let Some(beta_header) = &beta_header {
             base.insert("anthropic-beta".into(), Some(beta_header.clone()));
         }
         if let Some(session_id) = session_id.filter(|_| compat.send_session_affinity_headers) {
-            let header = if compat.session_affinity_format == Some(crate::types::AnthropicSessionAffinityFormat::Openrouter) {
+            let header = if compat.session_affinity_format
+                == Some(crate::types::AnthropicSessionAffinityFormat::Openrouter)
+            {
                 "x-session-id"
             } else {
                 "x-session-affinity"
@@ -1939,12 +2533,25 @@ fn create_client(
     let model_headers = model.headers.as_ref().map(nullable_headers);
     let dynamic_nullable = dynamic_headers.map(nullable_headers);
     let sources = if model.provider == "github-copilot" {
-        vec![Some(&base), model_headers.as_ref(), dynamic_nullable.as_ref(), options.request.headers.as_ref()]
+        vec![
+            Some(&base),
+            model_headers.as_ref(),
+            dynamic_nullable.as_ref(),
+            options.request.headers.as_ref(),
+        ]
     } else {
-        vec![Some(&base), model_headers.as_ref(), options.request.headers.as_ref()]
+        vec![
+            Some(&base),
+            model_headers.as_ref(),
+            options.request.headers.as_ref(),
+        ]
     };
     let headers = sanitize_adaptive_thinking_headers(model, merge_headers(&sources));
-    AnthropicClient { base_url, headers, is_oauth_token }
+    AnthropicClient {
+        base_url,
+        headers,
+        is_oauth_token,
+    }
 }
 
 /// The SDK's per-request headers: default headers, the `anthropic-version` constant and the auth
@@ -1952,7 +2559,9 @@ fn create_client(
 fn request_headers(client: &AnthropicClient, model: &Model, api_key: Option<&str>) -> HeaderMap {
     let mut map = HeaderMap::new();
     for (name, value) in &client.headers {
-        let Ok(name) = HeaderName::from_bytes(name.as_bytes()) else { continue };
+        let Ok(name) = HeaderName::from_bytes(name.as_bytes()) else {
+            continue;
+        };
         match value {
             None => {
                 map.remove(name);
@@ -1964,14 +2573,23 @@ fn request_headers(client: &AnthropicClient, model: &Model, api_key: Option<&str
             }
         }
     }
-    map.insert(HeaderName::from_static("anthropic-version"), HeaderValue::from_static("2023-06-01"));
-    map.insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    map.insert(
+        HeaderName::from_static("anthropic-version"),
+        HeaderValue::from_static("2023-06-01"),
+    );
+    map.insert(
+        reqwest::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     if model.provider == "cloudflare-ai-gateway" {
         return map;
     }
     let Some(api_key) = api_key else { return map };
     let (name, value) = if model.provider == "github-copilot" || client.is_oauth_token {
-        (HeaderName::from_static("authorization"), format!("Bearer {api_key}"))
+        (
+            HeaderName::from_static("authorization"),
+            format!("Bearer {api_key}"),
+        )
     } else {
         (HeaderName::from_static("x-api-key"), api_key.to_owned())
     };
@@ -1995,10 +2613,20 @@ async fn build_prepared_request(
     unsigned_thinking_replay: &str,
 ) -> Result<PreparedRequest, AnthropicStreamError> {
     let payload = Value::Object(
-        build_params(model, context, is_oauth_token, options, unsigned_thinking_replay)
-            .map_err(AnthropicStreamError::Message)?,
+        build_params(
+            model,
+            context,
+            is_oauth_token,
+            options,
+            unsigned_thinking_replay,
+        )
+        .map_err(AnthropicStreamError::Message)?,
     );
-    let hooked = options.request.apply_payload_hook(&payload, model, None).await.map_err(AnthropicStreamError::Message)?;
+    let hooked = options
+        .request
+        .apply_payload_hook(&payload, model, None)
+        .await
+        .map_err(AnthropicStreamError::Message)?;
     let mut params = match (hooked, payload) {
         (Some(Value::Object(next)), _) | (_, Value::Object(next)) => next,
         _ => Map::new(),
@@ -2013,7 +2641,11 @@ async fn build_prepared_request(
     }
     let headers = extract_payload_request_metadata(&mut params);
     Ok(PreparedRequest {
-        sent_model: params.get("model").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        sent_model: params
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         params,
         headers,
     })
@@ -2021,7 +2653,10 @@ async fn build_prepared_request(
 
 fn is_forced_anthropic_tool_choice(tool_choice: Option<&Value>) -> bool {
     match tool_choice {
-        Some(Value::Object(choice)) => matches!(choice.get("type").and_then(Value::as_str), Some("any" | "tool")),
+        Some(Value::Object(choice)) => matches!(
+            choice.get("type").and_then(Value::as_str),
+            Some("any" | "tool")
+        ),
         _ => false,
     }
 }
@@ -2049,23 +2684,34 @@ async fn send_request(
     }
     if let Some(overrides) = &prepared.headers {
         for (name, value) in overrides {
-            let Ok(name) = HeaderName::from_bytes(name.as_bytes()) else { continue };
+            let Ok(name) = HeaderName::from_bytes(name.as_bytes()) else {
+                continue;
+            };
             if let Ok(value) = HeaderValue::from_str(value) {
                 headers.insert(name, value);
             }
         }
     }
     let body = Value::Object(body).to_string();
-    let request = http_client.post(&url).headers(headers).body(body);
+    let request = crate::utils::gzip_request_body::send_with_gzip_request_body(
+        &http_client,
+        &url,
+        headers,
+        body,
+        get_anthropic_compat(model).supports_gzip_request_body,
+    );
     let timeout_ms = options.request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-    match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), request.send()).await {
+    match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), request).await {
         Err(_) => Err(AnthropicStreamError::Network {
             message: format!("Request timed out after {timeout_ms}ms"),
             timeout: true,
         }),
         Ok(Err(error)) => {
-            let timeout = error.is_timeout();
-            Err(AnthropicStreamError::Network { message: error.to_string(), timeout })
+            let timeout = matches!(&error, crate::utils::gzip_request_body::GzipRequestError::Http(error) if error.is_timeout());
+            Err(AnthropicStreamError::Network {
+                message: error.to_string(),
+                timeout,
+            })
         }
         Ok(Ok(response)) => Ok(response),
     }
@@ -2115,8 +2761,14 @@ fn parse_anthropic_event(sse: &ServerSentEvent) -> Result<Value, AnthropicStream
 fn decode_anthropic_event(sse: &ServerSentEvent) -> Result<Option<Value>, AnthropicStreamError> {
     if sse.event.as_deref() == Some("error") {
         let mut error_text = sse.data.clone();
-        if let Some(hint_ms) = extract_429_retry_after_ms(&RetryHintInput { status: None, headers: None, body_text: &sse.data }, None)
-        {
+        if let Some(hint_ms) = extract_429_retry_after_ms(
+            &RetryHintInput {
+                status: None,
+                headers: None,
+                body_text: &sse.data,
+            },
+            None,
+        ) {
             error_text = append_retry_after_ms_marker(&error_text, hint_ms);
         }
         return Err(AnthropicStreamError::Message(error_text));
@@ -2141,7 +2793,9 @@ struct StreamState {
 
 impl StreamState {
     fn find_block(&self, index: usize) -> Option<usize> {
-        self.indices.iter().position(|block_index| *block_index == Some(index))
+        self.indices
+            .iter()
+            .position(|block_index| *block_index == Some(index))
     }
 
     fn push_block(&mut self, block: ContentBlock, index: usize) -> usize {
@@ -2160,6 +2814,9 @@ fn create_output(model: &Model, options: &StreamOptions) -> AssistantMessage {
         .filter(|supported| *supported)
         .map(|_| effort_option(options).unwrap_or_else(|| "high".to_owned()));
     AssistantMessage {
+        thinking_level: None,
+        provider_diagnostic: None,
+        prompt_cache_diagnostics: None,
         content: Vec::new(),
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -2173,6 +2830,7 @@ fn create_output(model: &Model, options: &StreamOptions) -> AssistantMessage {
         stop_details: None,
         deferred: None,
         error_message: None,
+        error_cause: None,
         abort_source: None,
         raw_stop_reason: None,
         end_turn: None,
@@ -2183,7 +2841,10 @@ fn create_output(model: &Model, options: &StreamOptions) -> AssistantMessage {
 fn handle_message_start(state: &mut StreamState, model: &Model, event: &Value, sent_model: &str) {
     let message = event.get("message").cloned().unwrap_or(Value::Null);
     state.output.response_id = message.get("id").and_then(Value::as_str).map(str::to_owned);
-    if let Some(transformations) = message.get("input_transformations").and_then(Value::as_array) {
+    if let Some(transformations) = message
+        .get("input_transformations")
+        .and_then(Value::as_array)
+    {
         state.input_transformations = Some(transformations.clone());
     }
     if let Some(response_model) = message.get("model").and_then(Value::as_str) {
@@ -2192,29 +2853,49 @@ fn handle_message_start(state: &mut StreamState, model: &Model, event: &Value, s
             None
         } else {
             model.compat.as_ref().and_then(|compat| {
-                compat.anthropic_messages().allowed_fallback_models.and_then(|models| {
-                    models.into_iter().find_map(|candidate| match candidate {
-                        AllowedFallbackModel::Model(fallback)
-                            if fallback.provider == model.provider && fallback.model == state.output.model =>
-                        {
-                            Some(fallback.cost)
-                        }
-                        _ => None,
+                compat
+                    .anthropic_messages()
+                    .allowed_fallback_models
+                    .and_then(|models| {
+                        models.into_iter().find_map(|candidate| match candidate {
+                            AllowedFallbackModel::Model(fallback)
+                                if fallback.provider == model.provider
+                                    && fallback.model == state.output.model =>
+                            {
+                                Some(fallback.cost)
+                            }
+                            _ => None,
+                        })
                     })
-                })
             })
         };
         state.usage_model = match fallback_cost {
-            Some(cost) => Model { id: state.output.model.clone(), cost, ..model.clone() },
+            Some(cost) => Model {
+                id: state.output.model.clone(),
+                cost,
+                ..model.clone()
+            },
             None => model.clone(),
         };
     }
 
     let usage = message.get("usage").cloned().unwrap_or(Value::Null);
-    state.output.usage.input = usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
-    state.output.usage.output = usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
-    state.output.usage.cache_read = usage.get("cache_read_input_tokens").and_then(Value::as_u64).unwrap_or(0);
-    state.output.usage.cache_write = usage.get("cache_creation_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    state.output.usage.input = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    state.output.usage.output = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    state.output.usage.cache_read = usage
+        .get("cache_read_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    state.output.usage.cache_write = usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     state.output.usage.cache_write_1h = Some(
         usage
             .get("cache_creation")
@@ -2229,8 +2910,11 @@ fn handle_message_start(state: &mut StreamState, model: &Model, event: &Value, s
     calculate_cost(model, &mut state.output.usage);
 
     if state.abort_server_side_fallback
-        && let Some(receipt) =
-            parse_sticky_fallback_receipt(&usage, sent_model, message.get("model").and_then(Value::as_str))
+        && let Some(receipt) = parse_sticky_fallback_receipt(
+            &usage,
+            sent_model,
+            message.get("model").and_then(Value::as_str),
+        )
     {
         state.server_fallback_receipt = Some(receipt);
         state.abort_controller.abort(None);
@@ -2258,49 +2942,84 @@ fn handle_content_block_start(
         Some("text") => {
             let content_index = state.push_block(
                 ContentBlock::Text(TextContent {
-                    text: block.get("text").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                    text: block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
                     ..TextContent::default()
                 }),
                 index,
             );
-            sink.push(AssistantMessageEvent::TextStart { content_index, partial: state.output.clone() });
+            sink.push(AssistantMessageEvent::TextStart {
+                content_index,
+                partial: state.output.clone(),
+            });
         }
         Some("thinking") => {
             let content_index = state.push_block(
                 ContentBlock::Thinking(crate::types::ThinkingContent {
-                    thinking: block.get("thinking").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                    thinking: block
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
                     thinking_signature: Some(
-                        block.get("signature").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                        block
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
                     ),
                     ..crate::types::ThinkingContent::default()
                 }),
                 index,
             );
-            sink.push(AssistantMessageEvent::ThinkingStart { content_index, partial: state.output.clone() });
+            sink.push(AssistantMessageEvent::ThinkingStart {
+                content_index,
+                partial: state.output.clone(),
+            });
         }
         Some("redacted_thinking") => {
             let content_index = state.push_block(
                 ContentBlock::Thinking(crate::types::ThinkingContent {
                     thinking: "[Reasoning redacted]".into(),
-                    thinking_signature: block.get("data").and_then(Value::as_str).map(str::to_owned),
+                    thinking_signature: block
+                        .get("data")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
                     redacted: Some(true),
                     ..crate::types::ThinkingContent::default()
                 }),
                 index,
             );
-            sink.push(AssistantMessageEvent::ThinkingStart { content_index, partial: state.output.clone() });
+            sink.push(AssistantMessageEvent::ThinkingStart {
+                content_index,
+                partial: state.output.clone(),
+            });
         }
         Some("tool_use") => {
-            let raw_name = block.get("name").and_then(Value::as_str).unwrap_or_default();
+            let raw_name = block
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let name = if state.is_oauth_token {
                 from_claude_code_name(raw_name, context.tools.as_deref())
             } else {
                 raw_name.to_owned()
             };
-            let arguments = block.get("input").and_then(Value::as_object).cloned().unwrap_or_default();
+            let arguments = block
+                .get("input")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             let content_index = state.push_block(
                 ContentBlock::ToolCall(ToolCall {
-                    id: block.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                    id: block
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
                     name,
                     arguments,
                     incomplete: None,
@@ -2310,11 +3029,17 @@ fn handle_content_block_start(
                 }),
                 index,
             );
-            sink.push(AssistantMessageEvent::ToolcallStart { content_index, partial: state.output.clone() });
+            sink.push(AssistantMessageEvent::ToolcallStart {
+                content_index,
+                partial: state.output.clone(),
+            });
         }
         Some(other) => {
             state.push_block(
-                ContentBlock::ProviderNative(crate::types::ProviderNativeContent { subtype: other.to_owned(), raw: block }),
+                ContentBlock::ProviderNative(crate::types::ProviderNativeContent {
+                    subtype: other.to_owned(),
+                    raw: block,
+                }),
                 index,
             );
         }
@@ -2322,12 +3047,19 @@ fn handle_content_block_start(
     }
 }
 
-fn handle_content_block_delta(state: &mut StreamState, event: &Value, sink: &AssistantMessageEventStream) {
+fn handle_content_block_delta(
+    state: &mut StreamState,
+    event: &Value,
+    sink: &AssistantMessageEventStream,
+) {
     let delta = event.get("delta").cloned().unwrap_or(Value::Null);
     let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
     match delta.get("type").and_then(Value::as_str) {
         Some("text_delta") => {
-            let text = delta.get("text").and_then(Value::as_str).unwrap_or_default();
+            let text = delta
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if let Some(content_index) = state.find_block(index)
                 && let Some(ContentBlock::Text(block)) = state.output.content.get_mut(content_index)
             {
@@ -2340,9 +3072,13 @@ fn handle_content_block_delta(state: &mut StreamState, event: &Value, sink: &Ass
             }
         }
         Some("thinking_delta") => {
-            let thinking = delta.get("thinking").and_then(Value::as_str).unwrap_or_default();
+            let thinking = delta
+                .get("thinking")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if let Some(content_index) = state.find_block(index)
-                && let Some(ContentBlock::Thinking(block)) = state.output.content.get_mut(content_index)
+                && let Some(ContentBlock::Thinking(block)) =
+                    state.output.content.get_mut(content_index)
             {
                 block.thinking.push_str(thinking);
                 sink.push(AssistantMessageEvent::ThinkingDelta {
@@ -2353,13 +3089,24 @@ fn handle_content_block_delta(state: &mut StreamState, event: &Value, sink: &Ass
             }
         }
         Some("input_json_delta") => {
-            let partial = delta.get("partial_json").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let Some(content_index) = state.find_block(index) else { return };
-            if matches!(state.output.content.get(content_index), Some(ContentBlock::ToolCall(_))) {
+            let partial = delta
+                .get("partial_json")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let Some(content_index) = state.find_block(index) else {
+                return;
+            };
+            if matches!(
+                state.output.content.get(content_index),
+                Some(ContentBlock::ToolCall(_))
+            ) {
                 let scratch = state.partial_json[content_index].get_or_insert_with(String::new);
                 scratch.push_str(&partial);
                 let parsed = parse_streaming_json(Some(scratch));
-                if let Some(ContentBlock::ToolCall(call)) = state.output.content.get_mut(content_index) {
+                if let Some(ContentBlock::ToolCall(call)) =
+                    state.output.content.get_mut(content_index)
+                {
                     call.arguments = parsed.as_object().cloned().unwrap_or_default();
                 }
                 sink.push(AssistantMessageEvent::ToolcallDelta {
@@ -2367,7 +3114,8 @@ fn handle_content_block_delta(state: &mut StreamState, event: &Value, sink: &Ass
                     delta: partial,
                     partial: state.output.clone(),
                 });
-            } else if let Some(ContentBlock::ProviderNative(native)) = state.output.content.get(content_index)
+            } else if let Some(ContentBlock::ProviderNative(native)) =
+                state.output.content.get(content_index)
                 && is_provider_native_tool_use_block(&native.raw)
             {
                 let scratch = state.partial_json[content_index].get_or_insert_with(String::new);
@@ -2375,38 +3123,64 @@ fn handle_content_block_delta(state: &mut StreamState, event: &Value, sink: &Ass
             }
         }
         Some("signature_delta") => {
-            let signature = delta.get("signature").and_then(Value::as_str).unwrap_or_default();
+            let signature = delta
+                .get("signature")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if let Some(content_index) = state.find_block(index)
-                && let Some(ContentBlock::Thinking(block)) = state.output.content.get_mut(content_index)
+                && let Some(ContentBlock::Thinking(block)) =
+                    state.output.content.get_mut(content_index)
             {
-                block.thinking_signature.get_or_insert_with(String::new).push_str(signature);
+                block
+                    .thinking_signature
+                    .get_or_insert_with(String::new)
+                    .push_str(signature);
             }
         }
         _ => {}
     }
 }
 
-fn handle_content_block_stop(state: &mut StreamState, event: &Value, sink: &AssistantMessageEventStream) {
+fn handle_content_block_stop(
+    state: &mut StreamState,
+    event: &Value,
+    sink: &AssistantMessageEventStream,
+) {
     let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let Some(content_index) = state.find_block(index) else { return };
+    let Some(content_index) = state.find_block(index) else {
+        return;
+    };
     state.indices[content_index] = None;
     match state.output.content.get(content_index) {
         Some(ContentBlock::Text(block)) => {
             let content = block.text.clone();
-            sink.push(AssistantMessageEvent::TextEnd { content_index, content, partial: state.output.clone() });
+            sink.push(AssistantMessageEvent::TextEnd {
+                content_index,
+                content,
+                partial: state.output.clone(),
+            });
         }
         Some(ContentBlock::Thinking(block)) => {
             let content = block.thinking.clone();
-            sink.push(AssistantMessageEvent::ThinkingEnd { content_index, content, partial: state.output.clone() });
+            sink.push(AssistantMessageEvent::ThinkingEnd {
+                content_index,
+                content,
+                partial: state.output.clone(),
+            });
         }
         Some(ContentBlock::ToolCall(_)) => {
-            let partial_json = state.partial_json[content_index].clone().unwrap_or_default();
+            let partial_json = state.partial_json[content_index]
+                .clone()
+                .unwrap_or_default();
             state.partial_json[content_index] = None;
             let parsed = parse_streaming_json(Some(&partial_json));
-            if let Some(ContentBlock::ToolCall(call)) = state.output.content.get_mut(content_index) {
+            if let Some(ContentBlock::ToolCall(call)) = state.output.content.get_mut(content_index)
+            {
                 call.arguments = parsed.as_object().cloned().unwrap_or_default();
             }
-            let Some(ContentBlock::ToolCall(call)) = state.output.content.get(content_index) else { return };
+            let Some(ContentBlock::ToolCall(call)) = state.output.content.get(content_index) else {
+                return;
+            };
             sink.push(AssistantMessageEvent::ToolcallEnd {
                 content_index,
                 tool_call: call.clone(),
@@ -2416,7 +3190,8 @@ fn handle_content_block_stop(state: &mut StreamState, event: &Value, sink: &Assi
         Some(ContentBlock::ProviderNative(_)) => {
             let partial_json = state.partial_json[content_index].take();
             if let Some(partial_json) = partial_json
-                && let Some(ContentBlock::ProviderNative(native)) = state.output.content.get_mut(content_index)
+                && let Some(ContentBlock::ProviderNative(native)) =
+                    state.output.content.get_mut(content_index)
             {
                 native.raw = merge_provider_native_input(&native.raw, &partial_json);
             }
@@ -2425,7 +3200,10 @@ fn handle_content_block_stop(state: &mut StreamState, event: &Value, sink: &Assi
     }
 }
 
-fn handle_message_delta(state: &mut StreamState, event: &Value) -> Result<(), AnthropicStreamError> {
+fn handle_message_delta(
+    state: &mut StreamState,
+    event: &Value,
+) -> Result<(), AnthropicStreamError> {
     if let Some(transformations) = event.get("input_transformations").and_then(Value::as_array) {
         state.input_transformations = Some(transformations.clone());
     }
@@ -2433,7 +3211,8 @@ fn handle_message_delta(state: &mut StreamState, event: &Value) -> Result<(), An
     if let Some(stop_reason) = delta.get("stop_reason").and_then(Value::as_str) {
         state.output.raw_stop_reason = Some(stop_reason.to_owned());
         let (mapped, error_message, stop_details) =
-            map_stop_reason(stop_reason, delta.get("stop_details")).map_err(AnthropicStreamError::Message)?;
+            map_stop_reason(stop_reason, delta.get("stop_details"))
+                .map_err(AnthropicStreamError::Message)?;
         state.output.stop_reason = mapped;
         if let Some(error_message) = error_message {
             state.output.error_message = Some(error_message);
@@ -2452,7 +3231,10 @@ fn handle_message_delta(state: &mut StreamState, event: &Value) -> Result<(), An
         if let Some(cache_read) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
             state.output.usage.cache_read = cache_read;
         }
-        if let Some(cache_write) = usage.get("cache_creation_input_tokens").and_then(Value::as_u64) {
+        if let Some(cache_write) = usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+        {
             state.output.usage.cache_write = cache_write;
         }
         if let Some(thinking_tokens) = usage
@@ -2481,7 +3263,9 @@ fn handle_event(
 ) -> Result<(), AnthropicStreamError> {
     match event.get("type").and_then(Value::as_str) {
         Some("message_start") => handle_message_start(state, model, event, sent_model),
-        Some("content_block_start") => handle_content_block_start(state, model, context, event, sink),
+        Some("content_block_start") => {
+            handle_content_block_start(state, model, context, event, sink)
+        }
         Some("content_block_delta") => handle_content_block_delta(state, event, sink),
         Some("content_block_stop") => handle_content_block_stop(state, event, sink),
         Some("message_delta") => handle_message_delta(state, event)?,
@@ -2501,11 +3285,21 @@ fn merge_provider_native_input(raw: &Value, partial_json: &str) -> Value {
 fn strip_streaming_scratch(state: &mut StreamState) {
     state.indices.iter_mut().for_each(|index| *index = None);
     for content_index in 0..state.output.content.len() {
-        let Some(partial_json) = state.partial_json[content_index].take() else { continue };
-        if let Some(ContentBlock::ProviderNative(native)) = state.output.content.get_mut(content_index) {
+        let Some(partial_json) = state.partial_json[content_index].take() else {
+            continue;
+        };
+        if let Some(ContentBlock::ProviderNative(native)) =
+            state.output.content.get_mut(content_index)
+        {
             native.raw = merge_provider_native_input(&native.raw, &partial_json);
         }
     }
+}
+
+struct RequestReplay<'a> {
+    unsigned_thinking: &'a Mutex<&'static str>,
+    fallback_key: Option<&'a str>,
+    omitted_tools: &'a Mutex<usize>,
 }
 
 async fn attempt_request(
@@ -2514,50 +3308,217 @@ async fn attempt_request(
     client: &AnthropicClient,
     options: &StreamOptions,
     api_key: Option<&str>,
-    unsigned_thinking_replay: &Mutex<&'static str>,
-    fallback_key: Option<&str>,
+    replay: RequestReplay<'_>,
 ) -> Result<(PreparedRequest, reqwest::Response), AnthropicStreamError> {
-    let prepared = build_prepared_request(model, context, client.is_oauth_token, options, replay_mode(unsigned_thinking_replay)).await?;
-    let forced_tool_choice = is_forced_anthropic_tool_choice(prepared.params.get("tool_choice"));
-    let response = match send_request(model, client, options, api_key, &prepared).await {
-        Ok(response) if response.status().is_success() => return Ok((prepared, response)),
-        Ok(response) => classify_response_failure(response).await,
-        Err(error) => error,
-    };
-
-    if is_forced_tool_choice_unsupported_error(
-        &HttpFailure { status: response.status(), message: response.to_string() },
-        forced_tool_choice,
-    ) {
-        let retried = PreparedRequest {
-            params: omit_tool_choice_param(&prepared.params),
-            headers: prepared.headers.clone(),
-            sent_model: prepared.sent_model.clone(),
-        };
-        return match send_request(model, client, options, api_key, &retried).await {
-            Ok(response) if response.status().is_success() => Ok((retried, response)),
-            Ok(response) => Err(classify_response_failure(response).await),
-            Err(error) => Err(error),
-        };
-    }
-
-    if replay_mode(unsigned_thinking_replay) != "text" && is_invalid_unsigned_thinking_signature_error(&response) {
-        *unsigned_thinking_replay.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = "text";
-        if let Some(key) = fallback_key {
-            UNSIGNED_THINKING_TEXT_REPLAY_FALLBACKS
+    let RequestReplay {
+        unsigned_thinking: unsigned_thinking_replay,
+        fallback_key,
+        omitted_tools,
+    } = replay;
+    let mut demote_references = fallback_key.is_some_and(|key| {
+        TOOL_REFERENCE_REPLAY_FALLBACKS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(key)
+    });
+    let prefix = fallback_key.map(|key| format!("{key}\0"));
+    let mut expired: HashSet<String> = prefix
+        .as_ref()
+        .map(|prefix| {
+            EXPIRED_WEB_SEARCH_REPLAYS
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(key.to_owned());
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .filter_map(|key| key.strip_prefix(prefix).map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut version_retried = false;
+    let mut version_client = None;
+    let mut federation_retried = false;
+    loop {
+        let client = version_client.as_ref().unwrap_or(client);
+        let mut prepared = build_prepared_request(
+            model,
+            context,
+            client.is_oauth_token,
+            options,
+            replay_mode(unsigned_thinking_replay),
+        )
+        .await?;
+        let demoted = demote_tool_reference_replay(&prepared.params);
+        let replays_references = demoted != prepared.params;
+        if demote_references {
+            prepared.params = demoted;
         }
-        let prepared = build_prepared_request(model, context, client.is_oauth_token, options, replay_mode(unsigned_thinking_replay)).await?;
-        return match send_request(model, client, options, api_key, &prepared).await {
-            Ok(response) if response.status().is_success() => Ok((prepared, response)),
-            Ok(response) => Err(classify_response_failure(response).await),
-            Err(error) => Err(error),
+        demote_expired_web_search_replay(&mut prepared.params, &expired);
+        let choice = prepared.params.get("tool_choice").cloned();
+        if let Some(Value::Array(tools)) = prepared.params.get_mut("tools") {
+            let omitted = crate::utils::github_copilot_tool_limit::limit_github_copilot_tools(
+                &model.provider,
+                tools,
+                choice.as_ref(),
+            );
+            if omitted > 0 {
+                *omitted_tools
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = omitted;
+            }
+        }
+        let sent = send_with_forced_tool_choice_fallback_classified(
+            model,
+            prepared.params.clone(),
+            get_anthropic_compat(model).supports_forced_tool_choice,
+            is_forced_anthropic_tool_choice,
+            |params| {
+                let request = PreparedRequest {
+                    params,
+                    headers: prepared.headers.clone(),
+                    sent_model: prepared.sent_model.clone(),
+                };
+                async move {
+                    let response = send_request(model, client, options, api_key, &request).await?;
+                    if response.status().is_success() {
+                        Ok(response)
+                    } else {
+                        Err(classify_response_failure(response).await)
+                    }
+                }
+            },
+            |error: &AnthropicStreamError| HttpFailure {
+                status: error.status(),
+                message: error.to_string(),
+            }.into(),
+        ).await;
+        let response = match sent {
+            Ok((params, response)) => {
+                prepared.params = params;
+                return Ok((prepared, response));
+            }
+            Err(error) => error,
         };
-    }
+        if !federation_retried && response.status() == Some(401) {
+            let headers = provider_headers_to_record(options.request.headers.as_ref());
+            if let Some(config) = anthropic_federation::resolve(
+                model,
+                options,
+                assert_request_auth(&model.provider, api_key, headers.as_ref()).is_ok(),
+            ) {
+                federation_retried = true;
+                let token = anthropic_federation::token(&config, options, true)
+                    .await
+                    .map_err(AnthropicStreamError::Message)?;
+                let mut headers = client.headers.clone();
+                headers.insert("authorization".into(), Some(format!("Bearer {token}")));
+                version_client = Some(AnthropicClient {
+                    base_url: client.base_url.clone(),
+                    headers,
+                    is_oauth_token: false,
+                });
+                continue;
+            }
+        }
 
-    Err(response)
+        if replay_mode(unsigned_thinking_replay) != "text"
+            && is_invalid_unsigned_thinking_signature_error(&response)
+        {
+            *unsigned_thinking_replay
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = "text";
+            if let Some(key) = fallback_key {
+                UNSIGNED_THINKING_TEXT_REPLAY_FALLBACKS
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(key.to_owned());
+            }
+            continue;
+        }
+        let message = response.to_string();
+        if client.is_oauth_token
+            && is_claude_code_version_too_old_error(response.status(), &message)
+        {
+            let advertised = client
+                .headers
+                .get("user-agent")
+                .and_then(Option::as_deref)
+                .and_then(|value| value.strip_prefix("claude-cli/"))
+                .unwrap_or(CLAUDE_CODE_VERSION);
+            if !version_retried {
+                version_retried = true;
+                if let Some(next) = recover_claude_code_version(
+                    &message,
+                    CLAUDE_CODE_VERSION,
+                    advertised,
+                    options.request.env.as_ref(),
+                )
+                .await
+                {
+                    let mut headers = client.headers.clone();
+                    headers.insert("user-agent".into(), Some(format!("claude-cli/{next}")));
+                    version_client = Some(AnthropicClient {
+                        base_url: client.base_url.clone(),
+                        headers,
+                        is_oauth_token: true,
+                    });
+                    continue;
+                }
+            }
+            return Err(match response {
+                AnthropicStreamError::Http {
+                    status,
+                    message,
+                    headers,
+                    parsed_body,
+                } => AnthropicStreamError::Http {
+                    status,
+                    message: format!(
+                        "{message}\n{}",
+                        claude_code_version_too_old_hint(advertised)
+                    ),
+                    headers,
+                    parsed_body,
+                },
+                other => other,
+            });
+        }
+        if !demote_references
+            && replays_references
+            && response.status() == Some(400)
+            && message.to_ascii_lowercase().contains("tool reference '")
+            && message
+                .to_ascii_lowercase()
+                .contains("' not found in available tools")
+        {
+            demote_references = true;
+            if let Some(key) = fallback_key {
+                TOOL_REFERENCE_REPLAY_FALLBACKS
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(key.to_owned());
+            }
+            continue;
+        }
+        if is_expired_web_search_content_error(response.status(), &message) {
+            let newly_expired: Vec<String> =
+                expired_web_search_replay_ids(&prepared.params, &message)
+                    .into_iter()
+                    .filter(|id| !expired.contains(id))
+                    .collect();
+            if !newly_expired.is_empty() {
+                for id in newly_expired {
+                    if let Some(prefix) = &prefix {
+                        EXPIRED_WEB_SEARCH_REPLAYS
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .insert(format!("{prefix}{id}"));
+                    }
+                    expired.insert(id);
+                }
+                continue;
+            }
+        }
+        return Err(response);
+    }
 }
 
 async fn drive(
@@ -2567,10 +3528,31 @@ async fn drive(
     state: &mut StreamState,
     sink: &AssistantMessageEventStream,
 ) -> Result<(), AnthropicStreamError> {
-    let api_key = options.request.api_key.clone().filter(|key| !key.is_empty());
+    let resolved_context = crate::types::transcript::resolve_provider_context(
+        context,
+        model.compat.as_ref().is_some_and(|compat| {
+            compat
+                .anthropic_messages()
+                .supports_mid_convo_system_messages
+                == Some(true)
+        }),
+    );
+    let context = &resolved_context;
+    let api_key = options
+        .request
+        .api_key
+        .clone()
+        .filter(|key| !key.is_empty());
     let options_headers = provider_headers_to_record(options.request.headers.as_ref());
-    assert_request_auth(&model.provider, api_key.as_deref(), options_headers.as_ref())
-        .map_err(AnthropicStreamError::Message)?;
+    let auth = assert_request_auth(
+        &model.provider,
+        api_key.as_deref(),
+        options_headers.as_ref(),
+    );
+    let federation = anthropic_federation::resolve(model, options, auth.is_ok());
+    if federation.is_none() {
+        auth.map_err(AnthropicStreamError::Message)?;
+    }
 
     let dynamic_headers = (model.provider == "github-copilot").then(|| {
         let has_images = has_copilot_vision_input(&context.messages);
@@ -2581,9 +3563,13 @@ async fn drive(
         options.cache_retention.or(model.cache_retention),
         options.request.env.as_ref(),
     );
-    let cache_session_id = if cache_retention == CacheRetention::None { None } else { options.session_id.clone() };
+    let cache_session_id = if cache_retention == CacheRetention::None {
+        None
+    } else {
+        options.session_id.clone()
+    };
 
-    let client = create_client(
+    let mut client = create_client(
         model,
         context,
         options,
@@ -2591,19 +3577,36 @@ async fn drive(
         dynamic_headers.as_ref(),
         cache_session_id.as_deref(),
     );
+    if let Some(config) = &federation {
+        let token = anthropic_federation::token(config, options, false)
+            .await
+            .map_err(AnthropicStreamError::Message)?;
+        client
+            .headers
+            .insert("authorization".into(), Some(format!("Bearer {token}")));
+        let beta = client.headers.entry("anthropic-beta".into()).or_default();
+        *beta = Some(match beta.take() {
+            Some(value) => format!("{value},oauth-2025-04-20"),
+            None => "oauth-2025-04-20".into(),
+        });
+    }
     state.is_oauth_token = client.is_oauth_token;
 
     let fallback_key = unsigned_thinking_fallback_key(model, options.session_id.as_deref());
-    let unsigned_thinking_replay: Mutex<&'static str> = Mutex::new(if fallback_key.as_ref().is_some_and(|key| {
-        UNSIGNED_THINKING_TEXT_REPLAY_FALLBACKS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(key)
-    }) {
-        "text"
-    } else {
-        unsigned_thinking_replay_value(Some(&get_anthropic_compat(model).unsigned_thinking_replay))
-    });
+    let unsigned_thinking_replay: Mutex<&'static str> = Mutex::new(
+        if fallback_key.as_ref().is_some_and(|key| {
+            UNSIGNED_THINKING_TEXT_REPLAY_FALLBACKS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(key)
+        }) {
+            "text"
+        } else {
+            unsigned_thinking_replay_value(Some(
+                &get_anthropic_compat(model).unsigned_thinking_replay,
+            ))
+        },
+    );
 
     let _ = LazyLock::force(&UNSIGNED_THINKING_CLEANUP);
 
@@ -2612,9 +3615,23 @@ async fn drive(
     let api_key_ref = api_key.as_deref();
     let fallback_key_ref = fallback_key.as_deref();
     let replay_cell = &unsigned_thinking_replay;
+    let omitted_tools = Mutex::new(0);
+    let omitted_tools_ref = &omitted_tools;
     let request_outcome = retry_provider_request(
         move || async move {
-            attempt_request(model, context, client_ref, options, api_key_ref, replay_cell, fallback_key_ref).await
+            attempt_request(
+                model,
+                context,
+                client_ref,
+                options,
+                api_key_ref,
+                RequestReplay {
+                    unsigned_thinking: replay_cell,
+                    fallback_key: fallback_key_ref,
+                    omitted_tools: omitted_tools_ref,
+                },
+            )
+            .await
         },
         &ProviderRetryOptions {
             max_retries: options.request.max_retries,
@@ -2624,44 +3641,82 @@ async fn drive(
     )
     .await;
 
+    crate::utils::github_copilot_tool_limit::record_github_copilot_tool_limit(
+        &mut state.output,
+        *omitted_tools
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+    );
+
     let (prepared, response) = match request_outcome {
         Ok(outcome) => outcome,
         Err(error) => {
             let error = map_retry_error(error);
             if let Some(status) = error.status() {
-                options.request.apply_response_hook(
-                    &crate::types::ProviderResponse { status, headers: Default::default() }, model,
-                ).await.map_err(AnthropicStreamError::Message)?;
+                options
+                    .request
+                    .apply_response_hook(
+                        &crate::types::ProviderResponse {
+                            status,
+                            headers: Default::default(),
+                        },
+                        model,
+                    )
+                    .await
+                    .map_err(AnthropicStreamError::Message)?;
             }
             return Err(error);
         }
     };
     sent_model.clone_from(&prepared.sent_model);
 
-    options.request.apply_response_hook(
-            &crate::types::ProviderResponse { status: response.status().as_u16(), headers: headers_to_record(response.headers()) },
+    options
+        .request
+        .apply_response_hook(
+            &crate::types::ProviderResponse {
+                status: response.status().as_u16(),
+                headers: headers_to_record(response.headers()),
+            },
             model,
-        ).await.map_err(AnthropicStreamError::Message)?;
-    sink.push(AssistantMessageEvent::Start { partial: state.output.clone() });
+        )
+        .await
+        .map_err(AnthropicStreamError::Message)?;
+    sink.push(AssistantMessageEvent::Start {
+        partial: state.output.clone(),
+    });
 
     let mut decoder = SseDecoder::default();
     let mut saw_message_start = false;
     let mut saw_message_end = false;
     let mut body = response.bytes_stream();
     while let Some(chunk) = body.next().await {
-        if options.request.signal.as_ref().is_some_and(AbortSignal::aborted) {
+        if options
+            .request
+            .signal
+            .as_ref()
+            .is_some_and(AbortSignal::aborted)
+        {
             return Err(AnthropicStreamError::Message("Request was aborted".into()));
         }
-        let chunk = chunk.map_err(|error| AnthropicStreamError::Network { message: error.to_string(), timeout: false })?;
+        let chunk = chunk.map_err(|error| AnthropicStreamError::Network {
+            message: error.to_string(),
+            timeout: false,
+        })?;
         for sse in decoder.push_bytes(&chunk) {
             if let Some(event) = decode_anthropic_event(&sse)? {
+                options
+                    .observe_provider_stream_event(&event, model)
+                    .await
+                    .map_err(AnthropicStreamError::Message)?;
                 if is_anthropic_message_start(&event) {
                     saw_message_start = true;
                 } else if is_anthropic_message_stop(&event) {
                     saw_message_end = true;
                 }
                 handle_event(state, model, context, &event, &sent_model, sink)?;
-                if state.server_fallback_receipt.is_some() && state.abort_controller.signal().aborted() {
+                if state.server_fallback_receipt.is_some()
+                    && state.abort_controller.signal().aborted()
+                {
                     return finish_stream(state, options, sink, None);
                 }
             }
@@ -2669,6 +3724,10 @@ async fn drive(
     }
     for sse in decoder.finish() {
         if let Some(event) = decode_anthropic_event(&sse)? {
+            options
+                .observe_provider_stream_event(&event, model)
+                .await
+                .map_err(AnthropicStreamError::Message)?;
             if is_anthropic_message_start(&event) {
                 saw_message_start = true;
             } else if is_anthropic_message_stop(&event) {
@@ -2678,11 +3737,18 @@ async fn drive(
         }
     }
 
-    if options.request.signal.as_ref().is_some_and(AbortSignal::aborted) {
+    if options
+        .request
+        .signal
+        .as_ref()
+        .is_some_and(AbortSignal::aborted)
+    {
         return Err(AnthropicStreamError::Message("Request was aborted".into()));
     }
     if saw_message_start && !saw_message_end {
-        return Err(AnthropicStreamError::Message("Anthropic stream ended before message_stop".into()));
+        return Err(AnthropicStreamError::Message(
+            "Anthropic stream ended before message_stop".into(),
+        ));
     }
     finish_stream(state, options, sink, None)
 }
@@ -2705,11 +3771,20 @@ fn finish_stream(
         apply_server_fallback_abort(&mut state.output, &receipt);
     }
     if state.output.stop_reason == StopReason::Pending {
-        return Err(AnthropicStreamError::Message("Anthropic stream ended without a stop reason".into()));
-    }
-    if matches!(state.output.stop_reason, StopReason::Aborted | StopReason::Error) {
         return Err(AnthropicStreamError::Message(
-            state.output.error_message.clone().unwrap_or_else(|| "An unknown error occurred".to_owned()),
+            "Anthropic stream ended without a stop reason".into(),
+        ));
+    }
+    if matches!(
+        state.output.stop_reason,
+        StopReason::Aborted | StopReason::Error
+    ) {
+        return Err(AnthropicStreamError::Message(
+            state
+                .output
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "An unknown error occurred".to_owned()),
         ));
     }
     if let Some(transformations) = state.input_transformations.clone()
@@ -2740,7 +3815,10 @@ fn finish_stream(
         );
     }
     let _ = options;
-    sink.push(AssistantMessageEvent::Done { reason: done_reason(state.output.stop_reason), message: state.output.clone() });
+    sink.push(AssistantMessageEvent::Done {
+        reason: done_reason(state.output.stop_reason),
+        message: state.output.clone(),
+    });
     sink.end(Some(state.output.clone()));
     Ok(())
 }
@@ -2754,10 +3832,18 @@ fn done_reason(stop_reason: StopReason) -> DoneReason {
     }
 }
 
-async fn run_stream(model: Model, context: Context, options: StreamOptions, sink: AssistantMessageEventStream) {
+async fn run_stream(
+    model: Model,
+    context: Context,
+    options: StreamOptions,
+    sink: AssistantMessageEventStream,
+) {
     let output = create_output(&model, &options);
     let abort_controller = AbortController::new();
-    let combined = combine_abort_signals(&[options.request.signal.clone(), Some(abort_controller.signal())]);
+    let combined = combine_abort_signals(&[
+        options.request.signal.clone(),
+        Some(abort_controller.signal()),
+    ]);
     let mut state = StreamState {
         output,
         indices: Vec::new(),
@@ -2774,13 +3860,25 @@ async fn run_stream(model: Model, context: Context, options: StreamOptions, sink
     combined.cleanup();
     if let Err(error) = outcome {
         strip_streaming_scratch(&mut state);
-        let aborted = options.request.signal.as_ref().is_some_and(AbortSignal::aborted);
-        state.output.stop_reason = if aborted { StopReason::Aborted } else { StopReason::Error };
+        let aborted = options
+            .request
+            .signal
+            .as_ref()
+            .is_some_and(AbortSignal::aborted);
+        state.output.stop_reason = if aborted {
+            StopReason::Aborted
+        } else {
+            StopReason::Error
+        };
         let mut error_message = error.to_string();
         if error.status() == Some(429)
             && let Some(headers) = error.headers()
             && let Some(hint_ms) = extract_429_retry_after_ms(
-                &RetryHintInput { status: Some(429), headers: Some(headers), body_text: &error_message },
+                &RetryHintInput {
+                    status: Some(429),
+                    headers: Some(headers),
+                    body_text: &error_message,
+                },
                 None,
             )
         {
@@ -2796,16 +3894,53 @@ async fn run_stream(model: Model, context: Context, options: StreamOptions, sink
                 details: retry_failure_details(&failure),
             },
         );
-        state.output.error_message = Some(error_message);
+        state.output.provider_diagnostic =
+            crate::utils::event_stream::StreamError::diagnostic_from_status(error.status());
+        let error_message =
+            crate::utils::github_copilot_tool_limit::format_github_copilot_tool_limit_error(
+                &state.output,
+                error_message,
+            );
+        let body = match &error {
+            AnthropicStreamError::Http { parsed_body, .. } => {
+                parsed_body.as_ref().map(|body| body.to_string())
+            }
+            _ => None,
+        };
+        state.output.error_message = Some(github_copilot_errors::with_github_copilot_failure_note(
+            error_message,
+            &model.provider,
+            error.status(),
+            body.as_deref(),
+            error.headers(),
+        ));
         sink.push(AssistantMessageEvent::Error {
-            reason: if aborted { ErrorReason::Aborted } else { ErrorReason::Error },
+            reason: if aborted {
+                ErrorReason::Aborted
+            } else {
+                ErrorReason::Error
+            },
             error: state.output.clone(),
         });
         sink.end(Some(state.output.clone()));
     }
 }
 
-pub fn stream(model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+pub fn stream(
+    model: &Model,
+    context: &Context,
+    options: Option<StreamOptions>,
+) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(
+        context,
+        model.compat.as_ref().is_some_and(|compat| {
+            compat
+                .anthropic_messages()
+                .supports_mid_convo_system_messages
+                == Some(true)
+        }),
+    );
+    let context = &resolved_context;
     let stream = create_assistant_message_event_stream();
     let sink = stream.clone();
     let model = model.clone();
@@ -2820,30 +3955,54 @@ pub fn stream_simple(
     context: &Context,
     options: Option<SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(
+        context,
+        model.compat.as_ref().is_some_and(|compat| {
+            compat
+                .anthropic_messages()
+                .supports_mid_convo_system_messages
+                == Some(true)
+        }),
+    );
+    let context = &resolved_context;
     let simple = options.unwrap_or_default();
     let api_key = simple.stream.request.api_key.clone();
     let options_headers = provider_headers_to_record(simple.stream.request.headers.as_ref());
-    if let Err(message) = assert_request_auth(&model.provider, api_key.as_deref(), options_headers.as_ref()) {
+    if let Err(message) = assert_request_auth(
+        &model.provider,
+        api_key.as_deref(),
+        options_headers.as_ref(),
+    ) && anthropic_federation::resolve(model, &simple.stream, false).is_none() {
         return crate::utils::lazy::error_stream(model, &message);
     }
 
-    let mut stream_options = match build_base_options(model, context, Some(&simple), api_key.as_deref()) {
-        Ok(stream_options) => stream_options,
-        Err(error) => return crate::utils::lazy::error_stream(model, &error.to_string()),
-    };
+    let mut stream_options =
+        match build_base_options(model, context, Some(&simple), api_key.as_deref()) {
+            Ok(stream_options) => stream_options,
+            Err(error) => return crate::utils::lazy::error_stream(model, &error.to_string()),
+        };
     if let Some(tool_choice) = &simple.tool_choice {
-        stream_options.extra.insert("toolChoice".into(), serde_json::to_value(tool_choice).unwrap_or(Value::Null));
+        stream_options.extra.insert(
+            "toolChoice".into(),
+            serde_json::to_value(tool_choice).unwrap_or(Value::Null),
+        );
     }
 
     let Some(reasoning) = simple.reasoning else {
-        stream_options.extra.insert("thinkingEnabled".into(), Value::from(false));
+        stream_options
+            .extra
+            .insert("thinkingEnabled".into(), Value::from(false));
         return stream(model, context, Some(stream_options));
     };
 
     if supports_adaptive_thinking(model) {
         let effort = map_thinking_level_to_effort(model, Some(reasoning));
-        stream_options.extra.insert("thinkingEnabled".into(), Value::from(true));
-        stream_options.extra.insert("effort".into(), Value::from(effort));
+        stream_options
+            .extra
+            .insert("thinkingEnabled".into(), Value::from(true));
+        stream_options
+            .extra
+            .insert("effort".into(), Value::from(effort));
         return stream(model, context, Some(stream_options));
     }
 
@@ -2853,11 +4012,19 @@ pub fn stream_simple(
         reasoning,
         simple.thinking_budgets.as_ref(),
     );
-    let max_tokens = clamp_max_tokens_to_context(model, context, adjusted.max_tokens).unwrap_or(adjusted.max_tokens);
-    stream_options.extra.insert("thinkingEnabled".into(), Value::from(true));
+    let max_tokens = clamp_max_tokens_to_context(model, context, adjusted.max_tokens)
+        .unwrap_or(adjusted.max_tokens);
     stream_options
         .extra
-        .insert("thinkingBudgetTokens".into(), Value::from(adjusted.thinking_budget.min(max_tokens.saturating_sub(1024))));
+        .insert("thinkingEnabled".into(), Value::from(true));
+    stream_options.extra.insert(
+        "thinkingBudgetTokens".into(),
+        Value::from(
+            adjusted
+                .thinking_budget
+                .min(max_tokens.saturating_sub(1024)),
+        ),
+    );
     stream_options.max_tokens = Some(max_tokens);
     stream(model, context, Some(stream_options))
 }
@@ -2871,8 +4038,14 @@ pub fn build_anthropic_warm_prompt_cache_params(
     overridden.max_tokens = Some(0);
     overridden.extra.remove("thinkingEnabled");
     overridden.extra.remove("toolChoice");
-    let params = build_params(model, context, false, &overridden, unsigned_thinking_replay_value(Some(&get_anthropic_compat(model).unsigned_thinking_replay)))
-        .unwrap_or_default();
+    let params = build_params(
+        model,
+        context,
+        false,
+        &overridden,
+        unsigned_thinking_replay_value(Some(&get_anthropic_compat(model).unsigned_thinking_replay)),
+    )
+    .unwrap_or_default();
     let mut non_streaming = params;
     non_streaming.remove("stream");
     non_streaming.remove("thinking");

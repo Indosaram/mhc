@@ -40,6 +40,17 @@ fn only_ambient_secrets_are_stripped_and_declared_env_wins() {
 }
 
 #[test]
+fn package_manager_filter_ignores_case_only_for_ambient_values() {
+    let ambient = map(&[("yArN_cache", "ambient"), ("pnpm_home", "ambient"), ("no_update_notifier", "1"), ("NO_UPDATE_NOTIFIER_EXTRA", "kept")]);
+    let declared = map(&[("yArN_cache", "declared")]);
+    let clean = create_clean_mcp_environment_from(&ambient, &declared);
+    assert_eq!(clean["yArN_cache"], "declared");
+    assert!(!clean.contains_key("pnpm_home"));
+    assert!(!clean.contains_key("no_update_notifier"));
+    assert_eq!(clean["NO_UPDATE_NOTIFIER_EXTRA"], "kept");
+}
+
+#[test]
 fn the_pinned_entry_point_keeps_declared_env_intact() {
     let clean = create_clean_mcp_environment(&map(&[("MCP_DECLARED", "declared")]));
     assert_eq!(clean["MCP_DECLARED"], "declared");
