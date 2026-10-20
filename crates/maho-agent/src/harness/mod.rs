@@ -12,6 +12,7 @@ pub mod events;
 pub mod execution;
 pub mod hooks;
 pub mod messages;
+pub mod pico3;
 pub mod prompt_templates;
 pub mod result;
 pub mod runtime;

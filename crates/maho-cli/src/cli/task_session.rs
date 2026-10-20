@@ -277,7 +277,7 @@ mod tests {
         std::fs::create_dir_all(&parent_cwd).expect("parent cwd");
         std::fs::create_dir_all(&child_cwd).expect("child cwd");
         use maho_ai::providers::faux::{faux_provider,faux_assistant_message,faux_tool_call,FauxAssistantMessageOptions};
-        let provider = faux_provider(Default::default());
+        let provider = faux_provider(Default::default()).expect("valid faux provider");
         provider.set_responses(vec![
             faux_assistant_message(faux_tool_call("write", serde_json::json!({"path":"child-only.txt","content":"child"}).as_object().expect("arguments").clone(), Some("child-write")), FauxAssistantMessageOptions {stop_reason:Some(maho_ai::types::StopReason::ToolUse),..Default::default()}).into(),
             faux_assistant_message("done", Default::default()).into(),
@@ -285,7 +285,7 @@ mod tests {
         let model = provider.get_model(Some("faux-1")).expect("faux model");
         let mut model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(root.path().join("models.json")), providers: Some(Vec::new()), ..Default::default()
-        });
+        }).expect("valid model runtime");
         model_runtime.register_native_provider(provider.provider.clone());
         let registry = maho_core::model_registry::ModelRegistry::new(model_runtime.clone());
         registry.auth_storage.set("faux", Some(serde_json::json!({"type":"api_key","key":"child-fixture"}))).expect("faux auth");

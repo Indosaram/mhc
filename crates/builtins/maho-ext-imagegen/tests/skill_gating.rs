@@ -36,7 +36,7 @@ async fn discover(api: &ExtensionApi, ctx: &ExtensionContext) -> Vec<String> {
 }
 
 async fn before_agent_start(api: &ExtensionApi, ctx: &ExtensionContext) -> Option<String> {
-    let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: "draw an image".into(), images: None, system_prompt: "base".into(), system_prompt_options: BuildSystemPromptOptions::default() });
+    let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: "draw an image".into(), trigger: "prompt".into(), preview: false, images: None, system_prompt: "base".into(), system_prompt_options: BuildSystemPromptOptions::default() });
     match (api.registered.handlers[&EventKind::BeforeAgentStart][0])(&mut event, ctx).await.expect("before agent start") {
         EventResult::BeforeAgentStart(result) => result.system_prompt,
         EventResult::None => None,

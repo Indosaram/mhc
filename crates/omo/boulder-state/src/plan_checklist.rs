@@ -458,7 +458,8 @@ fn parse_task_separator_and_title(rest: &str) -> Option<&str> {
             } else if dash_blank_count >= 2 {
                 &after_dash[dash_blank_count - 1..]
             } else {
-                return None;
+                // The optional dash group backtracks when it leaves no title.
+                after_blanks
             };
             if is_dot_text(title) {
                 return Some(title);

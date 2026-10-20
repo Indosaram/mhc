@@ -9,11 +9,13 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use base64::Engine;
-use maho_ai::api::{bedrock_converse_stream, mistral_conversations, openai_images, openrouter_images, pi_messages};
+use maho_ai::api::{
+    bedrock_converse_stream, mistral_conversations, openai_images, openrouter_images, pi_messages,
+};
 use maho_ai::types::{
-    AssistantMessageEvent, ContentBlock, Context, ImagesContext, ImagesModel, ImagesModelCost, ImagesOutputModality,
-    ImagesStopReason, InputModality, Message, Model, ModelCost, ProviderEnv, SimpleStreamOptions, StreamOptions,
-    UserContent, UserMessage,
+    AssistantMessageEvent, ContentBlock, Context, ImagesContext, ImagesModel, ImagesModelCost,
+    ImagesOutputModality, ImagesStopReason, InputModality, Message, Model, ModelCost, ProviderEnv,
+    SimpleStreamOptions, StreamOptions, UserContent, UserMessage,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -25,11 +27,15 @@ struct FixtureServer {
 
 impl FixtureServer {
     async fn start(body: Vec<u8>, content_type: &'static str) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind fixture server");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fixture server");
         let addr = listener.local_addr().expect("fixture server addr");
         let handle = tokio::spawn(async move {
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
                 let body = body.clone();
                 tokio::spawn(async move {
                     let mut buffer = [0u8; 4096];
@@ -63,8 +69,10 @@ impl Drop for FixtureServer {
 /// tab indentation plus the generator's `Date.now()` timestamp normalization, and JS number
 /// formatting (an integral `f64` prints as `0`, never `0.0`).
 fn serialize_golden(events: &[AssistantMessageEvent], shared_containers: &[&str]) -> String {
-    let raw: Vec<serde_json::Value> =
-        events.iter().map(|event| serde_json::to_value(event).expect("event JSON")).collect();
+    let raw: Vec<serde_json::Value> = events
+        .iter()
+        .map(|event| serde_json::to_value(event).expect("event JSON"))
+        .collect();
     let terminal = final_message(&raw);
     let normalized: Vec<serde_json::Value> = raw
         .into_iter()
@@ -85,12 +93,16 @@ fn normalize_event(
 ) -> serde_json::Value {
     let mut event = event;
     for key in ["partial", "message", "error"] {
-        let is_message =
-            matches!(event.get(key), Some(serde_json::Value::Object(message)) if message.contains_key("role"));
+        let is_message = matches!(event.get(key), Some(serde_json::Value::Object(message)) if message.contains_key("role"));
         if !is_message {
             continue;
         }
-        let Some(object) = event.get_mut(key).and_then(serde_json::Value::as_object_mut) else { continue };
+        let Some(object) = event
+            .get_mut(key)
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
         if let Some(content) = final_message.get("content") {
             object.insert("content".into(), content.clone());
         }
@@ -134,7 +146,9 @@ struct JsNumberFormatter {
 
 impl JsNumberFormatter {
     fn new() -> Self {
-        Self { inner: serde_json::ser::PrettyFormatter::with_indent(b"\t") }
+        Self {
+            inner: serde_json::ser::PrettyFormatter::with_indent(b"\t"),
+        }
     }
 }
 
@@ -229,7 +243,9 @@ impl serde_json::ser::Formatter for JsNumberFormatter {
 }
 
 fn golden_path(case: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/replay").join(format!("{case}.json"))
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden/replay")
+        .join(format!("{case}.json"))
 }
 
 fn case_path(case: &str) -> std::path::PathBuf {
@@ -240,19 +256,26 @@ fn case_path(case: &str) -> std::path::PathBuf {
 
 fn load_case(case: &str) -> serde_json::Value {
     let path = case_path(case);
-    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}")))
-        .expect("replay case JSON")
+    serde_json::from_str(
+        &std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}")),
+    )
+    .expect("replay case JSON")
 }
 
 fn sse_fixture_bytes(case: &str) -> Vec<u8> {
     let spec = load_case(case);
-    let events = spec["fixture"]["events"].as_array().expect("fixture.events");
+    let events = spec["fixture"]["events"]
+        .as_array()
+        .expect("fixture.events");
     let mut body = String::new();
     for event in events {
         if let Some(name) = event.get("event").and_then(serde_json::Value::as_str) {
             body.push_str(&format!("event: {name}\n"));
         }
-        body.push_str(&format!("data: {}\n\n", event["data"].as_str().expect("fixture event data")));
+        body.push_str(&format!(
+            "data: {}\n\n",
+            event["data"].as_str().expect("fixture event data")
+        ));
     }
     body.into_bytes()
 }
@@ -260,7 +283,8 @@ fn sse_fixture_bytes(case: &str) -> Vec<u8> {
 fn assert_matches_golden(case: &str, events: &[AssistantMessageEvent], shared_containers: &[&str]) {
     let actual = serialize_golden(events, shared_containers);
     let path = golden_path(case);
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}"));
+    let expected =
+        std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}"));
     assert_eq!(
         actual, expected,
         "replay mismatch for {case}: run `bun tools/golden/ai-replay.mjs --case {case}` to regenerate from pinned senpi"
@@ -277,6 +301,8 @@ fn replay_model(api: &str, provider: &str, id: &str) -> Model {
         reasoning: false,
         default_thinking_level: None,
         thinking_level_map: None,
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         input: vec![InputModality::Text],
         cost: ModelCost::default(),
         context_window: 200_000,
@@ -294,13 +320,19 @@ fn replay_model(api: &str, provider: &str, id: &str) -> Model {
 
 fn hello_context() -> Context {
     Context {
+        active_tool_names: None,
         system_prompt: None,
-        messages: vec![Message::User(UserMessage { content: UserContent::Text("Hello".into()), timestamp: 0 })],
+        messages: vec![Message::User(UserMessage {
+            content: UserContent::Text("Hello".into()),
+            timestamp: 0,
+        })],
         tools: None,
     }
 }
 
-async fn collect(stream: maho_ai::types::AssistantMessageEventStream) -> Vec<AssistantMessageEvent> {
+async fn collect(
+    stream: maho_ai::types::AssistantMessageEventStream,
+) -> Vec<AssistantMessageEvent> {
     tokio::time::timeout(Duration::from_secs(10), stream.collect())
         .await
         .expect("replay round trip within the bound")
@@ -309,7 +341,11 @@ async fn collect(stream: maho_ai::types::AssistantMessageEventStream) -> Vec<Ass
 
 #[tokio::test]
 async fn pi_messages_replays_the_recorded_stream() {
-    let server = FixtureServer::start(sse_fixture_bytes("ai-replay-pi-messages-basic"), "text/event-stream").await;
+    let server = FixtureServer::start(
+        sse_fixture_bytes("ai-replay-pi-messages-basic"),
+        "text/event-stream",
+    )
+    .await;
     let mut model = replay_model("pi-messages", "test-replay", "pi-messages-replay-model");
     model.base_url = server.base_url();
     let mut options = StreamOptions::default();
@@ -321,30 +357,54 @@ async fn pi_messages_replays_the_recorded_stream() {
 
 #[tokio::test]
 async fn mistral_conversations_replays_the_recorded_stream() {
-    let server = FixtureServer::start(sse_fixture_bytes("ai-replay-mistral-basic"), "text/event-stream").await;
-    let mut model = replay_model("mistral-conversations", "test-replay", "mistral-replay-model");
+    let server = FixtureServer::start(
+        sse_fixture_bytes("ai-replay-mistral-basic"),
+        "text/event-stream",
+    )
+    .await;
+    let mut model = replay_model(
+        "mistral-conversations",
+        "test-replay",
+        "mistral-replay-model",
+    );
     model.base_url = server.base_url();
     let mut options = StreamOptions::default();
     options.request.api_key = Some("test".into());
     options.request.timeout_ms = Some(10_000);
 
-    let events = collect(mistral_conversations::stream(&model, &hello_context(), Some(options))).await;
+    let events = collect(mistral_conversations::stream(
+        &model,
+        &hello_context(),
+        Some(options),
+    ))
+    .await;
     assert_matches_golden("ai-replay-mistral-basic", &events, &["usage"]);
 }
 
 #[tokio::test]
 async fn bedrock_converse_stream_replays_the_recorded_stream() {
     let spec = load_case("ai-replay-bedrock-basic");
-    let encoded = spec["fixture"]["bodyBase64"].as_str().expect("fixture.bodyBase64");
-    let body = base64::engine::general_purpose::STANDARD.decode(encoded).expect("bedrock fixture base64");
+    let encoded = spec["fixture"]["bodyBase64"]
+        .as_str()
+        .expect("fixture.bodyBase64");
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("bedrock fixture base64");
     let server = FixtureServer::start(body, "application/vnd.amazon.eventstream").await;
 
-    let mut model = replay_model("bedrock-converse-stream", "test-replay", "anthropic.claude-3-replay");
+    let mut model = replay_model(
+        "bedrock-converse-stream",
+        "test-replay",
+        "anthropic.claude-3-replay",
+    );
     model.base_url = server.base_url();
     let mut options = StreamOptions::default();
     let env: ProviderEnv = [
         ("AWS_ACCESS_KEY_ID".to_owned(), "AKIDREPLAY".to_owned()),
-        ("AWS_SECRET_ACCESS_KEY".to_owned(), "replay-secret".to_owned()),
+        (
+            "AWS_SECRET_ACCESS_KEY".to_owned(),
+            "replay-secret".to_owned(),
+        ),
         ("AWS_REGION".to_owned(), "us-east-1".to_owned()),
         ("AWS_BEDROCK_FORCE_HTTP1".to_owned(), "1".to_owned()),
     ]
@@ -352,7 +412,12 @@ async fn bedrock_converse_stream_replays_the_recorded_stream() {
     .collect();
     options.request.env = Some(env);
 
-    let events = collect(bedrock_converse_stream::stream(&model, &hello_context(), Some(options))).await;
+    let events = collect(bedrock_converse_stream::stream(
+        &model,
+        &hello_context(),
+        Some(options),
+    ))
+    .await;
     assert_matches_golden("ai-replay-bedrock-basic", &events, &["usage"]);
 }
 
@@ -365,14 +430,21 @@ async fn pi_messages_stream_simple_forwards_to_stream() {
     let mut simple = SimpleStreamOptions::default();
     simple.stream.request.api_key = Some("test".into());
 
-    let events = collect(pi_messages::stream_simple(&model, &hello_context(), Some(simple))).await;
+    let events = collect(pi_messages::stream_simple(
+        &model,
+        &hello_context(),
+        Some(simple),
+    ))
+    .await;
     assert_eq!(events.len(), 1);
     assert!(matches!(events[0], AssistantMessageEvent::Done { .. }));
 }
 
 #[tokio::test]
 async fn pi_messages_truncated_stream_ends_with_a_typed_error() {
-    let body = "data: {\"type\":\"start\"}\n\ndata: {\"type\":\"text_start\",\"contentIndex\":0}\n\n".to_owned();
+    let body =
+        "data: {\"type\":\"start\"}\n\ndata: {\"type\":\"text_start\",\"contentIndex\":0}\n\n"
+            .to_owned();
     let server = FixtureServer::start(body.into_bytes(), "text/event-stream").await;
     let mut model = replay_model("pi-messages", "test-replay", "pi-messages-replay-model");
     model.base_url = server.base_url();
@@ -381,7 +453,9 @@ async fn pi_messages_truncated_stream_ends_with_a_typed_error() {
 
     let events = collect(pi_messages::stream(&model, &hello_context(), Some(options))).await;
     let last = events.last().expect("terminal event");
-    let AssistantMessageEvent::Error { error, .. } = last else { panic!("expected an error event") };
+    let AssistantMessageEvent::Error { error, .. } = last else {
+        panic!("expected an error event")
+    };
     assert_eq!(
         error.error_message.as_deref(),
         Some("test-replay stream ended without a terminal event")
@@ -392,20 +466,35 @@ async fn pi_messages_truncated_stream_ends_with_a_typed_error() {
 async fn mistral_malformed_event_body_ends_with_a_typed_error() {
     let body = "data: {\"nope\":1}\n\n".to_owned();
     let server = FixtureServer::start(body.into_bytes(), "text/event-stream").await;
-    let mut model = replay_model("mistral-conversations", "test-replay", "mistral-replay-model");
+    let mut model = replay_model(
+        "mistral-conversations",
+        "test-replay",
+        "mistral-replay-model",
+    );
     model.base_url = server.base_url();
     let mut options = StreamOptions::default();
     options.request.api_key = Some("test".into());
     options.request.timeout_ms = Some(10_000);
 
-    let events = collect(mistral_conversations::stream(&model, &hello_context(), Some(options))).await;
+    let events = collect(mistral_conversations::stream(
+        &model,
+        &hello_context(),
+        Some(options),
+    ))
+    .await;
     let last = events.last().expect("terminal event");
-    let AssistantMessageEvent::Error { error, .. } = last else { panic!("expected an error event") };
-    assert_eq!(error.error_message.as_deref(), Some("Invalid Mistral streaming event"));
+    let AssistantMessageEvent::Error { error, .. } = last else {
+        panic!("expected an error event")
+    };
+    assert_eq!(
+        error.error_message.as_deref(),
+        Some("Invalid Mistral streaming event")
+    );
 }
 
 fn images_model(api: &str, provider: &str, id: &str, base_url: &str) -> ImagesModel {
     ImagesModel {
+        input_limits: None,
         id: id.to_owned(),
         name: id.to_owned(),
         api: api.to_owned(),
@@ -428,11 +517,16 @@ fn png_data_url() -> String {
     use base64::Engine;
     let mut bytes = vec![0x89u8, 0x50, 0x4e, 0x47];
     bytes.extend_from_slice(&[0, 0, 0, 0]);
-    format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
 }
 
 fn prompt_context() -> ImagesContext {
-    ImagesContext { input: vec![ContentBlock::text("draw a cat")] }
+    ImagesContext {
+        input: vec![ContentBlock::text("draw a cat")],
+    }
 }
 
 #[tokio::test]
@@ -442,7 +536,12 @@ async fn openai_images_orders_revised_prompts_and_parses_data_urls() {
         png_data_url()
     );
     let server = FixtureServer::start(body.into_bytes(), "application/json").await;
-    let model = images_model("openai-images", "openai", "gpt-image-2.5", &server.base_url());
+    let model = images_model(
+        "openai-images",
+        "openai",
+        "gpt-image-2.5",
+        &server.base_url(),
+    );
     let mut options = maho_ai::types::ImagesOptions::default();
     options.request.api_key = Some("sk-test".into());
 
@@ -452,16 +551,26 @@ async fn openai_images_orders_revised_prompts_and_parses_data_urls() {
     assert_eq!(images.output[0], ContentBlock::text("a cat"));
     assert_eq!(images.output[1].type_name(), "image");
     assert_eq!(images.output[2].type_name(), "image");
-    let ContentBlock::Image(image) = &images.output[1] else { panic!("image") };
+    let ContentBlock::Image(image) = &images.output[1] else {
+        panic!("image")
+    };
     assert_eq!(image.mime_type, "image/png");
 }
 
 #[tokio::test]
 async fn openai_images_missing_auth_returns_an_error_envelope() {
-    let model = images_model("openai-images", "openai", "gpt-image-2.5", "http://127.0.0.1:1/v1");
+    let model = images_model(
+        "openai-images",
+        "openai",
+        "gpt-image-2.5",
+        "http://127.0.0.1:1/v1",
+    );
     let images = openai_images::generate_images(&model, &prompt_context(), None).await;
     assert_eq!(images.stop_reason, ImagesStopReason::Error);
-    assert_eq!(images.error_message.as_deref(), Some("No API key for provider: openai"));
+    assert_eq!(
+        images.error_message.as_deref(),
+        Some("No API key for provider: openai")
+    );
     assert!(images.output.is_empty());
 }
 
@@ -472,7 +581,12 @@ async fn openrouter_images_returns_text_plus_images() {
         png_data_url()
     );
     let server = FixtureServer::start(body.into_bytes(), "application/json").await;
-    let model = images_model("openrouter-images", "openrouter", "black-forest-labs/flux.2-pro", &server.base_url());
+    let model = images_model(
+        "openrouter-images",
+        "openrouter",
+        "black-forest-labs/flux.2-pro",
+        &server.base_url(),
+    );
     let mut options = maho_ai::types::ImagesOptions::default();
     options.request.api_key = Some("sk-test".into());
 
@@ -481,14 +595,21 @@ async fn openrouter_images_returns_text_plus_images() {
     assert_eq!(images.response_id.as_deref(), Some("gen-1"));
     assert_eq!(images.output.len(), 2);
     assert_eq!(images.output[0], ContentBlock::text("here you go"));
-    let ContentBlock::Image(image) = &images.output[1] else { panic!("image") };
+    let ContentBlock::Image(image) = &images.output[1] else {
+        panic!("image")
+    };
     assert_eq!(image.mime_type, "image/png");
 }
 
 #[tokio::test]
 async fn openrouter_images_abort_returns_an_aborted_result() {
     let server = FixtureServer::start(b"{}".to_vec(), "application/json").await;
-    let model = images_model("openrouter-images", "openrouter", "black-forest-labs/flux.2-pro", &server.base_url());
+    let model = images_model(
+        "openrouter-images",
+        "openrouter",
+        "black-forest-labs/flux.2-pro",
+        &server.base_url(),
+    );
     let controller = maho_ai::utils::abort::AbortController::new();
     controller.abort(None);
     let mut options = maho_ai::types::ImagesOptions::default();

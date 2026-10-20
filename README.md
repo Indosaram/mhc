@@ -37,6 +37,18 @@ Windows x86_64（PowerShell），安装到 `%LOCALAPPDATA%\mhc` 并加入用户 
 irm https://raw.githubusercontent.com/Indosaram/mhc/main/install.ps1 | iex
 ```
 
+## 更新与升级
+
+mhc 支持原生自更新，自动下载完整自包含发布包并校验 SHA256，原子替换时完整保留用户配置与会话数据（`~/.omo/agent`）：
+
+```bash
+mhc update           # 检查并升级至最新发布版本
+mhc update --all     # 顺序更新已安装的资源包及 mhc 原生程序
+```
+
+- **会话安全与回滚**：更新检测到其他活跃会话时会自动拒绝替换以保护运行时状态；遇到写入异常时自动原子回滚至原有版本。
+- **非阻塞启动提示**：交互终端启动时在后台静默查询缓存，检测到新版本时在提示框内告知，不阻塞界面加载与输入。
+
 ## 快速开始
 
 ```bash

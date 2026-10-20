@@ -32,3 +32,40 @@ pub fn resize_image_in_process(bytes: &[u8], mime: &str, options: &ImageResizeOp
         None
     }).ok().flatten()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_profile_resolves_independent_defaults_for_cli() {
+        // Given a height-only profile with byte and quality overrides.
+        let profile = maho_ai::model::ModelImageResizeOptions {
+            max_height: Some(4), max_bytes: Some(100_000), jpeg_quality: Some(23),
+            ..Default::default()
+        };
+        // When converting the shared model contract to native resize options.
+        let options = ImageResizeOptions::from(&profile);
+        // Then absent width keeps the upstream default and all overrides survive.
+        assert_eq!(options.max_width, 2000);
+        assert_eq!(options.max_height, 4);
+        assert!((options.max_bytes - 100_000.0).abs() < f64::EPSILON);
+        assert_eq!(options.jpeg_quality, 23);
+    }
+
+    #[test]
+    fn base64_budget_is_strict_even_at_exact_encoded_size() {
+        // Given a PNG whose payload fits only when the ceiling is exclusive.
+        let bytes = photon_rs::PhotonImage::new(vec![255; 4], 1, 1).get_bytes();
+        let encoded_size = bytes.len().div_ceil(3) * 4;
+        // When the ceiling equals the original base64 payload size.
+        let result = resize_image_in_process(&bytes, "image/png", &ImageResizeOptions {
+            max_bytes: encoded_size as f64, ..Default::default()
+        });
+        // Then it must be re-encoded smaller or omitted, never passed through.
+        if let Some(result) = result {
+            assert!(result.was_resized);
+            assert!(result.data.len() < encoded_size);
+        }
+    }
+}

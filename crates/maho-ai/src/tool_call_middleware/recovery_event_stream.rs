@@ -6,21 +6,21 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
-use tokio::sync::OnceCell;
+use tokio::sync::watch;
 
 type CancellationHandler = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
 pub struct RecoveryCancellation {
     handler: Mutex<Option<CancellationHandler>>,
-    cancellation: OnceCell<()>,
+    cancellation: OnceLock<watch::Receiver<bool>>,
     source_closed: Mutex<bool>,
 }
 
 impl Default for RecoveryCancellation {
     fn default() -> Self {
-        Self { handler: Mutex::new(None), cancellation: OnceCell::new(), source_closed: Mutex::new(false) }
+        Self { handler: Mutex::new(None), cancellation: OnceLock::new(), source_closed: Mutex::new(false) }
     }
 }
 
@@ -30,30 +30,36 @@ impl RecoveryCancellation {
     }
 
     pub fn set_cancellation_handler(&self, handler: CancellationHandler) {
-        *self.handler.lock().expect("cancellation handler mutex is not held across a panic") = Some(handler);
+        *self.handler.lock().unwrap_or_else(|error| error.into_inner()) = Some(handler);
     }
 
     pub fn mark_source_closed(&self) -> bool {
-        if self.cancellation.initialized() {
+        let mut closed = self.source_closed.lock().unwrap_or_else(|error| error.into_inner());
+        if self.cancellation.get().is_some() {
             return false;
         }
-        *self.source_closed.lock().expect("source_closed mutex is not held across a panic") = true;
+        *closed = true;
         true
     }
 
     pub async fn cancel(&self) {
-        let already_closed = *self.source_closed.lock().expect("source_closed mutex is not held across a panic");
-        if already_closed {
-            return;
+        let mut completion = {
+            let closed = self.source_closed.lock().unwrap_or_else(|error| error.into_inner());
+            if *closed { return; }
+            self.cancellation.get_or_init(|| {
+                let handler = self.handler.lock().unwrap_or_else(|error| error.into_inner()).take();
+                let (completed, completion) = watch::channel(false);
+                tokio::spawn(async move {
+                    if let Some(handler) = handler { handler().await; }
+                    completed.send_replace(true);
+                });
+                completion
+            }).clone()
+        };
+        loop {
+            if *completion.borrow() { return; }
+            if completion.changed().await.is_err() { return; }
         }
-        let handler = self.handler.lock().expect("cancellation handler mutex is not held across a panic").take();
-        self.cancellation
-            .get_or_init(|| async {
-                if let Some(handler) = handler {
-                    handler().await;
-                }
-            })
-            .await;
     }
 }
 
@@ -63,6 +69,27 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn concurrent_cancellation_survives_a_dropped_waiter() {
+        let cancellation = RecoveryCancellation::new();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        cancellation.set_cancellation_handler(Box::new(move || Box::pin(async move {
+            entered_tx.send(()).expect("entered subscriber");
+            release_rx.await.expect("release");
+        })));
+        let bound = std::time::Duration::from_secs(5);
+        let mut first = Box::pin(cancellation.cancel());
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        tokio::time::timeout(bound, entered_rx).await.expect("entered deadline").expect("entered");
+        assert!(!cancellation.mark_source_closed());
+        drop(first);
+        let mut second = Box::pin(cancellation.cancel());
+        assert!(futures::poll!(second.as_mut()).is_pending());
+        release_tx.send(()).expect("release subscriber");
+        tokio::time::timeout(bound, second).await.expect("cancel deadline");
+    }
 
     #[tokio::test]
     async fn cancel_invokes_the_handler_exactly_once() {
@@ -97,7 +124,8 @@ mod tests {
     #[test]
     fn mark_source_closed_fails_once_cancellation_has_started() {
         let cancellation = RecoveryCancellation::new();
-        assert!(cancellation.cancellation.set(()).is_ok());
+        let (_completed, completion) = watch::channel(true);
+        assert!(cancellation.cancellation.set(completion).is_ok());
         assert!(!cancellation.mark_source_closed());
     }
 }

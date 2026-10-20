@@ -118,7 +118,7 @@ fn preview_unsafe_handlers_are_reported_by_extension_path() {
     assert_eq!(runner(vec![safe, unsafe_ext]).preview_unsafe_before_agent_start_paths(), vec!["unsafe"]);
 }
 fn runner(extensions: Vec<LoadedExtension>) -> ExtensionRunner { ExtensionRunner::new(extensions, ExtensionRuntime::default(), EventBus::default(), context()) }
-fn before() -> BeforeAgentStartEvent { BeforeAgentStartEvent { prompt: "hello".into(), images: None, system_prompt: "base".into(), system_prompt_options: BuildSystemPromptOptions::default() } }
+fn before() -> BeforeAgentStartEvent { BeforeAgentStartEvent { prompt: "hello".into(), trigger: "prompt".into(), preview: false, images: None, system_prompt: "base".into(), system_prompt_options: BuildSystemPromptOptions::default() } }
 fn input() -> InputEvent { InputEvent { input_id: "id".into(), text: "X".into(), images: None, source: InputSource::Interactive, streaming_behavior: None } }
 fn result_event() -> ToolResultEvent { ToolResultEvent { tool_name: "bash".into(), tool_call_id: "call".into(), input: JsonValue::Null, content: vec![ToolContent::text("base")], details: None, is_error: false, usage: None } }
 fn none() -> ExtensionHandler { Arc::new(|_, _| Box::pin(async { Ok(EventResult::None) })) }
@@ -135,6 +135,27 @@ fn prompt(suffix: &'static str) -> ExtensionHandler {
         assert_eq!(ctx.get_system_prompt(), event.system_prompt);
         Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt: Some(format!("{}{suffix}", event.system_prompt)), message: None }))
     }))
+}
+
+#[tokio::test]
+async fn before_agent_start_preserves_turn_source_across_prompt_rewrites() {
+    for trigger in ["prompt", "extension", "delivery"] {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let observer: ExtensionHandler = Arc::new(move |event, _| {
+            let ExtensionEvent::BeforeAgentStart(event) = event else { panic!("before agent start"); };
+            captured.lock().unwrap().push((event.trigger.clone(), event.preview));
+            Box::pin(async { Ok(EventResult::None) })
+        });
+        let mut runner = runner(vec![
+            extension("rewrite", EventKind::BeforeAgentStart, prompt(" updated")),
+            extension("observe", EventKind::BeforeAgentStart, observer),
+        ]);
+        let event = BeforeAgentStartEvent { trigger: trigger.into(), ..before() };
+        let merged = runner.emit_before_agent_start(event).await.unwrap().unwrap();
+        assert_eq!(merged.system_prompt.as_deref(), Some("base updated"));
+        assert_eq!(*observed.lock().unwrap(), [(trigger.to_owned(), false)]);
+    }
 }
 
 #[tokio::test]
@@ -998,7 +1019,7 @@ async fn typed_tool_decodes_parameters_and_serializes_detail_updates() {
     let definition = ToolDefinition::new("typed", "typed", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })));
     api.register_typed_tool(definition, Arc::new(|_, params: BTreeMap<String, u64>, _, update: Option<TypedToolUpdateCallback<u64>>, _| Box::pin(async move {
         let value = params["value"];
-        let result = TypedAgentToolResult { content: vec![ContentBlock::text("done")], details: value, usage: None, added_tool_names: None, terminate: Some(true), is_error: None };
+        let result = TypedAgentToolResult { content: vec![ContentBlock::text("done")], details: value, usage: None, nested_calls: None, added_tool_names: None, terminate: Some(true), is_error: None };
         if let Some(update) = update { update(result.clone())?; }
         Ok(result)
     }))).unwrap();

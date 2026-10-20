@@ -9,7 +9,7 @@ use model_core::get_bundled_model_capabilities_snapshot;
 use model_core::get_model_capabilities;
 use pretty_assertions::assert_eq;
 
-const FAST_RULE: &str = "openai-gpt-5.6-fast-service-tier-alias";
+const FAST_RULE: &str = "openai-gpt-fast-service-tier-alias";
 
 fn supplemental_only_snapshot() -> ModelCapabilitiesSnapshot {
     get_bundled_model_capabilities_snapshot(&ModelCapabilitiesSnapshot {

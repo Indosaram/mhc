@@ -38,8 +38,9 @@ use maho_ext_api::{
 use omo_config_core::LoadOmoConfigOptions;
 use maho_omo_config_resolution::{SenpiOmoConfigResult, load_senpi_omo_config};
 
-use crate::builtin_profiles::DEFAULT_MODEL_PROFILE_ID;
+use crate::builtin_profiles::RETIRED_MODEL_PROFILE_IDS;
 use crate::credential_policy::credential_rotation_policy;
+use crate::default_profile::{ProbeState, new_probe_state, resolve_default_model_profile};
 use crate::notice::{auth_failed_details, notice_content};
 use crate::request_auth::{AuthFailure, probe_request_auth, sanitized_auth_error_detail};
 use crate::resolve::{
@@ -183,7 +184,6 @@ fn log_skipped_candidate(logger: Option<&Arc<dyn ComponentLogger>>, failure: &Au
 struct ProbedResolution {
     resolution: ModelProfileResolution,
     model: Option<Model>,
-    failures: Vec<AuthFailure>,
 }
 
 // Each failed probe removes at least one selector (the whole provider for a credential failure, the
@@ -196,12 +196,11 @@ async fn resolve_with_request_auth(
     agent_dir: Option<&Path>,
     profiles: Option<&JsonValue>,
     active: &str,
+    probes: &mut ProbeState,
     logger: Option<&Arc<dyn ComponentLogger>>,
 ) -> ProbedResolution {
     let available = available_selectors(registry);
-    let mut excluded_providers: BTreeSet<String> = BTreeSet::new();
-    let mut excluded_selectors: BTreeSet<String> = BTreeSet::new();
-    let mut failures: Vec<AuthFailure> = Vec::new();
+    let ProbeState { excluded_providers, excluded_selectors, failures } = probes;
     // The rotation policy reads the registry's own auth-status port (a runtime API key turns
     // rotation off), never an injected stub.
     let policy = credential_rotation_policy(registry, agent_dir);
@@ -221,7 +220,7 @@ async fn resolve_with_request_auth(
         })
     };
 
-    let mut resolution = resolve(&excluded_providers, &excluded_selectors);
+    let mut resolution = resolve(excluded_providers, excluded_selectors);
     let mut model: Option<Model> = None;
     while let ModelProfileResolution::Resolved { profile, provider, model_id, .. } = &resolution {
         let found = registry.find(provider, model_id);
@@ -251,9 +250,30 @@ async fn resolve_with_request_auth(
             excluded_providers.insert(failure.provider.clone());
         }
         failures.push(failure);
-        resolution = resolve(&excluded_providers, &excluded_selectors);
+        resolution = resolve(excluded_providers, excluded_selectors);
     }
-    ProbedResolution { resolution, model, failures }
+    ProbedResolution { resolution, model }
+}
+
+fn is_retired_profile(name: &str, user_profiles: Option<&JsonValue>) -> bool {
+    RETIRED_MODEL_PROFILE_IDS.contains(&name)
+        && user_profiles.and_then(|profiles| profiles.get(name)).is_none()
+}
+
+fn log_retired_profile_once(
+    logger: Option<&Arc<dyn ComponentLogger>>,
+    logged: &Mutex<BTreeSet<String>>,
+    name: &str,
+) {
+    if !logged.lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_owned()) {
+        return;
+    }
+    if let Some(logger) = logger {
+        logger.info(
+            &format!("omo-senpi: model_profile \"{name}\" is retired; starting on Daily · Normal (or the first lane that resolves). Remove it from omo.json to silence this."),
+            None,
+        );
+    }
 }
 
 fn send_notice(
@@ -289,6 +309,7 @@ impl Extension for ModelProfileComponent {
         // One apply per session id; a host that reports no id gets exactly one apply per extension
         // instance, which is the conservative reading of "never clobber twice".
         let applied_sessions: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new(BTreeSet::new()));
+        let logged_retired_profiles = Arc::new(Mutex::new(BTreeSet::new()));
 
         api.on(
             EventKind::SessionStart,
@@ -296,6 +317,7 @@ impl Extension for ModelProfileComponent {
                 let runtime = runtime.clone();
                 let load_config = Arc::clone(&load_config);
                 let applied_sessions = Arc::clone(&applied_sessions);
+                let logged_retired_profiles = Arc::clone(&logged_retired_profiles);
                 Box::pin(async move {
                     let ExtensionEvent::SessionStart(start) = event else {
                         return Ok(EventResult::None);
@@ -319,11 +341,12 @@ impl Extension for ModelProfileComponent {
 
                     let config = load_config(&ctx.cwd).config;
                     let configured = config.get("model_profile").and_then(JsonValue::as_str);
-                    let active = configured
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or(DEFAULT_MODEL_PROFILE_ID)
-                        .to_owned();
                     let profiles = config.get("model_profiles").cloned();
+                    let named = configured.filter(|value| !value.trim().is_empty());
+                    let explicit = named.filter(|name| !is_retired_profile(name, profiles.as_ref()));
+                    if let Some(name) = named.filter(|_| explicit.is_none()) {
+                        log_retired_profile_once(ctx.logger.as_ref(), &logged_retired_profiles, name);
+                    }
 
                     let Ok(actions) = runtime.session_actions() else {
                         if let Some(logger) = ctx.logger.as_ref() {
@@ -337,15 +360,34 @@ impl Extension for ModelProfileComponent {
 
                     let mode = mode_str(ctx.mode);
                     let logger = ctx.logger.clone();
-                    let probed = resolve_with_request_auth(
-                        ctx.model_registry.as_ref(),
-                        Some(ctx.agent_dir.as_path()),
-                        profiles.as_ref(),
-                        &active,
-                        logger.as_ref(),
-                    )
-                    .await;
-                    let content = notice_content(&probed.resolution, &probed.failures, mode);
+                    let (probed, probes) = if let Some(active) = explicit {
+                        let mut probes = new_probe_state();
+                        let probed = resolve_with_request_auth(
+                            ctx.model_registry.as_ref(),
+                            Some(ctx.agent_dir.as_path()),
+                            profiles.as_ref(),
+                            active,
+                            &mut probes,
+                            logger.as_ref(),
+                        ).await;
+                        (probed, probes)
+                    } else {
+                        let registry = ctx.model_registry.as_ref();
+                        let agent_dir = Some(ctx.agent_dir.as_path());
+                        let profiles = profiles.as_ref();
+                        let logger = logger.as_ref();
+                        resolve_default_model_profile(
+                            new_probe_state(),
+                            |profile_id, mut probes| async move {
+                                let probed = resolve_with_request_auth(
+                                    registry, agent_dir, profiles, profile_id, &mut probes, logger,
+                                ).await;
+                                (probed, probes)
+                            },
+                            |probed| &probed.resolution,
+                        ).await
+                    };
+                    let content = notice_content(&probed.resolution, &probes.failures, mode);
 
                     if let ModelProfileResolution::Resolved { profile, provider, model_id, reasoning, skipped } =
                         &probed.resolution
@@ -385,7 +427,7 @@ impl Extension for ModelProfileComponent {
                         if let Some(reasoning) = reasoning {
                             details.insert("reasoning".to_owned(), JsonValue::String(reasoning.clone()));
                         }
-                        if let Some(auth_failed) = auth_failed_details(&probed.failures)
+                        if let Some(auth_failed) = auth_failed_details(&probes.failures)
                             && let JsonValue::Object(auth_failed) = auth_failed
                         {
                             details.extend(auth_failed);
@@ -417,9 +459,9 @@ impl Extension for ModelProfileComponent {
                     };
                     let details = match &probed.resolution {
                         ModelProfileResolution::Unavailable { profile, .. }
-                            if !probed.failures.is_empty() =>
+                            if !probes.failures.is_empty() =>
                         {
-                            auth_failed_details(&probed.failures).map(|auth_failed| {
+                            auth_failed_details(&probes.failures).map(|auth_failed| {
                                 let mut map = serde_json::Map::new();
                                 map.insert("profile".to_owned(), JsonValue::String(profile.id.clone()));
                                 if let JsonValue::Object(auth_failed) = auth_failed {
@@ -438,5 +480,38 @@ impl Extension for ModelProfileComponent {
                 })
             }),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Logger(Mutex<Vec<String>>);
+
+    impl ComponentLogger for Logger {
+        fn info(&self, message: &str, _: Option<&JsonValue>) {
+            self.0.lock().expect("test logger lock").push(message.to_owned());
+        }
+        fn warn(&self, _: &str, _: Option<&JsonValue>) {}
+        fn error(&self, _: &str, _: Option<&JsonValue>) {}
+    }
+
+    #[test]
+    fn retirement_respects_user_definitions_and_logs_only_once() {
+        assert!(is_retired_profile("recommended", None));
+        assert!(!is_retired_profile("daily-normal", None));
+        assert!(!is_retired_profile("capable", None));
+        assert!(!is_retired_profile(
+            "recommended",
+            Some(&serde_json::json!({"recommended": {"models": ["zai/glm-5.3"]}})),
+        ));
+        let logger = Arc::new(Logger::default());
+        let port: Arc<dyn ComponentLogger> = logger.clone();
+        let logged = Mutex::new(BTreeSet::new());
+        log_retired_profile_once(Some(&port), &logged, "recommended");
+        log_retired_profile_once(Some(&port), &logged, "recommended");
+        assert_eq!(logger.0.lock().expect("test logger lock").len(), 1);
     }
 }

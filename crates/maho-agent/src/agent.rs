@@ -10,44 +10,90 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use maho_ai::model::Model;
 use maho_ai::types::{
-    ContentBlock, ImageContent, Message, ModelThinkingLevel, OnPayload, OnResponse, ProviderRequestOptions,
-    SimpleStreamOptions, ThinkingBudgets, ThinkingSelection, Transport, UserContent, UserMessage, Usage, UsageCost,
+    ContentBlock, ImageContent, Message, ModelThinkingLevel, OnPayload, OnResponse,
+    ProviderRequestOptions, SimpleStreamOptions, ThinkingBudgets, ThinkingSelection, Transport,
+    Usage, UsageCost, UserContent, UserMessage,
 };
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 
-use crate::agent_loop::{AgentEventSink, build_provider_context, run_agent_loop, run_agent_loop_continue};
+use crate::agent_loop::{
+    AgentEventSink, build_provider_context, run_agent_loop, run_agent_loop_continue,
+};
 use crate::assistant_terminal_state::now_ms;
 use crate::stream_fn::get_default_stream_fn;
 use crate::types::{
-    AfterToolCall, AfterToolCallContext, AfterToolCallResult, AgentContext, AgentEvent, AgentLoopConfig,
-    AgentLoopTurnUpdate, AgentMessage, AgentState, AgentTool, BeforeToolCall, BeforeToolCallContext,
-    BeforeToolCallResult, ConvertToLlm, CursorExecHandlersConfig, GetApiKey, PendingQueue, PrepareNextTurnContext,
-    QueueMode, ResolveUnknownToolCall, ShouldStopAfterTurnContext, StreamFn, ToolExecutionMode, TransformContext,
+    AfterToolCall, AfterToolCallContext, AfterToolCallResult, AgentContext, AgentEvent,
+    AgentLoopConfig, AgentLoopTurnUpdate, AgentMessage, AgentState, AgentTool, BeforeToolCall,
+    BeforeToolCallContext, BeforeToolCallResult, ConvertToLlm, CursorExecHandlersConfig, GetApiKey,
+    PendingQueue, PrepareNextTurnContext, QueueMode, ResolveUnknownToolCall,
+    ShouldStopAfterTurnContext, StreamFn, ToolExecutionMode, TransformContext,
     model_thinking_level_to_reasoning, parse_thinking_level,
 };
 
 /// \`shouldStopAfterTurn\` as the host passes it: it also receives the active run signal.
-pub type ShouldStopAfterTurnWithSignal =
-    Arc<dyn Fn(ShouldStopAfterTurnContext, Option<AbortSignal>) -> maho_ai::types::BoxFuture<'static, bool> + Send + Sync>;
-
-/// \`prepareNextTurn\` as the host passes it: it receives only the active run signal.
-pub type PrepareNextTurnWithoutContext =
-    Arc<dyn Fn(Option<AbortSignal>) -> maho_ai::types::BoxFuture<'static, Option<AgentLoopTurnUpdate>> + Send + Sync>;
-
-/// \`prepareNextTurnWithContext\` as the host passes it: it also receives the active run signal.
-pub type PrepareNextTurnWithContext = Arc<
-    dyn Fn(PrepareNextTurnContext, Option<AbortSignal>) -> maho_ai::types::BoxFuture<'static, Option<AgentLoopTurnUpdate>>
+pub type ShouldStopAfterTurnWithSignal = Arc<
+    dyn Fn(
+            ShouldStopAfterTurnContext,
+            Option<AbortSignal>,
+        ) -> maho_ai::types::BoxFuture<'static, bool>
         + Send
         + Sync,
 >;
 
-pub type AgentListener = Arc<dyn Fn(AgentEvent, AbortSignal) -> maho_ai::types::BoxFuture<'static, ()> + Send + Sync>;
+/// \`prepareNextTurn\` as the host passes it: it receives only the active run signal.
+pub type PrepareNextTurnWithoutContext = Arc<
+    dyn Fn(Option<AbortSignal>) -> maho_ai::types::BoxFuture<'static, Option<AgentLoopTurnUpdate>>
+        + Send
+        + Sync,
+>;
+
+/// \`prepareNextTurnWithContext\` as the host passes it: it also receives the active run signal.
+pub type PrepareNextTurnWithContext = Arc<
+    dyn Fn(
+            PrepareNextTurnContext,
+            Option<AbortSignal>,
+        ) -> maho_ai::types::BoxFuture<'static, Option<AgentLoopTurnUpdate>>
+        + Send
+        + Sync,
+>;
+
+pub type AgentListener =
+    Arc<dyn Fn(AgentEvent, AbortSignal) -> maho_ai::types::BoxFuture<'static, ()> + Send + Sync>;
+
+pub type QueuedDrain = Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync>;
+
+pub struct QueuedGiveBack {
+    pub restorable: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub restore: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+pub trait QueuedInputPort: Send + Sync {
+    fn claim(
+        &self,
+        queue: PendingQueue,
+        drain: QueuedDrain,
+    ) -> maho_ai::types::BoxFuture<'static, Vec<AgentMessage>>;
+    fn release(
+        &self,
+        queue: PendingQueue,
+        messages: Vec<AgentMessage>,
+        give_back: QueuedGiveBack,
+    ) -> maho_ai::types::BoxFuture<'static, ()>;
+    fn commit_consumption(
+        &self,
+        queue: PendingQueue,
+        messages: Vec<AgentMessage>,
+    ) -> maho_ai::types::BoxFuture<'static, Result<(), String>>;
+}
 
 fn default_convert_to_llm(messages: Vec<AgentMessage>) -> Vec<Message> {
     messages
         .into_iter()
         .filter(|message| {
-            matches!(message.role(), "user" | "assistant" | "toolResult")
+            matches!(
+                message.role(),
+                "system" | "user" | "assistant" | "toolResult" | "configurationUpdate"
+            )
         })
         .map(AgentMessage::into_llm)
         .collect()
@@ -66,7 +112,7 @@ fn empty_usage() -> Usage {
     }
 }
 
-fn default_model() -> Model {
+pub(crate) fn default_model() -> Model {
     Model {
         id: "unknown".to_owned(),
         name: "unknown".to_owned(),
@@ -78,6 +124,7 @@ fn default_model() -> Model {
         thinking_level_map: None,
         input: Vec::new(),
         cost: maho_ai::types::ModelCost {
+            effective_rates: None,
             input: 0.0,
             output: 0.0,
             cache_read: 0.0,
@@ -89,6 +136,8 @@ fn default_model() -> Model {
         sampling_params: None,
         headers: None,
         cache_retention: None,
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         upstream_model_id: None,
         service_tier: None,
         recover_text_tool_calls: None,
@@ -106,6 +155,7 @@ pub struct PartialAgentState {
     pub thinking_selection: Option<ThinkingSelection>,
     pub reasoning_baseline: Option<String>,
     pub tools: Option<Vec<AgentTool>>,
+    pub declared_tools: Option<Vec<AgentTool>>,
     pub messages: Option<Vec<AgentMessage>>,
 }
 
@@ -122,6 +172,9 @@ pub struct AgentOptions {
     pub before_tool_call: Option<BeforeToolCall>,
     pub after_tool_call: Option<AfterToolCall>,
     pub should_stop_after_turn: Option<ShouldStopAfterTurnWithSignal>,
+    pub finish_turn: Option<crate::types::FinishTurn>,
+    pub prepare_request: Option<crate::types::PrepareRequest>,
+    pub queued_input_port: Option<Arc<dyn QueuedInputPort>>,
     pub prepare_next_turn: Option<PrepareNextTurnWithoutContext>,
     pub prepare_next_turn_with_context: Option<PrepareNextTurnWithContext>,
     pub steering_mode: Option<QueueMode>,
@@ -158,7 +211,11 @@ struct PendingMessageQueue {
 
 impl PendingMessageQueue {
     fn new(mode: QueueMode) -> Self {
-        Self { messages: Vec::new(), clear_generation: 0, mode }
+        Self {
+            messages: Vec::new(),
+            clear_generation: 0,
+            mode,
+        }
     }
 
     fn enqueue(&mut self, message: AgentMessage) {
@@ -181,7 +238,10 @@ impl PendingMessageQueue {
             return Vec::new();
         }
         let end = if is_background_notice(&self.messages[0]) {
-            self.messages.iter().take_while(|message| is_background_notice(message)).count()
+            self.messages
+                .iter()
+                .take_while(|message| is_background_notice(message))
+                .count()
         } else {
             1
         };
@@ -201,7 +261,10 @@ impl PendingMessageQueue {
 }
 
 fn is_background_notice(message: &AgentMessage) -> bool {
-    !matches!(message.role(), "system" | "user" | "assistant" | "toolResult")
+    !matches!(
+        message.role(),
+        "system" | "user" | "assistant" | "toolResult"
+    )
 }
 
 struct ActiveRun {
@@ -246,6 +309,9 @@ struct AgentSettings {
     before_tool_call: Option<BeforeToolCall>,
     after_tool_call: Option<AfterToolCall>,
     should_stop_after_turn: Option<ShouldStopAfterTurnWithSignal>,
+    finish_turn: Option<crate::types::FinishTurn>,
+    prepare_request: Option<crate::types::PrepareRequest>,
+    queued_input_port: Option<Arc<dyn QueuedInputPort>>,
     prepare_next_turn: Option<PrepareNextTurnWithoutContext>,
     prepare_next_turn_with_context: Option<PrepareNextTurnWithContext>,
     session_id: Option<String>,
@@ -262,7 +328,9 @@ struct AgentSettings {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Stateful wrapper around the low-level agent loop.
@@ -281,25 +349,33 @@ impl Agent {
             initial_state.system_prompt.clone().unwrap_or_default(),
             initial_state.model.clone().unwrap_or_else(default_model),
         );
-        state.thinking_level = initial_state.thinking_level.unwrap_or(ModelThinkingLevel::Off);
+        state.thinking_level = initial_state
+            .thinking_level
+            .unwrap_or(ModelThinkingLevel::Off);
         state.thinking_selection = initial_state.thinking_selection.clone();
         state.reasoning_baseline = initial_state.reasoning_baseline.clone();
+        state.declared_tools = initial_state.declared_tools.clone();
         state.set_tools(initial_state.tools.clone().unwrap_or_default());
         state.set_messages(initial_state.messages.clone().unwrap_or_default());
 
         let settings = AgentSettings {
-            convert_to_llm: options
-                .convert_to_llm
-                .clone()
-                .unwrap_or_else(|| Arc::new(|messages| Box::pin(async move { default_convert_to_llm(messages) }))),
+            convert_to_llm: options.convert_to_llm.clone().unwrap_or_else(|| {
+                Arc::new(|messages| Box::pin(async move { default_convert_to_llm(messages) }))
+            }),
             transform_context: options.transform_context.clone(),
-            stream_function: options.stream_fn.clone().unwrap_or_else(get_default_stream_fn),
+            stream_function: options
+                .stream_fn
+                .clone()
+                .unwrap_or_else(get_default_stream_fn),
             get_api_key: options.get_api_key.clone(),
             on_payload: options.on_payload.clone(),
             on_response: options.on_response.clone(),
             before_tool_call: options.before_tool_call.clone(),
             after_tool_call: options.after_tool_call.clone(),
             should_stop_after_turn: options.should_stop_after_turn.clone(),
+            finish_turn: options.finish_turn.clone(),
+            prepare_request: options.prepare_request.clone(),
+            queued_input_port: options.queued_input_port.clone(),
             prepare_next_turn: options.prepare_next_turn.clone(),
             prepare_next_turn_with_context: options.prepare_next_turn_with_context.clone(),
             session_id: options.session_id.clone(),
@@ -308,7 +384,9 @@ impl Agent {
             timeout_ms: options.timeout_ms,
             stream_start_timeout_ms: options.stream_start_timeout_ms,
             max_retry_delay_ms: options.max_retry_delay_ms,
-            tool_execution: options.tool_execution.unwrap_or(ToolExecutionMode::Parallel),
+            tool_execution: options
+                .tool_execution
+                .unwrap_or(ToolExecutionMode::Parallel),
             removed_tool_hints: options.removed_tool_hints.clone().unwrap_or_default(),
             resolve_unknown_tool_call: options.resolve_unknown_tool_call.clone(),
             abort_server_side_fallback: options.abort_server_side_fallback,
@@ -318,7 +396,10 @@ impl Agent {
         Self {
             inner: Arc::new(AgentInner {
                 state: Mutex::new(state),
-                listeners: Mutex::new(Listeners { next_id: 0, entries: Vec::new() }),
+                listeners: Mutex::new(Listeners {
+                    next_id: 0,
+                    entries: Vec::new(),
+                }),
                 steering_queue: Mutex::new(PendingMessageQueue::new(
                     options.steering_mode.unwrap_or(QueueMode::OneAtATime),
                 )),
@@ -348,7 +429,9 @@ impl Agent {
     }
 
     pub fn unsubscribe(&self, subscription: &AgentSubscription) {
-        lock(&self.inner.listeners).entries.retain(|(id, _)| *id != subscription.id);
+        lock(&self.inner.listeners)
+            .entries
+            .retain(|(id, _)| *id != subscription.id);
     }
 
     /// Current agent state (a snapshot; the TS getter returns the live object).
@@ -374,14 +457,26 @@ impl Agent {
 
     /// `state.tools.map(t => t.name)` without cloning the transcript or tool schemas.
     pub fn tool_names(&self) -> Vec<String> {
-        lock(&self.inner.state).tools().iter().map(|tool| tool.name().to_owned()).collect()
+        lock(&self.inner.state)
+            .tools()
+            .iter()
+            .map(|tool| tool.name().to_owned())
+            .collect()
     }
 
     /// Active tool names plus the named active tool, both from one consistent snapshot.
     pub fn tool_names_and_find(&self, name: &str) -> (Vec<String>, Option<AgentTool>) {
         let state = lock(&self.inner.state);
-        let names = state.tools().iter().map(|tool| tool.name().to_owned()).collect();
-        let tool = state.tools().iter().find(|candidate| candidate.name() == name).cloned();
+        let names = state
+            .tools()
+            .iter()
+            .map(|tool| tool.name().to_owned())
+            .collect();
+        let tool = state
+            .tools()
+            .iter()
+            .find(|candidate| candidate.name() == name)
+            .cloned();
         (names, tool)
     }
 
@@ -413,6 +508,10 @@ impl Agent {
     /// Assign `state.tools`, copying the provided top-level array.
     pub fn set_tools(&self, tools: Vec<AgentTool>) {
         lock(&self.inner.state).set_tools(tools);
+    }
+
+    pub fn set_declared_tools(&self, tools: Option<Vec<AgentTool>>) {
+        lock(&self.inner.state).declared_tools = tools;
     }
 
     /// Assign `state.messages`, copying the provided top-level array.
@@ -449,7 +548,9 @@ impl Agent {
 
     /// `state.reasoningBaseline ??= level`: keep the first pre-update reasoning level.
     pub fn init_reasoning_baseline(&self, level: &str) {
-        lock(&self.inner.state).reasoning_baseline.get_or_insert_with(|| level.to_owned());
+        lock(&self.inner.state)
+            .reasoning_baseline
+            .get_or_insert_with(|| level.to_owned());
     }
 
     pub fn steering_mode(&self) -> QueueMode {
@@ -498,12 +599,15 @@ impl Agent {
 
     /// Returns true when either queue still contains pending messages.
     pub fn has_queued_messages(&self) -> bool {
-        lock(&self.inner.steering_queue).has_items() || lock(&self.inner.follow_up_queue).has_items()
+        lock(&self.inner.steering_queue).has_items()
+            || lock(&self.inner.follow_up_queue).has_items()
     }
 
     /// Active abort signal for the current run, if any.
     pub fn signal(&self) -> Option<AbortSignal> {
-        lock(&self.inner.active_run).as_ref().map(|run| run.abort_controller.signal())
+        lock(&self.inner.active_run)
+            .as_ref()
+            .map(|run| run.abort_controller.signal())
     }
 
     /// Abort the current run, if one is active.
@@ -527,7 +631,9 @@ impl Agent {
     ///
     /// This resolves after `agent_end` listeners settle.
     pub async fn wait_for_idle(&self) {
-        let receiver = lock(&self.inner.active_run).as_ref().map(|run| run.completion.subscribe());
+        let receiver = lock(&self.inner.active_run)
+            .as_ref()
+            .map(|run| run.completion.subscribe());
         if let Some(mut receiver) = receiver {
             let _ = receiver.wait_for(|done| *done).await;
         }
@@ -546,6 +652,7 @@ impl Agent {
             state.streaming_message = None;
             state.pending_tool_calls.clear();
             state.error_message = None;
+            state.provider_diagnostic = None;
         }
         self.clear_follow_up_queue();
         self.clear_steering_queue();
@@ -559,7 +666,8 @@ impl Agent {
             );
         }
         let messages = self.normalize_prompt_input(input);
-        self.run_prompt_messages(messages, PromptRunOptions::default()).await;
+        self.run_prompt_messages(messages, PromptRunOptions::default())
+            .await;
     }
 
     /// Continue by delivering queued input first when a compaction leaves custom context at the tail.
@@ -570,16 +678,18 @@ impl Agent {
             panic!("Agent is already processing. Wait for completion before continuing.");
         }
 
-        let last_role = lock(&self.inner.state).messages().last().map(|message| message.role().to_owned());
+        let last_role = lock(&self.inner.state)
+            .messages()
+            .last()
+            .map(|message| message.role().to_owned());
         if last_role.as_deref() == Some("assistant") {
             self.continue_run(options).await;
             return;
         }
 
-        let queued_steering = lock(&self.inner.steering_queue).drain();
-        if !queued_steering.is_empty() {
-            self.run_prompt_messages(
-                queued_steering,
+        if lock(&self.inner.steering_queue).has_items() {
+            self.run_queued_messages(
+                PendingQueue::Steering,
                 PromptRunOptions {
                     skip_initial_steering_poll: true,
                     initial_request_timeout_ms: options.timeout_ms,
@@ -590,10 +700,9 @@ impl Agent {
             return;
         }
 
-        let queued_follow_ups = lock(&self.inner.follow_up_queue).drain();
-        if !queued_follow_ups.is_empty() {
-            self.run_prompt_messages(
-                queued_follow_ups,
+        if lock(&self.inner.follow_up_queue).has_items() {
+            self.run_queued_messages(
+                PendingQueue::FollowUp,
                 PromptRunOptions {
                     skip_initial_steering_poll: false,
                     initial_request_timeout_ms: options.timeout_ms,
@@ -621,10 +730,9 @@ impl Agent {
         };
 
         if last_message.role() == "assistant" {
-            let queued_steering = lock(&self.inner.steering_queue).drain();
-            if !queued_steering.is_empty() {
-                self.run_prompt_messages(
-                    queued_steering,
+            if lock(&self.inner.steering_queue).has_items() {
+                self.run_queued_messages(
+                    PendingQueue::Steering,
                     PromptRunOptions {
                         skip_initial_steering_poll: true,
                         initial_request_timeout_ms: options.timeout_ms,
@@ -635,10 +743,9 @@ impl Agent {
                 return;
             }
 
-            let queued_follow_ups = lock(&self.inner.follow_up_queue).drain();
-            if !queued_follow_ups.is_empty() {
-                self.run_prompt_messages(
-                    queued_follow_ups,
+            if lock(&self.inner.follow_up_queue).has_items() {
+                self.run_queued_messages(
+                    PendingQueue::FollowUp,
                     PromptRunOptions {
                         skip_initial_steering_poll: false,
                         initial_request_timeout_ms: options.timeout_ms,
@@ -690,6 +797,46 @@ impl Agent {
         .await;
     }
 
+    async fn run_queued_messages(&self, queue: PendingQueue, options: PromptRunOptions) {
+        self.run_with_lifecycle(|signal| async move {
+            self.run_claimed_queue(queue, options, signal).await;
+        })
+        .await;
+    }
+
+    async fn run_claimed_queue(
+        &self,
+        queue: PendingQueue,
+        options: PromptRunOptions,
+        signal: Option<AbortSignal>,
+    ) {
+        let config = self.create_loop_config(options);
+        let messages = match self.take_queued_messages(queue).await {
+            Ok(messages) => messages,
+            Err(error) => {
+                crate::agent_loop::emit_run_failure(
+                    &config,
+                    error,
+                    &agent_event_sink(self.clone()),
+                )
+                .await;
+                return;
+            }
+        };
+        if messages.is_empty() {
+            return;
+        }
+        run_agent_loop(
+            messages,
+            self.create_context_snapshot(),
+            config,
+            agent_event_sink(self.clone()),
+            signal,
+            Some(self.stream_function()),
+        )
+        .await;
+    }
+
     async fn run_continuation(&self, options: AgentContinuationOptions) {
         self.run_with_lifecycle(|signal| async move {
             let context = self.create_context_snapshot();
@@ -716,6 +863,7 @@ impl Agent {
             system_prompt: state.system_prompt.clone(),
             messages: state.messages().to_vec(),
             tools: Some(state.tools().to_vec()),
+            declared_tools: state.declared_tools.clone(),
         }
     }
 
@@ -752,13 +900,16 @@ impl Agent {
         config.get_api_key = settings.get_api_key.clone();
         config.stream_start_timeout_ms = settings.stream_start_timeout_ms;
         config.initial_request_timeout_ms = options.initial_request_timeout_ms;
-        config.initial_request_stream_start_timeout_ms = options.initial_request_stream_start_timeout_ms;
+        config.initial_request_stream_start_timeout_ms =
+            options.initial_request_stream_start_timeout_ms;
         config.tool_execution = Some(settings.tool_execution);
         config.removed_tool_hints = Some(settings.removed_tool_hints.clone());
         config.resolve_unknown_tool_call = settings.resolve_unknown_tool_call.clone();
         config.before_tool_call = settings.before_tool_call.clone();
         config.after_tool_call = settings.after_tool_call.clone();
         config.cursor_exec_handlers = settings.cursor_exec_handlers.clone();
+        config.finish_turn = settings.finish_turn.clone();
+        config.prepare_request = settings.prepare_request.clone();
 
         if let Some(should_stop_after_turn) = settings.should_stop_after_turn.clone() {
             let agent = self.clone();
@@ -768,7 +919,8 @@ impl Agent {
             }));
         }
 
-        if settings.prepare_next_turn_with_context.is_some() || settings.prepare_next_turn.is_some() {
+        if settings.prepare_next_turn_with_context.is_some() || settings.prepare_next_turn.is_some()
+        {
             let agent = self.clone();
             let with_context = settings.prepare_next_turn_with_context.clone();
             let without_context = settings.prepare_next_turn.clone();
@@ -784,53 +936,159 @@ impl Agent {
             }));
         }
 
-        let skip_initial_steering_poll = Arc::new(AtomicBool::new(options.skip_initial_steering_poll));
-        let steering_generation = Arc::new(Mutex::new(lock(&self.inner.steering_queue).clear_generation()));
-        let follow_up_generation = Arc::new(Mutex::new(lock(&self.inner.follow_up_queue).clear_generation()));
+        let skip_initial_steering_poll =
+            Arc::new(AtomicBool::new(options.skip_initial_steering_poll));
+        let steering_generation = Arc::new(Mutex::new(
+            lock(&self.inner.steering_queue).clear_generation(),
+        ));
+        let follow_up_generation = Arc::new(Mutex::new(
+            lock(&self.inner.follow_up_queue).clear_generation(),
+        ));
         let steering_generation_for_restore = steering_generation.clone();
         let follow_up_generation_for_restore = follow_up_generation.clone();
 
+        let port = settings.queued_input_port.clone();
+        let steering_port = port.clone();
         let steering_agent = self.clone();
         config.get_steering_messages = Some(Arc::new(move || {
             if skip_initial_steering_poll.swap(false, Ordering::SeqCst) {
                 return Box::pin(async { Vec::new() });
             }
-            let mut queue = lock(&steering_agent.inner.steering_queue);
-            *lock(&steering_generation) = queue.clear_generation();
-            let drained = queue.drain();
-            Box::pin(async move { drained })
+            let agent = steering_agent.clone();
+            let generation = steering_generation.clone();
+            let drain: QueuedDrain = Arc::new(move || {
+                let mut queue = lock(&agent.inner.steering_queue);
+                *lock(&generation) = queue.clear_generation();
+                queue.drain()
+            });
+            match &steering_port {
+                Some(port) => port.claim(PendingQueue::Steering, drain),
+                None => {
+                    let messages = drain();
+                    Box::pin(async move { messages })
+                }
+            }
         }));
 
+        let follow_up_port = port.clone();
         let follow_up_agent = self.clone();
         config.get_follow_up_messages = Some(Arc::new(move || {
-            let mut queue = lock(&follow_up_agent.inner.follow_up_queue);
-            *lock(&follow_up_generation) = queue.clear_generation();
-            let drained = queue.drain();
-            Box::pin(async move { drained })
+            let agent = follow_up_agent.clone();
+            let generation = follow_up_generation.clone();
+            let drain: QueuedDrain = Arc::new(move || {
+                let mut queue = lock(&agent.inner.follow_up_queue);
+                *lock(&generation) = queue.clear_generation();
+                queue.drain()
+            });
+            match &follow_up_port {
+                Some(port) => port.claim(PendingQueue::FollowUp, drain),
+                None => {
+                    let messages = drain();
+                    Box::pin(async move { messages })
+                }
+            }
         }));
+
+        if let Some(port) = port.clone() {
+            config.commit_queued_consumption = Some(Arc::new(move |queue, messages| {
+                port.commit_consumption(queue, messages)
+            }));
+        }
 
         let restore_agent = self.clone();
         config.restore_pending_messages = Some(Arc::new(move |queue, messages| {
-            match queue {
-                PendingQueue::Steering => {
-                    let current = lock(&restore_agent.inner.steering_queue).clear_generation();
-                    if *lock(&steering_generation_for_restore) != current {
-                        return Box::pin(async {});
-                    }
-                    lock(&restore_agent.inner.steering_queue).prepend(messages);
-                }
-                PendingQueue::FollowUp => {
-                    let current = lock(&restore_agent.inner.follow_up_queue).clear_generation();
-                    if *lock(&follow_up_generation_for_restore) != current {
-                        return Box::pin(async {});
-                    }
-                    lock(&restore_agent.inner.follow_up_queue).prepend(messages);
+            let generation = match queue {
+                PendingQueue::Steering => *lock(&steering_generation_for_restore),
+                PendingQueue::FollowUp => *lock(&follow_up_generation_for_restore),
+            };
+            let give_back = restore_agent.give_back(queue, messages.clone(), generation);
+            match &port {
+                Some(port) => port.release(queue, messages, give_back),
+                None => {
+                    (give_back.restore)();
+                    Box::pin(async {})
                 }
             }
-            Box::pin(async {})
         }));
 
         config
+    }
+
+    fn pending_queue(&self, queue: PendingQueue) -> &Mutex<PendingMessageQueue> {
+        match queue {
+            PendingQueue::Steering => &self.inner.steering_queue,
+            PendingQueue::FollowUp => &self.inner.follow_up_queue,
+        }
+    }
+
+    fn give_back(
+        &self,
+        queue: PendingQueue,
+        messages: Vec<AgentMessage>,
+        generation: u64,
+    ) -> QueuedGiveBack {
+        let check_agent = self.clone();
+        let restore_agent = self.clone();
+        QueuedGiveBack {
+            restorable: Arc::new(move || {
+                lock(check_agent.pending_queue(queue)).clear_generation() == generation
+            }),
+            restore: Arc::new(move || {
+                let mut pending = lock(restore_agent.pending_queue(queue));
+                if pending.clear_generation() != generation {
+                    return false;
+                }
+                pending.prepend(messages.clone());
+                true
+            }),
+        }
+    }
+
+    async fn take_queued_messages(&self, queue: PendingQueue) -> Result<Vec<AgentMessage>, String> {
+        let port = lock(&self.inner.settings).queued_input_port.clone();
+        let Some(port) = port else {
+            return Ok(lock(self.pending_queue(queue)).drain());
+        };
+        let generation = Arc::new(Mutex::new(
+            lock(self.pending_queue(queue)).clear_generation(),
+        ));
+        let drain_generation = generation.clone();
+        let agent = self.clone();
+        let messages = port
+            .claim(
+                queue,
+                Arc::new(move || {
+                    let mut pending = lock(agent.pending_queue(queue));
+                    *lock(&drain_generation) = pending.clear_generation();
+                    pending.drain()
+                }),
+            )
+            .await;
+        if !messages.is_empty()
+            && let Err(error) = port.commit_consumption(queue, messages.clone()).await
+        {
+            let claimed_generation = *lock(&generation);
+            port.release(
+                queue,
+                messages.clone(),
+                self.give_back(queue, messages, claimed_generation),
+            )
+            .await;
+            return Err(error);
+        }
+        Ok(messages)
+    }
+
+    pub fn set_finish_turn(&self, callback: Option<crate::types::FinishTurn>) {
+        lock(&self.inner.settings).finish_turn = callback;
+    }
+
+    pub fn set_prepare_request(&self, callback: Option<crate::types::PrepareRequest>) {
+        lock(&self.inner.settings).prepare_request = callback;
+    }
+
+    pub fn set_queued_input_port(&self, port: Option<Arc<dyn QueuedInputPort>>) {
+        lock(&self.inner.settings).queued_input_port = port;
     }
 
     async fn run_with_lifecycle<F, Fut>(&self, executor: F)
@@ -855,6 +1113,7 @@ impl Agent {
             state.is_streaming = true;
             state.streaming_message = None;
             state.error_message = None;
+            state.provider_diagnostic = None;
         }
 
         executor(Some(abort_controller.signal())).await;
@@ -866,14 +1125,20 @@ impl Agent {
             let run_continues = {
                 let active_run = lock(&self.inner.active_run);
                 match active_run.as_ref() {
-                    Some(run) => !abort_controller.signal().aborted() && !run.suppress_queued_message_drain,
+                    Some(run) => {
+                        !abort_controller.signal().aborted() && !run.suppress_queued_message_drain
+                    }
                     None => false,
                 }
             };
-            if !run_continues || !self.can_drain_queued_messages_after_run() || !self.has_queued_messages() {
+            if !run_continues
+                || !self.can_drain_queued_messages_after_run()
+                || !self.has_queued_messages()
+            {
                 break;
             }
-            self.run_queued_messages_after_agent_end(Some(abort_controller.signal())).await;
+            self.run_queued_messages_after_agent_end(Some(abort_controller.signal()))
+                .await;
         }
 
         self.finish_run();
@@ -894,42 +1159,23 @@ impl Agent {
     }
 
     async fn run_queued_messages_after_agent_end(&self, signal: Option<AbortSignal>) {
-        let queued_steering = lock(&self.inner.steering_queue).drain();
-        if !queued_steering.is_empty() {
-            let context = self.create_context_snapshot();
-            let config = self.create_loop_config(PromptRunOptions {
-                skip_initial_steering_poll: true,
-                initial_request_timeout_ms: None,
-                initial_request_stream_start_timeout_ms: None,
-            });
-            run_agent_loop(
-                queued_steering,
-                context,
-                config,
-                agent_event_sink(self.clone()),
+        if lock(&self.inner.steering_queue).has_items() {
+            self.run_claimed_queue(
+                PendingQueue::Steering,
+                PromptRunOptions {
+                    skip_initial_steering_poll: true,
+                    initial_request_timeout_ms: None,
+                    initial_request_stream_start_timeout_ms: None,
+                },
                 signal,
-                Some(self.stream_function()),
             )
             .await;
             return;
         }
-
-        let queued_follow_ups = lock(&self.inner.follow_up_queue).drain();
-        if queued_follow_ups.is_empty() {
-            return;
+        if lock(&self.inner.follow_up_queue).has_items() {
+            self.run_claimed_queue(PendingQueue::FollowUp, PromptRunOptions::default(), signal)
+                .await;
         }
-
-        let context = self.create_context_snapshot();
-        let config = self.create_loop_config(PromptRunOptions::default());
-        run_agent_loop(
-            queued_follow_ups,
-            context,
-            config,
-            agent_event_sink(self.clone()),
-            signal,
-            Some(self.stream_function()),
-        )
-        .await;
     }
 
     fn finish_run(&self) {
@@ -965,16 +1211,26 @@ impl Agent {
                 state.push_message(message.clone());
             }
             AgentEvent::ToolExecutionStart { tool_call_id, .. } => {
-                lock(&self.inner.state).pending_tool_calls.insert(tool_call_id.clone());
+                lock(&self.inner.state)
+                    .pending_tool_calls
+                    .insert(tool_call_id.clone());
             }
             AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
-                lock(&self.inner.state).pending_tool_calls.remove(tool_call_id);
+                lock(&self.inner.state)
+                    .pending_tool_calls
+                    .remove(tool_call_id);
             }
             AgentEvent::TurnEnd { message, .. } => {
                 if let Some(assistant) = message.as_assistant()
                     && let Some(error_message) = assistant.error_message.clone()
+                    && !error_message.is_empty()
                 {
-                    lock(&self.inner.state).error_message = Some(error_message);
+                    let mut state = lock(&self.inner.state);
+                    state.error_message = Some(error_message);
+                    state.provider_diagnostic = assistant
+                        .provider_diagnostic
+                        .as_ref()
+                        .and_then(maho_ai::types::sanitize_provider_diagnostic);
                 }
             }
             AgentEvent::AgentEnd { .. } => {
@@ -988,12 +1244,19 @@ impl Agent {
             // error channel, and no loop event is ever emitted outside a run.
             return;
         };
-        let listeners: Vec<AgentListener> =
-            lock(&self.inner.listeners).entries.iter().map(|(_, listener)| listener.clone()).collect();
+        let listeners: Vec<AgentListener> = lock(&self.inner.listeners)
+            .entries
+            .iter()
+            .map(|(_, listener)| listener.clone())
+            .collect();
         let last = listeners.len().saturating_sub(1);
         let mut owned = Some(event);
         for (index, listener) in listeners.iter().enumerate() {
-            let next = if index == last { owned.take() } else { owned.clone() };
+            let next = if index == last {
+                owned.take()
+            } else {
+                owned.clone()
+            };
             if let Some(next) = next {
                 listener(next, signal.clone()).await;
             }
@@ -1010,7 +1273,9 @@ impl Agent {
     /// late lifecycle event belongs to that finished run and must be discarded.
     pub async fn emit_external_event(&self, event: AgentEvent, run_signal: Option<AbortSignal>) {
         let active_signal = self.signal();
-        let Some(active_signal) = active_signal else { return };
+        let Some(active_signal) = active_signal else {
+            return;
+        };
         if run_signal.is_some_and(|signal| !signal.same_signal(&active_signal)) {
             return;
         }
@@ -1093,7 +1358,9 @@ impl Agent {
 
     /// `Agent.prepareNextTurnWithContext` (getter).
     pub fn prepare_next_turn_with_context(&self) -> Option<PrepareNextTurnWithContext> {
-        lock(&self.inner.settings).prepare_next_turn_with_context.clone()
+        lock(&self.inner.settings)
+            .prepare_next_turn_with_context
+            .clone()
     }
 
     /// `Agent.prepareNextTurn`.
@@ -1215,14 +1482,20 @@ impl Agent {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 pub enum AgentPromptInput {
-    Text { text: String, images: Vec<ImageContent> },
+    Text {
+        text: String,
+        images: Vec<ImageContent>,
+    },
     Message(AgentMessage),
     Messages(Vec<AgentMessage>),
 }
 
 impl AgentPromptInput {
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into(), images: Vec::new() }
+        Self::Text {
+            text: text.into(),
+            images: Vec::new(),
+        }
     }
 }
 
@@ -1231,6 +1504,123 @@ struct PromptRunOptions {
     skip_initial_steering_poll: bool,
     initial_request_timeout_ms: Option<u64>,
     initial_request_stream_start_timeout_ms: Option<u64>,
+}
+
+#[cfg(test)]
+mod queue_ownership_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn provider_diagnostic_follows_error_projection_and_reset_lifecycle() {
+        // Given: a terminal provider failure with structured quota evidence.
+        let agent = Agent::new(AgentOptions::default());
+        let diagnostic = maho_ai::types::ProviderDiagnostic {
+            category: maho_ai::types::ProviderDiagnosticCategory::Quota,
+            http_status: Some(429),
+            code: Some("insufficient_quota".into()),
+            evidence: maho_ai::types::ProviderDiagnosticEvidence::StructuredCode,
+        };
+        let message = crate::assistant_terminal_state::create_terminal_failure_assistant_message(
+            &default_model(),
+            maho_ai::types::StopReason::Error,
+            &crate::assistant_terminal_state::AgentStreamError::ProviderFailure {
+                message: "failure".into(),
+                diagnostic: diagnostic.clone(),
+            },
+            None,
+        );
+        // When: the terminal event is projected into public state.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            agent.process_events(AgentEvent::TurnEnd {
+                message: maho_ai::types::Message::Assistant(Box::new(message)).into(),
+                tool_results: Vec::new(),
+            }),
+        )
+        .await
+        .expect("bounded event projection");
+        // Then: the structured cause is public and reset removes it with the error.
+        assert_eq!(agent.state().provider_diagnostic, Some(diagnostic));
+        agent.reset();
+        assert!(agent.state().provider_diagnostic.is_none());
+        assert!(agent.state().error_message.is_none());
+    }
+
+    struct RejectConsumption;
+
+    impl QueuedInputPort for RejectConsumption {
+        fn claim(
+            &self,
+            _: PendingQueue,
+            drain: QueuedDrain,
+        ) -> maho_ai::types::BoxFuture<'static, Vec<AgentMessage>> {
+            Box::pin(async move { drain() })
+        }
+
+        fn release(
+            &self,
+            _: PendingQueue,
+            _: Vec<AgentMessage>,
+            give_back: QueuedGiveBack,
+        ) -> maho_ai::types::BoxFuture<'static, ()> {
+            Box::pin(async move {
+                (give_back.restore)();
+            })
+        }
+
+        fn commit_consumption(
+            &self,
+            _: PendingQueue,
+            _: Vec<AgentMessage>,
+        ) -> maho_ai::types::BoxFuture<'static, Result<(), String>> {
+            Box::pin(async { Err("not durable".into()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_first_continuation_restores_rejected_consumption() {
+        // Given: a queue owner that refuses durable consumption.
+        let agent = Agent::new(AgentOptions {
+            queued_input_port: Some(Arc::new(RejectConsumption)),
+            ..Default::default()
+        });
+        let message = agent
+            .normalize_prompt_input(AgentPromptInput::text("queued"))
+            .remove(0);
+        agent.steer(message);
+        // When: continuation tries to admit that queue as its initial prompt.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            agent.continue_with_queued_messages(AgentContinuationOptions::default()),
+        )
+        .await
+        .expect("bounded continuation");
+        // Then: input is restored, never emitted, and the run settles.
+        assert!(agent.has_queued_messages());
+        assert!(
+            !agent
+                .state()
+                .messages()
+                .iter()
+                .any(|message| message.role() == "user")
+        );
+        assert!(!agent.is_streaming());
+    }
+
+    #[test]
+    fn clear_after_claim_prevents_give_back() {
+        // Given: a give-back token from the current queue generation.
+        let agent = Agent::new(AgentOptions::default());
+        let messages = agent.normalize_prompt_input(AgentPromptInput::text("claimed"));
+        let generation = lock(&agent.inner.steering_queue).clear_generation();
+        let give_back = agent.give_back(PendingQueue::Steering, messages, generation);
+        // When: the owner clears the queue after the claim.
+        agent.clear_steering_queue();
+        // Then: both admission checks reject restoration.
+        assert!(!(give_back.restorable)());
+        assert!(!(give_back.restore)());
+        assert!(!agent.has_queued_messages());
+    }
 }
 
 /// Unused marker so the empty-usage helper stays part of the ported surface.
@@ -1247,5 +1637,11 @@ pub fn agent_event_sink(agent: Agent) -> AgentEventSink {
 }
 
 #[allow(dead_code)]
-fn unused_marker(_: &AtomicU64, _: &AfterToolCallContext, _: &AfterToolCallResult, _: &BeforeToolCallContext, _: &BeforeToolCallResult) {
+fn unused_marker(
+    _: &AtomicU64,
+    _: &AfterToolCallContext,
+    _: &AfterToolCallResult,
+    _: &BeforeToolCallContext,
+    _: &BeforeToolCallResult,
+) {
 }

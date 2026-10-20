@@ -3,8 +3,6 @@
 use crate::auth::oauth::device_code::{
     OAuthDeviceCodePollOptions, OAuthDeviceCodePollResult, poll_oauth_device_code_flow,
 };
-use crate::auth::oauth::loopback::{LoopbackRequest, LoopbackResponse, bind_loopback};
-use crate::auth::oauth::oauth_page::{oauth_error_html, oauth_success_html};
 use crate::auth::oauth::pkce::generate_pkce;
 use crate::auth::oauth::transport::{HttpRequest, HttpResponse, OAuthTransport, default_transport};
 use crate::auth::types::{
@@ -14,9 +12,7 @@ use crate::auth::types::{
 use crate::utils::abort::AbortSignal;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use tokio::sync::watch;
+use std::sync::Arc;
 use url::Url;
 
 const CALLBACK_HOST: &str = "127.0.0.1";
@@ -67,12 +63,21 @@ async fn load_radius_oauth_discovery(
         .await?;
 
     if !response.ok() {
-        anyhow::bail!("Could not load Radius OAuth config from {gateway}: {} {}", response.status, response.body);
+        anyhow::bail!(
+            "Could not load Radius OAuth config from {gateway}: {} {}",
+            response.status,
+            response.body
+        );
     }
 
     let discovery: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
-    match discovery.get("authorizationEndpoint").and_then(Value::as_str) {
-        Some(endpoint) => Ok(RadiusOAuthDiscovery { authorization_endpoint: endpoint.to_string() }),
+    match discovery
+        .get("authorizationEndpoint")
+        .and_then(Value::as_str)
+    {
+        Some(endpoint) => Ok(RadiusOAuthDiscovery {
+            authorization_endpoint: endpoint.to_string(),
+        }),
         None => anyhow::bail!("Invalid Radius OAuth config from {gateway}"),
     }
 }
@@ -99,8 +104,14 @@ fn read_oauth_response_error(response: &HttpResponse, message: &str) -> OAuthRes
     if !text.is_empty() {
         match serde_json::from_str::<Value>(text) {
             Ok(Value::Object(object)) => {
-                oauth_error = object.get("error").and_then(Value::as_str).map(str::to_string);
-                description = object.get("error_description").and_then(Value::as_str).map(str::to_string);
+                oauth_error = object
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                description = object
+                    .get("error_description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
             }
             _ => description = Some(text.to_string()),
         }
@@ -112,7 +123,11 @@ fn read_oauth_response_error(response: &HttpResponse, message: &str) -> OAuthRes
         (None, Some(description)) => description.clone(),
         (None, None) => response.status.to_string(),
     };
-    OAuthResponseError { status: response.status, oauth_error, message: format!("{message}: {detail}") }
+    OAuthResponseError {
+        status: response.status,
+        oauth_error,
+        message: format!("{message}: {detail}"),
+    }
 }
 
 fn form_body(fields: &[(&str, &str)]) -> String {
@@ -137,7 +152,10 @@ async fn request_oauth_token(
                 url,
                 headers: vec![
                     ("accept".into(), "application/json".into()),
-                    ("content-type".into(), "application/x-www-form-urlencoded".into()),
+                    (
+                        "content-type".into(),
+                        "application/x-www-form-urlencoded".into(),
+                    ),
                 ],
                 body: Some(form_body(fields)),
                 timeout_ms: None,
@@ -154,140 +172,78 @@ async fn request_oauth_token(
         })?;
 
     if !response.ok() {
-        return Err(read_oauth_response_error(&response, "Radius OAuth token request failed").into());
+        return Err(
+            read_oauth_response_error(&response, "Radius OAuth token request failed").into(),
+        );
     }
 
     let data: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
-    let access = data.get("access_token").and_then(Value::as_str).unwrap_or_default();
-    let refresh = data.get("refresh_token").and_then(Value::as_str).unwrap_or_default();
-    let expires_in = data.get("expires_in").and_then(Value::as_f64).unwrap_or_default();
+    let access = data
+        .get("access_token")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let refresh = data
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let expires_in = data
+        .get("expires_in")
+        .and_then(Value::as_f64)
+        .unwrap_or_default();
     let scope = data.get("scope").cloned().unwrap_or(Value::Null);
-    let credential = OAuthCredential::new(access, refresh, transport.now_ms() + expires_in * 1000.0 - TOKEN_EXPIRY_SKEW_MS);
+    let credential = OAuthCredential::new(
+        access,
+        refresh,
+        transport.now_ms() + expires_in * 1000.0 - TOKEN_EXPIRY_SKEW_MS,
+    );
     Ok(credential.with_extra("scope", scope))
 }
 
-struct CallbackShared {
-    expected_state: String,
-    settled: AtomicBool,
-    code: watch::Sender<Option<Option<String>>>,
-}
-
-impl CallbackShared {
-    fn settle(&self, code: Option<String>) {
-        if self.settled.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let _ = self.code.send(Some(code));
-    }
-}
-
 pub struct OAuthCallbackServer {
-    shared: Arc<CallbackShared>,
-    code: watch::Receiver<Option<Option<String>>>,
-    listener: Mutex<Option<crate::auth::oauth::loopback::LoopbackListener>>,
-    signal: Option<AbortSignal>,
-    listener_id: Option<crate::utils::abort::ListenerId>,
+    server: super::callback_server::OAuthCallbackServer<String>,
 }
-
 impl OAuthCallbackServer {
-    pub async fn wait_for_code(&self) -> Option<String> {
-        let mut code = self.code.clone();
-        loop {
-            let current = { code.borrow().clone() };
-            if let Some(current) = current {
-                return current;
-            }
-            if code.changed().await.is_err() {
-                return None;
-            }
-        }
+    pub async fn wait_for_code(&self) -> anyhow::Result<Option<String>> {
+        self.server.wait().await
     }
-
     pub fn close(&self) {
-        if let (Some(signal), Some(listener_id)) = (&self.signal, self.listener_id) {
-            signal.remove_abort_listener(listener_id);
-        }
-        self.shared.settle(None);
-        if let Some(listener) = self.listener.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            listener.close();
-        }
+        self.server.close();
     }
 }
 
-fn handle_callback(shared: &CallbackShared, request: &LoopbackRequest) -> LoopbackResponse {
-    if request.path != CALLBACK_PATH {
-        return LoopbackResponse::html(404, oauth_error_html("Callback route not found.", None));
-    }
-    if request.query_param("state").as_deref() != Some(shared.expected_state.as_str()) {
-        return LoopbackResponse::html(400, oauth_error_html("OAuth state mismatch.", None));
-    }
-
-    if let Some(error) = request.query_param("error") {
-        let description = request.query_param("error_description").unwrap_or(error);
-        shared.settle(None);
-        return LoopbackResponse::html(400, oauth_error_html(&description, None));
-    }
-
-    let Some(code) = request.query_param("code") else {
-        return LoopbackResponse::html(400, oauth_error_html("Missing authorization code.", None));
-    };
-
-    shared.settle(Some(code));
-    LoopbackResponse::html(200, oauth_success_html("Signed in to Radius. You may now close this page."))
-}
-
-pub async fn start_oauth_callback_server(expected_state: &str, signal: &AbortSignal) -> anyhow::Result<OAuthCallbackServer> {
+pub async fn start_oauth_callback_server(
+    expected_state: &str,
+    signal: &AbortSignal,
+) -> anyhow::Result<OAuthCallbackServer> {
     start_oauth_callback_server_on_port(expected_state, signal, CALLBACK_PORT).await
 }
-
 pub async fn start_oauth_callback_server_on_port(
     expected_state: &str,
     signal: &AbortSignal,
     port: u16,
 ) -> anyhow::Result<OAuthCallbackServer> {
-    let (code_tx, code_rx) = watch::channel(None);
-    let shared = Arc::new(CallbackShared {
-        expected_state: expected_state.to_string(),
-        settled: AtomicBool::new(false),
-        code: code_tx,
-    });
-
-    let handler = {
-        let shared = shared.clone();
-        Arc::new(move |request: LoopbackRequest| -> crate::auth::oauth::loopback::LoopbackFuture {
-            let response = handle_callback(&shared, &request);
-            Box::pin(std::future::ready(response))
-        })
-    };
-
-    let listener = match bind_loopback(port, CALLBACK_HOST, handler).await {
-        Ok(listener) => listener,
-        Err(_) => {
-            shared.settle(None);
-            return Ok(OAuthCallbackServer {
-                shared,
-                code: code_rx,
-                listener: Mutex::new(None),
-                signal: None,
-                listener_id: None,
-            });
-        }
-    };
-
-    let abort_shared = shared.clone();
-    let listener_id = signal.add_abort_listener(move |_| abort_shared.settle(None));
-
-    Ok(OAuthCallbackServer {
-        shared,
-        code: code_rx,
-        listener: Mutex::new(Some(listener)),
-        signal: Some(signal.clone()),
-        listener_id: Some(listener_id),
-    })
+    let server = super::callback_server::start_oauth_callback_server(
+        super::callback_server::OAuthCallbackServerOptions {
+            provider_name: "Radius".into(),
+            host: CALLBACK_HOST.into(),
+            port,
+            path: CALLBACK_PATH.into(),
+            redirect_host: None,
+            state: Some(expected_state.into()),
+            cancel_path: None,
+            complete: Arc::new(|code| -> super::callback_server::CompletionFuture<String> {
+                Box::pin(async move { Ok(code) })
+            }),
+            signal: Some(signal.clone()),
+            timeout_ms: None,
+        },
+    )
+    .await?;
+    Ok(OAuthCallbackServer { server })
 }
 
 async fn login_with_browser(
-    transport: &dyn OAuthTransport,
+    transport: Arc<dyn OAuthTransport>,
     gateway: &str,
     authorization_endpoint: &str,
     interaction: &ProviderAuthInteraction,
@@ -310,33 +266,63 @@ async fn login_with_browser(
     };
     authorize_url.set_query(Some(&query));
 
-    let callback_server = start_oauth_callback_server(&state, &interaction.signal).await?;
-    interaction.notify(AuthEvent::Progress { message: format!("Listening for OAuth callback on {redirect_uri}") });
+    let complete_gateway = gateway.to_owned();
+    let complete_redirect = redirect_uri.clone();
+    let complete_signal = interaction.signal.clone();
+    let callback_server = super::callback_server::start_oauth_callback_server(
+        super::callback_server::OAuthCallbackServerOptions {
+            provider_name: "Radius".into(),
+            host: CALLBACK_HOST.into(),
+            port: CALLBACK_PORT,
+            path: CALLBACK_PATH.into(),
+            redirect_host: None,
+            state: Some(state),
+            cancel_path: None,
+            signal: Some(interaction.signal.clone()),
+            timeout_ms: None,
+            complete: Arc::new(
+                move |code| -> super::callback_server::CompletionFuture<OAuthCredential> {
+                    let transport = transport.clone();
+                    let gateway = complete_gateway.clone();
+                    let redirect = complete_redirect.clone();
+                    let verifier = pkce.verifier.clone();
+                    let signal = complete_signal.clone();
+                    Box::pin(async move {
+                        request_oauth_token(
+                            transport.as_ref(),
+                            &gateway,
+                            &[
+                                ("grant_type", "authorization_code"),
+                                ("client_id", OAUTH_CLIENT_ID),
+                                ("redirect_uri", &redirect),
+                                ("code", &code),
+                                ("code_verifier", &verifier),
+                            ],
+                            &signal,
+                        )
+                        .await
+                    })
+                },
+            ),
+        },
+    )
+    .await?;
+    interaction.notify(AuthEvent::Progress {
+        message: format!("Listening for OAuth callback on {redirect_uri}"),
+    });
     interaction.notify(AuthEvent::AuthUrl {
         url: authorize_url.to_string(),
         instructions: Some("Continue in your browser.".into()),
     });
 
     let result = async {
-        let Some(code) = callback_server.wait_for_code().await else {
+        let Some(credential) = callback_server.wait().await? else {
             if interaction.signal.aborted() {
                 anyhow::bail!("Login cancelled");
             }
             anyhow::bail!("OAuth callback did not complete.");
         };
-        request_oauth_token(
-            transport,
-            gateway,
-            &[
-                ("grant_type", "authorization_code"),
-                ("client_id", OAUTH_CLIENT_ID),
-                ("redirect_uri", &redirect_uri),
-                ("code", &code),
-                ("code_verifier", &pkce.verifier),
-            ],
-            &interaction.signal,
-        )
-        .await
+        Ok(credential)
     }
     .await;
 
@@ -366,9 +352,15 @@ async fn request_device_authorization(
                 url,
                 headers: vec![
                     ("accept".into(), "application/json".into()),
-                    ("content-type".into(), "application/x-www-form-urlencoded".into()),
+                    (
+                        "content-type".into(),
+                        "application/x-www-form-urlencoded".into(),
+                    ),
                 ],
-                body: Some(form_body(&[("client_id", OAUTH_CLIENT_ID), ("scope", OAUTH_SCOPE)])),
+                body: Some(form_body(&[
+                    ("client_id", OAUTH_CLIENT_ID),
+                    ("scope", OAUTH_SCOPE),
+                ])),
                 timeout_ms: None,
             },
             signal,
@@ -383,14 +375,30 @@ async fn request_device_authorization(
         })?;
 
     if !response.ok() {
-        return Err(read_oauth_response_error(&response, "Radius OAuth device authorization failed").into());
+        return Err(read_oauth_response_error(
+            &response,
+            "Radius OAuth device authorization failed",
+        )
+        .into());
     }
 
     let data: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
-    let device_code = data.get("device_code").and_then(Value::as_str).filter(|value| !value.is_empty());
-    let user_code = data.get("user_code").and_then(Value::as_str).filter(|value| !value.is_empty());
-    let verification_uri = data.get("verification_uri").and_then(Value::as_str).filter(|value| !value.is_empty());
-    let expires_in = data.get("expires_in").and_then(Value::as_f64).filter(|value| *value != 0.0);
+    let device_code = data
+        .get("device_code")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let user_code = data
+        .get("user_code")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let verification_uri = data
+        .get("verification_uri")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let expires_in = data
+        .get("expires_in")
+        .and_then(Value::as_f64)
+        .filter(|value| *value != 0.0);
     let (Some(device_code), Some(user_code), Some(verification_uri), Some(expires_in)) =
         (device_code, user_code, verification_uri, expires_in)
     else {
@@ -411,7 +419,8 @@ async fn login_with_device_code(
     gateway: String,
     interaction: &ProviderAuthInteraction,
 ) -> anyhow::Result<OAuthCredential> {
-    let device = request_device_authorization(transport.as_ref(), &gateway, &interaction.signal).await?;
+    let device =
+        request_device_authorization(transport.as_ref(), &gateway, &interaction.signal).await?;
     let poll_signal = interaction.signal.clone();
     interaction.notify(AuthEvent::DeviceCode {
         user_code: device.user_code.clone(),
@@ -448,7 +457,9 @@ async fn login_with_device_code(
                         None => Err(error),
                         Some(response_error) => match response_error.oauth_error.as_deref() {
                             Some("authorization_pending") => Ok(OAuthDeviceCodePollResult::Pending),
-                            Some("slow_down") => Ok(OAuthDeviceCodePollResult::SlowDown { interval_seconds: None }),
+                            Some("slow_down") => Ok(OAuthDeviceCodePollResult::SlowDown {
+                                interval_seconds: None,
+                            }),
                             Some("expired_token") => Ok(OAuthDeviceCodePollResult::Failed {
                                 message: "Device authorization expired.".into(),
                             }),
@@ -488,7 +499,11 @@ impl RadiusOAuth {
     }
 }
 
-pub fn create_radius_oauth(name: &str, gateway: &str, transport: Arc<dyn OAuthTransport>) -> RadiusOAuth {
+pub fn create_radius_oauth(
+    name: &str,
+    gateway: &str,
+    transport: Arc<dyn OAuthTransport>,
+) -> RadiusOAuth {
     RadiusOAuth::new(name, gateway, transport)
 }
 
@@ -502,7 +517,10 @@ impl OAuthAuth for RadiusOAuth {
         &self.name
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<OAuthCredential> {
         let login_method = interaction
             .prompt(AuthPrompt {
                 kind: AuthPromptKind::Select {
@@ -515,7 +533,8 @@ impl OAuthAuth for RadiusOAuth {
                         },
                         AuthPromptOption {
                             id: LOGIN_METHOD_DEVICE_CODE.into(),
-                            label: "Sign in with device code (when signing in from another device)".into(),
+                            label: "Sign in with device code (when signing in from another device)"
+                                .into(),
                             description: None,
                         },
                     ],
@@ -525,12 +544,22 @@ impl OAuthAuth for RadiusOAuth {
             .await?;
 
         if login_method == LOGIN_METHOD_DEVICE_CODE {
-            return login_with_device_code(self.transport.clone(), self.gateway.clone(), interaction).await;
+            return login_with_device_code(
+                self.transport.clone(),
+                self.gateway.clone(),
+                interaction,
+            )
+            .await;
         }
         if login_method == LOGIN_METHOD_BROWSER {
-            let discovery = load_radius_oauth_discovery(self.transport.as_ref(), &self.gateway, &interaction.signal).await?;
-            return login_with_browser(
+            let discovery = load_radius_oauth_discovery(
                 self.transport.as_ref(),
+                &self.gateway,
+                &interaction.signal,
+            )
+            .await?;
+            return login_with_browser(
+                self.transport.clone(),
                 &self.gateway,
                 &discovery.authorization_endpoint,
                 interaction,
@@ -540,7 +569,11 @@ impl OAuthAuth for RadiusOAuth {
         anyhow::bail!("Unknown {} sign-in method: {login_method}", self.name)
     }
 
-    async fn refresh(&self, credential: &OAuthCredential, signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        signal: &AbortSignal,
+    ) -> anyhow::Result<OAuthCredential> {
         request_oauth_token(
             self.transport.as_ref(),
             &self.gateway,
@@ -555,7 +588,10 @@ impl OAuthAuth for RadiusOAuth {
     }
 
     async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-        Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        Ok(ModelAuth {
+            api_key: Some(credential.access.clone()),
+            ..Default::default()
+        })
     }
 }
 
@@ -589,19 +625,25 @@ mod tests {
             Ok(self.login_method.clone())
         }
         fn notify(&self, event: AuthEvent) {
-            self.events.lock().unwrap_or_else(|p| p.into_inner()).push(event);
+            self.events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(event);
         }
     }
 
     fn interaction(login_method: &str) -> (ProviderAuthInteraction, Arc<StdMutex<Vec<AuthEvent>>>) {
         let events = Arc::new(StdMutex::new(Vec::new()));
         let signal = AbortController::new().signal();
-        let inner = Arc::new(ScriptedInteraction {
+        let inner: Arc<dyn AuthInteraction> = Arc::new(ScriptedInteraction {
             signal: signal.clone(),
             login_method: login_method.to_string(),
             events: events.clone(),
         });
-        (ProviderAuthInteraction::new(signal, inner), events)
+        (
+            ProviderAuthInteraction::new(signal, inner),
+            events,
+        )
     }
 
     fn form_of(request: &HttpRequest) -> Vec<(String, String)> {
@@ -611,13 +653,22 @@ mod tests {
     }
 
     fn form_value(request: &HttpRequest, key: &str) -> Option<String> {
-        form_of(request).into_iter().find(|(k, _)| k == key).map(|(_, value)| value)
+        form_of(request)
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, value)| value)
     }
 
     #[test]
     fn gateway_urls_get_a_scheme_and_no_trailing_slash() {
-        assert_eq!(normalize_gateway_url("radius.example"), "https://radius.example");
-        assert_eq!(normalize_gateway_url("http://radius.example/"), "http://radius.example");
+        assert_eq!(
+            normalize_gateway_url("radius.example"),
+            "https://radius.example"
+        );
+        assert_eq!(
+            normalize_gateway_url("http://radius.example/"),
+            "http://radius.example"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -639,15 +690,25 @@ mod tests {
             ),
         ]));
         transport.set_now_ms(1_784_851_200_000.0);
-        let oauth = RadiusOAuth::new("Radius", GATEWAY, transport.clone());
+        let oauth = RadiusOAuth::new(
+            "Radius",
+            GATEWAY,
+            transport.clone(),
+        );
         let (interaction, events) = interaction("device-code");
 
         let credential = oauth.login(&interaction).await.unwrap();
 
         assert_eq!(credential.access, "access-token");
         assert_eq!(credential.refresh, "refresh-token");
-        assert_eq!(credential.expires, 1_784_851_200_000.0 + 3600.0 * 1000.0 - 60_000.0);
-        assert_eq!(credential.get_extra_str("scope"), Some("gateway offline_access"));
+        assert_eq!(
+            credential.expires,
+            1_784_851_200_000.0 + 3600.0 * 1000.0 - 60_000.0
+        );
+        assert_eq!(
+            credential.get_extra_str("scope"),
+            Some("gateway offline_access")
+        );
         assert_eq!(
             *events.lock().unwrap_or_else(|p| p.into_inner()),
             vec![AuthEvent::DeviceCode {
@@ -658,14 +719,36 @@ mod tests {
             }]
         );
 
-        let urls: Vec<String> = transport.requests().iter().map(|request| request.url.clone()).collect();
-        assert_eq!(urls, vec![format!("{GATEWAY}/v1/oauth/device"), format!("{GATEWAY}/v1/oauth/token")]);
+        let urls: Vec<String> = transport
+            .requests()
+            .iter()
+            .map(|request| request.url.clone())
+            .collect();
+        assert_eq!(
+            urls,
+            vec![
+                format!("{GATEWAY}/v1/oauth/device"),
+                format!("{GATEWAY}/v1/oauth/token")
+            ]
+        );
         let device_request = &transport.requests()[0];
-        assert_eq!(form_value(device_request, "client_id").as_deref(), Some("pi-gateway"));
-        assert_eq!(form_value(device_request, "scope").as_deref(), Some("gateway offline_access"));
+        assert_eq!(
+            form_value(device_request, "client_id").as_deref(),
+            Some("pi-gateway")
+        );
+        assert_eq!(
+            form_value(device_request, "scope").as_deref(),
+            Some("gateway offline_access")
+        );
         let token_request = &transport.requests()[1];
-        assert_eq!(form_value(token_request, "grant_type").as_deref(), Some(OAUTH_DEVICE_CODE_GRANT_TYPE));
-        assert_eq!(form_value(token_request, "device_code").as_deref(), Some("device-code"));
+        assert_eq!(
+            form_value(token_request, "grant_type").as_deref(),
+            Some(OAUTH_DEVICE_CODE_GRANT_TYPE)
+        );
+        assert_eq!(
+            form_value(token_request, "device_code").as_deref(),
+            Some("device-code")
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -677,9 +760,16 @@ mod tests {
                 serde_json::json!({"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}),
             ),
         )]));
-        let oauth = RadiusOAuth::new("Radius", GATEWAY, transport.clone());
+        let oauth = RadiusOAuth::new(
+            "Radius",
+            GATEWAY,
+            transport.clone(),
+        );
         let credential = oauth
-            .refresh(&OAuthCredential::new("old-access", "old-refresh", 0.0), &AbortController::new().signal())
+            .refresh(
+                &OAuthCredential::new("old-access", "old-refresh", 0.0),
+                &AbortController::new().signal(),
+            )
             .await
             .unwrap();
         assert_eq!(credential.access, "new-access");
@@ -688,21 +778,40 @@ mod tests {
         let requests = transport.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url, format!("{GATEWAY}/v1/oauth/token"));
-        assert_eq!(form_value(&requests[0], "grant_type").as_deref(), Some("refresh_token"));
-        assert_eq!(form_value(&requests[0], "client_id").as_deref(), Some("pi-gateway"));
-        assert_eq!(form_value(&requests[0], "refresh_token").as_deref(), Some("old-refresh"));
+        assert_eq!(
+            form_value(&requests[0], "grant_type").as_deref(),
+            Some("refresh_token")
+        );
+        assert_eq!(
+            form_value(&requests[0], "client_id").as_deref(),
+            Some("pi-gateway")
+        );
+        assert_eq!(
+            form_value(&requests[0], "refresh_token").as_deref(),
+            Some("old-refresh")
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn discovers_only_the_interactive_browser_authorization_endpoint() {
         let transport = Arc::new(ScriptedTransport::new(vec![(
             Some("/v1/oauth"),
-            json(200, serde_json::json!({"issuer": "https://radius-ui.example"})),
+            json(
+                200,
+                serde_json::json!({"issuer": "https://radius-ui.example"}),
+            ),
         )]));
-        let oauth = RadiusOAuth::new("Radius", GATEWAY, transport.clone());
+        let oauth = RadiusOAuth::new(
+            "Radius",
+            GATEWAY,
+            transport.clone(),
+        );
         let (interaction, _) = interaction("browser");
         let error = oauth.login(&interaction).await.unwrap_err();
-        assert_eq!(error.to_string(), format!("Invalid Radius OAuth config from {GATEWAY}"));
+        assert_eq!(
+            error.to_string(),
+            format!("Invalid Radius OAuth config from {GATEWAY}")
+        );
         assert_eq!(transport.requests().len(), 1);
         assert_eq!(transport.requests()[0].url, format!("{GATEWAY}/v1/oauth"));
     }
@@ -710,10 +819,17 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn unknown_sign_in_methods_are_rejected() {
         let transport = Arc::new(ScriptedTransport::default());
-        let oauth = RadiusOAuth::new("Radius", GATEWAY, transport.clone());
+        let oauth = RadiusOAuth::new(
+            "Radius",
+            GATEWAY,
+            transport.clone(),
+        );
         let (interaction, _) = interaction("carrier-pigeon");
         let error = oauth.login(&interaction).await.unwrap_err();
-        assert_eq!(error.to_string(), "Unknown Radius sign-in method: carrier-pigeon");
+        assert_eq!(
+            error.to_string(),
+            "Unknown Radius sign-in method: carrier-pigeon"
+        );
         assert!(transport.requests().is_empty());
     }
 }

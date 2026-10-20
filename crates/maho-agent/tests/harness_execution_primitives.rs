@@ -250,7 +250,7 @@ async fn rejects_pre_aborted_invocations_and_combines_admitted_hook_cancellation
 #[tokio::test]
 async fn passes_tool_handlers_a_child_context_of_the_active_hook_span() {
     let telemetry = InMemoryTelemetryContext::new();
-    const VALUE_KEY: maho_agent::harness::context::ContextKey<String> = create_context_key("hook.test.value");
+    static VALUE_KEY: std::sync::LazyLock<maho_agent::harness::context::ContextKey<String>> = std::sync::LazyLock::new(|| create_context_key("hook.test.value"));
     let hooks = HookRegistry::new(Arc::new(|_e, _h, _l, _c| Box::pin(async {})));
     let received = Arc::new(std::sync::Mutex::new(None));
     let sink = received.clone();
@@ -741,7 +741,7 @@ async fn does_not_recurse_when_a_handler_error_listener_fails() {
 #[tokio::test]
 async fn keeps_concurrent_batches_contiguous_with_their_emitting_contexts() {
     let bus = HarnessEventBus::new();
-    const SOURCE_KEY: maho_agent::harness::context::ContextKey<String> = create_context_key("event.batch.source");
+    static SOURCE_KEY: std::sync::LazyLock<maho_agent::harness::context::ContextKey<String>> = std::sync::LazyLock::new(|| create_context_key("event.batch.source"));
     let first_context = with_context_value(&SOURCE_KEY, "first".to_owned(), &BACKGROUND_CONTEXT);
     let second_context = with_context_value(&SOURCE_KEY, "second".to_owned(), &BACKGROUND_CONTEXT);
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
