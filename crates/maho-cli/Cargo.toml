@@ -92,6 +92,9 @@ serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 regex.workspace = true
 sha2.workspace = true
+flate2 = "=1.1.8"
+tar = "0.4"
+zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
 url.workspace = true
 percent-encoding.workspace = true
 base64 = "=0.22.1"

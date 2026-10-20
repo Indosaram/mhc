@@ -37,6 +37,20 @@ Windows x86_64 (PowerShell), installs to `%LOCALAPPDATA%\mhc` and adds it to you
 irm https://raw.githubusercontent.com/Indosaram/mhc/main/install.ps1 | iex
 ```
 
+## Updating
+
+mhc includes built-in native self-update that downloads the complete release package with SHA256 checksum verification, atomically replacing the installation while preserving user state (`~/.omo/agent`):
+
+```bash
+mhc update           # Check and upgrade to the latest release
+mhc update --check   # Check for available updates without applying
+mhc update --force   # Bypass version checks and force re-install latest release
+mhc update --all     # Update both installed resource packages and native mhc
+```
+
+- **Session Safety & Rollback**: Updates refuse replacement if another active mhc session is running from the installation; automatic atomic rollback restores the previous version if replacement fails.
+- **Startup Notification**: Non-blocking background checks inform you when an update is available without delaying terminal startup.
+
 ## Quick start
 
 ```bash

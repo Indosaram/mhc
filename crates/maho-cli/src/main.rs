@@ -46,10 +46,13 @@ fn ensure_managed_tool(tool: maho_tools::managed_tools::ManagedTool, on_status: 
 }
 fn run() -> Result<(), String> {
     use std::path::PathBuf;
+    let mut argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(result) = maho_cli::native_update::install::helper_entry(&argv) {
+        return result;
+    }
     // senpi main.ts `main()`: `resetTimings()` opens the startup phase timeline (`PI_TIMING=1`).
     maho_core::timings::reset_timings(maho_core::timings::TimingLabel::Main);
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
-    let mut argv: Vec<String> = std::env::args().skip(1).collect();
     // senpi rpc-entry.ts: the `<app>-rpc` entry is `main(["--mode", "rpc", ...argv])`; the single native
     // binary answers it when invoked through an argv0 ending in `-rpc` (a symlink or copy).
     if std::env::args_os().next().and_then(|argv0| std::path::Path::new(&argv0).file_stem().map(|stem| stem.to_string_lossy().ends_with("-rpc"))).unwrap_or(false) {
@@ -60,6 +63,20 @@ fn run() -> Result<(), String> {
     let _ = maho_core::brand::brand_profile();
     let startup_env = maho_core::config::current_env();
     maho_process_env::apply(&startup_env, &maho_cli::cli::setup::startup_process_env(&argv, &startup_env));
+    let internal_role = std::env::var_os(maho_cli::experimental::process::INTERNAL_PROCESS_ENV).is_some();
+    let native_update = if !internal_role && argv.first().is_some_and(|arg| arg == "update") {
+        let options = maho_cli::package_manager_cli::parse_package_command(&argv)?;
+        options.is_some_and(|options| matches!(options.update_target,
+            None | Some(maho_cli::package_manager_cli::UpdateTarget::SelfOnly)
+                | Some(maho_cli::package_manager_cli::UpdateTarget::All)))
+    } else { false };
+    let version_only = !internal_role && argv.len() == 1
+        && matches!(argv[0].as_str(), "--version" | "-v");
+    let _installation_lease = if native_update || version_only {
+        None
+    } else {
+        maho_cli::native_update::install::session_lease()?
+    };
     // senpi bun/runtime-modules.ts `registerBunRuntimeModules`: the standalone binary registers its
     // statically embedded OAuth flows once per process before any login/auth resolution.
     maho_ai::bun_oauth::register_bun_oauth_flows();
