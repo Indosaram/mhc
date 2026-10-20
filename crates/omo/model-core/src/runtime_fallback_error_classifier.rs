@@ -133,6 +133,7 @@ static QUOTA_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)billing.?(?:hard.?)?limit",
         r"(?i)exhausted\s+your\s+capacity",
         r"(?i)resource.?exhausted",
+        r"(?i)\bcapacity_limit\b",
         r"(?i)out\s+of\s+credits?",
         r"(?i)payment.?required",
         r"(?i)usage\s+limit",
@@ -218,17 +219,33 @@ pub fn is_runtime_fallback_retryable_error(
     let status_code = get_runtime_fallback_status_code(error, Some(retry_on_errors));
     let message = get_runtime_fallback_error_message(error);
 
-    match classify_runtime_fallback_error(error) {
+    let error_type = classify_runtime_fallback_error(error);
+    match error_type {
         // OpenCode starts native compaction for context overflow; fallback would abort it.
         Some(RuntimeFallbackErrorType::Abort | RuntimeFallbackErrorType::ContextOverflow) => {
             return false;
         }
+        Some(RuntimeFallbackErrorType::MissingApiKey
+            | RuntimeFallbackErrorType::ModelNotFound
+            | RuntimeFallbackErrorType::QuotaExceeded
+            | RuntimeFallbackErrorType::InvalidApiKey) | None => {}
+    }
+
+    if get_runtime_fallback_error_name(error)
+        .is_some_and(|name| name.to_lowercase().replace(['_', '-'], "") == "contentfiltererror")
+    {
+        return true;
+    }
+
+    match error_type {
         Some(
             RuntimeFallbackErrorType::MissingApiKey
             | RuntimeFallbackErrorType::ModelNotFound
             | RuntimeFallbackErrorType::QuotaExceeded,
         ) => return true,
-        Some(RuntimeFallbackErrorType::InvalidApiKey) | None => {}
+        Some(RuntimeFallbackErrorType::InvalidApiKey
+            | RuntimeFallbackErrorType::Abort
+            | RuntimeFallbackErrorType::ContextOverflow) | None => {}
     }
 
     if let Some(code) = status_code.filter(|code| *code != 0)
@@ -253,4 +270,44 @@ pub fn is_runtime_fallback_retryable_error(
     }
 
     matches_retryable_pattern(&message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn capacity_limit_is_retryable_quota_exhaustion() {
+        let error = json!({
+            "name": "UnknownError",
+            "data": {"message": "Cursor Run failed after 3 attempts: Cursor API error (code=capacity_limit)"}
+        });
+        assert_eq!(classify_runtime_fallback_error(Some(&error)), Some(RuntimeFallbackErrorType::QuotaExceeded));
+        assert!(is_runtime_fallback_retryable_error(Some(&error), &[429, 500, 502, 503, 504], &RuntimeFallbackRetryOptions::default()));
+    }
+
+    #[test]
+    fn capacity_limit_requires_word_boundaries() {
+        for message in ["capacity_limit", "CAPACITY_LIMIT", "xcapacity_limit", "capacity_limits"] {
+            let error = json!({"message": message});
+            assert_eq!(classify_runtime_fallback_error(Some(&error)),
+                matches!(message, "capacity_limit" | "CAPACITY_LIMIT").then_some(RuntimeFallbackErrorType::QuotaExceeded));
+        }
+    }
+
+    #[test]
+    fn named_content_filter_errors_retry_but_validation_mentions_do_not() {
+        let cases = [
+            (json!({"name": "ContentFilterError", "data": {"message": "Blocked by the provider's content management policy."}}), true),
+            (json!({"error": {"name": "content_filter_error", "data": {"message": "The provider refused this response."}}}), true),
+            (json!({"name": "CONTENT-FILTER-ERROR"}), true),
+            (json!({"name": "ValidationError", "statusCode": 400, "message": "Invalid content filter configuration."}), false),
+            (json!({"name": "ValidationError", "data": {"statusCode": 400, "message": "Unsupported content_filter setting; ContentFilterError is not a valid request option."}}), false),
+            (json!({"name": "ContentFilterError", "detail": {"error": {"type": "terminal_quota_exhausted"}}}), false),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(is_runtime_fallback_retryable_error(Some(&error), &[429, 500, 502, 503, 504], &RuntimeFallbackRetryOptions::default()), expected, "{error}");
+        }
+    }
 }

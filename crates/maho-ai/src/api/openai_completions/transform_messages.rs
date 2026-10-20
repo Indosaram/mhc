@@ -4,11 +4,14 @@
 //! lane compiles standalone; delete it once 12-misc merges.
 
 use crate::model::Model;
-use crate::types::{AssistantMessage, ContentBlock, Message, StopReason, TextContent, ToolResultMessage};
+use crate::types::{
+    AssistantMessage, ContentBlock, Message, StopReason, TextContent, ToolResultMessage,
+};
 use crate::utils::diagnostics::now_ms;
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support images)";
-const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str = "(tool image omitted: model does not support images)";
+const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str =
+    "(tool image omitted: model does not support images)";
 const NO_VIDEO_USER_PLACEHOLDER: &str = "(video omitted: model does not support video input)";
 const NO_VIDEO_TOOL_PLACEHOLDER: &str = "(tool video omitted: model does not support video input)";
 
@@ -28,35 +31,47 @@ fn replace_media_with_placeholder(
 
     for block in content {
         if let ContentBlock::Image(image) = block
-            && matches(image) {
-                if !previous_was_placeholder {
-                    result.push(ContentBlock::Text(TextContent { text: placeholder.to_owned(), ..TextContent::default() }));
-                }
-                previous_was_placeholder = true;
-                continue;
+            && matches(image)
+        {
+            if !previous_was_placeholder {
+                result.push(ContentBlock::Text(TextContent {
+                    text: placeholder.to_owned(),
+                    ..TextContent::default()
+                }));
             }
+            previous_was_placeholder = true;
+            continue;
+        }
 
-        previous_was_placeholder = matches!(block, ContentBlock::Text(text) if text.text == placeholder);
+        previous_was_placeholder =
+            matches!(block, ContentBlock::Text(text) if text.text == placeholder);
         result.push(block.clone());
     }
 
     result
 }
 
-fn replace_images_with_placeholder(content: &[ContentBlock], placeholder: &str) -> Vec<ContentBlock> {
+fn replace_images_with_placeholder(
+    content: &[ContentBlock],
+    placeholder: &str,
+) -> Vec<ContentBlock> {
     let mut result: Vec<ContentBlock> = Vec::new();
     let mut previous_was_placeholder = false;
 
     for block in content {
         if matches!(block, ContentBlock::Image(_)) {
             if !previous_was_placeholder {
-                result.push(ContentBlock::Text(TextContent { text: placeholder.to_owned(), ..TextContent::default() }));
+                result.push(ContentBlock::Text(TextContent {
+                    text: placeholder.to_owned(),
+                    ..TextContent::default()
+                }));
             }
             previous_was_placeholder = true;
             continue;
         }
 
-        previous_was_placeholder = matches!(block, ContentBlock::Text(text) if text.text == placeholder);
+        previous_was_placeholder =
+            matches!(block, ContentBlock::Text(text) if text.text == placeholder);
         result.push(block.clone());
     }
 
@@ -76,15 +91,22 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
         .iter()
         .map(|message| match message {
             Message::User(user) => {
-                let crate::types::UserContent::Blocks(blocks) = &user.content else { return message.clone() };
+                let crate::types::UserContent::Blocks(blocks) = &user.content else {
+                    return message.clone();
+                };
                 let mut content = blocks.clone();
                 if !supports_video {
-                    content = replace_media_with_placeholder(&content, NO_VIDEO_USER_PLACEHOLDER, |image| {
-                        crate::types::is_video_mime_type(&image.mime_type)
-                    });
+                    content = replace_media_with_placeholder(
+                        &content,
+                        NO_VIDEO_USER_PLACEHOLDER,
+                        |image| crate::types::is_video_mime_type(&image.mime_type),
+                    );
                 }
                 if !supports_images {
-                    content = replace_images_with_placeholder(&content, NON_VISION_USER_IMAGE_PLACEHOLDER);
+                    content = replace_images_with_placeholder(
+                        &content,
+                        NON_VISION_USER_IMAGE_PLACEHOLDER,
+                    );
                 }
                 let mut next = user.clone();
                 next.content = crate::types::UserContent::Blocks(content);
@@ -93,12 +115,17 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
             Message::ToolResult(result) => {
                 let mut content = result.content.clone();
                 if !supports_video {
-                    content = replace_media_with_placeholder(&content, NO_VIDEO_TOOL_PLACEHOLDER, |image| {
-                        crate::types::is_video_mime_type(&image.mime_type)
-                    });
+                    content = replace_media_with_placeholder(
+                        &content,
+                        NO_VIDEO_TOOL_PLACEHOLDER,
+                        |image| crate::types::is_video_mime_type(&image.mime_type),
+                    );
                 }
                 if !supports_images {
-                    content = replace_images_with_placeholder(&content, NON_VISION_TOOL_IMAGE_PLACEHOLDER);
+                    content = replace_images_with_placeholder(
+                        &content,
+                        NON_VISION_TOOL_IMAGE_PLACEHOLDER,
+                    );
                 }
                 let mut next = result.clone();
                 next.content = content;
@@ -125,12 +152,14 @@ pub fn transform_messages(
     normalize_tool_call_id: Option<ToolCallIdNormalizer<'_>>,
     options: &TransformMessagesOptions,
 ) -> Vec<Message> {
-    let mut tool_call_id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut tool_call_id_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let image_aware_messages = downgrade_unsupported_images(messages, model);
     let preserve_thinking = options.preserve_thinking.unwrap_or(true);
     let preserve_text_signatures = options.preserve_text_signatures.unwrap_or(false);
     let preserve_unsigned_thinking = options.preserve_unsigned_thinking.unwrap_or(false);
-    let normalize_same_model_tool_call_ids = options.normalize_same_model_tool_call_ids.unwrap_or(false);
+    let normalize_same_model_tool_call_ids =
+        options.normalize_same_model_tool_call_ids.unwrap_or(false);
 
     let mut transformed: Vec<Message> = Vec::with_capacity(image_aware_messages.len());
     for message in &image_aware_messages {
@@ -144,15 +173,21 @@ pub fn transform_messages(
                 }
                 _ => transformed.push(message.clone()),
             },
-            Message::ConfigurationUpdate(_) => transformed.push(message.clone()),
+            Message::System(_) | Message::ConfigurationUpdate(_) => {
+                transformed.push(message.clone())
+            }
             Message::Assistant(assistant) => {
                 let is_same_model = assistant.provider == model.provider
                     && assistant.api == model.api
                     && assistant.model == model.id;
-                let has_tool_calls = assistant.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_)));
+                let has_tool_calls = assistant
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolCall(_)));
                 let preserve_provider_state = preserve_thinking || has_tool_calls;
 
-                let mut transformed_content: Vec<ContentBlock> = Vec::with_capacity(assistant.content.len());
+                let mut transformed_content: Vec<ContentBlock> =
+                    Vec::with_capacity(assistant.content.len());
                 for block in &assistant.content {
                     match block {
                         ContentBlock::Thinking(thinking) => {
@@ -177,7 +212,9 @@ pub fn transform_messages(
                                 continue;
                             }
                             if is_same_model {
-                                if preserve_provider_state || (preserve_unsigned_thinking && !has_usable_signature) {
+                                if preserve_provider_state
+                                    || (preserve_unsigned_thinking && !has_usable_signature)
+                                {
                                     transformed_content.push(block.clone());
                                 }
                                 continue;
@@ -188,7 +225,9 @@ pub fn transform_messages(
                             }));
                         }
                         ContentBlock::Text(text) => {
-                            if is_same_model && (preserve_provider_state || preserve_text_signatures) {
+                            if is_same_model
+                                && (preserve_provider_state || preserve_text_signatures)
+                            {
                                 transformed_content.push(block.clone());
                             } else {
                                 transformed_content.push(ContentBlock::Text(TextContent {
@@ -199,7 +238,9 @@ pub fn transform_messages(
                         }
                         ContentBlock::ToolCall(tool_call) => {
                             let mut normalized_tool_call = tool_call.clone();
-                            if (!is_same_model || !preserve_provider_state) && tool_call.thought_signature.is_some() {
+                            if (!is_same_model || !preserve_provider_state)
+                                && tool_call.thought_signature.is_some()
+                            {
                                 normalized_tool_call.thought_signature = None;
                             }
                             if (!is_same_model || normalize_same_model_tool_call_ids)
@@ -207,7 +248,8 @@ pub fn transform_messages(
                             {
                                 let normalized_id = normalize(&tool_call.id, model, assistant);
                                 if normalized_id != tool_call.id {
-                                    tool_call_id_map.insert(tool_call.id.clone(), normalized_id.clone());
+                                    tool_call_id_map
+                                        .insert(tool_call.id.clone(), normalized_id.clone());
                                     normalized_tool_call.id = normalized_id;
                                 }
                             }
@@ -225,18 +267,28 @@ pub fn transform_messages(
     }
 
     let mut result: Vec<Message> = Vec::new();
-    let mut tool_results_by_id: std::collections::HashMap<String, Vec<ResultEntry>> = std::collections::HashMap::new();
-    let mut next_tool_call_index_by_id: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    let mut tool_results_by_id: std::collections::HashMap<String, Vec<ResultEntry>> =
+        std::collections::HashMap::new();
+    let mut next_tool_call_index_by_id: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
     let mut dropped_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (source_index, message) in transformed.iter().enumerate() {
         match message {
             Message::ToolResult(result_message) => {
-                let entries = tool_results_by_id.entry(result_message.tool_call_id.clone()).or_default();
-                entries.push(ResultEntry { source_index, consumed: false });
+                let entries = tool_results_by_id
+                    .entry(result_message.tool_call_id.clone())
+                    .or_default();
+                entries.push(ResultEntry {
+                    source_index,
+                    consumed: false,
+                });
             }
             Message::Assistant(assistant) => {
-                if matches!(assistant.stop_reason, StopReason::Error | StopReason::Aborted) {
+                if matches!(
+                    assistant.stop_reason,
+                    StopReason::Error | StopReason::Aborted
+                ) {
                     for block in &assistant.content {
                         if let ContentBlock::ToolCall(tool_call) = block {
                             dropped_call_ids.insert(tool_call.id.clone());
@@ -246,7 +298,10 @@ pub fn transform_messages(
                 }
                 for block in &assistant.content {
                     if let ContentBlock::ToolCall(tool_call) = block {
-                        next_tool_call_index_by_id.entry(tool_call.id.clone()).or_default().push(source_index);
+                        next_tool_call_index_by_id
+                            .entry(tool_call.id.clone())
+                            .or_default()
+                            .push(source_index);
                     }
                 }
             }
@@ -259,7 +314,11 @@ pub fn transform_messages(
             Message::ToolResult(result_message) => {
                 let entry = tool_results_by_id
                     .get(&result_message.tool_call_id)
-                    .and_then(|entries| entries.iter().find(|entry| entry.source_index == source_index));
+                    .and_then(|entries| {
+                        entries
+                            .iter()
+                            .find(|entry| entry.source_index == source_index)
+                    });
                 let consumed = entry.is_some_and(|entry| entry.consumed);
                 if !consumed
                     && (!dropped_call_ids.contains(&result_message.tool_call_id)
@@ -269,23 +328,32 @@ pub fn transform_messages(
                 }
             }
             Message::Assistant(assistant) => {
-                if matches!(assistant.stop_reason, StopReason::Error | StopReason::Aborted) {
+                if matches!(
+                    assistant.stop_reason,
+                    StopReason::Error | StopReason::Aborted
+                ) {
                     continue;
                 }
                 result.push(message.clone());
                 for block in &assistant.content {
-                    let ContentBlock::ToolCall(tool_call) = block else { continue };
+                    let ContentBlock::ToolCall(tool_call) = block else {
+                        continue;
+                    };
                     let next_declaration_index = next_tool_call_index_by_id
                         .get(&tool_call.id)
-                        .and_then(|indexes| indexes.iter().copied().find(|index| *index > source_index))
-                        .unwrap_or(usize::MAX);
-                    let matched = tool_results_by_id.get_mut(&tool_call.id).and_then(|entries| {
-                        entries.iter_mut().find(|entry| {
-                            !entry.consumed
-                                && entry.source_index > source_index
-                                && entry.source_index < next_declaration_index
+                        .and_then(|indexes| {
+                            indexes.iter().copied().find(|index| *index > source_index)
                         })
-                    });
+                        .unwrap_or(usize::MAX);
+                    let matched = tool_results_by_id
+                        .get_mut(&tool_call.id)
+                        .and_then(|entries| {
+                            entries.iter_mut().find(|entry| {
+                                !entry.consumed
+                                    && entry.source_index > source_index
+                                    && entry.source_index < next_declaration_index
+                            })
+                        });
 
                     match matched {
                         Some(entry) => {

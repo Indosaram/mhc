@@ -134,7 +134,6 @@ async fn required_formatter_failure_marks_result_and_stops_diagnostics() {
     let result=api.registered.handlers[&EventKind::ToolResult][0](&mut event,&context(root.path().to_path_buf())).await.expect("required formatter result");
     let EventResult::ToolResult(result)=result else {panic!("required failure result")};
     assert_eq!(result.is_error,Some(true));
-    let content=result.content.expect("original plus required error");
-    assert_eq!(content.len(),2);
-    assert_eq!(content[0],original);
+    let content=result.content.expect("original content preserved on required failure");
+    assert_eq!(content,vec![original]);
 }

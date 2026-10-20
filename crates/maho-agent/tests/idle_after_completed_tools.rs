@@ -21,6 +21,7 @@ fn buffered_result(tool_call_id: &str) -> ToolResultMessage {
         details: None,
         usage: None,
         added_tool_names: None,
+        nested_calls: None,
         is_error: false,
         timestamp: 0,
     }

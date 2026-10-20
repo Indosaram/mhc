@@ -58,7 +58,7 @@ pub fn omo_team_subagent_member_schema() -> Node {
         vec![
             required("kind", literal("subagent_type")),
             required("subagent_type", non_empty_string()),
-            optional("prompt", non_empty_string()),
+            optional("prompt", string()),
         ],
     ))
 }

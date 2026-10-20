@@ -1,18 +1,4 @@
-pub const KNOWN_MODELS: &[(&str, &[&str])] = &[
-    ("anthropic", &["claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5"]),
-    ("anthropic-api", &["claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5"]),
-    ("deepseek", &["deepseek-v4-flash", "deepseek-v4-pro"]),
-    ("google", &["gemini-3.6-flash"]),
-    ("github-copilot", &["claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5", "gpt-5.6-sol", "gpt-5.6-terra"]),
-    ("kimi-for-coding", &["k3", "kimi-for-coding-highspeed", "kimi-k3"]),
-    ("moonshotai", &["kimi-k3"]),
-    ("openai", &["gpt-5.6-luna-fast", "gpt-5.6-sol", "gpt-5.6-terra"]),
-    ("opencode", &["claude-opus-5", "claude-sonnet-5", "gpt-5.6-sol", "kimi-k3"]),
-    ("opencode-go", &["deepseek-v4-pro", "kimi-k3", "minimax-m2.7", "minimax-m3"]),
-    ("quotio-openai", &["gpt-5.6-luna-fast", "gpt-5.6-sol", "gpt-5.6-terra"]),
-    ("vercel", &["claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5", "deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.6-flash", "gpt-5.6-sol", "gpt-5.6-terra", "kimi-k3", "minimax-m2.7", "minimax-m3"]),
-    ("xai", &["grok-4.20-0309-non-reasoning"]),
-];
+pub use crate::model_vocabulary::{KNOWN_MODELS, KNOWN_PROVIDERS, ALL_KNOWN_MODEL_IDS};
 use std::{collections::HashMap,io::Write,path::{Path,PathBuf},sync::{Mutex,OnceLock}};
 #[cfg(unix)]
 fn private_file(options: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600) }
@@ -27,9 +13,9 @@ pub fn create_omo_native_product_config() -> telemetry_core::TelemetryProductCon
     config.product_name="omo-native".into();
     config
 }
-pub const BUILTIN_SKILL_NAMES: &[&str] = &["ast-grep", "coding-agent-sessions", "dag-library", "data-scientist", "debugging", "frontend", "git-master", "give-me-tips", "hyperplan", "init-deep", "lsp-setup", "mass-ulw", "onboarding", "programming", "refactor", "remove-ai-slops", "review-work", "start-work", "ultimate-browsing", "ultrawork", "ulw-loop", "ulw-plan", "ulw-research", "visual-qa"];
-/// The pinned skill vocabulary, unchanged: `tools/package-native.mjs::parseBuiltinSkillNames` reads
-/// this constant and requires the pinned checkout's list to match, so it MUST stay the pin-era set.
+pub const BUILTIN_SKILL_NAMES: &[&str] = &["ast-grep", "browser", "coding-agent-sessions", "dag-library", "data-scientist", "debugging", "frontend", "git-master", "give-me-tips", "hyperplan", "init-deep", "lsp-setup", "mass-ulw", "onboarding", "programming", "refactor", "remove-ai-slops", "review-work", "ulw-execute", "ultimate-browsing", "ultrawork", "ulw-loop", "ulw-plan", "ulw-research", "visual-qa", "visualize"];
+pub use crate::event_schemas::{BUILTIN_CATEGORY_NAMES, EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_COMMON_PROPERTY_SCHEMAS, OMO_NATIVE_EVENT_SCHEMAS, OMO_NATIVE_PROPERTY_ALLOWLISTS, omo_native_event_schemas, builtin_category_names, curated_agents};
+/// Shipped v5.1.38 builtin skill vocabulary.
 pub fn pinned_skill_names()->Vec<String> {BUILTIN_SKILL_NAMES.iter().map(|name|(*name).to_string()).collect()}
 /// The selected-source skill vocabulary of the staged root the telemetry component consumes:
 /// `<skills_root>/../manifest.json` `skills.names`, written by `tools/package-native.mjs` for the
@@ -44,52 +30,6 @@ pub fn staged_skill_names(skills_root:&Path)->Option<Vec<String>> {
 }
 /// The runtime skill vocabulary: the selected manifest's names when present, else the pinned set.
 pub fn selected_skill_names(skills_root:&Path)->Vec<String> {staged_skill_names(skills_root).unwrap_or_else(pinned_skill_names)}
-pub const EVENT_PROPERTY_ALLOWLISTS: &[(&str, &[&str])] = &[
-    ("daily_active", &["$session_id", "day_utc", "reason"]),
-    ("session_started", &["$session_id", "$os", "$os_version", "arch", "cpu_count", "default_model", "default_provider", "memory_bucket", "model_count", "provider_count", "providers", "reason"]),
-    ("prompt_submitted", &["$session_id", "input_source", "invocation_stage", "is_effective_ultrawork_invocation", "is_real_user_prompt", "is_turn_start", "keyword_any", "keyword_occurrence_bucket", "keyword_ultrawork_full", "keyword_ulw_abbrev", "keyword_variant", "prompt_length_bucket", "queue_mode", "real_prompt_ordinal_bucket", "suppression_reason"]),
-    ("turn_completed", &["$session_id", "cache_read_tokens", "cache_write_tokens", "cost_usd", "input_tokens", "model_id", "output_tokens", "provider", "reasoning_tokens", "total_tokens", "turn_index"]),
-    ("skill_loaded", &["$session_id", "skill_name"]),
-    ("delegation_started", &["$session_id", "background", "batch_size_bucket", "kind", "name"]),
-    ("feature_used", &["$session_id", "feature"]),
-];
-pub fn builtin_category_names()->Vec<&'static str> {senpi_task::category::BUILTIN_CATEGORY_DEFAULTS.iter().map(|c|c.name).collect()}
-pub fn curated_agents()->std::collections::BTreeSet<&'static str> {senpi_task::agents::curated_readonly_agent_names()}
-pub fn omo_native_event_schemas()->serde_json::Value {
-    use serde_json::{Value,json};
-    let mut events=serde_json::Map::new();
-    for &(event,keys) in EVENT_PROPERTY_ALLOWLISTS {
-        let mut properties=serde_json::Map::new();
-        for &key in keys {
-            let values:Option<Vec<&str>>=match (event,key) {
-                (_,"default_provider"|"provider")=>Some(KNOWN_MODELS.iter().map(|(p,_)|*p).chain(["custom"]).collect()),
-                (_,"default_model"|"model_id")=>{let mut models=Vec::new();for (_,names) in KNOWN_MODELS {for &name in *names {if !models.contains(&name) {models.push(name);}}}models.push("custom");Some(models)},
-                ("daily_active","reason")=>Some(vec!["session_start"]),
-                ("session_started","reason")=>Some(vec!["startup","reload","new","resume","fork"]),
-                (_,"memory_bucket")=>Some(vec!["lt_8_gb","8_15_gb","16_31_gb","32_63_gb","64_plus_gb"]),
-                (_,"input_source")=>Some(vec!["interactive","rpc","extension"]),
-                (_,"invocation_stage")=>Some(vec!["none","first_arm","remention","post_compact_rearm"]),
-                (_,"keyword_occurrence_bucket")=>Some(vec!["1","2","3_5","6_plus"]),
-                (_,"keyword_variant")=>Some(vec!["none","ulw","ultrawork","both"]),
-                (_,"prompt_length_bucket")=>Some(vec!["lt_100","100_500","500_2000","gte_2000"]),
-                (_,"queue_mode")=>Some(vec!["immediate","follow_up","steer","other"]),
-                (_,"real_prompt_ordinal_bucket")=>Some(vec!["1","2_3","4_10","11_25","26_plus"]),
-                (_,"suppression_reason")=>Some(vec!["none","no_keyword","extension_source","embedded_directive","skill_expansion","skill_name_only"]),
-                (_,"skill_name")=>Some(BUILTIN_SKILL_NAMES.to_vec()),
-                (_,"batch_size_bucket")=>Some(vec!["1","2_4","5_plus"]),
-                (_,"kind")=>Some(vec!["category","subagent"]),
-                (_,"name")=>Some(builtin_category_names().into_iter().chain(curated_agents()).chain(["custom"]).collect()),
-                (_,"feature")=>Some(vec!["goal_tool","team_create","memory_tool"]),
-                _=>None,
-            };
-            let property=if let Some(values)=values {json!({"type":"string","values":values})} else {let kind=if key.starts_with("is_") || matches!(key,"keyword_any"|"keyword_ultrawork_full"|"keyword_ulw_abbrev"|"background") {"boolean"} else if key.ends_with("_count") || key.ends_with("_tokens") || matches!(key,"cost_usd"|"turn_index") {"number"} else {"string"};json!({"type":kind})};
-            properties.insert(key.into(),property);
-        }
-        events.insert(event.into(),Value::Object(properties));
-    }
-    events.insert("parallelism_summary".into(),Value::Object(crate::parallelism_schema::PARALLELISM_SUMMARY_SCHEMA.iter().map(|(key,kind)|((*key).into(),if *key=="schema_kind" {json!({"type":"string","values":["parallelism_v1","parallelism_v2"]})} else {json!({"type":kind})})).collect()));
-    Value::Object(events)
-}
 static FALLBACK_SALTS:OnceLock<Mutex<HashMap<PathBuf,[u8;32]>>>=OnceLock::new();
 pub fn get_omo_native_state_dir(env:&telemetry_core::TelemetryEnv)->PathBuf {
     crate::index::get_senpi_agent_dir(env).join("omo-senpi").join("omo-native")
@@ -108,18 +48,67 @@ pub fn hash_session_id(raw:&str,state_dir:&Path)->std::io::Result<String> {
     let mut hash=Sha256::new();hash.update(salt);hash.update(raw.as_bytes());Ok(format!("{:x}",hash.finalize()))
 }
 pub fn mask_provider_and_model(provider: &str, model: &str) -> (String, String) {
-    let models=KNOWN_MODELS.iter().find(|(p,_)| *p == provider).map(|(_,m)| *m);
-    (if models.is_some() {provider} else {"custom"}.into(), if models.is_some_and(|m|m.contains(&model)) {model} else {"custom"}.into())
+    let known_provider=KNOWN_PROVIDERS.contains(&provider);
+    (if known_provider {provider} else {"custom"}.into(), if ALL_KNOWN_MODEL_IDS.contains(model) {model} else {"custom"}.into())
 }
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+    #[test]
+    fn package_version_uses_build_metadata() {
+        assert_eq!(create_omo_native_product_config().package_version, env!("CARGO_PKG_VERSION"));
+    }
+    #[test]
+    fn shipped_models_survive_private_gateways() {
+        for &(provider, models) in KNOWN_MODELS {
+            assert!(KNOWN_PROVIDERS.contains(&provider));
+            for &model in models {
+                assert!(ALL_KNOWN_MODEL_IDS.contains(model));
+                assert_eq!(mask_provider_and_model(provider, model), (provider.into(), model.into()));
+                assert_eq!(mask_provider_and_model("private-gateway", model), ("custom".into(), model.into()));
+            }
+        }
+        let anthropic = KNOWN_MODELS.iter().find(|(provider, _)| *provider == "anthropic").expect("anthropic vocabulary").1;
+        let subscription = KNOWN_MODELS.iter().find(|(provider, _)| *provider == "anthropic-subscription").expect("subscription vocabulary").1;
+        assert_eq!(subscription, anthropic);
+        assert_eq!(mask_provider_and_model("deepseek", "claude-opus-5"), ("deepseek".into(), "claude-opus-5".into()));
+        for (provider, model) in [("private-gateway", "my-finetune"), ("openrouter", "acme-internal/claude-opus-5-ft"), ("private-gateway", "")] {
+            assert_eq!(mask_provider_and_model(provider, model), ("custom".into(), "custom".into()));
+        }
+        assert_eq!(mask_provider_and_model("anthropic", "my-finetune"), ("anthropic".into(), "custom".into()));
+    }
+    #[test]
+    fn task_insight_schemas_preserve_measurements_and_vocabulary() {
+        let schemas = omo_native_event_schemas();
+        let delegation = &schemas["delegation_completed"];
+        assert_eq!(delegation["status"]["values"], serde_json::json!(["completed", "error", "cancelled", "interrupted", "lost"]));
+        assert_eq!(delegation["start_reason"]["values"], serde_json::json!(["initial_spawn", "runtime_fallback", "session_resume", "dag_retry", "revive_after_completed", "revive_after_error", "revive_after_cancelled", "revive_after_interrupted", "revive_after_lost", "unknown"]));
+        assert_eq!(delegation["owner_kind"]["values"], serde_json::json!(["plain_child", "dag_node", "team_member", "unknown"]));
+        assert_eq!(delegation["background_mode"]["values"], serde_json::json!(["foreground", "background", "promoted", "unknown"]));
+        assert_eq!(delegation["execution_mode"]["values"], serde_json::json!(["in-process", "process"]));
+        assert_eq!(delegation["reasoning_effort"]["values"], serde_json::json!(["off", "minimal", "low", "medium", "high", "xhigh", "max", "other", "none"]));
+        assert_eq!(delegation["model_source"]["values"], serde_json::json!(["category", "explicit", "agent", "none"]));
+        for key in ["token_status", "stats_status"] {
+            assert_eq!(delegation[key]["values"], serde_json::json!(["complete", "partial", "unavailable"]));
+        }
+        assert_eq!(delegation["cost_status"]["values"], serde_json::json!(["reported", "unavailable", "invalid"]));
+        assert_eq!(delegation["duration_status"]["values"], serde_json::json!(["monotonic", "wall_clock", "unavailable"]));
+        assert_eq!(delegation["category"]["values"], serde_json::json!(builtin_category_names().into_iter().chain(["custom", "none"]).collect::<Vec<_>>()));
+        assert_eq!(delegation["agent_type"]["values"], serde_json::json!(curated_agents().into_iter().chain(["custom", "none"]).collect::<Vec<_>>()));
+        for key in ["task_seq", "run_epoch", "config_generation", "duration_ms", "turns", "tool_calls"] {
+            assert_eq!(delegation[key], serde_json::json!({"type":"number"}));
+        }
+        assert_eq!(schemas["category_config"]["source"]["values"], schemas["session_started"]["reason"]["values"]);
+        assert_eq!(schemas["category_config"]["config_generation"], serde_json::json!({"type":"number"}));
+        assert_eq!(schemas["session_started"]["timezone"], serde_json::json!({"type":"string"}));
+        assert_eq!(schemas["turn_completed"]["sample_rate"], serde_json::json!({"type":"number"}));
+    }
     #[test] fn native_product_identity() {let c=create_omo_native_product_config();assert_eq!(c.platform,"omo-senpi");assert_eq!(c.machine_id_prefix,"omo-senpi:");assert_eq!(c.product_env_prefix,"OMO_SENPI");assert_eq!(c.event_name,"daily_active");assert_eq!(c.cache_dir_name,"omo-native");assert!(!c.default_api_key.is_empty());}
     #[test] fn explicit_agent_state_dir() {let e=telemetry_core::TelemetryEnv::from([("SENPI_CODING_AGENT_DIR".into(),"/fixture/agent".into())]);let expected=crate::index::get_senpi_agent_dir(&e).join("omo-senpi").join("omo-native");assert_eq!(get_omo_native_state_dir(&e),expected);}
     #[test] fn deleted_salt_recreated() {let t=tempfile::tempdir().unwrap();hash_session_id("s",t.path()).unwrap();std::fs::remove_file(t.path().join("session-id-salt")).unwrap();hash_session_id("s",t.path()).unwrap();assert!(t.path().join("session-id-salt").is_file());}
     #[test] fn histogram_privacy_bound() {let widest=std::iter::repeat_n(crate::wave_assembler::MAX_TRACKED_CALLS.to_string(),8).collect::<Vec<_>>().join(":");assert_eq!(widest.len(),39);assert!(widest.len()<=64);}
     #[test] fn static_allowlists_unique() {assert!(!BUILTIN_SKILL_NAMES.is_empty());for (_,keys) in EVENT_PROPERTY_ALLOWLISTS {let unique:std::collections::HashSet<_>=keys.iter().collect();assert_eq!(unique.len(),keys.len());}}
-    #[test] fn imported_task_names_exact() {assert_eq!(builtin_category_names(),senpi_task::category::BUILTIN_CATEGORY_DEFAULTS.iter().map(|c|c.name).collect::<Vec<_>>());assert_eq!(curated_agents(),senpi_task::agents::curated_readonly_agent_names());}
+    #[test] fn imported_task_names_exact() {assert_eq!(builtin_category_names(),BUILTIN_CATEGORY_NAMES);assert_eq!(curated_agents(),senpi_task::agents::curated_readonly_agent_names());}
     #[test] fn schema_keys_match_capture_allowlists() {let schemas=omo_native_event_schemas();for (name,keys) in EVENT_PROPERTY_ALLOWLISTS {let mut actual=schemas[*name].as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>();let mut expected=keys.to_vec();actual.sort();expected.sort();assert_eq!(actual,expected);}assert_eq!(schemas["parallelism_summary"].as_object().unwrap().len(),crate::parallelism_schema::PARALLELISM_SUMMARY_SCHEMA.len());}
     #[test] fn schemas_preserve_closed_vocabularies_and_types() {let s=omo_native_event_schemas();assert_eq!(s["session_started"]["cpu_count"]["type"],"number");assert_eq!(s["prompt_submitted"]["keyword_any"]["type"],"boolean");assert_eq!(s["feature_used"]["feature"]["values"],serde_json::json!(["goal_tool","team_create","memory_tool"]));assert_eq!(s["parallelism_summary"]["schema_kind"]["values"],serde_json::json!(["parallelism_v1","parallelism_v2"]));assert!(s["delegation_started"]["name"]["values"].as_array().unwrap().contains(&serde_json::json!(builtin_category_names()[0])));assert!(!s.to_string().contains("prompt_text"));}
     #[test] fn salted_hash_stable_private() {let t=tempfile::tempdir().unwrap();let a=hash_session_id("private-session",t.path()).unwrap();assert_eq!(a,hash_session_id("private-session",t.path()).unwrap());assert_ne!(a,hash_session_id("other-session",t.path()).unwrap());assert_eq!(a.len(),64);assert!(!a.contains("private-session"));assert_eq!(std::fs::read(t.path().join("session-id-salt")).unwrap().len(),32);}
@@ -132,12 +121,12 @@ mod identity_tests {
         assert_eq!(selected_skill_names(&skills),pinned_skill_names());
         std::fs::write(t.path().join("manifest.json"),serde_json::json!({"skills":{"source":"latest","names":["browser","ulw-execute"]}}).to_string()).unwrap();
         assert_eq!(selected_skill_names(&skills),vec!["browser".to_string(),"ulw-execute".to_string()]);
-        assert!(BUILTIN_SKILL_NAMES.contains(&"start-work"),"the pinned constant stays the pinned identity");
-        assert!(!BUILTIN_SKILL_NAMES.contains(&"browser"));
+        assert!(!BUILTIN_SKILL_NAMES.contains(&"start-work"));
+        assert!(BUILTIN_SKILL_NAMES.contains(&"browser"));
     }
     #[test] fn pure_schema_stays_pinned() {
         let pinned=omo_native_event_schemas()["skill_loaded"]["skill_name"]["values"].as_array().unwrap().clone();
-        assert!(!pinned.contains(&serde_json::json!("browser")));
-        assert!(pinned.contains(&serde_json::json!("start-work")));
+        assert!(pinned.contains(&serde_json::json!("browser")));
+        assert!(!pinned.contains(&serde_json::json!("start-work")));
     }
 }

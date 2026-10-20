@@ -40,8 +40,17 @@ pub struct PromptTemplateDiagnostic {
 }
 
 impl PromptTemplateDiagnostic {
-    fn warning(code: PromptTemplateDiagnosticCode, message: impl Into<String>, path: impl Into<String>) -> Self {
-        Self { kind: "warning", code, message: message.into(), path: path.into() }
+    fn warning(
+        code: PromptTemplateDiagnosticCode,
+        message: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: "warning",
+            code,
+            message: message.into(),
+            path: path.into(),
+        }
     }
 }
 
@@ -71,7 +80,8 @@ pub async fn load_prompt_templates(
         let kind = resolve_kind(env, &info, &mut diagnostics, context).await;
         match kind {
             Some(FileKind::Directory) => {
-                let (templates, mut dir_diagnostics) = load_templates_from_dir(env, &info.path, context).await;
+                let (templates, mut dir_diagnostics) =
+                    load_templates_from_dir(env, &info.path, context).await;
                 prompt_templates.extend(templates);
                 diagnostics.append(&mut dir_diagnostics);
             }
@@ -99,11 +109,15 @@ pub async fn load_sourced_prompt_templates<TSource: Clone>(
     inputs: Vec<(String, TSource)>,
     map_prompt_template: Option<&PromptTemplateMapper<TSource>>,
     context: &Context,
-) -> (Vec<(PromptTemplate, TSource)>, Vec<(PromptTemplateDiagnostic, TSource)>) {
+) -> (
+    Vec<(PromptTemplate, TSource)>,
+    Vec<(PromptTemplateDiagnostic, TSource)>,
+) {
     let mut prompt_templates = Vec::new();
     let mut diagnostics = Vec::new();
     for (path, source) in inputs {
-        let (templates, template_diagnostics) = load_prompt_templates(env, vec![path], context).await;
+        let (templates, template_diagnostics) =
+            load_prompt_templates(env, vec![path], context).await;
         for template in templates {
             let mapped = match map_prompt_template {
                 Some(map) => map(template, source.clone(), context),
@@ -238,7 +252,9 @@ async fn resolve_kind(
         }
     };
     match env.file_info(&canonical_path, context).await {
-        Ok(target) if target.kind == FileKind::File || target.kind == FileKind::Directory => Some(target.kind),
+        Ok(target) if target.kind == FileKind::File || target.kind == FileKind::Directory => {
+            Some(target.kind)
+        }
         Ok(_) => None,
         Err(error) => {
             if error.code != super::types::FileErrorCode::NotFound {
@@ -260,14 +276,20 @@ pub struct ParsedFrontmatter {
     pub body: String,
 }
 
-/// `parseFrontmatter(content)` over the minimal YAML subset prompt templates use.
+/// `parseFrontmatter(content)` retaining string-valued template metadata.
 pub fn parse_frontmatter(content: &str) -> Result<ParsedFrontmatter, String> {
     let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
     if !normalized.starts_with("---") {
-        return ok(ParsedFrontmatter { frontmatter: Default::default(), body: normalized });
+        return ok(ParsedFrontmatter {
+            frontmatter: Default::default(),
+            body: normalized,
+        });
     }
     let Some(end_index) = normalized[3..].find("\n---").map(|index| index + 3) else {
-        return ok(ParsedFrontmatter { frontmatter: Default::default(), body: normalized });
+        return ok(ParsedFrontmatter {
+            frontmatter: Default::default(),
+            body: normalized,
+        });
     };
     let yaml_string = &normalized[4..end_index];
     let body = normalized[end_index + 4..].trim().to_string();
@@ -278,41 +300,20 @@ pub fn parse_frontmatter(content: &str) -> Result<ParsedFrontmatter, String> {
 }
 
 fn parse_yaml_mapping(source: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
-    let mut map = std::collections::BTreeMap::new();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some((key, raw_value)) = trimmed.split_once(':') else {
-            return Err(format!("unexpected YAML content: {trimmed}"));
-        };
-        let key = key.trim();
-        if key.is_empty() {
-            return Err(format!("unexpected YAML content: {trimmed}"));
-        }
-        let value = raw_value.trim();
-        let value = if value.starts_with('[') {
-            if !value.ends_with(']') {
-                return Err("unexpected end of the stream within a flow collection".to_string());
-            }
-            value.to_string()
-        } else {
-            strip_yaml_quotes(value)
-        };
-        map.insert(key.to_string(), value);
-    }
-    Ok(map)
-}
-
-fn strip_yaml_quotes(value: &str) -> String {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2
-        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"') || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
-    {
-        return value[1..value.len() - 1].to_string();
-    }
-    value.to_string()
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(source).map_err(|error| error.to_string())?;
+    Ok(match value {
+        serde_yaml::Value::Mapping(mapping) => mapping
+            .into_iter()
+            .filter_map(|(key, value)| match (key, value) {
+                (serde_yaml::Value::String(key), serde_yaml::Value::String(value)) => {
+                    Some((key, value))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => Default::default(),
+    })
 }
 
 /// `parseCommandArgs(argsString)`: shell-style single and double quotes.
@@ -351,14 +352,22 @@ pub fn parse_command_args(args_string: &str) -> Vec<String> {
 
 /// `substituteArgs(content, args)`.
 pub fn substitute_args(content: &str, args: &[String]) -> String {
+    let positional = substitute_stage(content, args, false);
+    let sliced = substitute_stage(&positional, args, true);
     let all_args = args.join(" ");
+    sliced
+        .replace("$ARGUMENTS", &all_args)
+        .replace("$@", &all_args)
+}
+
+fn substitute_stage(content: &str, args: &[String], sliced: bool) -> String {
     let mut result = String::new();
     let chars: Vec<char> = content.chars().collect();
     let mut index = 0;
 
     while index < chars.len() {
         if chars[index] == '$'
-            && let Some((replacement, consumed)) = match_dollar(&chars[index..], args, &all_args)
+            && let Some((replacement, consumed)) = match_dollar(&chars[index..], args, sliced)
         {
             result.push_str(&replacement);
             index += consumed;
@@ -370,21 +379,12 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
     result
 }
 
-fn match_dollar(chars: &[char], args: &[String], all_args: &str) -> Option<(String, usize)> {
+fn match_dollar(chars: &[char], args: &[String], sliced: bool) -> Option<(String, usize)> {
     if chars.len() < 2 {
         return None;
     }
     match chars[1] {
-        '@' => Some((all_args.to_string(), 2)),
-        'A' => {
-            let keyword: String = chars.iter().take(10).collect();
-            if keyword.starts_with("$ARGUMENTS") {
-                Some((all_args.to_string(), 10))
-            } else {
-                None
-            }
-        }
-        '{' => {
+        '{' if sliced => {
             let mut index = 2;
             let mut content = String::new();
             while index < chars.len() && chars[index] != '}' {
@@ -400,19 +400,27 @@ fn match_dollar(chars: &[char], args: &[String], all_args: &str) -> Option<(Stri
                 Some((start, length)) => (start, Some(length)),
                 None => (rest, None),
             };
+            if start_str.is_empty()
+                || !start_str.bytes().all(|byte| byte.is_ascii_digit())
+                || length_str.is_some_and(|length| {
+                    length.is_empty() || !length.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            {
+                return None;
+            }
             let start: usize = start_str.parse().ok()?;
             let start = start.saturating_sub(1);
             let start = start.min(args.len());
             match length_str {
                 Some(length_str) => {
                     let length: usize = length_str.parse().ok()?;
-                    let end = (start + length).min(args.len());
+                    let end = start.saturating_add(length).min(args.len());
                     Some((args[start..end].join(" "), consumed))
                 }
                 None => Some((args[start..].join(" "), consumed)),
             }
         }
-        digit if digit.is_ascii_digit() => {
+        digit if !sliced && digit.is_ascii_digit() => {
             let mut index = 1;
             let mut number = String::new();
             while index < chars.len() && chars[index].is_ascii_digit() {
@@ -438,3 +446,49 @@ pub fn format_prompt_template_invocation(template: &PromptTemplate, args: &[Stri
 
 /// Helper so `BoxFuture` stays referenced by this module's API surface.
 pub type PromptTemplateFuture<'a, T> = BoxFuture<'a, T>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_yaml_string_forms_without_coercing_non_strings() {
+        // Given YAML block scalars, escapes, and typed scalar descriptions.
+        for (yaml, expected) in [
+            ("description: |-\n  alpha\n  beta", Some("alpha\nbeta")),
+            ("description: >-\n  alpha\n  beta", Some("alpha beta")),
+            ("description: \"alpha\\nbeta\"", Some("alpha\nbeta")),
+            ("description: 'it''s YAML'", Some("it's YAML")),
+            ("description: 42", None),
+            ("description: true", None),
+        ] {
+            // When parsing the template metadata.
+            let parsed = parse_frontmatter(&format!("---\n{yaml}\n---\nbody")).expect("valid YAML");
+            // Then only genuine YAML strings supply the description.
+            assert_eq!(
+                parsed.frontmatter.get("description").map(String::as_str),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn substitutions_revisit_only_later_stages() {
+        // Given placeholders inside arguments inserted by an earlier stage.
+        let cases = [
+            ("$1", vec!["${@:2:1}", "ok"], "ok"),
+            ("$1", vec!["$ARGUMENTS", "ok"], "$ARGUMENTS ok"),
+            ("$1", vec!["$2", "ok"], "$2"),
+            ("${@:1:1}", vec!["$ARGUMENTS", "ok"], "$ARGUMENTS ok"),
+            ("$ARGUMENTS", vec!["$@"], "$@"),
+            ("${@:0:1}", vec!["ok", "tail"], "ok"),
+        ];
+        for (content, args, expected) in cases {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            // When substituting all stages.
+            let actual = substitute_args(content, &args);
+            // Then positional and sliced replacements are not recursive.
+            assert_eq!(actual, expected);
+        }
+    }
+}

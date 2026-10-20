@@ -22,10 +22,10 @@ pub fn register_catalog_methods(registry: &mut MethodRegistry,threads: Arc<Threa
                 if method == "collaborationMode/list" {
                     // Reloading models.json/auth.json is synchronous file work; keep it off the dispatcher.
                     let model = tokio::task::spawn_blocking(move || {
-                        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&agent_dir).join("models.json")),auth_path:Some(std::path::Path::new(&agent_dir).join("auth.json")),..Default::default()});
+                         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&agent_dir).join("models.json")),auth_path:Some(std::path::Path::new(&agent_dir).join("auth.json")),..Default::default()})?;
                         let models = maho_core::model_registry::ModelRegistry::new(runtime).get_available();
-                        models.iter().find(|model|maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER.iter().any(|(provider,id)|*provider == model.provider && *id == model.id)).or_else(||models.first()).map_or("unknown",|model|model.id.as_str()).to_owned()
-                    }).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+                         Ok::<_,maho_ai::models::ModelsError>(models.iter().find(|model|maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER.iter().any(|(provider,id)|*provider == model.provider && *id == model.id)).or_else(||models.first()).map_or("unknown",|model|model.id.as_str()).to_owned())
+                     }).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
                     return serde_json::to_value(super::protocol::collaboration_mode::CollaborationModeListResponse {data:vec![super::protocol::collaboration_mode::build_senpi_collaboration_mode_preset(model)]}).map_err(|error|JsonRpcError::new(-32603,error.to_string()));
                 }
                 let field = if method == "permissionProfile/list" {"cwd"} else {"threadId"};

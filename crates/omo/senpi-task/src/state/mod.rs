@@ -3,6 +3,7 @@
 mod id;
 mod isolation;
 mod record;
+pub mod recovery_presentation;
 mod transitions;
 mod types;
 
