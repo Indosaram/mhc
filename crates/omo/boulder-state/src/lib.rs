@@ -4,8 +4,7 @@
 //! The document is the one the TypeScript writer produces: a root *mirror* of the
 //! currently active work, a `works` map keyed by work id, and per-work task sessions.
 //! Behaviour and the on-disk bytes are ported 1:1; `parity.md` maps every TypeScript
-//! test file to the Rust tests covering it and lists the deliberate divergences (chiefly:
-//! a corrupt state file is a typed error here instead of a silent `null`).
+//! test file to the Rust tests covering it. Read failures yield absent state.
 
 mod constants;
 mod error;
@@ -17,6 +16,9 @@ mod storage;
 mod time;
 mod top_level_task;
 mod types;
+
+pub use crate::storage::{try_clear_boulder_state, try_write_boulder_state};
+pub use crate::storage::{find_newest_session_transcript_ms_precise, is_work_stale_precise};
 
 pub use crate::constants::{
     BOULDER_DIR, BOULDER_FILE, BOULDER_STATE_PATH, NOTEPAD_BASE_PATH, NOTEPAD_DIR,

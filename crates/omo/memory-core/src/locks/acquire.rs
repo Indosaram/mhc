@@ -4,9 +4,11 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::lock_record::{LockRecord, parse_lock_record};
 use super::candidate_sweep::{CandidateSweepOptions, sweep_stale_lock_candidates};
-use super::process_identity::{ProcessLiveness, get_pid_liveness, get_process_start_identity, start_identities_conflict};
+use super::lock_record::{LockRecord, parse_lock_record};
+use super::process_identity::{
+    ProcessLiveness, get_pid_liveness, get_process_start_identity, start_identities_conflict,
+};
 
 /// Error raised when an exclusive lock is currently held by another owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,19 +128,28 @@ impl LockNonce for LockRecord {
 struct OwnerSnapshot {
     raw: String,
     record: Option<LockRecord>,
+    metadata: Option<std::fs::Metadata>,
 }
 
 fn read_owner(lock_path: &Path) -> std::io::Result<Option<OwnerSnapshot>> {
-    match std::fs::read_to_string(lock_path) {
-        Ok(raw) => {
-            let record = parse_lock_record(&raw);
-            Ok(Some(OwnerSnapshot { raw, record }))
-        }
+    let read = || -> std::io::Result<OwnerSnapshot> {
+        let raw = std::fs::read_to_string(lock_path)?;
+        let metadata = std::fs::metadata(lock_path)?;
+        let record = parse_lock_record(&raw);
+        Ok(OwnerSnapshot {
+            raw,
+            record,
+            metadata: Some(metadata),
+        })
+    };
+    match read() {
+        Ok(owner) => Ok(Some(owner)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         #[cfg(windows)]
         Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => Ok(Some(OwnerSnapshot {
             raw: String::new(),
             record: None,
+            metadata: None,
         })),
         Err(err) => Err(err),
     }
@@ -200,21 +211,106 @@ fn is_proven_dead(owner: &LockRecord) -> bool {
     }
     let actual_start = get_process_start_identity(owner.pid);
     match actual_start {
-        Some(actual) if owner.process_start != "unavailable" => start_identities_conflict(&owner.process_start, &actual),
+        Some(actual) if owner.process_start != "unavailable" => {
+            start_identities_conflict(&owner.process_start, &actual)
+        }
         _ => false,
     }
+}
+
+const INCOMPLETE_LOCK_GRACE_MS: u64 = 5_000;
+
+fn is_same_owner(left: &OwnerSnapshot, right: &OwnerSnapshot) -> bool {
+    let (Some(left_meta), Some(right_meta)) = (&left.metadata, &right.metadata) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if left_meta.dev() != right_meta.dev() || left_meta.ino() != right_meta.ino() {
+            return false;
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if left_meta.creation_time() != right_meta.creation_time() {
+            return false;
+        }
+    }
+    left.raw == right.raw
+        && matches!((left_meta.modified(), right_meta.modified()), (Ok(a), Ok(b)) if a == b)
+}
+
+fn is_recoverable_owner(owner: &OwnerSnapshot, now: std::time::SystemTime) -> bool {
+    match &owner.record {
+        Some(record) => is_proven_dead(record),
+        None => owner
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|mtime| now.duration_since(mtime).ok())
+            .is_some_and(|age| age.as_millis() > u128::from(INCOMPLETE_LOCK_GRACE_MS)),
+    }
+}
+
+fn reclaim_stale_recovery_lock(
+    recovery_path: &Path,
+    now: std::time::SystemTime,
+) -> std::io::Result<bool> {
+    let Some(stale) = read_owner(recovery_path)? else {
+        return Ok(false);
+    };
+    if !is_recoverable_owner(&stale, now) {
+        return Ok(false);
+    }
+    let tombstone = recovery_path.with_file_name(format!(
+        "{}.reaping-{}",
+        recovery_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy(),
+        crate::support::random::random_uuid(),
+    ));
+    match std::fs::rename(recovery_path, &tombstone) {
+        Ok(()) => (),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || super::candidate_sweep::default_is_sharing_error(&error) =>
+        {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    }
+    finish_recovery_reap(recovery_path, &tombstone, &stale)
+}
+
+fn finish_recovery_reap(
+    recovery_path: &Path,
+    tombstone: &Path,
+    stale: &OwnerSnapshot,
+) -> std::io::Result<bool> {
+    if read_owner(tombstone)?.is_some_and(|moved| is_same_owner(&moved, stale)) {
+        std::fs::remove_file(tombstone)?;
+        return Ok(true);
+    }
+    // A replacement was moved, not the stale inode. Hand it back without overwriting a publisher.
+    match std::fs::hard_link(tombstone, recovery_path) {
+        Ok(()) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(error) => return Err(error),
+    }
+    std::fs::remove_file(tombstone)?;
+    Ok(false)
 }
 
 fn recover_dead_owner(
     lock_path: &Path,
     snapshot: &OwnerSnapshot,
     contender: &LockRecord,
+    now: std::time::SystemTime,
 ) -> std::io::Result<bool> {
-    let owner_record = match &snapshot.record {
-        Some(r) => r,
-        None => return Ok(false),
-    };
-    if !is_proven_dead(owner_record) {
+    if !is_recoverable_owner(snapshot, now) {
         return Ok(false);
     }
 
@@ -234,8 +330,15 @@ fn recover_dead_owner(
         run_id: contender.run_id.clone(),
     };
 
-    if !publish_exclusive(&recovery_path, &recovery_record)? {
-        return Ok(false);
+    for attempt in 0..2 {
+        if read_owner(&recovery_path)?.is_none()
+            && publish_exclusive(&recovery_path, &recovery_record)?
+        {
+            break;
+        }
+        if attempt > 0 || !reclaim_stale_recovery_lock(&recovery_path, now)? {
+            return Ok(false);
+        }
     }
 
     let result = (|| -> std::io::Result<bool> {
@@ -243,14 +346,19 @@ fn recover_dead_owner(
             Some(c) => c,
             None => return Ok(true),
         };
-        if current.raw != snapshot.raw {
+        if !is_same_owner(&current, snapshot) {
             return Ok(false);
         }
-        let current_record = match &current.record {
-            Some(r) => r,
-            None => return Ok(false),
-        };
-        if !is_proven_dead(current_record) {
+        if !is_recoverable_owner(&current, now) {
+            return Ok(false);
+        }
+        // The recovery nonce is the fence authorizing removal of the primary.
+        let fence = read_owner(&recovery_path)?;
+        if fence
+            .as_ref()
+            .and_then(|owner| owner.record.as_ref())
+            .is_none_or(|owner| owner.nonce != recovery_record.nonce)
+        {
             return Ok(false);
         }
         match std::fs::remove_file(lock_path) {
@@ -260,15 +368,24 @@ fn recover_dead_owner(
         }
     })();
 
-    let _ = release_lock(&recovery_path, &recovery_record.nonce);
+    release_lock(&recovery_path, &recovery_record.nonce)?;
     result
 }
 
-/// Acquires an exclusive lock file, retrying until timeout or recovery of proven-dead owners.
+/// Acquires an exclusive lock, recovering proven-dead owners or incomplete records past grace.
 pub fn acquire_lock(
     lock_path: &Path,
     record: &LockRecord,
     options: &AcquireLockOptions,
+) -> Result<(), AcquireLockError> {
+    acquire_lock_with_clock(lock_path, record, options, std::time::SystemTime::now)
+}
+
+fn acquire_lock_with_clock(
+    lock_path: &Path,
+    record: &LockRecord,
+    options: &AcquireLockOptions,
+    now: impl Fn() -> std::time::SystemTime,
 ) -> Result<(), AcquireLockError> {
     let wait_timeout_ms = options.wait_timeout_ms.unwrap_or(0);
     let retry_delay_ms = options.retry_delay_ms.unwrap_or(25);
@@ -290,7 +407,6 @@ pub fn acquire_lock(
             &options,
         );
     }
-
 
     let mut first_attempt = true;
     loop {
@@ -315,7 +431,7 @@ pub fn acquire_lock(
             None => continue,
         };
 
-        if recover_dead_owner(lock_path, &owner, record)? {
+        if recover_dead_owner(lock_path, &owner, record, now())? {
             continue;
         }
 

@@ -19,7 +19,9 @@ struct RecoveredThinking {
 
 /// `/^<\|(open|close)\|>([a-zA-Z_][a-zA-Z0-9_]*)?/`.
 fn named_marker_action_and_name(marker: &str) -> (Option<&str>, Option<&str>) {
-    let Some(rest) = marker.strip_prefix("<|") else { return (None, None) };
+    let Some(rest) = marker.strip_prefix("<|") else {
+        return (None, None);
+    };
     let (action, rest) = if let Some(rest) = rest.strip_prefix("open|>") {
         ("open", rest)
     } else if let Some(rest) = rest.strip_prefix("close|>") {
@@ -27,8 +29,14 @@ fn named_marker_action_and_name(marker: &str) -> (Option<&str>, Option<&str>) {
     } else {
         return (None, None);
     };
-    let name_end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
-    let name = if name_end == 0 { None } else { Some(&rest[..name_end]) };
+    let name_end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    let name = if name_end == 0 {
+        None
+    } else {
+        Some(&rest[..name_end])
+    };
     (Some(action), name)
 }
 
@@ -72,7 +80,11 @@ fn scan_thinking_segment(state: &mut ThinkingRecoveryState, text: &str) {
             last = offset;
             continue;
         }
-        offset += text[offset..].chars().next().map(char::len_utf8).unwrap_or(1);
+        offset += text[offset..]
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or(1);
     }
     state.append(&text[last..]);
 }
@@ -87,7 +99,11 @@ fn recover_thinking_content(input: &str) -> RecoveredThinking {
         recovered_response: false,
     };
 
-    let segments: Vec<_> = mask.feed(input, None).into_iter().chain(mask.finish()).collect();
+    let segments: Vec<_> = mask
+        .feed(input, None)
+        .into_iter()
+        .chain(mask.finish())
+        .collect();
     for segment in segments {
         if segment.scan {
             scan_thinking_segment(&mut state, &segment.text);
@@ -109,7 +125,11 @@ fn stripped_visible_text(input: &str) -> (String, bool) {
     let mut text = String::new();
     let mut changed = false;
 
-    let segments: Vec<_> = mask.feed(input, None).into_iter().chain(mask.finish()).collect();
+    let segments: Vec<_> = mask
+        .feed(input, None)
+        .into_iter()
+        .chain(mask.finish())
+        .collect();
     for segment in segments {
         if !segment.scan {
             text.push_str(&segment.text);
@@ -152,7 +172,10 @@ pub fn recover_kimi_xtml_thinking(message: &AssistantMessage) -> AssistantMessag
                 let (stripped_text, stripped_changed) = stripped_visible_text(&text_block.text);
                 changed = changed || stripped_changed;
                 if stripped_changed {
-                    content.push(ContentBlock::Text(crate::types::TextContent { text: stripped_text, ..text_block.clone() }));
+                    content.push(ContentBlock::Text(crate::types::TextContent {
+                        text: stripped_text,
+                        ..text_block.clone()
+                    }));
                 } else {
                     content.push(block.clone());
                 }
@@ -162,9 +185,16 @@ pub fn recover_kimi_xtml_thinking(message: &AssistantMessage) -> AssistantMessag
                 changed = changed || recovered.changed;
                 thinking_changed = thinking_changed || recovered.changed;
                 recovered_response = recovered_response || recovered.recovered_response;
-                content.push(ContentBlock::Thinking(ThinkingContent { thinking: recovered.thinking, ..thinking_block.clone() }));
+                content.push(ContentBlock::Thinking(ThinkingContent {
+                    thinking: recovered.thinking,
+                    ..thinking_block.clone()
+                }));
                 if !recovered.response.is_empty() {
-                    content.push(ContentBlock::Text(crate::types::TextContent { text: recovered.response, audience: None, text_signature: None }));
+                    content.push(ContentBlock::Text(crate::types::TextContent {
+                        text: recovered.response,
+                        audience: None,
+                        text_signature: None,
+                    }));
                 }
             }
             other => content.push(other.clone()),
@@ -183,7 +213,10 @@ pub fn recover_kimi_xtml_thinking(message: &AssistantMessage) -> AssistantMessag
             kind: "kimi_xtml_thinking_recovery".to_string(),
             timestamp: crate::utils::diagnostics::now_ms(),
             error: None,
-            details: Some(serde_json::Map::from_iter([("recoveredResponse".to_string(), serde_json::Value::Bool(recovered_response))])),
+            details: Some(serde_json::Map::from_iter([(
+                "recoveredResponse".to_string(),
+                serde_json::Value::Bool(recovered_response),
+            )])),
         });
         result.diagnostics = Some(diagnostics);
     }
@@ -198,6 +231,8 @@ mod tests {
 
     fn message(content: Vec<ContentBlock>) -> AssistantMessage {
         AssistantMessage {
+            thinking_level: None,
+            provider_diagnostic: None,
             content,
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -220,7 +255,10 @@ mod tests {
 
     #[test]
     fn returns_message_unchanged_when_no_markers_are_present() {
-        let msg = message(vec![ContentBlock::Thinking(ThinkingContent { thinking: "plain thoughts".into(), ..ThinkingContent::default() })]);
+        let msg = message(vec![ContentBlock::Thinking(ThinkingContent {
+            thinking: "plain thoughts".into(),
+            ..ThinkingContent::default()
+        })]);
         let recovered = recover_kimi_xtml_thinking(&msg);
         assert_eq!(recovered.content, msg.content);
         assert!(recovered.diagnostics.is_none());
@@ -228,7 +266,10 @@ mod tests {
 
     #[test]
     fn splits_a_leaked_response_marker_out_of_thinking_into_a_text_block() {
-        let msg = message(vec![ContentBlock::Thinking(ThinkingContent { thinking: "reasoning<|open|>response<|sep|>the answer".into(), ..ThinkingContent::default() })]);
+        let msg = message(vec![ContentBlock::Thinking(ThinkingContent {
+            thinking: "reasoning<|open|>response<|sep|>the answer".into(),
+            ..ThinkingContent::default()
+        })]);
         let recovered = recover_kimi_xtml_thinking(&msg);
         assert_eq!(recovered.content.len(), 2);
         match &recovered.content[0] {
@@ -244,7 +285,11 @@ mod tests {
 
     #[test]
     fn strips_leaked_markers_from_plain_text_blocks() {
-        let msg = message(vec![ContentBlock::Text(TextContent { text: "hello<|sep|>world".into(), audience: None, text_signature: None })]);
+        let msg = message(vec![ContentBlock::Text(TextContent {
+            text: "hello<|sep|>world".into(),
+            audience: None,
+            text_signature: None,
+        })]);
         let recovered = recover_kimi_xtml_thinking(&msg);
         match &recovered.content[0] {
             ContentBlock::Text(t) => assert_eq!(t.text, "helloworld"),
@@ -252,27 +297,65 @@ mod tests {
         }
     }
     fn thinking_text(message: &AssistantMessage) -> String {
-        message.content.iter().filter_map(|block| if let ContentBlock::Thinking(t) = block { Some(t.thinking.as_str()) } else { None }).collect()
+        message
+            .content
+            .iter()
+            .filter_map(|block| {
+                if let ContentBlock::Thinking(t) = block {
+                    Some(t.thinking.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn visible_text(message: &AssistantMessage) -> String {
-        message.content.iter().filter_map(|block| if let ContentBlock::Text(t) = block { Some(t.text.as_str()) } else { None }).collect()
+        message
+            .content
+            .iter()
+            .filter_map(|block| {
+                if let ContentBlock::Text(t) = block {
+                    Some(t.text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn rendered_content(message: &AssistantMessage) -> String {
-        message.content.iter().map(|block| serde_json::to_string(block).expect("serializable")).collect()
+        message
+            .content
+            .iter()
+            .map(|block| serde_json::to_string(block).expect("serializable"))
+            .collect()
     }
 
     #[test]
     fn strips_tools_channel_and_unnamed_markers_from_thinking() {
-        let msg = message(vec![ContentBlock::Thinking(ThinkingContent { thinking: "private<|close|>tools<|sep|> reasoning<|close|><|sep|> remains<|sep|>".into(), ..ThinkingContent::default() })]);
+        let msg = message(vec![ContentBlock::Thinking(ThinkingContent {
+            thinking: "private<|close|>tools<|sep|> reasoning<|close|><|sep|> remains<|sep|>"
+                .into(),
+            ..ThinkingContent::default()
+        })]);
         let recovered = recover_kimi_xtml_thinking(&msg);
         assert_eq!(thinking_text(&recovered), "private reasoning remains");
         assert_eq!(visible_text(&recovered), "");
         assert!(!rendered_content(&recovered).contains("<|"));
-        let diagnostic = recovered.diagnostics.as_ref().and_then(|d| d.last()).expect("diagnostic");
+        let diagnostic = recovered
+            .diagnostics
+            .as_ref()
+            .and_then(|d| d.last())
+            .expect("diagnostic");
         assert_eq!(diagnostic.kind, "kimi_xtml_thinking_recovery");
-        assert_eq!(diagnostic.details.as_ref().and_then(|d| d.get("recoveredResponse")), Some(&Value::Bool(false)));
+        assert_eq!(
+            diagnostic
+                .details
+                .as_ref()
+                .and_then(|d| d.get("recoveredResponse")),
+            Some(&Value::Bool(false))
+        );
     }
 
     #[test]
@@ -290,11 +373,13 @@ mod tests {
     #[test]
     fn preserves_tools_and_unnamed_marker_literals_inside_fenced_code() {
         let literal = "Example:\n\u{60}\u{60}\u{60}text\n<|close|>tools<|sep|><|close|><|sep|>\n\u{60}\u{60}\u{60}";
-        let msg = message(vec![ContentBlock::Thinking(ThinkingContent { thinking: literal.into(), ..ThinkingContent::default() })]);
+        let msg = message(vec![ContentBlock::Thinking(ThinkingContent {
+            thinking: literal.into(),
+            ..ThinkingContent::default()
+        })]);
         let recovered = recover_kimi_xtml_thinking(&msg);
         assert_eq!(recovered.content, msg.content);
         assert_eq!(thinking_text(&recovered), literal);
         assert!(recovered.diagnostics.is_none());
     }
-
 }

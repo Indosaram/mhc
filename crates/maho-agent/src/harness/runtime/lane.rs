@@ -3,7 +3,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-pub use super::types::{CommitDecision, ContinueOperationResult, Drive, FinishDecision, LaneCommand, LaneState, OperationCommand, ProcedureResult};
+pub use super::types::{
+    CommitDecision, ContinueOperationResult, Drive, FinishDecision, LaneCommand, LaneState,
+    OperationCommand, ProcedureResult,
+};
 use super::types::{Config, RuntimeDriveLane, RuntimeLane, StructuralPreparation};
 use crate::harness::context::Context;
 use crate::harness::events::{HarnessEvent, HarnessEventBus, HarnessEventPayload};
@@ -17,14 +20,16 @@ use crate::harness::session::types::{
 use crate::harness::session::values::*;
 use maho_ai::types::{BoxFuture, ModelThinkingLevel};
 
-
 pub enum QueuedInput {
     Text(String),
     Message(Box<crate::types::AgentMessage>),
 }
 
 pub enum PromptInput {
-    Text { text: String, images: Vec<maho_ai::types::ImageContent> },
+    Text {
+        text: String,
+        images: Vec<maho_ai::types::ImageContent>,
+    },
     Messages(Vec<crate::types::AgentMessage>),
 }
 
@@ -149,14 +154,30 @@ pub enum AbortError {
 /// Pinned `DriveClaim`: the outcome of one serialized attempt to install or observe a drive pass.
 #[derive(Clone)]
 enum DriveClaim {
-    Observe { drive: Arc<Drive>, installed: bool },
-    Occupied { drive: Arc<Drive> },
-    Settled { outcome: crate::harness::session::types::OperationResultRecord },
-    Mismatch { error: OperationMismatch },
+    Cancelled {
+        reason: maho_ai::utils::abort::AbortReason,
+    },
+    Observe {
+        drive: Arc<Drive>,
+        installed: bool,
+    },
+    Occupied {
+        drive: Arc<Drive>,
+    },
+    Settled {
+        outcome: crate::harness::session::types::OperationResultRecord,
+    },
+    Mismatch {
+        error: OperationMismatch,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancelQueuedOutcome { Cancelled, AlreadyConsumed, NotFound }
+pub enum CancelQueuedOutcome {
+    Cancelled,
+    AlreadyConsumed,
+    NotFound,
+}
 
 pub fn inbox_items(inbox: &[InboxItem], kind: InboxItemKind) -> Vec<InboxItem> {
     inbox
@@ -277,7 +298,9 @@ impl Lane {
             idle_owner: tokio::sync::RwLock::new(()),
             state_change: tokio::sync::Notify::new(),
             drive_config: Arc::new(Mutex::new(super::harness::default_drive_config())),
-            tool_runner: Arc::new(Mutex::new(Arc::new(super::tools::EmptyToolRunner) as Arc<dyn super::tools::ToolBatchRunner>)),
+            tool_runner: Arc::new(Mutex::new(
+                Arc::new(super::tools::EmptyToolRunner) as Arc<dyn super::tools::ToolBatchRunner>
+            )),
             self_ref: Mutex::new(Weak::new()),
             active_drive: Mutex::new(None),
         }
@@ -285,7 +308,12 @@ impl Lane {
 
     /// The pinned `Lane.readConfig()`: a fresh snapshot of the shared process-local configuration.
     pub fn read_config(&self) -> Arc<Config<()>> {
-        Arc::new(clone_drive_config(&self.drive_config.lock().unwrap_or_else(|error| error.into_inner())))
+        Arc::new(clone_drive_config(
+            &self
+                .drive_config
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        ))
     }
 
     /// Pinned `Lane.emitBatch`: deliver events through the lane's own bus exactly once.
@@ -295,7 +323,10 @@ impl Lane {
 
     /// Install the weak self used by `RuntimeDriveLane` (pinned `Arc::new_cyclic`).
     pub fn install_self(self: &Arc<Self>) {
-        *self.self_ref.lock().unwrap_or_else(|error| error.into_inner()) = Arc::downgrade(self);
+        *self
+            .self_ref
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Arc::downgrade(self);
     }
 
     fn arc(&self) -> Result<Arc<Lane>, SessionError> {
@@ -347,7 +378,11 @@ impl Lane {
 
     /// Pinned `throw this.onFault(error, context)`, preferring an existing close error.
     fn fault(&self, error: SessionError, context: &Context) -> SessionError {
-        let closed = self.closed_error.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let closed = self
+            .closed_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if let Some(closed) = closed {
             return closed;
         }
@@ -371,7 +406,12 @@ impl Lane {
             self.faulted.store(faulted, Ordering::SeqCst);
             self.state_change.notify_waiters();
             // Pinned `seal` also closes the installed drive gate so a live observation rejects.
-            if let Some(drive) = self.active_drive.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            if let Some(drive) = self
+                .active_drive
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
                 drive.close_gate(error.message.clone());
             }
         }
@@ -388,56 +428,170 @@ impl Lane {
         Ok(self.models.get_model(&model.provider, &model.model_id))
     }
 
-    pub async fn accept_skill(&self, name: &str, additional_instructions: Option<String>, operation_id: Option<String>, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+    pub async fn accept_skill(
+        &self,
+        name: &str,
+        additional_instructions: Option<String>,
+        operation_id: Option<String>,
+        context: &Context,
+    ) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
         self.assert_open()?;
         let config = self.read_config();
-        let Some(skill) = config.resources.skills.as_ref().and_then(|skills| skills.iter().find(|skill| skill.name == name)) else { return Ok(Err(AdmissionError::UnknownSkill { name: name.into() })); };
+        let Some(skill) = config
+            .resources
+            .skills
+            .as_ref()
+            .and_then(|skills| skills.iter().find(|skill| skill.name == name))
+        else {
+            return Ok(Err(AdmissionError::UnknownSkill { name: name.into() }));
+        };
         let normalized = skill.file_path.trim_end_matches(['/', '\\']);
         let separator = normalized.rfind(['/', '\\']);
-        let directory = match separator { Some(2) if normalized.as_bytes().get(1) == Some(&b':') => &normalized[..3], Some(index) if index > 0 => &normalized[..index], _ => "/" };
-        let mut text = format!("<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>", skill.name, skill.file_path, directory, skill.content);
-        if let Some(instructions) = additional_instructions.filter(|value| !value.is_empty()) { text.push_str("\n\n"); text.push_str(&instructions); }
-        let settings = crate::harness::session::types::RunSettings { compaction: config.compaction, steering_mode: config.steering_mode, follow_up_mode: config.follow_up_mode, tool_execution: config.tool_execution };
-        self.accept_prompt(PromptInput::Text { text, images: vec![] }, operation_id, settings, context).await
+        let directory = match separator {
+            Some(2) if normalized.as_bytes().get(1) == Some(&b':') => &normalized[..3],
+            Some(index) if index > 0 => &normalized[..index],
+            _ => "/",
+        };
+        let mut text = format!(
+            "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>",
+            skill.name, skill.file_path, directory, skill.content
+        );
+        if let Some(instructions) = additional_instructions.filter(|value| !value.is_empty()) {
+            text.push_str("\n\n");
+            text.push_str(&instructions);
+        }
+        let settings = crate::harness::session::types::RunSettings {
+            compaction: config.compaction,
+            steering_mode: config.steering_mode,
+            follow_up_mode: config.follow_up_mode,
+            tool_execution: config.tool_execution,
+        };
+        self.accept_prompt(
+            PromptInput::Text {
+                text,
+                images: vec![],
+            },
+            operation_id,
+            settings,
+            context,
+        )
+        .await
     }
 
-    pub async fn accept_prompt_template(&self, name: &str, args: Vec<String>, operation_id: Option<String>, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+    pub async fn accept_prompt_template(
+        &self,
+        name: &str,
+        args: Vec<String>,
+        operation_id: Option<String>,
+        context: &Context,
+    ) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
         self.assert_open()?;
         let config = self.read_config();
-        let Some(template) = config.resources.prompt_templates.as_ref().and_then(|templates| templates.iter().find(|template| template.name == name)) else { return Ok(Err(AdmissionError::UnknownTemplate { name: name.into() })); };
-        let text = crate::harness::prompt_templates::format_prompt_template_invocation(template, &args);
-        let settings = crate::harness::session::types::RunSettings { compaction: config.compaction, steering_mode: config.steering_mode, follow_up_mode: config.follow_up_mode, tool_execution: config.tool_execution };
-        self.accept_prompt(PromptInput::Text { text, images: vec![] }, operation_id, settings, context).await
+        let Some(template) = config
+            .resources
+            .prompt_templates
+            .as_ref()
+            .and_then(|templates| templates.iter().find(|template| template.name == name))
+        else {
+            return Ok(Err(AdmissionError::UnknownTemplate { name: name.into() }));
+        };
+        let text =
+            crate::harness::prompt_templates::format_prompt_template_invocation(template, &args);
+        let settings = crate::harness::session::types::RunSettings {
+            compaction: config.compaction,
+            steering_mode: config.steering_mode,
+            follow_up_mode: config.follow_up_mode,
+            tool_execution: config.tool_execution,
+        };
+        self.accept_prompt(
+            PromptInput::Text {
+                text,
+                images: vec![],
+            },
+            operation_id,
+            settings,
+            context,
+        )
+        .await
     }
 
-    pub async fn inspect_execution(&self, context: &Context) -> Result<LaneExecutionInfo, SessionError> {
+    pub async fn inspect_execution(
+        &self,
+        context: &Context,
+    ) -> Result<LaneExecutionInfo, SessionError> {
         let name = self.name.clone();
-        self.command_inner(move |state, _| Box::pin(async move {
-            let captured_model = state.operation.as_ref().and_then(|operation| {
-                let model = match &operation.state {
-                    OperationState::AssistantReady(value) => &value.assistant.generation_context.configuration.model,
-                    OperationState::AssistantEffectPending(value) => &value.assistant.generation_context.configuration.model,
-                    OperationState::AssistantRetryWait(value) => &value.assistant.generation_context.configuration.model,
-                    OperationState::Tools(value) => &value.batch.configuration.model,
-                    OperationState::DeferredSuspended(value) => &value.deferred.configuration.model,
-                    OperationState::DeferredEffectPending(value) => &value.deferred.configuration.model,
-                    OperationState::SummaryReady(value) => &value.ready.scope.summary_context.configuration.model,
-                    OperationState::SummaryEffectPending(value) => &value.pending.scope.summary_context.configuration.model,
-                    OperationState::SummaryRetryWait(value) => &value.retry.scope.summary_context.configuration.model,
-                    OperationState::Starting(_) | OperationState::Checkpoint(_) | OperationState::SummaryDeciding(_) | OperationState::NavigationReadyToCommit(_) => return None,
-                };
-                Some(model.clone())
-            });
-            let identity = |model: LaneModelRef| crate::harness::agent_harness::ModelIdentity { provider: model.provider, model_id: model.model_id };
-            let current = state.operation.map(|operation| crate::harness::agent_harness::CurrentOperationInfo {
-                id: operation.meta.operation_id,
-                kind: operation.meta.intent.kind(),
-                started_at: operation.meta.started_at,
-                status: match operation.state.operation_scope_of().control { Control::Running => crate::harness::agent_harness::OperationStatus::Open, Control::CancelRequested { .. } => crate::harness::agent_harness::OperationStatus::Aborting },
-                captured_model: captured_model.map(identity),
-            });
-            Ok(LaneCommand::Return { result: LaneExecutionInfo { lane: name, tip_id: state.tip_id, configured_model: identity(state.configuration.model), current, last_operation_id: state.last_operation_id } })
-        }), context).await
+        self.command_inner(
+            move |state, _| {
+                Box::pin(async move {
+                    let captured_model = state.operation.as_ref().and_then(|operation| {
+                        let model = match &operation.state {
+                            OperationState::AssistantReady(value) => {
+                                &value.assistant.generation_context.configuration.model
+                            }
+                            OperationState::AssistantEffectPending(value) => {
+                                &value.assistant.generation_context.configuration.model
+                            }
+                            OperationState::AssistantRetryWait(value) => {
+                                &value.assistant.generation_context.configuration.model
+                            }
+                            OperationState::Tools(value) => &value.batch.configuration.model,
+                            OperationState::DeferredSuspended(value) => {
+                                &value.deferred.configuration.model
+                            }
+                            OperationState::DeferredEffectPending(value) => {
+                                &value.deferred.configuration.model
+                            }
+                            OperationState::SummaryReady(value) => {
+                                &value.ready.scope.summary_context.configuration.model
+                            }
+                            OperationState::SummaryEffectPending(value) => {
+                                &value.pending.scope.summary_context.configuration.model
+                            }
+                            OperationState::SummaryRetryWait(value) => {
+                                &value.retry.scope.summary_context.configuration.model
+                            }
+                            OperationState::Starting(_)
+                            | OperationState::Checkpoint(_)
+                            | OperationState::SummaryDeciding(_)
+                            | OperationState::NavigationReadyToCommit(_) => return None,
+                        };
+                        Some(model.clone())
+                    });
+                    let identity =
+                        |model: LaneModelRef| crate::harness::agent_harness::ModelIdentity {
+                            provider: model.provider,
+                            model_id: model.model_id,
+                        };
+                    let current = state.operation.map(|operation| {
+                        crate::harness::agent_harness::CurrentOperationInfo {
+                            id: operation.meta.operation_id,
+                            kind: operation.meta.intent.kind(),
+                            started_at: operation.meta.started_at,
+                            status: match operation.state.operation_scope_of().control {
+                                Control::Running => {
+                                    crate::harness::agent_harness::OperationStatus::Open
+                                }
+                                Control::CancelRequested { .. } => {
+                                    crate::harness::agent_harness::OperationStatus::Aborting
+                                }
+                            },
+                            captured_model: captured_model.map(identity),
+                        }
+                    });
+                    Ok(LaneCommand::Return {
+                        result: LaneExecutionInfo {
+                            lane: name,
+                            tip_id: state.tip_id,
+                            configured_model: identity(state.configuration.model),
+                            current,
+                            last_operation_id: state.last_operation_id,
+                        },
+                    })
+                })
+            },
+            context,
+        )
+        .await
     }
 
     pub async fn wait_for_idle(&self, context: &Context) -> Result<(), SessionError> {
@@ -445,29 +599,54 @@ impl Lane {
             let changed = self.state_change.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            let owner = crate::harness::context::await_with_context(self.idle_owner.read(), context).await.map_err(|error| session_invariant_error(error.to_string()))?;
+            let owner =
+                crate::harness::context::await_with_context(self.idle_owner.read(), context)
+                    .await
+                    .map_err(|error| session_invariant_error(error.to_string()))?;
             self.assert_open()?;
             let mutation = self.session.begin_mutation(context).await?;
             let idle = self.state().operation.is_none()
-                && self.active_drive.lock().unwrap_or_else(|error| error.into_inner()).is_none();
+                && self
+                    .active_drive
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .is_none();
             mutation.end(context).await;
             drop(owner);
-            if idle { return Ok(()); }
-            crate::harness::context::await_with_context(changed, context).await.map_err(|error| session_invariant_error(error.to_string()))?;
+            if idle {
+                return Ok(());
+            }
+            crate::harness::context::await_with_context(changed, context)
+                .await
+                .map_err(|error| session_invariant_error(error.to_string()))?;
         }
     }
 
-    pub async fn run_when_idle<F, Fut>(&self, callback: F, context: &Context) -> Result<(), SessionError>
-    where F: FnOnce(Context) -> Fut, Fut: std::future::Future<Output = Result<(), SessionError>> {
+    pub async fn run_when_idle<F, Fut>(
+        &self,
+        callback: F,
+        context: &Context,
+    ) -> Result<(), SessionError>
+    where
+        F: FnOnce(Context) -> Fut,
+        Fut: std::future::Future<Output = Result<(), SessionError>>,
+    {
         loop {
             let changed = self.state_change.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            let owner = crate::harness::context::await_with_context(self.idle_owner.write(), context).await.map_err(|error| session_invariant_error(error.to_string()))?;
+            let owner =
+                crate::harness::context::await_with_context(self.idle_owner.write(), context)
+                    .await
+                    .map_err(|error| session_invariant_error(error.to_string()))?;
             self.assert_open()?;
             let mutation = self.session.begin_mutation(context).await?;
             let idle = self.state().operation.is_none()
-                && self.active_drive.lock().unwrap_or_else(|error| error.into_inner()).is_none();
+                && self
+                    .active_drive
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .is_none();
             mutation.end(context).await;
             if idle {
                 let result = callback(context.clone()).await;
@@ -476,7 +655,9 @@ impl Lane {
                 return result;
             }
             drop(owner);
-            crate::harness::context::await_with_context(changed, context).await.map_err(|error| session_invariant_error(error.to_string()))?;
+            crate::harness::context::await_with_context(changed, context)
+                .await
+                .map_err(|error| session_invariant_error(error.to_string()))?;
         }
     }
 
@@ -484,45 +665,150 @@ impl Lane {
         drop(self.idle_owner.write().await);
     }
 
-    pub async fn accept_compaction(&self, custom_instructions: Option<String>, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
-        use crate::harness::session::types::{StorageBranchScan, BranchOrder, EntryType, OperationScope, OperationMarker, OperationIntent, OperationIntentKind, SummaryDecidingOperation, SummaryTask, SummaryTaskReason, ResultBoundary};
+    pub async fn accept_compaction(
+        &self,
+        custom_instructions: Option<String>,
+        operation_id: Option<String>,
+        settings: crate::harness::session::types::RunSettings,
+        context: &Context,
+    ) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+        use crate::harness::session::types::{
+            BranchOrder, EntryType, OperationIntent, OperationIntentKind, OperationMarker,
+            OperationScope, ResultBoundary, StorageBranchScan, SummaryDecidingOperation,
+            SummaryTask, SummaryTaskReason,
+        };
         self.assert_open()?;
         let started_at = now_ms();
-        let operation_id = operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
+        let operation_id =
+            operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
         let task_id = (self.session.id_generator())(Some(started_at));
         let name = self.name.clone();
         let read_context = context.clone();
-        self.command(move |mut state, reader| Box::pin(async move {
-            if let Some(operation) = &state.operation { return Ok(LaneCommand::Return { result: Err(AdmissionError::LaneBusy { lane: name, operation_id: operation.meta.operation_id.clone() }) }); }
-            let mut path = if let Some(tip) = &state.tip_id {
-                let mut query = StorageBranchScan::new(tip);
-                query.stop_at_type = Some(EntryType::Compaction);
-                query.order = Some(BranchOrder::NewestFirst);
-                reader.scan_branch(query, &read_context).await?
-            } else { vec![] };
-            path.reverse();
-            let prepared = crate::harness::compaction::compaction::prepare_compaction(&path, settings.compaction).map_err(|error| session_invariant_error(error.to_string()))?;
-            let Some(prepared) = prepared else { return Ok(LaneCommand::Return { result: Err(AdmissionError::NothingToCompact) }); };
-            let meta = OperationMeta { operation_id: operation_id.clone(), lane: name.clone(), source_tip_id: state.tip_id.clone(), started_at, intent: OperationIntent::Compaction { custom_instructions: custom_instructions.clone() } };
-            let current = OperationState::SummaryDeciding(SummaryDecidingOperation { operation: OperationScope { control: Control::Running, settings, latest_assistant_entry_id: None }, at: OperationMarker::SummaryDeciding, task: SummaryTask { task_id: task_id.clone(), reason: Some(SummaryTaskReason::Manual), custom_instructions, boundary: ResultBoundary::Finish } });
-            state.operation = Some(Operation { meta: meta.clone(), state: current.clone() });
-            let writes = vec![
-                Write::Value(set_value(&operation_preparation(&operation_id, &task_id), encoded(&super::structural::durable_compaction_preparation(&prepared))?)),
-                Write::Value(set_value(&operation_meta(&operation_id), encoded(&meta)?)),
-                Write::Value(set_value(&operation_state(&operation_id), encoded(&current)?)),
-                Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?)),
-            ];
-            let admission = OperationAdmission { operation_id: operation_id.clone(), started_at, kind: OperationIntentKind::Compaction };
-            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| Ok(admission.clone())), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::CompactionStart { run_id: operation_id.clone(), reason: "manual".into(), started_at }, Some(name.clone()))])) }, next: Box::new(state) })
-        }), context).await
+        self.command(
+            move |mut state, reader| {
+                Box::pin(async move {
+                    if let Some(operation) = &state.operation {
+                        return Ok(LaneCommand::Return {
+                            result: Err(AdmissionError::LaneBusy {
+                                lane: name,
+                                operation_id: operation.meta.operation_id.clone(),
+                            }),
+                        });
+                    }
+                    let mut path = if let Some(tip) = &state.tip_id {
+                        let mut query = StorageBranchScan::new(tip);
+                        query.stop_at_type = Some(EntryType::Compaction);
+                        query.order = Some(BranchOrder::NewestFirst);
+                        reader.scan_branch(query, &read_context).await?
+                    } else {
+                        vec![]
+                    };
+                    path.reverse();
+                    let prepared = crate::harness::compaction::compaction::prepare_compaction(
+                        &path,
+                        settings.compaction,
+                    )
+                    .map_err(|error| session_invariant_error(error.to_string()))?;
+                    let Some(prepared) = prepared else {
+                        return Ok(LaneCommand::Return {
+                            result: Err(AdmissionError::NothingToCompact),
+                        });
+                    };
+                    let meta = OperationMeta {
+                        operation_id: operation_id.clone(),
+                        lane: name.clone(),
+                        source_tip_id: state.tip_id.clone(),
+                        started_at,
+                        intent: OperationIntent::Compaction {
+                            custom_instructions: custom_instructions.clone(),
+                        },
+                    };
+                    let current = OperationState::SummaryDeciding(SummaryDecidingOperation {
+                        operation: OperationScope {
+                            control: Control::Running,
+                            settings,
+                            latest_assistant_entry_id: None,
+                        },
+                        at: OperationMarker::SummaryDeciding,
+                        task: SummaryTask {
+                            task_id: task_id.clone(),
+                            reason: Some(SummaryTaskReason::Manual),
+                            custom_instructions,
+                            boundary: ResultBoundary::Finish,
+                        },
+                    });
+                    state.operation = Some(Operation {
+                        meta: meta.clone(),
+                        state: current.clone(),
+                    });
+                    let writes = vec![
+                        Write::Value(set_value(
+                            &operation_preparation(&operation_id, &task_id),
+                            encoded(&super::structural::durable_compaction_preparation(
+                                &prepared,
+                            ))?,
+                        )),
+                        Write::Value(set_value(&operation_meta(&operation_id), encoded(&meta)?)),
+                        Write::Value(set_value(
+                            &operation_state(&operation_id),
+                            encoded(&current)?,
+                        )),
+                        Write::Value(set_value(
+                            &lane_state(&name),
+                            encoded(&durable_lane_state(&state))?,
+                        )),
+                    ];
+                    let admission = OperationAdmission {
+                        operation_id: operation_id.clone(),
+                        started_at,
+                        kind: OperationIntentKind::Compaction,
+                    };
+                    Ok(LaneCommand::Commit {
+                        decision: CommitDecision {
+                            writes,
+                            materialize: Arc::new(move |_| Ok(admission.clone())),
+                            events: Some(Arc::new(move |_| {
+                                vec![HarnessEvent::new(
+                                    HarnessEventPayload::CompactionStart {
+                                        run_id: operation_id.clone(),
+                                        reason: "manual".into(),
+                                        started_at,
+                                    },
+                                    Some(name.clone()),
+                                )]
+                            })),
+                        },
+                        next: Box::new(state),
+                    })
+                })
+            },
+            context,
+        )
+        .await
     }
 
-    pub async fn accept_navigation(&self, target_id: Option<String>, options: NavigationOptions, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
-        use crate::harness::session::types::{StorageBranchScan, BranchOrder, OperationScope, OperationMarker, OperationIntent, OperationIntentKind, SummaryDecidingOperation, NavigationReadyToCommitOperation, SummaryTask, ResultBoundary};
-        let NavigationOptions { summarize, label, custom_instructions } = options;
+    pub async fn accept_navigation(
+        &self,
+        target_id: Option<String>,
+        options: NavigationOptions,
+        operation_id: Option<String>,
+        settings: crate::harness::session::types::RunSettings,
+        context: &Context,
+    ) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+        use crate::harness::session::types::{
+            BranchOrder, NavigationReadyToCommitOperation, OperationIntent, OperationIntentKind,
+            OperationMarker, OperationScope, ResultBoundary, StorageBranchScan,
+            SummaryDecidingOperation, SummaryTask,
+        };
+        let NavigationOptions {
+            summarize,
+            label,
+            custom_instructions,
+        } = options;
         self.assert_open()?;
         let started_at = now_ms();
-        let operation_id = operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
+        let operation_id =
+            operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
         let task_id = (self.session.id_generator())(Some(started_at));
         let name = self.name.clone();
         let read_context = context.clone();
@@ -565,103 +851,284 @@ impl Lane {
         }), context).await
     }
 
-    pub async fn request_operation_abort(&self, operation_id: String, context: &Context) -> Result<Result<AbortRequest, OperationMismatch>, SessionError> {
+    pub async fn request_operation_abort(
+        &self,
+        operation_id: String,
+        context: &Context,
+    ) -> Result<Result<AbortRequest, OperationMismatch>, SessionError> {
         let drive = self.active_drive_matching(&operation_id);
         let cancellation = Cancellation::new();
-        if let Some(drive) = &drive { drive.begin_abort(cancellation.clone()); }
+        if let Some(drive) = &drive {
+            drive.begin_abort(cancellation.clone());
+        }
         let name = self.name.clone();
         let read_context = context.clone();
-        let result = self.command(move |mut state, reader| Box::pin(async move {
-            let Some(mut operation) = state.operation.clone().filter(|operation| operation.meta.operation_id == operation_id) else {
-                return Ok(LaneCommand::Return { result: Err(OperationMismatch { expected: operation_id, current_operation_id: state.operation.map(|operation| operation.meta.operation_id), last_operation_id: state.last_operation_id }) });
-            };
-            if matches!(operation.state.operation_scope_of().control, Control::CancelRequested { .. }) {
-                return Ok(LaneCommand::Return { result: Ok(AbortRequest { operation_id, newly_requested: false, steer: vec![], follow_up: vec![] }) });
-            }
-            let removed: Vec<_> = state.inbox.iter().filter(|item| matches!(item.kind, InboxItemKind::Steer | InboxItemKind::FollowUp)).cloned().collect();
-            let mut steer = vec![];
-            let mut follow_up = vec![];
-            for item in &removed {
-                let stored = reader.get_value(&pending_entry(&item.entry_id), &read_context).await?.ok_or_else(|| session_invariant_error("Pending abort entry is missing its message"))?;
-                let pending: PendingEntry = serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))?;
-                let PendingEntry::Message { payload } = pending else { return Err(session_invariant_error("Pending abort entry is not a message")); };
-                if item.kind == InboxItemKind::Steer { steer.push(payload); } else { follow_up.push(payload); }
-            }
-            let mut value = encoded(&operation.state)?;
-            value["control"] = encoded(&Control::CancelRequested { requested_at: now_ms() })?;
-            operation.state = crate::harness::runtime::restore::decode_operation_state(value.clone())?;
-            state.operation = Some(operation);
-            state.inbox = without_inbox_items(&state.inbox, &removed);
-            let queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
-            let mut writes: Vec<_> = removed.iter().map(|item| Write::Value(delete_value(&pending_entry(&item.entry_id)))).collect();
-            writes.push(Write::Value(set_value(&operation_state(&operation_id), value)));
-            writes.push(Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?)));
-            let result = AbortRequest { operation_id: operation_id.clone(), newly_requested: true, steer: steer.clone(), follow_up: follow_up.clone() };
-            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| Ok(result.clone())), events: Some(Arc::new(move |_| {
-                let mut events = vec![HarnessEvent::new(HarnessEventPayload::OperationAbort { operation_id: operation_id.clone(), steer: steer.clone(), follow_up: follow_up.clone() }, Some(name.clone()))];
-                if !removed.is_empty() { events.push(HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))); }
-                events
-            })) }, next: Box::new(state) })
-        }), context).await;
+        let result = self
+            .command(
+                move |mut state, reader| {
+                    Box::pin(async move {
+                        let Some(mut operation) = state
+                            .operation
+                            .clone()
+                            .filter(|operation| operation.meta.operation_id == operation_id)
+                        else {
+                            return Ok(LaneCommand::Return {
+                                result: Err(OperationMismatch {
+                                    expected: operation_id,
+                                    current_operation_id: state
+                                        .operation
+                                        .map(|operation| operation.meta.operation_id),
+                                    last_operation_id: state.last_operation_id,
+                                }),
+                            });
+                        };
+                        if matches!(
+                            operation.state.operation_scope_of().control,
+                            Control::CancelRequested { .. }
+                        ) {
+                            return Ok(LaneCommand::Return {
+                                result: Ok(AbortRequest {
+                                    operation_id,
+                                    newly_requested: false,
+                                    steer: vec![],
+                                    follow_up: vec![],
+                                }),
+                            });
+                        }
+                        let removed: Vec<_> = state
+                            .inbox
+                            .iter()
+                            .filter(|item| {
+                                matches!(item.kind, InboxItemKind::Steer | InboxItemKind::FollowUp)
+                            })
+                            .cloned()
+                            .collect();
+                        let mut steer = vec![];
+                        let mut follow_up = vec![];
+                        for item in &removed {
+                            let stored = reader
+                                .get_value(&pending_entry(&item.entry_id), &read_context)
+                                .await?
+                                .ok_or_else(|| {
+                                    session_invariant_error(
+                                        "Pending abort entry is missing its message",
+                                    )
+                                })?;
+                            let pending: PendingEntry = serde_json::from_value(stored.value)
+                                .map_err(|error| session_invariant_error(error.to_string()))?;
+                            let PendingEntry::Message { payload } = pending else {
+                                return Err(session_invariant_error(
+                                    "Pending abort entry is not a message",
+                                ));
+                            };
+                            if item.kind == InboxItemKind::Steer {
+                                steer.push(payload);
+                            } else {
+                                follow_up.push(payload);
+                            }
+                        }
+                        let mut value = encoded(&operation.state)?;
+                        value["control"] = encoded(&Control::CancelRequested {
+                            requested_at: now_ms(),
+                        })?;
+                        operation.state = crate::harness::runtime::restore::decode_operation_state(
+                            value.clone(),
+                        )?;
+                        state.operation = Some(operation);
+                        state.inbox = without_inbox_items(&state.inbox, &removed);
+                        let queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
+                        let mut writes: Vec<_> = removed
+                            .iter()
+                            .map(|item| Write::Value(delete_value(&pending_entry(&item.entry_id))))
+                            .collect();
+                        writes.push(Write::Value(set_value(
+                            &operation_state(&operation_id),
+                            value,
+                        )));
+                        writes.push(Write::Value(set_value(
+                            &lane_state(&name),
+                            encoded(&durable_lane_state(&state))?,
+                        )));
+                        let result = AbortRequest {
+                            operation_id: operation_id.clone(),
+                            newly_requested: true,
+                            steer: steer.clone(),
+                            follow_up: follow_up.clone(),
+                        };
+                        Ok(LaneCommand::Commit {
+                            decision: CommitDecision {
+                                writes,
+                                materialize: Arc::new(move |_| Ok(result.clone())),
+                                events: Some(Arc::new(move |_| {
+                                    let mut events = vec![HarnessEvent::new(
+                                        HarnessEventPayload::OperationAbort {
+                                            operation_id: operation_id.clone(),
+                                            steer: steer.clone(),
+                                            follow_up: follow_up.clone(),
+                                        },
+                                        Some(name.clone()),
+                                    )];
+                                    if !removed.is_empty() {
+                                        events.push(HarnessEvent::new(
+                                            HarnessEventPayload::QueueUpdate {
+                                                queues: queues.clone(),
+                                            },
+                                            Some(name.clone()),
+                                        ));
+                                    }
+                                    events
+                                })),
+                            },
+                            next: Box::new(state),
+                        })
+                    })
+                },
+                context,
+            )
+            .await;
         // Pinned `settleGate`: a newly-requested (or already-requested) abort releases the wait and
         // pulls the admission gate; a mismatch leaves the stale drive's gate state untouched.
         let signal = matches!(&result, Ok(Ok(_)));
         cancellation.resolve();
-        if signal && let Some(drive) = &drive { drive.signal_abort(); }
+        if signal && let Some(drive) = &drive {
+            drive.signal_abort();
+        }
         result
     }
 
-    fn mismatch(&self, expected: String, current_operation_id: Option<String>, last_operation_id: Option<String>) -> OperationMismatch {
-        OperationMismatch { expected, current_operation_id, last_operation_id }
+    fn mismatch(
+        &self,
+        expected: String,
+        current_operation_id: Option<String>,
+        last_operation_id: Option<String>,
+    ) -> OperationMismatch {
+        OperationMismatch {
+            expected,
+            current_operation_id,
+            last_operation_id,
+        }
     }
 
     /// Pinned `Lane.drive`: install, observe, or await the one drive pass that owns `operation_id`.
-    pub async fn drive(self: &Arc<Self>, options: crate::harness::agent_harness::DriveOptions, context: &Context) -> Result<crate::harness::agent_harness::DriveOutcome, crate::harness::agent_harness::DriveOptionsError> {
+    pub async fn drive(
+        self: &Arc<Self>,
+        options: crate::harness::agent_harness::DriveOptions,
+        context: &Context,
+    ) -> Result<
+        crate::harness::agent_harness::DriveOutcome,
+        crate::harness::agent_harness::DriveOptionsError,
+    > {
         use crate::harness::agent_harness::{DriveOptionsError, DriveOutcome};
         self.install_self();
         if let Err(error) = self.assert_open() {
             return Err(DriveOptionsError::Session(error));
         }
         loop {
+            if let Some(reason) = super::harness::drive_abort_reason(context) {
+                return Err(DriveOptionsError::Cancelled(reason));
+            }
+            let owner =
+                crate::harness::context::await_with_context(self.idle_owner.read(), context)
+                    .await
+                    .map_err(DriveOptionsError::Cancelled)?;
             let this = self.clone();
             let operation_id = options.operation_id.clone();
             let drive_context = context.clone();
             let claim = self
-                .command(
+                .command_inner_with_owner(
                     move |state, reader| {
                         Box::pin(async move {
-                            if drive_context.is_aborted() {
-                                return Ok(LaneCommand::Reject { error: "The operation was aborted".into() });
+                            if let Some(reason) = super::harness::drive_abort_reason(&drive_context)
+                            {
+                                return Ok(LaneCommand::Return {
+                                    result: DriveClaim::Cancelled { reason },
+                                });
                             }
-                            if state.operation.as_ref().is_some_and(|operation| operation.meta.operation_id == operation_id) {
-                                let existing = this.active_drive.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                            if state.operation.as_ref().is_some_and(|operation| {
+                                operation.meta.operation_id == operation_id
+                            }) {
+                                let existing = this
+                                    .active_drive
+                                    .lock()
+                                    .unwrap_or_else(|error| error.into_inner())
+                                    .clone();
                                 return match existing {
                                     None => {
-                                        let drive = Arc::new(Drive::new(&crate::harness::agent_harness::DriveOptions { operation_id: operation_id.clone(), wait_for_retry: options.wait_for_retry, poll_deferred: options.poll_deferred }, &drive_context));
-                                        *this.active_drive.lock().unwrap_or_else(|error| error.into_inner()) = Some(drive.clone());
+                                        let drive = Arc::new(Drive::new(
+                                            &crate::harness::agent_harness::DriveOptions {
+                                                operation_id: operation_id.clone(),
+                                                wait_for_retry: options.wait_for_retry,
+                                                poll_deferred: options.poll_deferred,
+                                            },
+                                            &drive_context,
+                                        ));
+                                        *this
+                                            .active_drive
+                                            .lock()
+                                            .unwrap_or_else(|error| error.into_inner()) =
+                                            Some(drive.clone());
                                         this.state_change.notify_waiters();
-                                        Ok(LaneCommand::Return { result: DriveClaim::Observe { drive, installed: true } })
+                                        Ok(LaneCommand::Return {
+                                            result: DriveClaim::Observe {
+                                                drive,
+                                                installed: true,
+                                            },
+                                        })
                                     }
-                                    Some(drive) if drive.operation_id == operation_id => Ok(LaneCommand::Return { result: DriveClaim::Observe { drive, installed: false } }),
-                                    Some(drive) => Ok(LaneCommand::Return { result: DriveClaim::Occupied { drive } }),
+                                    Some(drive) if drive.operation_id == operation_id => {
+                                        Ok(LaneCommand::Return {
+                                            result: DriveClaim::Observe {
+                                                drive,
+                                                installed: false,
+                                            },
+                                        })
+                                    }
+                                    Some(drive) => Ok(LaneCommand::Return {
+                                        result: DriveClaim::Occupied { drive },
+                                    }),
                                 };
                             }
-                            let stored = reader.get_value(&operation_result(&operation_id), &drive_context).await?;
+                            let stored = reader
+                                .get_value(&operation_result(&operation_id), &drive_context)
+                                .await?;
                             Ok(match stored {
-                                Some(stored) => LaneCommand::Return { result: DriveClaim::Settled { outcome: serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))? } },
-                                None => LaneCommand::Return { result: DriveClaim::Mismatch { error: this.mismatch(operation_id.clone(), state.operation.map(|operation| operation.meta.operation_id), state.last_operation_id) } },
+                                Some(stored) => LaneCommand::Return {
+                                    result: DriveClaim::Settled {
+                                        outcome: serde_json::from_value(stored.value).map_err(
+                                            |error| session_invariant_error(error.to_string()),
+                                        )?,
+                                    },
+                                },
+                                None => LaneCommand::Return {
+                                    result: DriveClaim::Mismatch {
+                                        error: this.mismatch(
+                                            operation_id.clone(),
+                                            state
+                                                .operation
+                                                .map(|operation| operation.meta.operation_id),
+                                            state.last_operation_id,
+                                        ),
+                                    },
+                                },
                             })
                         })
                     },
                     context,
+                    Some(owner),
                 )
                 .await
                 .map_err(DriveOptionsError::Session)?;
             match claim {
+                DriveClaim::Cancelled { reason } => {
+                    return Err(DriveOptionsError::Cancelled(reason));
+                }
                 DriveClaim::Settled { outcome } => return Ok(DriveOutcome::Settled { outcome }),
                 DriveClaim::Mismatch { error } => return Err(DriveOptionsError::Mismatch(error)),
                 DriveClaim::Occupied { drive } => {
-                    let _ = drive.completion.wait().await;
+                    crate::harness::context::await_with_context(drive.completion.wait(), context)
+                        .await
+                        .map_err(DriveOptionsError::Cancelled)?
+                        .map_err(DriveOptionsError::Drive)?;
                     continue;
                 }
                 DriveClaim::Observe { drive, installed } => {
@@ -669,23 +1136,43 @@ impl Lane {
                         let lane = self.clone();
                         let running = drive.clone();
                         tokio::spawn(async move {
-                            let outcome = super::drive::drive_operation(lane.as_ref(), running.as_ref()).await;
+                            let outcome =
+                                super::drive::drive_operation(lane.as_ref(), running.as_ref())
+                                    .await;
                             {
-                                let mut active = lane.active_drive.lock().unwrap_or_else(|error| error.into_inner());
-                                if active.as_ref().is_some_and(|candidate| Arc::ptr_eq(candidate, &running)) { *active = None; }
+                                let mut active = lane
+                                    .active_drive
+                                    .lock()
+                                    .unwrap_or_else(|error| error.into_inner());
+                                if active
+                                    .as_ref()
+                                    .is_some_and(|candidate| Arc::ptr_eq(candidate, &running))
+                                {
+                                    *active = None;
+                                }
                             }
                             lane.state_change.notify_waiters();
                             match outcome {
                                 Ok(outcome) => running.settle(outcome),
                                 // Pinned drive rejection: `closedError ?? onFault(error, drive.context)`.
                                 Err(error) => {
-                                    let failure = if lane.on_fault.is_some() { lane.fault(error, &running.context) } else { error };
+                                    let failure = if lane.on_fault.is_some() {
+                                        lane.fault(error, &running.context)
+                                    } else {
+                                        error
+                                    };
                                     running.fail(failure.message)
                                 }
                             }
                         });
                     }
-                    return match drive.completion.wait().await {
+                    return match crate::harness::context::await_with_context(
+                        drive.completion.wait(),
+                        context,
+                    )
+                    .await
+                    .map_err(DriveOptionsError::Cancelled)?
+                    {
                         Ok(outcome) => Ok(outcome),
                         Err(error) => Err(DriveOptionsError::Drive(error)),
                     };
@@ -695,7 +1182,10 @@ impl Lane {
     }
 
     /// Pinned `Lane.resume`: re-drive the one open operation, polling deferred handles and waiting retries.
-    pub async fn resume(self: &Arc<Self>, context: &Context) -> Result<Result<crate::harness::agent_harness::DriveOutcome, String>, SessionError> {
+    pub async fn resume(
+        self: &Arc<Self>,
+        context: &Context,
+    ) -> Result<Result<crate::harness::agent_harness::DriveOutcome, String>, SessionError> {
         use crate::harness::agent_harness::{DriveOptions, DriveOptionsError};
         if let Err(error) = self.assert_open() {
             return Ok(Err(error.message));
@@ -706,8 +1196,15 @@ impl Lane {
                 move |state, _reader| {
                     Box::pin(async move {
                         Ok(match &state.operation {
-                            Some(operation) => LaneCommand::Return { result: Ok(operation.meta.operation_id.clone()) },
-                            None => LaneCommand::Return { result: Err(format!("Lane {:?} has no active operation to resume", name)) },
+                            Some(operation) => LaneCommand::Return {
+                                result: Ok(operation.meta.operation_id.clone()),
+                            },
+                            None => LaneCommand::Return {
+                                result: Err(format!(
+                                    "Lane {:?} has no active operation to resume",
+                                    name
+                                )),
+                            },
                         })
                     })
                 },
@@ -718,11 +1215,26 @@ impl Lane {
             Ok(operation_id) => operation_id,
             Err(message) => return Ok(Err(message)),
         };
-        match self.drive(DriveOptions { operation_id: operation_id.clone(), wait_for_retry: Some(true), poll_deferred: Some(true) }, context).await {
+        match self
+            .drive(
+                DriveOptions {
+                    operation_id: operation_id.clone(),
+                    wait_for_retry: Some(true),
+                    poll_deferred: Some(true),
+                },
+                context,
+            )
+            .await
+        {
             Ok(outcome) => Ok(Ok(outcome)),
             Err(DriveOptionsError::Session(error)) => Err(error),
+            Err(DriveOptionsError::Cancelled(reason)) => {
+                Err(session_invariant_error(reason.to_string()))
+            }
             Err(DriveOptionsError::Drive(message)) => Ok(Err(message)),
-            Err(DriveOptionsError::Mismatch(_)) => Err(session_invariant_error(format!("Operation {operation_id} no longer matches its lane"))),
+            Err(DriveOptionsError::Mismatch(_)) => Err(session_invariant_error(format!(
+                "Operation {operation_id} no longer matches its lane"
+            ))),
         }
     }
 
@@ -738,8 +1250,14 @@ impl Lane {
     }
 
     /// Pinned `Lane.prompt(...)`: admit a run, then drive it to settlement or suspension.
-    pub async fn prompt(self: &Arc<Self>, input: PromptInput, context: &Context) -> Result<RunResult, SessionError> {
-        let admission = self.accept_prompt(input, None, self.run_settings(), context).await?;
+    pub async fn prompt(
+        self: &Arc<Self>,
+        input: PromptInput,
+        context: &Context,
+    ) -> Result<RunResult, SessionError> {
+        let admission = self
+            .accept_prompt(input, None, self.run_settings(), context)
+            .await?;
         let admission = match admission {
             Ok(admission) => admission,
             Err(error) => return Ok(Err(error)),
@@ -748,8 +1266,15 @@ impl Lane {
     }
 
     /// Pinned `Lane.skill(...)`.
-    pub async fn skill(self: &Arc<Self>, name: &str, additional_instructions: Option<String>, context: &Context) -> Result<RunResult, SessionError> {
-        let admission = self.accept_skill(name, additional_instructions, None, context).await?;
+    pub async fn skill(
+        self: &Arc<Self>,
+        name: &str,
+        additional_instructions: Option<String>,
+        context: &Context,
+    ) -> Result<RunResult, SessionError> {
+        let admission = self
+            .accept_skill(name, additional_instructions, None, context)
+            .await?;
         let admission = match admission {
             Ok(admission) => admission,
             Err(error) => return Ok(Err(error)),
@@ -758,8 +1283,15 @@ impl Lane {
     }
 
     /// Pinned `Lane.promptFromTemplate(...)`.
-    pub async fn prompt_from_template(self: &Arc<Self>, name: &str, args: Vec<String>, context: &Context) -> Result<RunResult, SessionError> {
-        let admission = self.accept_prompt_template(name, args, None, context).await?;
+    pub async fn prompt_from_template(
+        self: &Arc<Self>,
+        name: &str,
+        args: Vec<String>,
+        context: &Context,
+    ) -> Result<RunResult, SessionError> {
+        let admission = self
+            .accept_prompt_template(name, args, None, context)
+            .await?;
         let admission = match admission {
             Ok(admission) => admission,
             Err(error) => return Ok(Err(error)),
@@ -768,38 +1300,98 @@ impl Lane {
     }
 
     /// Pinned `Lane.driveRunRequest`: drive an accepted run to settlement or a suspension.
-    async fn drive_run(self: &Arc<Self>, admission: OperationAdmission, context: &Context) -> Result<RunResult, SessionError> {
+    async fn drive_run(
+        self: &Arc<Self>,
+        admission: OperationAdmission,
+        context: &Context,
+    ) -> Result<RunResult, SessionError> {
         use crate::harness::agent_harness::{DriveOptions, DriveOptionsError, DriveOutcome};
         match self
-            .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: Some(true), poll_deferred: None }, context)
+            .drive(
+                DriveOptions {
+                    operation_id: admission.operation_id.clone(),
+                    wait_for_retry: Some(true),
+                    poll_deferred: None,
+                },
+                context,
+            )
             .await
         {
             Ok(DriveOutcome::Settled { outcome }) => Ok(Ok(RunOutcome::Settled(outcome))),
-            Ok(DriveOutcome::WaitingDeferred { operation_id, deferred }) => Ok(Ok(RunOutcome::Suspended(SuspendedRun { operation_id, deferred }))),
-            Ok(DriveOutcome::WaitingRetry { .. }) => Err(session_invariant_error(format!("Run {} returned an unwaited retry", admission.operation_id))),
+            Ok(DriveOutcome::WaitingDeferred {
+                operation_id,
+                deferred,
+            }) => Ok(Ok(RunOutcome::Suspended(SuspendedRun {
+                operation_id,
+                deferred,
+            }))),
+            Ok(DriveOutcome::WaitingRetry { .. }) => Err(session_invariant_error(format!(
+                "Run {} returned an unwaited retry",
+                admission.operation_id
+            ))),
             Err(DriveOptionsError::Session(error)) => Err(error),
+            Err(DriveOptionsError::Cancelled(reason)) => {
+                Err(session_invariant_error(reason.to_string()))
+            }
             Err(DriveOptionsError::Drive(message)) => Err(session_invariant_error(message)),
-            Err(DriveOptionsError::Mismatch(_)) => Err(session_invariant_error(format!("Accepted run {} no longer matches its lane", admission.operation_id))),
+            Err(DriveOptionsError::Mismatch(_)) => Err(session_invariant_error(format!(
+                "Accepted run {} no longer matches its lane",
+                admission.operation_id
+            ))),
         }
     }
 
     /// Pinned `Lane.driveStructuralAdmission`: drive a compaction/navigation admission.
-    async fn drive_structural(self: &Arc<Self>, admission: OperationAdmission, context: &Context) -> Result<Result<crate::harness::session::types::OperationResultRecord, AdmissionError>, SessionError> {
+    async fn drive_structural(
+        self: &Arc<Self>,
+        admission: OperationAdmission,
+        context: &Context,
+    ) -> Result<
+        Result<crate::harness::session::types::OperationResultRecord, AdmissionError>,
+        SessionError,
+    > {
         use crate::harness::agent_harness::{DriveOptions, DriveOptionsError, DriveOutcome};
         match self
-            .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: Some(true), poll_deferred: None }, context)
+            .drive(
+                DriveOptions {
+                    operation_id: admission.operation_id.clone(),
+                    wait_for_retry: Some(true),
+                    poll_deferred: None,
+                },
+                context,
+            )
             .await
         {
             Ok(DriveOutcome::Settled { outcome }) => Ok(Ok(outcome)),
-            Err(DriveOptionsError::Session(error)) if error.kind == SessionErrorKind::Closed => Ok(Err(AdmissionError::Closed { message: error.message })),
-            Ok(DriveOutcome::WaitingDeferred { .. }) | Ok(DriveOutcome::WaitingRetry { .. }) => Err(session_invariant_error(format!("{} {} returned an unexpected wait", admission.kind_label(), admission.operation_id))),
-            Err(error) => Err(session_invariant_error(format!("Accepted {} {} no longer matches its lane: {error}", admission.kind_label(), admission.operation_id))),
+            Err(DriveOptionsError::Session(error)) if error.kind == SessionErrorKind::Closed => {
+                Ok(Err(AdmissionError::Closed {
+                    message: error.message,
+                }))
+            }
+            Ok(DriveOutcome::WaitingDeferred { .. }) | Ok(DriveOutcome::WaitingRetry { .. }) => {
+                Err(session_invariant_error(format!(
+                    "{} {} returned an unexpected wait",
+                    admission.kind_label(),
+                    admission.operation_id
+                )))
+            }
+            Err(error) => Err(session_invariant_error(format!(
+                "Accepted {} {} no longer matches its lane: {error}",
+                admission.kind_label(),
+                admission.operation_id
+            ))),
         }
     }
 
     /// Pinned `Lane.compact(...)`: admit a compaction, drive it, then run the continuation window.
-    pub async fn compact(self: &Arc<Self>, custom_instructions: Option<String>, context: &Context) -> Result<CompactionResult, SessionError> {
-        let admission = self.accept_compaction(custom_instructions, None, self.run_settings(), context).await?;
+    pub async fn compact(
+        self: &Arc<Self>,
+        custom_instructions: Option<String>,
+        context: &Context,
+    ) -> Result<CompactionResult, SessionError> {
+        let admission = self
+            .accept_compaction(custom_instructions, None, self.run_settings(), context)
+            .await?;
         let admission = match admission {
             Ok(admission) => admission,
             Err(error) => return Ok(Err(error)),
@@ -809,12 +1401,22 @@ impl Lane {
             Err(error) => return Ok(Err(error)),
         };
         let run = self.continue_after_structural(&record, context).await?;
-        Ok(Ok(CompactionOutcome { compaction: record, run }))
+        Ok(Ok(CompactionOutcome {
+            compaction: record,
+            run,
+        }))
     }
 
     /// Pinned `Lane.navigateTree(...)`: admit a navigation, drive it, then run the continuation window.
-    pub async fn navigate_tree(self: &Arc<Self>, target_id: Option<String>, options: NavigationOptions, context: &Context) -> Result<NavigationResult, SessionError> {
-        let admission = self.accept_navigation(target_id, options, None, self.run_settings(), context).await?;
+    pub async fn navigate_tree(
+        self: &Arc<Self>,
+        target_id: Option<String>,
+        options: NavigationOptions,
+        context: &Context,
+    ) -> Result<NavigationResult, SessionError> {
+        let admission = self
+            .accept_navigation(target_id, options, None, self.run_settings(), context)
+            .await?;
         let admission = match admission {
             Ok(admission) => admission,
             Err(error) => return Ok(Err(error)),
@@ -824,81 +1426,201 @@ impl Lane {
             Err(error) => return Ok(Err(error)),
         };
         let run = self.continue_after_structural(&record, context).await?;
-        Ok(Ok(NavigationOutcome { navigation: record, run }))
+        Ok(Ok(NavigationOutcome {
+            navigation: record,
+            run,
+        }))
     }
 
     /// Pinned `Lane.continueAfterStructural`: the post-structural continuation window.
-    async fn continue_after_structural(self: &Arc<Self>, record: &crate::harness::session::types::OperationResultRecord, context: &Context) -> Result<Option<RunOutcome>, SessionError> {
+    async fn continue_after_structural(
+        self: &Arc<Self>,
+        record: &crate::harness::session::types::OperationResultRecord,
+        context: &Context,
+    ) -> Result<Option<RunOutcome>, SessionError> {
         use crate::harness::agent_harness::{DriveOptions, DriveOptionsError, DriveOutcome};
         use crate::harness::session::types::TerminalStatus;
         if record.status == TerminalStatus::Aborted {
             return Ok(None);
         }
         let admission = self
-            .accept_prompt(PromptInput::Text { text: String::new(), images: Vec::new() }, None, self.run_settings(), context)
+            .accept_prompt(
+                PromptInput::Text {
+                    text: String::new(),
+                    images: Vec::new(),
+                },
+                None,
+                self.run_settings(),
+                context,
+            )
             .await?;
         let admission = match admission {
             Ok(admission) => admission,
             Err(AdmissionError::Empty) | Err(AdmissionError::LaneBusy { .. }) => return Ok(None),
-            Err(AdmissionError::Closed { message }) => return Err(SessionError::new(SessionErrorKind::Closed, message)),
-            Err(error) => return Err(session_invariant_error(format!("Structural continuation acceptance returned {error}"))),
+            Err(AdmissionError::Closed { message }) => {
+                return Err(SessionError::new(SessionErrorKind::Closed, message));
+            }
+            Err(error) => {
+                return Err(session_invariant_error(format!(
+                    "Structural continuation acceptance returned {error}"
+                )));
+            }
         };
         match self
-            .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: Some(true), poll_deferred: None }, context)
+            .drive(
+                DriveOptions {
+                    operation_id: admission.operation_id.clone(),
+                    wait_for_retry: Some(true),
+                    poll_deferred: None,
+                },
+                context,
+            )
             .await
         {
             Ok(DriveOutcome::Settled { outcome }) => Ok(Some(RunOutcome::Settled(outcome))),
-            Ok(DriveOutcome::WaitingDeferred { operation_id, deferred }) => Ok(Some(RunOutcome::Suspended(SuspendedRun { operation_id, deferred }))),
-            Ok(DriveOutcome::WaitingRetry { .. }) => Err(session_invariant_error(format!("Continuation run {} returned an unwaited retry", admission.operation_id))),
-            Err(DriveOptionsError::Session(error)) if error.kind == SessionErrorKind::Closed => Err(error),
-            Err(error) => Err(session_invariant_error(format!("Continuation run {} no longer matches its lane: {error}", admission.operation_id))),
+            Ok(DriveOutcome::WaitingDeferred {
+                operation_id,
+                deferred,
+            }) => Ok(Some(RunOutcome::Suspended(SuspendedRun {
+                operation_id,
+                deferred,
+            }))),
+            Ok(DriveOutcome::WaitingRetry { .. }) => Err(session_invariant_error(format!(
+                "Continuation run {} returned an unwaited retry",
+                admission.operation_id
+            ))),
+            Err(DriveOptionsError::Session(error)) if error.kind == SessionErrorKind::Closed => {
+                Err(error)
+            }
+            Err(error) => Err(session_invariant_error(format!(
+                "Continuation run {} no longer matches its lane: {error}",
+                admission.operation_id
+            ))),
         }
     }
 
     /// Pinned `Lane.abort(...)`: request cancellation and reconcile the current operation.
-    pub async fn abort(self: &Arc<Self>, context: &Context) -> Result<Result<AbortResult, AbortError>, SessionError> {
+    pub async fn abort(
+        self: &Arc<Self>,
+        context: &Context,
+    ) -> Result<Result<AbortResult, AbortError>, SessionError> {
         use crate::harness::agent_harness::{DriveOptions, DriveOptionsError};
         let operation_id = self
-            .command(|state, _reader| Box::pin(async move { Ok(LaneCommand::Return { result: state.operation.map(|operation| operation.meta.operation_id) }) }), context)
+            .command(
+                |state, _reader| {
+                    Box::pin(async move {
+                        Ok(LaneCommand::Return {
+                            result: state.operation.map(|operation| operation.meta.operation_id),
+                        })
+                    })
+                },
+                context,
+            )
             .await?;
         let Some(operation_id) = operation_id else {
-            return Ok(Err(AbortError::NoActiveOperation { lane: self.name.clone(), message: format!("Lane {:?} has no active operation", self.name) }));
+            return Ok(Err(AbortError::NoActiveOperation {
+                lane: self.name.clone(),
+                message: format!("Lane {:?} has no active operation", self.name),
+            }));
         };
-        let requested = self.request_operation_abort(operation_id.clone(), context).await?;
+        let requested = self
+            .request_operation_abort(operation_id.clone(), context)
+            .await?;
         let request = match requested {
             Ok(request) => request,
-            Err(_mismatch) => return Ok(Err(AbortError::NoActiveOperation { lane: self.name.clone(), message: format!("Lane {:?} no longer has the inspected operation", self.name) })),
+            Err(_mismatch) => {
+                return Ok(Err(AbortError::NoActiveOperation {
+                    lane: self.name.clone(),
+                    message: format!("Lane {:?} no longer has the inspected operation", self.name),
+                }));
+            }
         };
-        match self.drive(DriveOptions { operation_id: operation_id.clone(), wait_for_retry: None, poll_deferred: None }, context).await {
+        match self
+            .drive(
+                DriveOptions {
+                    operation_id: operation_id.clone(),
+                    wait_for_retry: None,
+                    poll_deferred: None,
+                },
+                context,
+            )
+            .await
+        {
             Ok(_) => {}
-            Err(DriveOptionsError::Session(error)) if error.kind == SessionErrorKind::Closed => return Ok(Err(AbortError::Closed { message: error.message })),
-            Err(error) => return Err(session_invariant_error(format!("Cancelled operation {operation_id} no longer matches its lane: {error}"))),
+            Err(DriveOptionsError::Session(error)) if error.kind == SessionErrorKind::Closed => {
+                return Ok(Err(AbortError::Closed {
+                    message: error.message,
+                }));
+            }
+            Err(error) => {
+                return Err(session_invariant_error(format!(
+                    "Cancelled operation {operation_id} no longer matches its lane: {error}"
+                )));
+            }
         }
-        Ok(Ok(AbortResult { operation_id, steer: request.steer, follow_up: request.follow_up }))
+        Ok(Ok(AbortResult {
+            operation_id,
+            steer: request.steer,
+            follow_up: request.follow_up,
+        }))
     }
 
-    pub async fn accept_prompt(&self, input: PromptInput, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
-        use crate::harness::session::types::{OperationIntent, OperationMarker, OperationScope, OperationIntentKind, StartingOperation};
+    pub async fn accept_prompt(
+        &self,
+        input: PromptInput,
+        operation_id: Option<String>,
+        settings: crate::harness::session::types::RunSettings,
+        context: &Context,
+    ) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+        use crate::harness::session::types::{
+            OperationIntent, OperationIntentKind, OperationMarker, OperationScope,
+            StartingOperation,
+        };
         if let Err(error) = self.assert_open() {
-            return if error.kind == SessionErrorKind::Closed { Ok(Err(AdmissionError::Closed { message: error.message })) } else { Err(error) };
+            return if error.kind == SessionErrorKind::Closed {
+                Ok(Err(AdmissionError::Closed {
+                    message: error.message,
+                }))
+            } else {
+                Err(error)
+            };
         }
         let started_at = now_ms();
-        let operation_id = operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
+        let operation_id =
+            operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
         let messages = match input {
             PromptInput::Messages(messages) => messages,
             PromptInput::Text { text, images } => {
-                if text.is_empty() && images.is_empty() { vec![] } else {
+                if text.is_empty() && images.is_empty() {
+                    vec![]
+                } else {
                     let mut content = vec![];
-                    if !text.is_empty() { content.push(maho_ai::types::ContentBlock::text(text)); }
+                    if !text.is_empty() {
+                        content.push(maho_ai::types::ContentBlock::text(text));
+                    }
                     content.extend(images.into_iter().map(maho_ai::types::ContentBlock::Image));
-                    vec![crate::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Blocks(content), timestamp: started_at }))]
+                    vec![crate::types::AgentMessage::Llm(
+                        maho_ai::types::Message::User(maho_ai::types::UserMessage {
+                            content: maho_ai::types::UserContent::Blocks(content),
+                            timestamp: started_at,
+                        }),
+                    )]
                 }
             }
         };
         if messages.iter().any(|message| matches!(message.try_as_llm(), Some(maho_ai::types::Message::Assistant(assistant)) if assistant.stop_reason == maho_ai::types::StopReason::Pending)) {
             return Ok(Err(AdmissionError::PendingAssistant));
         }
-        let prompt: Vec<_> = messages.into_iter().map(|message| NewEntry::message((self.session.id_generator())(Some(started_at)), None, message)).collect();
+        let prompt: Vec<_> = messages
+            .into_iter()
+            .map(|message| {
+                NewEntry::message(
+                    (self.session.id_generator())(Some(started_at)),
+                    None,
+                    message,
+                )
+            })
+            .collect();
         let name = self.name.clone();
         let read_context = context.clone();
         self.command(move |mut state, reader| Box::pin(async move {
@@ -947,22 +1669,64 @@ impl Lane {
         }), context).await
     }
 
-    /// The Session mutation barrier covers planning, commit and memory publication, but not event delivery.
-    pub async fn command<T, F>(&self, plan: F, context: &Context) -> Result<T, SessionError>
+    pub(crate) async fn read_lane<T: Send, F>(
+        &self,
+        read: F,
+        context: &Context,
+    ) -> Result<T, SessionError>
     where
-        F: for<'a> FnOnce(LaneState, &'a dyn SessionReader) -> BoxFuture<'a, Result<LaneCommand<T>, SessionError>>,
+        F: for<'a> FnOnce(
+            LaneState,
+            &'a dyn SessionReader,
+        ) -> BoxFuture<'a, Result<T, SessionError>>,
     {
         self.assert_open()?;
-        let owner = crate::harness::context::await_with_context(self.idle_owner.read(), context).await.map_err(|error| session_invariant_error(error.to_string()))?;
-        self.command_inner_with_owner(plan, context, Some(owner)).await
+        let mutation = self
+            .session
+            .begin_mutation(context)
+            .await
+            .map_err(|error| self.fault(error, context))?;
+        let result = async {
+            self.assert_open()?;
+            read(self.state(), mutation.as_ref()).await
+        }
+        .await
+        .map_err(|error| self.fault(error, context));
+        mutation.end(context).await;
+        result
+    }
+
+    pub async fn command<T, F>(&self, plan: F, context: &Context) -> Result<T, SessionError>
+    where
+        F: for<'a> FnOnce(
+            LaneState,
+            &'a dyn SessionReader,
+        ) -> BoxFuture<'a, Result<LaneCommand<T>, SessionError>>,
+    {
+        self.assert_open()?;
+        let owner = crate::harness::context::await_with_context(self.idle_owner.read(), context)
+            .await
+            .map_err(|error| session_invariant_error(error.to_string()))?;
+        self.command_inner_with_owner(plan, context, Some(owner))
+            .await
     }
 
     async fn command_inner<T, F>(&self, plan: F, context: &Context) -> Result<T, SessionError>
-    where F: for<'a> FnOnce(LaneState, &'a dyn SessionReader) -> BoxFuture<'a, Result<LaneCommand<T>, SessionError>> {
+    where
+        F: for<'a> FnOnce(
+            LaneState,
+            &'a dyn SessionReader,
+        ) -> BoxFuture<'a, Result<LaneCommand<T>, SessionError>>,
+    {
         self.command_inner_with_owner(plan, context, None).await
     }
 
-    async fn command_inner_with_owner<T, F>(&self, plan: F, context: &Context, owner: Option<tokio::sync::RwLockReadGuard<'_, ()>>) -> Result<T, SessionError>
+    async fn command_inner_with_owner<T, F>(
+        &self,
+        plan: F,
+        context: &Context,
+        owner: Option<tokio::sync::RwLockReadGuard<'_, ()>>,
+    ) -> Result<T, SessionError>
     where
         F: for<'a> FnOnce(
             LaneState,
@@ -1271,114 +2035,352 @@ impl Lane {
         Ok(self.state().configuration.active_tool_names)
     }
 
-    pub async fn get_result(&self, id: &str, context: &Context) -> Result<Option<crate::harness::session::types::OperationResultRecord>, SessionError> {
+    pub async fn get_result(
+        &self,
+        id: &str,
+        context: &Context,
+    ) -> Result<Option<crate::harness::session::types::OperationResultRecord>, SessionError> {
         self.assert_open()?;
-        self.session.get_value(&operation_result(id), context).await?
-            .map(|stored| serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))).transpose()
+        self.session
+            .get_value(&operation_result(id), context)
+            .await?
+            .map(|stored| {
+                serde_json::from_value(stored.value)
+                    .map_err(|error| session_invariant_error(error.to_string()))
+            })
+            .transpose()
     }
 
-    pub async fn steer(&self, input: QueuedInput, images: Vec<maho_ai::types::ImageContent>, context: &Context) -> Result<String, SessionError> { self.enqueue(InboxItemKind::Steer, input, images, context).await }
-    pub async fn follow_up(&self, input: QueuedInput, images: Vec<maho_ai::types::ImageContent>, context: &Context) -> Result<String, SessionError> { self.enqueue(InboxItemKind::FollowUp, input, images, context).await }
-    pub async fn next_run(&self, input: QueuedInput, images: Vec<maho_ai::types::ImageContent>, context: &Context) -> Result<String, SessionError> { self.enqueue(InboxItemKind::NextRun, input, images, context).await }
+    pub async fn steer(
+        &self,
+        input: QueuedInput,
+        images: Vec<maho_ai::types::ImageContent>,
+        context: &Context,
+    ) -> Result<String, SessionError> {
+        self.enqueue(InboxItemKind::Steer, input, images, context)
+            .await
+    }
+    pub async fn follow_up(
+        &self,
+        input: QueuedInput,
+        images: Vec<maho_ai::types::ImageContent>,
+        context: &Context,
+    ) -> Result<String, SessionError> {
+        self.enqueue(InboxItemKind::FollowUp, input, images, context)
+            .await
+    }
+    pub async fn next_run(
+        &self,
+        input: QueuedInput,
+        images: Vec<maho_ai::types::ImageContent>,
+        context: &Context,
+    ) -> Result<String, SessionError> {
+        self.enqueue(InboxItemKind::NextRun, input, images, context)
+            .await
+    }
 
-    async fn enqueue(&self, kind: InboxItemKind, input: QueuedInput, images: Vec<maho_ai::types::ImageContent>, context: &Context) -> Result<String, SessionError> {
+    async fn enqueue(
+        &self,
+        kind: InboxItemKind,
+        input: QueuedInput,
+        images: Vec<maho_ai::types::ImageContent>,
+        context: &Context,
+    ) -> Result<String, SessionError> {
         self.assert_open()?;
         let at = now_ms();
         let message = match input {
             QueuedInput::Text(text) => {
-                if text.is_empty() && images.is_empty() { return Err(session_invariant_error("Queued input must contain text or an image")); }
+                if text.is_empty() && images.is_empty() {
+                    return Err(session_invariant_error(
+                        "Queued input must contain text or an image",
+                    ));
+                }
                 let mut content = Vec::new();
-                if !text.is_empty() { content.push(maho_ai::types::ContentBlock::text(text)); }
+                if !text.is_empty() {
+                    content.push(maho_ai::types::ContentBlock::text(text));
+                }
                 content.extend(images.into_iter().map(maho_ai::types::ContentBlock::Image));
-                crate::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Blocks(content), timestamp: at }))
-            },
+                crate::types::AgentMessage::Llm(maho_ai::types::Message::User(
+                    maho_ai::types::UserMessage {
+                        content: maho_ai::types::UserContent::Blocks(content),
+                        timestamp: at,
+                    },
+                ))
+            }
             QueuedInput::Message(message) => {
                 let mut message = *message;
-                if matches!(message.try_as_llm(), Some(maho_ai::types::Message::Assistant(assistant)) if assistant.stop_reason == maho_ai::types::StopReason::Pending) { return Err(session_invariant_error("Cannot queue a pending assistant message")); }
+                if matches!(message.try_as_llm(), Some(maho_ai::types::Message::Assistant(assistant)) if assistant.stop_reason == maho_ai::types::StopReason::Pending)
+                {
+                    return Err(session_invariant_error(
+                        "Cannot queue a pending assistant message",
+                    ));
+                }
                 if !images.is_empty() {
-                    let crate::types::AgentMessage::Llm(maho_ai::types::Message::User(user)) = &mut message else { return Err(session_invariant_error("Images can be added only to queued user messages")); };
+                    let crate::types::AgentMessage::Llm(maho_ai::types::Message::User(user)) =
+                        &mut message
+                    else {
+                        return Err(session_invariant_error(
+                            "Images can be added only to queued user messages",
+                        ));
+                    };
                     let mut content = match &user.content {
-                        maho_ai::types::UserContent::Text(text) => if text.is_empty() { vec![] } else { vec![maho_ai::types::ContentBlock::text(text.clone())] },
+                        maho_ai::types::UserContent::Text(text) => {
+                            if text.is_empty() {
+                                vec![]
+                            } else {
+                                vec![maho_ai::types::ContentBlock::text(text.clone())]
+                            }
+                        }
                         maho_ai::types::UserContent::Blocks(blocks) => blocks.clone(),
                     };
                     content.extend(images.into_iter().map(maho_ai::types::ContentBlock::Image));
                     user.content = maho_ai::types::UserContent::Blocks(content);
                 }
                 message
-            },
+            }
         };
         let id = (self.session.id_generator())(Some(at));
         let name = self.name.clone();
         let read_context = context.clone();
-        self.command(move |mut state, reader| Box::pin(async move {
-            let mut queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
-            let item = InboxItem { entry_id: id.clone(), kind };
-            let pending = PendingEntry::Message { payload: message };
-            queues.push(queued_item(&item, &pending)?);
-            state.inbox.push(item);
-            let writes = vec![Write::Value(set_value(&pending_entry(&id), encoded(&pending)?)), Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?))];
-            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| id.clone()), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))])) }, next: Box::new(state) })
-        }), context).await
+        self.command(
+            move |mut state, reader| {
+                Box::pin(async move {
+                    let mut queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
+                    let item = InboxItem {
+                        entry_id: id.clone(),
+                        kind,
+                    };
+                    let pending = PendingEntry::Message { payload: message };
+                    queues.push(queued_item(&item, &pending)?);
+                    state.inbox.push(item);
+                    let writes = vec![
+                        Write::Value(set_value(&pending_entry(&id), encoded(&pending)?)),
+                        Write::Value(set_value(
+                            &lane_state(&name),
+                            encoded(&durable_lane_state(&state))?,
+                        )),
+                    ];
+                    Ok(LaneCommand::Commit {
+                        decision: CommitDecision {
+                            writes,
+                            materialize: Arc::new(move |_| id.clone()),
+                            events: Some(Arc::new(move |_| {
+                                vec![HarnessEvent::new(
+                                    HarnessEventPayload::QueueUpdate {
+                                        queues: queues.clone(),
+                                    },
+                                    Some(name.clone()),
+                                )]
+                            })),
+                        },
+                        next: Box::new(state),
+                    })
+                })
+            },
+            context,
+        )
+        .await
     }
 
-    pub async fn cancel_queued(&self, id: String, context: &Context) -> Result<CancelQueuedOutcome, SessionError> {
+    pub async fn cancel_queued(
+        &self,
+        id: String,
+        context: &Context,
+    ) -> Result<CancelQueuedOutcome, SessionError> {
         self.assert_open()?;
         let name = self.name.clone();
         let read_context = context.clone();
-        self.command(move |mut state, reader| Box::pin(async move {
-            if !state.inbox.iter().any(|item| item.entry_id == id) {
-                let consumed = reader.get_entries(vec![id.clone()], &read_context).await?.contains_key(&id);
-                return Ok(LaneCommand::Return { result: if consumed { CancelQueuedOutcome::AlreadyConsumed } else { CancelQueuedOutcome::NotFound } });
-            }
-            if reader.get_value(&pending_entry(&id), &read_context).await?.is_none() { return Err(session_invariant_error(format!("Queued entry {id} is missing its payload"))); }
-            state.inbox.retain(|item| item.entry_id != id);
-            let queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
-            let writes = vec![Write::Value(delete_value(&pending_entry(&id))), Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?))];
-            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(|_| CancelQueuedOutcome::Cancelled), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))])) }, next: Box::new(state) })
-        }), context).await
+        self.command(
+            move |mut state, reader| {
+                Box::pin(async move {
+                    if !state.inbox.iter().any(|item| item.entry_id == id) {
+                        let consumed = reader
+                            .get_entries(vec![id.clone()], &read_context)
+                            .await?
+                            .contains_key(&id);
+                        return Ok(LaneCommand::Return {
+                            result: if consumed {
+                                CancelQueuedOutcome::AlreadyConsumed
+                            } else {
+                                CancelQueuedOutcome::NotFound
+                            },
+                        });
+                    }
+                    if reader
+                        .get_value(&pending_entry(&id), &read_context)
+                        .await?
+                        .is_none()
+                    {
+                        return Err(session_invariant_error(format!(
+                            "Queued entry {id} is missing its payload"
+                        )));
+                    }
+                    state.inbox.retain(|item| item.entry_id != id);
+                    let queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
+                    let writes = vec![
+                        Write::Value(delete_value(&pending_entry(&id))),
+                        Write::Value(set_value(
+                            &lane_state(&name),
+                            encoded(&durable_lane_state(&state))?,
+                        )),
+                    ];
+                    Ok(LaneCommand::Commit {
+                        decision: CommitDecision {
+                            writes,
+                            materialize: Arc::new(|_| CancelQueuedOutcome::Cancelled),
+                            events: Some(Arc::new(move |_| {
+                                vec![HarnessEvent::new(
+                                    HarnessEventPayload::QueueUpdate {
+                                        queues: queues.clone(),
+                                    },
+                                    Some(name.clone()),
+                                )]
+                            })),
+                        },
+                        next: Box::new(state),
+                    })
+                })
+            },
+            context,
+        )
+        .await
     }
 
-    pub async fn record_usage(&self, usage: maho_ai::types::Usage, entry_id: Option<String>, details: Option<serde_json::Value>, context: &Context) -> Result<String, SessionError> {
+    pub async fn record_usage(
+        &self,
+        usage: maho_ai::types::Usage,
+        entry_id: Option<String>,
+        details: Option<serde_json::Value>,
+        context: &Context,
+    ) -> Result<String, SessionError> {
         self.assert_open()?;
         let id = (self.session.id_generator())(None);
         let name = self.name.clone();
-        self.command(move |state, _| Box::pin(async move {
-            let row = crate::harness::session::types::NewUsageRow { id: id.clone(), usage, entry_id, adjustment: true, details };
-            Ok(LaneCommand::Commit { decision: CommitDecision {
-                writes: vec![crate::harness::session::commit::insert_usage(row.clone())], materialize: Arc::new(move |_| id.clone()),
-                events: Some(Arc::new(move |commit| vec![HarnessEvent::new(HarnessEventPayload::Usage { lane: name.clone(), row: crate::harness::session::types::UsageRow { id: row.id.clone(), seq: commit.seqs[0], usage: row.usage, entry_id: row.entry_id.clone(), adjustment: true, details: row.details.clone() }, totals: commit.stats.usage }, Some(name.clone()))])),
-            }, next: Box::new(state) })
-        }), context).await
+        self.command(
+            move |state, _| {
+                Box::pin(async move {
+                    let row = crate::harness::session::types::NewUsageRow {
+                        id: id.clone(),
+                        usage,
+                        entry_id,
+                        adjustment: true,
+                        details,
+                    };
+                    Ok(LaneCommand::Commit {
+                        decision: CommitDecision {
+                            writes: vec![crate::harness::session::commit::insert_usage(
+                                row.clone(),
+                            )],
+                            materialize: Arc::new(move |_| id.clone()),
+                            events: Some(Arc::new(move |commit| {
+                                vec![HarnessEvent::new(
+                                    HarnessEventPayload::Usage {
+                                        lane: name.clone(),
+                                        row: crate::harness::session::types::UsageRow {
+                                            id: row.id.clone(),
+                                            seq: commit.seqs[0],
+                                            usage: row.usage,
+                                            entry_id: row.entry_id.clone(),
+                                            adjustment: true,
+                                            details: row.details.clone(),
+                                        },
+                                        totals: commit.stats.usage,
+                                    },
+                                    Some(name.clone()),
+                                )]
+                            })),
+                        },
+                        next: Box::new(state),
+                    })
+                })
+            },
+            context,
+        )
+        .await
     }
 
-    pub async fn find_entries(&self, query: Option<crate::harness::session::types::BranchScan>, context: &Context) -> Result<Vec<crate::harness::session::types::Entry>, SessionError> {
+    pub async fn find_entries(
+        &self,
+        query: Option<crate::harness::session::types::BranchScan>,
+        context: &Context,
+    ) -> Result<Vec<crate::harness::session::types::Entry>, SessionError> {
         self.assert_open()?;
         let query = query.unwrap_or_default();
-        let Some(start) = query.start.or(self.state().tip_id) else { return Ok(vec![]); };
-        self.session.scan_branch(crate::harness::session::types::StorageBranchScan {
-            start, stop_at_type: query.stop_at_type, stop_at_id: query.stop_at_id, entry_type: query.entry_type, custom_type: query.custom_type, order: Some(query.order.unwrap_or(crate::harness::session::types::BranchOrder::NewestFirst)), limit: query.limit, cursor: query.cursor,
-        }, context).await
+        let Some(start) = query.start.or(self.state().tip_id) else {
+            return Ok(vec![]);
+        };
+        self.session
+            .scan_branch(
+                crate::harness::session::types::StorageBranchScan {
+                    start,
+                    stop_at_type: query.stop_at_type,
+                    stop_at_id: query.stop_at_id,
+                    entry_type: query.entry_type,
+                    custom_type: query.custom_type,
+                    order: Some(
+                        query
+                            .order
+                            .unwrap_or(crate::harness::session::types::BranchOrder::NewestFirst),
+                    ),
+                    limit: query.limit,
+                    cursor: query.cursor,
+                },
+                context,
+            )
+            .await
     }
 
-    pub async fn find_entry(&self, query: Option<crate::harness::session::types::BranchScan>, context: &Context) -> Result<Option<crate::harness::session::types::Entry>, SessionError> {
+    pub async fn find_entry(
+        &self,
+        query: Option<crate::harness::session::types::BranchScan>,
+        context: &Context,
+    ) -> Result<Option<crate::harness::session::types::Entry>, SessionError> {
         let mut query = query.unwrap_or_default();
         query.limit = Some(query.limit.unwrap_or(1).min(1));
-        Ok(self.find_entries(Some(query), context).await?.into_iter().next())
+        Ok(self
+            .find_entries(Some(query), context)
+            .await?
+            .into_iter()
+            .next())
     }
 
-    pub async fn append_message(&self, message: crate::types::AgentMessage, context: &Context) -> Result<String, SessionError> {
-        self.append(PendingEntry::Message { payload: message }, context).await
+    pub async fn append_message(
+        &self,
+        message: crate::types::AgentMessage,
+        context: &Context,
+    ) -> Result<String, SessionError> {
+        self.append(PendingEntry::Message { payload: message }, context)
+            .await
     }
 
-    pub async fn append_custom_entry(&self, custom_type: String, data: Option<serde_json::Value>, context: &Context) -> Result<String, SessionError> {
-        self.append(PendingEntry::Custom { custom_type, payload: data }, context).await
+    pub async fn append_custom_entry(
+        &self,
+        custom_type: String,
+        data: Option<serde_json::Value>,
+        context: &Context,
+    ) -> Result<String, SessionError> {
+        self.append(
+            PendingEntry::Custom {
+                custom_type,
+                payload: data,
+            },
+            context,
+        )
+        .await
     }
 
-    async fn append(&self, pending: PendingEntry, context: &Context) -> Result<String, SessionError> {
+    async fn append(
+        &self,
+        pending: PendingEntry,
+        context: &Context,
+    ) -> Result<String, SessionError> {
         self.assert_open()?;
         if let PendingEntry::Message { payload } = &pending
-            && matches!(payload.try_as_llm(), Some(maho_ai::types::Message::Assistant(message)) if message.stop_reason == maho_ai::types::StopReason::Pending) {
-                return Err(crate::harness::session::session::session_pending_assistant_message_error());
+            && matches!(payload.try_as_llm(), Some(maho_ai::types::Message::Assistant(message)) if message.stop_reason == maho_ai::types::StopReason::Pending)
+        {
+            return Err(
+                crate::harness::session::session::session_pending_assistant_message_error(),
+            );
         }
         let id = (self.session.id_generator())(None);
         let name = self.name.clone();
@@ -1434,6 +2436,9 @@ impl Lane {
 /// the live projection and `publish_state` writes it back after a drive commit (not a no-op);
 /// `emit` forwards through the lane's own event bus so watchers see exactly one copy.
 impl RuntimeLane for Lane {
+    fn command_lane(&self) -> Option<&Lane> {
+        Some(self)
+    }
     fn faulted(&self) -> bool {
         Lane::faulted(self)
     }
@@ -1501,7 +2506,8 @@ impl RuntimeDriveLane for Lane {
         &'a self,
         drive: &'a Drive,
         state: &'a OperationState,
-    ) -> BoxFuture<'a, Result<ContinueOperationResult<Option<StructuralPreparation>>, SessionError>> {
+    ) -> BoxFuture<'a, Result<ContinueOperationResult<Option<StructuralPreparation>>, SessionError>>
+    {
         Box::pin(async move {
             let lane = self.arc()?;
             super::structural::prepare_compaction_threshold(&lane, drive, state).await
@@ -1519,15 +2525,27 @@ impl RuntimeDriveLane for Lane {
         })
     }
 
-    fn run_tools<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, SessionError>> {
+    fn run_tools<'a>(
+        &'a self,
+        drive: &'a Drive,
+        state: OperationState,
+    ) -> BoxFuture<'a, Result<ProcedureResult, SessionError>> {
         Box::pin(async move {
             let lane = self.arc()?;
-            let runner = self.tool_runner.lock().unwrap_or_else(|error| error.into_inner()).clone();
+            let runner = self
+                .tool_runner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
             runner.run(&lane, drive, state).await
         })
     }
 
-    fn run_structural<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, SessionError>> {
+    fn run_structural<'a>(
+        &'a self,
+        drive: &'a Drive,
+        state: OperationState,
+    ) -> BoxFuture<'a, Result<ProcedureResult, SessionError>> {
         Box::pin(async move {
             let lane = self.arc()?;
             super::structural::run_structural(&lane, drive, state).await
@@ -1554,28 +2572,69 @@ fn clone_drive_config(config: &Config<()>) -> Config<()> {
     }
 }
 
-fn queued_item(item: &InboxItem, pending: &PendingEntry) -> Result<crate::harness::events::LaneQueuedItem, SessionError> {
-    let kind = match item.kind { InboxItemKind::Write => "write", InboxItemKind::Steer => "steer", InboxItemKind::FollowUp => "followUp", InboxItemKind::NextRun => "nextRun" }.to_owned();
+fn queued_item(
+    item: &InboxItem,
+    pending: &PendingEntry,
+) -> Result<crate::harness::events::LaneQueuedItem, SessionError> {
+    let kind = match item.kind {
+        InboxItemKind::Write => "write",
+        InboxItemKind::Steer => "steer",
+        InboxItemKind::FollowUp => "followUp",
+        InboxItemKind::NextRun => "nextRun",
+    }
+    .to_owned();
     let (item_type, message, custom_type, data) = match pending {
         PendingEntry::Message { payload } => ("message", Some(payload.clone()), None, None),
-        PendingEntry::Custom { custom_type, payload } => {
-            if item.kind != InboxItemKind::Write { return Err(session_invariant_error(format!("Pending {kind} entry {} is not a message", item.entry_id))); }
+        PendingEntry::Custom {
+            custom_type,
+            payload,
+        } => {
+            if item.kind != InboxItemKind::Write {
+                return Err(session_invariant_error(format!(
+                    "Pending {kind} entry {} is not a message",
+                    item.entry_id
+                )));
+            }
             ("custom", None, Some(custom_type.clone()), payload.clone())
-        },
+        }
     };
-    Ok(crate::harness::events::LaneQueuedItem { entry_id: item.entry_id.clone(), kind, item_type: item_type.into(), message, custom_type, data })
+    Ok(crate::harness::events::LaneQueuedItem {
+        entry_id: item.entry_id.clone(),
+        kind,
+        item_type: item_type.into(),
+        message,
+        custom_type,
+        data,
+    })
 }
 
-async fn read_lane_queues(reader: &dyn SessionReader, inbox: &[InboxItem], context: &Context) -> Result<Vec<crate::harness::events::LaneQueuedItem>, SessionError> {
+async fn read_lane_queues(
+    reader: &dyn SessionReader,
+    inbox: &[InboxItem],
+    context: &Context,
+) -> Result<Vec<crate::harness::events::LaneQueuedItem>, SessionError> {
     let mut queues = Vec::with_capacity(inbox.len());
     for item in inbox {
-        let stored = reader.get_value(&pending_entry(&item.entry_id), context).await?.ok_or_else(|| session_invariant_error(format!("Pending {:?} entry {} is missing its payload", item.kind, item.entry_id)))?;
-        let pending: PendingEntry = serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))?;
+        let stored = reader
+            .get_value(&pending_entry(&item.entry_id), context)
+            .await?
+            .ok_or_else(|| {
+                session_invariant_error(format!(
+                    "Pending {:?} entry {} is missing its payload",
+                    item.kind, item.entry_id
+                ))
+            })?;
+        let pending: PendingEntry = serde_json::from_value(stored.value)
+            .map_err(|error| session_invariant_error(error.to_string()))?;
         queues.push(queued_item(item, &pending)?);
     }
     Ok(queues)
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
 }

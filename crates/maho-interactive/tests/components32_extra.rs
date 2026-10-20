@@ -6,9 +6,15 @@ use maho_interactive::components::bordered_loader::BorderedLoader;
 use maho_interactive::components::custom_entry::{CustomEntryComponent, EntryRenderer};
 use maho_interactive::components::keybinding_hints::key_hint;
 use maho_interactive::components::markdown_transform::{MarkdownTransformContext, MessageType};
-use maho_interactive::components::mermaid::{MermaidRenderingMode, create_mermaid_markdown_transformer};
-use maho_interactive::components::tool_execution_images::{ToolExecutionImageOptions, ToolExecutionImages};
-use maho_interactive::components::user_message_selector::{UserMessageItem, UserMessageSelectorComponent};
+use maho_interactive::components::mermaid::{
+    MermaidRenderingMode, create_mermaid_markdown_transformer,
+};
+use maho_interactive::components::tool_execution_images::{
+    ToolExecutionImageOptions, ToolExecutionImages,
+};
+use maho_interactive::components::user_message_selector::{
+    UserMessageItem, UserMessageSelectorComponent,
+};
 use maho_interactive::theme::{ColorMode, Theme};
 use maho_tui::components::text::Text;
 use maho_tui::tui::Component;
@@ -23,11 +29,19 @@ fn fixtures() -> Value {
 }
 
 fn expected(case: &Value) -> Vec<String> {
-    case["lines"].as_array().expect("lines").iter().map(|line| line.as_str().expect("line").to_owned()).collect()
+    case["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .map(|line| line.as_str().expect("line").to_owned())
+        .collect()
 }
 
 fn trim(lines: Vec<String>) -> Vec<String> {
-    lines.into_iter().map(|line| line.trim_end().to_owned()).collect()
+    lines
+        .into_iter()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
 }
 
 /// The command header's syntax highlighting is todo 31's `highlight_code`, whose bash grammar
@@ -61,7 +75,8 @@ fn mermaid_transformer_matches_pinned_senpi_for_every_gate() {
         let markdown = case["markdown"].as_str().expect("markdown");
         let rendering_mode = mode(case["mode"].as_str().expect("mode"));
         let current = rendering_mode;
-        let transform = create_mermaid_markdown_transformer(Rc::new(move || current), Some(theme.clone()));
+        let transform =
+            create_mermaid_markdown_transformer(Rc::new(move || current), Some(theme.clone()));
         let output = transform(
             markdown,
             MarkdownTransformContext {
@@ -90,7 +105,11 @@ fn bordered_loaders_match_pinned_senpi() {
         let cancellable = case["cancellable"].as_bool().expect("cancellable");
         let hint = key_hint("tui.select.cancel", "cancel", &theme);
         let mut loader = BorderedLoader::new(theme.clone(), "Working...", cancellable, &hint, 0);
-        assert_eq!(trim(loader.render(width)), expected(case), "bordered width={width} cancellable={cancellable}");
+        assert_eq!(
+            trim(loader.render(width)),
+            expected(case),
+            "bordered width={width} cancellable={cancellable}"
+        );
     }
 }
 
@@ -99,8 +118,11 @@ fn bash_execution_matches_pinned_senpi_for_every_terminal_state() {
     let theme = theme();
     for case in fixtures()["bash"].as_array().expect("bash") {
         let width = case["width"].as_u64().expect("width") as usize;
-        let exclude_from_context = case["excludeFromContext"].as_bool().expect("excludeFromContext");
-        let mut component = BashExecutionComponent::new("echo hello", exclude_from_context, theme.clone());
+        let exclude_from_context = case["excludeFromContext"]
+            .as_bool()
+            .expect("excludeFromContext");
+        let mut component =
+            BashExecutionComponent::new("echo hello", exclude_from_context, theme.clone());
         for line in case["output"].as_array().expect("output") {
             component.append_output(&format!("{}\n", line.as_str().expect("line")));
         }
@@ -112,7 +134,12 @@ fn bash_execution_matches_pinned_senpi_for_every_terminal_state() {
         );
         let actual = trim(component.render(width));
         let wanted = expected(case);
-        assert_eq!(actual.len(), wanted.len(), "bash {} line count at {width}", case["name"].as_str().unwrap_or(""));
+        assert_eq!(
+            actual.len(),
+            wanted.len(),
+            "bash {} line count at {width}",
+            case["name"].as_str().unwrap_or("")
+        );
         for (index, (left, right)) in actual.iter().zip(&wanted).enumerate() {
             let is_command_header = strip_ansi(left).contains("echo hello");
             let (left, right) = if is_command_header {
@@ -146,9 +173,15 @@ fn tool_execution_images_match_pinned_senpi_without_image_support() {
                 data: String::from("aGVsbG8="),
                 mime_type: String::from("image/png"),
             }],
-            details: None, structured_content: None
+            details: None,
+            structured_content: None,
+            is_error: None,
         });
-        assert_eq!(trim(images.render(width)), expected(case), "images at {width}");
+        assert_eq!(
+            trim(images.render(width)),
+            expected(case),
+            "images at {width}"
+        );
     }
 }
 
@@ -174,7 +207,11 @@ fn user_message_selector_matches_pinned_senpi() {
             case["initialSelectedId"].as_str(),
             theme.clone(),
         );
-        assert_eq!(trim(component.render(width)), expected(case), "selector at {width}");
+        assert_eq!(
+            trim(component.render(width)),
+            expected(case),
+            "selector at {width}"
+        );
     }
 }
 
@@ -185,40 +222,102 @@ fn custom_entries_match_pinned_senpi_with_and_without_content() {
         let width = case["width"].as_u64().expect("width") as usize;
         let renderer: EntryRenderer = Rc::new(|value: &Value, _expanded, _theme| {
             Ok(value["data"]["text"].as_str().map(|text| {
-                Rc::new(RefCell::new(Text::with_padding(format!("entry: {text}"), 0, 0))) as Rc<RefCell<dyn Component>>
+                Rc::new(RefCell::new(Text::with_padding(
+                    format!("entry: {text}"),
+                    0,
+                    0,
+                ))) as Rc<RefCell<dyn Component>>
             }))
         });
-        let mut component = CustomEntryComponent::new(case["entry"].clone(), renderer, theme.clone());
-        assert_eq!(component.has_content(), case["hasContent"].as_bool().expect("hasContent"));
-        assert_eq!(trim(component.render(width)), expected(case), "entry at {width}");
+        let mut component =
+            CustomEntryComponent::new(case["entry"].clone(), renderer, theme.clone());
+        assert_eq!(
+            component.has_content(),
+            case["hasContent"].as_bool().expect("hasContent")
+        );
+        assert_eq!(
+            trim(component.render(width)),
+            expected(case),
+            "entry at {width}"
+        );
     }
 }
 
 #[test]
 fn extension_entry_renderers_drive_custom_entries_and_their_replaces_predicate() {
-    use maho_interactive::components::custom_entry::{from_extension_entry_renderer, from_extension_entry_replaces};
-    let renderer: maho_ext_api::EntryRenderer = std::sync::Arc::new(|entry: &maho_ext_api::SessionEntry, options: &maho_ext_api::EntryRenderOptions, _theme: &maho_ext_api::Theme| {
-        let text = format!("{} {}", entry.data["data"]["text"].as_str().unwrap_or_default(), options.expanded);
-        Some(Box::new(Text::with_padding(text, 0, 0)) as Box<dyn Component>)
-    });
-    let entry = serde_json::json!({"type":"custom","id":"e1","customType":"note","data":{"text":"hello"}});
-    let mut component = CustomEntryComponent::new(entry.clone(), from_extension_entry_renderer(renderer), theme());
+    use maho_interactive::components::custom_entry::{
+        from_extension_entry_renderer, from_extension_entry_replaces,
+    };
+    let renderer: maho_ext_api::EntryRenderer = std::sync::Arc::new(
+        |entry: &maho_ext_api::SessionEntry,
+         options: &maho_ext_api::EntryRenderOptions,
+         _theme: &maho_ext_api::Theme| {
+            let text = format!(
+                "{} {}",
+                entry.data["data"]["text"].as_str().unwrap_or_default(),
+                options.expanded
+            );
+            Some(Box::new(Text::with_padding(text, 0, 0)) as Box<dyn Component>)
+        },
+    );
+    let entry =
+        serde_json::json!({"type":"custom","id":"e1","customType":"note","data":{"text":"hello"}});
+    let mut component = CustomEntryComponent::new(
+        entry.clone(),
+        from_extension_entry_renderer(renderer),
+        theme(),
+    );
     component.set_expanded(true);
     assert!(component.has_content());
-    assert!(component.render(40).iter().any(|line| line.contains("hello true")));
-    let replaces = from_extension_entry_replaces(std::sync::Arc::new(|previous: &maho_ext_api::SessionEntry, next: &maho_ext_api::SessionEntry| previous.kind == next.kind && previous.id != next.id));
-    assert!(replaces(&entry, &serde_json::json!({"type":"custom","id":"e2","customType":"note"})));
+    assert!(
+        component
+            .render(40)
+            .iter()
+            .any(|line| line.contains("hello true"))
+    );
+    let replaces = from_extension_entry_replaces(std::sync::Arc::new(
+        |previous: &maho_ext_api::SessionEntry, next: &maho_ext_api::SessionEntry| {
+            previous.kind == next.kind && previous.id != next.id
+        },
+    ));
+    assert!(replaces(
+        &entry,
+        &serde_json::json!({"type":"custom","id":"e2","customType":"note"})
+    ));
 }
 
 #[test]
 fn extension_message_renderers_receive_typed_custom_messages() {
-    use maho_interactive::components::custom_message::{CustomMessageComponent, from_extension_message_renderer};
+    use maho_interactive::components::custom_message::{
+        CustomMessageComponent, from_extension_message_renderer,
+    };
     use maho_interactive::components::markdown_transform::get_markdown_theme;
-    let renderer: maho_ext_api::MessageRenderer = std::sync::Arc::new(|message: &maho_ext_api::CustomMessage, options: &maho_ext_api::MessageRenderOptions, _theme: &maho_ext_api::Theme| {
-        let maho_ext_api::ToolContent::Text { text, .. } = &message.content[0] else { return None };
-        Some(Box::new(Text::with_padding(format!("{}:{text}:{}", message.custom_type, options.output_pad), 0, 0)) as Box<dyn Component>)
-    });
+    let renderer: maho_ext_api::MessageRenderer = std::sync::Arc::new(
+        |message: &maho_ext_api::CustomMessage,
+         options: &maho_ext_api::MessageRenderOptions,
+         _theme: &maho_ext_api::Theme| {
+            let maho_ext_api::ToolContent::Text { text, .. } = &message.content[0] else {
+                return None;
+            };
+            Some(Box::new(Text::with_padding(
+                format!("{}:{text}:{}", message.custom_type, options.output_pad),
+                0,
+                0,
+            )) as Box<dyn Component>)
+        },
+    );
     let message = serde_json::json!({"role":"custom","customType":"notice","content":"body","display":true,"timestamp":0});
-    let mut component = CustomMessageComponent::new(message, Some(from_extension_message_renderer(renderer)), theme(), get_markdown_theme(&theme()), 2);
-    assert!(component.render(40).iter().any(|line| line.contains("notice:body:2")));
+    let mut component = CustomMessageComponent::new(
+        message,
+        Some(from_extension_message_renderer(renderer)),
+        theme(),
+        get_markdown_theme(&theme()),
+        2,
+    );
+    assert!(
+        component
+            .render(40)
+            .iter()
+            .any(|line| line.contains("notice:body:2"))
+    );
 }

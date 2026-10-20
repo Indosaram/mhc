@@ -242,7 +242,7 @@ fn memory_for_parent(parent: super::default_extensions::TaskParent, cwd: &Path, 
         coordinator: Some(super::kibitzer_coordinator::create_kibitzer_coordinator(omo_cell.clone())),
         drain_pending_for: recall_ports.drain_pending_for,
         drain_queued: recall_ports.drain_queued,
-    });
+    }).map_err(|error| error.to_string())?;
 
     Ok(OmoSenpiComponent::from_context_register("memory", move |api, omo_runtime| {
         *omo_cell.lock().unwrap_or_else(PoisonError::into_inner) = Some(omo_runtime.clone());
@@ -260,12 +260,12 @@ fn memory_executable_path(executable: std::path::PathBuf) -> std::path::PathBuf 
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::ffi::OsStrExt;
-        if !executable.is_file() {
-            if let Some(original) = executable.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
-                let replacement = Path::new(std::ffi::OsStr::from_bytes(original));
-                if replacement.is_file() {
-                    return replacement.to_path_buf();
-                }
+        if !executable.is_file()
+            && let Some(original) = executable.as_os_str().as_bytes().strip_suffix(b" (deleted)")
+        {
+            let replacement = Path::new(std::ffi::OsStr::from_bytes(original));
+            if replacement.is_file() {
+                return replacement.to_path_buf();
             }
         }
     }

@@ -9,16 +9,16 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use maho_ai::api::openai_completions::{
-    stream_simple_with_transport, stream_with_transport, ChatRequest, ChatStreamResponse, ChatTransport,
-    OpenAiCompletionsError, OpenAiCompletionsOptions,
-};
 use futures::StreamExt;
-use maho_ai::types::{
-    ContentBlock, Context, Message, Model, SimpleStreamOptions, StopReason, StreamOptions, TextContent, ThinkingContent,
-    Tool, ToolCall, ToolResultMessage, UserContent,
+use maho_ai::api::openai_completions::{
+    ChatRequest, ChatStreamResponse, ChatTransport, OpenAiCompletionsError,
+    OpenAiCompletionsOptions, stream_simple_with_transport, stream_with_transport,
 };
-use serde_json::{json, Value};
+use maho_ai::types::{
+    ContentBlock, Context, Message, Model, SimpleStreamOptions, StopReason, StreamOptions,
+    TextContent, ThinkingContent, Tool, ToolCall, ToolResultMessage, UserContent,
+};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Default)]
 pub struct CapturedRequest {
@@ -28,11 +28,19 @@ pub struct CapturedRequest {
 
 impl CapturedRequest {
     pub fn messages(&self) -> &[Value] {
-        self.body.get("messages").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
+        self.body
+            .get("messages")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     pub fn tools(&self) -> &[Value] {
-        self.body.get("tools").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
+        self.body
+            .get("tools")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -49,17 +57,33 @@ pub struct ScriptedResponse {
 
 impl ScriptedResponse {
     pub fn chunks(chunks: impl IntoIterator<Item = Value>) -> Self {
-        Self { status: 200, headers: BTreeMap::new(), chunks: chunks.into_iter().map(Ok).collect() }
+        Self {
+            status: 200,
+            headers: BTreeMap::new(),
+            chunks: chunks.into_iter().map(Ok).collect(),
+        }
     }
 
     pub fn failing(error: OpenAiCompletionsError) -> Self {
-        Self { status: 200, headers: BTreeMap::new(), chunks: vec![Err(error)] }
+        Self {
+            status: 200,
+            headers: BTreeMap::new(),
+            chunks: vec![Err(error)],
+        }
     }
 
-    pub fn chunks_then_error(chunks: impl IntoIterator<Item = Value>, error: OpenAiCompletionsError) -> Self {
-        let mut items: Vec<Result<Value, OpenAiCompletionsError>> = chunks.into_iter().map(Ok).collect();
+    pub fn chunks_then_error(
+        chunks: impl IntoIterator<Item = Value>,
+        error: OpenAiCompletionsError,
+    ) -> Self {
+        let mut items: Vec<Result<Value, OpenAiCompletionsError>> =
+            chunks.into_iter().map(Ok).collect();
         items.push(Err(error));
-        Self { status: 200, headers: BTreeMap::new(), chunks: items }
+        Self {
+            status: 200,
+            headers: BTreeMap::new(),
+            chunks: items,
+        }
     }
 }
 
@@ -70,7 +94,9 @@ pub struct ScriptedTransport {
 }
 
 impl ScriptedTransport {
-    pub fn new(responses: impl IntoIterator<Item = Result<ScriptedResponse, OpenAiCompletionsError>>) -> Arc<Self> {
+    pub fn new(
+        responses: impl IntoIterator<Item = Result<ScriptedResponse, OpenAiCompletionsError>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             responses: Mutex::new(responses.into_iter().collect()),
             requests: Mutex::new(Vec::new()),
@@ -90,7 +116,12 @@ impl ScriptedTransport {
     }
 
     pub fn last_request(&self) -> CapturedRequest {
-        self.requests.lock().expect("requests lock").last().cloned().expect("a captured request")
+        self.requests
+            .lock()
+            .expect("requests lock")
+            .last()
+            .cloned()
+            .expect("a captured request")
     }
 }
 
@@ -98,14 +129,23 @@ impl ChatTransport for ScriptedTransport {
     fn create_chat_completion(
         &self,
         request: ChatRequest,
-    ) -> maho_ai::types::BoxFuture<'static, Result<ChatStreamResponse, OpenAiCompletionsError>> {
+    ) -> maho_ai::types::BoxFuture<'static, Result<ChatStreamResponse, OpenAiCompletionsError>>
+    {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
         let headers = request
             .headers
             .iter()
-            .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_lowercase(), value.to_owned())))
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_lowercase(), value.to_owned()))
+            })
             .collect();
-        self.requests.lock().expect("requests lock").push(CapturedRequest { headers, body });
+        self.requests
+            .lock()
+            .expect("requests lock")
+            .push(CapturedRequest { headers, body });
         let response = self.responses.lock().expect("responses lock").pop_front();
         Box::pin(async move {
             match response {
@@ -131,7 +171,6 @@ pub fn chunk(delta: Value, finish_reason: Option<&str>) -> Value {
         }],
     })
 }
-
 
 pub fn catalog_model(provider: &str, id: &str) -> Model {
     maho_ai::compat::get_model(provider, id)
@@ -159,7 +198,12 @@ pub fn model(overrides: &[(&str, Value)]) -> Model {
 }
 
 pub fn context(messages: Vec<Message>, tools: Option<Vec<Tool>>) -> Context {
-    Context { system_prompt: None, messages, tools }
+    Context {
+        system_prompt: None,
+        messages,
+        tools,
+        active_tool_names: None,
+    }
 }
 
 pub fn user_message(text: &str) -> Message {
@@ -170,11 +214,17 @@ pub fn user_message(text: &str) -> Message {
 }
 
 pub fn user_blocks(blocks: Vec<ContentBlock>) -> Message {
-    Message::User(maho_ai::types::UserMessage { content: UserContent::Blocks(blocks), timestamp: 0 })
+    Message::User(maho_ai::types::UserMessage {
+        content: UserContent::Blocks(blocks),
+        timestamp: 0,
+    })
 }
 
 pub fn text_block(text: &str) -> ContentBlock {
-    ContentBlock::Text(TextContent { text: text.to_owned(), ..TextContent::default() })
+    ContentBlock::Text(TextContent {
+        text: text.to_owned(),
+        ..TextContent::default()
+    })
 }
 
 pub fn thinking_block(thinking: &str, signature: Option<&str>) -> ContentBlock {
@@ -184,11 +234,6 @@ pub fn thinking_block(thinking: &str, signature: Option<&str>) -> ContentBlock {
         ..ThinkingContent::default()
     })
 }
-
-
-
-
-
 
 pub fn tool(name: &str, parameters: Value) -> Tool {
     Tool {
@@ -228,6 +273,8 @@ pub fn tool_result(tool_call_id: &str, content: Vec<ContentBlock>) -> Message {
 
 pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
     Message::Assistant(Box::new(maho_ai::types::AssistantMessage {
+        thinking_level: None,
+        provider_diagnostic: None,
         content,
         api: "openai-completions".to_owned(),
         provider: "openrouter".to_owned(),
@@ -250,23 +297,40 @@ pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> Message
 
 pub fn options(api_key: &str) -> OpenAiCompletionsOptions {
     OpenAiCompletionsOptions {
-        stream: StreamOptions { request: maho_ai::types::ProviderRequestOptions { api_key: Some(api_key.to_owned()), ..Default::default() }, ..Default::default() },
+        stream: StreamOptions {
+            request: maho_ai::types::ProviderRequestOptions {
+                api_key: Some(api_key.to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
 
 pub fn stream_options(api_key: &str) -> StreamOptions {
     StreamOptions {
-        request: maho_ai::types::ProviderRequestOptions { api_key: Some(api_key.to_owned()), ..Default::default() },
+        request: maho_ai::types::ProviderRequestOptions {
+            api_key: Some(api_key.to_owned()),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
 
 pub fn simple_options(api_key: &str) -> SimpleStreamOptions {
-    SimpleStreamOptions { stream: stream_options(api_key), ..Default::default() }
+    SimpleStreamOptions {
+        stream: stream_options(api_key),
+        ..Default::default()
+    }
 }
 
-pub fn run(model: &Model, context: &Context, options: OpenAiCompletionsOptions, transport: Arc<ScriptedTransport>) -> maho_ai::types::AssistantMessageEventStream {
+pub fn run(
+    model: &Model,
+    context: &Context,
+    options: OpenAiCompletionsOptions,
+    transport: Arc<ScriptedTransport>,
+) -> maho_ai::types::AssistantMessageEventStream {
     stream_with_transport(model, context, Some(options), transport)
 }
 
@@ -279,16 +343,21 @@ pub fn run_simple(
     stream_simple_with_transport(model, context, Some(options), transport)
 }
 
-pub async fn finish(stream: &maho_ai::types::AssistantMessageEventStream) -> maho_ai::types::AssistantMessage {
+pub async fn finish(
+    stream: &maho_ai::types::AssistantMessageEventStream,
+) -> maho_ai::types::AssistantMessage {
     stream.result().await.expect("stream result")
 }
 
-pub async fn events(stream: &maho_ai::types::AssistantMessageEventStream) -> Vec<maho_ai::types::AssistantMessageEvent> {
+pub async fn events(
+    stream: &maho_ai::types::AssistantMessageEventStream,
+) -> Vec<maho_ai::types::AssistantMessageEvent> {
     stream.collect().await.expect("stream events")
 }
 
-
-type RawHandler = Arc<dyn Fn(tokio::net::TcpStream, Vec<u8>) -> maho_ai::types::BoxFuture<'static, ()> + Send + Sync>;
+type RawHandler = Arc<
+    dyn Fn(tokio::net::TcpStream, Vec<u8>) -> maho_ai::types::BoxFuture<'static, ()> + Send + Sync,
+>;
 
 pub struct RawServer {
     pub base_url: String,
@@ -297,11 +366,15 @@ pub struct RawServer {
 
 impl RawServer {
     pub async fn start(handler: RawHandler) -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind raw server");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind raw server");
         let address = listener.local_addr().expect("raw server addr");
         let handle = tokio::spawn(async move {
             loop {
-                let Ok((mut stream, _)) = listener.accept().await else { return };
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
                 let handler = handler.clone();
                 tokio::spawn(async move {
                     let request = read_http_request(&mut stream).await;
@@ -309,7 +382,10 @@ impl RawServer {
                 });
             }
         });
-        Self { base_url: format!("http://{address}/v1"), handle }
+        Self {
+            base_url: format!("http://{address}/v1"),
+            handle,
+        }
     }
 
     pub fn shutdown(self) {
@@ -366,11 +442,17 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
 }
 
 pub fn request_body(request: &[u8]) -> Value {
-    let start = find_header_end(request).map(|position| position + 4).unwrap_or(0);
+    let start = find_header_end(request)
+        .map(|position| position + 4)
+        .unwrap_or(0);
     serde_json::from_slice(&request[start..]).unwrap_or(Value::Null)
 }
 
-pub async fn write_sse(stream: &mut tokio::net::TcpStream, frames: &[Value], close_after: Option<usize>) {
+pub async fn write_sse(
+    stream: &mut tokio::net::TcpStream,
+    frames: &[Value],
+    close_after: Option<usize>,
+) {
     use tokio::io::AsyncWriteExt;
     let body: String = frames
         .iter()
@@ -390,4 +472,3 @@ pub async fn write_sse(stream: &mut tokio::net::TcpStream, frames: &[Value], clo
         let _ = stream.shutdown().await;
     }
 }
-

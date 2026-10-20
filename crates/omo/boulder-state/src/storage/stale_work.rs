@@ -63,9 +63,13 @@ pub fn resolve_stale_work_threshold_ms(env: &BTreeMap<String, String>) -> f64 {
 /// Pure staleness rule: a work with no activity evidence at all is stale, and recorded activity
 /// older than the threshold is stale. A stamp in the future (clock skew) counts as activity.
 pub fn is_work_stale(last_activity_ms: Option<i64>, now_ms: i64, threshold_ms: f64) -> bool {
+    is_work_stale_precise(last_activity_ms.map(|ms| ms as f64), now_ms, threshold_ms)
+}
+
+pub fn is_work_stale_precise(last_activity_ms: Option<f64>, now_ms: i64, threshold_ms: f64) -> bool {
     match last_activity_ms {
         None => true,
-        Some(last) => now_ms as f64 - last as f64 >= threshold_ms,
+        Some(last) => now_ms as f64 - last >= threshold_ms,
     }
 }
 
@@ -112,7 +116,7 @@ fn reconcile_stale_works_inner(
             threshold_ms,
             options.sessions_directory.as_deref(),
         );
-        if !is_work_stale(last_activity_ms, now_ms, threshold_ms) {
+        if !is_work_stale_precise(last_activity_ms, now_ms, threshold_ms) {
             continue;
         }
 
@@ -124,7 +128,7 @@ fn reconcile_stale_works_inner(
         demoted.push(StaleWorkDemotion {
             work_id,
             stale_since: stale_since.clone(),
-            last_activity_at: last_activity_ms.map(format_iso_millis),
+            last_activity_at: last_activity_ms.map(|ms| format_iso_millis(ms.trunc() as i64)),
         });
     }
 
@@ -184,15 +188,15 @@ fn resolve_last_activity_ms(
     now_ms: i64,
     threshold_ms: f64,
     sessions_directory: Option<&Path>,
-) -> Option<i64> {
+) -> Option<f64> {
     let recorded_ms = newest_ms([
-        parse_iso_to_ms(work.get("updated_at")),
-        parse_iso_to_ms(work.get("started_at")),
+        parse_iso_to_ms(work.get("updated_at")).map(|ms| ms as f64),
+        parse_iso_to_ms(work.get("started_at")).map(|ms| ms as f64),
     ]);
     // Recorded activity inside the window already proves the work is not stale, so the transcript
     // scan only runs for works that would otherwise be demoted.
     if let Some(recorded_ms) = recorded_ms
-        && now_ms as f64 - (recorded_ms as f64) < threshold_ms
+        && now_ms as f64 - recorded_ms < threshold_ms
     {
         return Some(recorded_ms);
     }
@@ -205,7 +209,7 @@ fn resolve_last_activity_ms(
     let worktree_path = work.get_str("worktree_path").map(str::to_string);
     newest_ms([
         recorded_ms,
-        find_newest_session_transcript_ms(
+        find_newest_session_transcript_ms_precise(
             sessions_directory,
             &session_ids,
             &[Some(directory.to_string_lossy().into_owned()), worktree_path],
@@ -222,6 +226,15 @@ pub fn find_newest_session_transcript_ms(
     session_ids: &[String],
     session_cwds: &[Option<String>],
 ) -> Option<i64> {
+    find_newest_session_transcript_ms_precise(sessions_directory, session_ids, session_cwds)
+        .map(|ms| ms.trunc() as i64)
+}
+
+pub fn find_newest_session_transcript_ms_precise(
+    sessions_directory: &Path,
+    session_ids: &[String],
+    session_cwds: &[Option<String>],
+) -> Option<f64> {
     let session_ids: Vec<String> = session_ids
         .iter()
         .map(|session_id| strip_session_platform(session_id))
@@ -241,7 +254,7 @@ pub fn find_newest_session_transcript_ms(
         return None;
     };
 
-    let mut newest: Option<i64> = None;
+    let mut newest: Option<f64> = None;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let Ok(file_type) = entry.file_type() else {
@@ -306,14 +319,16 @@ fn normalize_path_for_match(value: &str) -> String {
     normalized
 }
 
-fn mtime_ms(path: &Path) -> Option<i64> {
+fn mtime_ms(path: &Path) -> Option<f64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-    i64::try_from(duration.as_millis()).ok()
+    Some(match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs_f64() * 1_000.0,
+        Err(error) => -error.duration().as_secs_f64() * 1_000.0,
+    })
 }
 
-fn newest_ms(values: impl IntoIterator<Item = Option<i64>>) -> Option<i64> {
-    let mut newest: Option<i64> = None;
+fn newest_ms(values: impl IntoIterator<Item = Option<f64>>) -> Option<f64> {
+    let mut newest: Option<f64> = None;
     for value in values {
         let Some(value) = value else {
             continue;

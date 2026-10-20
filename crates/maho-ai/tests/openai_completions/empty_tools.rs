@@ -43,6 +43,22 @@ async fn capture(
 }
 
 #[tokio::test]
+async fn sends_json_content_type_without_custom_headers() {
+    let model = base_model(&[]);
+    let transport = ScriptedTransport::success([chunk(json!({}), Some("stop"))]);
+
+    let message = finish(&run_simple(
+        &model,
+        &context(vec![user_message("hi")], None),
+        simple_options("test"),
+        Some(transport.clone()),
+    )).await;
+
+    assert_eq!(message.stop_reason, StopReason::Stop);
+    assert_eq!(transport.last_request().headers.get("content-type").map(String::as_str), Some("application/json"));
+}
+
+#[tokio::test]
 async fn omits_tools_field_when_context_tools_is_an_empty_array() {
     let model = base_model(&[]);
     let payload = capture(&model, &context(vec![user_message("hi")], Some(Vec::new())), None).await;

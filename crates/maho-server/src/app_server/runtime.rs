@@ -170,8 +170,8 @@ impl AppServerRuntime {
         super::models::register_remote_status_method(&mut core.registry,agent_dir.clone());
         let model_directory = agent_dir.clone();
         super::models::register_model_list_method(&mut core.registry,Arc::new(move || {
-            let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&model_directory).join("models.json")),auth_path:Some(std::path::Path::new(&model_directory).join("auth.json")),..Default::default()});
-            maho_core::model_registry::ModelRegistry::new(runtime).get_available()
+            let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&model_directory).join("models.json")),auth_path:Some(std::path::Path::new(&model_directory).join("auth.json")),..Default::default()}).map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+            Ok(maho_core::model_registry::ModelRegistry::new(runtime).get_available())
         }));
         let process_inventory = super::mcp_wire_status::create_process_mcp_wire_status_adapter(std::path::Path::new(&agent_dir),std::path::Path::new(&cwd),&std::env::vars().collect()).unwrap_or_else(|error| {eprintln!("app-server MCP configuration: {error}");super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())});
         let mcp_inventory = Arc::new(Mutex::new(super::mcp_wire_status::McpWireStatusRegistry::new(Some(process_inventory))));

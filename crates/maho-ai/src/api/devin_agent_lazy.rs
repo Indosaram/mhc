@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, LazyLock, Mutex};
 
-use crate::api::lazy::{lazy_api, LazyApiCapabilities};
+use crate::api::lazy::{LazyApiCapabilities, lazy_api};
 use crate::types::ProviderStreams;
 
 /// The statically bundled concrete module. senpi's lazy wrapper imports `./devin-agent.ts` through a
@@ -39,7 +39,9 @@ static MODULE_OVERRIDE: Mutex<Option<Arc<dyn ProviderStreams>>> = Mutex::new(Non
 /// `setDevinAgentProviderModule`: installs the statically bundled implementation in a standalone
 /// Bun isolate (a host-provided module in the Rust port).
 pub fn set_devin_agent_provider_module(module: Arc<dyn ProviderStreams>) {
-    *MODULE_OVERRIDE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(module);
+    *MODULE_OVERRIDE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(module);
 }
 
 /// `loadDevinAgentModule`: the newest override, else the concrete module.
@@ -53,19 +55,25 @@ pub fn load_devin_agent_module() -> Arc<dyn ProviderStreams> {
 
 /// `devinAgentApi`.
 pub fn devin_agent_api() -> Arc<dyn ProviderStreams> {
-    lazy_api(Arc::new(|| Ok(load_devin_agent_module())), LazyApiCapabilities::default())
+    lazy_api(
+        Arc::new(|| Ok(load_devin_agent_module())),
+        LazyApiCapabilities::default(),
+    )
 }
 
 /// Clears the installed override so one test cannot leak into the next.
 pub fn reset_devin_agent_provider_module_for_tests() {
-    *MODULE_OVERRIDE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    *MODULE_OVERRIDE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::{
-        AssistantMessage, AssistantMessageEvent, Context, InputModality, Model, ModelCost, StopReason, Usage,
+        AssistantMessage, AssistantMessageEvent, Context, InputModality, Model, ModelCost,
+        StopReason, Usage,
     };
     use crate::utils::event_stream::create_assistant_message_event_stream;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -76,7 +84,9 @@ mod tests {
 
     impl RecordingModule {
         fn new() -> Arc<Self> {
-            Arc::new(Self { calls: AtomicUsize::new(0) })
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+            })
         }
 
         fn call_log(&self) -> usize {
@@ -94,6 +104,8 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let stream = create_assistant_message_event_stream();
             let message = AssistantMessage {
+                thinking_level: None,
+                provider_diagnostic: None,
                 content: Vec::new(),
                 api: model.api.clone(),
                 provider: model.provider.clone(),
@@ -161,7 +173,10 @@ mod tests {
     async fn loads_the_concrete_provider_when_no_override_is_installed() {
         reset_devin_agent_provider_module_for_tests();
         let loaded = load_devin_agent_module();
-        assert!(Arc::ptr_eq(&loaded, &load_devin_agent_module()), "the concrete module is loaded once");
+        assert!(
+            Arc::ptr_eq(&loaded, &load_devin_agent_module()),
+            "the concrete module is loaded once"
+        );
     }
 
     #[tokio::test]
@@ -170,7 +185,10 @@ mod tests {
         let _ = load_devin_agent_module();
         let override_module = RecordingModule::new();
         set_devin_agent_provider_module(override_module.clone());
-        assert!(Arc::ptr_eq(&load_devin_agent_module(), &(override_module.clone() as Arc<dyn ProviderStreams>)));
+        assert!(Arc::ptr_eq(
+            &load_devin_agent_module(),
+            &(override_module.clone() as Arc<dyn ProviderStreams>)
+        ));
         reset_devin_agent_provider_module_for_tests();
     }
 

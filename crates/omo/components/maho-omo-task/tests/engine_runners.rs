@@ -73,6 +73,26 @@ fn factory_adds_one_to_parent_depth_limit() {
     assert!(matches!(result,Err(ManagedRunnerError::Runner(failure)) if failure.kind==RunnerFailureKind::DepthExceeded));
 }
 #[test] fn builtin_agents_exist_without_overrides() { let agents=maho_omo_task::engine_runners::resolve_task_agents(&serde_json::json!({})); assert_eq!(agents.keys().map(String::as_str).collect::<Vec<_>>(),["explore","librarian","plan-consultant","plan-reviewer"]); assert_eq!(agents["explore"].execution_mode.as_deref(),Some("in-process")); }
+
+#[test]
+fn claude_agents_reach_task_planning_with_explicit_overrides_preserved() -> std::io::Result<()> {
+    // Given
+    let root = tempfile::tempdir()?;
+    let cwd = root.path().join("project");
+    let claude = root.path().join("claude");
+    std::fs::create_dir_all(cwd.join(".claude/agents"))?;
+    std::fs::create_dir_all(&claude)?;
+    std::fs::write(cwd.join(".claude/agents/scout.md"), "---\ntools: Read\nmodel: opus\n---\nscout")?;
+    let config = serde_json::json!({"agents":{"scout":{"model":"native/override","disable":true}}});
+    // When
+    let agents = maho_omo_task::engine_runners::resolve_task_agents_with_compat(&config, &cwd, &claude);
+    // Then
+    assert_eq!(agents["scout"].model.as_deref(), Some("native/override"));
+    assert_eq!(agents["scout"].disable, Some(true));
+    assert_eq!(agents["scout"].tools, Some(vec![senpi_task::agents::AgentToolRule::new("read", true)]));
+    assert_eq!(agents["explore"].execution_mode.as_deref(), Some("in-process"));
+    Ok(())
+}
 #[test] fn model_overlay_preserves_builtin_prompt_and_tools() { let baseline=maho_omo_task::engine_runners::resolve_task_agents(&serde_json::json!({})); let agents=maho_omo_task::engine_runners::resolve_task_agents(&serde_json::json!({"agents":{"explore":{"model":"acme/custom-1"}}})); assert_eq!(agents["explore"].model.as_deref(),Some("acme/custom-1")); assert_eq!(agents["explore"].prompt,baseline["explore"].prompt); assert_eq!(agents["explore"].tools,baseline["explore"].tools); }
 #[test] fn curated_execution_is_pinned_but_user_agent_remains_configurable() { let agents=maho_omo_task::engine_runners::resolve_task_agents(&serde_json::json!({"agents":{"explore":{"execution_mode":"process"},"scout":{"execution_mode":"process"}}})); assert_eq!(agents["explore"].execution_mode.as_deref(),Some("in-process")); assert_eq!(agents["scout"].execution_mode.as_deref(),Some("process")); }
 #[test] fn user_agent_is_appended_and_disabled_builtin_retains_disable_flag() {

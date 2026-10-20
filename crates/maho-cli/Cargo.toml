@@ -6,6 +6,7 @@ publish.workspace = true
 license = "MIT"
 
 [dependencies]
+maho-chord = { path = "../maho-chord" }
 maho-ai = { path = "../maho-ai" }
 maho-agent = { path = "../maho-agent" }
 maho-core = { path = "../maho-core" }
@@ -92,6 +93,9 @@ serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 regex.workspace = true
 sha2.workspace = true
+flate2 = "=1.1.8"
+tar = "0.4"
+zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
 url.workspace = true
 percent-encoding.workspace = true
 base64 = "=0.22.1"
@@ -103,6 +107,12 @@ tempfile.workspace = true
 notify = "=8.2.0"
 nix = { version = "=0.28.0", features = ["signal", "process"] }
 tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "io-std", "fs", "signal", "sync"] }
+
+[target.'cfg(windows)'.dependencies]
+winsafe = { version = "=0.0.29", default-features = false, features = ["psapi"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "=0.14.11"
 
 [dev-dependencies]
 maho-ext-host = { path = "../maho-ext-host" }

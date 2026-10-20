@@ -1,8 +1,8 @@
 //! Port of senpi packages/ai/src/auth/helpers.ts.
 
 use crate::auth::types::{
-    ApiKeyAuth, ApiKeyCredential, AuthContext, AuthPrompt, AuthPromptKind, AuthResult, ModelAuth, OAuthAuth,
-    OAuthCredential, ProviderAuthInteraction,
+    ApiKeyAuth, ApiKeyCredential, AuthContext, AuthPrompt, AuthPromptKind, AuthResult, ModelAuth,
+    OAuthAuth, OAuthCredential, ProviderAuthInteraction,
 };
 use crate::utils::abort::AbortSignal;
 use async_trait::async_trait;
@@ -16,7 +16,10 @@ pub struct EnvApiKeyAuth {
 }
 
 pub fn env_api_key_auth(name: impl Into<String>, env_vars: &[&str]) -> EnvApiKeyAuth {
-    EnvApiKeyAuth { name: name.into(), env_vars: env_vars.iter().map(|s| s.to_string()).collect() }
+    EnvApiKeyAuth {
+        name: name.into(),
+        env_vars: env_vars.iter().map(|s| s.to_string()).collect(),
+    }
 }
 
 #[async_trait]
@@ -29,16 +32,32 @@ impl ApiKeyAuth for EnvApiKeyAuth {
         true
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<ApiKeyCredential> {
-        interaction.signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<ApiKeyCredential> {
+        interaction
+            .signal
+            .throw_if_aborted()
+            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
         let key = interaction
             .prompt(AuthPrompt {
-                kind: AuthPromptKind::Secret { message: format!("Enter {}", self.name), placeholder: None },
+                kind: AuthPromptKind::Secret {
+                    message: format!("Enter {}", self.name),
+                    placeholder: None,
+                },
                 signal: None,
             })
             .await?;
-        interaction.signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
-        Ok(ApiKeyCredential { key: Some(key), env: None })
+        interaction
+            .signal
+            .throw_if_aborted()
+            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
+        Ok(ApiKeyCredential {
+            key: Some(key),
+            env: None,
+            ..Default::default()
+        })
     }
 
     async fn resolve(
@@ -47,26 +66,40 @@ impl ApiKeyAuth for EnvApiKeyAuth {
         credential: Option<&ApiKeyCredential>,
         signal: &AbortSignal,
     ) -> anyhow::Result<Option<AuthResult>> {
-        signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
+        signal
+            .throw_if_aborted()
+            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
         if let Some(credential) = credential
-            && let Some(key) = credential.key.as_ref().filter(|key| !key.is_empty()) {
-                return Ok(Some(AuthResult {
-                    auth: ModelAuth { api_key: Some(key.clone()), ..Default::default() },
-                    env: credential.env.clone(),
-                    source: Some("stored credential".into()),
-                }));
-            }
+            && let Some(key) = credential.key.as_ref().filter(|key| !key.is_empty())
+        {
+            return Ok(Some(AuthResult {
+                ambient: false,
+                auth: ModelAuth {
+                    api_key: Some(key.clone()),
+                    ..Default::default()
+                },
+                env: credential.env.clone(),
+                source: Some("stored credential".into()),
+            }));
+        }
         for env_var in &self.env_vars {
             let value = ctx.env(env_var).await;
-            signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
+            signal
+                .throw_if_aborted()
+                .map_err(|reason| anyhow::anyhow!("{reason}"))?;
             if let Some(value) = value
-                && !value.is_empty() {
-                    return Ok(Some(AuthResult {
-                        auth: ModelAuth { api_key: Some(value), ..Default::default() },
-                        env: None,
-                        source: Some(env_var.clone()),
-                    }));
-                }
+                && !value.is_empty()
+            {
+                return Ok(Some(AuthResult {
+                    ambient: false,
+                    auth: ModelAuth {
+                        api_key: Some(value),
+                        ..Default::default()
+                    },
+                    env: None,
+                    source: Some(env_var.clone()),
+                }));
+            }
         }
         Ok(None)
     }
@@ -78,6 +111,7 @@ pub struct LazyOAuth {
     name: String,
     is_subscription: bool,
     login_label: Option<String>,
+    rejected_token_statuses: Vec<u16>,
     load: Arc<dyn Fn() -> LoadFuture + Send + Sync>,
     loaded: Mutex<Option<Arc<dyn OAuthAuth>>>,
 }
@@ -88,12 +122,29 @@ pub fn lazy_oauth(
     login_label: Option<String>,
     load: impl Fn() -> LoadFuture + Send + Sync + 'static,
 ) -> LazyOAuth {
-    LazyOAuth { name: name.into(), is_subscription, login_label, load: Arc::new(load), loaded: Mutex::new(None) }
+    LazyOAuth {
+        name: name.into(),
+        is_subscription,
+        login_label,
+        rejected_token_statuses: Vec::new(),
+        load: Arc::new(load),
+        loaded: Mutex::new(None),
+    }
 }
 
 impl LazyOAuth {
+    pub fn with_rejected_token_statuses(mut self, statuses: &[u16]) -> Self {
+        self.rejected_token_statuses = statuses.to_vec();
+        self
+    }
+
     async fn loaded(&self) -> anyhow::Result<Arc<dyn OAuthAuth>> {
-        if let Some(existing) = self.loaded.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+        if let Some(existing) = self
+            .loaded
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
             return Ok(existing);
         }
         let loaded = (self.load)().await?;
@@ -116,11 +167,22 @@ impl OAuthAuth for LazyOAuth {
         self.login_label.as_deref()
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+    fn rejected_token_statuses(&self) -> &[u16] {
+        &self.rejected_token_statuses
+    }
+
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<OAuthCredential> {
         self.loaded().await?.login(interaction).await
     }
 
-    async fn refresh(&self, credential: &OAuthCredential, signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        signal: &AbortSignal,
+    ) -> anyhow::Result<OAuthCredential> {
         self.loaded().await?.refresh(credential, signal).await
     }
 
@@ -170,10 +232,20 @@ mod tests {
     #[tokio::test]
     async fn resolve_prefers_stored_credential_over_env() {
         let auth = env_api_key_auth("Anthropic API key", &["ANTHROPIC_API_KEY"]);
-        let ctx = FauxAuthContext { values: [("ANTHROPIC_API_KEY".to_string(), "env-value".to_string())].into() };
+        let ctx = FauxAuthContext {
+            values: [("ANTHROPIC_API_KEY".to_string(), "env-value".to_string())].into(),
+        };
         let signal = AbortController::new().signal();
-        let stored = ApiKeyCredential { key: Some("stored".into()), env: None };
-        let result = auth.resolve(&ctx, Some(&stored), &signal).await.unwrap().unwrap();
+        let stored = ApiKeyCredential {
+            key: Some("stored".into()),
+            env: None,
+            ..Default::default()
+        };
+        let result = auth
+            .resolve(&ctx, Some(&stored), &signal)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.auth.api_key, Some("stored".into()));
         assert_eq!(result.source, Some("stored credential".into()));
     }
@@ -181,7 +253,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_falls_back_to_first_set_env_var() {
         let auth = env_api_key_auth("Anthropic API key", &["MISSING_ONE", "ANTHROPIC_API_KEY"]);
-        let ctx = FauxAuthContext { values: [("ANTHROPIC_API_KEY".to_string(), "env-value".to_string())].into() };
+        let ctx = FauxAuthContext {
+            values: [("ANTHROPIC_API_KEY".to_string(), "env-value".to_string())].into(),
+        };
         let signal = AbortController::new().signal();
         let result = auth.resolve(&ctx, None, &signal).await.unwrap().unwrap();
         assert_eq!(result.auth.api_key, Some("env-value".into()));
@@ -191,10 +265,20 @@ mod tests {
     #[tokio::test]
     async fn resolve_falls_back_to_env_when_the_stored_key_is_empty() {
         let auth = env_api_key_auth("Anthropic API key", &["ANTHROPIC_API_KEY"]);
-        let ctx = FauxAuthContext { values: [("ANTHROPIC_API_KEY".to_string(), "env-value".to_string())].into() };
+        let ctx = FauxAuthContext {
+            values: [("ANTHROPIC_API_KEY".to_string(), "env-value".to_string())].into(),
+        };
         let signal = AbortController::new().signal();
-        let stored = ApiKeyCredential { key: Some(String::new()), env: None };
-        let result = auth.resolve(&ctx, Some(&stored), &signal).await.unwrap().unwrap();
+        let stored = ApiKeyCredential {
+            key: Some(String::new()),
+            env: None,
+            ..Default::default()
+        };
+        let result = auth
+            .resolve(&ctx, Some(&stored), &signal)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.auth.api_key, Some("env-value".into()));
         assert_eq!(result.source, Some("ANTHROPIC_API_KEY".into()));
     }
@@ -202,7 +286,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_returns_none_when_nothing_configured() {
         let auth = env_api_key_auth("x", &["MISSING"]);
-        let ctx = FauxAuthContext { values: Default::default() };
+        let ctx = FauxAuthContext {
+            values: Default::default(),
+        };
         let signal = AbortController::new().signal();
         assert!(auth.resolve(&ctx, None, &signal).await.unwrap().is_none());
     }
@@ -213,7 +299,10 @@ mod tests {
         let signal = AbortController::new().signal();
         let interaction = ProviderAuthInteraction::new(
             signal,
-            Arc::new(FauxInteraction { signal: AbortController::new().signal(), answer: "sk-typed".into() }),
+            Arc::new(FauxInteraction {
+                signal: AbortController::new().signal(),
+                answer: "sk-typed".into(),
+            }),
         );
         let credential = auth.login(&interaction).await.unwrap();
         assert_eq!(credential.key, Some("sk-typed".into()));
@@ -229,20 +318,33 @@ mod tests {
             fn name(&self) -> &str {
                 "faux"
             }
-            async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+            async fn login(
+                &self,
+                _interaction: &ProviderAuthInteraction,
+            ) -> anyhow::Result<OAuthCredential> {
                 Ok(OAuthCredential::new("a", "r", 1.0))
             }
-            async fn refresh(&self, credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+            async fn refresh(
+                &self,
+                credential: &OAuthCredential,
+                _signal: &AbortSignal,
+            ) -> anyhow::Result<OAuthCredential> {
                 Ok(credential.clone())
             }
             async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-                Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+                Ok(ModelAuth {
+                    api_key: Some(credential.access.clone()),
+                    ..Default::default()
+                })
             }
         }
         let lazy = lazy_oauth("Faux", true, Some("Sign in with Faux".into()), move || {
             counter.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(Arc::new(FauxOAuth) as Arc<dyn OAuthAuth>) })
-        });
+        })
+        .with_rejected_token_statuses(&[401, 403]);
+        assert_eq!(lazy.rejected_token_statuses(), &[401, 403]);
+        assert_eq!(load_count.load(Ordering::SeqCst), 0);
         let credential = OAuthCredential::new("access", "refresh", 1.0);
         let auth = lazy.to_auth(&credential).await.unwrap();
         assert_eq!(auth.api_key, Some("access".into()));
