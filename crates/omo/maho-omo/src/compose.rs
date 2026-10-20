@@ -229,8 +229,8 @@ impl Extension for OmoExtension {
                         context.defer_macrotask = Some(Arc::new(move |work| startup.schedule(work)));
                     }
                     Box::pin(async move {
-                        let _turn = shared.enter_turn();
-                        original(event, &context).await
+                        let future = original(event, &context);
+                        shared.first_poll_in_turn(future).await
                     })
                 });
             }

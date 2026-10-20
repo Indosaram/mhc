@@ -137,6 +137,10 @@ impl IdleInjectionQueue {
         self.inner.barrier.enter()
     }
 
+    pub fn barrier(&self) -> Arc<TurnBarrier> {
+        Arc::clone(&self.inner.barrier)
+    }
+
     /// Host ingress: holds the turn across the whole closure so consecutive coordinator calls inside
     /// it cannot be split by a deferred pass (see the scheduler module docs).
     pub fn run_in_turn<R>(&self, body: impl FnOnce() -> R) -> R {
