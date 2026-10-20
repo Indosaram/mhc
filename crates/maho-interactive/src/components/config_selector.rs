@@ -146,6 +146,13 @@ pub fn get_group_label(metadata: &PathMetadata, agent_dir: &str, home_dir: &str,
     if metadata.origin == maho_core::source_info::SourceOrigin::Package {
         return format!("{} ({})", metadata.source, metadata.scope.as_str());
     }
+    if metadata.source == "builtin" {
+        return if metadata.scope == SourceScope::User {
+            "Built-in".to_owned()
+        } else {
+            "Built-in (project override)".to_owned()
+        };
+    }
     if metadata.source == "auto" {
         if let Some(base_dir) = &metadata.base_dir {
             return match metadata.scope {
@@ -206,7 +213,9 @@ pub fn build_groups(
                 .parent()
                 .and_then(Path::file_name)
                 .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-            let display_name = if resource_type == ResourceType::Extensions && parent_folder != "extensions" {
+            let display_name = if metadata.source == "builtin" {
+                resource.path.trim_start_matches("builtin:").to_owned()
+            } else if resource_type == ResourceType::Extensions && parent_folder != "extensions" {
                 format!("{parent_folder}/{file_name}")
             } else if resource_type == ResourceType::Skills && file_name == "SKILL.md" {
                 parent_folder
@@ -759,6 +768,9 @@ impl ResourceList {
     }
 
     fn get_resource_pattern(&self, item: &ResourceItem) -> String {
+        if item.metadata.source == "builtin" {
+            return item.path.clone();
+        }
         let scope = item.metadata.scope;
         let base_dir = item
             .metadata
@@ -778,7 +790,7 @@ impl ResourceList {
     }
 
     fn get_resource_pattern_for_scope(&self, item: &ResourceItem, scope: SettingsScope) -> String {
-        if scope != self.get_item_scope(item) {
+        if scope != self.get_item_scope(item) || item.metadata.source == "builtin" {
             return item.path.clone();
         }
         let base_dir = item
@@ -970,7 +982,10 @@ impl ResourceList {
             })
             .collect();
         if state != ProjectOverrideState::Inherit {
-            if self.is_inherited_global_item(item) && !updated.iter().any(|entry| entry == &pattern) {
+            if self.is_inherited_global_item(item)
+                && item.metadata.source != "builtin"
+                && !updated.iter().any(|entry| entry == &pattern)
+            {
                 updated.push(pattern.clone());
             }
             updated.push(format!(
@@ -1369,4 +1384,198 @@ impl Focusable for ConfigSelectorComponent {
 
 fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maho_core::source_info::SourceOrigin;
+    use crate::theme::ColorMode;
+
+    #[derive(Default)]
+    struct Settings {
+        global: Value,
+        project: Value,
+    }
+
+    impl ConfigSettingsHost for Settings {
+        fn get_global_settings(&self) -> Value { self.global.clone() }
+        fn get_project_settings(&self) -> Value { self.project.clone() }
+        fn set_packages(&mut self, packages: &[Value]) {
+            self.global["packages"] = serde_json::json!(packages);
+        }
+        fn set_project_packages(&mut self, packages: &[Value]) {
+            self.project["packages"] = serde_json::json!(packages);
+        }
+        fn set_extension_paths(&mut self, paths: &[String]) {
+            self.global["extensions"] = serde_json::json!(paths);
+        }
+        fn set_project_extension_paths(&mut self, paths: &[String]) {
+            self.project["extensions"] = serde_json::json!(paths);
+        }
+        fn set_skill_paths(&mut self, paths: &[String]) {
+            self.global["skills"] = serde_json::json!(paths);
+        }
+        fn set_project_skill_paths(&mut self, paths: &[String]) {
+            self.project["skills"] = serde_json::json!(paths);
+        }
+        fn set_prompt_template_paths(&mut self, paths: &[String]) {
+            self.global["prompts"] = serde_json::json!(paths);
+        }
+        fn set_project_prompt_template_paths(&mut self, paths: &[String]) {
+            self.project["prompts"] = serde_json::json!(paths);
+        }
+        fn set_theme_paths(&mut self, paths: &[String]) {
+            self.global["themes"] = serde_json::json!(paths);
+        }
+        fn set_project_theme_paths(&mut self, paths: &[String]) {
+            self.project["themes"] = serde_json::json!(paths);
+        }
+    }
+
+    fn builtin_item(scope: SourceScope) -> ResourceItem {
+        ResourceItem {
+            path: "builtin:task".to_owned(),
+            enabled: true,
+            metadata: PathMetadata {
+                source: "builtin".to_owned(),
+                scope,
+                origin: SourceOrigin::TopLevel,
+                base_dir: None,
+            },
+            resource_type: ResourceType::Extensions,
+            display_name: "task".to_owned(),
+            group_key: String::new(),
+            subgroup_key: String::new(),
+        }
+    }
+
+    fn list(settings: Settings, write_scope: ConfigWriteScope) -> ResourceList {
+        let theme = Theme::builtin("dark", ColorMode::Truecolor).expect("builtin theme");
+        ResourceList::new(
+            &theme,
+            BTreeMap::new(),
+            Box::new(settings),
+            "/project",
+            "/agent",
+            ".omo",
+            Some(24),
+            write_scope,
+        )
+    }
+
+    #[test]
+    fn builtin_groups_use_native_names_for_both_scopes() {
+        for scope in [SourceScope::User, SourceScope::Project] {
+            // Given synthesized builtin metadata from the package manager.
+            let item = builtin_item(scope);
+            let resolved = ResolvedPaths {
+                extensions: vec![ResolvedResource {
+                    path: item.path.clone(),
+                    enabled: item.enabled,
+                    metadata: item.metadata.clone(),
+                }],
+                ..ResolvedPaths::default()
+            };
+
+            // When the selector constructs its resource groups.
+            let groups = build_groups(&resolved, "/agent", "/home/user", ".omo");
+
+            // Then the shipped labels and native resource identity are retained.
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].label, if scope == SourceScope::User {
+                "Built-in"
+            } else {
+                "Built-in (project override)"
+            });
+            let row = &groups[0].subgroups[0].items[0];
+            assert_eq!(row.display_name, "task");
+            assert_eq!(row.path, item.path);
+            assert_eq!(row.metadata, item.metadata);
+        }
+    }
+
+    #[test]
+    fn builtin_patterns_remain_opaque_in_both_scopes() {
+        for source_scope in [SourceScope::User, SourceScope::Project] {
+            // Given a builtin ID that would be stripped if treated as a filesystem path.
+            let mut item = builtin_item(source_scope);
+            item.metadata.base_dir = Some(item.path.clone());
+            let list = list(Settings::default(), ConfigWriteScope::Global);
+
+            // When resource patterns are requested for either settings scope.
+            let patterns = [
+                list.get_resource_pattern(&item),
+                list.get_resource_pattern_for_scope(&item, SettingsScope::User),
+                list.get_resource_pattern_for_scope(&item, SettingsScope::Project),
+            ];
+
+            // Then every pattern preserves the complete builtin ID.
+            assert_eq!(patterns, [item.path.clone(), item.path.clone(), item.path]);
+        }
+    }
+
+    #[test]
+    fn global_builtin_toggle_replaces_only_its_own_override() {
+        for (enabled, expected) in [(true, "+builtin:task"), (false, "-builtin:task")] {
+            // Given old overrides and an unrelated extension entry.
+            let settings = Settings {
+                global: serde_json::json!({"extensions": ["-builtin:task", "+builtin:task", "other"]}),
+                ..Settings::default()
+            };
+            let mut list = list(settings, ConfigWriteScope::Global);
+            let item = builtin_item(SourceScope::User);
+
+            // When the builtin is explicitly enabled or disabled globally.
+            list.toggle_top_level_resource(&item, enabled);
+
+            // Then settings contain one signed native ID without changing other entries.
+            assert_eq!(list.settings.get_global_settings()["extensions"], serde_json::json!(["other", expected]));
+        }
+    }
+
+    #[test]
+    fn project_builtin_overrides_never_insert_an_inherited_load_path() {
+        for scope in [SourceScope::User, SourceScope::Project] {
+            for (state, expected) in [
+                (ProjectOverrideState::Load, serde_json::json!(["other", "+builtin:task"])),
+                (ProjectOverrideState::Unload, serde_json::json!(["other", "-builtin:task"])),
+                (ProjectOverrideState::Inherit, serde_json::json!(["other"])),
+            ] {
+                // Given an inherited builtin and previously written signed project overrides.
+                let item = builtin_item(scope);
+                let settings = Settings {
+                    global: serde_json::json!({"extensions": ["-builtin:other"]}),
+                    project: serde_json::json!({"extensions": ["other", "+builtin:task", "-builtin:task"]}),
+                };
+                let mut list = list(settings, ConfigWriteScope::Project);
+                list.inherited_enabled_by_key.insert(resource_item_key(&item), true);
+
+                // When the selector writes the chosen project override state.
+                assert!(list.set_project_resource_override(&item, state));
+
+                // Then only the signed override is written, or all target overrides are removed.
+                assert_eq!(list.settings.get_project_settings()["extensions"], expected);
+                assert_eq!(list.settings.get_global_settings()["extensions"], serde_json::json!(["-builtin:other"]));
+                assert_eq!(list.get_project_override_state(&item), state);
+            }
+        }
+    }
+
+    #[test]
+    fn inherited_files_still_insert_a_project_load_path() {
+        // Given a normal inherited extension rather than a builtin resource.
+        let mut item = builtin_item(SourceScope::User);
+        item.path = "/agent/extensions/task.rs".to_owned();
+        item.metadata.source = "auto".to_owned();
+        let mut list = list(Settings::default(), ConfigWriteScope::Project);
+
+        // When the selector writes its project unload override.
+        assert!(list.set_project_resource_override(&item, ProjectOverrideState::Unload));
+
+        // Then filesystem resource discovery retains the plain inherited path.
+        assert_eq!(list.settings.get_project_settings()["extensions"], serde_json::json!([
+            "/agent/extensions/task.rs", "-/agent/extensions/task.rs"
+        ]));
+    }
 }

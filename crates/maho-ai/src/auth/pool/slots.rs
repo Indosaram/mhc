@@ -35,6 +35,8 @@ pub struct CredentialSlot {
     pub expires: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<ProviderEnv>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// `Credential` plus the pool bookkeeping (`accounts`, `pinned`). Field order mirrors the TS
@@ -77,7 +79,15 @@ impl From<Credential> for PooledCredential {
     fn from(credential: Credential) -> Self {
         match credential {
             Credential::ApiKey(c) => {
-                Self { credential_type: PooledCredentialType::ApiKey, key: c.key, env: c.env, ..Default::default() }
+                Self {
+                    credential_type: PooledCredentialType::ApiKey,
+                    key: c.key,
+                    env: c.env,
+                    accounts: accounts_from_extra(&c.extra),
+                    pinned: pinned_from_extra(&c.extra),
+                    extra: provider_fields(c.extra),
+                    ..Default::default()
+                }
             }
             Credential::OAuth(c) => Self {
                 credential_type: PooledCredentialType::OAuth,
@@ -127,7 +137,11 @@ impl PooledCredential {
     pub fn to_flat_credential(&self) -> Option<Credential> {
         match self.credential_type {
             PooledCredentialType::ApiKey => {
-                Some(Credential::ApiKey(ApiKeyCredential { key: self.key.clone(), env: self.env.clone() }))
+                Some(Credential::ApiKey(ApiKeyCredential {
+                    key: self.key.clone(),
+                    env: self.env.clone(),
+                    extra: self.extra.clone(),
+                }))
             }
             PooledCredentialType::OAuth => {
                 let mut cred = OAuthCredential::new(self.access.clone()?, self.refresh.clone()?, self.expires?);
@@ -146,7 +160,18 @@ impl PooledCredential {
     pub fn to_stored_credential(&self) -> Credential {
         match self.credential_type {
             PooledCredentialType::ApiKey => {
-                Credential::ApiKey(ApiKeyCredential { key: self.key.clone(), env: self.env.clone() })
+                let mut cred = ApiKeyCredential {
+                    key: self.key.clone(),
+                    env: self.env.clone(),
+                    extra: self.extra.clone(),
+                };
+                if let Some(accounts) = &self.accounts {
+                    cred.extra.insert("accounts".into(), serde_json::to_value(accounts).unwrap_or_default());
+                }
+                if let Some(pinned) = &self.pinned {
+                    cred.extra.insert("pinned".into(), serde_json::Value::String(pinned.clone()));
+                }
+                Credential::ApiKey(cred)
             }
             PooledCredentialType::OAuth => {
                 let mut cred = OAuthCredential::new(
@@ -438,6 +463,8 @@ pub fn upsert_slot(credential: Option<PooledCredential>, slot: CredentialSlot) -
 }
 
 fn merge_slot(base: &CredentialSlot, over: &CredentialSlot) -> CredentialSlot {
+    let mut extra = base.extra.clone();
+    extra.extend(over.extra.clone());
     CredentialSlot {
         name: over.name.clone(),
         display_name: over.display_name.clone().or_else(|| base.display_name.clone()),
@@ -447,6 +474,7 @@ fn merge_slot(base: &CredentialSlot, over: &CredentialSlot) -> CredentialSlot {
         refresh: over.refresh.clone().or_else(|| base.refresh.clone()),
         expires: over.expires.or(base.expires),
         env: over.env.clone().or_else(|| base.env.clone()),
+        extra,
     }
 }
 
@@ -515,7 +543,11 @@ pub fn project_slot(credential: Option<&PooledCredential>, name: &str) -> Option
             }
             Some(Credential::OAuth(cred))
         }
-        PooledCredentialType::ApiKey => Some(Credential::ApiKey(ApiKeyCredential { key: slot.key, env })),
+        PooledCredentialType::ApiKey => Some(Credential::ApiKey(ApiKeyCredential {
+            key: slot.key,
+            env,
+            extra: credential.extra.clone(),
+        })),
     }
 }
 
@@ -711,6 +743,34 @@ pub fn merge_refreshed(current: &PooledCredential, refreshed: &Credential) -> Po
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn generic_pool_mutation_preserves_subscription_slot_extensions() {
+        // Given subscription slots with block state and additional provider metadata.
+        let original = serde_json::json!({
+            "type": "oauth", "access": "a", "refresh": "r", "expires": 1.0,
+            "accounts": [
+                {"name": "default", "access": "a", "refresh": "r", "expires": 1.0,
+                 "blockedUntil": 123.0, "blockReason": "rate_limit", "providerSlotField": "kept"},
+                {"name": "other", "access": "b", "refresh": "s", "expires": 2.0,
+                 "blockReason": "auth_error"}
+            ]
+        });
+        let credential: super::Credential = serde_json::from_value(original.clone()).expect("credential");
+        let pool = super::PooledCredential::from(credential);
+        // When a generic slot upsert updates only presentation metadata.
+        let next = super::upsert_slot(Some(pool), super::CredentialSlot {
+            name: "default".into(), display_name: Some("Work".into()), ..Default::default()
+        }).expect("upsert");
+        let stored = serde_json::to_value(next.to_stored_credential()).expect("stored");
+        // Then block state and unknown fields survive the complete pool round trip.
+        assert_eq!(stored["accounts"][0]["blockedUntil"], original["accounts"][0]["blockedUntil"]);
+        assert_eq!(stored["accounts"][0]["blockReason"], original["accounts"][0]["blockReason"]);
+        assert_eq!(stored["accounts"][0]["providerSlotField"], "kept");
+        assert_eq!(stored["accounts"][1], original["accounts"][1]);
+        let next = super::remove_slot(Some(next), "default").expect("survivor");
+        assert_eq!(serde_json::to_value(next.to_stored_credential()).expect("stored")["accounts"][0], original["accounts"][1]);
+    }
+
     use super::*;
 
     fn oauth_pool(access: &str, refresh: &str, accounts: Vec<CredentialSlot>) -> PooledCredential {
@@ -962,6 +1022,87 @@ mod tests {
         let projected = project_slot(Some(&pooled), "work").expect("work slot projects");
         assert_eq!(projected.as_oauth().expect("oauth").access, "work-access");
         assert_eq!(projected.as_oauth().expect("oauth").refresh, "r2");
+    }
+
+    #[test]
+    fn api_key_pool_preserves_siblings_when_round_tripped_through_credential() {
+        // Given
+        let stored = serde_json::json!({
+            "type": "api_key", "key": "first",
+            "env": {"REGION": "global"},
+            "accounts": [
+                {"name": "default", "key": "first", "source": "login"},
+                {"name": "work", "displayName": "Work", "key": "second", "source": "import"}
+            ],
+            "pinned": "work", "order": ["work", "default"],
+            "providerField": {"id": 7}
+        });
+        let credential: Credential = serde_json::from_value(stored.clone()).unwrap();
+
+        // When
+        let pooled = PooledCredential::from(credential);
+        let restored = serde_json::to_value(pooled.to_stored_credential()).unwrap();
+
+        // Then
+        assert_eq!(restored, stored);
+        let work = project_slot(Some(&pooled), "work").unwrap();
+        let key = work.as_api_key().unwrap();
+        assert_eq!(key.key.as_deref(), Some("second"));
+        assert_eq!(key.env.as_ref().unwrap().get("REGION").map(String::as_str), Some("global"));
+        assert!(!key.extra.contains_key("accounts"));
+        assert!(!key.extra.contains_key("pinned"));
+    }
+
+    #[test]
+    fn second_api_key_login_keeps_the_first_account_after_store_round_trip() {
+        // Given
+        let initial = login(None, PooledCredential {
+            key: Some("first".into()),
+            ..Default::default()
+        });
+        let stored = PooledCredential::from(initial.to_stored_credential());
+
+        // When
+        let added = login(Some(stored), PooledCredential {
+            key: Some("second".into()),
+            ..Default::default()
+        });
+        let restored = PooledCredential::from(added.to_stored_credential());
+
+        // Then
+        let slots = list_slots(Some(&restored));
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].name, "default");
+        assert_eq!(slots[0].key.as_deref(), Some("first"));
+        assert_eq!(slots[1].name, "login-2");
+        assert_eq!(slots[1].key.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn api_key_logout_reprojects_survivor_and_clears_removed_pin_after_store_round_trip() {
+        // Given
+        let initial = login(None, PooledCredential {
+            key: Some("first".into()),
+            ..Default::default()
+        });
+        let pool = login(Some(initial), PooledCredential {
+            key: Some("second".into()),
+            ..Default::default()
+        });
+        let pinned = pin_slot(pool, "default").unwrap();
+        let stored = PooledCredential::from(pinned.to_stored_credential());
+
+        // When
+        let survivor = remove_slot(Some(stored), "default").unwrap();
+        let restored = PooledCredential::from(survivor.to_stored_credential());
+
+        // Then
+        assert_eq!(restored.key.as_deref(), Some("second"));
+        assert_eq!(restored.pinned, None);
+        let slots = list_slots(Some(&restored));
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].name, "login-2");
+        assert_eq!(slots[0].key.as_deref(), Some("second"));
     }
 
     #[test]

@@ -16,19 +16,19 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
         };
         let apply_options = move |model: maho_ext_api::ProviderModelConfig| {
             let options = model_options.get(&model.id).cloned().unwrap_or_default();
-            let mut model = extension_provider_model(model);
+            let mut model = extension_provider_model(model)?;
             model.service_tier = options.service_tier;
             model.prompt_preset = options.prompt_preset;
             model.sampling_params = options.sampling_params.map(|params| params.into_iter().collect());
             model.cache_retention = options.cache_retention;
-            model
+            Ok::<_, maho_ext_api::ExtensionFailure>(model)
         };
-        let models = config.models.map(|models| models.into_iter().map(&apply_options).collect());
+        let models = config.models.map(|models| models.into_iter().map(&apply_options).collect::<Result<Vec<_>, _>>()).transpose()?;
         let refresh_models = config.refresh_models.map(|refresh| -> crate::provider_composer::ExtensionRefresh {
             std::sync::Arc::new(move |context| {
                 let future = refresh(context);
                 let apply_options = apply_options.clone();
-                Box::pin(async move { future.await.map(|models| models.into_iter().map(apply_options).collect()).map_err(|error| error.message) })
+                Box::pin(async move { future.await.and_then(|models| models.into_iter().map(apply_options).collect()).map_err(|error| error.message) })
             })
         });
         let input = crate::provider_composer::ProviderConfigInput {
@@ -39,6 +39,9 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
             },
             stream_simple: config.stream_simple, oauth: config.oauth, fallback_eligible: config.fallback_eligible,
             refresh_models, retry_policy,
+            ambient_auth: config.ambient_auth,
+            images: config.images.into_iter().collect(),
+            classifiers: config.classifiers.into_iter().collect(),
         };
         runtime.register_provider(&name, input).map_err(maho_ext_api::ExtensionFailure::new)
     }
@@ -46,14 +49,22 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unregister_provider(name); Ok(())
     }
 }
-fn extension_provider_model(model: maho_ext_api::ProviderModelConfig) -> crate::model_config_schema::ModelsJsonModel {
-    crate::model_config_schema::ModelsJsonModel {
+fn extension_provider_model(model: maho_ext_api::ProviderModelConfig) -> Result<crate::model_config_schema::ModelsJsonModel, maho_ext_api::ExtensionFailure> {
+    let input_limits = model.input_limits.map(|limits| serde_json::to_value(limits)
+        .and_then(serde_json::from_value)).transpose().map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+    let prompt_cache = model.prompt_cache.map(|cache| serde_json::to_value(cache)
+        .and_then(serde_json::from_value)).transpose().map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+    Ok(crate::model_config_schema::ModelsJsonModel {
         id: model.id, name: Some(model.name), upstream_model_id: model.upstream_model_id, api: model.api, base_url: model.base_url,
         reasoning: Some(model.reasoning), recover_text_tool_calls: model.recover_text_tool_calls, thinking_level_map: model.thinking_level_map,
         input: Some(model.input), cost: Some(model.cost), context_window: Some(model.context_window as f64), max_tokens: Some(model.max_tokens as f64),
         headers: model.headers, extra_body: model.extra_body.and_then(|value| value.as_object().cloned()), compat: model.compat.map(|compat| compat.0),
+        input_limits, prompt_cache,
+        default_thinking_level: model.default_thinking_level,
+        model_type: model.model_type, output: model.output, image_cost: model.image_cost,
+        supports_assistant_prefill: model.supports_assistant_prefill,
         ..Default::default()
-    }
+    })
 }
 
 /// Thrown when `/import` references a JSONL file path that does not exist.
@@ -445,13 +456,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extension_registration_preserves_nonchat_catalogs_and_prefill() {
+        use maho_ext_api::*;
+        let runtime = crate::model_runtime::ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+            providers: Some(Vec::new()), ..Default::default()
+        }).expect("valid runtime");
+        let actions = ExtensionModelRuntimeActions(std::sync::Mutex::new(runtime.clone()));
+        let definition = |id: &str, kind| ProviderModelConfig {
+            model_type: Some(kind), output: Some(vec![maho_ai::types::ImagesOutputModality::Image]),
+            image_cost: Some(Default::default()), input_limits: None, prompt_cache: None,
+            supports_assistant_prefill: Some(true), default_thinking_level: None,
+            id: id.into(), name: id.into(), upstream_model_id: None,
+            api: Some(match kind { maho_ai::types::ModelType::Image => "fixture-image", maho_ai::types::ModelType::Classifier => "fixture-classifier", maho_ai::types::ModelType::Chat => "fixture-chat" }.into()),
+            base_url: None, reasoning: false, recover_text_tool_calls: None, thinking_level_map: None,
+            input: vec![maho_ai::types::InputModality::Text], cost: Default::default(), context_window: 1024, max_tokens: 128,
+            headers: None, extra_body: None, compat: None,
+        };
+        // Given
+        let config = ProviderConfig { base_url: Some("https://example.test".into()), models: Some(vec![
+            definition("chat", maho_ai::types::ModelType::Chat), definition("image", maho_ai::types::ModelType::Image),
+            definition("classifier", maho_ai::types::ModelType::Classifier),
+        ]), ..Default::default() };
+        // When
+        actions.register_provider(ProviderRegistration::Config { name: "fixture".into(), config: Box::new(config) }, "fixture").expect("register");
+        // Then
+        let stored = runtime.get_registered_provider_config("fixture").expect("config");
+        let provider = crate::provider_composer::compose_model_provider("fixture", None, &crate::model_config::ModelConfig::default(), Some(&stored)).expect("compose");
+        let models = provider.get_all_models();
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().any(|model| matches!(model, maho_ai::types::AnyModel::Image(model) if model.id == "image")));
+        assert!(models.iter().any(|model| matches!(model, maho_ai::types::AnyModel::Classifier(model) if model.id == "classifier")));
+        assert_eq!(provider.get_models()[0].supports_assistant_prefill, Some(true));
+    }
+
+    #[test]
     fn extension_provider_registration_reaches_the_live_session_catalog() {
         use maho_ext_api::*;
-        let runtime = crate::model_runtime::ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions { providers: Some(vec![]), ..Default::default() });
+        let runtime = crate::model_runtime::ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions { providers: Some(vec![]), ..Default::default() }).expect("valid model runtime");
         let actions = std::sync::Arc::new(ExtensionModelRuntimeActions(std::sync::Mutex::new(runtime.clone())));
         let extension_runtime = ExtensionRuntime::default();
         let api = ExtensionApi::new(LoadedExtension::new("fixture", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), extension_runtime.clone());
         let model = ProviderModelConfig {
+            model_type: None, output: None, image_cost: None, input_limits: None, prompt_cache: None,
+            supports_assistant_prefill: None, default_thinking_level: None,
             id: "fixture-model".into(), name: "Fixture".into(), upstream_model_id: None, api: None, base_url: None,
             reasoning: false, recover_text_tool_calls: None, thinking_level_map: None, input: vec![maho_ai::types::InputModality::Text],
             cost: Default::default(), context_window: 4096, max_tokens: 512, headers: None, extra_body: None, compat: None,
@@ -493,8 +540,8 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            }).await;
-        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+            }).await.expect("valid session services");
+        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
         let mut manager = crate::session_manager::SessionManager::create(&cwd, dir.path().join("sessions").to_str(), None);
         let user = manager.append_message(serde_json::json!({"role":"user","content":"durable","timestamp":0}));
         let assistant = manager.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("answer", Default::default())).expect("assistant"));
@@ -517,8 +564,8 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()), ..Default::default()
-            }).await;
-        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+            }).await.expect("valid session services");
+        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
         let manager = crate::session_manager::SessionManager::create(&cwd, None, None);
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
             cwd: Some(cwd.clone()), agent_dir: Some(agent_dir), model: provider.get_model(Some("faux-1")),
@@ -535,8 +582,8 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            }).await;
-        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+            }).await.expect("valid session services");
+        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
         let mut manager = crate::session_manager::SessionManager::create(&cwd, dir.path().join("sessions").to_str(), None);
         let entry = manager.append_message(serde_json::json!({"role":"user","content":"unsaved","timestamp":0}));
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
@@ -559,13 +606,13 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            }).await;
+            }).await.expect("valid session services");
         let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
             models: Some(vec![
                 maho_ai::providers::faux::FauxModelDefinition { id: "original".to_owned(), ..Default::default() },
                 maho_ai::providers::faux::FauxModelDefinition { id: "saved".to_owned(), reasoning: Some(true), ..Default::default() },
             ]), ..Default::default()
-        });
+        }).expect("valid faux provider");
         let mut model_runtime = services.model_runtime().clone();
         model_runtime.register_native_provider(provider.provider.clone());
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
@@ -600,7 +647,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()), ..Default::default()
-            }).await;
+            }).await.expect("valid session services");
         let model = serde_json::from_value(serde_json::json!({
             "id":"faux-1", "name":"faux-1", "provider":"faux", "api":"faux", "baseUrl":"",
             "reasoning":false, "input":[], "contextWindow":128000, "maxTokens":4096,
@@ -697,8 +744,8 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            }).await;
-        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+            }).await.expect("valid session services");
+        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
             cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("faux-1")),
             session_manager: Some(crate::session_manager::SessionManager::in_memory(&cwd, None, None)),

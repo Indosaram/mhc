@@ -10,8 +10,9 @@ use std::sync::Arc;
 use maho_ai::api::cursor_agent::types::{CursorExecHandlers, CursorToolResultHandler};
 use maho_ai::model::Model;
 use maho_ai::types::{
-    AssistantMessage, BoxFuture, ContentBlock, Context, Message, ModelThinkingLevel, SimpleStreamOptions,
-    ThinkingLevel, ThinkingSelection, Tool, ToolCall, ToolResultMessage, Usage,
+    AssistantMessage, BoxFuture, ContentBlock, Context, Message, ModelThinkingLevel,
+    SimpleStreamOptions, ThinkingLevel, ThinkingSelection, Tool, ToolCall, ToolResultMessage,
+    Usage,
 };
 use maho_ai::utils::abort::AbortSignal;
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,13 @@ use serde_json::Value;
 /// - Failures must be encoded in the returned stream via protocol events and a final
 ///   `AssistantMessage` with stopReason "error" or "aborted" and errorMessage.
 pub type StreamFn = Arc<
-    dyn Fn(&Model, &Context, Option<AgentStreamOptions>) -> maho_ai::types::AssistantMessageEventStream + Send + Sync,
+    dyn Fn(
+            &Model,
+            &Context,
+            Option<AgentStreamOptions>,
+        ) -> maho_ai::types::AssistantMessageEventStream
+        + Send
+        + Sync,
 >;
 
 /// senpi's `SimpleStreamOptions & CursorAgentOptions`: the loop hands the stream function one
@@ -67,7 +74,9 @@ pub(crate) fn parse_thinking_level(value: &str) -> Option<ThinkingLevel> {
 }
 
 /// `thinkingLevel === "off" ? undefined : thinkingLevel` for the model-level enum.
-pub(crate) fn model_thinking_level_to_reasoning(level: ModelThinkingLevel) -> Option<ThinkingLevel> {
+pub(crate) fn model_thinking_level_to_reasoning(
+    level: ModelThinkingLevel,
+) -> Option<ThinkingLevel> {
     match level {
         ModelThinkingLevel::Off => None,
         ModelThinkingLevel::Minimal => Some(ThinkingLevel::Minimal),
@@ -179,10 +188,57 @@ pub struct ShouldStopAfterTurnContext {
 /// `PrepareNextTurnContext` is the same shape as `ShouldStopAfterTurnContext`.
 pub type PrepareNextTurnContext = ShouldStopAfterTurnContext;
 
+pub type AgentTurnContext = ShouldStopAfterTurnContext;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentTurnDecision {
+    Continue,
+    End,
+}
+
+/// Runs before `turn_end`, including on hard error/abort exits (whose decision is ignored).
+pub type FinishTurn = Arc<
+    dyn Fn(AgentTurnContext, Option<AbortSignal>) -> BoxFuture<'static, Option<AgentTurnDecision>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Debug, Clone)]
+pub struct PrepareRequestContext {
+    pub context: AgentContext,
+    pub model: Model,
+    pub thinking_level: ModelThinkingLevel,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentRequestUpdate {
+    pub context: Option<AgentContext>,
+    pub model: Option<Model>,
+    pub thinking_level: Option<ModelThinkingLevel>,
+    pub thinking_selection: Option<Option<ThinkingSelection>>,
+    pub abort_server_side_fallback: Option<bool>,
+    pub failure: Option<String>,
+}
+
+pub type PrepareRequest = Arc<
+    dyn Fn(
+            PrepareRequestContext,
+            Option<AbortSignal>,
+        ) -> BoxFuture<'static, Option<AgentRequestUpdate>>
+        + Send
+        + Sync,
+>;
+
+pub type CommitQueuedConsumption = Arc<
+    dyn Fn(PendingQueue, Vec<AgentMessage>) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
+>;
+
 /// Replacement runtime state used by the agent loop before starting another provider request.
 #[derive(Debug, Clone, Default)]
 pub struct AgentLoopTurnUpdate {
     pub context: Option<AgentContext>,
+    /// Appended with message lifecycle events only if another request is scheduled.
+    pub messages: Option<Vec<AgentMessage>>,
     pub model: Option<Model>,
     /// `undefined` leaves the level unchanged; `Some(Off)` clears it; any other level replaces it.
     pub thinking_level: Option<ModelThinkingLevel>,
@@ -194,23 +250,47 @@ pub struct AgentLoopTurnUpdate {
     pub failure: Option<String>,
 }
 
-pub type ConvertToLlm = Arc<dyn Fn(Vec<AgentMessage>) -> BoxFuture<'static, Vec<Message>> + Send + Sync>;
-pub type TransformContext =
-    Arc<dyn Fn(Vec<AgentMessage>, Option<AbortSignal>) -> BoxFuture<'static, Vec<AgentMessage>> + Send + Sync>;
-pub type GetApiKey = Arc<dyn Fn(String) -> BoxFuture<'static, Option<String>> + Send + Sync>;
+pub type ConvertToLlm =
+    Arc<dyn Fn(Vec<AgentMessage>) -> BoxFuture<'static, Vec<Message>> + Send + Sync>;
+pub type TransformContext = Arc<
+    dyn Fn(Vec<AgentMessage>, Option<AbortSignal>) -> BoxFuture<'static, Vec<AgentMessage>>
+        + Send
+        + Sync,
+>;
+pub type GetApiKey = Arc<
+    dyn Fn(
+            String,
+        )
+            -> BoxFuture<'static, Result<Option<String>, maho_ai::utils::event_stream::StreamError>>
+        + Send
+        + Sync,
+>;
 pub type GetMessages = Arc<dyn Fn() -> BoxFuture<'static, Vec<AgentMessage>> + Send + Sync>;
 pub type RestorePendingMessages =
     Arc<dyn Fn(PendingQueue, Vec<AgentMessage>) -> BoxFuture<'static, ()> + Send + Sync>;
 pub type ShouldStopAfterTurn =
     Arc<dyn Fn(ShouldStopAfterTurnContext) -> BoxFuture<'static, bool> + Send + Sync>;
-pub type PrepareNextTurn =
-    Arc<dyn Fn(PrepareNextTurnContext) -> BoxFuture<'static, Option<AgentLoopTurnUpdate>> + Send + Sync>;
+pub type PrepareNextTurn = Arc<
+    dyn Fn(PrepareNextTurnContext) -> BoxFuture<'static, Option<AgentLoopTurnUpdate>> + Send + Sync,
+>;
 pub type ResolveUnknownToolCall =
     Arc<dyn Fn(String, AgentContext) -> BoxFuture<'static, Option<AgentTool>> + Send + Sync>;
-pub type BeforeToolCall =
-    Arc<dyn Fn(BeforeToolCallContext, Option<AbortSignal>) -> BoxFuture<'static, Option<BeforeToolCallResult>> + Send + Sync>;
-pub type AfterToolCall =
-    Arc<dyn Fn(AfterToolCallContext, Option<AbortSignal>) -> BoxFuture<'static, Option<AfterToolCallResult>> + Send + Sync>;
+pub type BeforeToolCall = Arc<
+    dyn Fn(
+            BeforeToolCallContext,
+            Option<AbortSignal>,
+        ) -> BoxFuture<'static, Option<BeforeToolCallResult>>
+        + Send
+        + Sync,
+>;
+pub type AfterToolCall = Arc<
+    dyn Fn(
+            AfterToolCallContext,
+            Option<AbortSignal>,
+        ) -> BoxFuture<'static, Option<AfterToolCallResult>>
+        + Send
+        + Sync,
+>;
 
 /// Configuration for the agent loop (`AgentLoopConfig extends SimpleStreamOptions`).
 #[derive(Clone)]
@@ -233,6 +313,9 @@ pub struct AgentLoopConfig {
     pub transform_context: Option<TransformContext>,
     /// Resolves an API key dynamically for each LLM call.
     pub get_api_key: Option<GetApiKey>,
+    pub finish_turn: Option<FinishTurn>,
+    pub prepare_request: Option<PrepareRequest>,
+    pub commit_queued_consumption: Option<CommitQueuedConsumption>,
     /// Called after each turn fully completes and `turn_end` has been emitted.
     pub should_stop_after_turn: Option<ShouldStopAfterTurn>,
     /// Called after each completed assistant turn, before the loop decides whether another request starts.
@@ -269,6 +352,9 @@ impl AgentLoopConfig {
             convert_to_llm,
             transform_context: None,
             get_api_key: None,
+            finish_turn: None,
+            prepare_request: None,
+            commit_queued_consumption: None,
             should_stop_after_turn: None,
             prepare_next_turn: None,
             get_steering_messages: None,
@@ -317,11 +403,21 @@ impl<'de> Deserialize<'de> for CustomAgentMessage {
         let value = Value::deserialize(deserializer)?;
         let role = value.get("role").and_then(Value::as_str).map(str::to_owned);
         let parsed = match role.as_deref() {
-            Some("bashExecution") => serde_json::from_value(value).map(CustomAgentMessage::BashExecution),
+            Some("bashExecution") => {
+                serde_json::from_value(value).map(CustomAgentMessage::BashExecution)
+            }
             Some("custom") => serde_json::from_value(value).map(CustomAgentMessage::Custom),
-            Some("branchSummary") => serde_json::from_value(value).map(CustomAgentMessage::BranchSummary),
-            Some("compactionSummary") => serde_json::from_value(value).map(CustomAgentMessage::CompactionSummary),
-            other => return Err(D::Error::custom(format!("unknown custom agent message role: {other:?}"))),
+            Some("branchSummary") => {
+                serde_json::from_value(value).map(CustomAgentMessage::BranchSummary)
+            }
+            Some("compactionSummary") => {
+                serde_json::from_value(value).map(CustomAgentMessage::CompactionSummary)
+            }
+            other => {
+                return Err(D::Error::custom(format!(
+                    "unknown custom agent message role: {other:?}"
+                )));
+            }
         };
         parsed.map_err(D::Error::custom)
     }
@@ -343,7 +439,9 @@ impl AgentMessage {
     pub fn role(&self) -> &'static str {
         match self {
             AgentMessage::Llm(message) => message.role(),
-            AgentMessage::Custom(custom) => crate::harness::messages::custom_agent_message_role(custom),
+            AgentMessage::Custom(custom) => {
+                crate::harness::messages::custom_agent_message_role(custom)
+            }
         }
     }
 
@@ -368,7 +466,9 @@ impl AgentMessage {
     pub fn into_llm(self) -> Message {
         match self {
             AgentMessage::Llm(message) => message,
-            AgentMessage::Custom(custom) => crate::harness::messages::custom_agent_message_to_llm(&custom),
+            AgentMessage::Custom(custom) => {
+                crate::harness::messages::custom_agent_message_to_llm(&custom)
+            }
         }
     }
 
@@ -401,12 +501,14 @@ pub struct AgentState {
     pub thinking_level: ModelThinkingLevel,
     pub thinking_selection: Option<ThinkingSelection>,
     pub reasoning_baseline: Option<String>,
+    pub declared_tools: Option<Vec<AgentTool>>,
     tools: Vec<AgentTool>,
     messages: Vec<AgentMessage>,
     pub is_streaming: bool,
     pub streaming_message: Option<AgentMessage>,
     pub pending_tool_calls: BTreeSet<String>,
     pub error_message: Option<String>,
+    pub provider_diagnostic: Option<maho_ai::types::ProviderDiagnostic>,
 }
 
 impl AgentState {
@@ -417,12 +519,14 @@ impl AgentState {
             thinking_level: ModelThinkingLevel::Off,
             thinking_selection: None,
             reasoning_baseline: None,
+            declared_tools: None,
             tools: Vec::new(),
             messages: Vec::new(),
             is_streaming: false,
             streaming_message: None,
             pending_tool_calls: BTreeSet::new(),
             error_message: None,
+            provider_diagnostic: None,
         }
     }
 
@@ -448,6 +552,13 @@ impl AgentState {
     }
 }
 
+#[derive(Clone)]
+pub struct AgentToolCallOutcome {
+    pub tool_call: AgentToolCall,
+    pub result: AgentToolResult,
+    pub is_error: bool,
+}
+
 /// Final or partial result produced by a tool.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -465,6 +576,8 @@ pub struct AgentToolResult {
     /// Usage from the final tool execution itself, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_calls: Option<maho_ai::types::NestedToolCalls>,
     /// Names of tools introduced by this result and available from this transcript point onward.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_tool_names: Option<Vec<String>>,
@@ -483,6 +596,7 @@ impl AgentToolResult {
             details: Value::Object(Default::default()),
             structured_content: None,
             usage: None,
+            nested_calls: None,
             added_tool_names: None,
             terminate: None,
             is_error: None,
@@ -494,11 +608,16 @@ impl AgentToolResult {
 pub type AgentToolUpdateCallback = Arc<dyn Fn(AgentToolResult) + Send + Sync>;
 
 /// Compatibility shim for raw tool-call arguments before schema validation.
-pub type ToolArgumentShim = Arc<dyn Fn(Value) -> Value + Send + Sync>;
+pub type ToolArgumentShim = Arc<dyn Fn(Value) -> Result<Value, String> + Send + Sync>;
 
 /// Tool execution function: `(toolCallId, params, signal?, onUpdate?)`.
 pub type AgentToolExecute = Arc<
-    dyn Fn(String, Value, Option<AbortSignal>, Option<AgentToolUpdateCallback>) -> BoxFuture<'static, AgentToolResult>
+    dyn Fn(
+            String,
+            Value,
+            Option<AbortSignal>,
+            Option<AgentToolUpdateCallback>,
+        ) -> BoxFuture<'static, AgentToolResult>
         + Send
         + Sync,
 >;
@@ -552,6 +671,7 @@ pub struct AgentContext {
     pub messages: Vec<AgentMessage>,
     /// Tools available for this run.
     pub tools: Option<Vec<AgentTool>>,
+    pub declared_tools: Option<Vec<AgentTool>>,
 }
 
 /// Events emitted by the Agent for UI updates.
@@ -560,7 +680,11 @@ pub struct AgentContext {
 /// public event shape every consumer matches on.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum AgentEvent {
     // Agent lifecycle
     AgentStart,
@@ -590,17 +714,45 @@ pub enum AgentEvent {
         tool_call_id: String,
         tool_name: String,
         args: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_call_id: Option<String>,
     },
     ToolExecutionUpdate {
         tool_call_id: String,
         tool_name: String,
         args: Value,
         partial_result: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_call_id: Option<String>,
     },
     ToolExecutionEnd {
         tool_call_id: String,
         tool_name: String,
         result: Value,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_call_id: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod nested_event_tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_events_round_trip_parent_attribution_and_omit_top_level_parent() {
+        for parent in [None, Some("root".to_owned())] {
+            let events = [
+                AgentEvent::ToolExecutionStart { tool_call_id: "root/1".into(), tool_name: "read".into(), args: Value::Null, parent_tool_call_id: parent.clone() },
+                AgentEvent::ToolExecutionUpdate { tool_call_id: "root/1".into(), tool_name: "read".into(), args: Value::Null, partial_result: Value::Null, parent_tool_call_id: parent.clone() },
+                AgentEvent::ToolExecutionEnd { tool_call_id: "root/1".into(), tool_name: "read".into(), result: Value::Null, is_error: false, parent_tool_call_id: parent.clone() },
+            ];
+            for event in events {
+                let wire = serde_json::to_value(&event).expect("serialize event");
+                assert_eq!(wire.get("parentToolCallId").and_then(Value::as_str), parent.as_deref());
+                let restored: AgentEvent = serde_json::from_value(wire).expect("deserialize event");
+                assert_eq!(restored, event);
+            }
+        }
+    }
 }

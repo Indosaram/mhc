@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use maho_ai::model::Model;
-use maho_ai::types::{AssistantMessage, ContentBlock, StopReason, ToolResultMessage, Usage, UsageCost};
+use maho_ai::types::{
+    AssistantMessage, ContentBlock, StopReason, ToolResultMessage, Usage, UsageCost,
+};
 use maho_ai::utils::diagnostics::AssistantMessageDiagnostic;
 use maho_ai::utils::stop_details::is_classifier_refusal;
 use serde_json::Value;
@@ -38,11 +40,20 @@ pub enum AgentStreamError {
     /// \`StreamStartTimeoutError\`. The wording must keep matching the retryable-error
     /// classifier ("timed out" in packages/ai/src/utils/retry.ts) so a dead stream start is
     /// retried instead of dead-ending the session.
-    #[error("Provider stream start timed out after {timeout_ms}ms (raise streamStartTimeoutMs — retry.provider.streamStartTimeoutMs in senpi settings; 0 disables)")]
+    #[error(
+        "Provider stream start timed out after {timeout_ms}ms (raise streamStartTimeoutMs — retry.provider.streamStartTimeoutMs in senpi settings; 0 disables)"
+    )]
     StartTimeout { timeout_ms: u64 },
     /// \`ProviderRetryWatchdogAbortError\`.
     #[error("{provider_cause}")]
     ProviderRetryWatchdogAbort { provider_cause: String },
+    #[error("{message}")]
+    ProviderFailure {
+        message: String,
+        diagnostic: maho_ai::types::ProviderDiagnostic,
+    },
+    #[error("{message}")]
+    OAuthRefreshUnavailable { message: String },
     /// Any other thrown value, normalized to its message.
     #[error("{message}")]
     Other { message: String },
@@ -57,8 +68,12 @@ impl AgentStreamError {
             AgentStreamError::StartTimeout { timeout_ms } => format!(
                 "Provider stream start timed out after {timeout_ms}ms (raise streamStartTimeoutMs — retry.provider.streamStartTimeoutMs in senpi settings; 0 disables)"
             ),
-            AgentStreamError::ProviderRetryWatchdogAbort { provider_cause } => provider_cause.clone(),
-            AgentStreamError::Other { message } => message.clone(),
+            AgentStreamError::ProviderRetryWatchdogAbort { provider_cause } => {
+                provider_cause.clone()
+            }
+            AgentStreamError::Other { message }
+            | AgentStreamError::ProviderFailure { message, .. }
+            | AgentStreamError::OAuthRefreshUnavailable { message } => message.clone(),
         }
     }
 }
@@ -75,12 +90,17 @@ pub const PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME: &str = "ProviderRetryWatchdo
 
 impl ProviderRetryWatchdogAbortError {
     pub fn new(provider_cause: impl Into<String>) -> Self {
-        Self { provider_cause: provider_cause.into() }
+        Self {
+            provider_cause: provider_cause.into(),
+        }
     }
 
     /// The reason passed to `agent.abort(new ProviderRetryWatchdogAbortError(...))`.
     pub fn into_abort_reason(self) -> maho_ai::utils::abort::AbortReason {
-        maho_ai::utils::abort::AbortReason::new(PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME, self.provider_cause)
+        maho_ai::utils::abort::AbortReason::new(
+            PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME,
+            self.provider_cause,
+        )
     }
 }
 
@@ -114,7 +134,10 @@ pub fn now_ms() -> i64 {
 pub fn demote_tool_use_without_tool_calls(message: AssistantMessage) -> AssistantMessage {
     // Count raw blocks: cursor-resolved calls are legitimate completed tool calls and must not be demoted.
     if message.stop_reason != StopReason::ToolUse
-        || message.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_)))
+        || message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolCall(_)))
     {
         return message;
     }
@@ -125,17 +148,28 @@ pub fn demote_tool_use_without_tool_calls(message: AssistantMessage) -> Assistan
         error: None,
         details: Some(serde_json::Map::new()),
     });
-    AssistantMessage { stop_reason: StopReason::Stop, diagnostics: Some(diagnostics), ..message }
+    AssistantMessage {
+        stop_reason: StopReason::Stop,
+        diagnostics: Some(diagnostics),
+        ..message
+    }
 }
 
 pub fn promote_stop_with_pending_tool_calls(message: AssistantMessage) -> AssistantMessage {
     if message.stop_reason != StopReason::Stop {
         return message;
     }
-    if !message.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_))) {
+    if !message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+    {
         return message;
     }
-    AssistantMessage { stop_reason: StopReason::ToolUse, ..message }
+    AssistantMessage {
+        stop_reason: StopReason::ToolUse,
+        ..message
+    }
 }
 
 pub fn should_terminate_assistant_turn(message: &AssistantMessage) -> bool {
@@ -155,7 +189,9 @@ pub fn should_finalize_idle_as_stop(
     provider_tool_results: &[ToolResultMessage],
     is_cursor_exec_resolved: impl Fn(&maho_ai::types::ToolCall) -> bool,
 ) -> bool {
-    let Some(partial_message) = partial_message else { return false };
+    let Some(partial_message) = partial_message else {
+        return false;
+    };
     let tool_calls: Vec<&maho_ai::types::ToolCall> = partial_message
         .content
         .iter()
@@ -180,35 +216,79 @@ pub fn create_terminal_failure_assistant_message(
     partial_message: Option<&AssistantMessage>,
 ) -> AssistantMessage {
     let error_message = error.message();
-    let fallback = if reason == StopReason::Aborted { "Request was aborted" } else { "Error" };
+    let provider_diagnostic = match error {
+        AgentStreamError::ProviderFailure { diagnostic, .. } if reason == StopReason::Error => {
+            maho_ai::types::sanitize_provider_diagnostic(diagnostic)
+        }
+        _ => None,
+    };
+    let mut diagnostics = partial_message.and_then(|message| message.diagnostics.clone());
+    if reason == StopReason::Error
+        && matches!(error, AgentStreamError::OAuthRefreshUnavailable { .. })
+    {
+        diagnostics
+            .get_or_insert_default()
+            .push(AssistantMessageDiagnostic {
+                kind: maho_ai::utils::retry::OAUTH_REFRESH_UNAVAILABLE_DIAGNOSTIC.to_owned(),
+                timestamp: now_ms(),
+                error: None,
+                details: Some(serde_json::Map::from_iter([(
+                    "provider".to_owned(),
+                    serde_json::json!(model.provider),
+                )])),
+            });
+    }
+    let fallback = if reason == StopReason::Aborted {
+        "Request was aborted"
+    } else {
+        "Error"
+    };
     // TS sets abortSource only for a ProviderRetryWatchdogAbortError; the field stays absent
     // otherwise, even when the partial message carried one.
     let abort_source = match error {
-        AgentStreamError::ProviderRetryWatchdogAbort { .. } => Some(maho_ai::types::AbortSource::Provider),
+        AgentStreamError::ProviderRetryWatchdogAbort { .. } => {
+            Some(maho_ai::types::AbortSource::Provider)
+        }
         _ => None,
     };
     AssistantMessage {
         content: partial_message
             .map(|message| message.content.clone())
             .unwrap_or_else(|| vec![ContentBlock::text("")]),
-        api: partial_message.map(|message| message.api.clone()).unwrap_or_else(|| model.api.clone()),
+        api: partial_message
+            .map(|message| message.api.clone())
+            .unwrap_or_else(|| model.api.clone()),
         provider: partial_message
             .map(|message| message.provider.clone())
             .unwrap_or_else(|| model.provider.clone()),
-        model: partial_message.map(|message| message.model.clone()).unwrap_or_else(|| model.id.clone()),
+        model: partial_message
+            .map(|message| message.model.clone())
+            .unwrap_or_else(|| model.id.clone()),
         response_model: partial_message.and_then(|message| message.response_model.clone()),
         response_id: partial_message.and_then(|message| message.response_id.clone()),
-        provider_thinking_level: partial_message.and_then(|message| message.provider_thinking_level.clone()),
-        diagnostics: partial_message.and_then(|message| message.diagnostics.clone()),
-        usage: partial_message.map(|message| message.usage).unwrap_or_else(empty_usage),
+        thinking_level: None,
+        provider_thinking_level: partial_message
+            .and_then(|message| message.provider_thinking_level.clone()),
+        diagnostics,
+        usage: partial_message
+            .map(|message| message.usage)
+            .unwrap_or_else(empty_usage),
         stop_reason: reason,
         stop_details: None,
         deferred: None,
-        error_message: Some(if error_message.is_empty() { fallback.to_owned() } else { error_message }),
+        error_message: Some(if error_message.is_empty() {
+            fallback.to_owned()
+        } else {
+            error_message
+        }),
+        provider_diagnostic,
+        error_cause: partial_message.and_then(|message| message.error_cause.clone()),
         abort_source,
         raw_stop_reason: None,
         end_turn: None,
-        timestamp: partial_message.map(|message| message.timestamp).unwrap_or_else(now_ms),
+        timestamp: partial_message
+            .map(|message| message.timestamp)
+            .unwrap_or_else(now_ms),
     }
 }
 
@@ -219,15 +299,120 @@ pub fn normalize_terminal_assistant_message(
     let Some(reason) = event.reason() else {
         return message;
     };
-    let fallback = if reason == StopReason::Aborted { "Request was aborted" } else { "Error" };
-    let error_message = message.error_message.clone().unwrap_or_else(|| fallback.to_owned());
-    if message.stop_reason == reason && message.error_message.as_deref() == Some(error_message.as_str()) {
+    let fallback = if reason == StopReason::Aborted {
+        "Request was aborted"
+    } else {
+        "Error"
+    };
+    let error_message = message
+        .error_message
+        .clone()
+        .unwrap_or_else(|| fallback.to_owned());
+    if message.stop_reason == reason
+        && message.error_message.as_deref() == Some(error_message.as_str())
+    {
         return message;
     }
-    AssistantMessage { stop_reason: reason, error_message: Some(error_message), ..message }
+    AssistantMessage {
+        stop_reason: reason,
+        error_message: Some(error_message),
+        ..message
+    }
 }
 
 /// \`details: {}\` diagnostics payload helper (TS writes \`details: {}\u{2026}\`).
 pub fn empty_details() -> Option<BTreeMap<String, Value>> {
     Some(BTreeMap::new())
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use maho_ai::types::{
+        ProviderDiagnostic, ProviderDiagnosticCategory, ProviderDiagnosticEvidence,
+    };
+
+    fn diagnostic() -> ProviderDiagnostic {
+        ProviderDiagnostic {
+            category: ProviderDiagnosticCategory::Quota,
+            http_status: Some(429),
+            code: Some("insufficient_quota".into()),
+            evidence: ProviderDiagnosticEvidence::StructuredCode,
+        }
+    }
+
+    #[test]
+    fn terminal_failure_retains_typed_usage_limit_without_parsing_text() {
+        let model = crate::agent::default_model();
+        let error = AgentStreamError::OAuthRefreshUnavailable { message: "ordinary failure".into() };
+        let mut partial = create_terminal_failure_assistant_message(&model, StopReason::Error, &error, None);
+        partial.error_cause = Some(maho_ai::types::AssistantErrorCause::UsageLimit { scope: maho_ai::types::UsageLimitScope::Model });
+        let terminal = create_terminal_failure_assistant_message(&model, StopReason::Error, &error, Some(&partial));
+        assert_eq!(terminal.error_cause, partial.error_cause);
+        assert!(create_terminal_failure_assistant_message(&model, StopReason::Error, &error, None).error_cause.is_none());
+    }
+
+    #[test]
+    fn terminal_failure_preserves_only_valid_error_diagnostics() {
+        // Given: a structured provider failure and a contradictory classification.
+        let model = crate::agent::default_model();
+        for reason in [StopReason::Error, StopReason::Aborted] {
+            for valid in [true, false] {
+                let mut metadata = diagnostic();
+                if !valid {
+                    metadata.http_status = Some(401);
+                }
+                let error = AgentStreamError::ProviderFailure {
+                    message: "failure".into(),
+                    diagnostic: metadata,
+                };
+                // When: the failure is projected into a terminal message.
+                let message =
+                    create_terminal_failure_assistant_message(&model, reason, &error, None);
+                // Then: only an error with consistent structured evidence survives.
+                assert_eq!(
+                    message.provider_diagnostic,
+                    (valid && reason == StopReason::Error).then(diagnostic)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn oauth_refresh_unavailable_appends_without_replacing_partial_diagnostics() {
+        // Given: a partial response with existing diagnostics.
+        let model = crate::agent::default_model();
+        let error = AgentStreamError::OAuthRefreshUnavailable {
+            message: "refresh failed".into(),
+        };
+        let mut partial =
+            create_terminal_failure_assistant_message(&model, StopReason::Error, &error, None);
+        partial.diagnostics.as_mut().expect("refresh diagnostic")[0].kind = "existing".into();
+        for reason in [StopReason::Error, StopReason::Aborted] {
+            // When: a typed refresh failure settles a partial response.
+            let message =
+                create_terminal_failure_assistant_message(&model, reason, &error, Some(&partial));
+            // Then: an error appends the retry marker; abort only retains the partial metadata.
+            let diagnostics = message.diagnostics.expect("partial diagnostics");
+            assert_eq!(diagnostics[0].kind, "existing");
+            assert_eq!(
+                diagnostics.len(),
+                if reason == StopReason::Error { 2 } else { 1 }
+            );
+            if reason == StopReason::Error {
+                assert_eq!(
+                    diagnostics[1].kind,
+                    maho_ai::utils::retry::OAUTH_REFRESH_UNAVAILABLE_DIAGNOSTIC
+                );
+                assert_eq!(
+                    diagnostics[1]
+                        .details
+                        .as_ref()
+                        .expect("provider details")
+                        .get("provider"),
+                    Some(&serde_json::json!(model.provider))
+                );
+            }
+        }
+    }
 }

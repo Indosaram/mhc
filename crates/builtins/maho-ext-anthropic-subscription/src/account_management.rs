@@ -94,7 +94,7 @@ mod tests {
     #[tokio::test]
     async fn unsupported_provider_and_api_key_credentials_are_rejected() {
         let store=InMemoryCredentialStore::new();assert!(get_provider_accounts(&store,"other",&BTreeMap::new(),0.0).await.is_err());
-        store.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,Box::new(|_|Box::pin(async {Ok(Some(Credential::ApiKey(maho_ai::auth::types::ApiKeyCredential {key:Some("fixture".into()),env:None})))})),None).await.expect("seed");
+        store.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,Box::new(|_|Box::pin(async {Ok(Some(Credential::ApiKey(maho_ai::auth::types::ApiKeyCredential {key:Some("fixture".into()),env:None,..Default::default()})))})),None).await.expect("seed");
         assert!(get_provider_accounts(&store,ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,&BTreeMap::new(),0.0).await.is_err());
     }
 }

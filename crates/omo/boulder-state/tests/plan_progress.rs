@@ -28,6 +28,30 @@ const STRUCTURED_PLAN: [&str; 12] = [
 ];
 
 #[test]
+fn malformed_utf8_does_not_hide_readable_checkboxes() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("plan.md");
+    std::fs::write(&path, b"\xff\n- [x] Done\n- [ ] Remaining\xff\n").expect("write");
+    assert_eq!(get_plan_progress(&path), PlanProgress {
+        total: 2,
+        completed: 1,
+        is_complete: false,
+    });
+}
+
+#[test]
+fn optional_dash_separator_backtracks_to_leave_a_title() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    for (section, label) in [("TODOs", "T1"), ("Final Verification Wave", "F1")] {
+        for dash in ["-", "\u{2014}"] {
+            let path = write_plan(&directory, &format!("## {section}\n- [ ] {label} {dash} \n"));
+            assert_eq!(get_plan_progress(&path).total, 1);
+            assert_eq!(read_current_top_level_task(&path).expect("task").title, format!("{dash} "));
+        }
+    }
+}
+
+#[test]
 fn structured_plan_counts_only_labeled_top_level_todo_and_final_wave_tasks() {
     // given
     let directory = tempfile::tempdir().expect("tempdir");

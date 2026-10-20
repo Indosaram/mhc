@@ -532,7 +532,7 @@ impl ComputerUseComponent {
             let state = Arc::clone(&state_exec_start);
             // Only computer tools can open a permission request; skip cloning other tools' args.
             let captured = match event {
-                ExtensionEvent::ToolExecutionStart { tool_call_id, tool_name, args }
+                ExtensionEvent::ToolExecutionStart { tool_call_id, tool_name, args, .. }
                     if matches_tool_name(tool_name, COMPUTER_TOOL_NAME) || matches_tool_name(tool_name, COMPUTER_ACTIONS_TOOL_NAME) =>
                 {
                     Some((ctx.session_manager.session_id().to_string(), tool_call_id.clone(), tool_name.clone(), args.clone()))
@@ -566,7 +566,7 @@ impl ComputerUseComponent {
             let state_backend = Arc::clone(&state_backend_exec_end);
             // Nothing awaits a permission verdict: skip cloning the result and building the payload.
             let captured = match event {
-                ExtensionEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } if telemetry.has_pending() => {
+                ExtensionEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error, .. } if telemetry.has_pending() => {
                     let session_id = state_ctx.lock().ok().and_then(|g| g.clone()).unwrap_or_else(|| ctx.session_manager.session_id().to_string());
                     let backend_str = state_backend.lock().ok().map(|g| g.clone()).unwrap_or_else(|| "unavailable".to_string());
                     Some((session_id, backend_str, tool_call_id.clone(), tool_name.clone(), result.clone(), *is_error))

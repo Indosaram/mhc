@@ -13,7 +13,12 @@ pub struct ToolExecutionResult {
 
 impl ToolExecutionResult {
     pub fn as_tool_result(&self) -> ToolResult {
-        ToolResult { content: self.content.clone(), details: self.details.clone(), structured_content: None }
+        ToolResult {
+            content: self.content.clone(),
+            details: self.details.clone(),
+            structured_content: None,
+            is_error: None,
+        }
     }
 }
 

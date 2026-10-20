@@ -4,7 +4,10 @@ use crate::types::{AssistantMessage, ContentBlock};
 use unicode_general_category::{GeneralCategory, get_general_category};
 
 pub fn has_visible_text(text: &str) -> bool {
-    let stripped: String = text.chars().filter(|c| get_general_category(*c) != GeneralCategory::Format).collect();
+    let stripped: String = text
+        .chars()
+        .filter(|c| get_general_category(*c) != GeneralCategory::Format)
+        .collect();
     !super::js::trim(&stripped).is_empty()
 }
 
@@ -23,6 +26,8 @@ mod tests {
 
     fn assistant(content: Vec<ContentBlock>) -> AssistantMessage {
         AssistantMessage {
+            thinking_level: None,
+            provider_diagnostic: None,
             content,
             api: "openai-completions".into(),
             provider: "test".into(),
@@ -48,11 +53,26 @@ mod tests {
     #[test]
     fn treats_format_character_only_text_as_invisible() {
         let cases: &[(&str, &str)] = &[
-            ("treats format-character-only text \"\\u200b\" as invisible", "\u{200b}"),
-            ("treats format-character-only text \"\\u200c\" as invisible", "\u{200c}"),
-            ("treats format-character-only text \"\\u200d\" as invisible", "\u{200d}"),
-            ("treats format-character-only text \"\\u2060\" as invisible", "\u{2060}"),
-            ("treats format-character-only text \"\\ufeff\" as invisible", "\u{feff}"),
+            (
+                "treats format-character-only text \"\\u200b\" as invisible",
+                "\u{200b}",
+            ),
+            (
+                "treats format-character-only text \"\\u200c\" as invisible",
+                "\u{200c}",
+            ),
+            (
+                "treats format-character-only text \"\\u200d\" as invisible",
+                "\u{200d}",
+            ),
+            (
+                "treats format-character-only text \"\\u2060\" as invisible",
+                "\u{2060}",
+            ),
+            (
+                "treats format-character-only text \"\\ufeff\" as invisible",
+                "\u{feff}",
+            ),
         ];
         for (title, text) in cases {
             assert!(!has_visible_text(text), "case: {title}");
@@ -66,7 +86,9 @@ mod tests {
 
     #[test]
     fn keeps_emoji_zwj_sequences_visible() {
-        assert!(has_visible_text("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}"));
+        assert!(has_visible_text(
+            "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}"
+        ));
     }
 
     #[test]
@@ -81,19 +103,31 @@ mod tests {
 
     #[test]
     fn accepts_visible_text_or_a_tool_call_and_rejects_thinking_plus_invisible_text() {
-        assert!(has_visible_assistant_content(&assistant(vec![ContentBlock::Text(TextContent {
-            text: "answer".into(),
-            ..Default::default()
-        })])));
-        assert!(has_visible_assistant_content(&assistant(vec![ContentBlock::ToolCall(ToolCall {
-            id: "call-1".into(),
-            name: "read".into(),
-            arguments: [("path".to_owned(), serde_json::json!("README.md"))].into_iter().collect(),
-            ..Default::default()
-        })])));
+        assert!(has_visible_assistant_content(&assistant(vec![
+            ContentBlock::Text(TextContent {
+                text: "answer".into(),
+                ..Default::default()
+            })
+        ])));
+        assert!(has_visible_assistant_content(&assistant(vec![
+            ContentBlock::ToolCall(ToolCall {
+                id: "call-1".into(),
+                name: "read".into(),
+                arguments: [("path".to_owned(), serde_json::json!("README.md"))]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            })
+        ])));
         assert!(!has_visible_assistant_content(&assistant(vec![
-            ContentBlock::Text(TextContent { text: "\u{200b}".into(), ..Default::default() }),
-            ContentBlock::Thinking(ThinkingContent { thinking: "private".into(), ..Default::default() }),
+            ContentBlock::Text(TextContent {
+                text: "\u{200b}".into(),
+                ..Default::default()
+            }),
+            ContentBlock::Thinking(ThinkingContent {
+                thinking: "private".into(),
+                ..Default::default()
+            }),
         ])));
     }
 }

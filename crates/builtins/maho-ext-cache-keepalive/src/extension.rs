@@ -18,9 +18,21 @@ impl Default for CacheKeepalive{
         let auth=ctx.model_registry.get_api_key_and_headers(&model).await?;
         let mut options=maho_ai::types::StreamOptions::default();
         options.request.api_key=auth.auth.api_key;options.request.headers=Some((prepared.transform_headers)(auth.auth.headers.unwrap_or_default()).await?);options.request.env=auth.env;options.request.affinity_session_id=Some(ctx.session_manager.session_id().into());options.cache_retention=model.cache_retention;
+        options.session_id=Some(ctx.session_manager.session_id().into());
         let transform=prepared.transform_payload;
         options.request.async_on_payload=Some(Arc::new(move|payload,_,_|{let transform=transform.clone();Box::pin(async move{transform(payload).await.map(Some).map_err(|error|error.to_string())})}));
-        maho_ai::api::warm_prompt_cache::warm_prompt_cache(&model,&context,Some(options),&|model,context,options|Ok(serde_json::Value::Object(maho_ai::api::anthropic_messages::build_anthropic_warm_prompt_cache_params(model,context,Some(options))))).await.map_err(ExtensionFailure::new)
+        let options=maho_ai::types::SimpleStreamOptions{
+            stream:options,
+            reasoning:ctx.current_thinking_level()?,
+            service_tier:ctx.current_effective_service_tier()?.map(|tier|match tier{
+                ServiceTier::Auto=>maho_ai::types::ServiceTierPreference::Auto,
+                ServiceTier::Flex=>maho_ai::types::ServiceTierPreference::Flex,
+                ServiceTier::Priority=>maho_ai::types::ServiceTierPreference::Priority,
+                ServiceTier::Ultrafast=>maho_ai::types::ServiceTierPreference::Ultrafast,
+            }),
+            ..Default::default()
+        };
+        maho_ai::api::warm_prompt_cache::warm_prompt_cache_simple(&model,&context,options,&|model,context,options|Ok(serde_json::Value::Object(maho_ai::api::anthropic_messages::build_anthropic_warm_prompt_cache_params(model,context,Some(options))))).await.map_err(ExtensionFailure::new)
     }))}}
 }
 struct State {ctx:Option<ExtensionContext>,parked:bool,arm_on_settle:bool,active:bool,generation:u64,attempts:u64,cost:f64,last:Option<i64>,messages:Vec<AgentMessage>,usage:Option<Usage>,work:Option<tokio::task::JoinHandle<()>>,retired:Vec<tokio::task::JoinHandle<()>>,entries:Vec<serde_json::Value>}

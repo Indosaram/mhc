@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use boulder_state::{
-    BoulderStateError, get_work_by_id, read_boulder_state, select_active_work, write_boulder_state,
+    get_work_by_id, read_boulder_state, select_active_work, write_boulder_state,
 };
 use pretty_assertions::assert_eq;
 
@@ -125,7 +125,7 @@ fn selecting_the_legacy_work_of_a_mirror_only_state_matches_typescript_bytes() {
 }
 
 #[test]
-fn corrupt_files_are_errors_and_never_panic() {
+fn corrupt_files_return_no_state_and_never_panic() {
     // given
     let cases = [
         ("", "json"),
@@ -136,23 +136,14 @@ fn corrupt_files_are_errors_and_never_panic() {
         ("{\"works\":{\"a\":1}}", "shape"),
     ];
 
-    for (content, expected_kind) in cases {
+    for (content, _) in cases {
         let directory = stage(content);
 
         // when
         let result = read_boulder_state(directory.path());
 
         // then
-        let error = result.expect_err(content);
-        let kind = match &error {
-            BoulderStateError::InvalidJson { .. } => "json",
-            BoulderStateError::InvalidShape { .. } => "shape",
-            BoulderStateError::Read { .. }
-            | BoulderStateError::Write { .. }
-            | BoulderStateError::Remove { .. } => "io",
-        };
-        assert_eq!((content, kind), (content, expected_kind));
-        assert_eq!(error.path(), directory.path().join(".omo/boulder.json"));
+        assert_eq!(result.expect("null fallback"), None, "{content}");
     }
 }
 
