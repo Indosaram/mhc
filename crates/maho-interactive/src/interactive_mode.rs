@@ -1476,10 +1476,6 @@ impl InteractiveMode {
         match self.session_host.clone() { Some(host) => host.follow_up(text.to_owned()).await, None => self.session.follow_up(text, None, Default::default()).await }
     }
 
-    async fn host_compact(&self, instructions: Option<String>) -> Result<(), String> {
-        match self.session_host.clone() { Some(host) => host.compact(instructions).await, None => self.session.compact(instructions.as_deref()).await.map(|_| ()) }
-    }
-
     async fn host_navigate_tree(&mut self, entry_id: &str, options: maho_core::agent_session::TreeNavigationOptions) -> Result<maho_core::agent_session::AssistantEditResult, String> {
         match self.session_host.clone() {
             Some(host) => { let result = host.navigate_tree(entry_id.to_owned(), options).await?; self.request_remote_history(); Ok(result) }
