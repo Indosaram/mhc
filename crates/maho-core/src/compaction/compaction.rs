@@ -867,7 +867,7 @@ pub fn build_summarization_context(prompt_text: &str, source_context: Option<&Co
             context.messages.push(instruction_message);
             context
         }
-        None => Context {
+        None => Context { active_tool_names: None,
             system_prompt: Some(super::utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
             messages: vec![instruction_message],
             tools: None,
@@ -1668,7 +1668,7 @@ mod tests {
             tokens_before: 10, previous_summary: None, file_ops: create_file_ops(),
             settings: crate::compaction::settings::default_compaction_settings(),
         };
-        let prefix_source = Context { system_prompt: Some("system".into()), messages: Vec::new(), tools: None };
+        let prefix_source = Context { active_tool_names: None, system_prompt: Some("system".into()), messages: Vec::new(), tools: None };
         let cache_friendly = CacheFriendlySummaryOptions {
             source_context: None, turn_prefix_source_context: Some(prefix_source),
             request_options: Some(SummaryRequestOptions { session_id: Some("agent-session".into()), ..Default::default() }),

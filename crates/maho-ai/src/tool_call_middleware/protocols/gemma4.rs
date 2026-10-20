@@ -2,7 +2,9 @@
 
 use serde_json::{Map, Value};
 
-use crate::tool_call_middleware::types::{ParsedToolCall, ParserOptions, StreamParser, StreamParserEvent, ToolResultContent};
+use crate::tool_call_middleware::types::{
+    ParsedToolCall, ParserOptions, StreamParser, StreamParserEvent, ToolResultContent,
+};
 use crate::types::Tool;
 use crate::utils::validation::validate_tool_arguments;
 
@@ -17,21 +19,47 @@ fn format_gemma4_value(value: &Value) -> String {
         Value::Null => "null".to_string(),
         Value::String(text) => format!("{STRING_DELIM}{text}{STRING_DELIM}"),
         Value::Number(_) | Value::Bool(_) => value.to_string(),
-        Value::Array(items) => format!("[{}]", items.iter().map(format_gemma4_value).collect::<Vec<_>>().join(",")),
-        Value::Object(map) => format!("{{{}}}", map.iter().map(|(key, val)| format!("{key}:{}", format_gemma4_value(val))).collect::<Vec<_>>().join(",")),
+        Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(format_gemma4_value)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(map) => format!(
+            "{{{}}}",
+            map.iter()
+                .map(|(key, val)| format!("{key}:{}", format_gemma4_value(val)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
     }
 }
 
 fn format_gemma4_args(args: &Map<String, Value>) -> String {
-    args.iter().map(|(key, value)| format!("{key}:{}", format_gemma4_value(value))).collect::<Vec<_>>().join(",")
+    args.iter()
+        .map(|(key, value)| format!("{key}:{}", format_gemma4_value(value)))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 pub fn gemma4_format_tool_call(name: &str, args: &Map<String, Value>) -> String {
-    format!("{TOOL_CALL_START}call:{name}{{{}}}{TOOL_CALL_END}", format_gemma4_args(args))
+    format!(
+        "{TOOL_CALL_START}call:{name}{{{}}}{TOOL_CALL_END}",
+        format_gemma4_args(args)
+    )
 }
 
-pub fn gemma4_format_tool_response(_tool_name: &str, _tool_call_id: &str, content: &[ToolResultContent]) -> String {
-    let text_parts: Vec<&str> = content.iter().filter_map(|item| item.as_text().map(|text| text.text.as_str())).collect();
+pub fn gemma4_format_tool_response(
+    _tool_name: &str,
+    _tool_call_id: &str,
+    content: &[ToolResultContent],
+) -> String {
+    let text_parts: Vec<&str> = content
+        .iter()
+        .filter_map(|item| item.as_text().map(|text| text.text.as_str()))
+        .collect();
     format!("{TOOL_RESPONSE_START}{}", text_parts.join("\n"))
 }
 
@@ -44,7 +72,10 @@ pub fn gemma4_format_tools_system_prompt(tools: &[Tool]) -> String {
         .iter()
         .map(|tool| {
             let schema = json_stringify_indent_3(&tool.parameters);
-            format!("Name: {}\nDescription: {}\nParameters Schema:\n{schema}", tool.name, tool.description)
+            format!(
+                "Name: {}\nDescription: {}\nParameters Schema:\n{schema}",
+                tool.name, tool.description
+            )
         })
         .collect();
 
@@ -59,7 +90,8 @@ fn json_stringify_indent_3(value: &Value) -> String {
     let mut buf = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(b"   ");
     let mut serializer = serde_json::Serializer::with_formatter(&mut buf, formatter);
-    serde::Serialize::serialize(value, &mut serializer).expect("json_stringify_indent_3: Value serialization cannot fail");
+    serde::Serialize::serialize(value, &mut serializer)
+        .expect("json_stringify_indent_3: Value serialization cannot fail");
     String::from_utf8(buf).expect("json_stringify_indent_3: serde_json emits valid UTF-8")
 }
 
@@ -72,10 +104,16 @@ fn is_integer_literal(text: &str) -> bool {
 fn is_float_literal(text: &str) -> bool {
     let text = text.strip_prefix('-').unwrap_or(text);
     if let Some((int_part, frac_part)) = text.split_once('.') {
-        if !int_part.is_empty() && int_part.bytes().all(|b| b.is_ascii_digit()) {
+        if !int_part.is_empty()
+            && int_part.bytes().all(|b| b.is_ascii_digit())
+            && frac_part.bytes().all(|b| b.is_ascii_digit())
+        {
             return true;
         }
-        if int_part.is_empty() && !frac_part.is_empty() && frac_part.bytes().all(|b| b.is_ascii_digit()) {
+        if int_part.is_empty()
+            && !frac_part.is_empty()
+            && frac_part.bytes().all(|b| b.is_ascii_digit())
+        {
             return true;
         }
     }
@@ -133,7 +171,9 @@ fn parse_gemma4_array(array_string: &str, partial: bool) -> Vec<Value> {
                 }
                 Some(byte_offset) => {
                     let char_offset = after[..byte_offset].chars().count();
-                    items.push(Value::String(chars[index..index + char_offset].iter().collect()));
+                    items.push(Value::String(
+                        chars[index..index + char_offset].iter().collect(),
+                    ));
                     index += char_offset + STRING_DELIM.chars().count();
                     continue;
                 }
@@ -151,7 +191,11 @@ fn parse_gemma4_array(array_string: &str, partial: bool) -> Vec<Value> {
                     let after: String = chars[index..].iter().collect();
                     index = match after.find(STRING_DELIM) {
                         None => chars.len(),
-                        Some(byte_offset) => index + after[..byte_offset].chars().count() + STRING_DELIM.chars().count(),
+                        Some(byte_offset) => {
+                            index
+                                + after[..byte_offset].chars().count()
+                                + STRING_DELIM.chars().count()
+                        }
                     };
                     continue;
                 }
@@ -162,7 +206,11 @@ fn parse_gemma4_array(array_string: &str, partial: bool) -> Vec<Value> {
                 }
                 index += 1;
             }
-            let body: String = if depth > 0 { chars[object_start..index].iter().collect() } else { chars[object_start..index - 1].iter().collect() };
+            let body: String = if depth > 0 {
+                chars[object_start..index].iter().collect()
+            } else {
+                chars[object_start..index - 1].iter().collect()
+            };
             items.push(Value::Object(parse_gemma4_args(&body, depth > 0)));
             continue;
         }
@@ -179,7 +227,11 @@ fn parse_gemma4_array(array_string: &str, partial: bool) -> Vec<Value> {
                 }
                 index += 1;
             }
-            let body: String = if depth > 0 { chars[sub_array_start..index].iter().collect() } else { chars[sub_array_start..index - 1].iter().collect() };
+            let body: String = if depth > 0 {
+                chars[sub_array_start..index].iter().collect()
+            } else {
+                chars[sub_array_start..index - 1].iter().collect()
+            };
             items.push(Value::Array(parse_gemma4_array(&body, depth > 0)));
             continue;
         }
@@ -191,7 +243,9 @@ fn parse_gemma4_array(array_string: &str, partial: bool) -> Vec<Value> {
         if partial && index >= chars.len() {
             break;
         }
-        items.push(parse_gemma4_value(&chars[value_start..index].iter().collect::<String>()));
+        items.push(parse_gemma4_value(
+            &chars[value_start..index].iter().collect::<String>(),
+        ));
     }
 
     items
@@ -221,7 +275,11 @@ pub fn parse_gemma4_args(args_string: &str, partial: bool) -> Map<String, Value>
         if index >= chars.len() {
             break;
         }
-        let key: String = chars[key_start..index].iter().collect::<String>().trim().to_string();
+        let key: String = chars[key_start..index]
+            .iter()
+            .collect::<String>()
+            .trim()
+            .to_string();
         index += 1;
 
         if index >= chars.len() {
@@ -253,7 +311,14 @@ pub fn parse_gemma4_args(args_string: &str, partial: bool) -> Map<String, Value>
                 }
                 Some(byte_offset) => {
                     let char_offset = after[..byte_offset].chars().count();
-                    result.insert(key, Value::String(chars[value_start..value_start + char_offset].iter().collect()));
+                    result.insert(
+                        key,
+                        Value::String(
+                            chars[value_start..value_start + char_offset]
+                                .iter()
+                                .collect(),
+                        ),
+                    );
                     index = value_start + char_offset + STRING_DELIM.chars().count();
                     continue;
                 }
@@ -271,7 +336,11 @@ pub fn parse_gemma4_args(args_string: &str, partial: bool) -> Map<String, Value>
                     let after: String = chars[index..].iter().collect();
                     index = match after.find(STRING_DELIM) {
                         None => chars.len(),
-                        Some(byte_offset) => index + after[..byte_offset].chars().count() + STRING_DELIM.chars().count(),
+                        Some(byte_offset) => {
+                            index
+                                + after[..byte_offset].chars().count()
+                                + STRING_DELIM.chars().count()
+                        }
                     };
                     continue;
                 }
@@ -282,7 +351,11 @@ pub fn parse_gemma4_args(args_string: &str, partial: bool) -> Map<String, Value>
                 }
                 index += 1;
             }
-            let body: String = if depth > 0 { chars[object_start..index].iter().collect() } else { chars[object_start..index - 1].iter().collect() };
+            let body: String = if depth > 0 {
+                chars[object_start..index].iter().collect()
+            } else {
+                chars[object_start..index - 1].iter().collect()
+            };
             result.insert(key, Value::Object(parse_gemma4_args(&body, depth > 0)));
             continue;
         }
@@ -298,7 +371,11 @@ pub fn parse_gemma4_args(args_string: &str, partial: bool) -> Map<String, Value>
                     let after: String = chars[index..].iter().collect();
                     index = match after.find(STRING_DELIM) {
                         None => chars.len(),
-                        Some(byte_offset) => index + after[..byte_offset].chars().count() + STRING_DELIM.chars().count(),
+                        Some(byte_offset) => {
+                            index
+                                + after[..byte_offset].chars().count()
+                                + STRING_DELIM.chars().count()
+                        }
                     };
                     continue;
                 }
@@ -309,7 +386,11 @@ pub fn parse_gemma4_args(args_string: &str, partial: bool) -> Map<String, Value>
                 }
                 index += 1;
             }
-            let body: String = if depth > 0 { chars[array_start..index].iter().collect() } else { chars[array_start..index - 1].iter().collect() };
+            let body: String = if depth > 0 {
+                chars[array_start..index].iter().collect()
+            } else {
+                chars[array_start..index - 1].iter().collect()
+            };
             result.insert(key, Value::Array(parse_gemma4_array(&body, depth > 0)));
             continue;
         }
@@ -321,14 +402,21 @@ pub fn parse_gemma4_args(args_string: &str, partial: bool) -> Map<String, Value>
         if partial && index >= chars.len() {
             break;
         }
-        result.insert(key, parse_gemma4_value(&chars[value_start..index].iter().collect::<String>()));
+        result.insert(
+            key,
+            parse_gemma4_value(&chars[value_start..index].iter().collect::<String>()),
+        );
     }
 
     result
 }
 
 fn find_common_prefix(left: &str, right: &str) -> String {
-    left.chars().zip(right.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a).collect()
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a)
+        .collect()
 }
 
 struct ToolCallExtract {
@@ -348,36 +436,53 @@ fn extract_tool_calls(text: String) -> Vec<ToolCallExtract> {
             continue;
         };
         let name_end_offset = prefix.find('{');
-        let Some(name_end_offset) = name_end_offset else { break };
+        let Some(name_end_offset) = name_end_offset else {
+            break;
+        };
         let name = &prefix[..name_end_offset];
-        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
             cursor = after_start;
             continue;
         }
         let body_start = after_start + 5 + name_end_offset + 1;
-        let terminator = [(TOOL_CALL_END, body_start), (TURN_END, body_start)]
-            .into_iter()
-            .filter_map(|(token, from)| text[from..].find(token).map(|i| (from + i, token)))
-            .min_by_key(|(i, _)| *i);
-        let Some((term_index, _term_token)) = terminator else { break };
-        let close_brace = text[..term_index].rfind('}');
-        let Some(close_brace) = close_brace else {
-            cursor = after_start;
-            continue;
+        let terminator = text[body_start..]
+            .match_indices('}')
+            .find_map(|(index, _)| {
+                let close = body_start + index;
+                let after = &text[close + 1..];
+                (after.starts_with(TOOL_CALL_END) || after.starts_with(TURN_END))
+                    .then_some(close + 1)
+            });
+        let Some(term_index) = terminator else {
+            break;
         };
-        if close_brace < body_start {
-            cursor = after_start;
-            continue;
-        }
+        let close_brace = term_index - 1;
         let raw_args = text[body_start..close_brace].to_string();
-        results.push(ToolCallExtract { name: name.to_string(), raw_args });
+        results.push(ToolCallExtract {
+            name: name.to_string(),
+            raw_args,
+        });
         cursor = term_index;
     }
     results
 }
 
-pub fn gemma4_parse_generated_text(text: &str, _tools: &[Tool], _options: Option<&ParserOptions>) -> Vec<ParsedToolCall> {
-    extract_tool_calls(text.to_string()).into_iter().map(|extract| ParsedToolCall { name: extract.name, arguments: parse_gemma4_args(&extract.raw_args, false) }).collect()
+pub fn gemma4_parse_generated_text(
+    text: &str,
+    _tools: &[Tool],
+    _options: Option<&ParserOptions>,
+) -> Vec<ParsedToolCall> {
+    extract_tool_calls(text.to_string())
+        .into_iter()
+        .map(|extract| ParsedToolCall {
+            name: extract.name,
+            arguments: parse_gemma4_args(&extract.raw_args, false),
+        })
+        .collect()
 }
 
 pub struct Gemma4ArgsComplete {
@@ -430,15 +535,24 @@ pub fn scan_gemma4_args_complete(content: &str) -> Option<Gemma4ArgsComplete> {
             continue;
         }
         let opening = delimiters.pop();
-        if (character == '}' && opening != Some('{')) || (character == ']' && opening != Some('[')) {
+        if (character == '}' && opening != Some('{')) || (character == ']' && opening != Some('['))
+        {
             return None;
         }
         if delimiters.is_empty() {
-            let residue: String = chars[index + 1..].iter().collect::<String>().trim().to_string();
-            if !residue.is_empty() && residue != get_partial_token_suffix(&residue, &[TOOL_CALL_END, TURN_END]) {
+            let residue: String = chars[index + 1..]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string();
+            if !residue.is_empty()
+                && residue != get_partial_token_suffix(&residue, &[TOOL_CALL_END, TURN_END])
+            {
                 return None;
             }
-            return Some(Gemma4ArgsComplete { raw_args: chars[outer_open_char_index + 1..index].iter().collect() });
+            return Some(Gemma4ArgsComplete {
+                raw_args: chars[outer_open_char_index + 1..index].iter().collect(),
+            });
         }
         index += 1;
     }
@@ -447,8 +561,12 @@ pub fn scan_gemma4_args_complete(content: &str) -> Option<Gemma4ArgsComplete> {
 }
 
 fn extract_partial_tool_call(content: &str) -> (Option<String>, String) {
-    let Some(function_part) = content.strip_prefix("call:") else { return (None, String::new()) };
-    let Some(brace_index) = function_part.find('{') else { return (None, String::new()) };
+    let Some(function_part) = content.strip_prefix("call:") else {
+        return (None, String::new());
+    };
+    let Some(brace_index) = function_part.find('{') else {
+        return (None, String::new());
+    };
     let name = function_part[..brace_index].trim().to_string();
     let mut raw_args = function_part[brace_index + 1..].to_string();
     if raw_args.ends_with('}') {
@@ -469,7 +587,10 @@ fn strip_trailing_unsafe_characters(arguments_json: &str) -> String {
 }
 
 fn find_earliest_token<'a>(text: &str, tokens: &[&'a str]) -> Option<(usize, &'a str)> {
-    tokens.iter().filter_map(|token| text.find(token).map(|index| (index, *token))).min_by_key(|(index, _)| *index)
+    tokens
+        .iter()
+        .filter_map(|token| text.find(token).map(|index| (index, *token)))
+        .min_by_key(|(index, _)| *index)
 }
 
 struct Gemma4StreamParser {
@@ -492,7 +613,10 @@ impl Gemma4StreamParser {
 
     fn current_tool_call_id(&self) -> String {
         let index = self.current_tool_index.max(0) as usize;
-        self.tool_call_ids.get(index).cloned().unwrap_or_else(|| format!("gemma4-tool-{}", self.current_tool_index))
+        self.tool_call_ids
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| format!("gemma4-tool-{}", self.current_tool_index))
     }
 
     fn emit_tool_call_start(&mut self, events: &mut Vec<StreamParserEvent>, name: &str) {
@@ -500,15 +624,29 @@ impl Gemma4StreamParser {
             return;
         }
         self.current_tool_name = Some(name.to_string());
-        events.push(StreamParserEvent::ToolcallStart { index: self.current_tool_index as usize, name: name.to_string(), id: self.current_tool_call_id() });
+        events.push(StreamParserEvent::ToolcallStart {
+            index: self.current_tool_index as usize,
+            name: name.to_string(),
+            id: self.current_tool_call_id(),
+        });
     }
 
-    fn emit_final_tool_call(&mut self, events: &mut Vec<StreamParserEvent>, name: &str, arguments_object: Map<String, Value>) {
+    fn emit_final_tool_call(
+        &mut self,
+        events: &mut Vec<StreamParserEvent>,
+        name: &str,
+        arguments_object: Map<String, Value>,
+    ) {
         self.emit_tool_call_start(events, name);
         let arguments_json = Value::Object(arguments_object.clone()).to_string();
-        let final_delta = arguments_json[self.current_arguments_json.len().min(arguments_json.len())..].to_string();
+        let final_delta = arguments_json
+            [self.current_arguments_json.len().min(arguments_json.len())..]
+            .to_string();
         if !final_delta.is_empty() {
-            events.push(StreamParserEvent::ToolcallDelta { index: self.current_tool_index as usize, arguments_delta: final_delta });
+            events.push(StreamParserEvent::ToolcallDelta {
+                index: self.current_tool_index as usize,
+                arguments_delta: final_delta,
+            });
         }
         events.push(StreamParserEvent::ToolcallEnd {
             index: self.current_tool_index as usize,
@@ -520,7 +658,12 @@ impl Gemma4StreamParser {
         });
     }
 
-    fn emit_incomplete_tool_call(&mut self, events: &mut Vec<StreamParserEvent>, name: &str, arguments_object: Map<String, Value>) {
+    fn emit_incomplete_tool_call(
+        &mut self,
+        events: &mut Vec<StreamParserEvent>,
+        name: &str,
+        arguments_object: Map<String, Value>,
+    ) {
         self.emit_tool_call_start(events, name);
         events.push(StreamParserEvent::ToolcallEnd {
             index: self.current_tool_index as usize,
@@ -537,7 +680,10 @@ impl Gemma4StreamParser {
             options.report_error(
                 "Could not complete Gemma4 tool call at finish.",
                 Some(std::collections::HashMap::from([
-                    ("protocol".to_string(), Value::String("gemma4-delimiter".to_string())),
+                    (
+                        "protocol".to_string(),
+                        Value::String("gemma4-delimiter".to_string()),
+                    ),
                     ("retainedLength".to_string(), Value::from(retained_length)),
                 ])),
             );
@@ -549,7 +695,10 @@ impl Gemma4StreamParser {
             options.report_error(
                 "Gemma4 tool call dropped",
                 Some(std::collections::HashMap::from([
-                    ("protocol".to_string(), Value::String("gemma4-delimiter".to_string())),
+                    (
+                        "protocol".to_string(),
+                        Value::String("gemma4-delimiter".to_string()),
+                    ),
                     ("retainedLength".to_string(), Value::from(retained_length)),
                 ])),
             );
@@ -580,7 +729,8 @@ impl Gemma4StreamParser {
         }
 
         if !self.current_arguments_json.is_empty() {
-            let common_prefix = find_common_prefix(&self.current_arguments_json, &safe_arguments_json);
+            let common_prefix =
+                find_common_prefix(&self.current_arguments_json, &safe_arguments_json);
             if common_prefix.len() < self.current_arguments_json.len() {
                 self.current_arguments_json = common_prefix;
                 return;
@@ -593,7 +743,10 @@ impl Gemma4StreamParser {
         }
 
         self.current_arguments_json = safe_arguments_json;
-        events.push(StreamParserEvent::ToolcallDelta { index: self.current_tool_index as usize, arguments_delta });
+        events.push(StreamParserEvent::ToolcallDelta {
+            index: self.current_tool_index as usize,
+            arguments_delta,
+        });
     }
 
     fn emit_completed_tool_call(&mut self, events: &mut Vec<StreamParserEvent>) {
@@ -616,10 +769,17 @@ impl StreamParser for Gemma4StreamParser {
             if !self.inside_tool_call {
                 let combined_text = format!("{}{}", self.plain_text_carry, remaining);
                 let Some(start_index) = combined_text.find(TOOL_CALL_START) else {
-                    let partial_suffix = get_partial_token_suffix(&combined_text, &[TOOL_CALL_START]);
-                    let flushable_text = if partial_suffix.is_empty() { combined_text.clone() } else { combined_text[..combined_text.len() - partial_suffix.len()].to_string() };
+                    let partial_suffix =
+                        get_partial_token_suffix(&combined_text, &[TOOL_CALL_START]);
+                    let flushable_text = if partial_suffix.is_empty() {
+                        combined_text.clone()
+                    } else {
+                        combined_text[..combined_text.len() - partial_suffix.len()].to_string()
+                    };
                     if !flushable_text.is_empty() {
-                        events.push(StreamParserEvent::Text { text: flushable_text });
+                        events.push(StreamParserEvent::Text {
+                            text: flushable_text,
+                        });
                     }
                     self.plain_text_carry = partial_suffix;
                     break;
@@ -627,7 +787,9 @@ impl StreamParser for Gemma4StreamParser {
 
                 let text_before_tool_call = combined_text[..start_index].to_string();
                 if !text_before_tool_call.is_empty() {
-                    events.push(StreamParserEvent::Text { text: text_before_tool_call });
+                    events.push(StreamParserEvent::Text {
+                        text: text_before_tool_call,
+                    });
                 }
 
                 let after_start = combined_text[start_index + TOOL_CALL_START.len()..].to_string();
@@ -651,8 +813,14 @@ impl StreamParser for Gemma4StreamParser {
             let end_match = find_earliest_token(&combined_tool_call, &[TOOL_CALL_END, TURN_END]);
 
             let Some((end_index, end_token)) = end_match else {
-                let partial_suffix = get_partial_token_suffix(&combined_tool_call, &[TOOL_CALL_END, TURN_END]);
-                let flushable_content = if partial_suffix.is_empty() { combined_tool_call.clone() } else { combined_tool_call[..combined_tool_call.len() - partial_suffix.len()].to_string() };
+                let partial_suffix =
+                    get_partial_token_suffix(&combined_tool_call, &[TOOL_CALL_END, TURN_END]);
+                let flushable_content = if partial_suffix.is_empty() {
+                    combined_tool_call.clone()
+                } else {
+                    combined_tool_call[..combined_tool_call.len() - partial_suffix.len()]
+                        .to_string()
+                };
                 self.tool_call_carry = partial_suffix;
                 if !flushable_content.is_empty() {
                     self.tool_call_content.push_str(&flushable_content);
@@ -681,7 +849,9 @@ impl StreamParser for Gemma4StreamParser {
         let mut events = Vec::new();
 
         if !self.inside_tool_call && !self.plain_text_carry.is_empty() {
-            events.push(StreamParserEvent::Text { text: self.plain_text_carry.clone() });
+            events.push(StreamParserEvent::Text {
+                text: self.plain_text_carry.clone(),
+            });
         }
 
         if self.inside_tool_call {
@@ -705,15 +875,25 @@ impl StreamParser for Gemma4StreamParser {
                             namespace: None,
                         };
                         match validate_tool_arguments(tool, &tool_call) {
-                            Ok(Value::Object(validated_arguments)) => self.emit_final_tool_call(&mut events, name, validated_arguments),
+                            Ok(Value::Object(validated_arguments)) => {
+                                self.emit_final_tool_call(&mut events, name, validated_arguments)
+                            }
                             Ok(_) | Err(_) => {
                                 self.report_incomplete_tool_call(content.len());
-                                self.emit_incomplete_tool_call(&mut events, name, parse_gemma4_args(&raw_args, true));
+                                self.emit_incomplete_tool_call(
+                                    &mut events,
+                                    name,
+                                    parse_gemma4_args(&raw_args, true),
+                                );
                             }
                         }
                     } else {
                         self.report_incomplete_tool_call(content.len());
-                        self.emit_incomplete_tool_call(&mut events, name, parse_gemma4_args(&raw_args, true));
+                        self.emit_incomplete_tool_call(
+                            &mut events,
+                            name,
+                            parse_gemma4_args(&raw_args, true),
+                        );
                     }
                 }
             }
@@ -730,7 +910,10 @@ impl StreamParser for Gemma4StreamParser {
     }
 }
 
-pub fn gemma4_create_stream_parser(tools: Vec<Tool>, options: Option<ParserOptions>) -> Box<dyn StreamParser + Send> {
+pub fn gemma4_create_stream_parser(
+    tools: Vec<Tool>,
+    options: Option<ParserOptions>,
+) -> Box<dyn StreamParser + Send> {
     Box::new(Gemma4StreamParser {
         tool_call_ids: Vec::new(),
         tools,
@@ -745,7 +928,6 @@ pub fn gemma4_create_stream_parser(tools: Vec<Tool>, options: Option<ParserOptio
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,7 +937,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn tool(name: &str, description: &str, parameters: Value) -> Tool {
-        Tool { name: name.into(), description: description.into(), parameters, output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     fn weather_tool() -> Tool {
@@ -779,35 +968,67 @@ mod tests {
 
     fn fixture_tools() -> Vec<Tool> {
         vec![
-            tool("get_weather", "Get weather", json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}})),
+            tool(
+                "get_weather",
+                "Get weather",
+                json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}}),
+            ),
             tool(
                 "todowrite",
                 "Write todos",
                 json!({"type": "object", "required": ["todos"], "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["content", "status", "priority"], "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}}}}}),
             ),
-            tool("get_location", "Get location", json!({"type": "object", "properties": {}})),
+            tool(
+                "get_location",
+                "Get location",
+                json!({"type": "object", "properties": {}}),
+            ),
         ]
     }
 
-    fn error_collector() -> (Arc<Mutex<Vec<String>>>, crate::tool_call_middleware::types::ParserErrorHandler) {
+    fn error_collector() -> (
+        Arc<Mutex<Vec<String>>>,
+        crate::tool_call_middleware::types::ParserErrorHandler,
+    ) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let handler: crate::tool_call_middleware::types::ParserErrorHandler = Arc::new(move |message: &str, _metadata: Option<&HashMap<String, Value>>| {
-            sink.lock().expect("error sink").push(message.to_string());
-        });
+        let handler: crate::tool_call_middleware::types::ParserErrorHandler = Arc::new(
+            move |message: &str, _metadata: Option<&HashMap<String, Value>>| {
+                sink.lock().expect("error sink").push(message.to_string());
+            },
+        );
         (seen, handler)
     }
 
-    fn options_with(handler: crate::tool_call_middleware::types::ParserErrorHandler) -> ParserOptions {
-        ParserOptions { emit_raw_tool_call_text_on_error: false, on_error: Some(handler) }
+    fn options_with(
+        handler: crate::tool_call_middleware::types::ParserErrorHandler,
+    ) -> ParserOptions {
+        ParserOptions {
+            emit_raw_tool_call_text_on_error: false,
+            on_error: Some(handler),
+        }
     }
 
     fn text_of(events: &[StreamParserEvent]) -> String {
-        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+        events
+            .iter()
+            .filter_map(|event| {
+                if let StreamParserEvent::Text { text } = event {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn is_toolcall_event(event: &StreamParserEvent) -> bool {
-        matches!(event, StreamParserEvent::ToolcallStart { .. } | StreamParserEvent::ToolcallDelta { .. } | StreamParserEvent::ToolcallEnd { .. })
+        matches!(
+            event,
+            StreamParserEvent::ToolcallStart { .. }
+                | StreamParserEvent::ToolcallDelta { .. }
+                | StreamParserEvent::ToolcallEnd { .. }
+        )
     }
 
     fn feed_all(parser: &mut Box<dyn StreamParser + Send>, input: &str) -> Vec<StreamParserEvent> {
@@ -822,7 +1043,11 @@ mod tests {
 
     #[test]
     fn parses_a_single_gemma4_tool_call_with_string_delimiters() {
-        let calls = gemma4_parse_generated_text(r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}<tool_call|>"#, &[weather_tool()], None);
+        let calls = gemma4_parse_generated_text(
+            r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}<tool_call|>"#,
+            &[weather_tool()],
+            None,
+        );
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "get_weather");
         assert_eq!(arg(&calls[0], "city"), Some(&Value::String("Seoul".into())));
@@ -830,7 +1055,11 @@ mod tests {
 
     #[test]
     fn parses_bare_numbers_and_booleans_with_their_native_types() {
-        let calls = gemma4_parse_generated_text("<|tool_call>call:get_weather{count:42,flag:true}<tool_call|>", &[weather_tool()], None);
+        let calls = gemma4_parse_generated_text(
+            "<|tool_call>call:get_weather{count:42,flag:true}<tool_call|>",
+            &[weather_tool()],
+            None,
+        );
         assert_eq!(calls.len(), 1);
         assert_eq!(arg(&calls[0], "count"), Some(&json!(42)));
         assert_eq!(arg(&calls[0], "flag"), Some(&Value::Bool(true)));
@@ -868,32 +1097,61 @@ mod tests {
     #[test]
     fn streams_gemma4_tool_calls_with_accumulate_parse_diff_and_split_special_tokens() {
         let mut parser = gemma4_create_stream_parser(vec![weather_tool()], None);
-        assert_eq!(parser.feed("Before <|tool"), vec![StreamParserEvent::Text { text: "Before ".into() }]);
+        assert_eq!(
+            parser.feed("Before <|tool"),
+            vec![StreamParserEvent::Text {
+                text: "Before ".into()
+            }]
+        );
         assert_eq!(
             parser.feed(r#"_call>call:get_weather{city:<|"|>Seo"#),
             vec![
-                StreamParserEvent::ToolcallStart { index: 0, name: "get_weather".into(), id: "gemma4-tool-0".into() },
-                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"city":"Seo"#.into() },
+                StreamParserEvent::ToolcallStart {
+                    index: 0,
+                    name: "get_weather".into(),
+                    id: "gemma4-tool-0".into()
+                },
+                StreamParserEvent::ToolcallDelta {
+                    index: 0,
+                    arguments_delta: r#"{"city":"Seo"#.into()
+                },
             ]
         );
-        assert_eq!(parser.feed(r#"ul<|"|>,count:4"#), vec![StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: "ul".into() }]);
+        assert_eq!(
+            parser.feed(r#"ul<|"|>,count:4"#),
+            vec![StreamParserEvent::ToolcallDelta {
+                index: 0,
+                arguments_delta: "ul".into()
+            }]
+        );
         assert_eq!(
             parser.feed("2,flag:true}<tool_"),
-            vec![StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"","count":42"#.into() }]
+            vec![StreamParserEvent::ToolcallDelta {
+                index: 0,
+                arguments_delta: r#"","count":42"#.into()
+            }]
         );
         assert_eq!(
             parser.feed("call|> after"),
             vec![
-                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#","flag":true}"#.into() },
+                StreamParserEvent::ToolcallDelta {
+                    index: 0,
+                    arguments_delta: r#","flag":true}"#.into()
+                },
                 StreamParserEvent::ToolcallEnd {
                     index: 0,
                     name: "get_weather".into(),
                     id: "gemma4-tool-0".into(),
-                    arguments: json!({"city": "Seoul", "count": 42, "flag": true}).as_object().expect("object").clone(),
+                    arguments: json!({"city": "Seoul", "count": 42, "flag": true})
+                        .as_object()
+                        .expect("object")
+                        .clone(),
                     incomplete: false,
                     error_message: None,
                 },
-                StreamParserEvent::Text { text: " after".into() },
+                StreamParserEvent::Text {
+                    text: " after".into()
+                },
             ]
         );
         assert!(parser.finish().is_empty());
@@ -903,10 +1161,24 @@ mod tests {
     fn recovers_a_balanced_arguments_payload_with_the_terminator_missing() {
         let (seen, handler) = error_collector();
         let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
-        let events = feed_all(&mut parser, r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}"#);
-        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        let events = feed_all(
+            &mut parser,
+            r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}"#,
+        );
+        let ends: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. }))
+            .collect();
         assert_eq!(ends.len(), 1);
-        let StreamParserEvent::ToolcallEnd { name, arguments, incomplete, .. } = ends[0] else { unreachable!() };
+        let StreamParserEvent::ToolcallEnd {
+            name,
+            arguments,
+            incomplete,
+            ..
+        } = ends[0]
+        else {
+            unreachable!()
+        };
         assert_eq!(name, "get_weather");
         assert_eq!(arguments.get("city"), Some(&Value::String("Seoul".into())));
         assert!(!*incomplete);
@@ -917,13 +1189,24 @@ mod tests {
     fn flags_an_unbalanced_argument_object_as_incomplete() {
         let (seen, handler) = error_collector();
         let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
-        let events = feed_all(&mut parser, r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>"#);
-        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        let events = feed_all(
+            &mut parser,
+            r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>"#,
+        );
+        let ends: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. }))
+            .collect();
         assert_eq!(ends.len(), 1);
-        let StreamParserEvent::ToolcallEnd { incomplete, .. } = ends[0] else { unreachable!() };
+        let StreamParserEvent::ToolcallEnd { incomplete, .. } = ends[0] else {
+            unreachable!()
+        };
         assert!(*incomplete);
         assert!(!text_of(&events).contains("<|tool_call>"));
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not complete Gemma4 tool call at finish."]);
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Could not complete Gemma4 tool call at finish."]
+        );
     }
 
     #[test]
@@ -931,12 +1214,20 @@ mod tests {
         let (seen, handler) = error_collector();
         let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
         let events = feed_all(&mut parser, "<|tool_call>call:todowrite{todos:[]}");
-        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        let ends: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. }))
+            .collect();
         assert_eq!(ends.len(), 1);
-        let StreamParserEvent::ToolcallEnd { incomplete, .. } = ends[0] else { unreachable!() };
+        let StreamParserEvent::ToolcallEnd { incomplete, .. } = ends[0] else {
+            unreachable!()
+        };
         assert!(*incomplete);
         assert!(!text_of(&events).contains("<|tool_call>"));
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not complete Gemma4 tool call at finish."]);
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Could not complete Gemma4 tool call at finish."]
+        );
     }
 
     #[test]
@@ -946,24 +1237,34 @@ mod tests {
         let events = feed_all(&mut parser, "<|tool_call>call:");
         assert!(!events.iter().any(is_toolcall_event));
         assert!(!text_of(&events).contains("<|tool_call>"));
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Gemma4 tool call dropped"]);
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Gemma4 tool call dropped"]
+        );
     }
 
     #[test]
     fn drops_an_unknown_gemma_tool() {
         let (seen, handler) = error_collector();
         let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
-        let events = feed_all(&mut parser, r#"<|tool_call>call:unknown_tool{city:<|"|>Seoul<|"|>}"#);
+        let events = feed_all(
+            &mut parser,
+            r#"<|tool_call>call:unknown_tool{city:<|"|>Seoul<|"|>}"#,
+        );
         assert!(!events.iter().any(is_toolcall_event));
         assert!(!text_of(&events).contains("<|tool_call>"));
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Gemma4 tool call dropped"]);
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Gemma4 tool call dropped"]
+        );
     }
 
     #[test]
     fn requires_an_explicit_outer_closing_brace_before_recovering() {
         assert!(scan_gemma4_args_complete(r#"get_weather{city:<|"|>Seoul<|"|>"#).is_none());
         assert_eq!(
-            scan_gemma4_args_complete(r#"get_weather{city:<|"|>Seoul<|"|>}"#).map(|complete| complete.raw_args),
+            scan_gemma4_args_complete(r#"get_weather{city:<|"|>Seoul<|"|>}"#)
+                .map(|complete| complete.raw_args),
             Some(r#"city:<|"|>Seoul<|"|>"#.to_string())
         );
     }
@@ -979,19 +1280,34 @@ mod tests {
     #[test]
     fn recovers_a_partial_terminator_after_balanced_arguments() {
         let mut parser = gemma4_create_stream_parser(fixture_tools(), None);
-        let events = feed_all(&mut parser, r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}<tool_c"#);
+        let events = feed_all(
+            &mut parser,
+            r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}<tool_c"#,
+        );
         assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallEnd { name, arguments, incomplete: false, .. } if name == "get_weather" && arguments.get("city") == Some(&Value::String("Seoul".into())))));
-        assert!(!events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallEnd { incomplete: true, .. })));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            StreamParserEvent::ToolcallEnd {
+                incomplete: true,
+                ..
+            }
+        )));
     }
 
     #[test]
     fn drops_a_terminated_call_with_an_unknown_name() {
         let (seen, handler) = error_collector();
         let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
-        let events = feed_all(&mut parser, r#"<|tool_call>call:unknown_tool{city:<|"|>Seoul<|"|>}<tool_call|>"#);
+        let events = feed_all(
+            &mut parser,
+            r#"<|tool_call>call:unknown_tool{city:<|"|>Seoul<|"|>}<tool_call|>"#,
+        );
         assert!(events.is_empty());
         assert_eq!(seen.lock().expect("errors").len(), 1);
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Gemma4 tool call dropped"]);
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Gemma4 tool call dropped"]
+        );
     }
 
     #[test]
@@ -1000,10 +1316,19 @@ mod tests {
         let mut events = parser.feed(r#"<|tool_call>call:get_weather{city:<|"|>Seo"#);
         events.extend(parser.finish());
         assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallStart { id, .. } if id == "gemma4-tool-0")));
-        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallDelta { .. })));
-        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, StreamParserEvent::ToolcallDelta { .. }))
+        );
+        let ends: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. }))
+            .collect();
         assert_eq!(ends.len(), 1);
-        assert!(matches!(ends[0], StreamParserEvent::ToolcallEnd { id, incomplete: true, .. } if id == "gemma4-tool-0"));
+        assert!(
+            matches!(ends[0], StreamParserEvent::ToolcallEnd { id, incomplete: true, .. } if id == "gemma4-tool-0")
+        );
     }
 
     #[test]
@@ -1012,9 +1337,24 @@ mod tests {
         let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
         let raw_fragment = r#"call:get_weather{city:<|"|>Seo"#;
         let events = feed_all(&mut parser, &format!("<|tool_call>{raw_fragment}"));
-        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallEnd { incomplete: true, .. })));
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not complete Gemma4 tool call at finish."]);
-        assert!(!seen.lock().expect("errors").iter().any(|message| message.contains(raw_fragment)));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamParserEvent::ToolcallEnd {
+                incomplete: true,
+                ..
+            }
+        )));
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Could not complete Gemma4 tool call at finish."]
+        );
+        assert!(
+            !seen
+                .lock()
+                .expect("errors")
+                .iter()
+                .any(|message| message.contains(raw_fragment))
+        );
     }
 
     #[test]
@@ -1023,9 +1363,23 @@ mod tests {
         let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
         let raw_fragment = "call:get_weather{}";
         let events = feed_all(&mut parser, &format!("<|tool_call>{raw_fragment}"));
-        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallEnd { incomplete: true, .. })));
-        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not complete Gemma4 tool call at finish."]);
-        assert!(!seen.lock().expect("errors").iter().any(|message| message.contains(raw_fragment)));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamParserEvent::ToolcallEnd {
+                incomplete: true,
+                ..
+            }
+        )));
+        assert_eq!(
+            seen.lock().expect("errors").as_slice(),
+            ["Could not complete Gemma4 tool call at finish."]
+        );
+        assert!(
+            !seen
+                .lock()
+                .expect("errors")
+                .iter()
+                .any(|message| message.contains(raw_fragment))
+        );
     }
 }
-

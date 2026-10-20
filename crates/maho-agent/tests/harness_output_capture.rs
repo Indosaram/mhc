@@ -6,7 +6,9 @@
 use std::sync::{Arc, Mutex};
 
 use maho_agent::harness::context::background_context;
-use maho_agent::harness::types::{ShellOutputLimits, ShellOutputRetention, ShellOutputUpdate, ShellOutputView};
+use maho_agent::harness::types::{
+    ShellOutputLimits, ShellOutputRetention, ShellOutputUpdate, ShellOutputView,
+};
 use maho_agent::harness::utils::adaptive_publisher::{
     AdaptivePublisher, AdaptivePublisherOptions, PublisherClock,
 };
@@ -31,7 +33,9 @@ impl ManualClock {
             let mut state = self.state.lock().expect("clock poisoned");
             state.now_ms += ms;
             match state.pending.as_ref() {
-                Some((deadline, _)) if *deadline <= state.now_ms => state.pending.take().map(|(_, callback)| callback),
+                Some((deadline, _)) if *deadline <= state.now_ms => {
+                    state.pending.take().map(|(_, callback)| callback)
+                }
                 _ => None,
             }
         };
@@ -66,16 +70,22 @@ fn create_capture(
 ) -> OutputCapture {
     OutputCapture::with_clock(
         Some(&maho_agent::harness::types::ShellOutputCaptureOptions {
-            limits: ShellOutputLimits { max_bytes, max_lines, retain: Some(retain) },
+            limits: ShellOutputLimits {
+                max_bytes,
+                max_lines,
+                retain: Some(retain),
+            },
             spill: None,
         }),
         background_context(),
         OutputCaptureHandlers {
             on_update: Some(Arc::new(move |update, _context| {
                 updates.lock().expect("updates poisoned").push(update);
-                Box::pin(async {})
+                Box::pin(async { Ok(()) })
             })),
-            on_error: Arc::new(move |message| errors.lock().expect("errors poisoned").push(message)),
+            on_error: Arc::new(move |message| {
+                errors.lock().expect("errors poisoned").push(message)
+            }),
         },
         clock,
     )
@@ -106,7 +116,12 @@ fn bounds_event_count_and_spaces_large_publications_by_encoded_size() {
             snapshot: Box::new(move || snapshot_value.lock().expect("value poisoned").clone()),
             update: Box::new(|_previous: Option<&String>, current: &String| Some(current.clone())),
             measure: Box::new(|update: &String| update.len() as u64),
-            publish: Box::new(move |update| publish_updates.lock().expect("updates poisoned").push(update)),
+            publish: Box::new(move |update| {
+                publish_updates
+                    .lock()
+                    .expect("updates poisoned")
+                    .push(update)
+            }),
             on_error: Box::new(|message| panic!("{message}")),
             min_interval_ms: Some(100),
             target_bytes_per_second: Some(100),
@@ -118,7 +133,10 @@ fn bounds_event_count_and_spaces_large_publications_by_encoded_size() {
     *value.lock().expect("value poisoned") = "x".repeat(100);
     publisher.mark_dirty();
     clock.advance(100);
-    assert_eq!(*updates.lock().expect("updates poisoned"), vec!["a".to_string(), "x".repeat(100)]);
+    assert_eq!(
+        *updates.lock().expect("updates poisoned"),
+        vec!["a".to_string(), "x".repeat(100)]
+    );
 
     *value.lock().expect("value poisoned") = "held".to_string();
     publisher.mark_dirty();
@@ -148,7 +166,10 @@ fn commits_its_baseline_before_a_consumer_throws() {
             }),
             measure: Box::new(|_update: &SnapshotUpdate| 1),
             publish: Box::new(move |update| {
-                publish_updates.lock().expect("updates poisoned").push(update);
+                publish_updates
+                    .lock()
+                    .expect("updates poisoned")
+                    .push(update);
                 if *publish_throw.lock().expect("flag poisoned") {
                     panic!("consumer failed after apply");
                 }
@@ -164,12 +185,16 @@ fn commits_its_baseline_before_a_consumer_throws() {
     clock.advance(100);
     *value.lock().expect("value poisoned") = "ab".to_string();
     *throw_after_apply.lock().expect("flag poisoned") = true;
-    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publisher.mark_dirty())).is_err();
+    let panicked =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publisher.mark_dirty())).is_err();
     assert!(panicked, "the consumer panic propagates out of markDirty");
     publisher.flush(true);
     assert_eq!(
         *updates.lock().expect("updates poisoned"),
-        vec![(None, "a".to_string()), (Some("a".to_string()), "ab".to_string())]
+        vec![
+            (None, "a".to_string()),
+            (Some("a".to_string()), "ab".to_string())
+        ]
     );
 
     *throw_after_apply.lock().expect("flag poisoned") = false;
@@ -223,11 +248,21 @@ fn decodes_utf8_split_across_raw_process_chunks() {
 fn publishes_the_first_bounded_view_immediately_and_trickling_appends_responsively() {
     let clock = Arc::new(ManualClock::default());
     let updates = Arc::new(Mutex::new(Vec::new()));
-    let capture = create_capture(clock.clone(), 50, 100, ShellOutputRetention::Tail, updates.clone(), Arc::new(Mutex::new(Vec::new())));
+    let capture = create_capture(
+        clock.clone(),
+        50,
+        100,
+        ShellOutputRetention::Tail,
+        updates.clone(),
+        Arc::new(Mutex::new(Vec::new())),
+    );
 
     capture.push_text("one");
     assert_eq!(updates.lock().expect("updates poisoned").len(), 1);
-    assert!(matches!(updates.lock().expect("updates poisoned")[0], ShellOutputUpdate::Replace { .. }));
+    assert!(matches!(
+        updates.lock().expect("updates poisoned")[0],
+        ShellOutputUpdate::Replace { .. }
+    ));
 
     clock.advance(150);
     capture.push_text(" two");
@@ -239,14 +274,26 @@ fn publishes_the_first_bounded_view_immediately_and_trickling_appends_responsive
             other => panic!("expected append, got {other:?}"),
         }
     }
-    assert_eq!(fold(&updates.lock().expect("updates poisoned")).expect("folded").text, "one two");
+    assert_eq!(
+        fold(&updates.lock().expect("updates poisoned"))
+            .expect("folded")
+            .text,
+        "one two"
+    );
 }
 
 #[test]
 fn collapses_a_burst_into_one_trailing_update() {
     let clock = Arc::new(ManualClock::default());
     let updates = Arc::new(Mutex::new(Vec::new()));
-    let capture = create_capture(clock.clone(), 50, 100, ShellOutputRetention::Tail, updates.clone(), Arc::new(Mutex::new(Vec::new())));
+    let capture = create_capture(
+        clock.clone(),
+        50,
+        100,
+        ShellOutputRetention::Tail,
+        updates.clone(),
+        Arc::new(Mutex::new(Vec::new())),
+    );
     capture.push_text("a");
     capture.push_text("b");
     capture.push_text("c");
@@ -261,14 +308,26 @@ fn collapses_a_burst_into_one_trailing_update() {
             other => panic!("expected append, got {other:?}"),
         }
     }
-    assert_eq!(fold(&updates.lock().expect("updates poisoned")).expect("folded").text, "abc");
+    assert_eq!(
+        fold(&updates.lock().expect("updates poisoned"))
+            .expect("folded")
+            .text,
+        "abc"
+    );
 }
 
 #[test]
 fn publishes_a_small_slide_for_post_cap_trickle() {
     let clock = Arc::new(ManualClock::default());
     let updates = Arc::new(Mutex::new(Vec::new()));
-    let capture = create_capture(clock.clone(), 10, 100, ShellOutputRetention::Tail, updates.clone(), Arc::new(Mutex::new(Vec::new())));
+    let capture = create_capture(
+        clock.clone(),
+        10,
+        100,
+        ShellOutputRetention::Tail,
+        updates.clone(),
+        Arc::new(Mutex::new(Vec::new())),
+    );
     capture.push_text("abcdefghij");
     clock.advance(150);
     capture.push_text("k");
@@ -309,12 +368,22 @@ fn keeps_the_exact_byte_count_for_a_single_line_larger_than_its_working_buffer()
 fn uses_a_cap_bounded_replacement_after_complete_turnover() {
     let clock = Arc::new(ManualClock::default());
     let updates = Arc::new(Mutex::new(Vec::new()));
-    let capture = create_capture(clock.clone(), 10, 100, ShellOutputRetention::Tail, updates.clone(), Arc::new(Mutex::new(Vec::new())));
+    let capture = create_capture(
+        clock.clone(),
+        10,
+        100,
+        ShellOutputRetention::Tail,
+        updates.clone(),
+        Arc::new(Mutex::new(Vec::new())),
+    );
     capture.push_text("abcdefghij");
     capture.push_text(&"x".repeat(100));
     clock.advance(100);
 
-    assert!(matches!(updates.lock().expect("updates poisoned")[1], ShellOutputUpdate::Replace { .. }));
+    assert!(matches!(
+        updates.lock().expect("updates poisoned")[1],
+        ShellOutputUpdate::Replace { .. }
+    ));
     let folded = fold(&updates.lock().expect("updates poisoned")).expect("folded");
     assert_eq!(folded.text.chars().count(), 10);
     assert_eq!(folded.truncation.total_bytes, 110);
@@ -324,11 +393,23 @@ fn uses_a_cap_bounded_replacement_after_complete_turnover() {
 fn forces_held_state_and_cancels_its_trailing_timer_on_dispose() {
     let clock = Arc::new(ManualClock::default());
     let updates = Arc::new(Mutex::new(Vec::new()));
-    let capture = create_capture(clock.clone(), 50, 100, ShellOutputRetention::Tail, updates.clone(), Arc::new(Mutex::new(Vec::new())));
+    let capture = create_capture(
+        clock.clone(),
+        50,
+        100,
+        ShellOutputRetention::Tail,
+        updates.clone(),
+        Arc::new(Mutex::new(Vec::new())),
+    );
     capture.push_text("a");
     capture.push_text("b");
     capture.flush();
-    assert_eq!(fold(&updates.lock().expect("updates poisoned")).expect("folded").text, "ab");
+    assert_eq!(
+        fold(&updates.lock().expect("updates poisoned"))
+            .expect("folded")
+            .text,
+        "ab"
+    );
     capture.dispose();
     clock.advance(1_000);
     assert_eq!(updates.lock().expect("updates poisoned").len(), 2);
@@ -353,7 +434,14 @@ fn publishes_spill_metadata_without_resending_text() {
     let clock = Arc::new(ManualClock::default());
     let updates = Arc::new(Mutex::new(Vec::new()));
     let errors = Arc::new(Mutex::new(Vec::new()));
-    let capture = create_capture(clock.clone(), 50, 100, ShellOutputRetention::Tail, updates.clone(), errors.clone());
+    let capture = create_capture(
+        clock.clone(),
+        50,
+        100,
+        ShellOutputRetention::Tail,
+        updates.clone(),
+        errors.clone(),
+    );
     capture.push_text("output");
     capture.set_spill_path("/tmp/output.log");
     {
@@ -366,7 +454,10 @@ fn publishes_spill_metadata_without_resending_text() {
         }
     }
     assert_eq!(
-        fold(&updates.lock().expect("updates poisoned")).expect("folded").spill_path.as_deref(),
+        fold(&updates.lock().expect("updates poisoned"))
+            .expect("folded")
+            .spill_path
+            .as_deref(),
         Some("/tmp/output.log")
     );
     assert!(errors.lock().expect("errors poisoned").is_empty());

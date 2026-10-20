@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::{oneshot, watch};
 
 use crate::types::{AssistantMessage, AssistantMessageEvent};
@@ -13,15 +13,63 @@ use crate::types::{AssistantMessage, AssistantMessageEvent};
 #[error("{message}")]
 pub struct StreamError {
     pub message: String,
+    pub kind: StreamErrorKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamErrorKind {
+    Other,
+    ProviderFailure(crate::types::ProviderDiagnostic),
+    OAuthRefreshUnavailable,
 }
 
 impl StreamError {
+    pub fn diagnostic_from_status(status: Option<u16>) -> Option<crate::types::ProviderDiagnostic> {
+        use crate::types::{
+            ProviderDiagnostic, ProviderDiagnosticCategory as Category, ProviderDiagnosticEvidence,
+        };
+        let status = status.filter(|status| (400..=599).contains(status))?;
+        Some(ProviderDiagnostic {
+            category: match status {
+                401 => Category::Auth,
+                400 => Category::InvalidRequest,
+                500..=599 => Category::ProviderUnavailable,
+                _ => Category::Unknown,
+            },
+            http_status: Some(status),
+            code: None,
+            evidence: ProviderDiagnosticEvidence::StructuredStatus,
+        })
+    }
+
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+            kind: StreamErrorKind::Other,
+        }
+    }
+
+    pub fn provider_failure(
+        message: impl Into<String>,
+        diagnostic: crate::types::ProviderDiagnostic,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            kind: StreamErrorKind::ProviderFailure(diagnostic),
+        }
+    }
+
+    pub fn oauth_refresh_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: StreamErrorKind::OAuthRefreshUnavailable,
+        }
     }
 }
 
 type Waiter<T> = oneshot::Sender<Result<Option<T>, StreamError>>;
+type CancellationHandler =
+    Box<dyn FnOnce() -> crate::types::BoxFuture<'static, Result<(), StreamError>> + Send>;
 
 struct State<T, R> {
     queue: VecDeque<T>,
@@ -35,6 +83,8 @@ struct Inner<T, R> {
     state: Mutex<State<T, R>>,
     result_tx: watch::Sender<bool>,
     local_work_depth: AtomicUsize,
+    cancellation_handler: Mutex<Option<CancellationHandler>>,
+    cancellation: OnceLock<watch::Receiver<Option<Result<(), StreamError>>>>,
     is_complete: fn(&T) -> bool,
     extract_result: fn(&T) -> R,
 }
@@ -46,7 +96,9 @@ pub struct EventStream<T, R = T> {
 
 impl<T, R> Clone for EventStream<T, R> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -70,6 +122,8 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
                 }),
                 result_tx,
                 local_work_depth: AtomicUsize::new(0),
+                cancellation_handler: Mutex::new(None),
+                cancellation: OnceLock::new(),
                 is_complete,
                 extract_result,
             }),
@@ -77,7 +131,113 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
     }
 
     fn state(&self) -> MutexGuard<'_, State<T, R>> {
-        self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn set_cancellation_handler(&self, handler: CancellationHandler) {
+        *self
+            .inner
+            .cancellation_handler
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(handler);
+    }
+
+    pub async fn cancel(&self) -> Result<(), StreamError> {
+        let mut completion = self.inner
+            .cancellation
+            .get_or_init(|| {
+                let handler = self
+                    .inner
+                    .cancellation_handler
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                let stream = self.clone();
+                let (completed, completion) = watch::channel(None);
+                tokio::spawn(async move {
+                    let result = match handler {
+                        Some(handler) => handler().await,
+                        None => Ok(()),
+                    };
+                    match &result {
+                        Ok(()) => stream.end(None),
+                        Err(error) => stream.fail(error.clone()),
+                    }
+                    completed.send_replace(Some(result));
+                });
+                completion
+            })
+            .clone();
+        loop {
+            if let Some(result) = completion.borrow().clone() {
+                return result;
+            }
+            if completion.changed().await.is_err() {
+                return Err(StreamError::new("Cancellation task ended without acknowledgement"));
+            }
+        }
+    }
+
+    /// Join the owned relay after its cancellation handler, including terminal streams.
+    /// Install the handler first and attach the task before exposing the stream.
+    pub fn set_cancellation_task(&self, task: tokio::task::JoinHandle<()>) {
+        let handler = self.inner.cancellation_handler.lock()
+            .unwrap_or_else(|error| error.into_inner()).take();
+        self.set_cancellation_handler(Box::new(move || Box::pin(async move {
+            let cancellation = match handler {
+                Some(handler) => handler().await,
+                None => Ok(()),
+            };
+            let joined = task.await.map_err(|error| {
+                StreamError::new(format!("Stream relay task failed: {error}"))
+            });
+            cancellation.and(joined)
+        })));
+    }
+
+    /// Snapshot a settled result without waiting for an `end(None)` stream.
+    pub fn result_if_ready(&self) -> Option<Result<R, StreamError>> {
+        self.state().result.clone()
+    }
+
+    /// Relay ownership, not just events: abandoning the target closes the source first.
+    /// This is for transparent forwarding only; projecting wrappers finalize their own state.
+    pub fn forward_cancellation_from(&self, source: Self) {
+        self.forward_cancellation_after(async move { Some(source) });
+    }
+
+    pub fn forward_cancellation_after(
+        &self,
+        source: impl Future<Output = Option<Self>> + Send + 'static,
+    ) {
+        let target = Arc::downgrade(&self.inner);
+        self.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                let Some(source) = source.await else {
+                    return Ok(());
+                };
+                let cancellation = source.cancel().await;
+                let Some(inner) = target.upgrade() else {
+                    return cancellation;
+                };
+                let target = Self { inner };
+                match &cancellation {
+                    Ok(()) => {
+                        let result = source.state().result.clone();
+                        match result {
+                            Some(Ok(result)) => target.end(Some(result)),
+                            Some(Err(error)) => target.fail(error),
+                            None => target.end(None),
+                        }
+                    }
+                    Err(error) => target.fail(error.clone()),
+                }
+                cancellation
+            })
+        }));
     }
 
     fn settle(&self, state: &mut State<T, R>, result: Result<R, StreamError>) {
@@ -201,10 +361,13 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
 }
 
 fn is_terminal(event: &AssistantMessageEvent) -> bool {
-    matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. })
+    matches!(
+        event,
+        AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+    )
 }
 
-fn extract_message(event: &AssistantMessageEvent) -> AssistantMessage {
+pub(crate) fn extract_message(event: &AssistantMessageEvent) -> AssistantMessage {
     match event {
         AssistantMessageEvent::Done { message, .. } => message.clone(),
         AssistantMessageEvent::Error { error, .. } => error.clone(),
@@ -241,6 +404,10 @@ mod tests {
 
     fn message(stop_reason: StopReason) -> AssistantMessage {
         AssistantMessage {
+            error_cause: None,
+            prompt_cache_diagnostics: None,
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "faux".into(),
             provider: "faux".into(),
@@ -262,15 +429,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_cancellation_joins_relay_and_preserves_result() {
+        let stream: EventStream<u32, u32> = EventStream::new(|value| *value == 9, |value| *value);
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
+            entered_tx.send(()).expect("entered subscriber");
+            release_rx.await.expect("release");
+            Ok(())
+        })));
+        let resource = Arc::new(());
+        let owned = resource.clone();
+        let (exit_tx, exit_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _owned = owned;
+            exit_rx.await.expect("relay exit");
+        });
+        stream.set_cancellation_task(task);
+        stream.push(1);
+        stream.push(9);
+        let bound = std::time::Duration::from_secs(5);
+        let mut cancellation = Box::pin(stream.cancel());
+        assert!(futures::poll!(cancellation.as_mut()).is_pending());
+        tokio::time::timeout(bound, entered_rx).await.expect("entered deadline").expect("entered");
+        release_tx.send(()).expect("release subscriber");
+        assert!(futures::poll!(cancellation.as_mut()).is_pending());
+        exit_tx.send(()).expect("relay subscriber");
+        tokio::time::timeout(bound, cancellation).await.expect("cancel deadline").expect("cancel");
+        assert_eq!(Arc::strong_count(&resource), 1);
+        assert_eq!(stream.collect().await.expect("events"), vec![1, 9]);
+        assert_eq!(stream.result_if_ready(), Some(Ok(9)));
+    }
+
+    #[tokio::test]
+    async fn dropped_cancellation_waiter_does_not_lose_cleanup() {
+        let stream: EventStream<u32, u32> = EventStream::new(|_| false, |value| *value);
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
+            entered_tx.send(()).expect("entered subscriber");
+            release_rx.await.expect("release");
+            Ok(())
+        })));
+        let bound = std::time::Duration::from_secs(5);
+        let mut first = Box::pin(stream.cancel());
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        tokio::time::timeout(bound, entered_rx).await.expect("entered deadline").expect("entered");
+        drop(first);
+        let mut second = Box::pin(stream.cancel());
+        assert!(futures::poll!(second.as_mut()).is_pending());
+        release_tx.send(()).expect("release subscriber");
+        tokio::time::timeout(bound, second).await.expect("cancel deadline").expect("cancel");
+        assert_eq!(stream.next().await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn terminal_failure_keeps_original_result_and_reports_cleanup_failure() {
+        let stream: EventStream<u32, u32> = EventStream::new(|_| false, |value| *value);
+        let failure = StreamError::new("provider failure");
+        let cleanup = StreamError::new("cleanup failure");
+        let error = cleanup.clone();
+        stream.set_cancellation_handler(Box::new(move || Box::pin(async move { Err(error) })));
+        stream.fail(failure.clone());
+        assert_eq!(stream.cancel().await, Err(cleanup));
+        assert_eq!(stream.result_if_ready(), Some(Err(failure)));
+    }
+
+    #[tokio::test]
+    async fn forwarding_cancellation_waits_for_setup_and_inner_close() {
+        let outer = create_assistant_message_event_stream();
+        let inner = create_assistant_message_event_stream();
+        let (source_tx, source_rx) = oneshot::channel();
+        outer.forward_cancellation_after(async move { source_rx.await.ok() });
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let final_message = message(StopReason::Error);
+        let final_inner = inner.clone();
+        let expected = final_message.clone();
+        inner.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                let _ = entered_tx.send(());
+                release_rx.await.expect("release");
+                final_inner.end(Some(final_message));
+                Ok(())
+            })
+        }));
+        let cancel_outer = outer.clone();
+        let task = tokio::spawn(async move { cancel_outer.cancel().await });
+        source_tx.send(inner).expect("setup subscriber");
+        let bound = std::time::Duration::from_secs(5);
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("entered deadline")
+            .expect("entered");
+        assert!(!task.is_finished());
+        assert!(!outer.state().done);
+        release_tx.send(()).expect("release subscriber");
+        tokio::time::timeout(bound, task)
+            .await
+            .expect("close deadline")
+            .expect("task")
+            .expect("close");
+        assert_eq!(outer.result().await, Ok(expected));
+    }
+
+    #[tokio::test]
+    async fn forwarding_cancellation_preserves_inner_close_failure() {
+        let outer = create_assistant_message_event_stream();
+        let inner = create_assistant_message_event_stream();
+        let error = StreamError::new("inner close failed");
+        let failure = error.clone();
+        inner.set_cancellation_handler(Box::new(move || Box::pin(async move { Err(failure) })));
+        outer.forward_cancellation_from(inner);
+        assert_eq!(outer.cancel().await, Err(error.clone()));
+        assert_eq!(outer.result().await, Err(error));
+    }
+
+    #[tokio::test]
     async fn queued_events_are_delivered_in_order_and_done_sets_result() {
         let stream = create_assistant_message_event_stream();
-        stream.push(AssistantMessageEvent::Start { partial: message(StopReason::Pending) });
-        stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message: message(StopReason::Stop) });
-        stream.push(AssistantMessageEvent::Start { partial: message(StopReason::Pending) });
+        stream.push(AssistantMessageEvent::Start {
+            partial: message(StopReason::Pending),
+        });
+        stream.push(AssistantMessageEvent::Done {
+            reason: DoneReason::Stop,
+            message: message(StopReason::Stop),
+        });
+        stream.push(AssistantMessageEvent::Start {
+            partial: message(StopReason::Pending),
+        });
         stream.end(None);
         let events = stream.collect().await.expect("events");
         assert_eq!(events.len(), 2);
-        assert_eq!(stream.result().await.expect("result").stop_reason, StopReason::Stop);
+        assert_eq!(
+            stream.result().await.expect("result").stop_reason,
+            StopReason::Stop
+        );
     }
 
     #[tokio::test]
@@ -279,10 +573,16 @@ mod tests {
         let consumer = stream.clone();
         let task = tokio::spawn(async move { consumer.next().await });
         tokio::task::yield_now().await;
-        stream.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message(StopReason::Error) });
+        stream.push(AssistantMessageEvent::Error {
+            reason: ErrorReason::Error,
+            error: message(StopReason::Error),
+        });
         let event = task.await.expect("join").expect("ok").expect("event");
         assert!(matches!(event, AssistantMessageEvent::Error { .. }));
-        assert_eq!(stream.result().await.expect("result").stop_reason, StopReason::Error);
+        assert_eq!(
+            stream.result().await.expect("result").stop_reason,
+            StopReason::Error
+        );
         assert_eq!(stream.next().await, Ok(None));
     }
 
@@ -297,6 +597,32 @@ mod tests {
         assert_eq!(stream.result().await, Err(StreamError::new("boom")));
         stream.push(1);
         assert!(stream.queue().is_empty());
+    }
+
+    #[tokio::test]
+    async fn typed_failures_survive_iteration_and_result() {
+        let diagnostic = StreamError::diagnostic_from_status(Some(401)).expect("status diagnostic");
+        for error in [
+            StreamError::provider_failure("denied", diagnostic),
+            StreamError::oauth_refresh_unavailable("refresh unavailable"),
+        ] {
+            let stream: EventStream<u32, u32> = EventStream::new(|_| false, |value| *value);
+            let mut next = Box::pin(stream.next());
+            assert!(futures::poll!(next.as_mut()).is_pending());
+            stream.fail(error.clone());
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), next)
+                    .await
+                    .expect("bounded iterator"),
+                Err(error.clone())
+            );
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), stream.result())
+                    .await
+                    .expect("bounded result"),
+                Err(error)
+            );
+        }
     }
 
     #[tokio::test]
@@ -316,8 +642,16 @@ mod tests {
     #[tokio::test]
     async fn queues_adjacent_delta_events_immediately_without_throttling_or_merging() {
         let stream = create_assistant_message_event_stream();
-        stream.push(AssistantMessageEvent::TextDelta { content_index: 0, delta: "a".into(), partial: message(StopReason::Pending) });
-        stream.push(AssistantMessageEvent::TextDelta { content_index: 0, delta: "b".into(), partial: message(StopReason::Pending) });
+        stream.push(AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: "a".into(),
+            partial: message(StopReason::Pending),
+        });
+        stream.push(AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: "b".into(),
+            partial: message(StopReason::Pending),
+        });
         let queue = stream.queue();
         assert_eq!(queue.len(), 2);
         match &queue[0] {

@@ -4,8 +4,8 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 
 | Source | Short | Full commit | Location |
 | --- | --- | --- | --- |
-| senpi | cf69f5e7 | cf69f5e72eb325219a93e17bb54bbd4ba787899e | code-yeongyu/senpi |
-| oh-my-openagent | 77f3067f1 | 77f3067f157a4f88e6d8ed48b3a6c338654402ed | code-yeongyu/oh-my-openagent |
+| senpi | 903b83367 | 903b83367545bea516f35fc7f7c7cb692847988d | code-yeongyu/senpi |
+| oh-my-openagent | ce910506c1 | ce910506c13f6f9dfb973e686769e22dbd91a5d1 | code-yeongyu/oh-my-openagent |
 | omo-components (COMP) | 93b78ac | 93b78ac1cc8d488d124da7ed1d19f678e93fb0fd | (private checkout) |
 
 ## User extensions

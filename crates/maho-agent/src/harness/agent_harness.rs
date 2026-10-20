@@ -7,16 +7,19 @@ use maho_ai::types::DeferredHandle;
 
 use crate::harness::compaction::compaction::CompactionSettings;
 use crate::harness::session::session::SessionError;
-use crate::harness::session::types::{JsonValue, OperationKind, OperationResultRecord, Session, ToolExecutionMode};
-use crate::harness::types::{AgentHarnessStreamOptions, AgentHarnessTool};
+use crate::harness::session::types::{
+    JsonValue, OperationKind, OperationResultRecord, Session, ToolExecutionMode,
+};
 use crate::harness::tools::tool_context::ExecutionToolContext;
+use crate::harness::types::{AgentHarnessStreamOptions, AgentHarnessTool};
 use crate::types::QueueMode;
 
 use super::runtime::lane::OperationMismatch;
 use crate::harness::context::Context;
 
 /// Lazy form of pinned `toolContext`: `(context: Context) => TContext | Promise<TContext>`.
-pub type ToolContextResolver<TContext> = Arc<dyn Fn(&Context) -> maho_ai::types::BoxFuture<'static, TContext> + Send + Sync>;
+pub type ToolContextResolver<TContext> =
+    Arc<dyn Fn(&Context) -> maho_ai::types::BoxFuture<'static, TContext> + Send + Sync>;
 
 /// Pinned `toolContext?: TContext | ((context: Context) => TContext | Promise<TContext>)`.
 pub enum ToolContextSource<TContext> {
@@ -45,8 +48,9 @@ impl<TContext: Clone> ToolContextSource<TContext> {
 
 /// Pinned `systemPrompt: (toolContext: TContext, context: Context) => string | Promise<string>`;
 /// the tool context is `None` when the host configured no `toolContext` (pinned `undefined`).
-pub type AgentHarnessSystemPromptFn<TContext> =
-    Arc<dyn Fn(Option<TContext>, &Context) -> maho_ai::types::BoxFuture<'static, String> + Send + Sync>;
+pub type AgentHarnessSystemPromptFn<TContext> = Arc<
+    dyn Fn(Option<TContext>, &Context) -> maho_ai::types::BoxFuture<'static, String> + Send + Sync,
+>;
 
 pub type Resources = crate::harness::types::AgentHarnessResources;
 
@@ -59,9 +63,17 @@ pub struct DriveOptions {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DriveOutcome {
-    Settled { outcome: OperationResultRecord },
-    WaitingRetry { operation_id: String, not_before: i64 },
-    WaitingDeferred { operation_id: String, deferred: DeferredHandle },
+    Settled {
+        outcome: OperationResultRecord,
+    },
+    WaitingRetry {
+        operation_id: String,
+        not_before: i64,
+    },
+    WaitingDeferred {
+        operation_id: String,
+        deferred: DeferredHandle,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +148,8 @@ pub struct AgentHarnessOptions<TContext = ExecutionToolContext> {
     /// Pinned `toProviderMessages`; defaults to `convertToLlm`.
     pub to_provider_messages: Option<super::runtime::types::ToProviderMessagesFn>,
     /// Pinned `entryProjectors`, keyed by custom entry type; defaults to none.
-    pub entry_projectors: Option<std::collections::BTreeMap<String, crate::harness::session::types::EntryProjector>>,
+    pub entry_projectors:
+        Option<std::collections::BTreeMap<String, crate::harness::session::types::EntryProjector>>,
 }
 
 /// Failure of one `Lane::drive` call: the pinned `Result<DriveOutcome, OperationMismatch | Closed>`.
@@ -144,6 +157,8 @@ pub struct AgentHarnessOptions<TContext = ExecutionToolContext> {
 pub enum DriveOptionsError {
     #[error("{0}")]
     Session(SessionError),
+    #[error("{0}")]
+    Cancelled(maho_ai::utils::abort::AbortReason),
     #[error("{0}")]
     Drive(String),
     #[error("Operation {0:?} does not own its lane")]

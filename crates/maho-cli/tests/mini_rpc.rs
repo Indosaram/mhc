@@ -6,15 +6,31 @@ fn peers() -> (RpcPeer, RpcPeer) {
     let (lr, lw) = tokio::io::split(left); let (rr, rw) = tokio::io::split(right);
     (create_peer(lr, lw, PeerOptions { dead_ms: 0, ..Default::default() }), create_peer(rr, rw, PeerOptions { dead_ms: 0, ..Default::default() }))
 }
+
+#[test]
+fn native_service_ids_survive_frame_serialization_and_deserialization() {
+    let id = maho_chord::types::JsString::from_utf16(vec![0xd800]);
+    let frame = Frame::Announce { services: vec![id.clone()] };
+    let wire = serde_json::to_string(&frame).unwrap();
+    let decoded: Frame = serde_json::from_str(&wire).unwrap();
+    let Frame::Announce { services } = decoded else { panic!("announce"); };
+    assert_eq!(services, vec![id.clone()]);
+    let event = Frame::Event { service: id.clone(), payload: json!({"value":1}), to: None };
+    let decoded: Frame = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+    let Frame::Event { service, payload, to } = decoded else { panic!("event"); };
+    assert_eq!(service, id);
+    assert_eq!(payload, json!({"value":1}));
+    assert_eq!(to, None);
+}
 #[tokio::test]
 async fn remote_service_calls_and_unknown_methods_use_real_frames() {
     let (left, right) = peers();
     let echo: Handler = Arc::new(|args, _| Box::pin(async move { Ok(args[0].clone()) }));
-    right.provide(define_service("echo"), HashMap::from([("value".to_owned(), echo)]));
+    right.provide(&define_service("echo", false).expect("echo token"), HashMap::from([("value".to_owned(), echo)]));
     assert_eq!(tokio::time::timeout(Duration::from_secs(1), left.call("echo.value", vec![json!(42)])).await.unwrap().unwrap(), json!(42));
     assert_eq!(left.call("echo.missing", vec![]).await.unwrap_err(), "Unknown method: echo.missing");
     assert_eq!(left.call("absent.method", vec![]).await.unwrap_err(), "No service provides absent.method");
-    assert!(left.announced().contains("echo"));
+    assert!(left.announced().contains(&"echo".into()));
 }
 #[tokio::test]
 async fn addressed_events_preserve_destination() {
@@ -22,8 +38,8 @@ async fn addressed_events_preserve_destination() {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let sender = Arc::new(std::sync::Mutex::new(Some(sender)));
     right.on_event(move |service, payload, to| { if let Some(sender) = sender.lock().unwrap().take() { sender.send((service.to_owned(), payload.clone(), to.map(str::to_owned))).unwrap(); } });
-    left.emit_to(define_service("lane"), json!({"update":1}), "presentation");
-    assert_eq!(tokio::time::timeout(Duration::from_secs(1), receiver).await.unwrap().unwrap(), ("lane".to_owned(), json!({"update":1}), Some("presentation".to_owned())));
+    left.emit_to(&define_service("lane", false).expect("lane token"), json!({"update":1}), "presentation");
+    assert_eq!(tokio::time::timeout(Duration::from_secs(1), receiver).await.unwrap().unwrap(), ("lane".into(), json!({"update":1}), Some("presentation".to_owned())));
 }
 #[tokio::test]
 async fn caller_abort_reaches_inflight_service() {
@@ -32,7 +48,7 @@ async fn caller_abort_reaches_inflight_service() {
     let (cancelled, cancellation) = tokio::sync::oneshot::channel();
     let signals = Arc::new(std::sync::Mutex::new(Some((started, cancelled))));
     let handler: Handler = Arc::new(move |_, signal| { let (started, cancelled) = signals.lock().unwrap().take().unwrap(); Box::pin(async move { started.send(()).unwrap(); signal.cancelled().await; cancelled.send(()).unwrap(); Ok(json!(null)) }) });
-    right.provide(define_service("lane"), HashMap::from([("wait".to_owned(), handler)]));
+    right.provide(&define_service("lane", false).expect("lane token"), HashMap::from([("wait".to_owned(), handler)]));
     let controller = maho_ai::utils::abort::AbortController::new();
     let call = left.call_with(CallOptions { signal: Some(controller.signal()), timeout_ms: None }, "lane.wait", vec![]);
     let action = async { start.await.unwrap(); controller.abort(None); };

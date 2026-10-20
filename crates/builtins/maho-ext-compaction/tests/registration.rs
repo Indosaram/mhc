@@ -25,14 +25,16 @@ impl ModelRegistry for AuthRegistry {
     }
 }
 struct AuthSession { actions:Arc<PolicyActions>, branch:Vec<SessionEntry> }
-struct FallbackRegistry(Option<ResolvedRequestAuth>);
+struct FallbackRegistry(std::sync::Mutex<std::collections::VecDeque<Result<ResolvedRequestAuth,ExtensionFailure>>>);
 impl ModelRegistry for FallbackRegistry {
     fn get_all(&self)->Vec<Model> {Vec::new()}
     fn get_available(&self)->Vec<Model> {Vec::new()}
     fn find(&self,_:&str,_:&str)->Option<Model> {None}
     fn has_configured_auth(&self,_:&Model)->bool {false}
     fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>> {Box::pin(async {Err("local fallback reached".into())})}
-    fn get_api_key_and_headers<'a>(&'a self,_:&'a Model)->ExtensionFuture<'a,ResolvedRequestAuth> {Box::pin(async {self.0.clone().ok_or_else(||ExtensionFailure::new("auth lookup failed"))})}
+    fn get_api_key_and_headers<'a>(&'a self,_:&'a Model)->ExtensionFuture<'a,ResolvedRequestAuth> {Box::pin(async move {
+        self.0.lock().expect("fallback auth fixture").pop_front().expect("expected remote or local auth lookup")
+    })}
 }
 struct AuthCheckpointActions;
 impl ExtensionSessionActions for AuthCheckpointActions {
@@ -206,7 +208,7 @@ async fn registered_restoration_is_bounded_accepted_only_and_once() {
         }
         let mut rejected=ExtensionEvent::SessionCompact(SessionCompactEvent::Rejected {reason:CompactionReason::Manual,request_id:"rejected".into(),rejection_cause:CompactionRejectionCause::ExternalOwner});
         for handler in &api.registered.handlers[&EventKind::SessionCompact] {handler(&mut rejected,&ctx).await.expect("native compaction scenario invariant");}
-        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"continue".into(),images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
+        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"continue".into(),trigger:"prompt".into(),preview:false,images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
         let handler=&api.registered.handlers[&EventKind::BeforeAgentStart][0];
         let result=handler(&mut before,&ctx).await.expect("native compaction scenario invariant");
         assert!(matches!(result,EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:None,..})));
@@ -247,11 +249,11 @@ async fn run_native_scenario(cancel: bool, threshold: bool) {
 
 async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     use maho_core::agent_session::{AgentSession, AgentSessionConfig};
-    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider};
+    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message};
     let temp = tempfile::tempdir().expect("native compaction scenario invariant");
     let cwd = temp.path().to_string_lossy().into_owned();
     let idle_variant=matches!(variant,"idle-shutdown"|"idle-model-change"|"idle-stale-runner");
-    let provider = register_faux_provider(RegisterFauxProviderOptions { api: Some("compaction-registration-faux".into()), tokens_per_second: Some(0.), ..Default::default() });
+    let provider = maho_ai::compat::register_faux_provider(RegisterFauxProviderOptions { api: Some("compaction-registration-faux".into()), tokens_per_second: Some(0.), ..Default::default() }).expect("register faux API provider");
     let mut model = provider.get_model(None).expect("native compaction scenario invariant");
     let (remote_started,mut remote_started_rx)=tokio::sync::mpsc::channel(1);
     let remote_cancel=matches!(variant,"remote-cancel"|"session-abort");
@@ -346,7 +348,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     // registered over it with a configured key, so request auth resolves that key (no faux base auth).
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_provider(&model.provider, maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider {
             base_url: Some(model.base_url.clone()), api_key: Some("faux".into()), api: Some(model.api.clone()),
@@ -405,7 +407,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         let shutdown=tokio::time::timeout(std::time::Duration::from_secs(10),session.emit_session_shutdown(SessionReason::Quit)).await;
         let disposed=tokio::time::timeout(std::time::Duration::from_secs(10),session.dispose()).await;
         let cancelled=match model_cancelled {Some(cancelled)=>cancelled,None=>tokio::time::timeout(std::time::Duration::from_secs(10),idle_cancelled_rx.recv()).await};
-        let calls=provider.get_call_log().len();provider.unregister();
+        let calls=provider.get_call_log().len();provider.unregister().expect("unregister faux provider");
         assert!(matches!(prompted,Ok(Ok(_))),"foreground outcome: {prompted:?}");
         assert!(matches!(outcome,Ok(Ok(()))),"idle request outcome: {outcome:?}");
         assert!(shutdown.is_ok(),"bounded registered shutdown dispatch");
@@ -449,7 +451,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         let requests:Vec<_>=provider.get_call_log().iter().map(|call|serde_json::json!({"roles":call.context.messages.iter().map(|message|serde_json::to_value(message).expect("request message")["role"].clone()).collect::<Vec<_>>()})).collect();
         let events=captured.lock().expect("lifecycle events").clone();
         let disposed=tokio::time::timeout(std::time::Duration::from_secs(10),session.dispose()).await;
-        provider.unregister();
+        provider.unregister().expect("unregister faux provider");
         assert!(disposed.is_ok(),"bounded lifecycle cleanup");
         let result=outcome.expect("bounded lifecycle compaction").expect("lifecycle result");
         let actual=serde_json::json!({"summary":result.summary,"tokensBefore":result.tokens_before,"lifecycle":events,"compactions":entries.iter().filter(|entry|entry["type"]=="compaction").count(),"requests":requests});
@@ -463,7 +465,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         let calls=provider.get_call_log();assert_eq!(calls.len(),2);
         assert_ne!(calls[0].context.system_prompt,calls[1].context.system_prompt,"reminder lease must not repeat on the next request");
         assert!(!session.with_session_manager(|manager|manager.entries()).iter().any(|entry|entry["type"]=="compaction"));
-        session.dispose().await;provider.unregister();println!("PASS reminder: real repeated provider requests consume one epoch lease; cleanup: disposed session, unregistered faux, tempdir dropped");return;
+        session.dispose().await;provider.unregister().expect("unregister faux provider");println!("PASS reminder: real repeated provider requests consume one epoch lease; cleanup: disposed session, unregistered faux, tempdir dropped");return;
     }
     if cancel || remote_cancel {
         let operation=session.compact(None);tokio::pin!(operation);
@@ -481,7 +483,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
             if result.is_err() {server.abort();let _=server.await;}
             Some(result)
         } else {None};
-        let disposed=tokio::time::timeout(std::time::Duration::from_secs(10),session.dispose()).await;provider.unregister();
+        let disposed=tokio::time::timeout(std::time::Duration::from_secs(10),session.dispose()).await;provider.unregister().expect("unregister faux provider");
         assert!(disposed.is_ok(),"bounded negative cleanup");
         assert!(matches!(outcome,Ok(Ok(true))),"cancellation outcome: {outcome:?}");
         assert!(!compacting,"settled cancellation must clear active request");
@@ -524,7 +526,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     }
     if let Some(server)=remote_server {tokio::time::timeout(std::time::Duration::from_secs(10),server).await.expect("remote server cleanup bound").expect("remote capture assertions");}
     session.dispose().await;
-    provider.unregister();
+    provider.unregister().expect("unregister faux provider");
     println!("PASS {variant}: registered generation accepted, checkpoint and todos persisted; cleanup: disposed session, unregistered faux, tempdir dropped");
 }
 
@@ -585,8 +587,8 @@ async fn registered_idle_retry_dispatches_without_prompt_arrival() {
 
 async fn run_idle_retry_prompt_scenario(prompt_arrives:bool) {
     use maho_ai::types::ContentBlock;
-    use maho_ai::providers::faux::{register_faux_provider,RegisterFauxProviderOptions,FauxResponseStep,faux_assistant_message,FauxAssistantMessageOptions};
-    let provider=register_faux_provider(RegisterFauxProviderOptions {api:Some("compaction-pending-idle-retry".into()),tokens_per_second:Some(0.),..Default::default()});
+    use maho_ai::providers::faux::{RegisterFauxProviderOptions,FauxResponseStep,faux_assistant_message,FauxAssistantMessageOptions};
+    let provider=maho_ai::compat::register_faux_provider(RegisterFauxProviderOptions {api:Some("compaction-pending-idle-retry".into()),tokens_per_second:Some(0.),..Default::default()}).expect("register faux API provider");
     let model=provider.get_model(None).expect("retry model");
     let (started,mut starts)=tokio::sync::mpsc::unbounded_channel();
     let (cancelled,mut cancellations)=tokio::sync::mpsc::unbounded_channel();
@@ -605,7 +607,7 @@ async fn run_idle_retry_prompt_scenario(prompt_arrives:bool) {
     for handler in &api.registered.handlers[&EventKind::AgentEnd] {handler(&mut end,&ctx).await.expect("registered idle hook");}
     let scheduled=tokio::time::timeout(std::time::Duration::from_secs(10),probes.recv()).await;
     if matches!(scheduled,Ok(Some(()))) && prompt_arrives {
-        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"next".into(),images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
+        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"next".into(),trigger:"prompt".into(),preview:false,images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
         for handler in &api.registered.handlers[&EventKind::BeforeAgentStart] {handler(&mut before,&ctx).await.expect("registered prompt hook");}
     }
     tokio::time::advance(std::time::Duration::from_millis(maho_ext_compaction::idle_retry::IDLE_WARMUP_RETRY_DELAY_MS+1)).await;
@@ -613,7 +615,7 @@ async fn run_idle_retry_prompt_scenario(prompt_arrives:bool) {
     let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
     for handler in &api.registered.handlers[&EventKind::SessionShutdown] {handler(&mut shutdown,&ctx).await.expect("retry cleanup");}
     let cleanup=if prompt_arrives {None} else {Some(tokio::time::timeout(std::time::Duration::from_secs(10),cancellations.recv()).await)};
-    let calls=provider.get_call_log().len();provider.unregister();
+    let calls=provider.get_call_log().len();provider.unregister().expect("unregister faux provider");
     if let Some(cleanup)=cleanup {assert!(matches!(cleanup,Ok(Some(()))),"actual retry provider cancellation: {cleanup:?}");}
     assert!(matches!(scheduled,Ok(Some(()))),"watcher evaluates retry eligibility before prompt: {scheduled:?}");
     if let Some(retried)=retried {assert!(matches!(retried,Ok(Some(()))),"positive control retry dispatch: {retried:?}");assert_eq!(calls,2);}
@@ -641,7 +643,12 @@ async fn run_fallback_event_capture() {
         let model:Model=serde_json::from_value(serde_json::json!({"id":"context-model","name":"m","api":if reason=="not-openai-responses" {"faux"} else {"openai-responses"},"provider":"openai","baseUrl":"http://127.0.0.1:1/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("fallback model");
         let branch=if reason=="empty-compaction-input" {Vec::new()} else {vec![SessionEntry {id:"old".into(),parent_id:None,timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"type":"message","id":"old","message":{"role":"user","content":"old","timestamp":0}})}]};
         let mut ctx=context();ctx.model=Some(model);
-        ctx.model_registry=Arc::new(FallbackRegistry(if reason=="auth lookup failed" {None} else {Some(ResolvedRequestAuth {auth:maho_ai::models::ProviderAuthResult {api_key:if reason=="missing-openai-auth" {None} else {Some("fake".into())},headers:None,base_url:if reason=="missing-remote-replay-origin-provenance" {Some("invalid url".into())} else {None}},extra_body:None,upstream_model_id:Some("request-model".into()),service_tier:None,env:None})}));
+        let mut auth=std::collections::VecDeque::new();
+        if !matches!(reason,"branch-compaction"|"not-openai-responses") {
+            auth.push_back(if reason=="auth lookup failed" {Err(ExtensionFailure::new("auth lookup failed"))} else {Ok(ResolvedRequestAuth { ambient: false,auth:maho_ai::models::ProviderAuthResult {api_key:if reason=="missing-openai-auth" {None} else {Some("fake".into())},headers:None,base_url:if reason=="missing-remote-replay-origin-provenance" {Some("invalid url".into())} else {None}},extra_body:None,upstream_model_id:Some("request-model".into()),service_tier:None,env:None})});
+        }
+        auth.push_back(Err(ExtensionFailure::new("local fallback reached")));
+        ctx.model_registry=Arc::new(FallbackRegistry(std::sync::Mutex::new(auth)));
         ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions::new(policy_settings())),branch});
         let captured=Arc::new(std::sync::Mutex::new(Vec::new()));let events=EventBus::default();let observed=Arc::clone(&captured);
         let _subscription=events.on(maho_ext_compaction::openai_remote::SENPI_COMPACTION_EVENT,Arc::new(move |data|observed.lock().expect("captured events").push(data.clone())));
@@ -691,7 +698,7 @@ async fn run_model_auth_capture(sse:bool) {
     });
     let branch=vec![SessionEntry {id:"old".into(),parent_id:None,timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"type":"message","id":"old","message":{"role":"user","content":"old context","timestamp":0}})}];
     let mut ctx=context();ctx.model=Some(model.clone());ctx.service_tier=Some(ServiceTier::Priority);
-    ctx.model_registry=Arc::new(AuthRegistry {model,auth:ResolvedRequestAuth {auth:maho_ai::models::ProviderAuthResult {api_key:Some("refreshed-key".into()),headers:Some(std::collections::BTreeMap::from([("x-refreshed".into(),Some("live".into()))])),base_url:Some(live_base.clone())},upstream_model_id:Some("live-model".into()),extra_body:Some(serde_json::Map::from_iter([("stream_extra".into(),serde_json::json!(true))])),service_tier:Some(maho_ai::types::ServiceTierPreference::Flex),env:None}});
+    ctx.model_registry=Arc::new(AuthRegistry {model,auth:ResolvedRequestAuth { ambient: false,auth:maho_ai::models::ProviderAuthResult {api_key:Some("refreshed-key".into()),headers:Some(std::collections::BTreeMap::from([("x-refreshed".into(),Some("live".into()))])),base_url:Some(live_base.clone())},upstream_model_id:Some("live-model".into()),extra_body:Some(serde_json::Map::from_iter([("stream_extra".into(),serde_json::json!(true))])),service_tier:Some(maho_ai::types::ServiceTierPreference::Flex),env:None}});
     ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions::new(policy_settings())),branch});
     let registered=LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default());
     let runtime=ExtensionRuntime::default();runtime.bind_session_actions(Arc::new(AuthCheckpointActions));

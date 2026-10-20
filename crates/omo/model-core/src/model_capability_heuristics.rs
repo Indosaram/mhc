@@ -84,7 +84,7 @@ const OPENAI_REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", 
 const HIGH_MAX: &[&str] = &["high", "max"];
 const HIGH_MAX_ALIASES: &[(&str, &str)] = &[("low", "high"), ("medium", "high"), ("xhigh", "max")];
 
-pub static HEURISTIC_MODEL_FAMILY_REGISTRY: [HeuristicModelFamilyDefinition; 16] = [
+pub static HEURISTIC_MODEL_FAMILY_REGISTRY: [HeuristicModelFamilyDefinition; 19] = [
     HeuristicModelFamilyDefinition {
         pattern: Some(claude_opus_pattern),
         variants: Some(LOW_TO_MAX),
@@ -110,6 +110,30 @@ pub static HEURISTIC_MODEL_FAMILY_REGISTRY: [HeuristicModelFamilyDefinition; 16]
         reasoning_efforts: Some(OPENAI_REASONING_EFFORTS),
         supports_temperature: Some(false),
         ..HeuristicModelFamilyDefinition::named("openai-reasoning")
+    },
+    HeuristicModelFamilyDefinition {
+        pattern: Some(|model_id| model_id.contains("gpt-6-astra")),
+        variants: Some(&["low", "medium", "high", "xhigh", "max"]),
+        reasoning_efforts: Some(&["low", "medium", "high", "xhigh", "max"]),
+        reasoning_effort_aliases: Some(&[("none", "low"), ("minimal", "low")]),
+        supports_temperature: Some(false),
+        ..HeuristicModelFamilyDefinition::named("gpt-6-astra")
+    },
+    HeuristicModelFamilyDefinition {
+        pattern: Some(|model_id| model_id.contains("gpt-6-1-sol")),
+        variants: Some(&["low", "medium", "high", "xhigh", "max"]),
+        reasoning_efforts: Some(&["low", "medium", "high", "xhigh", "max"]),
+        reasoning_effort_aliases: Some(&[("none", "low"), ("minimal", "low")]),
+        supports_temperature: Some(false),
+        ..HeuristicModelFamilyDefinition::named("gpt-6.1-sol")
+    },
+    HeuristicModelFamilyDefinition {
+        includes: Some(&["gpt-6"]),
+        variants: Some(&["low", "medium", "high", "xhigh", "max"]),
+        reasoning_efforts: Some(&["none", "low", "medium", "high", "xhigh", "max"]),
+        reasoning_effort_aliases: Some(&[("minimal", "low")]),
+        supports_temperature: Some(false),
+        ..HeuristicModelFamilyDefinition::named("gpt-6")
     },
     HeuristicModelFamilyDefinition {
         includes: Some(&["gpt-5"]),
@@ -205,4 +229,44 @@ pub fn detect_heuristic_model_family(
                     .any(|value| normalized_model_id.contains(value))
             })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn specific_gpt_six_families_precede_general_gpt_rules() {
+        for (model, family) in [
+            ("gpt-6-astra", "gpt-6-astra"),
+            ("openai/gpt-6-astra-fast:max", "gpt-6-astra"),
+            ("gpt-6.1-sol", "gpt-6.1-sol"),
+            ("openai/gpt-6.1-sol-fast (high)", "gpt-6.1-sol"),
+            ("gpt-6-sol", "gpt-6"),
+            ("gpt-6-luna-fast", "gpt-6"),
+        ] {
+            let result = detect_heuristic_model_family(model).expect("GPT six family exists");
+            assert_eq!(result.family, family, "{model}");
+            assert_eq!(result.variants, Some(&["low", "medium", "high", "xhigh", "max"][..]));
+            assert_eq!(result.supports_temperature, Some(false));
+        }
+    }
+
+    #[test]
+    fn astra_and_six_point_one_sol_downgrade_none_and_minimal_to_low() {
+        for model in ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-sol-fast"] {
+            let result = detect_heuristic_model_family(model).expect("specific GPT six family exists");
+            assert_eq!(result.reasoning_efforts, Some(&["low", "medium", "high", "xhigh", "max"][..]));
+            assert_eq!(result.reasoning_effort_alias("none"), Some("low"));
+            assert_eq!(result.reasoning_effort_alias("minimal"), Some("low"));
+        }
+    }
+
+    #[test]
+    fn general_gpt_six_keeps_none_but_aliases_minimal() {
+        let result = detect_heuristic_model_family("gpt-6-sol").expect("general GPT six family exists");
+        assert_eq!(result.reasoning_efforts, Some(&["none", "low", "medium", "high", "xhigh", "max"][..]));
+        assert_eq!(result.reasoning_effort_alias("none"), None);
+        assert_eq!(result.reasoning_effort_alias("minimal"), Some("low"));
+    }
 }
