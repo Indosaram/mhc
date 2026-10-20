@@ -149,7 +149,14 @@ async fn never_reachable_spawn_throws_unreachable() {
 async fn pending_probe_abort_settles_without_spawning() {
     let dir = tempfile::tempdir().unwrap();
     let mut harness = harness(Vec::new(), false);
-    harness.deps.probe = Arc::new(|_paths, _signal| Box::pin(std::future::pending()));
+    let (started, observed) = tokio::sync::oneshot::channel();
+    let started = Arc::new(Mutex::new(Some(started)));
+    harness.deps.probe = Arc::new(move |_paths, _signal| {
+        if let Some(started) = started.lock().expect("probe start sender").take() {
+            started.send(()).expect("probe start receiver");
+        }
+        Box::pin(std::future::pending())
+    });
     let controller = lsp_core::abort::AbortController::new();
     let options = EnsureDaemonOptions {
         signal: Some(controller.signal()),
@@ -160,7 +167,10 @@ async fn pending_probe_abort_settles_without_spawning() {
         let deps = harness.deps.clone();
         async move { ensure_daemon_running(&paths, &deps, options).await }
     });
-    tokio::task::yield_now().await;
+    tokio::time::timeout(Duration::from_secs(5), observed)
+        .await
+        .expect("probe must start")
+        .expect("probe start signal");
     controller.abort();
     let result = tokio::time::timeout(Duration::from_secs(5), running)
         .await
@@ -196,4 +206,39 @@ fn native_binary_and_node_script_launch_commands() {
             PathBuf::from("daemon")
         ]
     );
+}
+
+#[tokio::test]
+async fn failed_readiness_cools_down_for_five_seconds_then_retries() {
+    let dir = tempfile::tempdir().expect("temporary daemon root");
+    let paths = paths(&dir);
+    let harness = harness(Vec::new(), false);
+    let options = EnsureDaemonOptions { ready_timeout_ms: Some(300), ..EnsureDaemonOptions::default() };
+    assert!(ensure_daemon_running(&paths, &harness.deps, options.clone()).await.is_err());
+    assert!(ensure_daemon_running(&paths.clone(), &harness.deps.clone(), options.clone()).await.is_err());
+    assert_eq!(harness.spawns.load(Ordering::SeqCst), 1);
+    assert_eq!((harness.deps.now)(), 300);
+    (harness.deps.sleep)(4_999, None).await;
+    assert!(ensure_daemon_running(&paths, &harness.deps, options.clone()).await.is_err());
+    assert_eq!(harness.spawns.load(Ordering::SeqCst), 1);
+    (harness.deps.sleep)(1, None).await;
+    assert!(ensure_daemon_running(&paths, &harness.deps, options).await.is_err());
+    assert_eq!(harness.spawns.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn cooldown_is_per_endpoint_and_reachable_probe_clears_it() {
+    let dir = tempfile::tempdir().expect("temporary daemon root");
+    let paths = paths(&dir);
+    let mut harness = harness(Vec::new(), false);
+    let options = EnsureDaemonOptions { ready_timeout_ms: Some(0), ..EnsureDaemonOptions::default() };
+    assert!(ensure_daemon_running(&paths, &harness.deps, options.clone()).await.is_err());
+    let other = DaemonPaths::under_dir(dir.path().join("other"), "1");
+    assert!(ensure_daemon_running(&other, &harness.deps, options.clone()).await.is_err());
+    assert_eq!(harness.spawns.load(Ordering::SeqCst), 2);
+    harness.deps.probe = Arc::new(|_, _| Box::pin(async { true }));
+    ensure_daemon_running(&paths, &harness.deps, options.clone()).await.expect("reachable clears cooldown");
+    harness.deps.probe = Arc::new(|_, _| Box::pin(async { false }));
+    assert!(ensure_daemon_running(&paths, &harness.deps, options).await.is_err());
+    assert_eq!(harness.spawns.load(Ordering::SeqCst), 3);
 }

@@ -13,7 +13,7 @@ async fn native_permission_factory_enforces_provider_tool_admission() {
     let path = directory.path().join("fixture.txt").to_string_lossy().into_owned();
     let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
         tokens_per_second: Some(0.0), ..Default::default()
-    });
+    }).expect("valid faux provider");
     let mut request = maho_ai::providers::faux::faux_assistant_message("", Default::default());
     request.stop_reason = maho_ai::types::StopReason::ToolUse;
     request.content = vec![maho_ai::providers::faux::faux_tool_call("read",
@@ -21,7 +21,7 @@ async fn native_permission_factory_enforces_provider_tool_admission() {
     provider.set_responses(vec![request.into(), maho_ai::providers::faux::faux_assistant_message("done", Default::default()).into()]);
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("fixture-auth".into()), ..Default::default() },

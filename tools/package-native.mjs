@@ -249,7 +249,7 @@ async function parseNames(path, pattern) {
  */
 export async function parseBuiltinSkillNames(repoRoot, omoRoot) {
 	const rustPath = join(repoRoot, "crates/omo/components/maho-omo-telemetry/src/product_identity.rs");
-	const tsPath = join(omoRoot, "packages/omo-senpi/src/components/telemetry/product-identity.ts");
+	const tsPath = join(omoRoot, "packages/omo-senpi/src/components/telemetry/event-schemas.ts");
 	const rustNames = await parseNames(rustPath, /BUILTIN_SKILL_NAMES\s*:\s*&\[&str\]\s*=\s*&\[([\s\S]*?)\]\s*;/);
 	const tsNames = await parseNames(tsPath, /BUILTIN_SKILL_NAMES\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\s*as const\)/);
 	if (rustNames.length === 0) throw new Error(`could not read BUILTIN_SKILL_NAMES from ${rustPath}`);

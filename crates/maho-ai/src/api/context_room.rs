@@ -24,7 +24,11 @@ pub struct ContextWindowExhaustedError {
 
 impl ContextWindowExhaustedError {
     pub fn new(estimated_tokens: u64, context_window: u64) -> Self {
-        Self { estimated_tokens, context_window, min_answer_tokens: MIN_ANSWER_TOKENS }
+        Self {
+            estimated_tokens,
+            context_window,
+            min_answer_tokens: MIN_ANSWER_TOKENS,
+        }
     }
 }
 
@@ -38,25 +42,38 @@ pub fn clamp_max_tokens_to_context(
     max_tokens: u64,
 ) -> Result<u64, ContextWindowExhaustedError> {
     if model.context_window == 0 {
-        return Ok(if max_tokens > 0 { max_tokens.max(MIN_MAX_TOKENS) } else { MIN_MAX_TOKENS });
+        return Ok(if max_tokens > 0 {
+            max_tokens.max(MIN_MAX_TOKENS)
+        } else {
+            MIN_MAX_TOKENS
+        });
     }
     let estimated_tokens = estimate_context_tokens(context).tokens;
-    let available = model.context_window as i64 - estimated_tokens as i64 - CONTEXT_SAFETY_TOKENS as i64;
+    let available =
+        model.context_window as i64 - estimated_tokens as i64 - CONTEXT_SAFETY_TOKENS as i64;
     if model.context_window >= CONTEXT_GUARD_MIN_WINDOW && available < MIN_ANSWER_TOKENS as i64 {
-        return Err(ContextWindowExhaustedError::new(estimated_tokens, model.context_window));
+        return Err(ContextWindowExhaustedError::new(
+            estimated_tokens,
+            model.context_window,
+        ));
     }
     let safe_available = available.max(MIN_MAX_TOKENS as i64) as u64;
-    let requested = if max_tokens > 0 { max_tokens } else { safe_available };
+    let requested = if max_tokens > 0 {
+        max_tokens
+    } else {
+        safe_available
+    };
     Ok(requested.min(safe_available))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Message, UserMessage, UserContent};
+    use crate::types::{Message, UserContent, UserMessage};
 
     fn any_model() -> Model {
-        crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone()
+        crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0]
+            .clone()
     }
 
     fn model_with_window(context_window: u64) -> Model {
@@ -67,8 +84,12 @@ mod tests {
 
     fn context_with_text(chars: usize) -> Context {
         Context {
+            active_tool_names: None,
             system_prompt: None,
-            messages: vec![Message::User(UserMessage { content: UserContent::Text("x".repeat(chars)), timestamp: 0 })],
+            messages: vec![Message::User(UserMessage {
+                content: UserContent::Text("x".repeat(chars)),
+                timestamp: 0,
+            })],
             tools: None,
         }
     }
@@ -76,14 +97,23 @@ mod tests {
     #[test]
     fn zero_window_clamps_to_the_one_token_floor() {
         let model = model_with_window(0);
-        assert_eq!(clamp_max_tokens_to_context(&model, &Context::default(), 0), Ok(1));
-        assert_eq!(clamp_max_tokens_to_context(&model, &Context::default(), 500), Ok(500));
+        assert_eq!(
+            clamp_max_tokens_to_context(&model, &Context::default(), 0),
+            Ok(1)
+        );
+        assert_eq!(
+            clamp_max_tokens_to_context(&model, &Context::default(), 500),
+            Ok(500)
+        );
     }
 
     #[test]
     fn tiny_window_shrinks_the_budget_instead_of_failing() {
         let model = model_with_window(100);
-        assert_eq!(clamp_max_tokens_to_context(&model, &Context::default(), 8192), Ok(1));
+        assert_eq!(
+            clamp_max_tokens_to_context(&model, &Context::default(), 8192),
+            Ok(1)
+        );
     }
 
     #[test]
@@ -93,12 +123,19 @@ mod tests {
         let error = clamp_max_tokens_to_context(&model, &context, 8192).expect_err("exhausted");
         assert_eq!(error.context_window, CONTEXT_GUARD_MIN_WINDOW);
         assert!(error.estimated_tokens >= MIN_ANSWER_TOKENS);
-        assert!(error.to_string().starts_with("Context window exhausted: the conversation is estimated at "));
+        assert!(
+            error
+                .to_string()
+                .starts_with("Context window exhausted: the conversation is estimated at ")
+        );
     }
 
     #[test]
     fn ample_window_keeps_the_requested_budget() {
         let model = model_with_window(200_000);
-        assert_eq!(clamp_max_tokens_to_context(&model, &context_with_text(40), 8192), Ok(8192));
+        assert_eq!(
+            clamp_max_tokens_to_context(&model, &context_with_text(40), 8192),
+            Ok(8192)
+        );
     }
 }

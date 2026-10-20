@@ -8,13 +8,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
-pub use crate::model::{CursorAgentCompat, CursorReasoning, DevinAgentCompat, Model, ModelCompat, ModelImageInputLimits, ModelImageResizeOptions, ModelInputLimits};
+#[path = "utils/transcript.rs"]
+pub mod transcript;
+
+pub use crate::model::{
+    CursorAgentCompat, CursorReasoning, DevinAgentCompat, Model, ModelCompat,
+    ModelImageInputLimits, ModelImageResizeOptions, ModelInputLimits, ModelPromptCache,
+};
 pub use crate::openai_responses_compat::{OpenAIResponsesCompat, SessionAffinityFormat};
 pub use crate::utils::diagnostics::AssistantMessageDiagnostic;
 pub use crate::utils::event_stream::AssistantMessageEventStream;
 
 pub type Api = String;
 pub type ImagesApi = String;
+pub type ClassifierApi = String;
 pub type ProviderId = String;
 pub type ImagesProviderId = String;
 
@@ -35,6 +42,109 @@ pub const KNOWN_APIS: &[&str] = &[
 
 pub const KNOWN_IMAGES_APIS: &[&str] = &["openrouter-images", "openai-images"];
 
+pub const KNOWN_CLASSIFIER_APIS: &[&str] = &[
+    "typesafe-system-one",
+    "cloudflare-workers-ai-system-one",
+    "llama-cpp-classify",
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ClassifierQuestion {
+    Choice {
+        instructions: String,
+        criteria: indexmap::IndexMap<String, String>,
+    },
+    Score {
+        instructions: String,
+        criteria: Vec<String>,
+    },
+    Bool {
+        instructions: String,
+        criteria: ClassifierBoolCriteria,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClassifierBoolCriteria {
+    pub r#true: String,
+    pub r#false: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClassifierContext {
+    pub state: Map<String, Value>,
+    pub questions: indexmap::IndexMap<String, ClassifierQuestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ClassifierAnswer {
+    Choice {
+        choice: String,
+        probabilities: indexmap::IndexMap<String, f64>,
+        confidence: f64,
+    },
+    Score {
+        score: f64,
+        confidence: f64,
+    },
+    Bool {
+        probability: f64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClassifierStopReason {
+    Stop,
+    Error,
+    Aborted,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClassifierResult {
+    pub api: ClassifierApi,
+    pub provider: ProviderId,
+    pub model: String,
+    pub answers: indexmap::IndexMap<String, ClassifierAnswer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    pub stop_reason: ClassifierStopReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    pub timestamp: i64,
+}
+
+pub type ClassifierOnPayload = std::sync::Arc<
+    dyn Fn(Value, ClassifierModel) -> BoxFuture<'static, Result<Option<Value>, String>>
+        + Send
+        + Sync,
+>;
+pub type ClassifierOnResponse = std::sync::Arc<
+    dyn Fn(ProviderResponse, ClassifierModel) -> BoxFuture<'static, Result<(), String>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone, Default)]
+pub struct ClassifierOptions {
+    pub request: ProviderRequestOptions,
+    pub temperature: Option<f64>,
+    pub on_payload: Option<ClassifierOnPayload>,
+    pub on_response: Option<ClassifierOnResponse>,
+}
+
+pub trait ProviderClassifier: Send + Sync {
+    fn classify<'a>(
+        &'a self,
+        model: &'a ClassifierModel,
+        context: &'a ClassifierContext,
+        options: Option<ClassifierOptions>,
+    ) -> BoxFuture<'a, ClassifierResult>;
+}
+
 pub const KNOWN_PROVIDERS: &[&str] = &[
     "alibaba-token-plan",
     "amazon-bedrock",
@@ -50,6 +160,7 @@ pub const KNOWN_PROVIDERS: &[&str] = &[
     "ollama",
     "cursor",
     "radius",
+    "typesafe",
     "nvidia",
     "deepseek",
     "github-copilot",
@@ -73,6 +184,7 @@ pub const KNOWN_PROVIDERS: &[&str] = &[
     "opencode",
     "opencode-go",
     "kimi-coding",
+    "meta",
     "cloudflare-workers-ai",
     "cloudflare-ai-gateway",
     "qwen-token-plan",
@@ -271,13 +383,25 @@ pub enum StreamKind {
 }
 
 /// Payload hook: may return a replacement payload.
-pub type OnPayload =
-    std::sync::Arc<dyn Fn(&Value, &Model, Option<&ProviderRequestMetadata>) -> Option<Value> + Send + Sync>;
+pub type OnPayload = std::sync::Arc<
+    dyn Fn(&Value, &Model, Option<&ProviderRequestMetadata>) -> Option<Value> + Send + Sync,
+>;
 pub type OnResponse = std::sync::Arc<dyn Fn(&ProviderResponse, &Model) + Send + Sync>;
-pub type AsyncOnPayload = std::sync::Arc<dyn Fn(Value, Model, Option<ProviderRequestMetadata>)
-    -> BoxFuture<'static, Result<Option<Value>, String>> + Send + Sync>;
-pub type AsyncOnResponse = std::sync::Arc<dyn Fn(ProviderResponse, Model)
-    -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+pub type AsyncOnPayload = std::sync::Arc<
+    dyn Fn(
+            Value,
+            Model,
+            Option<ProviderRequestMetadata>,
+        ) -> BoxFuture<'static, Result<Option<Value>, String>>
+        + Send
+        + Sync,
+>;
+pub type AsyncOnResponse = std::sync::Arc<
+    dyn Fn(ProviderResponse, Model) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
+>;
+pub type OnProviderStreamEvent = std::sync::Arc<dyn Fn(&Value, &Model) + Send + Sync>;
+pub type AsyncOnProviderStreamEvent =
+    std::sync::Arc<dyn Fn(Value, Model) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// `telemetryContext`: the explicit telemetry parent for this logical request. The harness
 /// `TelemetryContext` lives above this crate, so it is carried as an opaque shared handle that
@@ -307,13 +431,32 @@ pub struct ProviderRequestOptions {
 }
 
 impl ProviderRequestOptions {
-    pub async fn apply_payload_hook(&self, payload: &Value, model: &Model,
-        metadata: Option<&ProviderRequestMetadata>) -> Result<Option<Value>, String> {
-        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
-        let mut replacement = self.on_payload.as_ref().and_then(|hook| hook(payload, model, metadata));
-        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+    pub async fn apply_payload_hook(
+        &self,
+        payload: &Value,
+        model: &Model,
+        metadata: Option<&ProviderRequestMetadata>,
+    ) -> Result<Option<Value>, String> {
+        if let Some(signal) = &self.signal {
+            signal
+                .throw_if_aborted()
+                .map_err(|error| error.to_string())?;
+        }
+        let mut replacement = self
+            .on_payload
+            .as_ref()
+            .and_then(|hook| hook(payload, model, metadata));
+        if let Some(signal) = &self.signal {
+            signal
+                .throw_if_aborted()
+                .map_err(|error| error.to_string())?;
+        }
         if let Some(hook) = &self.async_on_payload {
-            let future = hook(replacement.as_ref().unwrap_or(payload).clone(), model.clone(), metadata.cloned());
+            let future = hook(
+                replacement.as_ref().unwrap_or(payload).clone(),
+                model.clone(),
+                metadata.cloned(),
+            );
             let next = match &self.signal {
                 Some(signal) => tokio::select! {
                     biased;
@@ -322,16 +465,36 @@ impl ProviderRequestOptions {
                 },
                 None => future.await?,
             };
-            if next.is_some() { replacement = next; }
+            if next.is_some() {
+                replacement = next;
+            }
         }
-        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+        if let Some(signal) = &self.signal {
+            signal
+                .throw_if_aborted()
+                .map_err(|error| error.to_string())?;
+        }
         Ok(replacement)
     }
 
-    pub async fn apply_response_hook(&self, response: &ProviderResponse, model: &Model) -> Result<(), String> {
-        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
-        if let Some(hook) = &self.on_response { hook(response, model); }
-        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+    pub async fn apply_response_hook(
+        &self,
+        response: &ProviderResponse,
+        model: &Model,
+    ) -> Result<(), String> {
+        if let Some(signal) = &self.signal {
+            signal
+                .throw_if_aborted()
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(hook) = &self.on_response {
+            hook(response, model);
+        }
+        if let Some(signal) = &self.signal {
+            signal
+                .throw_if_aborted()
+                .map_err(|error| error.to_string())?;
+        }
         if let Some(hook) = &self.async_on_response {
             let future = hook(response.clone(), model.clone());
             match &self.signal {
@@ -343,7 +506,11 @@ impl ProviderRequestOptions {
                 None => future.await?,
             }
         }
-        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+        if let Some(signal) = &self.signal {
+            signal
+                .throw_if_aborted()
+                .map_err(|error| error.to_string())?;
+        }
         Ok(())
     }
 }
@@ -359,9 +526,12 @@ impl std::fmt::Debug for ProviderRequestOptions {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct StreamOptions {
     pub request: ProviderRequestOptions,
+    /// Observes parsed, adapter-owned events before normalization. Adapter support is explicit.
+    pub on_provider_stream_event: Option<OnProviderStreamEvent>,
+    pub async_on_provider_stream_event: Option<AsyncOnProviderStreamEvent>,
     pub temperature: Option<f64>,
     pub sampling_params: Option<Map<String, Value>>,
     pub max_tokens: Option<u64>,
@@ -375,7 +545,45 @@ pub struct StreamOptions {
     pub extra: Map<String, Value>,
 }
 
+impl std::fmt::Debug for StreamOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamOptions")
+            .field("request", &self.request)
+            .field("temperature", &self.temperature)
+            .field("sampling_params", &self.sampling_params)
+            .field("max_tokens", &self.max_tokens)
+            .field("transport", &self.transport)
+            .field("cache_retention", &self.cache_retention)
+            .field("session_id", &self.session_id)
+            .field("extra_body", &self.extra_body)
+            .field(
+                "websocket_connect_timeout_ms",
+                &self.websocket_connect_timeout_ms,
+            )
+            .field("metadata", &self.metadata)
+            .field("extra", &self.extra)
+            .finish_non_exhaustive()
+    }
+}
+
 pub type ProviderStreamOptions = StreamOptions;
+
+impl StreamOptions {
+    /// Observe an adapter-owned event before normalizing it into assistant content.
+    pub async fn observe_provider_stream_event(
+        &self,
+        event: &Value,
+        model: &Model,
+    ) -> Result<(), String> {
+        if let Some(hook) = &self.on_provider_stream_event {
+            hook(event, model);
+        }
+        if let Some(hook) = &self.async_on_provider_stream_event {
+            hook(event.clone(), model.clone()).await?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DeferredFetchOptions {
@@ -457,7 +665,12 @@ pub type ProviderImagesOptions = ImagesOptions;
 
 /// The streaming surface a provider exposes (`ProviderStreams`).
 pub trait ProviderStreams: Send + Sync {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream;
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream;
     fn stream_simple(
         &self,
         model: &Model,
@@ -509,16 +722,23 @@ pub trait ProviderImages: Send + Sync {
         model: &'a ImagesModel,
         context: &'a ImagesContext,
         options: Option<ImagesOptions>,
-    ) -> BoxFuture<'a, AssistantImages>;
+    ) -> BoxFuture<'a, Result<AssistantImages, String>>;
 }
 
-pub type StreamFunction =
-    std::sync::Arc<dyn Fn(&Model, &Context, Option<StreamOptions>) -> AssistantMessageEventStream + Send + Sync>;
+pub type StreamFunction = std::sync::Arc<
+    dyn Fn(&Model, &Context, Option<StreamOptions>) -> AssistantMessageEventStream + Send + Sync,
+>;
 pub type SimpleStreamFunction = std::sync::Arc<
-    dyn Fn(&Model, &Context, Option<SimpleStreamOptions>) -> AssistantMessageEventStream + Send + Sync,
+    dyn Fn(&Model, &Context, Option<SimpleStreamOptions>) -> AssistantMessageEventStream
+        + Send
+        + Sync,
 >;
 pub type ImagesFunction = std::sync::Arc<
-    dyn for<'a> Fn(&'a ImagesModel, &'a ImagesContext, Option<ImagesOptions>) -> BoxFuture<'a, AssistantImages>
+    dyn for<'a> Fn(
+            &'a ImagesModel,
+            &'a ImagesContext,
+            Option<ImagesOptions>,
+        ) -> BoxFuture<'a, Result<AssistantImages, String>>
         + Send
         + Sync,
 >;
@@ -631,7 +851,10 @@ impl ContentBlock {
     }
 
     pub fn text(text: impl Into<String>) -> Self {
-        ContentBlock::Text(TextContent { text: text.into(), ..TextContent::default() })
+        ContentBlock::Text(TextContent {
+            text: text.into(),
+            ..TextContent::default()
+        })
     }
 }
 
@@ -652,7 +875,11 @@ pub struct Usage {
     pub output: u64,
     pub cache_read: u64,
     pub cache_write: u64,
-    #[serde(default, rename = "cacheWrite1h", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "cacheWrite1h",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cache_write_1h: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<u64>,
@@ -728,6 +955,20 @@ pub struct UserMessage {
     pub timestamp: i64,
 }
 
+/// Instructions and ordered declaration deltas at one point in the transcript.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemMessage {
+    pub content: UserContent,
+    #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
+    pub sections: indexmap::IndexMap<String, Option<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_added: Vec<Tool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_removed: Vec<ToolReference>,
+    pub timestamp: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigurationUpdateMessage {
     pub content: Vec<ContentBlock>,
@@ -741,10 +982,141 @@ pub enum AbortSource {
     Provider,
 }
 
+#[path = "utils/tool_name_match.rs"]
+pub mod tool_name_match;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDiagnosticCategory {
+    Auth,
+    RateLimit,
+    Quota,
+    ContextLimit,
+    InvalidRequest,
+    ProviderUnavailable,
+    Network,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDiagnosticEvidence {
+    StructuredStatus,
+    StructuredCode,
+    StructuredTransport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDiagnostic {
+    pub category: ProviderDiagnosticCategory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    pub evidence: ProviderDiagnosticEvidence,
+}
+
+pub const PROVIDER_DIAGNOSTIC_MAX_BYTES: usize = 512;
+
+pub fn sanitize_provider_diagnostic(value: &ProviderDiagnostic) -> Option<ProviderDiagnostic> {
+    use ProviderDiagnosticCategory as Category;
+    use ProviderDiagnosticEvidence as Evidence;
+    let status = value.http_status;
+    if status.is_some_and(|status| !(400..=599).contains(&status)) {
+        return None;
+    }
+    let valid = match value.evidence {
+        Evidence::StructuredStatus => {
+            let category = match status? {
+                401 => Category::Auth,
+                400 => Category::InvalidRequest,
+                500..=599 => Category::ProviderUnavailable,
+                _ => Category::Unknown,
+            };
+            value.code.is_none() && value.category == category
+        }
+        Evidence::StructuredTransport => {
+            status.is_none()
+                && value.category == Category::Network
+                && matches!(
+                    value.code.as_deref(),
+                    Some(
+                        "ECONNRESET"
+                            | "ECONNREFUSED"
+                            | "ETIMEDOUT"
+                            | "ENOTFOUND"
+                            | "EAI_AGAIN"
+                            | "EPIPE"
+                            | "UND_ERR_SOCKET"
+                            | "UND_ERR_CONNECT_TIMEOUT"
+                            | "UND_ERR_HEADERS_TIMEOUT"
+                            | "UND_ERR_BODY_TIMEOUT"
+                            | "UND_ERR_CLOSED"
+                            | "APIConnectionError"
+                            | "APIConnectionTimeoutError"
+                    )
+                )
+        }
+        Evidence::StructuredCode => {
+            let (category, compatible) = match value.code.as_deref()? {
+                "authentication_error" | "invalid_api_key" => {
+                    (Category::Auth, status.is_none_or(|s| s == 401))
+                }
+                "rate_limit_error" | "rate_limit_exceeded" => {
+                    (Category::RateLimit, status.is_none_or(|s| s == 429))
+                }
+                "insufficient_quota" => (Category::Quota, status.is_none_or(|s| s == 429)),
+                "context_length_exceeded" => {
+                    (Category::ContextLimit, status.is_none_or(|s| s == 400))
+                }
+                "invalid_request_error" => {
+                    (Category::InvalidRequest, status.is_none_or(|s| s == 400))
+                }
+                "overloaded_error" | "api_error" | "timeout_error" => (
+                    Category::ProviderUnavailable,
+                    status.is_none_or(|s| (500..=599).contains(&s)),
+                ),
+                "billing_error" => (Category::Unknown, status.is_none_or(|s| s == 402)),
+                "permission_error" => (Category::Unknown, status.is_none_or(|s| s == 403)),
+                "not_found_error" => (Category::Unknown, status.is_none_or(|s| s == 404)),
+                _ => return None,
+            };
+            compatible && value.category == category
+        }
+    };
+    if !valid {
+        return None;
+    }
+    match serde_json::to_vec(value) {
+        Ok(wire) if wire.len() <= PROVIDER_DIAGNOSTIC_MAX_BYTES => {}
+        Ok(_) | Err(_) => return None,
+    }
+    Some(value.clone())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UsageLimitScope {
+    Account,
+    Model,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum AssistantErrorCause {
+    #[serde(rename = "usage_limit")]
+    UsageLimit { scope: UsageLimitScope },
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantMessage {
     pub content: Vec<ContentBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_diagnostics: Option<
+        crate::api::openai_responses_shared::openai_responses_prompt_cache::PromptCacheDiagnostics,
+    >,
     pub api: Api,
     pub provider: ProviderId,
     pub model: String,
@@ -752,6 +1124,9 @@ pub struct AssistantMessage {
     pub response_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_id: Option<String>,
+    /// Requested agent effort, distinct from the provider-native effort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<ModelThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_thinking_level: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -764,6 +1139,10 @@ pub struct AssistantMessage {
     pub deferred: Option<DeferredHandle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_cause: Option<AssistantErrorCause>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_diagnostic: Option<ProviderDiagnostic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abort_source: Option<AbortSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -793,7 +1172,7 @@ fn serialize_optional<S: serde::ser::SerializeStruct, T: Serialize + ?Sized>(
 impl Serialize for AssistantMessage {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("AssistantMessage", 18)?;
+        let mut state = serializer.serialize_struct("AssistantMessage", 21)?;
         state.serialize_field("role", "assistant")?;
         state.serialize_field("content", &self.content)?;
         state.serialize_field("api", &self.api)?;
@@ -803,9 +1182,25 @@ impl Serialize for AssistantMessage {
         state.serialize_field("stopReason", &self.stop_reason)?;
         state.serialize_field("timestamp", &self.timestamp)?;
         serialize_optional(&mut state, "responseId", self.response_id.as_ref())?;
+        serialize_optional(
+            &mut state,
+            "promptCacheDiagnostics",
+            self.prompt_cache_diagnostics.as_ref(),
+        )?;
+        serialize_optional(&mut state, "thinkingLevel", self.thinking_level.as_ref())?;
+        serialize_optional(
+            &mut state,
+            "providerDiagnostic",
+            self.provider_diagnostic.as_ref(),
+        )?;
         serialize_optional(&mut state, "rawStopReason", self.raw_stop_reason.as_ref())?;
-        serialize_optional(&mut state, "providerThinkingLevel", self.provider_thinking_level.as_ref())?;
+        serialize_optional(
+            &mut state,
+            "providerThinkingLevel",
+            self.provider_thinking_level.as_ref(),
+        )?;
         serialize_optional(&mut state, "errorMessage", self.error_message.as_ref())?;
+        serialize_optional(&mut state, "errorCause", self.error_cause.as_ref())?;
         serialize_optional(&mut state, "stopDetails", self.stop_details.as_ref())?;
         serialize_optional(&mut state, "abortSource", self.abort_source.as_ref())?;
         serialize_optional(&mut state, "endTurn", self.end_turn.as_ref())?;
@@ -814,6 +1209,36 @@ impl Serialize for AssistantMessage {
         serialize_optional(&mut state, "deferred", self.deferred.as_ref())?;
         state.end()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NestedToolCallStatus {
+    Ok,
+    Error,
+    Unfinished,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NestedToolCallRecord {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Map<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments_bytes: Option<usize>,
+    pub status: NestedToolCallStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NestedToolCalls {
+    pub calls: Vec<NestedToolCallRecord>,
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -826,6 +1251,8 @@ pub struct ToolResultMessage {
     pub details: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_calls: Option<NestedToolCalls>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_tool_names: Option<Vec<String>>,
     pub is_error: bool,
@@ -840,6 +1267,8 @@ pub struct ToolResultMessage {
 #[serde(tag = "role")]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
+    #[serde(rename = "system")]
+    System(SystemMessage),
     #[serde(rename = "user")]
     User(UserMessage),
     #[serde(rename = "assistant")]
@@ -853,6 +1282,7 @@ pub enum Message {
 impl Message {
     pub fn role(&self) -> &'static str {
         match self {
+            Message::System(_) => "system",
             Message::User(_) => "user",
             Message::Assistant(_) => "assistant",
             Message::ToolResult(_) => "toolResult",
@@ -959,6 +1389,11 @@ pub struct Tool {
     pub constrained_sampling: Option<ConstrainedSampling>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolReference {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Context {
@@ -967,6 +1402,19 @@ pub struct Context {
     pub messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_tool_names: Option<Vec<String>>,
+}
+
+/// Provider-facing context, constructed by `transcript::normalize_context`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptContext {
+    pub messages: Vec<Message>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_tool_names: Option<Vec<String>>,
+    #[serde(skip)]
+    pub(crate) _normalized: (),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -986,23 +1434,68 @@ pub enum ErrorReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum AssistantMessageEvent {
-    Start { partial: AssistantMessage },
-    TextStart { content_index: usize, partial: AssistantMessage },
-    TextDelta { content_index: usize, delta: String, partial: AssistantMessage },
-    TextEnd { content_index: usize, content: String, partial: AssistantMessage },
-    ThinkingStart { content_index: usize, partial: AssistantMessage },
-    ThinkingDelta { content_index: usize, delta: String, partial: AssistantMessage },
-    ThinkingEnd { content_index: usize, content: String, partial: AssistantMessage },
+    Start {
+        partial: AssistantMessage,
+    },
+    TextStart {
+        content_index: usize,
+        partial: AssistantMessage,
+    },
+    TextDelta {
+        content_index: usize,
+        delta: String,
+        partial: AssistantMessage,
+    },
+    TextEnd {
+        content_index: usize,
+        content: String,
+        partial: AssistantMessage,
+    },
+    ThinkingStart {
+        content_index: usize,
+        partial: AssistantMessage,
+    },
+    ThinkingDelta {
+        content_index: usize,
+        delta: String,
+        partial: AssistantMessage,
+    },
+    ThinkingEnd {
+        content_index: usize,
+        content: String,
+        partial: AssistantMessage,
+    },
     #[serde(rename = "toolcall_start")]
-    ToolcallStart { content_index: usize, partial: AssistantMessage },
+    ToolcallStart {
+        content_index: usize,
+        partial: AssistantMessage,
+    },
     #[serde(rename = "toolcall_delta")]
-    ToolcallDelta { content_index: usize, delta: String, partial: AssistantMessage },
+    ToolcallDelta {
+        content_index: usize,
+        delta: String,
+        partial: AssistantMessage,
+    },
     #[serde(rename = "toolcall_end")]
-    ToolcallEnd { content_index: usize, tool_call: ToolCall, partial: AssistantMessage },
-    Done { reason: DoneReason, message: AssistantMessage },
-    Error { reason: ErrorReason, error: AssistantMessage },
+    ToolcallEnd {
+        content_index: usize,
+        tool_call: ToolCall,
+        partial: AssistantMessage,
+    },
+    Done {
+        reason: DoneReason,
+        message: AssistantMessage,
+    },
+    Error {
+        reason: ErrorReason,
+        error: AssistantMessage,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1057,6 +1550,14 @@ pub struct VeniceParameters {
 #[serde(rename_all = "camelCase")]
 pub struct OpenAICompletionsCompat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_web_search: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_system_messages: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_tool_additions: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_forced_tool_choice: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_store: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_developer_role: Option<bool>,
@@ -1096,7 +1597,11 @@ pub struct OpenAICompletionsCompat {
     pub thinking_token_budget_field: Option<ThinkingTokenBudgetField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_thinking_token_budget: Option<bool>,
-    #[serde(default, rename = "supportsOpenAIGrammarTools", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "supportsOpenAIGrammarTools",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub supports_openai_grammar_tools: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_strict_mode: Option<bool>,
@@ -1155,6 +1660,12 @@ pub enum AnthropicSessionAffinityFormat {
 #[serde(rename_all = "camelCase")]
 pub struct AnthropicMessagesCompat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_gzip_request_body: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_system_messages: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_tool_changes: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_eager_tool_input_streaming: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_long_cache_retention: Option<bool>,
@@ -1197,6 +1708,13 @@ pub struct BedrockCompat {
     pub supports_strict_mode: Option<bool>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MistralConversationsCompat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_mid_convo_system_messages: Option<bool>,
+}
+
 /// `OpenRouterRouting`: provider routing preferences forwarded verbatim as the `provider` field.
 pub type OpenRouterRouting = Map<String, Value>;
 
@@ -1230,6 +1748,26 @@ pub struct ModelCostTier {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelCostCard {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<Vec<ModelCostTier>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCostEffectiveRate {
+    /// ISO 8601 UTC instant from which this card replaces all earlier cards.
+    pub effective_from: String,
+    #[serde(flatten)]
+    pub card: ModelCostCard,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelCost {
     pub input: f64,
     pub output: f64,
@@ -1237,6 +1775,9 @@ pub struct ModelCost {
     pub cache_write: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiers: Option<Vec<ModelCostTier>>,
+    /// Scheduled list-price changes, inclusive of their effective instant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_rates: Option<Vec<ModelCostEffectiveRate>>,
 }
 
 impl ModelCost {
@@ -1259,6 +1800,8 @@ pub struct ImagesModelCost {
     pub cache_write: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiers: Option<Vec<ModelCostTier>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_rates: Option<Vec<ModelCostEffectiveRate>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input: Option<f64>,
 }
@@ -1290,6 +1833,8 @@ pub struct ImagesModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level_map: Option<ThinkingLevelMap>,
     pub input: Vec<InputModality>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_limits: Option<ModelInputLimits>,
     pub output: Vec<ImagesOutputModality>,
     pub cost: ImagesModelCost,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1304,4 +1849,86 @@ pub struct ImagesModel {
     pub service_tier: Option<ServiceTierPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recover_text_tool_calls: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClassifierModel {
+    #[serde(rename = "type")]
+    pub model_type: ClassifierModelType,
+    pub id: String,
+    pub name: String,
+    pub api: ClassifierApi,
+    pub provider: ProviderId,
+    pub base_url: String,
+    pub input: Vec<InputModality>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_limits: Option<ModelInputLimits>,
+    pub cost: ModelCost,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<BTreeMap<String, String>>,
+    pub context_window: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClassifierModelType {
+    Classifier,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelType {
+    Chat,
+    Image,
+    Classifier,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnyModel {
+    Chat(Model),
+    Image(ImagesModel),
+    Classifier(ClassifierModel),
+}
+
+impl Serialize for AnyModel {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let value = match self {
+            Self::Chat(model) => serde_json::to_value(model),
+            Self::Image(model) => serde_json::to_value(model).map(|mut value| {
+                value["type"] = Value::String("image".into());
+                value
+            }),
+            Self::Classifier(model) => serde_json::to_value(model),
+        }
+        .map_err(serde::ser::Error::custom)?;
+        value.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AnyModel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        match value.get("type").and_then(Value::as_str) {
+            None | Some("chat") => serde_json::from_value(value).map(Self::Chat),
+            Some("image") => serde_json::from_value(value).map(Self::Image),
+            Some("classifier") => serde_json::from_value(value).map(Self::Classifier),
+            Some(kind) => {
+                return Err(serde::de::Error::custom(format!(
+                    "Unknown model type: {kind}"
+                )));
+            }
+        }
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl AnyModel {
+    pub const fn model_type(&self) -> ModelType {
+        match self {
+            Self::Chat(_) => ModelType::Chat,
+            Self::Image(_) => ModelType::Image,
+            Self::Classifier(_) => ModelType::Classifier,
+        }
+    }
 }

@@ -24,10 +24,19 @@ pub struct StreamThinkingProjection {
 
 impl StreamThinkingProjection {
     pub fn new(stream: AssistantMessageEventStream, preserve_source_metadata: bool) -> Self {
-        Self { stream, outer_index_by_inner_index: HashMap::new(), preserve_source_metadata }
+        Self {
+            stream,
+            outer_index_by_inner_index: HashMap::new(),
+            preserve_source_metadata,
+        }
     }
 
-    pub fn start(&mut self, message: &mut AssistantMessage, inner_index: usize, source: &AssistantMessage) -> usize {
+    pub fn start(
+        &mut self,
+        message: &mut AssistantMessage,
+        inner_index: usize,
+        source: &AssistantMessage,
+    ) -> usize {
         let source_block = source.content.get(inner_index);
         let block = match source_block {
             Some(ContentBlock::Thinking(thinking)) if self.preserve_source_metadata => {
@@ -37,14 +46,28 @@ impl StreamThinkingProjection {
         };
         let outer_index = message.content.len();
         message.content.push(ContentBlock::Thinking(block));
-        self.outer_index_by_inner_index.insert(inner_index, outer_index);
-        self.stream.push(AssistantMessageEvent::ThinkingStart { content_index: outer_index, partial: message.clone() });
+        self.outer_index_by_inner_index
+            .insert(inner_index, outer_index);
+        self.stream.push(AssistantMessageEvent::ThinkingStart {
+            content_index: outer_index,
+            partial: message.clone(),
+        });
         outer_index
     }
 
-    pub fn delta(&mut self, message: &mut AssistantMessage, inner_index: usize, delta: &str, source: &AssistantMessage) {
-        let Some(&outer_index) = self.outer_index_by_inner_index.get(&inner_index) else { return };
-        let Some(ContentBlock::Thinking(current)) = message.content.get_mut(outer_index) else { return };
+    pub fn delta(
+        &mut self,
+        message: &mut AssistantMessage,
+        inner_index: usize,
+        delta: &str,
+        source: &AssistantMessage,
+    ) {
+        let Some(&outer_index) = self.outer_index_by_inner_index.get(&inner_index) else {
+            return;
+        };
+        let Some(ContentBlock::Thinking(current)) = message.content.get_mut(outer_index) else {
+            return;
+        };
         match source.content.get(inner_index) {
             Some(ContentBlock::Thinking(thinking)) if self.preserve_source_metadata => {
                 *current = clone_thinking(thinking, thinking.thinking.clone());
@@ -58,9 +81,19 @@ impl StreamThinkingProjection {
         });
     }
 
-    pub fn end(&mut self, message: &mut AssistantMessage, inner_index: usize, content: &str, source: &AssistantMessage) {
-        let Some(&outer_index) = self.outer_index_by_inner_index.get(&inner_index) else { return };
-        let Some(ContentBlock::Thinking(current)) = message.content.get(outer_index) else { return };
+    pub fn end(
+        &mut self,
+        message: &mut AssistantMessage,
+        inner_index: usize,
+        content: &str,
+        source: &AssistantMessage,
+    ) {
+        let Some(&outer_index) = self.outer_index_by_inner_index.get(&inner_index) else {
+            return;
+        };
+        let Some(ContentBlock::Thinking(current)) = message.content.get(outer_index) else {
+            return;
+        };
         let source_block = source.content.get(inner_index);
         let updated = match source_block {
             Some(ContentBlock::Thinking(thinking)) if self.preserve_source_metadata => {
@@ -84,6 +117,8 @@ mod tests {
 
     fn message() -> AssistantMessage {
         AssistantMessage {
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -123,9 +158,19 @@ mod tests {
             stream.next().await.expect("delta2"),
             stream.next().await.expect("end"),
         ];
-        assert!(matches!(events[0], Some(AssistantMessageEvent::ThinkingStart { content_index: 0, .. })));
-        assert!(matches!(&events[1], Some(AssistantMessageEvent::ThinkingDelta { content_index: 0, delta, .. }) if delta == "ab"));
-        assert!(matches!(&events[3], Some(AssistantMessageEvent::ThinkingEnd { content_index: 0, content, .. }) if content == "abcd"));
+        assert!(matches!(
+            events[0],
+            Some(AssistantMessageEvent::ThinkingStart {
+                content_index: 0,
+                ..
+            })
+        ));
+        assert!(
+            matches!(&events[1], Some(AssistantMessageEvent::ThinkingDelta { content_index: 0, delta, .. }) if delta == "ab")
+        );
+        assert!(
+            matches!(&events[3], Some(AssistantMessageEvent::ThinkingEnd { content_index: 0, content, .. }) if content == "abcd")
+        );
         match &message.content[0] {
             ContentBlock::Thinking(thinking) => assert_eq!(thinking.thinking, "abcd"),
             other => panic!("expected thinking block, got {other:?}"),

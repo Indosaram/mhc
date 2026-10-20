@@ -7,15 +7,17 @@ use maho_agent::agent_loop::{agent_loop, agent_loop_continue, run_agent_loop};
 use maho_agent::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, StreamFn,
     ToolExecutionMode, identity_convert_to_llm,
-};use maho_ai::types::{
-    AssistantMessage, AssistantMessageEvent, ContentBlock, Message, StopReason, ThinkingContent, ToolResultMessage,
+};
+use maho_ai::types::{
+    AssistantMessage, AssistantMessageEvent, ContentBlock, Message, StopReason, ThinkingContent,
+    ToolResultMessage,
 };
 use maho_ai::utils::abort::AbortController;
 use maho_ai::utils::event_stream::AssistantMessageEventStream;
 use serde_json::json;
 use support::{
-    assistant, collect_events, event_names, message_stream, recording_tool, result_tool, scripted_stream_fn,
-    test_model, text_block, tool_call, user_message,
+    assistant, collect_events, event_names, message_stream, recording_tool, result_tool,
+    scripted_stream_fn, test_model, text_block, tool_call, user_message,
 };
 
 fn thinking_block(message: &AgentMessage, index: usize) -> &ThinkingContent {
@@ -27,10 +29,19 @@ fn thinking_block(message: &AgentMessage, index: usize) -> &ThinkingContent {
 }
 
 fn thinking_partial(thinking: &str) -> AssistantMessage {
-    assistant(vec![ContentBlock::Thinking(ThinkingContent { thinking: thinking.to_owned(), ..Default::default() })], StopReason::Stop)
+    assistant(
+        vec![ContentBlock::Thinking(ThinkingContent {
+            thinking: thinking.to_owned(),
+            ..Default::default()
+        })],
+        StopReason::Stop,
+    )
 }
 
-fn event_stream(events: Vec<AssistantMessageEvent>, end: Option<AssistantMessage>) -> AssistantMessageEventStream {
+fn event_stream(
+    events: Vec<AssistantMessageEvent>,
+    end: Option<AssistantMessage>,
+) -> AssistantMessageEventStream {
     let stream = AssistantMessageEventStream::assistant();
     for event in events {
         stream.push(event);
@@ -58,7 +69,12 @@ async fn collect_with_timeout(
 }
 
 fn context_with(tools: Vec<AgentTool>) -> AgentContext {
-    AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: Some(tools) }
+    AgentContext {
+        declared_tools: None,
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Some(tools),
+    }
 }
 
 #[tokio::test]
@@ -71,7 +87,13 @@ async fn uses_the_configured_default_when_a_legacy_caller_omits_stream_fn() {
     })));
 
     let config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
-    let stream = agent_loop(vec![user_message("Hello")], context_with(Vec::new()), config, None, None);
+    let stream = agent_loop(
+        vec![user_message("Hello")],
+        context_with(Vec::new()),
+        config,
+        None,
+        None,
+    );
     let _ = collect_with_timeout(&stream).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
@@ -82,12 +104,22 @@ async fn uses_the_configured_default_when_a_legacy_caller_omits_stream_fn() {
 async fn stamps_thinking_timing_on_a_completed_thinking_block() {
     let stream = agent_loop(
         vec![user_message("Hello")],
-        AgentContext { system_prompt: "Test".to_owned(), messages: Vec::new(), tools: Some(Vec::new()) },
+        AgentContext {
+            declared_tools: None,
+            system_prompt: "Test".to_owned(),
+            messages: Vec::new(),
+            tools: Some(Vec::new()),
+        },
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
         Some(stream_fn_of(vec![
-            AssistantMessageEvent::Start { partial: assistant(Vec::new(), StopReason::Stop) },
-            AssistantMessageEvent::ThinkingStart { content_index: 0, partial: thinking_partial("") },
+            AssistantMessageEvent::Start {
+                partial: assistant(Vec::new(), StopReason::Stop),
+            },
+            AssistantMessageEvent::ThinkingStart {
+                content_index: 0,
+                partial: thinking_partial(""),
+            },
             AssistantMessageEvent::ThinkingDelta {
                 content_index: 0,
                 delta: "reasoning".to_owned(),
@@ -110,7 +142,11 @@ async fn stamps_thinking_timing_on_a_completed_thinking_block() {
     let started_at = block.started_at.expect("startedAt");
     let ended_at = block.ended_at.expect("endedAt");
     assert!(ended_at >= started_at);
-    assert!(events.iter().any(|event| matches!(event, AgentEvent::MessageUpdate { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::MessageUpdate { .. }))
+    );
 }
 
 #[tokio::test]
@@ -118,8 +154,14 @@ async fn stamps_independent_timing_for_two_thinking_blocks() {
     let two = |first: &str, second: &str| {
         assistant(
             vec![
-                ContentBlock::Thinking(ThinkingContent { thinking: first.to_owned(), ..Default::default() }),
-                ContentBlock::Thinking(ThinkingContent { thinking: second.to_owned(), ..Default::default() }),
+                ContentBlock::Thinking(ThinkingContent {
+                    thinking: first.to_owned(),
+                    ..Default::default()
+                }),
+                ContentBlock::Thinking(ThinkingContent {
+                    thinking: second.to_owned(),
+                    ..Default::default()
+                }),
             ],
             StopReason::Stop,
         )
@@ -130,12 +172,31 @@ async fn stamps_independent_timing_for_two_thinking_blocks() {
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
         Some(stream_fn_of(vec![
-            AssistantMessageEvent::Start { partial: assistant(Vec::new(), StopReason::Stop) },
-            AssistantMessageEvent::ThinkingStart { content_index: 0, partial: two("", "") },
-            AssistantMessageEvent::ThinkingEnd { content_index: 0, content: "one".to_owned(), partial: two("one", "") },
-            AssistantMessageEvent::ThinkingStart { content_index: 1, partial: two("one", "") },
-            AssistantMessageEvent::ThinkingEnd { content_index: 1, content: "two".to_owned(), partial: two("one", "two") },
-            AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message: two("one", "two") },
+            AssistantMessageEvent::Start {
+                partial: assistant(Vec::new(), StopReason::Stop),
+            },
+            AssistantMessageEvent::ThinkingStart {
+                content_index: 0,
+                partial: two("", ""),
+            },
+            AssistantMessageEvent::ThinkingEnd {
+                content_index: 0,
+                content: "one".to_owned(),
+                partial: two("one", ""),
+            },
+            AssistantMessageEvent::ThinkingStart {
+                content_index: 1,
+                partial: two("one", ""),
+            },
+            AssistantMessageEvent::ThinkingEnd {
+                content_index: 1,
+                content: "two".to_owned(),
+                partial: two("one", "two"),
+            },
+            AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop,
+                message: two("one", "two"),
+            },
         ])),
     );
     let _ = collect_with_timeout(&stream).await;
@@ -156,8 +217,13 @@ async fn keeps_started_at_stable_across_thinking_updates() {
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
         Some(stream_fn_of(vec![
-            AssistantMessageEvent::Start { partial: assistant(Vec::new(), StopReason::Stop) },
-            AssistantMessageEvent::ThinkingStart { content_index: 0, partial: thinking_partial("") },
+            AssistantMessageEvent::Start {
+                partial: assistant(Vec::new(), StopReason::Stop),
+            },
+            AssistantMessageEvent::ThinkingStart {
+                content_index: 0,
+                partial: thinking_partial(""),
+            },
             AssistantMessageEvent::ThinkingDelta {
                 content_index: 0,
                 delta: "reasoning".to_owned(),
@@ -178,16 +244,27 @@ async fn keeps_started_at_stable_across_thinking_updates() {
     let started_ats: Vec<i64> = events
         .iter()
         .filter_map(|event| match event {
-            AgentEvent::MessageUpdate { message, assistant_message_event: AssistantMessageEvent::ThinkingStart { .. } }
-            | AgentEvent::MessageUpdate { message, assistant_message_event: AssistantMessageEvent::ThinkingDelta { .. } }
-            | AgentEvent::MessageUpdate { message, assistant_message_event: AssistantMessageEvent::ThinkingEnd { .. } } => {
-                thinking_block(message, 0).started_at
+            AgentEvent::MessageUpdate {
+                message,
+                assistant_message_event: AssistantMessageEvent::ThinkingStart { .. },
             }
+            | AgentEvent::MessageUpdate {
+                message,
+                assistant_message_event: AssistantMessageEvent::ThinkingDelta { .. },
+            }
+            | AgentEvent::MessageUpdate {
+                message,
+                assistant_message_event: AssistantMessageEvent::ThinkingEnd { .. },
+            } => thinking_block(message, 0).started_at,
             _ => None,
         })
         .collect();
     assert_eq!(started_ats.len(), 3);
-    assert!(started_ats.iter().all(|started_at| *started_at == started_ats[0]));
+    assert!(
+        started_ats
+            .iter()
+            .all(|started_at| *started_at == started_ats[0])
+    );
 }
 
 #[tokio::test]
@@ -198,8 +275,13 @@ async fn closes_thinking_timing_on_abort_error_events() {
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
         Some(stream_fn_of(vec![
-            AssistantMessageEvent::Start { partial: assistant(Vec::new(), StopReason::Stop) },
-            AssistantMessageEvent::ThinkingStart { content_index: 0, partial: thinking_partial("") },
+            AssistantMessageEvent::Start {
+                partial: assistant(Vec::new(), StopReason::Stop),
+            },
+            AssistantMessageEvent::ThinkingStart {
+                content_index: 0,
+                partial: thinking_partial(""),
+            },
             AssistantMessageEvent::Error {
                 reason: maho_ai::types::ErrorReason::Aborted,
                 error: assistant(
@@ -224,8 +306,13 @@ async fn closes_unterminated_thinking_timing_when_the_stream_falls_through() {
         None,
         Some(stream_fn_ending_with(
             vec![
-                AssistantMessageEvent::Start { partial: assistant(Vec::new(), StopReason::Stop) },
-                AssistantMessageEvent::ThinkingStart { content_index: 0, partial: thinking_partial("") },
+                AssistantMessageEvent::Start {
+                    partial: assistant(Vec::new(), StopReason::Stop),
+                },
+                AssistantMessageEvent::ThinkingStart {
+                    content_index: 0,
+                    partial: thinking_partial(""),
+                },
             ],
             thinking_partial(""),
         )),
@@ -251,8 +338,14 @@ async fn leaves_messages_without_thinking_events_unaffected() {
     );
     let _ = collect_with_timeout(&stream).await;
     let messages = stream.result().await.expect("result");
-    assert_eq!(messages[1].as_assistant().expect("assistant"), &final_message);
-    assert_eq!(messages[1].as_assistant().expect("assistant").content.len(), 1);
+    assert_eq!(
+        messages[1].as_assistant().expect("assistant"),
+        &final_message
+    );
+    assert_eq!(
+        messages[1].as_assistant().expect("assistant").content.len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -262,7 +355,10 @@ async fn emits_events_with_agent_message_types() {
         context_with(Vec::new()),
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
-        Some(scripted_stream_fn(vec![assistant(vec![text_block("Hi there")], StopReason::Stop)])),
+        Some(scripted_stream_fn(vec![assistant(
+            vec![text_block("Hi there")],
+            StopReason::Stop,
+        )])),
     );
     let events = collect_with_timeout(&stream).await;
     assert_eq!(events.first().map(support::event_name), Some("agent_start"));
@@ -290,7 +386,10 @@ async fn emits_a_terminal_assistant_error_when_stream_creation_throws() {
     );
     let _ = collect_with_timeout(&stream).await;
     let messages = stream.result().await.expect("result");
-    let last = messages.last().and_then(AgentMessage::as_assistant).expect("assistant message");
+    let last = messages
+        .last()
+        .and_then(AgentMessage::as_assistant)
+        .expect("assistant message");
     assert_eq!(last.stop_reason, StopReason::Error);
 }
 
@@ -300,15 +399,31 @@ async fn fails_the_turn_when_provider_stream_stays_idle_past_timeout_ms() {
     config.options.stream.request.timeout_ms = Some(20);
     let idle: StreamFn = Arc::new(|_model, _context, _options| {
         let stream = AssistantMessageEventStream::assistant();
-        stream.push(AssistantMessageEvent::Start { partial: assistant(Vec::new(), StopReason::Pending) });
+        stream.push(AssistantMessageEvent::Start {
+            partial: assistant(Vec::new(), StopReason::Pending),
+        });
         stream
     });
-    let stream = agent_loop(vec![user_message("Hello")], context_with(Vec::new()), config, None, Some(idle));
+    let stream = agent_loop(
+        vec![user_message("Hello")],
+        context_with(Vec::new()),
+        config,
+        None,
+        Some(idle),
+    );
     let _ = collect_with_timeout(&stream).await;
     let messages = stream.result().await.expect("result");
-    let last = messages.last().and_then(AgentMessage::as_assistant).expect("assistant message");
+    let last = messages
+        .last()
+        .and_then(AgentMessage::as_assistant)
+        .expect("assistant message");
     assert_eq!(last.stop_reason, StopReason::Error);
-    assert!(last.error_message.as_deref().unwrap_or_default().contains("Idle timeout"));
+    assert!(
+        last.error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Idle timeout")
+    );
 }
 
 #[tokio::test]
@@ -325,7 +440,9 @@ async fn aborts_the_provider_request_signal_when_the_caller_aborts_mid_stream() 
             let _ = sender.send(());
         }
         let stream = AssistantMessageEventStream::assistant();
-        stream.push(AssistantMessageEvent::Start { partial: assistant(Vec::new(), StopReason::Pending) });
+        stream.push(AssistantMessageEvent::Start {
+            partial: assistant(Vec::new(), StopReason::Pending),
+        });
         stream
     });
     let stream = agent_loop(
@@ -356,7 +473,9 @@ async fn attaches_fallback_error_details_when_a_terminal_error_event_omits_them(
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
         Some(stream_fn_of(vec![
-            AssistantMessageEvent::Start { partial: assistant(Vec::new(), StopReason::Pending) },
+            AssistantMessageEvent::Start {
+                partial: assistant(Vec::new(), StopReason::Pending),
+            },
             AssistantMessageEvent::Error {
                 reason: maho_ai::types::ErrorReason::Error,
                 error: assistant(Vec::new(), StopReason::Error),
@@ -365,7 +484,10 @@ async fn attaches_fallback_error_details_when_a_terminal_error_event_omits_them(
     );
     let _ = collect_with_timeout(&stream).await;
     let messages = stream.result().await.expect("result");
-    let last = messages.last().and_then(AgentMessage::as_assistant).expect("assistant message");
+    let last = messages
+        .last()
+        .and_then(AgentMessage::as_assistant)
+        .expect("assistant message");
     assert_eq!(last.stop_reason, StopReason::Error);
     assert_eq!(last.error_message.as_deref(), Some("Error"));
 }
@@ -391,10 +513,16 @@ async fn applies_transform_context_before_convert_to_llm() {
         context_with(Vec::new()),
         config,
         None,
-        Some(scripted_stream_fn(vec![assistant(vec![text_block("Hi")], StopReason::Stop)])),
+        Some(scripted_stream_fn(vec![assistant(
+            vec![text_block("Hi")],
+            StopReason::Stop,
+        )])),
     );
     let _ = collect_with_timeout(&stream).await;
-    assert_eq!(*order.lock().unwrap(), vec!["transform".to_owned(), "convert".to_owned()]);
+    assert_eq!(
+        *order.lock().unwrap(),
+        vec!["transform".to_owned(), "convert".to_owned()]
+    );
 }
 
 #[tokio::test]
@@ -406,7 +534,10 @@ async fn handles_tool_calls_and_results() {
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
         Some(scripted_stream_fn(vec![
-            assistant(vec![tool_call("call-1", "weather", json!({ "city": "Seoul" }))], StopReason::ToolUse),
+            assistant(
+                vec![tool_call("call-1", "weather", json!({ "city": "Seoul" }))],
+                StopReason::ToolUse,
+            ),
             assistant(vec![text_block("done")], StopReason::Stop),
         ])),
     );
@@ -422,8 +553,20 @@ async fn handles_tool_calls_and_results() {
         .collect();
     assert_eq!(tool_results.len(), 1);
     assert_eq!(tool_results[0].tool_name, "weather");
-    assert_eq!(events.iter().filter(|event| matches!(event, AgentEvent::ToolExecutionStart { .. })).count(), 1);
-    assert_eq!(events.iter().filter(|event| matches!(event, AgentEvent::ToolExecutionEnd { .. })).count(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::ToolExecutionStart { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::ToolExecutionEnd { .. }))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -435,7 +578,10 @@ async fn does_not_execute_tool_calls_from_a_length_truncated_assistant_message()
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
         Some(scripted_stream_fn(vec![
-            assistant(vec![tool_call("call-1", "weather", json!({ "city": "Seoul" }))], StopReason::Length),
+            assistant(
+                vec![tool_call("call-1", "weather", json!({ "city": "Seoul" }))],
+                StopReason::Length,
+            ),
             assistant(vec![text_block("done")], StopReason::Stop),
         ])),
     );
@@ -449,9 +595,12 @@ async fn returns_a_registered_removed_tool_hint_before_extension_hooks() {
     let counter = Arc::clone(&before_calls);
     let mut config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
     config.removed_tool_hints = Some(
-        [("exec".to_owned(), "exec was removed; use eval({ language: \"js\", code }) instead.".to_owned())]
-            .into_iter()
-            .collect(),
+        [(
+            "exec".to_owned(),
+            "exec was removed; use eval({ language: \"js\", code }) instead.".to_owned(),
+        )]
+        .into_iter()
+        .collect(),
     );
     config.before_tool_call = Some(Arc::new(move |_context, _signal| {
         counter.fetch_add(1, Ordering::SeqCst);
@@ -463,7 +612,10 @@ async fn returns_a_registered_removed_tool_hint_before_extension_hooks() {
         config,
         None,
         Some(scripted_stream_fn(vec![
-            assistant(vec![tool_call("removed-exec", "exec", json!({}))], StopReason::ToolUse),
+            assistant(
+                vec![tool_call("removed-exec", "exec", json!({}))],
+                StopReason::ToolUse,
+            ),
             assistant(vec![text_block("done")], StopReason::Stop),
         ])),
     );
@@ -548,7 +700,10 @@ async fn keeps_sequential_tool_calls_mutually_exclusive_with_default_parallel_co
             _ => None,
         })
         .collect();
-    assert_eq!(persisted, vec!["sequential_tool".to_owned(), "parallel_tool".to_owned()]);
+    assert_eq!(
+        persisted,
+        vec!["sequential_tool".to_owned(), "parallel_tool".to_owned()]
+    );
 }
 
 #[tokio::test]
@@ -565,7 +720,10 @@ async fn uses_prepare_next_turn_snapshot_before_continuing() {
         context_with(Vec::new()),
         config,
         None,
-        Some(scripted_stream_fn(vec![assistant(vec![text_block("hi")], StopReason::Stop)])),
+        Some(scripted_stream_fn(vec![assistant(
+            vec![text_block("hi")],
+            StopReason::Stop,
+        )])),
     );
     let _ = collect_with_timeout(&stream).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -582,7 +740,9 @@ async fn stops_after_the_current_turn_when_should_stop_after_turn_returns_true()
         context_with(Vec::new()),
         config,
         None,
-        Some(Arc::new(move |model, context, options| recording(model, context, options))),
+        Some(Arc::new(move |model, context, options| {
+            recording(model, context, options)
+        })),
     );
     let _ = collect_with_timeout(&stream).await;
     let messages = stream.result().await.expect("result");
@@ -600,22 +760,35 @@ async fn stops_after_a_tool_batch_when_every_tool_result_sets_terminate_true() {
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
         Some(scripted_stream_fn(vec![
-            assistant(vec![tool_call("call-1", "terminating_tool", json!({}))], StopReason::ToolUse),
+            assistant(
+                vec![tool_call("call-1", "terminating_tool", json!({}))],
+                StopReason::ToolUse,
+            ),
             assistant(vec![text_block("should not run")], StopReason::Stop),
         ])),
     );
     let _ = collect_with_timeout(&stream).await;
     let messages = stream.result().await.expect("result");
     assert!(messages.iter().all(|message| {
-        message.as_assistant().map(|assistant| assistant.content.iter().all(|block| {
+        message
+            .as_assistant()
+            .map(|assistant| {
+                assistant.content.iter().all(|block| {
             !matches!(block, ContentBlock::Text(text) if text.text == "should not run")
-        })).unwrap_or(true)
+        })
+            })
+            .unwrap_or(true)
     }));
 }
 
 #[tokio::test]
 async fn throws_when_context_has_no_messages() {
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: Some(Vec::new()) };
+    let context = AgentContext {
+        declared_tools: None,
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Some(Vec::new()),
+    };
     let config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = agent_loop_continue(context, config, None, Some(scripted_stream_fn(Vec::new())));
@@ -631,7 +804,10 @@ async fn continues_from_existing_context_without_emitting_user_message_events() 
         context,
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
-        Some(scripted_stream_fn(vec![assistant(vec![text_block("hi")], StopReason::Stop)])),
+        Some(scripted_stream_fn(vec![assistant(
+            vec![text_block("hi")],
+            StopReason::Stop,
+        )])),
     );
     let events = collect_with_timeout(&stream).await;
     assert_eq!(events.first().map(support::event_name), Some("agent_start"));
@@ -648,8 +824,14 @@ async fn two_sequential_tool_calls_produce_the_senpi_event_sequence() {
         AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
         None,
         Some(scripted_stream_fn(vec![
-            assistant(vec![tool_call("call-1", "weather", json!({ "city": "Seoul" }))], StopReason::ToolUse),
-            assistant(vec![tool_call("call-2", "forecast", json!({ "city": "Seoul" }))], StopReason::ToolUse),
+            assistant(
+                vec![tool_call("call-1", "weather", json!({ "city": "Seoul" }))],
+                StopReason::ToolUse,
+            ),
+            assistant(
+                vec![tool_call("call-2", "forecast", json!({ "city": "Seoul" }))],
+                StopReason::ToolUse,
+            ),
             assistant(vec![text_block("done")], StopReason::Stop),
         ])),
     );
@@ -694,7 +876,10 @@ async fn stops_before_polling_steering_when_a_tool_aborts_the_run() {
         let tool_signal = tool_signal.unwrap_or_else(|| signal.clone());
         Box::pin(async move {
             tool_signal.cancelled().await;
-            AgentToolResult { is_error: Some(true), ..AgentToolResult::text("Operation aborted") }
+            AgentToolResult {
+                is_error: Some(true),
+                ..AgentToolResult::text("Operation aborted")
+            }
         })
     });
     let wait_tool = AgentTool {
@@ -721,7 +906,9 @@ async fn stops_before_polling_steering_when_a_tool_aborts_the_run() {
     let mut config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
     config.get_steering_messages = Some(Arc::new(move || {
         polls.fetch_add(1, Ordering::SeqCst);
-        let mut delivered = delivered_sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut delivered = delivered_sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !steering_signal.aborted() || *delivered {
             return Box::pin(async { Vec::new() });
         }
@@ -735,7 +922,10 @@ async fn stops_before_polling_steering_when_a_tool_aborts_the_run() {
         config,
         Some(controller.signal()),
         Some(scripted_stream_fn(vec![
-            assistant(vec![tool_call("tool-1", "wait", json!({ "value": "abort" }))], StopReason::ToolUse),
+            assistant(
+                vec![tool_call("tool-1", "wait", json!({ "value": "abort" }))],
+                StopReason::ToolUse,
+            ),
             assistant(vec![text_block("processed queued")], StopReason::Stop),
         ])),
     );
@@ -764,15 +954,28 @@ async fn stops_before_polling_steering_when_a_tool_aborts_the_run() {
         })
         .collect();
     assert_eq!(user_texts, vec!["start".to_owned()]);
-    assert_eq!(events.iter().filter(|event| matches!(event, AgentEvent::TurnStart)).count(), 1);
-    assert_eq!(events.iter().filter(|event| matches!(event, AgentEvent::AgentEnd { .. })).count(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::TurnStart))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::AgentEnd { .. }))
+            .count(),
+        1
+    );
     assert_eq!(steering_polls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn the_recording_sink_receives_the_same_sequence_as_the_stream() {
     let (emit, recorded) = support::recording_sink();
-    let stream_fn: StreamFn = scripted_stream_fn(vec![assistant(vec![text_block("hi")], StopReason::Stop)]);
+    let stream_fn: StreamFn =
+        scripted_stream_fn(vec![assistant(vec![text_block("hi")], StopReason::Stop)]);
     run_agent_loop(
         vec![user_message("Hello")],
         context_with(Vec::new()),

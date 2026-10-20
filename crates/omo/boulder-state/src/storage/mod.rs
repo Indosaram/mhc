@@ -6,6 +6,9 @@ mod stale_work;
 mod task;
 mod write_state;
 
+pub use write_state::{try_clear_boulder_state, try_write_boulder_state};
+pub use stale_work::{find_newest_session_transcript_ms_precise, is_work_stale_precise};
+
 pub use path::{
     get_boulder_file_path, resolve_boulder_plan_path, resolve_boulder_plan_path_for_work,
 };

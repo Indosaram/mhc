@@ -1,5 +1,29 @@
 use maho_ext_api::Extension;
 
+#[cfg(windows)]
+#[tokio::test]
+async fn memory_report_command_loads_from_default_factories_without_model_tools() {
+    let root = tempfile::tempdir().expect("isolated factory directory");
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut factories = maho_cli::cli::default_extensions::factories(
+        sender,
+        std::sync::Arc::new(std::sync::OnceLock::new()),
+    );
+    maho_cli::cli::default_extensions::retain_no_extensions_factories(&mut factories);
+    factories.retain(|factory| factory.path == "<builtin:memory-report>");
+
+    let loaded = maho_ext_host::loader::load_extensions_async(
+        factories, root.path(), Default::default(),
+    ).await;
+
+    assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+    assert_eq!(loaded.extensions.len(), 1);
+    let extension = &loaded.extensions[0];
+    assert_eq!(extension.commands.len(), 1);
+    assert_eq!(extension.commands[0].name, "memory-report");
+    assert!(extension.tools.is_empty());
+}
+
 #[tokio::test]
 async fn concrete_default_factories_register_tools_and_commands() {
     let root = tempfile::tempdir().expect("isolated factory directory");

@@ -35,12 +35,12 @@ async fn session(root: &std::path::Path) -> maho_core::agent_session::AgentSessi
     std::fs::create_dir_all(&agent_dir).expect("agent directory");
     let cwd_string = cwd.to_string_lossy().into_owned();
     let agent_dir_string = agent_dir.to_string_lossy().into_owned();
-    let provider = faux_provider(Default::default());
+    let provider = faux_provider(Default::default()).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("faux model");
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         providers: Some(vec![provider.provider]),
         ..Default::default()
-    });
+    }).expect("valid model runtime");
     let inventory_factory = NativeAsyncExtensionFactory {
         path: "<test:loaded-surfaces-inventory>".into(),
         source_info: Default::default(),
