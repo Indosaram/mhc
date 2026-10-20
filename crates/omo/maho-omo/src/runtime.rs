@@ -121,6 +121,10 @@ impl OmoRuntime {
         self.coordinator.enter_turn()
     }
 
+    pub async fn first_poll_in_turn<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.coordinator.barrier().first_poll(future).await
+    }
+
     pub fn logger(&self) -> Arc<dyn ComponentLogger> {
         Arc::clone(&self.context.logger)
     }

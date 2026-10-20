@@ -83,6 +83,29 @@ async fn deferred_pass_waits_for_the_whole_turn() {
 }
 
 #[tokio::test]
+async fn deferred_pass_is_not_blocked_by_awaited_handler_work() {
+    let barrier = TurnBarrier::new();
+    let scheduler = DeferredScheduler::runtime(Arc::clone(&barrier), None);
+    let (started, started_receipt) = tokio::sync::oneshot::channel();
+    let (release, release_receipt) = tokio::sync::oneshot::channel();
+    let handler_barrier = Arc::clone(&barrier);
+    let handler = tokio::spawn(async move {
+        handler_barrier.first_poll(async move {
+            started.send(()).expect("started receipt");
+            release_receipt.await.expect("handler release");
+        }).await;
+    });
+    started_receipt.await.expect("handler first poll");
+
+    let (delivered, delivery_receipt) = tokio::sync::oneshot::channel();
+    scheduler.schedule(Box::new(move || delivered.send(()).expect("delivery receipt")));
+    tokio::time::timeout(Duration::from_secs(5), delivery_receipt).await.expect("bounded delivery").expect("delivery");
+
+    release.send(()).expect("release handler");
+    handler.await.expect("handler task");
+}
+
+#[tokio::test]
 async fn consecutive_producers_in_one_turn_deliver_one_batch() {
     let log = crate::support::DeliveryLog::new();
     let delivery = log.delivery();
