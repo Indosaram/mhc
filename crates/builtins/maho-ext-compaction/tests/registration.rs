@@ -206,7 +206,7 @@ async fn registered_restoration_is_bounded_accepted_only_and_once() {
         }
         let mut rejected=ExtensionEvent::SessionCompact(SessionCompactEvent::Rejected {reason:CompactionReason::Manual,request_id:"rejected".into(),rejection_cause:CompactionRejectionCause::ExternalOwner});
         for handler in &api.registered.handlers[&EventKind::SessionCompact] {handler(&mut rejected,&ctx).await.expect("native compaction scenario invariant");}
-        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"continue".into(),images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
+        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"continue".into(),trigger:"prompt".into(),preview:false,images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
         let handler=&api.registered.handlers[&EventKind::BeforeAgentStart][0];
         let result=handler(&mut before,&ctx).await.expect("native compaction scenario invariant");
         assert!(matches!(result,EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:None,..})));
@@ -346,7 +346,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     // registered over it with a configured key, so request auth resolves that key (no faux base auth).
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_provider(&model.provider, maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider {
             base_url: Some(model.base_url.clone()), api_key: Some("faux".into()), api: Some(model.api.clone()),
@@ -605,7 +605,7 @@ async fn run_idle_retry_prompt_scenario(prompt_arrives:bool) {
     for handler in &api.registered.handlers[&EventKind::AgentEnd] {handler(&mut end,&ctx).await.expect("registered idle hook");}
     let scheduled=tokio::time::timeout(std::time::Duration::from_secs(10),probes.recv()).await;
     if matches!(scheduled,Ok(Some(()))) && prompt_arrives {
-        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"next".into(),images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
+        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"next".into(),trigger:"prompt".into(),preview:false,images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
         for handler in &api.registered.handlers[&EventKind::BeforeAgentStart] {handler(&mut before,&ctx).await.expect("registered prompt hook");}
     }
     tokio::time::advance(std::time::Duration::from_millis(maho_ext_compaction::idle_retry::IDLE_WARMUP_RETRY_DELAY_MS+1)).await;
@@ -641,7 +641,7 @@ async fn run_fallback_event_capture() {
         let model:Model=serde_json::from_value(serde_json::json!({"id":"context-model","name":"m","api":if reason=="not-openai-responses" {"faux"} else {"openai-responses"},"provider":"openai","baseUrl":"http://127.0.0.1:1/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("fallback model");
         let branch=if reason=="empty-compaction-input" {Vec::new()} else {vec![SessionEntry {id:"old".into(),parent_id:None,timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"type":"message","id":"old","message":{"role":"user","content":"old","timestamp":0}})}]};
         let mut ctx=context();ctx.model=Some(model);
-        ctx.model_registry=Arc::new(FallbackRegistry(if reason=="auth lookup failed" {None} else {Some(ResolvedRequestAuth {auth:maho_ai::models::ProviderAuthResult {api_key:if reason=="missing-openai-auth" {None} else {Some("fake".into())},headers:None,base_url:if reason=="missing-remote-replay-origin-provenance" {Some("invalid url".into())} else {None}},extra_body:None,upstream_model_id:Some("request-model".into()),service_tier:None,env:None})}));
+        ctx.model_registry=Arc::new(FallbackRegistry(if reason=="auth lookup failed" {None} else {Some(ResolvedRequestAuth { ambient: false,auth:maho_ai::models::ProviderAuthResult {api_key:if reason=="missing-openai-auth" {None} else {Some("fake".into())},headers:None,base_url:if reason=="missing-remote-replay-origin-provenance" {Some("invalid url".into())} else {None}},extra_body:None,upstream_model_id:Some("request-model".into()),service_tier:None,env:None})}));
         ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions::new(policy_settings())),branch});
         let captured=Arc::new(std::sync::Mutex::new(Vec::new()));let events=EventBus::default();let observed=Arc::clone(&captured);
         let _subscription=events.on(maho_ext_compaction::openai_remote::SENPI_COMPACTION_EVENT,Arc::new(move |data|observed.lock().expect("captured events").push(data.clone())));
@@ -691,7 +691,7 @@ async fn run_model_auth_capture(sse:bool) {
     });
     let branch=vec![SessionEntry {id:"old".into(),parent_id:None,timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"type":"message","id":"old","message":{"role":"user","content":"old context","timestamp":0}})}];
     let mut ctx=context();ctx.model=Some(model.clone());ctx.service_tier=Some(ServiceTier::Priority);
-    ctx.model_registry=Arc::new(AuthRegistry {model,auth:ResolvedRequestAuth {auth:maho_ai::models::ProviderAuthResult {api_key:Some("refreshed-key".into()),headers:Some(std::collections::BTreeMap::from([("x-refreshed".into(),Some("live".into()))])),base_url:Some(live_base.clone())},upstream_model_id:Some("live-model".into()),extra_body:Some(serde_json::Map::from_iter([("stream_extra".into(),serde_json::json!(true))])),service_tier:Some(maho_ai::types::ServiceTierPreference::Flex),env:None}});
+    ctx.model_registry=Arc::new(AuthRegistry {model,auth:ResolvedRequestAuth { ambient: false,auth:maho_ai::models::ProviderAuthResult {api_key:Some("refreshed-key".into()),headers:Some(std::collections::BTreeMap::from([("x-refreshed".into(),Some("live".into()))])),base_url:Some(live_base.clone())},upstream_model_id:Some("live-model".into()),extra_body:Some(serde_json::Map::from_iter([("stream_extra".into(),serde_json::json!(true))])),service_tier:Some(maho_ai::types::ServiceTierPreference::Flex),env:None}});
     ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions::new(policy_settings())),branch});
     let registered=LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default());
     let runtime=ExtensionRuntime::default();runtime.bind_session_actions(Arc::new(AuthCheckpointActions));

@@ -13,9 +13,28 @@ on:
         description: Existing tag to (re)build and publish, e.g. v2026.10.18. Empty = warm the build cache on the selected branch.
         required: false
         default: ""
+      candidate_version:
+        description: Candidate version string for QA packages (e.g. 2026.10.20.1). Produces full packages without publishing.
+        required: false
+        default: ""
+      candidate_pair:
+        description: Build candidate pair A=2026.10.20.1 and B=2026.10.20.2 from same source without publishing.
+        type: boolean
+        required: false
+        default: false
+      package:
+        description: Force complete package generation and artifact upload even without a tag.
+        type: boolean
+        required: false
+        default: false
+      publish:
+        description: Publish release assets to GitHub Releases (set false for candidate QA runs).
+        type: boolean
+        required: false
+        default: true
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-${{ github.event.inputs.tag || github.event.inputs.candidate_version || (github.event.inputs.candidate_pair == 'true' && 'candidate-pair') || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -24,6 +43,10 @@ env:
   CARGO_NET_RETRY: "10"
   PROTOC_VERSION: "29.3"
   TAG: ${{ github.event.inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+  CANDIDATE_VERSION: ${{ github.event.inputs.candidate_version || '' }}
+  CANDIDATE_PAIR: ${{ github.event.inputs.candidate_pair || 'false' }}
+  DO_PACKAGE: ${{ github.event.inputs.package == 'true' || github.event.inputs.candidate_pair == 'true' || github.event.inputs.candidate_version != '' || (github.event.inputs.tag || (github.ref_type == 'tag' && github.ref_name)) != '' }}
+  DO_PUBLISH: ${{ (github.event.inputs.publish != 'false') && (github.event.inputs.tag != '' || github.ref_type == 'tag') && github.event.inputs.candidate_pair != 'true' && github.event.inputs.candidate_version == '' }}
 
 jobs:
   build:
@@ -80,13 +103,28 @@ jobs:
 
       - name: build release binaries
         run: |
-          export MHC_BUILD_VERSION="${TAG:+${TAG#v}}"
-          export MHC_BUILD_VERSION="${MHC_BUILD_VERSION:-0.0.0-cache}"
-          cargo build --release --locked -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
-          test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
+          if [ "$CANDIDATE_PAIR" = "true" ]; then
+            echo "Building candidate pair: A=2026.10.20.1 and B=2026.10.20.2"
+            export MHC_BUILD_VERSION="2026.10.20.1"
+            cargo build --release --locked -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
+            test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
+            mkdir -p target/release-A target/release-B
+            cp target/release/mhc$EXE target/release-A/
+            export MHC_BUILD_VERSION="2026.10.20.2"
+            touch crates/maho-cli/src/main.rs
+            cargo build --release --locked -p maho-cli --bin mhc
+            test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
+            cp target/release/mhc$EXE target/release-B/
+          else
+            export MHC_BUILD_VERSION="${CANDIDATE_VERSION:+${CANDIDATE_VERSION#v}}"
+            export MHC_BUILD_VERSION="${MHC_BUILD_VERSION:-${TAG:+${TAG#v}}}"
+            export MHC_BUILD_VERSION="${MHC_BUILD_VERSION:-0.0.0-cache}"
+            cargo build --release --locked -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
+            test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
+          fi
 
       - name: materialize browser skill runtime
-        if: env.TAG != ''
+        if: env.DO_PACKAGE == 'true'
         run: |
           commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)')
           git init -q "$RUNNER_TEMP/omowright"
@@ -96,40 +134,190 @@ jobs:
           node assets/omo-latest/stage-omowright-runtime.mjs --source "$RUNNER_TEMP/omowright" --target "$RUNNER_TEMP/omowright-runtime"
 
       - name: package
-        if: env.TAG != ''
+        if: env.DO_PACKAGE == 'true'
         run: |
-          name="mhc-${{ matrix.target }}"
-          bun tools/package-native.mjs --binary "target/release/mhc$EXE" --output "dist/$name" --skill-source latest \
-            --git-bash-binary "target/release/omo-git-bash$EXE" --desktop-engine-binary "target/release/senpi-desktop-engine$EXE" \
-            --omowright-runtime "$RUNNER_TEMP/omowright-runtime"
-          test -x "dist/$name/senpi-desktop-engine$EXE"
-          bun tools/package-native.mjs --verify-only "dist/$name"
-          "dist/$name/mhc$EXE" --version
-          if [ "$RUNNER_OS" = Windows ]; then
-            (cd dist && 7z a -tzip -bso0 "$name.zip" "$name" && sha256sum "$name.zip" > "$name.zip.sha256")
+          if [ "$CANDIDATE_PAIR" = "true" ]; then
+            for ver in 2026.10.20.1 2026.10.20.2; do
+              letter=$([ "$ver" = "2026.10.20.1" ] && echo "A" || echo "B")
+              name="mhc-${{ matrix.target }}"
+              out_dir="dist/candidate-${letter}/${name}"
+              mkdir -p "dist/candidate-${letter}"
+              cp "target/release-${letter}/mhc$EXE" "target/release/mhc$EXE"
+              bun tools/package-native.mjs --binary "target/release/mhc$EXE" --output "$out_dir" --skill-source latest \
+                --git-bash-binary "target/release/omo-git-bash$EXE" --desktop-engine-binary "target/release/senpi-desktop-engine$EXE" \
+                --omowright-runtime "$RUNNER_TEMP/omowright-runtime"
+              test -x "$out_dir/senpi-desktop-engine$EXE"
+              bun tools/package-native.mjs --verify-only "$out_dir"
+              test "$("$out_dir/mhc$EXE" --version | tr -d '\r')" = "$ver"
+              if [ "$RUNNER_OS" = Windows ]; then
+                (cd "dist/candidate-${letter}" && 7z a -tzip -bso0 "${name}.zip" "$name" && sha256sum "${name}.zip" > "${name}.zip.sha256")
+              else
+                tar -C "dist/candidate-${letter}" -czf "dist/candidate-${letter}/${name}.tar.gz" "$name"
+                (cd "dist/candidate-${letter}" && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+              fi
+            done
           else
-            tar -C dist -czf "dist/$name.tar.gz" "$name"
-            (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+            name="mhc-${{ matrix.target }}"
+            bun tools/package-native.mjs --binary "target/release/mhc$EXE" --output "dist/$name" --skill-source latest \
+              --git-bash-binary "target/release/omo-git-bash$EXE" --desktop-engine-binary "target/release/senpi-desktop-engine$EXE" \
+              --omowright-runtime "$RUNNER_TEMP/omowright-runtime"
+            test -x "dist/$name/senpi-desktop-engine$EXE"
+            bun tools/package-native.mjs --verify-only "dist/$name"
+            "dist/$name/mhc$EXE" --version
+            if [ "$RUNNER_OS" = Windows ]; then
+              (cd dist && 7z a -tzip -bso0 "$name.zip" "$name" && sha256sum "$name.zip" > "$name.zip.sha256")
+            else
+              tar -C dist -czf "dist/$name.tar.gz" "$name"
+              (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+            fi
           fi
 
       - uses: actions/upload-artifact@v7
-        if: env.TAG != ''
+        if: env.DO_PACKAGE == 'true'
         with:
           name: mhc-${{ matrix.target }}
           path: |
             dist/*.tar.gz*
             dist/*.zip*
+            dist/candidate-*/*.tar.gz*
+            dist/candidate-*/*.zip*
           retention-days: 7
 
-  publish:
+      # Build only the old executable from this source; B remains the exact release archive above.
+      - name: package updater baseline
+        if: env.TAG != '' && env.CANDIDATE_VERSION == '' && env.CANDIDATE_PAIR != 'true'
+        run: |
+          export MHC_BUILD_VERSION=0.0.0
+          touch crates/maho-cli/src/main.rs
+          cargo build --release --locked -p maho-cli --bin mhc
+          name="mhc-${{ matrix.target }}"
+          bun tools/package-native.mjs --binary "target/release/mhc$EXE" --output "baseline/$name" --skill-source latest \
+            --git-bash-binary "target/release/omo-git-bash$EXE" --desktop-engine-binary "target/release/senpi-desktop-engine$EXE" \
+            --omowright-runtime "$RUNNER_TEMP/omowright-runtime"
+          bun tools/package-native.mjs --verify-only "baseline/$name"
+          test "$("baseline/$name/mhc$EXE" --version | tr -d '\r')" = 0.0.0
+          if [ "$RUNNER_OS" = Windows ]; then
+            (cd baseline && 7z a -tzip -bso0 "$name.zip" "$name" && sha256sum "$name.zip" > "$name.zip.sha256")
+          else
+            tar -C baseline -czf "baseline/$name.tar.gz" "$name"
+            (cd baseline && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: env.TAG != '' && env.CANDIDATE_VERSION == '' && env.CANDIDATE_PAIR != 'true'
+        with:
+          name: updater-baseline-${{ matrix.target }}
+          path: |
+            baseline/*.tar.gz*
+            baseline/*.zip*
+          if-no-files-found: error
+          retention-days: 7
+
+  native-update-qa:
     needs: build
-    if: github.event.inputs.tag != '' || github.ref_type == 'tag'
+    if: ${{ (github.event.inputs.tag != '' || github.ref_type == 'tag') && github.event.inputs.candidate_version == '' && github.event.inputs.candidate_pair != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            runner: ubuntu-24.04
+            ext: tar.gz
+          - target: macos-aarch64
+            runner: macos-15
+            ext: tar.gz
+          - target: windows-x86_64
+            runner: windows-2025
+            ext: zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG != '' && format('refs/tags/{0}', env.TAG) || github.sha }}
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: mhc-${{ matrix.target }}
+          path: candidate
+      - uses: actions/download-artifact@v8
+        with:
+          name: updater-baseline-${{ matrix.target }}
+          path: baseline
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Windows'
+        with:
+          node-version: '22'
+      - name: install real Windows ConPTY adapter
+        if: runner.os == 'Windows'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/updater-pty" --no-audit --no-fund --ignore-scripts --include=optional @lydell/node-pty@1.2.0-beta.15
+          node -e 'const {createRequire}=require("node:module"); const r=createRequire(process.argv[1]); r("@lydell/node-pty"); r.resolve("@lydell/node-pty-win32-x64");' "$(cygpath -w "$RUNNER_TEMP/updater-pty/package.json")"
+          echo "MHC_QA_NODE_PTY_MODULE=$(cygpath -w "$RUNNER_TEMP/updater-pty/package.json")" >> "$GITHUB_ENV"
+      - name: prepare native installed-validation fault
+        env:
+          EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          bun scripts/qa-native-update-fixture.mjs --write-rollback-probe "$RUNNER_TEMP/rollback-probe.rs"
+          rustc --edition 2024 "$RUNNER_TEMP/rollback-probe.rs" -o "$RUNNER_TEMP/rollback-probe$EXE"
+      - name: verify archives and run required updater scenarios
+        env:
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.ext }}
+          EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          for dir in baseline candidate; do
+            if [ "$RUNNER_OS" = Windows ]; then
+              (cd "$dir" && sha256sum -c "mhc-${TARGET}.${EXT}.sha256")
+            else
+              (cd "$dir" && shasum -a 256 -c "mhc-${TARGET}.${EXT}.sha256")
+            fi
+          done
+          bun scripts/qa-native-update.mjs \
+            --old-package "baseline/mhc-${TARGET}.${EXT}" --old-version 0.0.0 \
+            --new-package "candidate/mhc-${TARGET}.${EXT}" --new-version "${TAG#v}" \
+            --target "$TARGET" --evidence-dir "evidence/$TARGET/source-baseline" \
+            --rollback-probe "$RUNNER_TEMP/rollback-probe$EXE"
+      - name: upgrade latest published release to just-built archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          tag=$(gh release view --repo Indosaram/mhc --json tagName --jq .tagName)
+          mkdir -p published
+          gh release download "$tag" --repo Indosaram/mhc --dir published --pattern "mhc-${TARGET}.${EXT}" --pattern "mhc-${TARGET}.${EXT}.sha256"
+          printf '%s\n' "$tag" > published/source-tag.txt
+          if [ "$RUNNER_OS" = Windows ]; then
+            (cd published && sha256sum -c "mhc-${TARGET}.${EXT}.sha256")
+          else
+            (cd published && shasum -a 256 -c "mhc-${TARGET}.${EXT}.sha256")
+          fi
+          bun scripts/qa-native-update.mjs --upgrade-only \
+            --old-package "published/mhc-${TARGET}.${EXT}" --old-version "${tag#v}" \
+            --new-package "candidate/mhc-${TARGET}.${EXT}" --new-version "${TAG#v}" \
+            --target "$TARGET" --evidence-dir "evidence/$TARGET/published-baseline"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: updater-qa-evidence-${{ matrix.target }}
+          path: evidence/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [build, native-update-qa]
+    if: ${{ needs.native-update-qa.result == 'success' && github.event.inputs.publish != 'false' && (github.event.inputs.tag != '' || github.ref_type == 'tag') && github.event.inputs.candidate_pair != 'true' && github.event.inputs.candidate_version == '' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
+          pattern: mhc-*
           path: dist
           merge-multiple: true
 

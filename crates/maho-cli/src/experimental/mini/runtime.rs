@@ -20,7 +20,7 @@ impl ModelRuntimeHandle {
         Arc::new(Self { inner: tokio::sync::Mutex::new(runtime) })
     }
 
-    pub async fn available(&self) -> Vec<Model> {
+    pub async fn available(&self) -> Result<Vec<Model>, ModelsError> {
         self.inner.lock().await.get_available(None).await
     }
 

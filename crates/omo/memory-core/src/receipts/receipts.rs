@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::fs::resilient::{create_dir_all, read_to_string};
 use crate::locks::{
-    acquire_lock, create_lock_record, receipts_lock_path, release_lock, AcquireLockOptions,
-    CreateLockRecordOptions,
+    AcquireLockOptions, CreateLockRecordOptions, acquire_lock, create_lock_record,
+    receipts_lock_path, release_lock,
 };
 use crate::support::host::hostname;
 use crate::support::time::now_iso;
@@ -102,7 +102,9 @@ pub struct MemoryReceipt {
 
 impl Serialize for MemoryReceipt {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if let Some(raw) = &self.raw { return raw.serialize(serializer); }
+        if let Some(raw) = &self.raw {
+            return raw.serialize(serializer);
+        }
         let mut value = serde_json::to_value(&self.input).map_err(serde::ser::Error::custom)?;
         value["v"] = self.v.into();
         value["at"] = self.at.clone().into();
@@ -340,12 +342,32 @@ fn bound_detail(detail: &str) -> String {
     if masked.encode_utf16().count() <= DETAIL_LIMIT {
         masked
     } else {
-        let prefix = masked.encode_utf16().take(DETAIL_LIMIT - 3).collect::<Vec<_>>();
+        let prefix = masked
+            .encode_utf16()
+            .take(DETAIL_LIMIT - 3)
+            .collect::<Vec<_>>();
         format!("{}...", String::from_utf16_lossy(&prefix))
     }
 }
 
 fn write_line(runtime_dir: &Path, receipt: &MemoryReceipt) -> Result<(), String> {
+    write_line_with_permissions(runtime_dir, receipt, |path| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+        Ok(())
+    })
+}
+
+fn write_line_with_permissions(
+    runtime_dir: &Path,
+    receipt: &MemoryReceipt,
+    set_permissions: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     let path = receipts_path(runtime_dir);
     let mut json = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
     json.push('\n');
@@ -361,11 +383,7 @@ fn write_line(runtime_dir: &Path, receipt: &MemoryReceipt) -> Result<(), String>
     file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
     file.sync_all().map_err(|e| e.to_string())?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    set_permissions(&path).map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -437,11 +455,20 @@ fn receipt_identity_from_line(line: &str) -> Option<String> {
     let kind = kind.as_str()?;
     let identity = if kind == "facts" {
         let batch_id = line.batch_id?;
-        receipt_identity(&MemoryReceiptIdentityInput::Facts { kind, batch_id: batch_id.as_str()?, event })
+        receipt_identity(&MemoryReceiptIdentityInput::Facts {
+            kind,
+            batch_id: batch_id.as_str()?,
+            event,
+        })
     } else if kind == "reflection" || kind == "dream" {
         let run_id = line.run_id?;
         let generation = line.generation?;
-        receipt_identity(&MemoryReceiptIdentityInput::Run { kind, run_id: run_id.as_str()?, event, generation: generation.as_str()? })
+        receipt_identity(&MemoryReceiptIdentityInput::Run {
+            kind,
+            run_id: run_id.as_str()?,
+            event,
+            generation: generation.as_str()?,
+        })
     } else {
         return None;
     };
@@ -458,16 +485,34 @@ fn parse_receipt(line: &str) -> Option<MemoryReceipt> {
     }
     let at = obj.get("at")?.as_str()?;
     let event = obj.get("event")?.as_str()?;
-    let host = obj.get("host").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
-    let pid = obj.get("pid").and_then(serde_json::Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or_default();
+    let host = obj
+        .get("host")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let pid = obj
+        .get("pid")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or_default();
 
     let kind = obj.get("kind")?.as_str()?;
     let input = if kind == "facts" {
         let batch_id = obj.get("batchId")?.as_str()?;
-        let trigger = obj.get("trigger").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let trigger = obj
+            .get("trigger")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         let sha = obj.get("sha").and_then(|v| v.as_str()).map(str::to_string);
-        let reason = obj.get("reason").and_then(|v| v.as_str()).map(str::to_string);
-        let detail = obj.get("detail").and_then(|v| v.as_str()).map(str::to_string);
+        let reason = obj
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let detail = obj
+            .get("detail")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         MemoryReceiptInput::Facts {
             kind: kind.to_string(),
             batch_id: batch_id.to_string(),
@@ -480,10 +525,20 @@ fn parse_receipt(line: &str) -> Option<MemoryReceipt> {
     } else if kind == "reflection" || kind == "dream" {
         let run_id = obj.get("runId")?.as_str()?;
         let generation = obj.get("generation")?.as_str()?;
-        let trigger = obj.get("trigger").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let trigger = obj
+            .get("trigger")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         let sha = obj.get("sha").and_then(|v| v.as_str()).map(str::to_string);
-        let reason = obj.get("reason").and_then(|v| v.as_str()).map(str::to_string);
-        let detail = obj.get("detail").and_then(|v| v.as_str()).map(str::to_string);
+        let reason = obj
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let detail = obj
+            .get("detail")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         MemoryReceiptInput::Run {
             kind: kind.to_string(),
             run_id: run_id.to_string(),
@@ -506,4 +561,61 @@ fn parse_receipt(line: &str) -> Option<MemoryReceipt> {
         input,
         raw: Some(val),
     })
+}
+
+#[cfg(all(test, unix))]
+mod permission_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn input() -> MemoryReceiptInput {
+        MemoryReceiptInput::Facts {
+            kind: "facts".into(),
+            batch_id: "permissions".into(),
+            trigger: "settle".into(),
+            event: "committed".into(),
+            sha: None,
+            reason: None,
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn append_restores_private_permissions_when_receipts_already_exist() {
+        // given
+        let root = tempfile::tempdir().expect("temporary runtime directory");
+        let path = receipts_path(root.path());
+        std::fs::write(&path, "").expect("existing receipts file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))
+            .expect("public receipt permissions");
+
+        // when
+        append_memory_receipt(root.path(), &input()).expect("append receipt");
+
+        // then
+        let mode = std::fs::metadata(&path)
+            .expect("receipt metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn write_line_reports_permission_failure_after_appending() {
+        // given
+        let root = tempfile::tempdir().expect("temporary runtime directory");
+        let receipt = to_receipt(&input());
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let expected = error.to_string();
+
+        // when: only the permission syscall is replaced, not append or flush.
+        let result = write_line_with_permissions(root.path(), &receipt, |_| Err(error));
+
+        // then: as upstream, the append remains durable but the operation reports failure.
+        assert_eq!(result, Err(expected));
+        let text = std::fs::read_to_string(receipts_path(root.path())).expect("appended receipt");
+        assert!(text.ends_with('\n'));
+        let stored: MemoryReceipt = serde_json::from_str(text.trim_end()).expect("valid receipt");
+        assert_eq!(stored, receipt);
+    }
 }

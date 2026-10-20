@@ -13,33 +13,48 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::Stream;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::api::constrained_sampling::create_grammar_tool_input_properties;
-use crate::api::openai_prompt_cache::{apply_chat_gpt_subscription_cache_affinity_headers, clamp_openai_prompt_cache_key};
+use crate::api::openai_prompt_cache::{
+    apply_chat_gpt_subscription_cache_affinity_headers, clamp_openai_prompt_cache_key,
+};
 use crate::api::openai_responses::{
-    close_websocket_silently, connect_web_socket, get_service_tier_cost_multiplier, is_websocket_reusable,
-    parse_web_socket, CachedWebSocket, CachedWebSocketConnection, ParseWebSocketOptions, TungsteniteWebSocket,
-    WebSocketFailureSlot, WebSocketStreamFailure, SESSION_WEBSOCKET_CACHE_TTL_MS,
+    CachedWebSocket, CachedWebSocketConnection, ParseWebSocketOptions,
+    SESSION_WEBSOCKET_CACHE_TTL_MS, TungsteniteWebSocket, WebSocketFailureSlot,
+    WebSocketStreamFailure, close_websocket_silently,
+    get_service_tier_cost_multiplier, is_websocket_reusable, parse_web_socket,
 };
 use crate::api::openai_responses_shared::{
-    convert_responses_messages, convert_responses_tools, get_done_reason, process_responses_stream,
-    ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ResponsesStreamError, ResponsesStreamOptions,
+    ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ResponsesStreamError,
+    ResponsesStreamOptions, convert_responses_messages, convert_responses_tools, get_done_reason,
+    process_responses_stream,
 };
-use crate::api::simple_options::{apply_extra_body, build_base_options, clamp_max_for_openai, OPENAI_RESPONSES_RESERVED_BODY_KEYS};
+use crate::api::simple_options::{
+    OPENAI_RESPONSES_RESERVED_BODY_KEYS, apply_extra_body, build_base_options, clamp_max_for_openai,
+};
 use crate::models::{clamp_thinking_level, supports_max, supports_xhigh};
 use crate::types::{
-    AssistantMessage, AssistantMessageEvent, CacheRetention, Context, ErrorReason, Model, ModelThinkingLevel,
-    ProviderHeaders, ProviderResponse, SimpleStreamOptions, StopReason, StreamOptions, ThinkingLevel, Transport, Usage,
+    AssistantMessage, AssistantMessageEvent, CacheRetention, Context, ErrorReason, Model,
+    ModelThinkingLevel, ProviderHeaders, ProviderResponse, SimpleStreamOptions, StopReason,
+    StreamOptions, ThinkingLevel, Transport, Usage,
 };
 use crate::utils::abort::AbortSignal;
 use crate::utils::deferred_tools::split_deferred_tools;
-use crate::utils::diagnostics::{append_assistant_message_diagnostic, create_assistant_message_diagnostic, now_ms, Thrown};
-use crate::utils::error_body::{format_provider_error, normalize_provider_error, SdkErrorShape, ThrownProviderError};
-use crate::utils::event_stream::{create_assistant_message_event_stream, AssistantMessageEventStream};
+use crate::utils::diagnostics::{
+    Thrown, append_assistant_message_diagnostic, create_assistant_message_diagnostic, now_ms,
+};
+use crate::utils::error_body::{
+    SdkErrorShape, ThrownProviderError, format_provider_error, normalize_provider_error,
+};
+use crate::utils::event_stream::{
+    AssistantMessageEventStream, create_assistant_message_event_stream,
+};
 use crate::utils::headers::headers_to_record;
 use crate::utils::lazy::error_stream;
-use crate::utils::retry_hint::{append_retry_after_ms_marker, extract_429_retry_after_ms, RetryHintInput};
+use crate::utils::retry_hint::{
+    RetryHintInput, append_retry_after_ms_marker, extract_429_retry_after_ms,
+};
 use crate::utils::uuid::uuidv7;
 use crate::wire_identity::get_wire_identity;
 
@@ -47,8 +62,8 @@ pub mod fallback_state;
 pub mod reasoning;
 
 use fallback_state::{
-    is_web_socket_sse_fallback_active, record_web_socket_failure, record_web_socket_sse_fallback,
-    ChatGptSubscriptionWebSocketDebugStats,
+    ChatGptSubscriptionWebSocketDebugStats, is_web_socket_sse_fallback_active,
+    record_web_socket_failure, record_web_socket_sse_fallback,
 };
 
 const DEFAULT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
@@ -67,7 +82,14 @@ const PREVIOUS_RESPONSE_NOT_FOUND_CODE: &str = "previous_response_not_found";
 /// `compat.supportsGrammarTools`: the vendor-prefixed grammar-tools capability key.
 const COMPAT_GRAMMAR_TOOLS_KEY: &str = "supportsOpenAIGrammarTools";
 
-const CODEX_RESPONSE_STATUSES: [&str; 6] = ["completed", "incomplete", "failed", "cancelled", "queued", "in_progress"];
+const CODEX_RESPONSE_STATUSES: [&str; 6] = [
+    "completed",
+    "incomplete",
+    "failed",
+    "cancelled",
+    "queued",
+    "in_progress",
+];
 
 /// `OpenAICodexResponsesOptions`, read off the provider-neutral options bag.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -93,7 +115,11 @@ impl CodexResponsesOptions {
 }
 
 fn option_str(options: &StreamOptions, key: &str) -> Option<String> {
-    options.extra.get(key).and_then(Value::as_str).map(str::to_owned)
+    options
+        .extra
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 /// A thrown Codex error carrying the backend's own code, mirroring `CodexApiError`.
@@ -115,6 +141,8 @@ pub struct CodexProtocolError {
 pub enum CodexError {
     Api(CodexApiError),
     Protocol(CodexProtocolError),
+    Provider(Box<crate::api::openai_responses::ResponsesApiError>),
+    WebSocketClose(crate::api::websocket_transport_failure::WebSocketCloseError),
     /// A non-Codex thrown value (network failure, timeout, abort, ...).
     Other(String),
 }
@@ -124,6 +152,8 @@ impl CodexError {
         match self {
             CodexError::Api(error) => error.message.clone(),
             CodexError::Protocol(error) => error.message.clone(),
+            CodexError::Provider(error) => error.to_string(),
+            CodexError::WebSocketClose(error) => error.to_string(),
             CodexError::Other(message) => message.clone(),
         }
     }
@@ -132,6 +162,12 @@ impl CodexError {
 impl From<CodexApiError> for CodexError {
     fn from(error: CodexApiError) -> Self {
         CodexError::Api(error)
+    }
+}
+
+impl From<crate::api::openai_responses::ResponsesApiError> for CodexError {
+    fn from(error: crate::api::openai_responses::ResponsesApiError) -> Self {
+        Self::Provider(Box::new(error))
     }
 }
 
@@ -147,7 +183,12 @@ pub fn build_request_body(
     let requested_reasoning_effort = options.reasoning_effort.as_deref();
     let mapped_reasoning_effort: Option<Option<String>> = requested_reasoning_effort
         .and_then(ModelThinkingLevel::parse)
-        .and_then(|level| model.thinking_level_map.as_ref().and_then(|map| map.get(&level).cloned()));
+        .and_then(|level| {
+            model
+                .thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get(&level).cloned())
+        });
     let reasoning_effort: Option<String> = match &mapped_reasoning_effort {
         Some(value) => value.clone(),
         None => requested_reasoning_effort.map(str::to_owned),
@@ -187,7 +228,10 @@ pub fn build_request_body(
     let messages = convert_responses_messages(
         model,
         context,
-        &CODEX_TOOL_CALL_PROVIDERS.iter().map(|provider| (*provider).to_owned()).collect(),
+        &CODEX_TOOL_CALL_PROVIDERS
+            .iter()
+            .map(|provider| (*provider).to_owned())
+            .collect(),
         &ConvertResponsesMessagesOptions {
             include_system_prompt: Some(false),
             preserve_thinking: Some(reasoning_requested),
@@ -210,16 +254,33 @@ pub fn build_request_body(
     body.insert(String::from("stream"), json!(true));
     body.insert(
         String::from("instructions"),
-        json!(context.system_prompt.clone().filter(|prompt| !prompt.is_empty()).unwrap_or_else(|| String::from("You are a helpful assistant."))),
+        json!(
+            context
+                .system_prompt
+                .clone()
+                .filter(|prompt| !prompt.is_empty())
+                .unwrap_or_else(|| String::from("You are a helpful assistant."))
+        ),
     );
     body.insert(String::from("input"), Value::Array(messages));
     body.insert(
         String::from("text"),
         json!({ "verbosity": options.text_verbosity.clone().unwrap_or_else(|| String::from("low")) }),
     );
-    body.insert(String::from("include"), json!(["reasoning.encrypted_content"]));
+    body.insert(
+        String::from("include"),
+        json!(["reasoning.encrypted_content"]),
+    );
     body.insert(String::from("prompt_cache_key"), json!(cache_session_id));
-    body.insert(String::from("tool_choice"), json!(options.tool_choice.clone().unwrap_or_else(|| String::from("auto"))));
+    body.insert(
+        String::from("tool_choice"),
+        json!(
+            options
+                .tool_choice
+                .clone()
+                .unwrap_or_else(|| String::from("auto"))
+        ),
+    );
     body.insert(String::from("parallel_tool_calls"), json!(true));
 
     if let Some(service_tier) = options.service_tier.as_ref() {
@@ -236,7 +297,10 @@ pub fn build_request_body(
         )?;
         body.insert(String::from("tools"), Value::Array(tools));
     }
-    let thinking_off = model.thinking_level_map.as_ref().and_then(|map| map.get(&ModelThinkingLevel::Off));
+    let thinking_off = model
+        .thinking_level_map
+        .as_ref()
+        .and_then(|map| map.get(&ModelThinkingLevel::Off));
     if let Some(reasoning) = reasoning::build_codex_reasoning(
         reasoning_effort_input.as_ref(),
         options.reasoning_summary.as_ref(),
@@ -252,7 +316,9 @@ pub fn build_request_body(
 
 /// `resolveCodexUrl`.
 pub fn resolve_codex_url(base_url: Option<&str>) -> String {
-    let raw = base_url.filter(|base_url| !base_url.trim().is_empty()).unwrap_or(DEFAULT_CODEX_BASE_URL);
+    let raw = base_url
+        .filter(|base_url| !base_url.trim().is_empty())
+        .unwrap_or(DEFAULT_CODEX_BASE_URL);
     let normalized = raw.trim_end_matches('/');
     if normalized.ends_with("/codex/responses") {
         return normalized.to_owned();
@@ -282,13 +348,21 @@ pub fn resolve_codex_web_socket_url(base_url: Option<&str>) -> String {
 }
 
 /// `resolveCodexServiceTier`.
-pub fn resolve_codex_service_tier(response_service_tier: Option<&str>, request_service_tier: Option<&str>) -> Option<String> {
+pub fn resolve_codex_service_tier(
+    response_service_tier: Option<&str>,
+    request_service_tier: Option<&str>,
+) -> Option<String> {
     if response_service_tier == Some("default")
-        && matches!(request_service_tier, Some("flex") | Some("priority") | Some("fast"))
+        && matches!(
+            request_service_tier,
+            Some("flex") | Some("priority") | Some("fast")
+        )
     {
         return request_service_tier.map(str::to_owned);
     }
-    response_service_tier.or(request_service_tier).map(str::to_owned)
+    response_service_tier
+        .or(request_service_tier)
+        .map(str::to_owned)
 }
 
 /// `getServiceTierCostMultiplier` for the Codex API (the shared helper reads the model id).
@@ -297,7 +371,11 @@ pub fn get_codex_service_tier_cost_multiplier(model: &Model, service_tier: Optio
 }
 
 /// `applyServiceTierPricing` for the Codex API.
-pub fn apply_codex_service_tier_pricing(usage: &mut Usage, service_tier: Option<&str>, model: &Model) {
+pub fn apply_codex_service_tier_pricing(
+    usage: &mut Usage,
+    service_tier: Option<&str>,
+    model: &Model,
+) {
     let multiplier = get_codex_service_tier_cost_multiplier(model, service_tier);
     if multiplier == 1.0 {
         return;
@@ -306,13 +384,16 @@ pub fn apply_codex_service_tier_pricing(usage: &mut Usage, service_tier: Option<
     usage.cost.output *= multiplier;
     usage.cost.cache_read *= multiplier;
     usage.cost.cache_write *= multiplier;
-    usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
+    usage.cost.total =
+        usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
 }
 
 /// `normalizeCodexStatus`: an unrecognized status is dropped, not passed through.
 fn normalize_codex_status(status: Option<&Value>) -> Option<String> {
     let status = status?.as_str()?;
-    CODEX_RESPONSE_STATUSES.contains(&status).then(|| status.to_owned())
+    CODEX_RESPONSE_STATUSES
+        .contains(&status)
+        .then(|| status.to_owned())
 }
 
 fn as_record(value: &Value) -> Option<&Map<String, Value>> {
@@ -325,7 +406,11 @@ fn get_string(value: Option<&Value>) -> Option<String> {
 
 fn get_codex_event_error(event: &Map<String, Value>) -> Option<&Map<String, Value>> {
     let response = event.get("response").and_then(as_record);
-    event.get("error").and_then(as_record).or_else(|| response.and_then(|response| response.get("error")).and_then(as_record))
+    event.get("error").and_then(as_record).or_else(|| {
+        response
+            .and_then(|response| response.get("error"))
+            .and_then(as_record)
+    })
 }
 
 fn get_codex_event_error_code(event: &Map<String, Value>) -> String {
@@ -347,7 +432,14 @@ fn get_codex_event_error_message(event: &Map<String, Value>) -> String {
 
 fn error_text_with_marker(base: String, event: &Map<String, Value>) -> String {
     let payload = serde_json::to_string(&Value::Object(event.clone())).unwrap_or_default();
-    match extract_429_retry_after_ms(&RetryHintInput { status: None, headers: None, body_text: &payload }, None) {
+    match extract_429_retry_after_ms(
+        &RetryHintInput {
+            status: None,
+            headers: None,
+            body_text: &payload,
+        },
+        None,
+    ) {
         Some(hint_ms) => append_retry_after_ms_marker(&base, hint_ms),
         None => base,
     }
@@ -381,11 +473,15 @@ pub fn is_codex_non_transport_error(error: &CodexError) -> bool {
 
 /// `getCodexEventErrorCode`/`getCodexEventErrorMessage` for a raw event, used by the transport.
 pub fn codex_event_error_code(event: &Value) -> String {
-    as_record(event).map(get_codex_event_error_code).unwrap_or_default()
+    as_record(event)
+        .map(get_codex_event_error_code)
+        .unwrap_or_default()
 }
 
 /// `getChatGptSubscriptionWebSocketDebugStats`.
-pub fn get_chat_gpt_subscription_web_socket_debug_stats(session_id: &str) -> Option<ChatGptSubscriptionWebSocketDebugStats> {
+pub fn get_chat_gpt_subscription_web_socket_debug_stats(
+    session_id: &str,
+) -> Option<ChatGptSubscriptionWebSocketDebugStats> {
     fallback_state::get_web_socket_debug_stats(session_id)
 }
 
@@ -414,8 +510,14 @@ pub fn record_web_socket_request_stats(
     if request_body.get("store").and_then(Value::as_bool) == Some(true) {
         stats.store_true_requests += 1;
     }
-    stats.last_input_items = request_body.get("input").and_then(Value::as_array).map_or(0, |input| input.len() as u64);
-    match request_body.get("previous_response_id").and_then(Value::as_str) {
+    stats.last_input_items = request_body
+        .get("input")
+        .and_then(Value::as_array)
+        .map_or(0, |input| input.len() as u64);
+    match request_body
+        .get("previous_response_id")
+        .and_then(Value::as_str)
+    {
         Some(previous_response_id) => {
             stats.delta_requests += 1;
             stats.last_delta_input_items = Some(stats.last_input_items);
@@ -439,7 +541,8 @@ fn request_body_without_input(body: &Map<String, Value>) -> Map<String, Value> {
 
 fn response_inputs_equal(a: Option<&Value>, b: Option<&Value>) -> bool {
     let serialize = |value: Option<&Value>| {
-        serde_json::to_string(&value.cloned().unwrap_or(Value::Array(Vec::new()))).unwrap_or_default()
+        serde_json::to_string(&value.cloned().unwrap_or(Value::Array(Vec::new())))
+            .unwrap_or_default()
     };
     serialize(a) == serialize(b)
 }
@@ -457,14 +560,25 @@ pub fn get_cached_web_socket_input_delta(
     if !request_bodies_match_except_input(body, last_request_body) {
         return None;
     }
-    let current_input = body.get("input").and_then(Value::as_array).cloned().unwrap_or_default();
-    let mut baseline = last_request_body.get("input").and_then(Value::as_array).cloned().unwrap_or_default();
+    let current_input = body
+        .get("input")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut baseline = last_request_body
+        .get("input")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     baseline.extend(last_response_items.iter().cloned());
     if current_input.len() < baseline.len() {
         return None;
     }
     let prefix = &current_input[..baseline.len()];
-    if !response_inputs_equal(Some(&Value::Array(prefix.to_vec())), Some(&Value::Array(baseline.clone()))) {
+    if !response_inputs_equal(
+        Some(&Value::Array(prefix.to_vec())),
+        Some(&Value::Array(baseline.clone())),
+    ) {
         return None;
     }
     Some(current_input[baseline.len()..].to_vec())
@@ -481,14 +595,25 @@ pub fn build_cached_web_socket_request_body(
     let delta = get_cached_web_socket_input_delta(body, last_request_body, last_response_items)?;
     let last_response_id = last_response_id?;
     let mut next = body.clone();
-    next.insert(String::from("previous_response_id"), json!(last_response_id));
+    next.insert(
+        String::from("previous_response_id"),
+        json!(last_response_id),
+    );
     next.insert(String::from("input"), Value::Array(delta));
     Some(next)
 }
 
 /// `parseErrorResponse`.
-pub async fn parse_error_response(status: u16, status_text: &str, raw: &str) -> (String, Option<String>) {
-    let mut message = if raw.is_empty() { status_text.to_owned() } else { raw.to_owned() };
+pub async fn parse_error_response(
+    status: u16,
+    status_text: &str,
+    raw: &str,
+) -> (String, Option<String>) {
+    let mut message = if raw.is_empty() {
+        status_text.to_owned()
+    } else {
+        raw.to_owned()
+    };
     if message.is_empty() {
         message = String::from("Request failed");
     }
@@ -501,20 +626,35 @@ pub async fn parse_error_response(status: u16, status_text: &str, raw: &str) -> 
             .and_then(Value::as_str)
             .or_else(|| error.get("type").and_then(Value::as_str))
             .unwrap_or_default();
-        let code_is_usage_limit = ["usage_limit_reached", "usage_not_included", "rate_limit_exceeded"]
-            .iter()
-            .any(|needle| code.to_lowercase().contains(needle));
+        let code_is_usage_limit = [
+            "usage_limit_reached",
+            "usage_not_included",
+            "rate_limit_exceeded",
+        ]
+        .iter()
+        .any(|needle| code.to_lowercase().contains(needle));
         if code_is_usage_limit || status == 429 {
             let plan = error
                 .get("plan_type")
                 .and_then(Value::as_str)
                 .map(|plan| format!(" ({} plan)", plan.to_lowercase()))
                 .unwrap_or_default();
-            let minutes = error.get("resets_at").and_then(Value::as_f64).map(|resets_at| {
-                ((resets_at * 1000.0 - now_ms() as f64) / 60_000.0).round().max(0.0) as i64
-            });
-            let when = minutes.map(|minutes| format!(" Try again in ~{minutes} min.")).unwrap_or_default();
-            friendly_message = Some(format!("You have hit your ChatGPT usage limit{plan}.{when}").trim().to_owned());
+            let minutes = error
+                .get("resets_at")
+                .and_then(Value::as_f64)
+                .map(|resets_at| {
+                    ((resets_at * 1000.0 - now_ms() as f64) / 60_000.0)
+                        .round()
+                        .max(0.0) as i64
+                });
+            let when = minutes
+                .map(|minutes| format!(" Try again in ~{minutes} min."))
+                .unwrap_or_default();
+            friendly_message = Some(
+                format!("You have hit your ChatGPT usage limit{plan}.{when}")
+                    .trim()
+                    .to_owned(),
+            );
         }
         let error_message = error.get("message").and_then(Value::as_str);
         message = error_message
@@ -588,10 +728,16 @@ pub fn build_base_codex_headers(
             }
         }
     }
-    headers.insert(String::from("Authorization"), Some(format!("Bearer {token}")));
+    headers.insert(
+        String::from("Authorization"),
+        Some(format!("Bearer {token}")),
+    );
     match account_id {
         Some(account_id) => {
-            headers.insert(String::from("chatgpt-account-id"), Some(account_id.to_owned()));
+            headers.insert(
+                String::from("chatgpt-account-id"),
+                Some(account_id.to_owned()),
+            );
         }
         None => {
             headers.remove("chatgpt-account-id");
@@ -605,7 +751,9 @@ pub fn build_base_codex_headers(
 fn to_header_map(headers: BTreeMap<String, Option<String>>) -> reqwest::header::HeaderMap {
     let mut header_map = reqwest::header::HeaderMap::new();
     for (name, value) in headers {
-        let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) else { continue };
+        let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) else {
+            continue;
+        };
         match value {
             Some(value) => {
                 if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
@@ -633,8 +781,14 @@ pub fn build_sse_headers(
         reqwest::header::HeaderName::from_static("openai-beta"),
         reqwest::header::HeaderValue::from_static("responses=experimental"),
     );
-    headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("text/event-stream"));
-    headers.insert(reqwest::header::CONTENT_TYPE, reqwest::header::HeaderValue::from_static("application/json"));
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
     apply_chat_gpt_subscription_cache_affinity_headers(&mut headers, session_id);
     headers
 }
@@ -653,7 +807,9 @@ pub fn build_web_socket_headers(
     }
     headers.insert(
         reqwest::header::HeaderName::from_static("openai-beta"),
-        reqwest::header::HeaderValue::from_static(crate::api::openai_responses::OPENAI_BETA_RESPONSES_WEBSOCKETS),
+        reqwest::header::HeaderValue::from_static(
+            crate::api::openai_responses::OPENAI_BETA_RESPONSES_WEBSOCKETS,
+        ),
     );
     apply_chat_gpt_subscription_cache_affinity_headers(&mut headers, Some(request_id));
     headers
@@ -693,23 +849,37 @@ impl CodexCachedWebSocketConnection {
     }
 
     fn set_continuation(&self, continuation: Option<CachedWebSocketContinuationState>) {
-        *self.continuation.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = continuation;
+        *self
+            .continuation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = continuation;
     }
 }
 
-type CodexWebSocketSessionCache = HashMap<String, HashMap<String, Arc<CodexCachedWebSocketConnection>>>;
+type CodexWebSocketSessionCache =
+    HashMap<String, HashMap<String, Arc<CodexCachedWebSocketConnection>>>;
 
 /// `websocketSessionCache`: session id -> account id -> connection.
-static WEBSOCKET_SESSION_CACHE: LazyLock<Mutex<CodexWebSocketSessionCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static WEBSOCKET_SESSION_CACHE: LazyLock<Mutex<CodexWebSocketSessionCache>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn websocket_session_cache() -> std::sync::MutexGuard<'static, CodexWebSocketSessionCache> {
-    WEBSOCKET_SESSION_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    WEBSOCKET_SESSION_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn remove_session_web_socket(session_id: &str, account_id: &str, entry: &Arc<CodexCachedWebSocketConnection>) {
+fn remove_session_web_socket(
+    session_id: &str,
+    account_id: &str,
+    entry: &Arc<CodexCachedWebSocketConnection>,
+) {
     let mut cache = websocket_session_cache();
     if let Some(account_entries) = cache.get_mut(session_id) {
-        if account_entries.get(account_id).is_some_and(|cached| Arc::ptr_eq(cached, entry)) {
+        if account_entries
+            .get(account_id)
+            .is_some_and(|cached| Arc::ptr_eq(cached, entry))
+        {
             account_entries.remove(account_id);
         }
         if account_entries.is_empty() {
@@ -719,7 +889,12 @@ fn remove_session_web_socket(session_id: &str, account_id: &str, entry: &Arc<Cod
 }
 
 /// `evictSessionWebSocket`.
-fn evict_session_web_socket(session_id: &str, account_id: &str, entry: &Arc<CodexCachedWebSocketConnection>, reason: &str) {
+fn evict_session_web_socket(
+    session_id: &str,
+    account_id: &str,
+    entry: &Arc<CodexCachedWebSocketConnection>,
+    reason: &str,
+) {
     unpark_session_web_socket(entry);
     close_websocket_silently(entry.socket.as_ref(), 1000, reason);
     remove_session_web_socket(session_id, account_id, entry);
@@ -727,7 +902,12 @@ fn evict_session_web_socket(session_id: &str, account_id: &str, entry: &Arc<Code
 
 /// `unparkSessionWebSocket`.
 fn unpark_session_web_socket(entry: &CodexCachedWebSocketConnection) {
-    if let Some(task) = entry.idle_task.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
+    if let Some(task) = entry
+        .idle_task
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+    {
         task.abort();
     }
 }
@@ -735,7 +915,11 @@ fn unpark_session_web_socket(entry: &CodexCachedWebSocketConnection) {
 /// `parkSessionWebSocket`: parks a connection between requests. The idle TTL is the only eviction
 /// the cache had; a server or network close while parked must evict immediately, because the next
 /// request would otherwise write into a dead socket and wait out the whole stream-start watchdog.
-fn park_session_web_socket(session_id: String, account_id: String, entry: Arc<CodexCachedWebSocketConnection>) {
+fn park_session_web_socket(
+    session_id: String,
+    account_id: String,
+    entry: Arc<CodexCachedWebSocketConnection>,
+) {
     unpark_session_web_socket(&entry);
     entry.busy.store(false, Ordering::SeqCst);
     let parked = entry.clone();
@@ -749,7 +933,10 @@ fn park_session_web_socket(session_id: String, account_id: String, entry: Arc<Co
         }
         evict_session_web_socket(&session_id, &account_id, &parked, reason);
     });
-    *entry.idle_task.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
+    *entry
+        .idle_task
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
 }
 
 /// The `{ socket, entry, reused, release }` `acquireWebSocket` returns.
@@ -788,13 +975,20 @@ async fn acquire_web_socket(
     account_id: &str,
     signal: Option<&AbortSignal>,
     connect_timeout_ms: Option<u64>,
-) -> Result<CodexWebSocketLease, String> {
+) -> Result<CodexWebSocketLease, CodexError> {
     let Some(session_id) = session_id else {
-        let socket = connect_web_socket(url, headers, signal, connect_timeout_ms).await?;
-        return Ok(CodexWebSocketLease { socket, entry: None, reused: false });
+        let socket = super::openai_responses::connect_web_socket_typed(url, headers, signal, connect_timeout_ms).await.map_err(CodexError::from)?;
+        return Ok(CodexWebSocketLease {
+            socket,
+            entry: None,
+            reused: false,
+        });
     };
 
-    let cached = websocket_session_cache().get(session_id).and_then(|entries| entries.get(account_id)).cloned();
+    let cached = websocket_session_cache()
+        .get(session_id)
+        .and_then(|entries| entries.get(account_id))
+        .cloned();
     if let Some(cached) = cached {
         unpark_session_web_socket(&cached);
         if !cached.busy() && is_web_socket_session_expired(cached.created_at) {
@@ -808,27 +1002,41 @@ async fn acquire_web_socket(
                 reused: true,
             });
         } else if cached.busy() {
-            let socket = connect_web_socket(url, headers, signal, connect_timeout_ms).await?;
-            return Ok(CodexWebSocketLease { socket, entry: None, reused: false });
+            let socket = super::openai_responses::connect_web_socket_typed(url, headers, signal, connect_timeout_ms).await.map_err(CodexError::from)?;
+            return Ok(CodexWebSocketLease {
+                socket,
+                entry: None,
+                reused: false,
+            });
         } else {
             close_websocket_silently(cached.socket.as_ref(), 1000, "done");
             remove_session_web_socket(session_id, account_id, &cached);
         }
     }
 
-    let socket = connect_web_socket(url, headers, signal, connect_timeout_ms).await?;
+    let socket = super::openai_responses::connect_web_socket_typed(url, headers, signal, connect_timeout_ms).await.map_err(CodexError::from)?;
     let entry = Arc::new(CodexCachedWebSocketConnection::new(socket.clone()));
     websocket_session_cache()
         .entry(session_id.to_owned())
         .or_default()
         .insert(account_id.to_owned(), entry.clone());
-    Ok(CodexWebSocketLease { socket, entry: Some((session_id.to_owned(), account_id.to_owned(), entry)), reused: false })
+    Ok(CodexWebSocketLease {
+        socket,
+        entry: Some((session_id.to_owned(), account_id.to_owned(), entry)),
+        reused: false,
+    })
 }
 
 /// `buildCachedWebSocketRequestBody` over a cached entry: a stale or mismatched continuation is
 /// dropped and the full body sent.
-fn build_entry_cached_web_socket_request_body(entry: &CodexCachedWebSocketConnection, body: &Map<String, Value>) -> Map<String, Value> {
-    let mut continuation = entry.continuation.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+fn build_entry_cached_web_socket_request_body(
+    entry: &CodexCachedWebSocketConnection,
+    body: &Map<String, Value>,
+) -> Map<String, Value> {
+    let mut continuation = entry
+        .continuation
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(state) = continuation.as_ref() else {
         return body.clone();
     };
@@ -859,7 +1067,11 @@ struct WebSocketStart {
 struct StartOnFirstEvent {
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     adapter_state: Arc<Mutex<CodexStreamAdapterState>>,
-    start: Option<(WebSocketStart, AssistantMessage, AssistantMessageEventStream)>,
+    start: Option<(
+        WebSocketStart,
+        AssistantMessage,
+        AssistantMessageEventStream,
+    )>,
 }
 
 impl Stream for StartOnFirstEvent {
@@ -869,7 +1081,12 @@ impl Stream for StartOnFirstEvent {
         let this = self.get_mut();
         let polled = this.inner.as_mut().poll_next(context);
         if let Poll::Ready(Some(Ok(_))) = &polled {
-            let failed = this.adapter_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).error.is_some();
+            let failed = this
+                .adapter_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .error
+                .is_some();
             if !failed && let Some((start, partial, sink)) = this.start.take() {
                 start.started.store(true, Ordering::SeqCst);
                 if !start.start_emitted.swap(true, Ordering::SeqCst) {
@@ -894,11 +1111,15 @@ async fn run_web_socket_request(
     signal: Option<AbortSignal>,
     grammar_tool_input_properties: &BTreeMap<String, String>,
     codex_options: &CodexResponsesOptions,
+    options: &StreamOptions,
 ) -> Result<(), CodexError> {
     let mut frame = Map::new();
     frame.insert(String::from("type"), json!("response.create"));
     frame.extend(request_body.clone());
-    let events = socket.begin_request(Value::Object(frame).to_string()).await.map_err(CodexError::Other)?;
+    let events = socket
+        .begin_request(Value::Object(frame).to_string())
+        .await
+        .map_err(CodexError::Other)?;
     let failed: WebSocketFailureSlot = Arc::default();
     let body = parse_web_socket(
         socket.clone(),
@@ -912,7 +1133,12 @@ async fn run_web_socket_request(
         failed.clone(),
     );
     let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
-    let adapter = CodexEventStream { body, buffer: String::new(), done: false, state: adapter_state.clone() };
+    let adapter = CodexEventStream {
+        body,
+        buffer: String::new(),
+        done: false,
+        state: adapter_state.clone(),
+    };
     let started = StartOnFirstEvent {
         inner: Box::pin(adapter),
         adapter_state: adapter_state.clone(),
@@ -920,21 +1146,38 @@ async fn run_web_socket_request(
     };
     let stream_options = ResponsesStreamOptions {
         service_tier: codex_options.service_tier.as_deref(),
+        on_provider_stream_event: options.on_provider_stream_event.as_ref(),
+        async_on_provider_stream_event: options.async_on_provider_stream_event.as_ref(),
+        resolve_service_tier: None,
         grammar_tool_input_properties,
         apply_service_tier_pricing: Some(&|usage: &mut Usage, service_tier: Option<&str>| {
             apply_codex_service_tier_pricing(usage, service_tier, model)
         }),
     };
-    let processed = process_responses_stream(Box::pin(started), output, stream, model, &stream_options).await;
-    let adapter_error = adapter_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).error.take();
+    let processed =
+        process_responses_stream(Box::pin(started), output, stream, model, &stream_options).await;
+    let adapter_error = adapter_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .error
+        .take();
     if let Some(error) = adapter_error {
         return Err(error);
     }
-    let failure = failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+    let failure = failed
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
     if let Some(failure) = failure {
         return Err(match failure {
+            WebSocketStreamFailure::Close(error) => CodexError::WebSocketClose(error),
+            WebSocketStreamFailure::DiagnosedTransport { message, diagnostic } => CodexError::from(
+                super::openai_responses::ResponsesApiError::Provider { message, diagnostic, error_cause: None }),
             WebSocketStreamFailure::Protocol { message, payload } => {
-                CodexError::Protocol(CodexProtocolError { message, payload: Some(Value::String(payload)) })
+                CodexError::Protocol(CodexProtocolError {
+                    message,
+                    payload: Some(Value::String(payload)),
+                })
             }
             other => CodexError::Other(other.message()),
         });
@@ -969,14 +1212,18 @@ async fn process_web_socket_stream(
         signal.as_ref(),
         websocket_connect_timeout_ms,
     )
-    .await
-    .map_err(CodexError::Other)?;
-    let use_cached_context = matches!(options.transport, Some(Transport::WebsocketCached | Transport::Auto));
+    .await?;
+    let use_cached_context = matches!(
+        options.transport,
+        Some(Transport::WebsocketCached | Transport::Auto)
+    );
     // ChatGPT Codex Responses rejects `store: true` ("Store must be set to false"). WebSocket
     // continuation still works via connection-scoped previous_response_id state.
     let full_body = body;
     let mut request_body = match lease.entry() {
-        Some(entry) if use_cached_context => build_entry_cached_web_socket_request_body(entry, full_body),
+        Some(entry) if use_cached_context => {
+            build_entry_cached_web_socket_request_body(entry, full_body)
+        }
         _ => full_body.clone(),
     };
     let mut recovered_stale_previous_response = false;
@@ -984,7 +1231,12 @@ async fn process_web_socket_stream(
         if let Some(session_id) = cache_session_id {
             let reused = lease.reused && !recovered_stale_previous_response;
             fallback_state::update_web_socket_debug_stats(session_id, |stats| {
-                record_web_socket_request_stats(Some(stats), &request_body, reused, use_cached_context);
+                record_web_socket_request_stats(
+                    Some(stats),
+                    &request_body,
+                    reused,
+                    use_cached_context,
+                );
             });
         }
         match run_web_socket_request(
@@ -998,6 +1250,7 @@ async fn process_web_socket_stream(
             signal.clone(),
             grammar_tool_input_properties,
             codex_options,
+            options,
         )
         .await
         {
@@ -1005,7 +1258,10 @@ async fn process_web_socket_stream(
             Err(error) => {
                 if !recovered_stale_previous_response
                     && let Some(entry) = lease.entry()
-                    && request_body.get("previous_response_id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())
+                    && request_body
+                        .get("previous_response_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !id.is_empty())
                     && is_codex_previous_response_stale(&error)
                     && !signal.as_ref().is_some_and(AbortSignal::aborted)
                 {
@@ -1029,6 +1285,7 @@ async fn process_web_socket_stream(
                 && let Some(response_id) = output.response_id.clone()
             {
                 let context = Context {
+                    active_tool_names: None,
                     system_prompt: None,
                     messages: vec![crate::types::Message::Assistant(Box::new(output.clone()))],
                     tools: None,
@@ -1036,7 +1293,10 @@ async fn process_web_socket_stream(
                 let response_items: Vec<Value> = convert_responses_messages(
                     model,
                     &context,
-                    &CODEX_TOOL_CALL_PROVIDERS.iter().map(|provider| (*provider).to_owned()).collect(),
+                    &CODEX_TOOL_CALL_PROVIDERS
+                        .iter()
+                        .map(|provider| (*provider).to_owned())
+                        .collect(),
                     &ConvertResponsesMessagesOptions {
                         include_system_prompt: Some(false),
                         grammar_tool_input_properties: grammar_tool_input_properties.clone(),
@@ -1090,7 +1350,11 @@ pub fn close_chat_gpt_subscription_web_socket_sessions(session_id: Option<&str>)
     };
     let mut cache = websocket_session_cache();
     if let Some(session_id) = session_id {
-        for entry in cache.remove(session_id).into_iter().flat_map(HashMap::into_values) {
+        for entry in cache
+            .remove(session_id)
+            .into_iter()
+            .flat_map(HashMap::into_values)
+        {
             close_entry(&entry);
         }
         drop(cache);
@@ -1113,9 +1377,10 @@ pub fn codex_session_resource_cleanup(session_id: Option<&str>) -> Result<(), St
 }
 
 /// `registerSessionResourceCleanup` for the codex WebSocket sessions.
-pub fn register_session_resource_cleanup(
-) -> impl FnOnce() {
-    crate::session_resources::register_session_resource_cleanup(Arc::new(codex_session_resource_cleanup))
+pub fn register_session_resource_cleanup() -> impl FnOnce() {
+    crate::session_resources::register_session_resource_cleanup(Arc::new(
+        codex_session_resource_cleanup,
+    ))
 }
 
 /// The Codex SSE adapter state shared with the driver: a Codex-level failure raised while mapping
@@ -1152,7 +1417,9 @@ impl Stream for CodexEventStream {
                     Ok(None) => continue,
                     Err(()) => {
                         this.done = true;
-                        return Poll::Ready(Some(Ok(Bytes::from(synthetic_error_frame(&this.state)))));
+                        return Poll::Ready(Some(Ok(Bytes::from(synthetic_error_frame(
+                            &this.state,
+                        )))));
                     }
                 }
             }
@@ -1171,7 +1438,10 @@ impl Stream for CodexEventStream {
                 }
                 Poll::Ready(Some(Err(error))) => {
                     this.done = true;
-                    let mut state = this.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let mut state = this
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     if state.error.is_none() {
                         state.error = Some(CodexError::Other(error.to_string()));
                     }
@@ -1199,7 +1469,10 @@ fn synthetic_error_frame(state: &Arc<Mutex<CodexStreamAdapterState>>) -> Vec<u8>
 
 /// `parseSSE` + `mapCodexEvents` for one frame: `Ok(None)` when the frame carries no event,
 /// `Err(())` when a Codex-level failure was recorded (the caller emits the terminal frame).
-fn map_codex_frame(chunk: &str, state: &Arc<Mutex<CodexStreamAdapterState>>) -> Result<Option<Bytes>, ()> {
+fn map_codex_frame(
+    chunk: &str,
+    state: &Arc<Mutex<CodexStreamAdapterState>>,
+) -> Result<Option<Bytes>, ()> {
     let data_lines: Vec<String> = chunk
         .split('\n')
         .filter(|line| line.starts_with("data:"))
@@ -1216,16 +1489,21 @@ fn map_codex_frame(chunk: &str, state: &Arc<Mutex<CodexStreamAdapterState>>) -> 
     let event = match serde_json::from_str::<Value>(data) {
         Ok(event) => event,
         Err(error) => {
-            return fail(state, CodexError::Protocol(CodexProtocolError {
-                message: format!("Invalid Codex SSE JSON: {error}"),
-                payload: Some(Value::String(data.to_owned())),
-            }));
+            return fail(
+                state,
+                CodexError::Protocol(CodexProtocolError {
+                    message: format!("Invalid Codex SSE JSON: {error}"),
+                    payload: Some(Value::String(data.to_owned())),
+                }),
+            );
         }
     };
     let Some(event_type) = event.get("type").and_then(Value::as_str).map(str::to_owned) else {
         return Ok(None);
     };
-    let Some(event) = event.as_object().cloned() else { return Ok(None) };
+    let Some(event) = event.as_object().cloned() else {
+        return Ok(None);
+    };
 
     match event_type.as_str() {
         "error" => {
@@ -1234,23 +1512,39 @@ fn map_codex_frame(chunk: &str, state: &Arc<Mutex<CodexStreamAdapterState>>) -> 
             let fallback = serde_json::to_string(&Value::Object(event.clone())).unwrap_or_default();
             let base = format!(
                 "Codex error: {}",
-                if !message.is_empty() { message } else if !code.is_empty() { code.clone() } else { fallback }
+                if !message.is_empty() {
+                    message
+                } else if !code.is_empty() {
+                    code.clone()
+                } else {
+                    fallback
+                }
             );
-            fail(state, CodexError::Api(CodexApiError {
-                message: error_text_with_marker(base, &event),
-                code: (!code.is_empty()).then_some(code),
-                payload: Some(Value::Object(event)),
-            }))
+            fail(
+                state,
+                CodexError::Api(CodexApiError {
+                    message: error_text_with_marker(base, &event),
+                    code: (!code.is_empty()).then_some(code),
+                    payload: Some(Value::Object(event)),
+                }),
+            )
         }
         "response.failed" => {
             let code = get_codex_event_error_code(&event);
             let message = get_codex_event_error_message(&event);
-            let base = if message.is_empty() { String::from("Codex response failed") } else { message };
-            fail(state, CodexError::Api(CodexApiError {
-                message: error_text_with_marker(base, &event),
-                code: Some(code),
-                payload: Some(Value::Object(event)),
-            }))
+            let base = if message.is_empty() {
+                String::from("Codex response failed")
+            } else {
+                message
+            };
+            fail(
+                state,
+                CodexError::Api(CodexApiError {
+                    message: error_text_with_marker(base, &event),
+                    code: Some(code),
+                    payload: Some(Value::Object(event)),
+                }),
+            )
         }
         "response.done" | "response.completed" | "response.incomplete" => {
             let response = event.get("response").cloned().unwrap_or(Value::Null);
@@ -1260,22 +1554,41 @@ fn map_codex_frame(chunk: &str, state: &Arc<Mutex<CodexStreamAdapterState>>) -> 
             } else {
                 normalized.remove("status");
             }
-            let frame = json!({ "type": "response.completed", "response": Value::Object(normalized) }).to_string();
-            let mut state_guard = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let frame =
+                json!({ "type": "response.completed", "response": Value::Object(normalized) })
+                    .to_string();
+            let mut state_guard = state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             state_guard.error = None;
             Ok(Some(Bytes::from(format!("data: {frame}\n\n"))))
         }
-        _ => Ok(Some(Bytes::from(format!("data: {}\n\n", Value::Object(event))))),
+        _ => Ok(Some(Bytes::from(format!(
+            "data: {}\n\n",
+            Value::Object(event)
+        )))),
     }
 }
 
-fn fail(state: &Arc<Mutex<CodexStreamAdapterState>>, error: CodexError) -> Result<Option<Bytes>, ()> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).error = Some(error);
+fn fail(
+    state: &Arc<Mutex<CodexStreamAdapterState>>,
+    error: CodexError,
+) -> Result<Option<Bytes>, ()> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .error = Some(error);
     Err(())
 }
 
 /// `stream`.
-pub fn stream(model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+pub fn stream(
+    model: &Model,
+    context: &Context,
+    options: Option<StreamOptions>,
+) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let stream = create_assistant_message_event_stream();
     let model = model.clone();
     let context = context.clone();
@@ -1289,6 +1602,9 @@ pub fn stream(model: &Model, context: &Context, options: Option<StreamOptions>) 
 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        prompt_cache_diagnostics: None,
+        thinking_level: None,
+        provider_diagnostic: None,
         content: Vec::new(),
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -1302,6 +1618,7 @@ fn create_output(model: &Model) -> AssistantMessage {
         stop_details: None,
         deferred: None,
         error_message: None,
+        error_cause: None,
         abort_source: None,
         raw_stop_reason: None,
         end_turn: None,
@@ -1309,18 +1626,53 @@ fn create_output(model: &Model) -> AssistantMessage {
     }
 }
 
-async fn run_stream(model: Model, context: Context, options: StreamOptions, sink: AssistantMessageEventStream) {
+async fn run_stream(
+    model: Model,
+    context: Context,
+    options: StreamOptions,
+    sink: AssistantMessageEventStream,
+) {
     let mut output = create_output(&model);
     let codex_options = CodexResponsesOptions::from_stream_options(&options);
-    if let Err(error) = drive(&model, &context, &options, &codex_options, &mut output, &sink).await {
-        output.stop_reason = if options.request.signal.as_ref().is_some_and(|signal| signal.aborted()) {
+    if let Err(error) = drive(
+        &model,
+        &context,
+        &options,
+        &codex_options,
+        &mut output,
+        &sink,
+    )
+    .await
+    {
+        output.stop_reason = if options
+            .request
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.aborted())
+        {
             StopReason::Aborted
         } else {
             StopReason::Error
         };
         output.error_message = Some(format_codex_error(&error));
+        if output.stop_reason != StopReason::Aborted {
+            match &error {
+                CodexError::Provider(error) => super::openai_responses::apply_responses_failure(&mut output, error),
+                CodexError::Api(error) => {
+                    if let Some(payload) = &error.payload {
+                        output.provider_diagnostic = crate::api::github_copilot_errors::diagnostic_from_responses_event(payload);
+                        output.error_cause = crate::api::github_copilot_errors::usage_limit_cause(&model.provider, None, payload);
+                    }
+                }
+                CodexError::Protocol(_) | CodexError::WebSocketClose(_) | CodexError::Other(_) => {}
+            }
+        }
         sink.push(AssistantMessageEvent::Error {
-            reason: if output.stop_reason == StopReason::Aborted { ErrorReason::Aborted } else { ErrorReason::Error },
+            reason: if output.stop_reason == StopReason::Aborted {
+                ErrorReason::Aborted
+            } else {
+                ErrorReason::Error
+            },
             error: output.clone(),
         });
         sink.end(None);
@@ -1333,12 +1685,19 @@ fn format_codex_error(error: &CodexError) -> String {
     let shape = SdkErrorShape {
         message: error.message(),
         status_code: match error {
-            CodexError::Api(api) => api.payload.as_ref().and_then(|payload| payload.get("status")).cloned(),
+            CodexError::Api(api) => api
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("status"))
+                .cloned(),
             _ => None,
         },
         ..SdkErrorShape::default()
     };
-    format_provider_error(&normalize_provider_error(&ThrownProviderError::Error(Box::new(shape))), None)
+    format_provider_error(
+        &normalize_provider_error(&ThrownProviderError::Error(Box::new(shape))),
+        None,
+    )
 }
 
 async fn drive(
@@ -1349,6 +1708,8 @@ async fn drive(
     output: &mut AssistantMessage,
     stream: &AssistantMessageEventStream,
 ) -> Result<(), CodexError> {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let api_key = options
         .request
         .api_key
@@ -1370,15 +1731,27 @@ async fn drive(
     let cache_session_id = (options.cache_retention != Some(CacheRetention::None))
         .then(|| clamp_openai_prompt_cache_key(options.session_id.as_deref()))
         .flatten();
-    let mut body = build_request_body(model, context, codex_options, cache_session_id.as_deref(), &grammar_tool_input_properties, options.extra_body.as_ref())
-        .map_err(CodexError::Other)?;
-    if let Some(next) = options.request.apply_payload_hook(&Value::Object(body.clone()), model, None)
-        .await.map_err(CodexError::Other)?
+    let mut body = build_request_body(
+        model,
+        context,
+        codex_options,
+        cache_session_id.as_deref(),
+        &grammar_tool_input_properties,
+        options.extra_body.as_ref(),
+    )
+    .map_err(CodexError::Other)?;
+    if let Some(next) = options
+        .request
+        .apply_payload_hook(&Value::Object(body.clone()), model, None)
+        .await
+        .map_err(CodexError::Other)?
     {
         body = next.as_object().cloned().unwrap_or_default();
     }
 
-    let websocket_request_id = cache_session_id.clone().unwrap_or_else(|| uuidv7(None).unwrap_or_default());
+    let websocket_request_id = cache_session_id
+        .clone()
+        .unwrap_or_else(|| uuidv7(None).unwrap_or_default());
     let sse_headers = build_sse_headers(
         model.headers.as_ref(),
         options.request.headers.as_ref(),
@@ -1395,11 +1768,15 @@ async fn drive(
     );
     let body_json = Value::Object(body.clone()).to_string();
     let http_timeout_ms = normalize_timeout_ms(options.request.timeout_ms)?;
-    let websocket_connect_timeout_ms =
-        normalize_timeout_ms(options.websocket_connect_timeout_ms.or(Some(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS)))?;
+    let websocket_connect_timeout_ms = normalize_timeout_ms(
+        options
+            .websocket_connect_timeout_ms
+            .or(Some(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS)),
+    )?;
     let transport = options.transport.unwrap_or(Transport::Auto);
     let start_emitted = Arc::new(AtomicBool::new(false));
-    let websocket_disabled_for_session = transport != Transport::Sse && is_web_socket_sse_fallback_active(cache_session_id.as_deref());
+    let websocket_disabled_for_session = transport != Transport::Sse
+        && is_web_socket_sse_fallback_active(cache_session_id.as_deref());
     if websocket_disabled_for_session {
         record_web_socket_sse_fallback(cache_session_id.as_deref());
     }
@@ -1411,7 +1788,10 @@ async fn drive(
         let mut retried_web_socket_connection_limit = false;
         let mut retried_missing_web_socket_continuation = false;
         loop {
-            let on_start = WebSocketStart { started: Arc::new(AtomicBool::new(false)), start_emitted: start_emitted.clone() };
+            let on_start = WebSocketStart {
+                started: Arc::new(AtomicBool::new(false)),
+                start_emitted: start_emitted.clone(),
+            };
             let result = process_web_socket_stream(
                 &websocket_url,
                 &body,
@@ -1437,7 +1817,10 @@ async fn drive(
             });
             let error = match result {
                 Ok(()) => {
-                    stream.push(AssistantMessageEvent::Done { reason: get_done_reason(output.stop_reason), message: output.clone() });
+                    stream.push(AssistantMessageEvent::Done {
+                        reason: get_done_reason(output.stop_reason),
+                        message: output.clone(),
+                    });
                     stream.end(None);
                     return Ok(());
                 }
@@ -1445,7 +1828,8 @@ async fn drive(
             };
             let websocket_started = on_start.started.load(Ordering::SeqCst);
             let aborted = signal.as_ref().is_some_and(AbortSignal::aborted);
-            let connection_limit_before_start = !websocket_started && is_web_socket_connection_limit_reached_error(&error);
+            let connection_limit_before_start =
+                !websocket_started && is_web_socket_connection_limit_reached_error(&error);
             let previous_response_not_found = is_previous_response_not_found_error(&error);
             if !aborted && previous_response_not_found && !retried_missing_web_socket_continuation {
                 retried_missing_web_socket_continuation = true;
@@ -1472,13 +1856,21 @@ async fn drive(
             details.insert(String::from("eventsEmitted"), json!(websocket_started));
             details.insert(
                 String::from("phase"),
-                json!(if websocket_started { "after_message_stream_start" } else { "before_message_stream_start" }),
+                json!(if websocket_started {
+                    "after_message_stream_start"
+                } else {
+                    "before_message_stream_start"
+                }),
             );
             details.insert(String::from("requestBytes"), json!(body_json.len()));
             let thrown = Thrown::error("Error", error.message());
             append_assistant_message_diagnostic(
                 &mut output.diagnostics,
-                create_assistant_message_diagnostic("provider_transport_failure", &thrown, Some(details)),
+                create_assistant_message_diagnostic(
+                    "provider_transport_failure",
+                    &thrown,
+                    Some(details),
+                ),
             );
             record_web_socket_failure(cache_session_id.as_deref(), &thrown);
             if websocket_started {
@@ -1490,7 +1882,8 @@ async fn drive(
     }
 
     let mut sse_headers = sse_headers;
-    let compressed_body = zstd::bulk::compress(body_json.as_bytes(), REQUEST_COMPRESSION_ZSTD_LEVEL).ok();
+    let compressed_body =
+        zstd::bulk::compress(body_json.as_bytes(), REQUEST_COMPRESSION_ZSTD_LEVEL).ok();
     if compressed_body.is_some() {
         sse_headers.insert(
             reqwest::header::HeaderName::from_static("content-encoding"),
@@ -1515,13 +1908,18 @@ async fn drive(
         let request = client.post(&url).headers(headers).body(body);
         let send = match http_timeout_ms {
             Some(timeout_ms) if timeout_ms > 0 => {
-                match tokio::time::timeout(Duration::from_millis(timeout_ms), request.send()).await {
+                match tokio::time::timeout(Duration::from_millis(timeout_ms), request.send()).await
+                {
                     Ok(result) => result,
                     Err(_) => {
-                        let message = format!("Codex SSE response headers timed out after {timeout_ms}ms");
+                        let message =
+                            format!("Codex SSE response headers timed out after {timeout_ms}ms");
                         last_error = Some(CodexError::Other(message.clone()));
                         if attempt < max_retries {
-                            if sleep(BASE_DELAY_MS * 2u64.pow(attempt), signal.as_ref()).await.is_err() {
+                            if sleep(BASE_DELAY_MS * 2u64.pow(attempt), signal.as_ref())
+                                .await
+                                .is_err()
+                            {
                                 return Err(CodexError::Other(String::from("Request was aborted")));
                             }
                             continue;
@@ -1539,7 +1937,8 @@ async fn drive(
                 if signal.as_ref().is_some_and(|signal| signal.aborted()) {
                     return Err(CodexError::Other(String::from("Request was aborted")));
                 }
-                last_error = Some(CodexError::Other(message.clone()));
+                let error = CodexError::from(super::openai_responses::responses_transport_error(error));
+                last_error = Some(error.clone());
                 if attempt < max_retries && !message.contains("usage limit") {
                     let delay = BASE_DELAY_MS * 2u64.pow(attempt);
                     if sleep(delay, signal.as_ref()).await.is_err() {
@@ -1547,14 +1946,21 @@ async fn drive(
                     }
                     continue;
                 }
-                return Err(CodexError::Other(message));
+                return Err(error);
             }
         };
 
-        options.request.apply_response_hook(
-                &ProviderResponse { status: response_value.status().as_u16(), headers: headers_to_record(response_value.headers()) },
+        options
+            .request
+            .apply_response_hook(
+                &ProviderResponse {
+                    status: response_value.status().as_u16(),
+                    headers: headers_to_record(response_value.headers()),
+                },
                 model,
-            ).await.map_err(CodexError::Other)?;
+            )
+            .await
+            .map_err(CodexError::Other)?;
 
         if response_value.status().is_success() {
             response = Some(response_value);
@@ -1566,11 +1972,17 @@ async fn drive(
         let error_text = response_value.text().await.unwrap_or_default();
         if attempt < max_retries && is_retryable_error(status, &error_text) {
             let retry_after_delay_ms = extract_429_retry_after_ms(
-                &RetryHintInput { status: Some(429), headers: Some(&headers), body_text: "" },
+                &RetryHintInput {
+                    status: Some(429),
+                    headers: Some(&headers),
+                    body_text: "",
+                },
                 None,
             );
             let delay_ms = match retry_after_delay_ms {
-                Some(delay_ms) => validate_retry_delay_ms(delay_ms, options.request.max_retry_delay_ms)?,
+                Some(delay_ms) => {
+                    validate_retry_delay_ms(delay_ms, options.request.max_retry_delay_ms)?
+                }
                 None => BASE_DELAY_MS * 2u64.pow(attempt),
             };
             if sleep(delay_ms, signal.as_ref()).await.is_err() {
@@ -1583,7 +1995,11 @@ async fn drive(
         let mut error_message = friendly_message.unwrap_or(message);
         if status == 429 {
             let hint_ms = extract_429_retry_after_ms(
-                &RetryHintInput { status: Some(429), headers: Some(&headers), body_text: &error_text },
+                &RetryHintInput {
+                    status: Some(429),
+                    headers: Some(&headers),
+                    body_text: &error_text,
+                },
                 None,
             );
             if let Some(hint_ms) = hint_ms {
@@ -1592,26 +2008,40 @@ async fn drive(
         }
         // senpi throws this into the attempt's `catch`, which retries any error but a retry-delay
         // rejection or a usage-limit message while attempts remain.
-        last_error = Some(CodexError::Other(error_message.clone()));
+        let error = CodexError::from(super::openai_responses::ResponsesApiError::Provider {
+            message: error_message.clone(),
+            diagnostic: crate::api::github_copilot_errors::diagnostic_from_openai_error(Some(status), Some(&error_text)),
+            error_cause: serde_json::from_str::<Value>(&error_text).ok().and_then(|payload|
+                crate::api::github_copilot_errors::usage_limit_cause(&model.provider, Some(status), &payload)),
+        });
+        last_error = Some(error.clone());
         if attempt < max_retries && !error_message.contains("usage limit") {
-            if sleep(BASE_DELAY_MS * 2u64.pow(attempt), signal.as_ref()).await.is_err() {
+            if sleep(BASE_DELAY_MS * 2u64.pow(attempt), signal.as_ref())
+                .await
+                .is_err()
+            {
                 return Err(CodexError::Other(String::from("Request was aborted")));
             }
             continue;
         }
-        return Err(CodexError::Other(error_message));
+        return Err(error);
     }
 
     let Some(response) = response else {
-        return Err(last_error.unwrap_or_else(|| CodexError::Other(String::from("Failed after retries"))));
+        return Err(
+            last_error.unwrap_or_else(|| CodexError::Other(String::from("Failed after retries")))
+        );
     };
 
     if !start_emitted.swap(true, Ordering::SeqCst) {
-        stream.push(AssistantMessageEvent::Start { partial: output.clone() });
+        stream.push(AssistantMessageEvent::Start {
+            partial: output.clone(),
+        });
     }
     let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
+    let provenance: super::openai_responses::ResponsesFailureSlot = Arc::default();
     let adapter = CodexEventStream {
-        body: Box::pin(response.bytes_stream()),
+        body: super::openai_responses::observe_responses_transport(Box::pin(response.bytes_stream()), provenance.clone()),
         buffer: String::new(),
         done: false,
         state: adapter_state.clone(),
@@ -1619,15 +2049,26 @@ async fn drive(
     let service_tier = codex_options.service_tier.as_deref();
     let stream_options = ResponsesStreamOptions {
         service_tier,
+        on_provider_stream_event: options.on_provider_stream_event.as_ref(),
+        async_on_provider_stream_event: options.async_on_provider_stream_event.as_ref(),
+        resolve_service_tier: None,
         grammar_tool_input_properties: &grammar_tool_input_properties,
         apply_service_tier_pricing: Some(&|usage: &mut Usage, service_tier: Option<&str>| {
             apply_codex_service_tier_pricing(usage, service_tier, model)
         }),
     };
-    let processed = process_responses_stream(Box::pin(adapter), output, stream, model, &stream_options).await;
-    let adapter_error = adapter_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).error.clone();
+    let processed =
+        process_responses_stream(Box::pin(adapter), output, stream, model, &stream_options).await;
+    let adapter_error = adapter_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .error
+        .clone();
     if let Some(error) = adapter_error {
-        return Err(error);
+        return Err(match error {
+            CodexError::Other(message) => CodexError::from(super::openai_responses::responses_stream_error(message, &provenance)),
+            error => error,
+        });
     }
     processed.map_err(|error: ResponsesStreamError| CodexError::Other(error.message))?;
 
@@ -1635,18 +2076,26 @@ async fn drive(
         return Err(CodexError::Other(String::from("Request was aborted")));
     }
     assert_successful_output(output)?;
-    stream.push(AssistantMessageEvent::Done { reason: get_done_reason(output.stop_reason), message: output.clone() });
+    stream.push(AssistantMessageEvent::Done {
+        reason: get_done_reason(output.stop_reason),
+        message: output.clone(),
+    });
     stream.end(None);
     Ok(())
 }
 
 fn assert_successful_output(output: &AssistantMessage) -> Result<(), CodexError> {
     if output.stop_reason == StopReason::Pending {
-        return Err(CodexError::Other(String::from("Codex stream ended without a stop reason")));
+        return Err(CodexError::Other(String::from(
+            "Codex stream ended without a stop reason",
+        )));
     }
     if output.stop_reason == StopReason::Error || output.stop_reason == StopReason::Aborted {
         return Err(CodexError::Other(
-            output.error_message.clone().unwrap_or_else(|| String::from("An unknown error occurred")),
+            output
+                .error_message
+                .clone()
+                .unwrap_or_else(|| String::from("An unknown error occurred")),
         ));
     }
     Ok(())
@@ -1683,13 +2132,29 @@ fn is_retryable_error(status: u16, error_text: &str) -> bool {
         return true;
     }
     let lowered = error_text.to_lowercase();
-    ["ratelimit", "rate limit", "rate_limit", "overloaded", "service unavailable", "serviceunavailable", "upstream connect", "connection refused"]
-        .iter()
-        .any(|needle| lowered.replace([' ', '.', '-', '_'], "").contains(&needle.replace([' ', '.', '-', '_'], "")))
+    [
+        "ratelimit",
+        "rate limit",
+        "rate_limit",
+        "overloaded",
+        "service unavailable",
+        "serviceunavailable",
+        "upstream connect",
+        "connection refused",
+    ]
+    .iter()
+    .any(|needle| {
+        lowered
+            .replace([' ', '.', '-', '_'], "")
+            .contains(&needle.replace([' ', '.', '-', '_'], ""))
+    })
 }
 
 /// `validateRetryDelayMs`.
-fn validate_retry_delay_ms(delay_ms: u64, max_retry_delay_ms: Option<u64>) -> Result<u64, CodexError> {
+fn validate_retry_delay_ms(
+    delay_ms: u64,
+    max_retry_delay_ms: Option<u64>,
+) -> Result<u64, CodexError> {
     let max_retry_delay_ms = max_retry_delay_ms.unwrap_or(DEFAULT_MAX_RETRY_DELAY_MS);
     if max_retry_delay_ms > 0 && delay_ms > max_retry_delay_ms {
         return Err(CodexError::Other(format!(
@@ -1718,18 +2183,36 @@ async fn sleep(ms: u64, signal: Option<&crate::utils::abort::AbortSignal>) -> Re
 }
 
 /// `streamSimple`.
-pub fn stream_simple(model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+pub fn stream_simple(
+    model: &Model,
+    context: &Context,
+    options: Option<SimpleStreamOptions>,
+) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let simple = options.unwrap_or_default();
-    let api_key = simple.stream.request.api_key.clone().filter(|key| !key.is_empty());
+    let api_key = simple
+        .stream
+        .request
+        .api_key
+        .clone()
+        .filter(|key| !key.is_empty());
     let Some(api_key) = api_key else {
-        return error_stream(model, &format!("No API key for provider: {}", model.provider));
+        return error_stream(
+            model,
+            &format!("No API key for provider: {}", model.provider),
+        );
     };
-    let mut stream_options = match build_base_options(model, context, Some(&simple), Some(&api_key)) {
+    let mut stream_options = match build_base_options(model, context, Some(&simple), Some(&api_key))
+    {
         Ok(stream_options) => stream_options,
         Err(error) => return error_stream(model, &error.to_string()),
     };
     if let Some(tool_choice) = simple.tool_choice {
-        stream_options.extra.insert(String::from("toolChoice"), serde_json::to_value(tool_choice).unwrap_or(Value::Null));
+        stream_options.extra.insert(
+            String::from("toolChoice"),
+            serde_json::to_value(tool_choice).unwrap_or(Value::Null),
+        );
     }
     if let Some(service_tier) = simple.service_tier {
         let tier = match service_tier {
@@ -1738,9 +2221,13 @@ pub fn stream_simple(model: &Model, context: &Context, options: Option<SimpleStr
             crate::types::ServiceTierPreference::Priority => "priority",
             crate::types::ServiceTierPreference::Ultrafast => "ultrafast",
         };
-        stream_options.extra.insert(String::from("serviceTier"), json!(tier));
+        stream_options
+            .extra
+            .insert(String::from("serviceTier"), json!(tier));
     }
-    let clamped_reasoning = simple.reasoning.map(|reasoning| clamp_thinking_level(model, reasoning.into()));
+    let clamped_reasoning = simple
+        .reasoning
+        .map(|reasoning| clamp_thinking_level(model, reasoning.into()));
     let reasoning_effort = match clamped_reasoning {
         None | Some(ModelThinkingLevel::Off) => None,
         Some(ModelThinkingLevel::Max) if supports_max(model) => Some(String::from("max")),
@@ -1759,7 +2246,9 @@ pub fn stream_simple(model: &Model, context: &Context, options: Option<SimpleStr
         }
     };
     if let Some(reasoning_effort) = reasoning_effort {
-        stream_options.extra.insert(String::from("reasoningEffort"), json!(reasoning_effort));
+        stream_options
+            .extra
+            .insert(String::from("reasoningEffort"), json!(reasoning_effort));
     }
     stream(model, context, Some(stream_options))
 }
@@ -1784,6 +2273,7 @@ fn _cached_socket_marker(socket: &dyn CachedWebSocket) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::openai_responses::connect_web_socket;
     use futures::{SinkExt, StreamExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
@@ -1791,14 +2281,39 @@ mod tests {
 
     #[test]
     fn websocket_url_converts_http_schemes() {
-        assert_eq!(resolve_codex_web_socket_url(Some("https://example.test")), "wss://example.test/codex/responses");
-        assert_eq!(resolve_codex_web_socket_url(Some("http://example.test/codex")), "ws://example.test/codex/responses");
+        assert_eq!(
+            resolve_codex_web_socket_url(Some("https://example.test")),
+            "wss://example.test/codex/responses"
+        );
+        assert_eq!(
+            resolve_codex_web_socket_url(Some("http://example.test/codex")),
+            "ws://example.test/codex/responses"
+        );
+    }
+
+    #[test]
+    fn codex_failed_event_retains_structured_usage_payload() {
+        // Given the backend's structured terminal error after any partial content.
+        let state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
+        let frame = format!("data: {}", json!({"type":"response.failed","response":{"error":{"code":"usage_limit_reached","message":"opaque"}}}));
+        // When the wire adapter maps the failure.
+        assert!(map_codex_frame(&frame, &state).is_err());
+        let error = state.lock().expect("adapter").error.clone().expect("error");
+        // Then structured scope can be projected without consulting the formatted message.
+        let CodexError::Api(error) = error else { panic!("API error"); };
+        assert_eq!(crate::api::github_copilot_errors::usage_limit_cause("chatgpt-subscription", None, error.payload.as_ref().expect("payload")),
+            Some(crate::types::AssistantErrorCause::UsageLimit { scope: crate::types::UsageLimitScope::Account }));
     }
 
     #[test]
     fn websocket_headers_use_websocket_beta_and_affinity() {
         let headers = build_web_socket_headers(None, None, None, "token", "request-id");
-        assert_eq!(headers.get("openai-beta").and_then(|value| value.to_str().ok()), Some("responses_websockets=2026-02-06"));
+        assert_eq!(
+            headers
+                .get("openai-beta")
+                .and_then(|value| value.to_str().ok()),
+            Some("responses_websockets=2026-02-06")
+        );
         assert!(headers.get("accept").is_none());
         assert!(headers.get("content-type").is_none());
     }
@@ -1818,31 +2333,50 @@ mod tests {
         };
         let collected: Vec<_> = adapter.collect().await;
         assert_eq!(collected.len(), 1);
-        assert!(String::from_utf8_lossy(collected[0].as_ref().expect("frame")).contains("response.completed"));
+        assert!(
+            String::from_utf8_lossy(collected[0].as_ref().expect("frame"))
+                .contains("response.completed")
+        );
     }
 
-    async fn serve_codex_socket(
-        frames: Vec<String>,
-    ) -> (String, tokio::task::JoinHandle<Value>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind websocket server");
+    async fn serve_codex_socket(frames: Vec<String>) -> (String, tokio::task::JoinHandle<Value>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind websocket server");
         let address = listener.local_addr().expect("websocket server address");
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept websocket");
             let mut socket = accept_async(stream).await.expect("websocket handshake");
-            let request = match socket.next().await.expect("request frame").expect("request frame is valid") {
-                Message::Text(text) => serde_json::from_str::<Value>(text.as_str()).expect("request JSON"),
+            let request = match socket
+                .next()
+                .await
+                .expect("request frame")
+                .expect("request frame is valid")
+            {
+                Message::Text(text) => {
+                    serde_json::from_str::<Value>(text.as_str()).expect("request JSON")
+                }
                 other => panic!("unexpected request frame {other:?}"),
             };
             for frame in frames {
-                socket.send(Message::Text(frame.into())).await.expect("send frame");
+                socket
+                    .send(Message::Text(frame.into()))
+                    .await
+                    .expect("send frame");
             }
             request
         });
         (format!("ws://{address}"), server)
     }
 
-    async fn read_live(socket: Arc<TungsteniteWebSocket>, request: &str) -> (Vec<String>, Option<WebSocketStreamFailure>) {
-        let events = socket.begin_request(request.to_owned()).await.expect("send request");
+    async fn read_live(
+        socket: Arc<TungsteniteWebSocket>,
+        request: &str,
+    ) -> (Vec<String>, Option<WebSocketStreamFailure>) {
+        let events = socket
+            .begin_request(request.to_owned())
+            .await
+            .expect("send request");
         let failed: WebSocketFailureSlot = Arc::default();
         let body = parse_web_socket(
             socket,
@@ -1855,12 +2389,13 @@ mod tests {
             },
             failed.clone(),
         );
-        let frames: Vec<String> = tokio::time::timeout(Duration::from_secs(10), body.collect::<Vec<_>>())
-            .await
-            .expect("bounded websocket read")
-            .into_iter()
-            .map(|frame| String::from_utf8_lossy(&frame.expect("frame")).into_owned())
-            .collect();
+        let frames: Vec<String> =
+            tokio::time::timeout(Duration::from_secs(10), body.collect::<Vec<_>>())
+                .await
+                .expect("bounded websocket read")
+                .into_iter()
+                .map(|frame| String::from_utf8_lossy(&frame.expect("frame")).into_owned())
+                .collect();
         let failure = failed.lock().expect("failure slot").take();
         (frames, failure)
     }
@@ -1872,9 +2407,14 @@ mod tests {
             json!({"type":"response.completed","response":{"status":"completed"}}).to_string(),
         ])
         .await;
-        let socket = connect_web_socket(&url, &BTreeMap::new(), None, Some(1_000)).await.expect("connect");
+        let socket = connect_web_socket(&url, &BTreeMap::new(), None, Some(1_000))
+            .await
+            .expect("connect");
         let (frames, failure) = read_live(socket, "{\"type\":\"response.create\"}").await;
-        assert_eq!(server.await.expect("server task")["type"], "response.create");
+        assert_eq!(
+            server.await.expect("server task")["type"],
+            "response.create"
+        );
         assert_eq!(failure, None);
         assert_eq!(frames.len(), 2);
         assert!(frames[0].contains("response.output_text.delta"));
@@ -1887,19 +2427,32 @@ mod tests {
             json!({"type":"response.output_text.delta","delta":"hi"}).to_string(),
         ])
         .await;
-        let socket = connect_web_socket(&url, &BTreeMap::new(), None, Some(1_000)).await.expect("connect");
+        let socket = connect_web_socket(&url, &BTreeMap::new(), None, Some(1_000))
+            .await
+            .expect("connect");
         let (frames, failure) = read_live(socket, "{}").await;
         server.await.expect("server task");
         assert_eq!(frames.len(), 1);
-        assert!(matches!(failure, Some(WebSocketStreamFailure::Transport(_))), "{failure:?}");
+        assert!(
+            matches!(failure, Some(WebSocketStreamFailure::Close(_))),
+            "{failure:?}"
+        );
     }
 
     #[tokio::test]
     async fn codex_error_frames_carry_the_backend_code() {
         let state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
-        let frame = format!("data: {}", json!({"type":"error","error":{"code":"previous_response_not_found","message":"gone"}}));
+        let frame = format!(
+            "data: {}",
+            json!({"type":"error","error":{"code":"previous_response_not_found","message":"gone"}})
+        );
         assert!(map_codex_frame(&frame, &state).is_err());
-        let error = state.lock().expect("state").error.clone().expect("recorded error");
+        let error = state
+            .lock()
+            .expect("state")
+            .error
+            .clone()
+            .expect("recorded error");
         assert!(is_previous_response_not_found_error(&error));
         assert!(is_codex_non_transport_error(&error));
     }

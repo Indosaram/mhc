@@ -1,21 +1,38 @@
 use super::*;
-use crate::models_generated::{CatalogError, MODELS, get_builtin_model, get_builtin_provider_models, get_builtin_providers};
-use crate::types::{AssistantMessageEvent, DoneReason, ModelCost, ModelCostTier, ModelThinkingLevel as L, StopReason};
+use crate::models_generated::{
+    CatalogError, MODELS, get_builtin_model, get_builtin_provider_models, get_builtin_providers,
+};
+use crate::types::{
+    AssistantMessageEvent, DoneReason, ModelCost, ModelCostTier, ModelThinkingLevel as L,
+    StopReason,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn builtin(provider: &str, id: &str) -> Model {
-    get_builtin_model(provider, id).expect("builtin model").clone()
+    get_builtin_model(provider, id)
+        .expect("builtin model")
+        .clone()
 }
 
 #[test]
 fn catalog_matches_senpi_generated_counts_and_order() {
-    assert_eq!(get_builtin_providers().len(), 42);
-    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1750);
-    assert_eq!(get_builtin_providers().first().copied(), Some("alibaba-token-plan"));
+    assert_eq!(get_builtin_providers().len(), 43);
+    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1756);
+    assert_eq!(
+        get_builtin_providers().first().copied(),
+        Some("alibaba-token-plan")
+    );
     let xai: Vec<&str> = MODELS["xai"].keys().map(String::as_str).collect();
     assert_eq!(
         xai,
-        ["grok-4.20-0309-non-reasoning", "grok-4.20-0309-reasoning", "grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7"]
+        [
+            "grok-4.20-0309-non-reasoning",
+            "grok-4.20-0309-reasoning",
+            "grok-4.3",
+            "grok-4.5",
+            "grok-4.6",
+            "grok-4.7"
+        ]
     );
 }
 
@@ -35,7 +52,11 @@ fn anthropic_claude_models_resolve_with_senpi_context_windows() {
     ];
     for (id, context_window, max_tokens) in expected {
         let model = builtin("anthropic", id);
-        assert_eq!((model.context_window, model.max_tokens), (context_window, max_tokens), "{id}");
+        assert_eq!(
+            (model.context_window, model.max_tokens),
+            (context_window, max_tokens),
+            "{id}"
+        );
         assert_eq!(model.api, "anthropic-messages");
     }
 }
@@ -44,14 +65,21 @@ fn anthropic_claude_models_resolve_with_senpi_context_windows() {
 fn unknown_model_and_provider_return_typed_errors() {
     assert_eq!(
         get_builtin_model("anthropic", "claude-does-not-exist"),
-        Err(CatalogError::NotFound { provider: "anthropic".into(), model_id: "claude-does-not-exist".into() })
+        Err(CatalogError::NotFound {
+            provider: "anthropic".into(),
+            model_id: "claude-does-not-exist".into()
+        })
     );
     assert_eq!(
         get_builtin_provider_models("nope").map(|m| m.len()),
-        Err(CatalogError::UnknownProvider { provider: "nope".into() })
+        Err(CatalogError::UnknownProvider {
+            provider: "nope".into()
+        })
     );
     assert_eq!(
-        get_builtin_model("anthropic", "x").map(|m| m.id.clone()).map_err(|e| e.to_string()),
+        get_builtin_model("anthropic", "x")
+            .map(|m| m.id.clone())
+            .map_err(|e| e.to_string()),
         Err("Model not found: anthropic/x".into())
     );
 }
@@ -68,26 +96,48 @@ fn derives_model_api_id_and_provider_literals_from_grouped_model_data() {
         ("xiaomi", "mimo-v2.6-pro", "openai-completions"),
     ] {
         let model = builtin(provider, id);
-        assert_eq!((model.id.as_str(), model.provider.as_str(), model.api.as_str()), (id, provider, api));
+        assert_eq!(
+            (
+                model.id.as_str(),
+                model.provider.as_str(),
+                model.api.as_str()
+            ),
+            (id, provider, api)
+        );
     }
 }
 
 #[test]
 fn routes_github_copilot_grok_4_5_through_the_responses_api() {
-    assert_eq!(builtin("github-copilot", "grok-4.5").api, "openai-responses");
+    assert_eq!(
+        builtin("github-copilot", "grok-4.5").api,
+        "openai-responses"
+    );
 }
 
 #[test]
 fn routes_all_github_copilot_gpt_models_through_the_responses_api() {
-    let gpt: Vec<&Model> = MODELS["github-copilot"].values().filter(|m| m.id.starts_with("gpt-")).collect();
+    let gpt: Vec<&Model> = MODELS["github-copilot"]
+        .values()
+        .filter(|m| m.id.starts_with("gpt-"))
+        .collect();
     assert!(!gpt.is_empty());
     assert!(gpt.iter().all(|m| m.api == "openai-responses"));
-    assert_eq!(builtin("github-copilot", "gpt-6-astra").api, "openai-responses");
+    assert_eq!(
+        builtin("github-copilot", "gpt-6-astra").api,
+        "openai-responses"
+    );
 }
 
 #[test]
 fn ships_grok_4_7_and_mimo_v2_6_pro_on_their_direct_provider_shards() {
-    let ids = |p: &str| get_builtin_provider_models(p).expect("provider").into_iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+    let ids = |p: &str| {
+        get_builtin_provider_models(p)
+            .expect("provider")
+            .into_iter()
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>()
+    };
     let xai = ids("xai");
     assert!(xai.contains(&"grok-4.6".into()) && xai.contains(&"grok-4.7".into()));
     let xiaomi = ids("xiaomi");
@@ -97,10 +147,16 @@ fn ships_grok_4_7_and_mimo_v2_6_pro_on_their_direct_provider_shards() {
 #[test]
 fn thinking_levels_match_senpi() {
     let opus = builtin("anthropic", "claude-opus-4-8");
-    assert_eq!(get_supported_thinking_levels(&opus), ModelThinkingLevel::ALL.to_vec());
+    assert_eq!(
+        get_supported_thinking_levels(&opus),
+        ModelThinkingLevel::ALL.to_vec()
+    );
     assert_eq!(clamp_thinking_level(&opus, L::Max), L::Max);
     let astra = builtin("openai", "gpt-6-astra");
-    assert_eq!(get_supported_thinking_levels(&astra), vec![L::Low, L::Medium, L::High, L::Xhigh, L::Max]);
+    assert_eq!(
+        get_supported_thinking_levels(&astra),
+        vec![L::Low, L::Medium, L::High, L::Xhigh, L::Max]
+    );
     assert_eq!(clamp_thinking_level(&astra, L::Minimal), L::Low);
     assert_eq!(clamp_thinking_level(&astra, L::Off), L::Low);
     let gpt4 = builtin("openai", "gpt-4");
@@ -123,7 +179,13 @@ fn model_family_matching_respects_boundaries() {
 #[test]
 fn calculate_cost_applies_tiers_and_one_hour_cache_writes() {
     let model = builtin("bai", "gpt-5.5");
-    let mut usage = Usage { input: 300_000, output: 1000, cache_write: 2000, cache_write_1h: Some(500), ..Usage::default() };
+    let mut usage = Usage {
+        input: 300_000,
+        output: 1000,
+        cache_write: 2000,
+        cache_write_1h: Some(500),
+        ..Usage::default()
+    };
     let cost = calculate_cost(&model, &mut usage);
     assert_eq!(cost.input, 3.000_000_000_000_000_4);
     assert_eq!(cost.output, 0.045_000_000_000_000_005);
@@ -146,7 +208,9 @@ fn models_are_equal_compares_id_and_provider() {
 
 #[test]
 fn merge_headers_replaces_case_insensitively() {
-    let base: ProviderHeaders = [("X-Key".to_owned(), Some("a".to_owned()))].into_iter().collect();
+    let base: ProviderHeaders = [("X-Key".to_owned(), Some("a".to_owned()))]
+        .into_iter()
+        .collect();
     let over: ProviderHeaders = [("x-key".to_owned(), None)].into_iter().collect();
     let merged = merge_headers(Some(&base), Some(&over)).expect("merged");
     assert_eq!(merged.len(), 1);
@@ -159,19 +223,34 @@ struct EchoStreams {
 }
 
 impl ProviderStreams for EchoStreams {
-    fn stream(&self, model: &Model, _context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        _context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let stream = AssistantMessageEventStream::assistant();
         let mut message = crate::utils::lazy::setup_error_message(model, "");
         message.stop_reason = StopReason::Stop;
         message.error_message = None;
         message.response_id = options.and_then(|o| o.request.api_key);
-        stream.push(AssistantMessageEvent::Start { partial: message.clone() });
-        stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message });
+        stream.push(AssistantMessageEvent::Start {
+            partial: message.clone(),
+        });
+        stream.push(AssistantMessageEvent::Done {
+            reason: DoneReason::Stop,
+            message,
+        });
         stream
     }
 
-    fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+    fn stream_simple(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
         self.stream(model, context, options.map(|o| o.stream))
     }
 }
@@ -187,30 +266,53 @@ fn test_provider(id: &str, models: Vec<Model>, fetch: Option<FetchModels>) -> Ar
         fetch_models: fetch,
         restore_models: None,
         filter_models: None,
-        api: ProviderApi::Single(Arc::new(EchoStreams { calls: AtomicUsize::new(0) })),
+        api: ProviderApi::Single(Arc::new(EchoStreams {
+            calls: AtomicUsize::new(0),
+        })),
+        images: IndexMap::new(),
     })
+    .expect("chat implementation")
 }
 
 #[test]
 fn provider_collection_retains_declared_retry_policy() {
     let profile = crate::utils::retry_profile::profiles::KIMI_CODE_RETRY_PROFILE.clone();
-    let provider = create_provider_with_retry_policy(CreateProviderOptions {
-        id: "retry-profile-test".into(),
-        name: None,
-        base_url: None,
-        headers: None,
-        auth: None,
-        models: Vec::new(),
-        fetch_models: None,
-        restore_models: None,
-        filter_models: None,
-        api: ProviderApi::Single(Arc::new(EchoStreams { calls: AtomicUsize::new(0) })),
-    }, Some(profile));
+    let provider = create_provider_with_retry_policy(
+        CreateProviderOptions {
+            id: "retry-profile-test".into(),
+            name: None,
+            base_url: None,
+            headers: None,
+            auth: None,
+            models: Vec::new(),
+            fetch_models: None,
+            restore_models: None,
+            filter_models: None,
+            api: ProviderApi::Single(Arc::new(EchoStreams {
+                calls: AtomicUsize::new(0),
+            })),
+            images: IndexMap::new(),
+        },
+        Some(profile),
+    ).expect("chat implementation");
     let models = create_models(None);
     models.set_provider(provider);
-    let retained = models.get_provider("retry-profile-test").expect("registered provider");
-    assert_eq!(retained.retry_policy().expect("declared policy").turn.max_retries, 9);
-    assert!(test_provider("default-profile-test", Vec::new(), None).retry_policy().is_none());
+    let retained = models
+        .get_provider("retry-profile-test")
+        .expect("registered provider");
+    assert_eq!(
+        retained
+            .retry_policy()
+            .expect("declared policy")
+            .turn
+            .max_retries,
+        9
+    );
+    assert!(
+        test_provider("default-profile-test", Vec::new(), None)
+            .retry_policy()
+            .is_none()
+    );
 }
 
 fn with_provider(model: &Model, provider: &str) -> Model {
@@ -224,23 +326,67 @@ async fn models_collection_streams_with_explicit_key_and_rejects_unconfigured() 
     let base = builtin("anthropic", "claude-opus-4-8");
     let model = with_provider(&base, "maho-test-provider");
     let models = create_models(None);
-    models.set_provider(test_provider("maho-test-provider", vec![model.clone()], None));
-    assert_eq!(models.get_model("maho-test-provider", &model.id), Some(model.clone()));
-    assert_eq!(models.get_provider("maho-test-provider").map(|p| p.name().to_owned()), Some("maho-test-provider".into()));
+    models.set_provider(test_provider(
+        "maho-test-provider",
+        vec![model.clone()],
+        None,
+    ));
+    assert_eq!(
+        models.get_model("maho-test-provider", &model.id),
+        Some(model.clone())
+    );
+    assert_eq!(
+        models
+            .get_provider("maho-test-provider")
+            .map(|p| p.name().to_owned()),
+        Some("maho-test-provider".into())
+    );
 
     let mut options = StreamOptions::default();
     options.request.api_key = Some("explicit".into());
-    let done = models.complete(&model, &Context::default(), Some(options), ModelsRequestTransforms::default()).await;
-    assert_eq!(done.expect("result").response_id.as_deref(), Some("explicit"));
+    let done = models
+        .complete(
+            &model,
+            &Context::default(),
+            Some(options),
+            ModelsRequestTransforms::default(),
+        )
+        .await;
+    assert_eq!(
+        done.expect("result").response_id.as_deref(),
+        Some("explicit")
+    );
 
-    let failed = models.complete(&model, &Context::default(), None, ModelsRequestTransforms::default()).await.expect("result");
+    let failed = models
+        .complete(
+            &model,
+            &Context::default(),
+            None,
+            ModelsRequestTransforms::default(),
+        )
+        .await
+        .expect("result");
     assert_eq!(failed.stop_reason, StopReason::Error);
-    assert_eq!(failed.error_message.as_deref(), Some("Provider is not configured: maho-test-provider"));
+    assert_eq!(
+        failed.error_message.as_deref(),
+        Some("Provider is not configured: maho-test-provider")
+    );
 
     let unknown = with_provider(&base, "nobody");
-    let failed = models.complete(&unknown, &Context::default(), None, ModelsRequestTransforms::default()).await.expect("result");
-    assert_eq!(failed.error_message.as_deref(), Some("Unknown provider: nobody"));
-    assert!(models.get_available(None).await.is_empty());
+    let failed = models
+        .complete(
+            &unknown,
+            &Context::default(),
+            None,
+            ModelsRequestTransforms::default(),
+        )
+        .await
+        .expect("result");
+    assert_eq!(
+        failed.error_message.as_deref(),
+        Some("Unknown provider: nobody")
+    );
+    assert!(models.get_available(None, None).await.expect("available models").is_empty());
 }
 
 #[tokio::test]
@@ -257,41 +403,82 @@ async fn refresh_restores_stored_models_then_publishes_fetched_ones() {
 
     struct KeyAuth;
     impl ModelsAuth for KeyAuth {
-        fn resolve<'a>(&'a self, _p: &'a dyn Provider, _o: &'a AuthResolutionOverrides) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
+        fn resolve<'a>(
+            &'a self,
+            _p: &'a dyn Provider,
+            _o: &'a AuthResolutionOverrides,
+        ) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
             Box::pin(async { Ok(Some(AuthResolution::default())) })
         }
-        fn refresh_credential<'a>(&'a self, _p: &'a dyn Provider, _s: Option<&'a Credential>, _g: &'a AbortSignal) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>> {
+        fn refresh_credential<'a>(
+            &'a self,
+            _p: &'a dyn Provider,
+            _s: Option<&'a Credential>,
+            _g: &'a AbortSignal,
+        ) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>> {
             Box::pin(async { Ok(Some(serde_json::json!({"type": "api_key", "key": "k"}))) })
         }
     }
 
     let store: Arc<dyn ModelsStore> = Arc::new(InMemoryModelsStore::new());
-    let models = create_models(Some(CreateModelsOptions { models_store: Some(store.clone()), auth: Some(Arc::new(KeyAuth)) }));
-    models.set_provider(test_provider("maho-refresh", vec![baseline.clone()], Some(fetch)));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: Some(store.clone()),
+        auth: Some(Arc::new(KeyAuth)),
+    }));
+    models.set_provider(test_provider(
+        "maho-refresh",
+        vec![baseline.clone()],
+        Some(fetch),
+    ));
 
     let result = models.refresh(ModelsRefreshOptions::default()).await;
     assert!(!result.aborted && result.errors.is_empty());
-    let ids: Vec<String> = models.get_models(Some("maho-refresh")).into_iter().map(|m| m.id).collect();
+    let ids: Vec<String> = models
+        .get_models(Some("maho-refresh"))
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
     assert_eq!(ids, vec![baseline.id.clone(), "fetched-model".into()]);
-    let persisted = store.read("maho-refresh", None).await.expect("read").expect("entry");
+    let persisted = store
+        .read("maho-refresh", None)
+        .await
+        .expect("read")
+        .expect("entry");
     assert_eq!(persisted.models, vec![fetched]);
     assert!(persisted.checked_at.is_some());
 
-    let offline = models.refresh(ModelsRefreshOptions { allow_network: Some(false), ..ModelsRefreshOptions::default() }).await;
+    let offline = models
+        .refresh(ModelsRefreshOptions {
+            allow_network: Some(false),
+            ..ModelsRefreshOptions::default()
+        })
+        .await;
     assert!(offline.errors.is_empty());
-    assert_eq!(models.get_available(Some("maho-refresh")).await.len(), 2);
+    assert_eq!(models.get_available(Some("maho-refresh"), None).await.expect("available models").len(), 2);
 
     let controller = AbortController::new();
     controller.abort(None);
-    let aborted = models.refresh(ModelsRefreshOptions { signal: Some(controller.signal()), ..ModelsRefreshOptions::default() }).await;
+    let aborted = models
+        .refresh(ModelsRefreshOptions {
+            signal: Some(controller.signal()),
+            ..ModelsRefreshOptions::default()
+        })
+        .await;
     assert!(aborted.aborted);
 }
 
 #[test]
 fn models_error_appends_cause_detail_once() {
-    let error = ModelsError::with_cause(ModelsErrorCode::ModelSource, "Model refresh failed for p", " boom ");
+    let error = ModelsError::with_cause(
+        ModelsErrorCode::ModelSource,
+        "Model refresh failed for p",
+        " boom ",
+    );
     assert_eq!(error.message, "Model refresh failed for p: boom");
-    assert_eq!(ModelsError::with_cause(ModelsErrorCode::Auth, "has boom", "boom").message, "has boom");
+    assert_eq!(
+        ModelsError::with_cause(ModelsErrorCode::Auth, "has boom", "boom").message,
+        "has boom"
+    );
     assert_eq!(error.code.as_str(), "model_source");
 }
 
@@ -331,13 +518,39 @@ fn plain_provider(id: &str, models: Vec<Model>) -> Arc<dyn Provider> {
 #[tokio::test]
 async fn ambient_bedrock_credentials_resolve_without_a_request_key() {
     let models = create_models(None);
-    models.set_provider(crate::providers::amazon_bedrock::amazon_bedrock_provider());
+    models.set_provider(crate::providers::amazon_bedrock::amazon_bedrock_provider().expect("provider"));
     let overrides = AuthResolutionOverrides {
-        env: Some(ProviderEnv::from([("AWS_PROFILE".to_owned(), "work".to_owned())])),
+        env: Some(ProviderEnv::from([(
+            "AWS_PROFILE".to_owned(),
+            "work".to_owned(),
+        )])),
         ..AuthResolutionOverrides::default()
     };
-    let resolution = models.get_auth("amazon-bedrock", &overrides).await.expect("resolve").expect("configured");
+    let resolution = models
+        .get_auth("amazon-bedrock", &overrides)
+        .await
+        .expect("resolve")
+        .expect("configured");
     assert_eq!(resolution.auth.api_key, None);
+    assert!(resolution.ambient);
+}
+
+#[tokio::test]
+async fn provider_auth_check_and_resolution_preserve_cloud_classification() {
+    struct CloudContext;
+    #[async_trait::async_trait]
+    impl crate::auth::types::AuthContext for CloudContext {
+        async fn env(&self, name: &str) -> Option<String> {
+            (name == "AWS_PROFILE").then(|| "work".into())
+        }
+        async fn file_exists(&self, _: &str) -> bool { false }
+    }
+    let store = Arc::new(crate::auth::credential_store::InMemoryCredentialStore::new());
+    let auth = ProviderModelsAuth::new(store.clone(), Arc::new(CloudContext));
+    let provider = crate::providers::amazon_bedrock::amazon_bedrock_provider().expect("provider");
+    let signal = crate::utils::abort::AbortController::new().signal();
+    assert!(auth.check(provider.as_ref(), &signal).await.expect("check").expect("profile").ambient);
+    assert!(auth.resolve(provider.as_ref(), &AuthResolutionOverrides::default()).await.expect("resolve").expect("profile").ambient);
 }
 
 #[test]
@@ -346,11 +559,22 @@ fn registers_replaces_and_deletes_providers() {
     let models = create_models(None);
     models.set_provider(plain_provider("p1", vec![]));
     models.set_provider(plain_provider("p2", vec![]));
-    assert_eq!(models.get_providers().iter().map(|p| p.id().to_owned()).collect::<Vec<_>>(), ["p1", "p2"], "{title}");
+    assert_eq!(
+        models
+            .get_providers()
+            .iter()
+            .map(|p| p.id().to_owned())
+            .collect::<Vec<_>>(),
+        ["p1", "p2"],
+        "{title}"
+    );
 
     let replacement = plain_provider("p1", vec![]);
     models.set_provider(replacement.clone());
-    assert!(Arc::ptr_eq(&models.get_provider("p1").expect("p1"), &replacement), "{title}");
+    assert!(
+        Arc::ptr_eq(&models.get_provider("p1").expect("p1"), &replacement),
+        "{title}"
+    );
     assert_eq!(models.get_providers().len(), 2, "{title}");
 
     models.delete_provider("p1");
@@ -372,10 +596,30 @@ fn lists_and_finds_models_per_provider() {
     models.set_provider(plain_provider("p1", vec![m1.clone(), m2.clone()]));
     models.set_provider(plain_provider("p2", vec![m3.clone()]));
 
-    assert_eq!(models.get_models(None).iter().map(|m| m.id.clone()).collect::<Vec<_>>(), [m1.id.clone(), m2.id.clone(), m3.id.clone()], "{title}");
-    assert_eq!(models.get_models(Some("p1")).iter().map(|m| m.id.clone()).collect::<Vec<_>>(), [m1.id.clone(), m2.id.clone()], "{title}");
+    assert_eq!(
+        models
+            .get_models(None)
+            .iter()
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>(),
+        [m1.id.clone(), m2.id.clone(), m3.id.clone()],
+        "{title}"
+    );
+    assert_eq!(
+        models
+            .get_models(Some("p1"))
+            .iter()
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>(),
+        [m1.id.clone(), m2.id.clone()],
+        "{title}"
+    );
     assert_eq!(models.get_models(Some("nope")).len(), 0, "{title}");
-    assert_eq!(models.get_model("p2", &m3.id).map(|m| m.id), Some(m3.id.clone()), "{title}");
+    assert_eq!(
+        models.get_model("p2", &m3.id).map(|m| m.id),
+        Some(m3.id.clone()),
+        "{title}"
+    );
     assert!(models.get_model("p2", "missing").is_none(), "{title}");
 
     let found = models.get_model("p2", &m3.id).expect("m3");
@@ -394,10 +638,20 @@ impl Provider for ThrowingProvider {
     fn get_models(&self) -> Vec<Model> {
         panic!("boom")
     }
-    fn stream(&self, model: &Model, _c: &Context, _o: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        _c: &Context,
+        _o: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         error_stream_for_test(model)
     }
-    fn stream_simple(&self, model: &Model, _c: &Context, _o: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+    fn stream_simple(
+        &self,
+        model: &Model,
+        _c: &Context,
+        _o: Option<SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
         error_stream_for_test(model)
     }
 }
@@ -412,10 +666,17 @@ fn error_stream_for_test(model: &Model) -> AssistantMessageEventStream {
 #[test]
 #[should_panic(expected = "boom")]
 fn swallows_provider_source_failures_for_both_all_provider_and_single_provider_listing() {
-    let title = "swallows provider source failures for both all-provider and single-provider listing";
+    let title =
+        "swallows provider source failures for both all-provider and single-provider listing";
     let models = create_models(None);
     models.set_provider(Arc::new(ThrowingProvider));
-    models.set_provider(plain_provider("ok", vec![with_provider(&builtin("anthropic", "claude-opus-4-8"), "ok")]));
+    models.set_provider(plain_provider(
+        "ok",
+        vec![with_provider(
+            &builtin("anthropic", "claude-opus-4-8"),
+            "ok",
+        )],
+    ));
 
     // `Models::get_models` swallows a panicking `getModels()` the way TS swallows a throw.
     let ok_ids: Vec<String> = models.get_models(None).into_iter().map(|m| m.id).collect();
@@ -423,14 +684,18 @@ fn swallows_provider_source_failures_for_both_all_provider_and_single_provider_l
     assert_eq!(models.get_models(Some("broken")).len(), 0, "{title}");
     // precise failures come from the provider directly: calling through panics, matching TS's
     // `toThrow("boom")` on `getProvider("broken")?.getModels()`.
-    models.get_provider("broken").expect("provider").get_models();
+    models
+        .get_provider("broken")
+        .expect("provider")
+        .get_models();
 }
 
 fn refreshable_provider(id: &str, models: Vec<Model>, fetch: FetchModels) -> Arc<dyn Provider> {
     test_provider(id, models, Some(fetch))
 }
 
-type RefreshScript = Arc<dyn Fn(RefreshModelsContext) -> BoxFuture<'static, Result<(), ModelsError>> + Send + Sync>;
+type RefreshScript =
+    Arc<dyn Fn(RefreshModelsContext) -> BoxFuture<'static, Result<(), ModelsError>> + Send + Sync>;
 
 /// A provider whose `refreshModels` is the test's own function, mirroring the TS fixture
 /// `testProvider({ getModels, refreshModels })`: it runs in BOTH the cache and the network phase
@@ -452,25 +717,41 @@ impl Provider for ScriptedProvider {
     }
 
     fn get_models(&self) -> Vec<Model> {
-        self.models.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        self.models
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     fn supports_refresh(&self) -> bool {
         self.refresh.is_some()
     }
 
-    fn refresh_models<'a>(&'a self, context: RefreshModelsContext) -> BoxFuture<'a, Result<(), ModelsError>> {
+    fn refresh_models<'a>(
+        &'a self,
+        context: RefreshModelsContext,
+    ) -> BoxFuture<'a, Result<(), ModelsError>> {
         match &self.refresh {
             Some(refresh) => Box::pin(async move { refresh(context).await }),
             None => Box::pin(async { Ok(()) }),
         }
     }
 
-    fn stream(&self, model: &Model, _context: &Context, _options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        _context: &Context,
+        _options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         error_stream_for_test(model)
     }
 
-    fn stream_simple(&self, model: &Model, _context: &Context, _options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+    fn stream_simple(
+        &self,
+        model: &Model,
+        _context: &Context,
+        _options: Option<SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
         error_stream_for_test(model)
     }
 }
@@ -479,8 +760,16 @@ fn scripted_models(models: Vec<Model>) -> Arc<Mutex<Vec<Model>>> {
     Arc::new(Mutex::new(models))
 }
 
-fn scripted_provider(id: &str, models: Arc<Mutex<Vec<Model>>>, refresh: Option<RefreshScript>) -> Arc<dyn Provider> {
-    Arc::new(ScriptedProvider { id: id.to_owned(), models, refresh })
+fn scripted_provider(
+    id: &str,
+    models: Arc<Mutex<Vec<Model>>>,
+    refresh: Option<RefreshScript>,
+) -> Arc<dyn Provider> {
+    Arc::new(ScriptedProvider {
+        id: id.to_owned(),
+        models,
+        refresh,
+    })
 }
 
 /// `testModel(provider, id)` from the TS fixture: a model whose identity the case controls.
@@ -498,14 +787,22 @@ fn keyed_auth(key: &'static str) -> Arc<dyn ModelsAuth> {
             let explicit = o.api_key.clone();
             Box::pin(async move {
                 Ok(Some(AuthResolution {
-                    auth: ProviderAuthResult { api_key: Some(explicit.unwrap_or_else(|| key.to_owned())), ..Default::default() },
+                    ambient: false,
+                    auth: ProviderAuthResult {
+                        api_key: Some(explicit.unwrap_or_else(|| key.to_owned())),
+                        ..Default::default()
+                    },
                     env: None,
                 }))
             })
         }),
-        refresh_credential: Box::new(move |_p: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| {
-            Box::pin(async move { Ok(Some(serde_json::json!({ "type": "api_key", "key": key }))) })
-        }),
+        refresh_credential: Box::new(
+            move |_p: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| {
+                Box::pin(
+                    async move { Ok(Some(serde_json::json!({ "type": "api_key", "key": key }))) },
+                )
+            },
+        ),
     })
 }
 
@@ -534,7 +831,10 @@ async fn refresh_updates_every_configured_dynamic_provider_and_reports_failures(
             Ok(())
         })
     });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(ambient_auth()) }));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(ambient_auth()),
+    }));
     models.set_provider(scripted_provider("dyn", list.clone(), Some(refresh)));
     models.set_provider(plain_provider("static", vec![test_model("static", "s1")]));
 
@@ -548,81 +848,143 @@ async fn refresh_updates_every_configured_dynamic_provider_and_reports_failures(
     let flaky: RefreshScript = Arc::new(|context: RefreshModelsContext| {
         Box::pin(async move {
             if context.allow_network {
-                return Err(ModelsError::new(ModelsErrorCode::ModelSource, "fetch failed"));
+                return Err(ModelsError::new(
+                    ModelsErrorCode::ModelSource,
+                    "fetch failed",
+                ));
             }
             Ok(())
         })
     });
-    models.set_provider(scripted_provider("flaky", scripted_models(vec![]), Some(flaky)));
+    models.set_provider(scripted_provider(
+        "flaky",
+        scripted_models(vec![]),
+        Some(flaky),
+    ));
     let second = models.refresh(ModelsRefreshOptions::default()).await;
     assert_eq!(refreshes.load(Ordering::SeqCst), 2, "{title}");
-    assert_eq!(second.errors.get("flaky").map(|error| error.message.as_str()), Some("fetch failed"), "{title}");
+    assert_eq!(
+        second
+            .errors
+            .get("flaky")
+            .map(|error| error.message.as_str()),
+        Some("fetch failed"),
+        "{title}"
+    );
 }
 
 #[tokio::test]
 async fn restricts_refresh_work_to_selected_providers() {
     let title = "restricts refresh work to selected providers";
     let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(ambient_auth()) }));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(ambient_auth()),
+    }));
     for id in ["one", "two"] {
         let calls = calls.clone();
         let id_owned = id.to_owned();
         let refresh: RefreshScript = Arc::new(move |context: RefreshModelsContext| {
             let (calls, id_owned) = (calls.clone(), id_owned.clone());
-            let phase = if context.allow_network { "network" } else { "cache" };
+            let phase = if context.allow_network {
+                "network"
+            } else {
+                "cache"
+            };
             Box::pin(async move {
-                calls.lock().expect("calls").push(format!("{id_owned}:{phase}"));
+                calls
+                    .lock()
+                    .expect("calls")
+                    .push(format!("{id_owned}:{phase}"));
                 Ok(())
             })
         });
-        models.set_provider(scripted_provider(id, scripted_models(vec![]), Some(refresh)));
+        models.set_provider(scripted_provider(
+            id,
+            scripted_models(vec![]),
+            Some(refresh),
+        ));
     }
 
     let result = models
-        .refresh(ModelsRefreshOptions { providers: Some(vec!["two".into(), "unknown".into()]), ..ModelsRefreshOptions::default() })
+        .refresh(ModelsRefreshOptions {
+            providers: Some(vec!["two".into(), "unknown".into()]),
+            ..ModelsRefreshOptions::default()
+        })
         .await;
 
     assert_eq!(result.errors.len(), 0, "{title}");
-    assert_eq!(*calls.lock().expect("calls"), vec!["two:cache".to_owned(), "two:network".to_owned()], "{title}");
+    assert_eq!(
+        *calls.lock().expect("calls"),
+        vec!["two:cache".to_owned(), "two:network".to_owned()],
+        "{title}"
+    );
 }
 
 #[tokio::test]
 async fn lets_providers_choose_persistent_deletion_and_ephemeral_publication_atomically() {
     let title = "lets providers choose persistent deletion and ephemeral publication atomically";
     let entry: Arc<Mutex<Option<ModelsStoreEntry>>> =
-        Arc::new(Mutex::new(Some(ModelsStoreEntry { models: vec![test_model("dynamic", "stored")], ..ModelsStoreEntry::default() })));
+        Arc::new(Mutex::new(Some(ModelsStoreEntry {
+            models: vec![test_model("dynamic", "stored")],
+            ..ModelsStoreEntry::default()
+        })));
 
     struct RecordingStore {
         entry: Arc<Mutex<Option<ModelsStoreEntry>>>,
     }
     impl ModelsStore for RecordingStore {
-        fn read<'a>(&'a self, _p: &'a str, _o: Option<&'a ModelsStoreOperationOptions>) -> crate::types::BoxFuture<'a, Result<Option<ModelsStoreEntry>, AbortReason>> {
+        fn read<'a>(
+            &'a self,
+            _p: &'a str,
+            _o: Option<&'a ModelsStoreOperationOptions>,
+        ) -> crate::types::BoxFuture<'a, Result<Option<ModelsStoreEntry>, AbortReason>> {
             let entry = self.entry.lock().expect("entry").clone();
             Box::pin(async move { Ok(entry) })
         }
-        fn write<'a>(&'a self, _p: &'a str, next: &'a ModelsStoreEntry, _o: Option<&'a ModelsStoreOperationOptions>) -> crate::types::BoxFuture<'a, Result<(), AbortReason>> {
+        fn write<'a>(
+            &'a self,
+            _p: &'a str,
+            next: &'a ModelsStoreEntry,
+            _o: Option<&'a ModelsStoreOperationOptions>,
+        ) -> crate::types::BoxFuture<'a, Result<(), AbortReason>> {
             *self.entry.lock().expect("entry") = Some(next.clone());
             Box::pin(async { Ok(()) })
         }
-        fn delete<'a>(&'a self, _p: &'a str, _o: Option<&'a ModelsStoreOperationOptions>) -> crate::types::BoxFuture<'a, Result<(), AbortReason>> {
+        fn delete<'a>(
+            &'a self,
+            _p: &'a str,
+            _o: Option<&'a ModelsStoreOperationOptions>,
+        ) -> crate::types::BoxFuture<'a, Result<(), AbortReason>> {
             *self.entry.lock().expect("entry") = None;
             Box::pin(async { Ok(()) })
         }
     }
 
     let state = Arc::new(Mutex::new("initial".to_owned()));
-    let (entry_for_refresh, state_for_delete, state_for_ephemeral) = (entry.clone(), state.clone(), state.clone());
+    let (entry_for_refresh, state_for_delete, state_for_ephemeral) =
+        (entry.clone(), state.clone(), state.clone());
     let refresh: RefreshScript = Arc::new(move |context: RefreshModelsContext| {
-        let (entry, state_delete, state_ephemeral) =
-            (entry_for_refresh.clone(), state_for_delete.clone(), state_for_ephemeral.clone());
+        let (entry, state_delete, state_ephemeral) = (
+            entry_for_refresh.clone(),
+            state_for_delete.clone(),
+            state_for_ephemeral.clone(),
+        );
         let stored = context.stored.clone();
         let publish = context.publisher();
         Box::pin(async move {
-            assert_eq!(stored.map(|entry| entry.models[0].id.clone()), Some("stored".to_owned()), "stored catalog is restored");
+            assert_eq!(
+                stored.map(|entry| entry.models[0].id.clone()),
+                Some("stored".to_owned()),
+                "stored catalog is restored"
+            );
             publish(ModelsPublication {
                 persist: Some(None),
                 update: Some(Box::new(move || {
-                    assert!(entry.lock().expect("entry").is_none(), "persist: null deletes the stored entry");
+                    assert!(
+                        entry.lock().expect("entry").is_none(),
+                        "persist: null deletes the stored entry"
+                    );
                     *state_delete.lock().expect("state") = "deleted".to_owned();
                 })),
             })
@@ -639,11 +1001,25 @@ async fn lets_providers_choose_persistent_deletion_and_ephemeral_publication_ato
             Ok(())
         })
     });
-    let store: Arc<dyn ModelsStore> = Arc::new(RecordingStore { entry: entry.clone() });
-    let models = create_models(Some(CreateModelsOptions { models_store: Some(store), auth: Some(ambient_auth()) }));
-    models.set_provider(scripted_provider("dynamic", scripted_models(vec![]), Some(refresh)));
+    let store: Arc<dyn ModelsStore> = Arc::new(RecordingStore {
+        entry: entry.clone(),
+    });
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: Some(store),
+        auth: Some(ambient_auth()),
+    }));
+    models.set_provider(scripted_provider(
+        "dynamic",
+        scripted_models(vec![]),
+        Some(refresh),
+    ));
 
-    let result = models.refresh(ModelsRefreshOptions { allow_network: Some(false), ..ModelsRefreshOptions::default() }).await;
+    let result = models
+        .refresh(ModelsRefreshOptions {
+            allow_network: Some(false),
+            ..ModelsRefreshOptions::default()
+        })
+        .await;
 
     assert_eq!(result.errors.len(), 0, "{title}");
     assert!(entry.lock().expect("entry").is_none(), "{title}");
@@ -656,11 +1032,21 @@ async fn always_gives_providers_a_concrete_signal() {
     let seen: Arc<Mutex<Vec<AbortSignal>>> = Arc::new(Mutex::new(Vec::new()));
     let seen_for_refresh = seen.clone();
     let refresh: RefreshScript = Arc::new(move |context: RefreshModelsContext| {
-        seen_for_refresh.lock().expect("seen").push(context.signal.clone());
+        seen_for_refresh
+            .lock()
+            .expect("seen")
+            .push(context.signal.clone());
         Box::pin(async { Ok(()) })
     });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(ambient_auth()) }));
-    models.set_provider(scripted_provider("dynamic", scripted_models(vec![]), Some(refresh)));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(ambient_auth()),
+    }));
+    models.set_provider(scripted_provider(
+        "dynamic",
+        scripted_models(vec![]),
+        Some(refresh),
+    ));
 
     let result = models.refresh(ModelsRefreshOptions::default()).await;
     assert!(!result.aborted, "{title}");
@@ -674,7 +1060,8 @@ async fn binds_model_store_waits_to_the_provider_refresh_signal() {
     let title = "binds model-store waits to the provider refresh signal";
     let storage_signals: Arc<Mutex<Vec<Option<AbortSignal>>>> = Arc::new(Mutex::new(Vec::new()));
     let (write_started_tx, mut write_started_rx) = tokio::sync::watch::channel(false);
-    let (write_outcome_tx, write_outcome_rx) = tokio::sync::oneshot::channel::<Result<(), AbortReason>>();
+    let (write_outcome_tx, write_outcome_rx) =
+        tokio::sync::oneshot::channel::<Result<(), AbortReason>>();
 
     /// Owned solely by the parked write future: completing it reports the write's own outcome,
     /// and dropping it (the write was cancelled) reports the abort reason its signal carries.
@@ -691,7 +1078,12 @@ async fn binds_model_store_waits_to_the_provider_refresh_signal() {
     }
     impl Drop for CancelGuard {
         fn drop(&mut self) {
-            let cancelled = self.signal.as_ref().and_then(AbortSignal::reason).map(Err).unwrap_or(Ok(()));
+            let cancelled = self
+                .signal
+                .as_ref()
+                .and_then(AbortSignal::reason)
+                .map(Err)
+                .unwrap_or(Ok(()));
             self.finish(cancelled);
         }
     }
@@ -699,15 +1091,31 @@ async fn binds_model_store_waits_to_the_provider_refresh_signal() {
     struct RecordingStore {
         signals: Arc<Mutex<Vec<Option<AbortSignal>>>>,
         write_started: tokio::sync::watch::Sender<bool>,
-        write_outcome: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<(), AbortReason>>>>,
+        write_outcome:
+            std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<(), AbortReason>>>>,
     }
     impl ModelsStore for RecordingStore {
-        fn read<'a>(&'a self, _p: &'a str, o: Option<&'a ModelsStoreOperationOptions>) -> crate::types::BoxFuture<'a, Result<Option<ModelsStoreEntry>, AbortReason>> {
-            self.signals.lock().expect("signals").push(o.and_then(|o| o.signal.clone()));
+        fn read<'a>(
+            &'a self,
+            _p: &'a str,
+            o: Option<&'a ModelsStoreOperationOptions>,
+        ) -> crate::types::BoxFuture<'a, Result<Option<ModelsStoreEntry>, AbortReason>> {
+            self.signals
+                .lock()
+                .expect("signals")
+                .push(o.and_then(|o| o.signal.clone()));
             Box::pin(async { Ok(None) })
         }
-        fn write<'a>(&'a self, _p: &'a str, _e: &'a ModelsStoreEntry, o: Option<&'a ModelsStoreOperationOptions>) -> crate::types::BoxFuture<'a, Result<(), AbortReason>> {
-            self.signals.lock().expect("signals").push(o.and_then(|o| o.signal.clone()));
+        fn write<'a>(
+            &'a self,
+            _p: &'a str,
+            _e: &'a ModelsStoreEntry,
+            o: Option<&'a ModelsStoreOperationOptions>,
+        ) -> crate::types::BoxFuture<'a, Result<(), AbortReason>> {
+            self.signals
+                .lock()
+                .expect("signals")
+                .push(o.and_then(|o| o.signal.clone()));
             let signal = o.and_then(|o| o.signal.clone());
             self.write_started.send_replace(true);
             let guard = CancelGuard {
@@ -716,15 +1124,24 @@ async fn binds_model_store_waits_to_the_provider_refresh_signal() {
             };
             Box::pin(async move {
                 let result = match signal {
-                    Some(signal) => race_with_abort_signal(std::future::pending::<()>(), &signal).await,
+                    Some(signal) => {
+                        race_with_abort_signal(std::future::pending::<()>(), &signal).await
+                    }
                     None => Ok(()),
                 };
                 guard.finish(result.clone());
                 result
             })
         }
-        fn delete<'a>(&'a self, _p: &'a str, o: Option<&'a ModelsStoreOperationOptions>) -> crate::types::BoxFuture<'a, Result<(), AbortReason>> {
-            self.signals.lock().expect("signals").push(o.and_then(|o| o.signal.clone()));
+        fn delete<'a>(
+            &'a self,
+            _p: &'a str,
+            o: Option<&'a ModelsStoreOperationOptions>,
+        ) -> crate::types::BoxFuture<'a, Result<(), AbortReason>> {
+            self.signals
+                .lock()
+                .expect("signals")
+                .push(o.and_then(|o| o.signal.clone()));
             Box::pin(async { Ok(()) })
         }
     }
@@ -734,37 +1151,70 @@ async fn binds_model_store_waits_to_the_provider_refresh_signal() {
         *provider_signal_clone.lock().expect("signal") = Some(ctx.signal.clone());
         let publish_ctx_signal = ctx.signal.clone();
         let _ = publish_ctx_signal;
-        Box::pin(async move { Ok(vec![with_provider(&builtin("anthropic", "claude-opus-4-8"), "dynamic")]) })
+        Box::pin(async move {
+            Ok(vec![with_provider(
+                &builtin("anthropic", "claude-opus-4-8"),
+                "dynamic",
+            )])
+        })
     });
-    let store: Arc<dyn ModelsStore> =
-        Arc::new(RecordingStore { signals: storage_signals.clone(), write_started: write_started_tx, write_outcome: std::sync::Mutex::new(Some(write_outcome_tx)) });
-    let models = create_models(Some(CreateModelsOptions { models_store: Some(store), auth: Some(keyed_auth("key")) }));
+    let store: Arc<dyn ModelsStore> = Arc::new(RecordingStore {
+        signals: storage_signals.clone(),
+        write_started: write_started_tx,
+        write_outcome: std::sync::Mutex::new(Some(write_outcome_tx)),
+    });
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: Some(store),
+        auth: Some(keyed_auth("key")),
+    }));
     models.set_provider(refreshable_provider("dynamic", vec![], fetch));
 
     let caller = AbortController::new();
     let models_for_spawn = models.clone();
     let signal = Some(caller.signal());
     let pending = tokio::spawn(async move {
-        models_for_spawn.refresh(ModelsRefreshOptions { providers: Some(vec!["dynamic".into()]), signal, ..ModelsRefreshOptions::default() }).await
+        models_for_spawn
+            .refresh(ModelsRefreshOptions {
+                providers: Some(vec!["dynamic".into()]),
+                signal,
+                ..ModelsRefreshOptions::default()
+            })
+            .await
     });
 
     // The network-phase write parks on the signal it was handed, so the store waits can be shown
     // to be bound to the provider's refresh signal: aborting the refresh cancels the parked write
     // with the refresh's own reason and aborts the very signal the provider received.
-    write_started_rx.wait_for(|started| *started).await.expect("write parks");
+    write_started_rx
+        .wait_for(|started| *started)
+        .await
+        .expect("write parks");
     let signals = storage_signals.lock().expect("signals").clone();
     assert_eq!(signals.len(), 3, "{title}");
     assert!(signals.iter().all(Option::is_some), "{title}");
-    let provider_signal = provider_signal.lock().expect("signal").clone().expect("provider signal");
+    let provider_signal = provider_signal
+        .lock()
+        .expect("signal")
+        .clone()
+        .expect("provider signal");
     assert!(!provider_signal.aborted(), "{title}");
 
     let reason = AbortReason::new("Test", "refresh aborted");
     caller.abort(Some(reason.clone()));
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), write_outcome_rx).await.expect("write settles").expect("write outcome");
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), write_outcome_rx)
+        .await
+        .expect("write settles")
+        .expect("write outcome");
     assert_eq!(outcome, Err(reason), "{title}");
     assert!(provider_signal.aborted(), "{title}");
-    assert!(signals.iter().flatten().all(AbortSignal::aborted), "{title}");
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), pending).await.expect("refresh settles").expect("join");
+    assert!(
+        signals.iter().flatten().all(AbortSignal::aborted),
+        "{title}"
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), pending)
+        .await
+        .expect("refresh settles")
+        .expect("join");
     assert!(result.aborted, "{title}");
     assert_eq!(result.errors.len(), 0, "{title}");
 }
@@ -781,10 +1231,22 @@ async fn returns_aborted_state_without_reporting_cancellation_as_a_provider_erro
             Ok(())
         })
     });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(ambient_auth()) }));
-    models.set_provider(scripted_provider("dynamic", scripted_models(vec![]), Some(refresh)));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(ambient_auth()),
+    }));
+    models.set_provider(scripted_provider(
+        "dynamic",
+        scripted_models(vec![]),
+        Some(refresh),
+    ));
 
-    let result = models.refresh(ModelsRefreshOptions { signal: Some(controller.signal()), ..ModelsRefreshOptions::default() }).await;
+    let result = models
+        .refresh(ModelsRefreshOptions {
+            signal: Some(controller.signal()),
+            ..ModelsRefreshOptions::default()
+        })
+        .await;
 
     assert!(result.aborted, "{title}");
     assert_eq!(result.errors.len(), 0, "{title}");
@@ -814,18 +1276,36 @@ async fn stops_waiting_on_abort_when_a_provider_ignores_its_signal() {
             Ok(())
         })
     });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(ambient_auth()) }));
-    models.set_provider(scripted_provider("dynamic", scripted_models(vec![]), Some(refresh)));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(ambient_auth()),
+    }));
+    models.set_provider(scripted_provider(
+        "dynamic",
+        scripted_models(vec![]),
+        Some(refresh),
+    ));
 
     let models_for_spawn = models.clone();
     let refresh_signal = Some(controller.signal());
     let pending = tokio::spawn(async move {
-        models_for_spawn.refresh(ModelsRefreshOptions { signal: refresh_signal, ..ModelsRefreshOptions::default() }).await
+        models_for_spawn
+            .refresh(ModelsRefreshOptions {
+                signal: refresh_signal,
+                ..ModelsRefreshOptions::default()
+            })
+            .await
     });
-    started_rx.wait_for(|started| *started).await.expect("started sender alive");
+    started_rx
+        .wait_for(|started| *started)
+        .await
+        .expect("started sender alive");
     controller.abort(None);
 
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), pending).await.expect("refresh settles").expect("join");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), pending)
+        .await
+        .expect("refresh settles")
+        .expect("join");
     assert!(result.aborted, "{title}");
     assert_eq!(result.errors.len(), 0, "{title}");
     // The abandoned provider future is dropped, so its late completion can never reach the
@@ -858,28 +1338,67 @@ async fn rejects_late_publication_from_a_superseded_non_cooperative_provider() {
                 models: vec![test_model("dynamic", &format!("generation-{current}"))],
                 ..ModelsStoreEntry::default()
             };
-            context
-                .publisher()(ModelsPublication { persist: Some(Some(entry)), update: None })
-                .await
-                .expect("publish");
+            context.publisher()(ModelsPublication {
+                persist: Some(Some(entry)),
+                update: None,
+            })
+            .await
+            .expect("publish");
             Ok(())
         })
     });
-    let models = create_models(Some(CreateModelsOptions { models_store: Some(store.clone()), auth: Some(ambient_auth()) }));
-    models.set_provider(scripted_provider("dynamic", scripted_models(vec![]), Some(refresh)));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: Some(store.clone()),
+        auth: Some(ambient_auth()),
+    }));
+    models.set_provider(scripted_provider(
+        "dynamic",
+        scripted_models(vec![]),
+        Some(refresh),
+    ));
 
-    let first = models.refresh(ModelsRefreshOptions { providers: Some(vec!["dynamic".into()]), ..ModelsRefreshOptions::default() }).await;
+    let first = models
+        .refresh(ModelsRefreshOptions {
+            providers: Some(vec!["dynamic".into()]),
+            ..ModelsRefreshOptions::default()
+        })
+        .await;
     assert_eq!(first.errors.len(), 0, "{title}");
-    let second = models.refresh(ModelsRefreshOptions { providers: Some(vec!["dynamic".into()]), ..ModelsRefreshOptions::default() }).await;
+    let second = models
+        .refresh(ModelsRefreshOptions {
+            providers: Some(vec!["dynamic".into()]),
+            ..ModelsRefreshOptions::default()
+        })
+        .await;
     assert_eq!(second.errors.len(), 0, "{title}");
-    let persisted = store.read("dynamic", None).await.expect("read").expect("entry");
+    let persisted = store
+        .read("dynamic", None)
+        .await
+        .expect("read")
+        .expect("entry");
     assert_eq!(persisted.models[0].id, "generation-2", "{title}");
 
-    let publish = captured.lock().expect("captured").take().expect("captured publisher");
-    let stale = ModelsStoreEntry { models: vec![test_model("dynamic", "generation-1")], ..ModelsStoreEntry::default() };
-    let accepted = publish(ModelsPublication { persist: Some(Some(stale)), update: None }).await.expect("late publish");
+    let publish = captured
+        .lock()
+        .expect("captured")
+        .take()
+        .expect("captured publisher");
+    let stale = ModelsStoreEntry {
+        models: vec![test_model("dynamic", "generation-1")],
+        ..ModelsStoreEntry::default()
+    };
+    let accepted = publish(ModelsPublication {
+        persist: Some(Some(stale)),
+        update: None,
+    })
+    .await
+    .expect("late publish");
     assert!(!accepted, "{title}");
-    let persisted = store.read("dynamic", None).await.expect("read").expect("entry");
+    let persisted = store
+        .read("dynamic", None)
+        .await
+        .expect("read")
+        .expect("entry");
     assert_eq!(persisted.models[0].id, "generation-2", "{title}");
 }
 
@@ -893,9 +1412,23 @@ async fn rejects_late_publication_from_a_superseded_non_cooperative_provider() {
 // exercises, since `ModelsAuth::resolve`/`refresh_credential` is exactly the dispatch
 // `apply_auth` and the refresh path call — this is genuinely todo-5 scope, not todo 13's.
 
-type ResolveFn = Box<dyn Fn(&dyn Provider, &AuthResolutionOverrides) -> BoxFuture<'static, Result<Option<AuthResolution>, ModelsError>> + Send + Sync>;
-type RefreshCredentialFn =
-    Box<dyn Fn(&dyn Provider, Option<&Credential>, &AbortSignal) -> BoxFuture<'static, Result<Option<Credential>, ModelsError>> + Send + Sync>;
+type ResolveFn = Box<
+    dyn Fn(
+            &dyn Provider,
+            &AuthResolutionOverrides,
+        ) -> BoxFuture<'static, Result<Option<AuthResolution>, ModelsError>>
+        + Send
+        + Sync,
+>;
+type RefreshCredentialFn = Box<
+    dyn Fn(
+            &dyn Provider,
+            Option<&Credential>,
+            &AbortSignal,
+        ) -> BoxFuture<'static, Result<Option<Credential>, ModelsError>>
+        + Send
+        + Sync,
+>;
 
 struct CallbackAuth {
     resolve: ResolveFn,
@@ -903,24 +1436,39 @@ struct CallbackAuth {
 }
 
 impl ModelsAuth for CallbackAuth {
-    fn resolve<'a>(&'a self, provider: &'a dyn Provider, overrides: &'a AuthResolutionOverrides) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
+    fn resolve<'a>(
+        &'a self,
+        provider: &'a dyn Provider,
+        overrides: &'a AuthResolutionOverrides,
+    ) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
         (self.resolve)(provider, overrides)
     }
-    fn refresh_credential<'a>(&'a self, provider: &'a dyn Provider, stored: Option<&'a Credential>, signal: &'a AbortSignal) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>> {
+    fn refresh_credential<'a>(
+        &'a self,
+        provider: &'a dyn Provider,
+        stored: Option<&'a Credential>,
+        signal: &'a AbortSignal,
+    ) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>> {
         (self.refresh_credential)(provider, stored, signal)
     }
 }
 
 fn no_refresh_credential() -> RefreshCredentialFn {
-    Box::new(|_p: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| Box::pin(async { Ok(None) }))
+    Box::new(
+        |_p: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| Box::pin(async { Ok(None) }),
+    )
 }
 
 fn ambient_auth() -> Arc<dyn ModelsAuth> {
     Arc::new(CallbackAuth {
-        resolve: Box::new(|_p: &dyn Provider, _o: &AuthResolutionOverrides| Box::pin(async { Ok(Some(AuthResolution::default())) })),
-        refresh_credential: Box::new(|_p: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| {
-            Box::pin(async { Ok(Some(serde_json::json!({ "type": "api_key" }))) })
+        resolve: Box::new(|_p: &dyn Provider, _o: &AuthResolutionOverrides| {
+            Box::pin(async { Ok(Some(AuthResolution::default())) })
         }),
+        refresh_credential: Box::new(
+            |_p: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| {
+                Box::pin(async { Ok(Some(serde_json::json!({ "type": "api_key" }))) })
+            },
+        ),
     })
 }
 
@@ -935,20 +1483,43 @@ async fn passes_caller_signals_to_provider_auth_callbacks() {
             let signal = o.signal.clone().expect("signal");
             Box::pin(async move {
                 received.lock().expect("received").push(signal);
-                Ok(Some(AuthResolution { auth: ProviderAuthResult { api_key: Some("resolved".into()), ..Default::default() }, env: None }))
+                Ok(Some(AuthResolution {
+                    ambient: false,
+                    auth: ProviderAuthResult {
+                        api_key: Some("resolved".into()),
+                        ..Default::default()
+                    },
+                    env: None,
+                }))
             }) as BoxFuture<'static, Result<Option<AuthResolution>, ModelsError>>
         }),
         refresh_credential: no_refresh_credential(),
     });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(auth) }));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(auth),
+    }));
     models.set_provider(plain_provider("p1", vec![]));
 
     let controller = AbortController::new();
-    models.get_auth("p1", &AuthResolutionOverrides { signal: Some(controller.signal()), ..Default::default() }).await.expect("auth");
+    models
+        .get_auth(
+            "p1",
+            &AuthResolutionOverrides {
+                signal: Some(controller.signal()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("auth");
 
     let received = received.lock().expect("received");
     assert_eq!(received.len(), 1, "{title}");
-    assert_eq!(received[0].reason(), controller.signal().reason(), "{title}");
+    assert_eq!(
+        received[0].reason(),
+        controller.signal().reason(),
+        "{title}"
+    );
 }
 
 #[tokio::test]
@@ -967,22 +1538,48 @@ async fn stops_waiting_for_non_cooperative_auth_callbacks() {
                 start_tx.send_replace(true);
                 let mut rx = finish_rx.lock().expect("rx").clone();
                 let _ = rx.wait_for(|open| *open).await;
-                Ok(Some(AuthResolution { auth: ProviderAuthResult { api_key: Some("key".into()), ..Default::default() }, env: None }))
+                Ok(Some(AuthResolution {
+                    ambient: false,
+                    auth: ProviderAuthResult {
+                        api_key: Some("key".into()),
+                        ..Default::default()
+                    },
+                    env: None,
+                }))
             }) as BoxFuture<'static, Result<Option<AuthResolution>, ModelsError>>
         }),
         refresh_credential: no_refresh_credential(),
     });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(auth) }));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(auth),
+    }));
     models.set_provider(plain_provider("p1", vec![]));
 
     let auth_controller = AbortController::new();
     let models_for_spawn = models.clone();
     let signal = Some(auth_controller.signal());
-    let pending = tokio::spawn(async move { models_for_spawn.get_auth("p1", &AuthResolutionOverrides { signal, ..Default::default() }).await });
-    start_rx.wait_for(|started| *started).await.expect("resolve started");
+    let pending = tokio::spawn(async move {
+        models_for_spawn
+            .get_auth(
+                "p1",
+                &AuthResolutionOverrides {
+                    signal,
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    start_rx
+        .wait_for(|started| *started)
+        .await
+        .expect("resolve started");
     auth_controller.abort(None);
 
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), pending).await.expect("settles").expect("join");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), pending)
+        .await
+        .expect("settles")
+        .expect("join");
     assert!(result.is_err(), "{title}");
 
     finish_tx.send_replace(true);
@@ -992,13 +1589,21 @@ async fn stops_waiting_for_non_cooperative_auth_callbacks() {
 async fn wraps_api_key_auth_failures_in_models_error() {
     let title = "wraps api-key auth failures in ModelsError";
     let auth: Arc<dyn ModelsAuth> = Arc::new(CallbackAuth {
-        resolve: Box::new(|_p: &dyn Provider, _o: &AuthResolutionOverrides| Box::pin(async { Err(ModelsError::new(ModelsErrorCode::Auth, "nope")) })),
+        resolve: Box::new(|_p: &dyn Provider, _o: &AuthResolutionOverrides| {
+            Box::pin(async { Err(ModelsError::new(ModelsErrorCode::Auth, "nope")) })
+        }),
         refresh_credential: no_refresh_credential(),
     });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(auth) }));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(auth),
+    }));
     models.set_provider(plain_provider("p1", vec![]));
 
-    let error = models.get_auth("p1", &AuthResolutionOverrides::default()).await.expect_err("auth fails");
+    let error = models
+        .get_auth("p1", &AuthResolutionOverrides::default())
+        .await
+        .expect_err("auth fails");
     assert_eq!(error.code, ModelsErrorCode::Auth, "{title}");
 }
 
@@ -1010,10 +1615,19 @@ async fn uses_explicit_request_api_key_and_env_during_provider_auth_resolution()
             let account = o.env.as_ref().and_then(|e| e.get("ACCOUNT_ID").cloned());
             let key = o.api_key.clone();
             Box::pin(async move {
-                let (Some(account), Some(key)) = (account, key) else { return Ok(None) };
-                let env: ProviderEnv = [("ACCOUNT_ID".to_owned(), account.clone())].into_iter().collect();
+                let (Some(account), Some(key)) = (account, key) else {
+                    return Ok(None);
+                };
+                let env: ProviderEnv = [("ACCOUNT_ID".to_owned(), account.clone())]
+                    .into_iter()
+                    .collect();
                 Ok(Some(AuthResolution {
-                    auth: ProviderAuthResult { api_key: Some(key), base_url: Some(format!("https://example.test/{account}")), ..Default::default() },
+                    ambient: false,
+                    auth: ProviderAuthResult {
+                        api_key: Some(key),
+                        base_url: Some(format!("https://example.test/{account}")),
+                        ..Default::default()
+                    },
                     env: Some(env),
                 }))
             }) as BoxFuture<'static, Result<Option<AuthResolution>, ModelsError>>
@@ -1023,8 +1637,13 @@ async fn uses_explicit_request_api_key_and_env_during_provider_auth_resolution()
     let base = builtin("anthropic", "claude-opus-4-8");
     let model = with_provider(&base, "p1");
     let calls: RecordedCalls = Arc::new(Mutex::new(Vec::new()));
-    let echo = Arc::new(RecordingEcho { calls: calls.clone() });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(auth) }));
+    let echo = Arc::new(RecordingEcho {
+        calls: calls.clone(),
+    });
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(auth),
+    }));
     models.set_provider(create_provider(CreateProviderOptions {
         id: "p1".into(),
         name: None,
@@ -1036,18 +1655,41 @@ async fn uses_explicit_request_api_key_and_env_during_provider_auth_resolution()
         restore_models: None,
         filter_models: None,
         api: ProviderApi::Single(echo),
-    }));
+        images: IndexMap::new(),
+    }).expect("chat implementation"));
 
     let mut options = SimpleStreamOptions::default();
     options.stream.request.api_key = Some("explicit-key".into());
-    options.stream.request.env = Some([("ACCOUNT_ID".to_owned(), "acct".to_owned())].into_iter().collect());
-    models.complete_simple(&model, &Context::default(), Some(options), ModelsRequestTransforms::default()).await.expect("result");
+    options.stream.request.env = Some(
+        [("ACCOUNT_ID".to_owned(), "acct".to_owned())]
+            .into_iter()
+            .collect(),
+    );
+    models
+        .complete_simple(
+            &model,
+            &Context::default(),
+            Some(options),
+            ModelsRequestTransforms::default(),
+        )
+        .await
+        .expect("result");
 
     let calls = calls.lock().expect("calls");
     assert_eq!(calls[0].0.base_url, "https://example.test/acct", "{title}");
-    assert_eq!(calls[0].1.as_ref().and_then(|o| o.request.api_key.clone()), Some("explicit-key".into()), "{title}");
-    let expected_env: ProviderEnv = [("ACCOUNT_ID".to_owned(), "acct".to_owned())].into_iter().collect();
-    assert_eq!(calls[0].1.as_ref().and_then(|o| o.request.env.clone()), Some(expected_env), "{title}");
+    assert_eq!(
+        calls[0].1.as_ref().and_then(|o| o.request.api_key.clone()),
+        Some("explicit-key".into()),
+        "{title}"
+    );
+    let expected_env: ProviderEnv = [("ACCOUNT_ID".to_owned(), "acct".to_owned())]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        calls[0].1.as_ref().and_then(|o| o.request.env.clone()),
+        Some(expected_env),
+        "{title}"
+    );
 }
 
 type RecordedCalls = Arc<Mutex<Vec<(Model, Option<StreamOptions>)>>>;
@@ -1057,18 +1699,34 @@ struct RecordingEcho {
 }
 
 impl ProviderStreams for RecordingEcho {
-    fn stream(&self, model: &Model, _context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
-        self.calls.lock().expect("calls").push((model.clone(), options.clone()));
+    fn stream(
+        &self,
+        model: &Model,
+        _context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push((model.clone(), options.clone()));
         let stream = AssistantMessageEventStream::assistant();
         let mut message = crate::utils::lazy::setup_error_message(model, "");
         message.stop_reason = StopReason::Stop;
         message.error_message = None;
         message.response_id = options.and_then(|o| o.request.api_key);
-        stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message });
+        stream.push(AssistantMessageEvent::Done {
+            reason: DoneReason::Stop,
+            message,
+        });
         stream
     }
 
-    fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+    fn stream_simple(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
         self.stream(model, context, options.map(|o| o.stream))
     }
 }
@@ -1080,14 +1738,22 @@ async fn merges_resolved_auth_into_stream_options_explicit_options_win_per_field
         resolve: Box::new(|_p: &dyn Provider, _o: &AuthResolutionOverrides| {
             Box::pin(async {
                 let headers: ProviderHeaders = [
-                    ("Authorization".to_owned(), Some("Bearer resolved-key".to_owned())),
+                    (
+                        "Authorization".to_owned(),
+                        Some("Bearer resolved-key".to_owned()),
+                    ),
                     ("x-a".to_owned(), Some("auth".to_owned())),
                     ("x-b".to_owned(), Some("auth".to_owned())),
                 ]
                 .into_iter()
                 .collect();
                 Ok(Some(AuthResolution {
-                    auth: ProviderAuthResult { api_key: Some("resolved-key".into()), headers: Some(headers), base_url: Some("https://auth.test/v1".into()) },
+                    ambient: false,
+                    auth: ProviderAuthResult {
+                        api_key: Some("resolved-key".into()),
+                        headers: Some(headers),
+                        base_url: Some("https://auth.test/v1".into()),
+                    },
                     env: None,
                 }))
             }) as BoxFuture<'static, Result<Option<AuthResolution>, ModelsError>>
@@ -1097,8 +1763,13 @@ async fn merges_resolved_auth_into_stream_options_explicit_options_win_per_field
     let base = builtin("anthropic", "claude-opus-4-8");
     let model = with_provider(&base, "p1");
     let calls: RecordedCalls = Arc::new(Mutex::new(Vec::new()));
-    let echo = Arc::new(RecordingEcho { calls: calls.clone() });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(auth) }));
+    let echo = Arc::new(RecordingEcho {
+        calls: calls.clone(),
+    });
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(auth),
+    }));
     models.set_provider(create_provider(CreateProviderOptions {
         id: "p1".into(),
         name: None,
@@ -1110,34 +1781,75 @@ async fn merges_resolved_auth_into_stream_options_explicit_options_win_per_field
         restore_models: None,
         filter_models: None,
         api: ProviderApi::Single(echo),
-    }));
+        images: IndexMap::new(),
+    }).expect("chat implementation"));
 
     let mut options = SimpleStreamOptions::default();
     options.stream.request.api_key = Some("explicit-key".into());
-    options.stream.request.headers =
-        Some([("authorization".to_owned(), Some("Explicit token".to_owned())), ("x-b".to_owned(), Some("explicit".to_owned()))].into_iter().collect());
-    let result = models.complete_simple(&model, &Context::default(), Some(options), ModelsRequestTransforms::default()).await.expect("result");
+    options.stream.request.headers = Some(
+        [
+            (
+                "authorization".to_owned(),
+                Some("Explicit token".to_owned()),
+            ),
+            ("x-b".to_owned(), Some("explicit".to_owned())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let result = models
+        .complete_simple(
+            &model,
+            &Context::default(),
+            Some(options),
+            ModelsRequestTransforms::default(),
+        )
+        .await
+        .expect("result");
     assert_eq!(result.stop_reason, StopReason::Stop, "{title}");
     {
         let calls = calls.lock().expect("calls");
         assert_eq!(calls.len(), 1, "{title}");
         let expected_headers: ProviderHeaders = [
-            ("authorization".to_owned(), Some("Explicit token".to_owned())),
+            (
+                "authorization".to_owned(),
+                Some("Explicit token".to_owned()),
+            ),
             ("x-a".to_owned(), Some("auth".to_owned())),
             ("x-b".to_owned(), Some("explicit".to_owned())),
         ]
         .into_iter()
         .collect();
-        assert_eq!(calls[0].1.as_ref().and_then(|o| o.request.api_key.clone()), Some("explicit-key".into()), "{title}");
-        assert_eq!(calls[0].1.as_ref().and_then(|o| o.request.headers.clone()), Some(expected_headers), "{title}");
+        assert_eq!(
+            calls[0].1.as_ref().and_then(|o| o.request.api_key.clone()),
+            Some("explicit-key".into()),
+            "{title}"
+        );
+        assert_eq!(
+            calls[0].1.as_ref().and_then(|o| o.request.headers.clone()),
+            Some(expected_headers),
+            "{title}"
+        );
         assert_eq!(calls[0].0.base_url, "https://auth.test/v1", "{title}");
     }
 
     // without explicit options, resolved auth applies
-    let result2 = models.complete_simple(&model, &Context::default(), None, ModelsRequestTransforms::default()).await.expect("result");
+    let result2 = models
+        .complete_simple(
+            &model,
+            &Context::default(),
+            None,
+            ModelsRequestTransforms::default(),
+        )
+        .await
+        .expect("result");
     assert_eq!(result2.stop_reason, StopReason::Stop, "{title}");
     let calls = calls.lock().expect("calls");
-    assert_eq!(calls[1].1.as_ref().and_then(|o| o.request.api_key.clone()), Some("resolved-key".into()), "{title}");
+    assert_eq!(
+        calls[1].1.as_ref().and_then(|o| o.request.api_key.clone()),
+        Some("resolved-key".into()),
+        "{title}"
+    );
 }
 
 #[tokio::test]
@@ -1146,17 +1858,37 @@ async fn adds_model_headers_only_for_model_auth_and_transforms_assembled_headers
     let auth: Arc<dyn ModelsAuth> = Arc::new(CallbackAuth {
         resolve: Box::new(|_p: &dyn Provider, o: &AuthResolutionOverrides| {
             let key = o.api_key.clone();
-            Box::pin(async move { Ok(key.map(|key| AuthResolution { auth: ProviderAuthResult { api_key: Some(key), ..Default::default() }, env: None })) })
-                as BoxFuture<'static, Result<Option<AuthResolution>, ModelsError>>
+            Box::pin(async move {
+                Ok(key.map(|key| AuthResolution {
+                    ambient: false,
+                    auth: ProviderAuthResult {
+                        api_key: Some(key),
+                        ..Default::default()
+                    },
+                    env: None,
+                }))
+            }) as BoxFuture<'static, Result<Option<AuthResolution>, ModelsError>>
         }),
         refresh_credential: no_refresh_credential(),
     });
     let base = builtin("anthropic", "claude-opus-4-8");
     let mut model = with_provider(&base, "p1");
-    model.headers = Some([("x-model".to_owned(), "model".to_owned()), ("x-shared".to_owned(), "model".to_owned())].into_iter().collect());
+    model.headers = Some(
+        [
+            ("x-model".to_owned(), "model".to_owned()),
+            ("x-shared".to_owned(), "model".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+    );
     let calls: RecordedCalls = Arc::new(Mutex::new(Vec::new()));
-    let echo = Arc::new(RecordingEcho { calls: calls.clone() });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(auth) }));
+    let echo = Arc::new(RecordingEcho {
+        calls: calls.clone(),
+    });
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(auth),
+    }));
     models.set_provider(create_provider(CreateProviderOptions {
         id: "p1".into(),
         name: None,
@@ -1168,13 +1900,33 @@ async fn adds_model_headers_only_for_model_auth_and_transforms_assembled_headers
         restore_models: None,
         filter_models: None,
         api: ProviderApi::Single(echo),
-    }));
+        images: IndexMap::new(),
+    }).expect("chat implementation"));
 
-    let plain_overrides = AuthResolutionOverrides { api_key: Some("key".into()), ..Default::default() };
-    assert_eq!(models.get_auth("p1", &plain_overrides).await.expect("auth").and_then(|r| r.auth.headers), None, "{title}");
-    let model_auth = models.get_auth_for_model(&model, &plain_overrides).await.expect("auth").expect("resolution");
-    let model_headers: ProviderHeaders =
-        [("x-model".to_owned(), Some("model".to_owned())), ("x-shared".to_owned(), Some("model".to_owned()))].into_iter().collect();
+    let plain_overrides = AuthResolutionOverrides {
+        api_key: Some("key".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        models
+            .get_auth("p1", &plain_overrides)
+            .await
+            .expect("auth")
+            .and_then(|r| r.auth.headers),
+        None,
+        "{title}"
+    );
+    let model_auth = models
+        .get_auth_for_model(&model, &plain_overrides)
+        .await
+        .expect("auth")
+        .expect("resolution");
+    let model_headers: ProviderHeaders = [
+        ("x-model".to_owned(), Some("model".to_owned())),
+        ("x-shared".to_owned(), Some("model".to_owned())),
+    ]
+    .into_iter()
+    .collect();
     assert_eq!(model_auth.auth.headers, Some(model_headers), "{title}");
 
     let transforms_ran = Arc::new(AtomicUsize::new(0));
@@ -1189,7 +1941,10 @@ async fn adds_model_headers_only_for_model_auth_and_transforms_assembled_headers
             ]
             .into_iter()
             .collect();
-            assert_eq!(headers, expected, "transform receives assembled headers exactly once");
+            assert_eq!(
+                headers, expected,
+                "transform receives assembled headers exactly once"
+            );
             Box::pin(async move {
                 let mut merged = headers;
                 merged.insert("x-transformed".to_owned(), Some("yes".to_owned()));
@@ -1199,9 +1954,18 @@ async fn adds_model_headers_only_for_model_auth_and_transforms_assembled_headers
     };
     let mut options = SimpleStreamOptions::default();
     options.stream.request.api_key = Some("key".into());
-    options.stream.request.headers =
-        Some([("x-explicit".to_owned(), Some("explicit".to_owned())), ("X-Shared".to_owned(), Some("explicit".to_owned()))].into_iter().collect());
-    models.complete_simple(&model, &Context::default(), Some(options), transforms).await.expect("result");
+    options.stream.request.headers = Some(
+        [
+            ("x-explicit".to_owned(), Some("explicit".to_owned())),
+            ("X-Shared".to_owned(), Some("explicit".to_owned())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    models
+        .complete_simple(&model, &Context::default(), Some(options), transforms)
+        .await
+        .expect("result");
 
     assert_eq!(transforms_ran.load(Ordering::SeqCst), 1, "{title}");
     let calls = calls.lock().expect("calls");
@@ -1213,7 +1977,11 @@ async fn adds_model_headers_only_for_model_auth_and_transforms_assembled_headers
     ]
     .into_iter()
     .collect();
-    assert_eq!(calls[0].1.as_ref().and_then(|o| o.request.headers.clone()), Some(expected_headers), "{title}");
+    assert_eq!(
+        calls[0].1.as_ref().and_then(|o| o.request.headers.clone()),
+        Some(expected_headers),
+        "{title}"
+    );
 }
 
 #[tokio::test]
@@ -1222,21 +1990,43 @@ async fn produces_an_error_stream_for_unknown_providers_instead_of_throwing() {
     let models = create_models(None);
     let base = builtin("anthropic", "claude-opus-4-8");
     let ghost = with_provider(&base, "ghost");
-    let result = models.complete_simple(&ghost, &Context::default(), None, ModelsRequestTransforms::default()).await.expect("result");
+    let result = models
+        .complete_simple(
+            &ghost,
+            &Context::default(),
+            None,
+            ModelsRequestTransforms::default(),
+        )
+        .await
+        .expect("result");
     assert_eq!(result.stop_reason, StopReason::Error, "{title}");
-    assert!(result.error_message.as_deref().is_some_and(|m| m.contains("Unknown provider: ghost")), "{title}");
+    assert!(
+        result
+            .error_message
+            .as_deref()
+            .is_some_and(|m| m.contains("Unknown provider: ghost")),
+        "{title}"
+    );
 }
 
 #[tokio::test]
 async fn streams_through_the_provider() {
     let title = "streams through the provider";
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(ambient_auth()) }));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(ambient_auth()),
+    }));
     let base = builtin("anthropic", "claude-opus-4-8");
     let model = with_provider(&base, "p1");
     models.set_provider(plain_provider("p1", vec![model.clone()]));
 
     let mut events = Vec::new();
-    let stream = models.stream_simple(&model, &Context::default(), None, ModelsRequestTransforms::default());
+    let stream = models.stream_simple(
+        &model,
+        &Context::default(),
+        None,
+        ModelsRequestTransforms::default(),
+    );
     loop {
         match stream.next().await {
             Ok(Some(event)) => events.push(match event {
@@ -1258,6 +2048,7 @@ async fn applies_request_wide_pricing_tiers_above_the_configured_input_threshold
     let title = "applies request-wide pricing tiers above the configured input threshold";
     let mut model = with_provider(&builtin("openai", "gpt-6-astra"), "openai");
     model.cost = ModelCost {
+        effective_rates: None,
         input: 5.0,
         output: 30.0,
         cache_read: 0.5,
@@ -1302,59 +2093,101 @@ async fn restores_cached_models_before_waiting_for_network_auth() {
     let mut cached = with_provider(&builtin("openai", "gpt-6-astra"), "dynamic");
     cached.id = "cached".into();
     store
-        .write("dynamic", &ModelsStoreEntry { models: vec![cached], ..ModelsStoreEntry::default() }, None)
+        .write(
+            "dynamic",
+            &ModelsStoreEntry {
+                models: vec![cached],
+                ..ModelsStoreEntry::default()
+            },
+            None,
+        )
         .await
         .expect("seed store");
 
     let (auth_started_tx, mut auth_started_rx) = tokio::sync::watch::channel(false);
     let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
     let auth: Arc<dyn ModelsAuth> = Arc::new(CallbackAuth {
-        resolve: Box::new(|_p: &dyn Provider, _o: &AuthResolutionOverrides| Box::pin(async { Ok(Some(AuthResolution::default())) })),
-        refresh_credential: Box::new(move |_p: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| {
-            auth_started_tx.send_replace(true);
-            let mut gate_rx = gate_rx.clone();
-            Box::pin(async move {
-                let _ = gate_rx.wait_for(|open| *open).await;
-                Ok(Some(serde_json::json!({ "type": "api_key", "key": "key" })))
-            }) as BoxFuture<'static, Result<Option<Credential>, ModelsError>>
+        resolve: Box::new(|_p: &dyn Provider, _o: &AuthResolutionOverrides| {
+            Box::pin(async { Ok(Some(AuthResolution::default())) })
         }),
+        refresh_credential: Box::new(
+            move |_p: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| {
+                auth_started_tx.send_replace(true);
+                let mut gate_rx = gate_rx.clone();
+                Box::pin(async move {
+                    let _ = gate_rx.wait_for(|open| *open).await;
+                    Ok(Some(serde_json::json!({ "type": "api_key", "key": "key" })))
+                }) as BoxFuture<'static, Result<Option<Credential>, ModelsError>>
+            },
+        ),
     });
-    let fetch: FetchModels =
-        Arc::new(|_ctx| Box::pin(async { Err(ModelsError::new(ModelsErrorCode::ModelSource, "must not fetch")) }));
-    let models = create_models(Some(CreateModelsOptions { models_store: Some(store), auth: Some(auth) }));
+    let fetch: FetchModels = Arc::new(|_ctx| {
+        Box::pin(async {
+            Err(ModelsError::new(
+                ModelsErrorCode::ModelSource,
+                "must not fetch",
+            ))
+        })
+    });
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: Some(store),
+        auth: Some(auth),
+    }));
     models.set_provider(refreshable_provider("dynamic", vec![], fetch));
 
     let caller = AbortController::new();
     let models_for_spawn = models.clone();
     let signal = Some(caller.signal());
     let pending = tokio::spawn(async move {
-        models_for_spawn.refresh(ModelsRefreshOptions { providers: Some(vec!["dynamic".into()]), signal, ..ModelsRefreshOptions::default() }).await
+        models_for_spawn
+            .refresh(ModelsRefreshOptions {
+                providers: Some(vec!["dynamic".into()]),
+                signal,
+                ..ModelsRefreshOptions::default()
+            })
+            .await
     });
-    auth_started_rx.wait_for(|started| *started).await.expect("auth started");
+    auth_started_rx
+        .wait_for(|started| *started)
+        .await
+        .expect("auth started");
 
     assert!(models.get_model("dynamic", "cached").is_some(), "{title}");
     caller.abort(None);
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), pending).await.expect("refresh settles").expect("join");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), pending)
+        .await
+        .expect("refresh settles")
+        .expect("join");
     assert!(result.aborted, "{title}");
     assert_eq!(result.errors.len(), 0, "{title}");
     gate_tx.send_replace(true);
 }
 
 #[tokio::test]
-async fn passes_effective_api_key_credentials_and_refresh_options_while_skipping_unconfigured_providers() {
+async fn passes_effective_api_key_credentials_and_refresh_options_while_skipping_unconfigured_providers()
+ {
     let title = "passes effective API-key credentials and refresh options while skipping unconfigured providers";
     let effective: Arc<Mutex<Option<Credential>>> = Arc::new(Mutex::new(None));
     let forced: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
     let unconfigured_refreshes = Arc::new(AtomicUsize::new(0));
     let auth: Arc<dyn ModelsAuth> = Arc::new(CallbackAuth {
-        resolve: Box::new(|_p: &dyn Provider, _o: &AuthResolutionOverrides| Box::pin(async { Ok(Some(AuthResolution::default())) })),
-        refresh_credential: Box::new(|provider: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| {
-            let configured = provider.id() == "configured";
-            Box::pin(async move { Ok(configured.then(|| serde_json::json!({ "type": "api_key", "key": "ambient-key" }))) })
-                as BoxFuture<'static, Result<Option<Credential>, ModelsError>>
+        resolve: Box::new(|_p: &dyn Provider, _o: &AuthResolutionOverrides| {
+            Box::pin(async { Ok(Some(AuthResolution::default())) })
         }),
+        refresh_credential: Box::new(
+            |provider: &dyn Provider, _s: Option<&Credential>, _g: &AbortSignal| {
+                let configured = provider.id() == "configured";
+                Box::pin(async move {
+                    Ok(configured
+                        .then(|| serde_json::json!({ "type": "api_key", "key": "ambient-key" })))
+                }) as BoxFuture<'static, Result<Option<Credential>, ModelsError>>
+            },
+        ),
     });
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(auth) }));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(auth),
+    }));
 
     let (seen_credential, seen_force) = (effective.clone(), forced.clone());
     let fetch: FetchModels = Arc::new(move |ctx: &RefreshModelsContext| {
@@ -1375,9 +2208,18 @@ async fn passes_effective_api_key_credentials_and_refresh_options_while_skipping
     });
     models.set_provider(refreshable_provider("unconfigured", vec![], fetch));
 
-    let result = models.refresh(ModelsRefreshOptions { force: Some(true), ..ModelsRefreshOptions::default() }).await;
+    let result = models
+        .refresh(ModelsRefreshOptions {
+            force: Some(true),
+            ..ModelsRefreshOptions::default()
+        })
+        .await;
     assert_eq!(result.errors.len(), 0, "{title}");
-    let credential = effective.lock().expect("credential").clone().expect("credential passed to the network phase");
+    let credential = effective
+        .lock()
+        .expect("credential")
+        .clone()
+        .expect("credential passed to the network phase");
     assert_eq!(credential["type"], "api_key", "{title}");
     assert_eq!(credential["key"], "ambient-key", "{title}");
     assert_eq!(*forced.lock().expect("force"), Some(true), "{title}");
@@ -1524,19 +2366,25 @@ const CATALOG_CASES: &[CatalogCase] = &[
         title: "includes xhigh and max for OpenAI gpt-5.6-sol models",
         provider: "openai",
         ids: &["gpt-5.6-sol"],
-        checks: &[Check::Exact(&["off", "minimal", "low", "medium", "high", "xhigh", "max"])],
+        checks: &[Check::Exact(&[
+            "off", "minimal", "low", "medium", "high", "xhigh", "max",
+        ])],
     },
     CatalogCase {
         title: "includes xhigh and max for OpenAI gpt-5.6-terra models",
         provider: "openai",
         ids: &["gpt-5.6-terra"],
-        checks: &[Check::Exact(&["off", "minimal", "low", "medium", "high", "xhigh", "max"])],
+        checks: &[Check::Exact(&[
+            "off", "minimal", "low", "medium", "high", "xhigh", "max",
+        ])],
     },
     CatalogCase {
         title: "includes xhigh and max for OpenAI gpt-5.6-luna models",
         provider: "openai",
         ids: &["gpt-5.6-luna"],
-        checks: &[Check::Exact(&["off", "minimal", "low", "medium", "high", "xhigh", "max"])],
+        checks: &[Check::Exact(&[
+            "off", "minimal", "low", "medium", "high", "xhigh", "max",
+        ])],
     },
     CatalogCase {
         title: "includes only medium/high/xhigh for OpenAI GPT-5.5 Pro",
@@ -1649,17 +2497,41 @@ fn delegates_extended_tier_precedence_to_the_exported_capability_predicates() {
     // exported predicates rather than a separate model-id check. Rust's static analogue is that
     // `get_supported_thinking_levels` routes xhigh/max through `supports_xhigh`/`supports_max`,
     // which this cross-check observes for both mapped and map-less models.
-    for (provider, id) in [("anthropic", "claude-opus-4-8"), ("openai", "gpt-6-astra"), ("openai", "gpt-5.5-pro"), ("xai", "grok-4.6")] {
+    for (provider, id) in [
+        ("anthropic", "claude-opus-4-8"),
+        ("openai", "gpt-6-astra"),
+        ("openai", "gpt-5.5-pro"),
+        ("xai", "grok-4.6"),
+    ] {
         let model = builtin(provider, id);
         let reported = get_supported_thinking_levels(&model);
-        assert_eq!(reported.contains(&L::Xhigh), supports_xhigh(&model), "{title} ({provider}/{id})");
-        assert_eq!(reported.contains(&L::Max), supports_max(&model), "{title} ({provider}/{id})");
+        assert_eq!(
+            reported.contains(&L::Xhigh),
+            supports_xhigh(&model),
+            "{title} ({provider}/{id})"
+        );
+        assert_eq!(
+            reported.contains(&L::Max),
+            supports_max(&model),
+            "{title} ({provider}/{id})"
+        );
     }
-    for (api, id) in [("openai-responses", "gpt-5.6-sol"), ("anthropic-messages", "gpt-5.6-terra")] {
+    for (api, id) in [
+        ("openai-responses", "gpt-5.6-sol"),
+        ("anthropic-messages", "gpt-5.6-terra"),
+    ] {
         let model = mapless_model(api, id);
         let reported = get_supported_thinking_levels(&model);
-        assert_eq!(reported.contains(&L::Xhigh), supports_xhigh(&model), "{title} ({api}/{id})");
-        assert_eq!(reported.contains(&L::Max), supports_max(&model), "{title} ({api}/{id})");
+        assert_eq!(
+            reported.contains(&L::Xhigh),
+            supports_xhigh(&model),
+            "{title} ({api}/{id})"
+        );
+        assert_eq!(
+            reported.contains(&L::Max),
+            supports_max(&model),
+            "{title} ({api}/{id})"
+        );
     }
 }
 
@@ -2102,13 +2974,27 @@ fn supports_xhigh_and_supports_max_match_senpi_for_map_less_models() {
     for case in MAPLESS_CASES {
         let mut model = mapless_model(case.api, case.id);
         model.reasoning = case.reasoning;
-        model.thinking_level_map =
-            case.map.map(|entries| entries.iter().map(|(name, value)| (level(name), value.map(str::to_owned))).collect());
+        model.thinking_level_map = case.map.map(|entries| {
+            entries
+                .iter()
+                .map(|(name, value)| (level(name), value.map(str::to_owned)))
+                .collect()
+        });
         if let Some(expected) = case.xhigh {
-            assert_eq!(supports_xhigh(&model), expected, "{}: supportsXhigh", case.title);
+            assert_eq!(
+                supports_xhigh(&model),
+                expected,
+                "{}: supportsXhigh",
+                case.title
+            );
         }
         if let Some(expected) = case.max {
-            assert_eq!(supports_max(&model), expected, "{}: supportsMax", case.title);
+            assert_eq!(
+                supports_max(&model),
+                expected,
+                "{}: supportsMax",
+                case.title
+            );
         }
         assert_levels(case.title, &model, case.checks);
     }
@@ -2122,7 +3008,11 @@ fn supports_xhigh_and_supports_max_match_senpi_for_map_less_models() {
 fn is_opt_in_for_ordinary_reasoning_models() {
     let title = "is opt-in for ordinary reasoning models";
     let model = mapless_model("openai-completions", "ordinary-reasoning");
-    assert_eq!(get_supported_thinking_levels(&model), levels(&["off", "minimal", "low", "medium", "high"]), "{title}");
+    assert_eq!(
+        get_supported_thinking_levels(&model),
+        levels(&["off", "minimal", "low", "medium", "high"]),
+        "{title}"
+    );
     assert_eq!(clamp_thinking_level(&model, L::Max), L::High, "{title}");
 }
 
@@ -2130,13 +3020,29 @@ fn is_opt_in_for_ordinary_reasoning_models() {
 fn supports_a_hole_between_high_and_max() {
     let title = "supports a hole between high and max";
     let mut model = mapless_model("openai-completions", "high-and-max");
-    model.thinking_level_map = Some([(L::Xhigh, None), (L::Max, Some("max".to_owned()))].into_iter().collect());
-    assert_eq!(get_supported_thinking_levels(&model), levels(&["off", "minimal", "low", "medium", "high", "max"]), "{title}");
+    model.thinking_level_map = Some(
+        [(L::Xhigh, None), (L::Max, Some("max".to_owned()))]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(
+        get_supported_thinking_levels(&model),
+        levels(&["off", "minimal", "low", "medium", "high", "max"]),
+        "{title}"
+    );
     assert_eq!(clamp_thinking_level(&model, L::Xhigh), L::Max, "{title}");
 }
 
 /// The `(model, handle, options)` triples a recording provider was asked to cancel.
-type CancelCalls = Arc<Mutex<Vec<(Model, DeferredHandle, Option<crate::types::DeferredCancelOptions>)>>>;
+type CancelCalls = Arc<
+    Mutex<
+        Vec<(
+            Model,
+            DeferredHandle,
+            Option<crate::types::DeferredCancelOptions>,
+        )>,
+    >,
+>;
 
 /// A provider streams that records the `(model, handle, options)` it was asked to cancel, so the
 /// `Models.cancelDeferred` dispatch (provider resolution + `applyAuth` + forward) is observable.
@@ -2145,16 +3051,29 @@ struct CancelRecorder {
 }
 
 impl ProviderStreams for CancelRecorder {
-    fn stream(&self, model: &Model, _context: &Context, _options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        _context: &Context,
+        _options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         let stream = AssistantMessageEventStream::assistant();
         let mut message = crate::utils::lazy::setup_error_message(model, "");
         message.stop_reason = StopReason::Stop;
         message.error_message = None;
-        stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message: message.clone() });
+        stream.push(AssistantMessageEvent::Done {
+            reason: DoneReason::Stop,
+            message: message.clone(),
+        });
         stream
     }
 
-    fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+    fn stream_simple(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
         self.stream(model, context, options.map(|options| options.stream))
     }
 
@@ -2178,7 +3097,8 @@ impl ProviderStreams for CancelRecorder {
 
 #[tokio::test]
 async fn cancel_deferred_resolves_the_provider_and_rejects_unknown_or_incapable_providers() {
-    let title = "Models.cancelDeferred resolves the provider and rejects unknown or incapable providers";
+    let title =
+        "Models.cancelDeferred resolves the provider and rejects unknown or incapable providers";
     let base = builtin("anthropic", "claude-opus-4-8");
     let model = with_provider(&base, "cancel-target");
     let handle = DeferredHandle {
@@ -2192,7 +3112,10 @@ async fn cancel_deferred_resolves_the_provider_and_rejects_unknown_or_incapable_
     };
 
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(ambient_auth()) }));
+    let models = create_models(Some(CreateModelsOptions {
+        models_store: None,
+        auth: Some(ambient_auth()),
+    }));
     models.set_provider(create_provider(CreateProviderOptions {
         id: "cancel-target".into(),
         name: None,
@@ -2203,22 +3126,57 @@ async fn cancel_deferred_resolves_the_provider_and_rejects_unknown_or_incapable_
         fetch_models: None,
         restore_models: None,
         filter_models: None,
-        api: ProviderApi::Single(Arc::new(CancelRecorder { calls: calls.clone() })),
-    }));
+        api: ProviderApi::Single(Arc::new(CancelRecorder {
+            calls: calls.clone(),
+        })),
+        images: IndexMap::new(),
+    }).expect("chat implementation"));
 
-    models.cancel_deferred(&model, &handle, None).await.expect("cancel forwards");
+    models
+        .cancel_deferred_with_transforms(
+            &model,
+            &handle,
+            None,
+            ModelsRequestTransforms {
+                transform_headers: Some(Arc::new(|mut headers| {
+                    Box::pin(async move {
+                        headers.insert("x-cancel-transform".into(), Some("applied".into()));
+                        headers
+                    })
+                })),
+            },
+        )
+        .await
+        .expect("cancel forwards");
     {
         let calls = calls.lock().expect("cancel calls");
         assert_eq!(calls.len(), 1, "{title}");
         assert_eq!(calls[0].1.id, "h", "{title}");
+        assert_eq!(
+            calls[0]
+                .2
+                .as_ref()
+                .and_then(|options| options.headers.as_ref())
+                .and_then(|headers| headers.get("x-cancel-transform")),
+            Some(&Some("applied".to_owned())),
+        );
     }
 
     let unknown = with_provider(&base, "nobody");
-    let error = models.cancel_deferred(&unknown, &handle, None).await.expect_err("unknown provider");
+    let error = models
+        .cancel_deferred(&unknown, &handle, None)
+        .await
+        .expect_err("unknown provider");
     assert_eq!(error, "Unknown provider: nobody", "{title}");
 
     let incapable = with_provider(&base, "cancel-less");
     models.set_provider(plain_provider("cancel-less", vec![incapable.clone()]));
-    let error = models.cancel_deferred(&incapable, &handle, None).await.expect_err("unsupported capability");
-    assert_eq!(error, "Provider cancel-less does not support deferred responses", "{title}");
+    let error = models
+        .cancel_deferred(&incapable, &handle, None)
+        .await
+        .expect_err("unsupported capability");
+    assert_eq!(
+        error, "Provider cancel-less does not support deferred responses",
+        "{title}"
+    );
 }

@@ -3,24 +3,28 @@
 //! The TS module drives the `openai` npm SDK; the same wire contract is issued here through
 //! `reqwest` (JSON for generations, multipart for edits).
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::api::openai_client_auth::resolve_openai_client_auth;
 use crate::api::openai_images_edit::{build_edit_params, upload_bytes, upload_name};
-use crate::api::openai_images_params::{build_params, is_image_params, option_str};
+use crate::api::openai_images_params::{build_params, is_image_params};
 use crate::api::openai_images_result::{requested_output_format, resolve_image};
 use crate::types::{
-    AssistantImages, ContentBlock, ImagesBackground, ImagesContext, ImagesFunction, ImagesModel, ImagesOptions,
-    ImagesStopReason, ProviderHeaders, Usage, UsageCost,
+    AssistantImages, ContentBlock, ImagesBackground, ImagesContext, ImagesFunction, ImagesModel,
+    ImagesOptions, ImagesStopReason, ProviderHeaders, Usage, UsageCost,
 };
 use crate::utils::diagnostics::now_ms;
 use crate::utils::headers::headers_to_record;
-use crate::utils::provider_retry::{retry_provider_request, ProviderErrorStatus, ProviderRequestError, ProviderRetryOptions, ProviderRetryError};
+use crate::utils::provider_retry::{
+    ProviderErrorStatus, ProviderRequestError, ProviderRetryError, ProviderRetryOptions,
+    retry_provider_request,
+};
 
 pub use crate::api::openai_images_params::{
+    OPENAI_IMAGE_BACKGROUNDS, OPENAI_IMAGE_MODERATIONS, OPENAI_IMAGE_OUTPUT_FORMATS,
+    OPENAI_IMAGE_QUALITIES,
     parse_openai_image_output_options as parse_openai_image_output_options_public,
-    parse_openai_image_size as parse_openai_image_size_public, OPENAI_IMAGE_BACKGROUNDS, OPENAI_IMAGE_MODERATIONS,
-    OPENAI_IMAGE_OUTPUT_FORMATS, OPENAI_IMAGE_QUALITIES,
+    parse_openai_image_size as parse_openai_image_size_public,
 };
 
 const ENDPOINT_SUFFIXES: &[&str] = &["/chat/completions", "/responses", "/models"];
@@ -30,11 +34,15 @@ const ENDPOINT_SUFFIXES: &[&str] = &["/chat/completions", "/responses", "/models
 pub struct OpenAiImagesRequestError {
     pub message: String,
     pub status: Option<u16>,
+    pub headers: reqwest::header::HeaderMap,
 }
 
 impl ProviderRequestError for OpenAiImagesRequestError {
     fn provider_status(&self) -> Option<ProviderErrorStatus<'_>> {
-        Some(ProviderErrorStatus { status: self.status, headers: None })
+        Some(ProviderErrorStatus {
+            status: self.status,
+            headers: Some(&self.headers),
+        })
     }
 }
 
@@ -62,7 +70,11 @@ pub async fn generate_images(
         let aborted = options_ref
             .and_then(|options| options.request.signal.as_ref())
             .is_some_and(|signal| signal.aborted());
-        output.stop_reason = if aborted { ImagesStopReason::Aborted } else { ImagesStopReason::Error };
+        output.stop_reason = if aborted {
+            ImagesStopReason::Aborted
+        } else {
+            ImagesStopReason::Error
+        };
         output.error_message = Some(error);
     }
     output
@@ -83,14 +95,25 @@ async fn run_generate(
             _ => None,
         })
         .collect();
-    let method = if images.is_empty() { "generate" } else { "edit" };
+    let method = if images.is_empty() {
+        "generate"
+    } else {
+        "edit"
+    };
     if method == "edit" {
-        params = build_edit_params(&params, &images, crate::api::openai_images_params::option_mask(options).as_ref())?;
+        params = build_edit_params(
+            &params,
+            &images,
+            crate::api::openai_images_params::option_mask(options).as_ref(),
+        )?;
     }
     let payload_model = model_as_payload_model(model);
     let mut params_value = Value::Object(params.clone());
     if let Some(options) = options
-        && let Some(next) = options.request.apply_payload_hook(&params_value, &payload_model, None).await?
+        && let Some(next) = options
+            .request
+            .apply_payload_hook(&params_value, &payload_model, None)
+            .await?
     {
         if !is_image_params(&next) {
             return Err("onPayload returned an invalid image generation payload".into());
@@ -120,9 +143,18 @@ async fn run_generate(
         Some(&headers),
     )?;
     let base_url = normalize_base_url(&model.base_url)?;
-    let url = format!("{base_url}/images/{}", if method == "edit" { "edits" } else { "generations" });
+    let url = format!(
+        "{base_url}/images/{}",
+        if method == "edit" {
+            "edits"
+        } else {
+            "generations"
+        }
+    );
 
-    let client = options.and_then(|options| options.request.fetch.clone()).unwrap_or_default();
+    let client = options
+        .and_then(|options| options.request.fetch.clone())
+        .unwrap_or_default();
     let mut request_headers = reqwest::header::HeaderMap::new();
     request_headers.insert(
         reqwest::header::AUTHORIZATION,
@@ -154,15 +186,26 @@ async fn run_generate(
         let url = url.clone();
         let request_headers = request_headers.clone();
         let params = params.clone();
-        let images = images.clone();
-        let mask = crate::api::openai_images_params::option_mask(options);
         let method = method.to_owned();
         let signal = signal.clone();
         async move {
             if signal.as_ref().is_some_and(|signal| signal.aborted()) {
-                return Err(OpenAiImagesRequestError { message: "Request aborted".into(), status: None });
+                return Err(OpenAiImagesRequestError {
+                    message: "Request aborted".into(),
+                    status: None,
+                    headers: reqwest::header::HeaderMap::new(),
+                });
             }
-            send_request(&client, &url, request_headers, &params, &images, mask.as_ref(), &method, signal.as_ref()).await
+            send_request(
+                &client,
+                &url,
+                request_headers,
+                &params,
+                &method,
+                signal.as_ref(),
+                options.and_then(|options| options.request.timeout_ms),
+            )
+            .await
         }
     };
 
@@ -175,9 +218,16 @@ async fn run_generate(
         })?;
 
     if let Some(options) = options {
-        options.request.apply_response_hook(
-            &crate::types::ProviderResponse { status: raw_status, headers: raw_headers }, &payload_model,
-        ).await?;
+        options
+            .request
+            .apply_response_hook(
+                &crate::types::ProviderResponse {
+                    status: raw_status,
+                    headers: raw_headers,
+                },
+                &payload_model,
+            )
+            .await?;
     }
 
     if let Some(usage) = body.get("usage") {
@@ -188,12 +238,17 @@ async fn run_generate(
         Some("opaque") => output.background = Some(ImagesBackground::Opaque),
         _ => {}
     }
-    let data = body.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
+    let data = body
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if data.is_empty() {
         return Err("OpenAI images response contained no image data".into());
     }
 
-    let output_format = requested_output_format(option_str(options, "outputFormat").as_deref());
+    let output_format =
+        requested_output_format(params.get("output_format").and_then(Value::as_str));
     for datum in &data {
         let image = resolve_image(datum, &output_format, options).await?;
         if let Some(prompt) = datum.get("revised_prompt").and_then(Value::as_str)
@@ -212,10 +267,9 @@ async fn send_request(
     url: &str,
     headers: reqwest::header::HeaderMap,
     params: &Map<String, Value>,
-    images: &[crate::types::ImageContent],
-    mask: Option<&crate::types::ImageContent>,
     method: &str,
     signal: Option<&crate::utils::abort::AbortSignal>,
+    timeout_ms: Option<u64>,
 ) -> Result<(Value, u16, std::collections::BTreeMap<String, String>), OpenAiImagesRequestError> {
     let request = if method == "edit" {
         let mut fields: Vec<MultipartField> = Vec::new();
@@ -225,47 +279,106 @@ async fn send_request(
             }
             fields.push(MultipartField::text(key, json_scalar(value)));
         }
-        for (index, image) in images.iter().enumerate() {
-            let bytes = upload_bytes(image).map_err(|message| OpenAiImagesRequestError { message, status: None })?;
-            fields.push(MultipartField::file("image[]", &upload_name(image, &format!("reference-{index}")), &image.mime_type, bytes));
-        }
-        if let Some(mask) = mask {
-            let bytes = upload_bytes(mask).map_err(|message| OpenAiImagesRequestError { message, status: None })?;
-            fields.push(MultipartField::file("mask", &upload_name(mask, "mask"), &mask.mime_type, bytes));
-        }
+        fields.extend(edit_upload_fields(params).map_err(|message| OpenAiImagesRequestError {
+            message,
+            status: None,
+            headers: reqwest::header::HeaderMap::new(),
+        })?);
         let (body, content_type) = encode_multipart(&fields);
         let mut headers = headers;
         headers.insert(
             reqwest::header::CONTENT_TYPE,
-            reqwest::header::HeaderValue::from_str(&content_type)
-                .map_err(|error| OpenAiImagesRequestError { message: error.to_string(), status: None })?,
+            reqwest::header::HeaderValue::from_str(&content_type).map_err(|error| {
+                OpenAiImagesRequestError {
+                    message: error.to_string(),
+                    status: None,
+                    headers: reqwest::header::HeaderMap::new(),
+                }
+            })?,
         );
         client.post(url).headers(headers).body(body)
     } else {
         client.post(url).headers(headers).json(params)
     };
+    let request = match timeout_ms {
+        Some(ms) if ms > 0 => request.timeout(std::time::Duration::from_millis(ms)),
+        _ => request,
+    };
 
     let response = match signal {
         Some(signal) => tokio::select! {
             result = request.send() => result,
-            _ = signal.cancelled() => return Err(OpenAiImagesRequestError { message: "Request aborted".into(), status: None }),
+            _ = signal.cancelled() => return Err(OpenAiImagesRequestError { message: "Request aborted".into(), status: None, headers: reqwest::header::HeaderMap::new() }),
         },
         None => request.send().await,
     }
-    .map_err(|error| OpenAiImagesRequestError { message: error.to_string(), status: None })?;
+    .map_err(|error| OpenAiImagesRequestError { message: error.to_string(), status: None, headers: reqwest::header::HeaderMap::new() })?;
     let status = response.status().as_u16();
     let response_headers = headers_to_record(response.headers());
-    let text = response.text().await.unwrap_or_default();
+    let error_headers = response.headers().clone();
+    let body = response.text();
+    let text = match signal {
+        Some(signal) => tokio::select! {
+            biased;
+            () = signal.cancelled() => return Err(OpenAiImagesRequestError { message: "Request aborted".into(), status: Some(status), headers: error_headers }),
+            text = body => text,
+        },
+        None => body.await,
+    }.map_err(|error| OpenAiImagesRequestError { message: error.to_string(), status: Some(status), headers: error_headers.clone() })?;
     if !(200..300).contains(&status) {
         let message = error_message_from_body(&text);
-        return Err(OpenAiImagesRequestError { message, status: Some(status) });
+        return Err(OpenAiImagesRequestError {
+            message,
+            status: Some(status),
+            headers: error_headers.clone(),
+        });
     }
-    let body = serde_json::from_str::<Value>(&text)
-        .map_err(|error| OpenAiImagesRequestError { message: error.to_string(), status: Some(status) })?;
+    let body = serde_json::from_str::<Value>(&text).map_err(|error| OpenAiImagesRequestError {
+        message: error.to_string(),
+        status: Some(status),
+        headers: error_headers,
+    })?;
     Ok((body, status, response_headers))
 }
 
 const MULTIPART_BOUNDARY: &str = "maho-ai-openai-images-boundary";
+
+fn edit_upload_fields(
+    params: &Map<String, Value>,
+) -> Result<Vec<MultipartField>, String> {
+    let mut fields = Vec::new();
+    for (key, prefix) in [("image", "reference"), ("mask", "mask")] {
+        let Some(value) = params.get(key).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let values = match value {
+            Value::Array(values) => values.as_slice(),
+            value => std::slice::from_ref(value),
+        };
+        for (index, value) in values.iter().enumerate() {
+            let image: crate::types::ImageContent =
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+            let bytes = upload_bytes(&image)?;
+            let name = if params.get(key).is_some_and(Value::is_array) {
+                format!("{key}[]")
+            } else {
+                key.to_owned()
+            };
+            let filename = if key == "image" {
+                format!("{prefix}-{index}")
+            } else {
+                prefix.to_owned()
+            };
+            fields.push(MultipartField::file(
+                &name,
+                &upload_name(&image, &filename),
+                &image.mime_type,
+                bytes,
+            ));
+        }
+    }
+    Ok(fields)
+}
 
 struct MultipartField {
     name: String,
@@ -276,7 +389,12 @@ struct MultipartField {
 
 impl MultipartField {
     fn text(name: &str, value: String) -> Self {
-        Self { name: name.to_owned(), filename: None, content_type: None, value: value.into_bytes() }
+        Self {
+            name: name.to_owned(),
+            filename: None,
+            content_type: None,
+            value: value.into_bytes(),
+        }
     }
 
     fn file(name: &str, filename: &str, content_type: &str, value: Vec<u8>) -> Self {
@@ -296,29 +414,36 @@ fn encode_multipart(fields: &[MultipartField]) -> (Vec<u8>, String) {
         match &field.filename {
             Some(filename) => {
                 body.extend_from_slice(
-                    format!(
-                        "Content-Disposition: form-data; name=\"{}\"",
-                        field.name
-                    )
-                    .as_bytes(),
+                    format!("Content-Disposition: form-data; name=\"{}\"", field.name).as_bytes(),
                 );
                 body.extend_from_slice(format!("; filename=\"{filename}\"\r\n").as_bytes());
                 if let Some(content_type) = &field.content_type {
                     body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
                 }
             }
-            None => body.extend_from_slice(format!("Content-Disposition: form-data; name=\"{}\"\r\n", field.name).as_bytes()),
+            None => body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{}\"\r\n",
+                    field.name
+                )
+                .as_bytes(),
+            ),
         }
         body.extend_from_slice(b"\r\n");
         body.extend_from_slice(&field.value);
         body.extend_from_slice(b"\r\n");
     }
     body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}--\r\n").as_bytes());
-    (body, format!("multipart/form-data; boundary={MULTIPART_BOUNDARY}"))
+    (
+        body,
+        format!("multipart/form-data; boundary={MULTIPART_BOUNDARY}"),
+    )
 }
 
 pub fn model_as_payload_model(model: &ImagesModel) -> crate::types::Model {
     crate::types::Model {
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         id: model.id.clone(),
         name: model.name.clone(),
         api: model.api.clone(),
@@ -329,6 +454,7 @@ pub fn model_as_payload_model(model: &ImagesModel) -> crate::types::Model {
         thinking_level_map: None,
         input: model.input.clone(),
         cost: crate::types::ModelCost {
+            effective_rates: None,
             input: model.cost.input,
             output: model.cost.output,
             cache_read: model.cost.cache_read,
@@ -344,7 +470,7 @@ pub fn model_as_payload_model(model: &ImagesModel) -> crate::types::Model {
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
-        input_limits: None,
+        input_limits: model.input_limits.clone(),
     }
 }
 
@@ -357,7 +483,11 @@ fn json_scalar(value: &Value) -> String {
 
 fn error_message_from_body(body: &str) -> String {
     if let Ok(parsed) = serde_json::from_str::<Value>(body) {
-        if let Some(message) = parsed.get("error").and_then(|error| error.get("message")).and_then(Value::as_str) {
+        if let Some(message) = parsed
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+        {
             return message.to_owned();
         }
         if let Some(message) = parsed.get("message").and_then(Value::as_str) {
@@ -369,8 +499,14 @@ fn error_message_from_body(body: &str) -> String {
 
 /// `$/million tokens`, with image input tokens carrying their own rate.
 pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
-    let input = raw_usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
-    let output = raw_usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let input = raw_usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = raw_usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let image_tokens = raw_usage
         .get("input_tokens_details")
         .and_then(|details| details.get("image_tokens"))
@@ -389,10 +525,14 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
         cache_write: 0,
         cache_write_1h: None,
         reasoning: None,
-        total_tokens: raw_usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(input + output),
+        total_tokens: raw_usage
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(input + output),
         cost: UsageCost::default(),
     };
-    usage.cost.input = (model.cost.input * text_tokens as f64 + image_rate * image_tokens as f64) / 1_000_000.0;
+    usage.cost.input =
+        (model.cost.input * text_tokens as f64 + image_rate * image_tokens as f64) / 1_000_000.0;
     usage.cost.output = (model.cost.output / 1_000_000.0) * output as f64;
     usage.cost.cache_read = 0.0;
     usage.cost.cache_write = 0.0;
@@ -401,7 +541,8 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
 }
 
 pub fn normalize_base_url(base_url: &str) -> Result<String, String> {
-    let mut url = url::Url::parse(base_url).map_err(|_| format!("Invalid OpenAI images base URL: {base_url}"))?;
+    let mut url = url::Url::parse(base_url)
+        .map_err(|_| format!("Invalid OpenAI images base URL: {base_url}"))?;
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err("OpenAI images base URL must use HTTP or HTTPS".into());
     }
@@ -413,17 +554,24 @@ pub fn normalize_base_url(base_url: &str) -> Result<String, String> {
     if normalized_pathname.contains("/images") {
         return Err("OpenAI images base URL must not include an images endpoint".into());
     }
-    if ENDPOINT_SUFFIXES.iter().any(|suffix| normalized_pathname.ends_with(suffix)) {
+    if ENDPOINT_SUFFIXES
+        .iter()
+        .any(|suffix| normalized_pathname.ends_with(suffix))
+    {
         return Err("OpenAI images base URL must not include a known API endpoint".into());
     }
-    let pathname = if pathname.ends_with("/v1") { pathname } else { format!("{pathname}/v1") };
+    let pathname = if pathname.ends_with("/v1") {
+        pathname
+    } else {
+        format!("{pathname}/v1")
+    };
     url.set_path(&pathname);
     Ok(url.to_string().trim_end_matches('/').to_owned())
 }
 
 pub fn images_function() -> ImagesFunction {
     std::sync::Arc::new(|model, context, options| {
-        Box::pin(async move { generate_images(model, context, options).await })
+        Box::pin(async move { Ok(generate_images(model, context, options).await) })
     })
 }
 
@@ -434,10 +582,68 @@ pub fn params_json(params: &Map<String, Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ImagesModelCost, InputModality, ImagesOutputModality};
+    use crate::types::{ImagesModelCost, ImagesOutputModality, InputModality};
+
+    #[test]
+    fn multipart_uploads_follow_replaced_payload_when_references_change() {
+        // Given a hook-replaced image and no mask in the final payload.
+        let params = json!({"image": [{"data": "AQI=", "mimeType": "image/webp"}]})
+            .as_object()
+            .expect("params")
+            .clone();
+        // When constructing the multipart upload fields.
+        let fields = edit_upload_fields(&params).expect("uploads");
+        // Then the replacement bytes and MIME are used, without restoring a mask.
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].value, vec![1, 2]);
+        assert_eq!(fields[0].content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fields[0].name, "image[]");
+    }
+
+    #[tokio::test]
+    async fn request_errors_preserve_retry_headers_when_provider_rejects() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // Given a real HTTP endpoint that forbids retrying its transient error.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let url = format!(
+            "http://{}/images/generations",
+            listener.local_addr().expect("address")
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut bytes = [0; 4096];
+            socket.read(&mut bytes).await.expect("request");
+            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nx-should-retry: false\r\nretry-after: 120\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.expect("response");
+        });
+        // When sending the image request.
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            send_request(
+                &reqwest::Client::new(),
+                &url,
+                reqwest::header::HeaderMap::new(),
+                &Map::new(),
+                "generate",
+                None,
+                None,
+            ),
+        )
+        .await
+        .expect("bounded request")
+        .expect_err("429");
+        // Then retry classification receives the provider's original headers.
+        let status = error.provider_status().expect("provider status");
+        assert_eq!(status.status, Some(429));
+        assert_eq!(status.headers.expect("headers")["x-should-retry"], "false");
+        assert_eq!(status.headers.expect("headers")["retry-after"], "120");
+        server.await.expect("server");
+    }
 
     fn model(image_input: Option<f64>) -> ImagesModel {
         ImagesModel {
+            input_limits: None,
             id: "gpt-image-2.5".into(),
             name: "gpt-image-2.5".into(),
             api: "openai-images".into(),
@@ -452,6 +658,7 @@ mod tests {
                 cache_read: 0.0,
                 cache_write: 0.0,
                 tiers: None,
+                effective_rates: None,
                 image_input,
             },
             sampling_params: None,
@@ -465,8 +672,14 @@ mod tests {
 
     #[test]
     fn base_urls_are_normalized_and_validated() {
-        assert_eq!(normalize_base_url("https://api.openai.com/v1"), Ok("https://api.openai.com/v1".into()));
-        assert_eq!(normalize_base_url("https://api.openai.com"), Ok("https://api.openai.com/v1".into()));
+        assert_eq!(
+            normalize_base_url("https://api.openai.com/v1"),
+            Ok("https://api.openai.com/v1".into())
+        );
+        assert_eq!(
+            normalize_base_url("https://api.openai.com"),
+            Ok("https://api.openai.com/v1".into())
+        );
         assert_eq!(
             normalize_base_url("https://api.openai.com/v1/images"),
             Err("OpenAI images base URL must not include an images endpoint".into())
@@ -523,4 +736,3 @@ mod tests {
         assert_eq!(error_message_from_body("not json"), "not json");
     }
 }
-

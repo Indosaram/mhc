@@ -19,7 +19,7 @@ pub fn stream_simple_google(
     builtin_api_streams("google-generative-ai").stream_simple(model, context, options)
 }
 
-pub fn google_provider() -> Arc<dyn Provider> {
+pub fn google_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     create_provider(CreateProviderOptions {
         id: "google".into(),
         name: Some("Google".into()),
@@ -30,6 +30,7 @@ pub fn google_provider() -> Arc<dyn Provider> {
         fetch_models: None,
         restore_models: None,
         filter_models: None,
+        images: indexmap::IndexMap::new(),
         api: ProviderApi::Single(builtin_api_streams("google-generative-ai")),
     })
 }

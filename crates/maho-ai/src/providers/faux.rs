@@ -2,13 +2,15 @@
 
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provider};
 use crate::types::{
-    AbortSource, AssistantMessage, AssistantMessageEvent, AssistantStopDetails, Context, ContentBlock,
-    DeferredFetchOptions, DeferredHandle, DoneReason, ErrorReason, ImageContent, Message, Model,
-    ProviderStreams, SimpleStreamOptions, StopReason, StreamOptions, TextContent, ThinkingContent, ToolCall,
-    Usage, UsageCost, UserContent,
+    AbortSource, AssistantMessage, AssistantMessageEvent, AssistantStopDetails, ContentBlock,
+    Context, DeferredFetchOptions, DeferredHandle, DoneReason, ErrorReason, ImageContent, Message,
+    Model, ProviderStreams, SimpleStreamOptions, StopReason, StreamOptions, TextContent,
+    ThinkingContent, ToolCall, Usage, UsageCost, UserContent,
 };
 use crate::utils::diagnostics::now_ms;
-use crate::utils::event_stream::{AssistantMessageEventStream, create_assistant_message_event_stream};
+use crate::utils::event_stream::{
+    AssistantMessageEventStream, create_assistant_message_event_stream,
+};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
@@ -32,6 +34,7 @@ pub struct FauxModelDefinition {
     pub name: Option<String>,
     pub reasoning: Option<bool>,
     pub input: Option<Vec<crate::types::InputModality>>,
+    pub input_limits: Option<crate::model::ModelInputLimits>,
     pub cost: Option<crate::types::ModelCost>,
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
@@ -65,17 +68,27 @@ pub struct FauxCallLogEntry {
 }
 
 pub fn faux_text(text: &str) -> ContentBlock {
-    ContentBlock::Text(TextContent { text: text.to_owned(), ..TextContent::default() })
+    ContentBlock::Text(TextContent {
+        text: text.to_owned(),
+        ..TextContent::default()
+    })
 }
 
 pub fn faux_thinking(thinking: &str) -> ContentBlock {
-    ContentBlock::Thinking(ThinkingContent { thinking: thinking.to_owned(), ..ThinkingContent::default() })
+    ContentBlock::Thinking(ThinkingContent {
+        thinking: thinking.to_owned(),
+        ..ThinkingContent::default()
+    })
 }
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn random_id(prefix: &str) -> String {
-    format!("{prefix}:{}:{}", now_ms(), ID_COUNTER.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{prefix}:{}:{}",
+        now_ms(),
+        ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 pub fn faux_tool_call(name: &str, arguments: Map<String, Value>, id: Option<&str>) -> ContentBlock {
@@ -137,8 +150,15 @@ fn normalize_faux_assistant_content(content: FauxContent) -> Vec<ContentBlock> {
     }
 }
 
-pub fn faux_assistant_message(content: impl Into<FauxContent>, options: FauxAssistantMessageOptions) -> AssistantMessage {
+pub fn faux_assistant_message(
+    content: impl Into<FauxContent>,
+    options: FauxAssistantMessageOptions,
+) -> AssistantMessage {
     AssistantMessage {
+        error_cause: None,
+        prompt_cache_diagnostics: None,
+        thinking_level: None,
+        provider_diagnostic: None,
         content: normalize_faux_assistant_content(content.into()),
         api: DEFAULT_API.to_owned(),
         provider: DEFAULT_PROVIDER.to_owned(),
@@ -160,7 +180,12 @@ pub fn faux_assistant_message(content: impl Into<FauxContent>, options: FauxAssi
 }
 
 pub type FauxResponseFactory = Arc<
-    dyn Fn(&Context, Option<&SimpleStreamOptions>, &FauxProviderState, &Model) -> crate::types::BoxFuture<'static, AssistantMessage>
+    dyn Fn(
+            &Context,
+            Option<&SimpleStreamOptions>,
+            &FauxProviderState,
+            &Model,
+        ) -> crate::types::BoxFuture<'static, AssistantMessage>
         + Send
         + Sync,
 >;
@@ -184,6 +209,7 @@ pub struct RegisterFauxProviderOptions {
     pub models: Option<Vec<FauxModelDefinition>>,
     pub deferred: Option<FauxDeferredOptions>,
     pub tokens_per_second: Option<f64>,
+    pub response_headers: Option<std::collections::BTreeMap<String, String>>,
     pub scheduler_hook: Option<Arc<dyn Fn() -> crate::types::BoxFuture<'static, ()> + Send + Sync>>,
     pub token_size: Option<FauxTokenSize>,
 }
@@ -214,6 +240,7 @@ pub struct FauxCore {
     min_token_size: u64,
     max_token_size: u64,
     tokens_per_second: Option<f64>,
+    response_headers: std::collections::BTreeMap<String, String>,
     scheduler_hook: Option<Arc<dyn Fn() -> crate::types::BoxFuture<'static, ()> + Send + Sync>>,
     deferred_options: FauxDeferredOptions,
     inner: Mutex<FauxInner>,
@@ -221,7 +248,10 @@ pub struct FauxCore {
 
 impl std::fmt::Debug for FauxCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FauxCore").field("api", &self.api).field("provider", &self.provider).finish_non_exhaustive()
+        f.debug_struct("FauxCore")
+            .field("api", &self.api)
+            .field("provider", &self.provider)
+            .finish_non_exhaustive()
     }
 }
 
@@ -244,7 +274,9 @@ fn content_to_text(content: &UserContent) -> String {
             .iter()
             .map(|block| match block {
                 ContentBlock::Text(text) => text.text.clone(),
-                ContentBlock::Image(ImageContent { mime_type, data }) => format!("[image:{mime_type}:{}]", data.len()),
+                ContentBlock::Image(ImageContent { mime_type, data }) => {
+                    format!("[image:{mime_type}:{}]", data.len())
+                }
                 other => other.type_name().to_owned(),
             })
             .collect::<Vec<String>>()
@@ -259,8 +291,12 @@ fn assistant_content_to_text(content: &[ContentBlock]) -> String {
             ContentBlock::Text(text) => text.text.clone(),
             ContentBlock::Thinking(thinking) => thinking.thinking.clone(),
             ContentBlock::ProviderNative(_) => String::new(),
-            ContentBlock::ToolCall(call) => format!("{}:{}", call.name, Value::Object(call.arguments.clone())),
-            ContentBlock::Image(image) => format!("[image:{}:{}]", image.mime_type, image.data.len()),
+            ContentBlock::ToolCall(call) => {
+                format!("{}:{}", call.name, Value::Object(call.arguments.clone()))
+            }
+            ContentBlock::Image(image) => {
+                format!("[image:{}:{}]", image.mime_type, image.data.len())
+            }
         })
         .collect::<Vec<String>>()
         .join("\n")
@@ -271,7 +307,9 @@ fn tool_result_to_text(message: &crate::types::ToolResultMessage) -> String {
     for block in &message.content {
         parts.push(match block {
             ContentBlock::Text(text) => text.text.clone(),
-            ContentBlock::Image(ImageContent { mime_type, data }) => format!("[image:{mime_type}:{}]", data.len()),
+            ContentBlock::Image(ImageContent { mime_type, data }) => {
+                format!("[image:{mime_type}:{}]", data.len())
+            }
             other => other.type_name().to_owned(),
         });
     }
@@ -282,12 +320,14 @@ fn message_to_text(message: &Message) -> String {
     match message {
         Message::User(user) => content_to_text(&user.content),
         Message::Assistant(assistant) => assistant_content_to_text(&assistant.content),
-        Message::ConfigurationUpdate(_) => String::new(),
+        Message::System(_) | Message::ConfigurationUpdate(_) => String::new(),
         Message::ToolResult(result) => tool_result_to_text(result),
     }
 }
 
 fn serialize_context(context: &Context) -> String {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let mut parts: Vec<String> = Vec::new();
     if let Some(system_prompt) = &context.system_prompt {
         parts.push(format!("system:{system_prompt}"));
@@ -297,7 +337,15 @@ fn serialize_context(context: &Context) -> String {
     }
     let tools = context.tools.as_deref().filter(|tools| !tools.is_empty());
     if let Some(tools) = tools {
-        parts.push(format!("tools:{}", Value::Array(tools.iter().map(|tool| serde_json::to_value(tool).unwrap_or(Value::Null)).collect())));
+        parts.push(format!(
+            "tools:{}",
+            Value::Array(
+                tools
+                    .iter()
+                    .map(|tool| serde_json::to_value(tool).unwrap_or(Value::Null))
+                    .collect()
+            )
+        ));
     }
     parts.join("\n\n")
 }
@@ -326,14 +374,22 @@ fn with_usage_estimate(
     let mut cache_write = 0;
     let session_id = options.and_then(|options| options.session_id.clone());
 
-    let caching = options.and_then(|options| options.cache_retention) != Some(crate::types::CacheRetention::None);
+    let caching = options.and_then(|options| options.cache_retention)
+        != Some(crate::types::CacheRetention::None);
     if let Some(session_id) = session_id.filter(|_| caching) {
         {
             match prompt_cache.get(&session_id) {
                 Some(previous_prompt) => {
                     let cached_chars = common_prefix_length(previous_prompt, &prompt_text);
-                    cache_read = estimate_tokens(&previous_prompt.chars().take(cached_chars).collect::<String>());
-                    cache_write = estimate_tokens(&prompt_text.chars().skip(cached_chars).collect::<String>());
+                    cache_read = estimate_tokens(
+                        &previous_prompt
+                            .chars()
+                            .take(cached_chars)
+                            .collect::<String>(),
+                    );
+                    cache_write = estimate_tokens(
+                        &prompt_text.chars().skip(cached_chars).collect::<String>(),
+                    );
                     input = prompt_tokens.saturating_sub(cache_read);
                 }
                 None => cache_write = prompt_tokens,
@@ -376,24 +432,45 @@ fn split_string_by_token_size(text: &str, min_token_size: u64, max_token_size: u
         let span = max_token_size.saturating_sub(min_token_size) + 1;
         let token_size = min_token_size + (next_random() * span as f64) as u64;
         let char_size = std::cmp::max(1, token_size * 4) as usize;
-        chunks.push(characters[index..std::cmp::min(index + char_size, characters.len())].iter().collect());
+        chunks.push(
+            characters[index..std::cmp::min(index + char_size, characters.len())]
+                .iter()
+                .collect(),
+        );
         index += char_size;
     }
-    if chunks.is_empty() { vec![String::new()] } else { chunks }
+    if chunks.is_empty() {
+        vec![String::new()]
+    } else {
+        chunks
+    }
 }
 
-fn clone_message(message: &AssistantMessage, api: &str, provider: &str, model_id: &str) -> AssistantMessage {
+fn clone_message(
+    message: &AssistantMessage,
+    api: &str,
+    provider: &str,
+    model_id: &str,
+) -> AssistantMessage {
     AssistantMessage {
         api: api.to_owned(),
         provider: provider.to_owned(),
         model: model_id.to_owned(),
-        timestamp: if message.timestamp == 0 { now_ms() } else { message.timestamp },
+        timestamp: if message.timestamp == 0 {
+            now_ms()
+        } else {
+            message.timestamp
+        },
         ..message.clone()
     }
 }
 
 fn create_deferred_message(model: &Model, handle: &DeferredHandle) -> AssistantMessage {
     AssistantMessage {
+        error_cause: None,
+        prompt_cache_diagnostics: None,
+        thinking_level: None,
+        provider_diagnostic: None,
         content: Vec::new(),
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -414,8 +491,17 @@ fn create_deferred_message(model: &Model, handle: &DeferredHandle) -> AssistantM
     }
 }
 
-fn create_error_message(error: &str, api: &str, provider: &str, model_id: &str) -> AssistantMessage {
+fn create_error_message(
+    error: &str,
+    api: &str,
+    provider: &str,
+    model_id: &str,
+) -> AssistantMessage {
     AssistantMessage {
+        error_cause: None,
+        prompt_cache_diagnostics: None,
+        thinking_level: None,
+        provider_diagnostic: None,
         content: Vec::new(),
         api: api.to_owned(),
         provider: provider.to_owned(),
@@ -484,7 +570,10 @@ struct StreamDeltas<'a> {
 impl StreamDeltas<'_> {
     fn abort_now(&self, partial: &AssistantMessage) -> AssistantMessage {
         let aborted = create_aborted_message(partial);
-        self.stream.push(AssistantMessageEvent::Error { reason: ErrorReason::Aborted, error: aborted.clone() });
+        self.stream.push(AssistantMessageEvent::Error {
+            reason: ErrorReason::Aborted,
+            error: aborted.clone(),
+        });
         self.stream.end(Some(aborted.clone()));
         aborted
     }
@@ -500,13 +589,19 @@ async fn stream_with_deltas(
     signal: Option<crate::utils::abort::AbortSignal>,
 ) -> Result<(), String> {
     let deltas = StreamDeltas { stream };
-    let mut partial = AssistantMessage { content: Vec::new(), stop_reason: StopReason::Pending, ..message.clone() };
+    let mut partial = AssistantMessage {
+        content: Vec::new(),
+        stop_reason: StopReason::Pending,
+        ..message.clone()
+    };
     if aborted(signal.as_ref()) {
         deltas.abort_now(&partial);
         return Ok(());
     }
 
-    stream.push(AssistantMessageEvent::Start { partial: partial.clone() });
+    stream.push(AssistantMessageEvent::Start {
+        partial: partial.clone(),
+    });
 
     for (index, block) in message.content.iter().enumerate() {
         if aborted(signal.as_ref()) {
@@ -516,9 +611,16 @@ async fn stream_with_deltas(
 
         match block {
             ContentBlock::Thinking(thinking) => {
-                partial.content.push(ContentBlock::Thinking(ThinkingContent::default()));
-                stream.push(AssistantMessageEvent::ThinkingStart { content_index: index, partial: partial.clone() });
-                for chunk in split_string_by_token_size(&thinking.thinking, min_token_size, max_token_size) {
+                partial
+                    .content
+                    .push(ContentBlock::Thinking(ThinkingContent::default()));
+                stream.push(AssistantMessageEvent::ThinkingStart {
+                    content_index: index,
+                    partial: partial.clone(),
+                });
+                for chunk in
+                    split_string_by_token_size(&thinking.thinking, min_token_size, max_token_size)
+                {
                     schedule_chunk(&chunk, tokens_per_second, scheduler_hook).await;
                     if aborted(signal.as_ref()) {
                         deltas.abort_now(&partial);
@@ -540,9 +642,15 @@ async fn stream_with_deltas(
                 });
             }
             ContentBlock::Text(text) => {
-                partial.content.push(ContentBlock::Text(TextContent::default()));
-                stream.push(AssistantMessageEvent::TextStart { content_index: index, partial: partial.clone() });
-                for chunk in split_string_by_token_size(&text.text, min_token_size, max_token_size) {
+                partial
+                    .content
+                    .push(ContentBlock::Text(TextContent::default()));
+                stream.push(AssistantMessageEvent::TextStart {
+                    content_index: index,
+                    partial: partial.clone(),
+                });
+                for chunk in split_string_by_token_size(&text.text, min_token_size, max_token_size)
+                {
                     schedule_chunk(&chunk, tokens_per_second, scheduler_hook).await;
                     if aborted(signal.as_ref()) {
                         deltas.abort_now(&partial);
@@ -572,9 +680,13 @@ async fn stream_with_deltas(
                     arguments: Map::new(),
                     ..ToolCall::default()
                 }));
-                stream.push(AssistantMessageEvent::ToolcallStart { content_index: index, partial: partial.clone() });
+                stream.push(AssistantMessageEvent::ToolcallStart {
+                    content_index: index,
+                    partial: partial.clone(),
+                });
                 let serialized = Value::Object(call.arguments.clone()).to_string();
-                for chunk in split_string_by_token_size(&serialized, min_token_size, max_token_size) {
+                for chunk in split_string_by_token_size(&serialized, min_token_size, max_token_size)
+                {
                     schedule_chunk(&chunk, tokens_per_second, scheduler_hook).await;
                     if aborted(signal.as_ref()) {
                         deltas.abort_now(&partial);
@@ -602,8 +714,15 @@ async fn stream_with_deltas(
         return Err("Faux response ended without a stop reason".to_owned());
     }
     if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
-        let reason = if message.stop_reason == StopReason::Aborted { ErrorReason::Aborted } else { ErrorReason::Error };
-        stream.push(AssistantMessageEvent::Error { reason, error: message.clone() });
+        let reason = if message.stop_reason == StopReason::Aborted {
+            ErrorReason::Aborted
+        } else {
+            ErrorReason::Error
+        };
+        stream.push(AssistantMessageEvent::Error {
+            reason,
+            error: message.clone(),
+        });
         stream.end(Some(message));
         return Ok(());
     }
@@ -614,14 +733,19 @@ async fn stream_with_deltas(
         StopReason::Deferred => DoneReason::Deferred,
         _ => DoneReason::Stop,
     };
-    stream.push(AssistantMessageEvent::Done { reason, message: message.clone() });
+    stream.push(AssistantMessageEvent::Done {
+        reason,
+        message: message.clone(),
+    });
     stream.end(Some(message));
     Ok(())
 }
 
 impl FauxCore {
     fn lock(&self) -> MutexGuard<'_, FauxInner> {
-        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn api(&self) -> &str {
@@ -683,7 +807,12 @@ impl FauxCore {
         let resolved = match step {
             FauxResponseStep::Message(message) => (**message).clone(),
             FauxResponseStep::Factory(factory) => {
-                let pending = std::panic::AssertUnwindSafe(factory(context, stream_options, state, request_model));
+                let pending = std::panic::AssertUnwindSafe(factory(
+                    context,
+                    stream_options,
+                    state,
+                    request_model,
+                ));
                 match futures::FutureExt::catch_unwind(pending).await {
                     Ok(message) => message,
                     Err(payload) => return Err(panic_message(&payload)),
@@ -693,14 +822,29 @@ impl FauxCore {
         let cloned = clone_message(&resolved, &self.api, &self.provider, &request_model.id);
         let mut inner = self.lock();
         let mut prompt_cache = std::mem::take(&mut inner.prompt_cache);
-        let estimated = with_usage_estimate(cloned, context, stream_options.map(|options| &options.stream), &mut prompt_cache);
+        let estimated = with_usage_estimate(
+            cloned,
+            context,
+            stream_options.map(|options| &options.stream),
+            &mut prompt_cache,
+        );
         inner.prompt_cache = prompt_cache;
         Ok(estimated)
     }
 
-    fn run(self: &Arc<Self>, model: &Model, context: &Context, options: StreamOptions, deferred: Option<crate::types::DeferredOption>) -> AssistantMessageEventStream {
+    fn run(
+        self: &Arc<Self>,
+        model: &Model,
+        context: &Context,
+        options: StreamOptions,
+        deferred: Option<crate::types::DeferredOption>,
+    ) -> AssistantMessageEventStream {
         let outer = create_assistant_message_event_stream();
-        let simple = SimpleStreamOptions { stream: options.clone(), deferred, ..SimpleStreamOptions::default() };
+        let simple = SimpleStreamOptions {
+            stream: options.clone(),
+            deferred,
+            ..SimpleStreamOptions::default()
+        };
         let (step, state) = {
             let mut inner = self.lock();
             let step = inner.pending_responses.pop_front();
@@ -719,27 +863,49 @@ impl FauxCore {
         let context = context.clone();
         let outer_for_task = outer.clone();
         tokio::spawn(async move {
-            if let Err(error) = options.request.apply_response_hook(
-                &crate::types::ProviderResponse { status: 200, headers: Default::default() }, &model,
-            ).await {
+            if let Err(error) = options
+                .request
+                .apply_response_hook(
+                    &crate::types::ProviderResponse {
+                        status: 200,
+                        headers: core.response_headers.clone(),
+                    },
+                    &model,
+                )
+                .await
+            {
                 let message = create_error_message(&error, &core.api, &core.provider, &model.id);
-                outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                outer_for_task.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error: message.clone(),
+                });
                 outer_for_task.end(Some(message));
                 return;
             }
             let Some(step) = step else {
-                let message = create_error_message("No more faux responses queued", &core.api, &core.provider, &model.id);
+                let message = create_error_message(
+                    "No more faux responses queued",
+                    &core.api,
+                    &core.provider,
+                    &model.id,
+                );
                 let mut inner = core.lock();
                 let mut prompt_cache = std::mem::take(&mut inner.prompt_cache);
-                let message = with_usage_estimate(message, &context, Some(&options), &mut prompt_cache);
+                let message =
+                    with_usage_estimate(message, &context, Some(&options), &mut prompt_cache);
                 inner.prompt_cache = prompt_cache;
-                outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                outer_for_task.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error: message.clone(),
+                });
                 outer_for_task.end(Some(message));
                 return;
             };
 
             // senpi `if (streamOptions?.deferred)`: `deferred: false` is a plain, non-deferred request.
-            if simple.deferred.as_ref().is_some_and(|deferred| !matches!(deferred, crate::types::DeferredOption::Enabled(false))) {
+            if simple.deferred.as_ref().is_some_and(|deferred| {
+                !matches!(deferred, crate::types::DeferredOption::Enabled(false))
+            }) {
                 let handle = DeferredHandle {
                     provider: model.provider.clone(),
                     model_id: model.id.clone(),
@@ -777,14 +943,20 @@ impl FauxCore {
                 )
                 .await
                 {
-                    let message = create_error_message(&error, &core.api, &core.provider, &model.id);
-                    outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                    let message =
+                        create_error_message(&error, &core.api, &core.provider, &model.id);
+                    outer_for_task.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Error,
+                        error: message.clone(),
+                    });
                     outer_for_task.end(Some(message));
                 }
                 return;
             }
 
-            let outcome = core.resolve_response(&step, &context, Some(&simple), &model, &state).await;
+            let outcome = core
+                .resolve_response(&step, &context, Some(&simple), &model, &state)
+                .await;
             let streamed = match outcome {
                 Ok(message) => stream_with_deltas(
                     &outer_for_task,
@@ -801,7 +973,10 @@ impl FauxCore {
             };
             if let Some(error) = streamed {
                 let message = create_error_message(&error, &core.api, &core.provider, &model.id);
-                outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                outer_for_task.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error: message.clone(),
+                });
                 outer_for_task.end(Some(message));
             }
         });
@@ -826,11 +1001,22 @@ impl FauxCore {
         let outer_for_task = outer.clone();
         tokio::spawn(async move {
             let options = options.unwrap_or_default();
-            if let Err(error) = options.request.apply_response_hook(
-                &crate::types::ProviderResponse { status: 200, headers: Default::default() }, &model,
-            ).await {
+            if let Err(error) = options
+                .request
+                .apply_response_hook(
+                    &crate::types::ProviderResponse {
+                        status: 200,
+                        headers: core.response_headers.clone(),
+                    },
+                    &model,
+                )
+                .await
+            {
                 let message = create_error_message(&error, &core.api, &core.provider, &model.id);
-                outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                outer_for_task.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error: message.clone(),
+                });
                 outer_for_task.end(Some(message));
                 return;
             }
@@ -845,9 +1031,10 @@ impl FauxCore {
                     {
                         Err(format!("Unknown faux deferred response: {}", handle.id))
                     }
-                    Some(entry) if entry.cancelled => {
-                        Err(format!("Faux deferred response was cancelled: {}", handle.id))
-                    }
+                    Some(entry) if entry.cancelled => Err(format!(
+                        "Faux deferred response was cancelled: {}",
+                        handle.id
+                    )),
                     Some(entry) if entry.pending_fetches > 0 => {
                         entry.pending_fetches -= 1;
                         Ok((entry.handle.clone(), None))
@@ -857,8 +1044,12 @@ impl FauxCore {
             };
             match pending {
                 Err(error) => {
-                    let message = create_error_message(&error, &core.api, &core.provider, &model.id);
-                    outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                    let message =
+                        create_error_message(&error, &core.api, &core.provider, &model.id);
+                    outer_for_task.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Error,
+                        error: message.clone(),
+                    });
                     outer_for_task.end(Some(message));
                 }
                 Ok((entry_handle, None)) => {
@@ -874,30 +1065,58 @@ impl FauxCore {
                     )
                     .await
                     {
-                        let message = create_error_message(&error, &core.api, &core.provider, &model.id);
-                        outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                        let message =
+                            create_error_message(&error, &core.api, &core.provider, &model.id);
+                        outer_for_task.push(AssistantMessageEvent::Error {
+                            reason: ErrorReason::Error,
+                            error: message.clone(),
+                        });
                         outer_for_task.end(Some(message));
                     }
                 }
                 Ok((_, Some(step))) => {
                     let (submission_options, submission_context, submission_model, final_message) = {
                         let mut inner = core.lock();
-                        let entry = inner.deferred_responses.get_mut(&handle.id).expect("entry present");
+                        let entry = inner
+                            .deferred_responses
+                            .get_mut(&handle.id)
+                            .expect("entry present");
                         let existing = entry.final_message.clone();
-                        (entry.options.clone(), entry.context.clone(), entry.model.clone(), existing)
+                        (
+                            entry.options.clone(),
+                            entry.context.clone(),
+                            entry.model.clone(),
+                            existing,
+                        )
                     };
                     let final_message = match final_message {
                         Some(message) => message,
                         None => {
-                            let simple = submission_options.clone();
+                            let mut simple = submission_options.unwrap_or_default();
+                            simple.deferred = None;
+                            simple.stream.request.signal = None;
+                            simple.stream.request.on_response = None;
+                            simple.stream.request.async_on_response = None;
                             let message = match core
-                                .resolve_response(&step, &submission_context, simple.as_ref(), &submission_model, &core.state())
+                                .resolve_response(
+                                    &step,
+                                    &submission_context,
+                                    Some(&simple),
+                                    &submission_model,
+                                    &core.state(),
+                                )
                                 .await
                             {
                                 Ok(message) => message,
-                                Err(error) => create_error_message(&error, &core.api, &core.provider, &submission_model.id),
+                                Err(error) => create_error_message(
+                                    &error,
+                                    &core.api,
+                                    &core.provider,
+                                    &submission_model.id,
+                                ),
                             };
-                            if let Some(entry) = core.lock().deferred_responses.get_mut(&handle.id) {
+                            if let Some(entry) = core.lock().deferred_responses.get_mut(&handle.id)
+                            {
                                 entry.final_message = Some(message.clone());
                             }
                             message
@@ -914,8 +1133,12 @@ impl FauxCore {
                     )
                     .await
                     {
-                        let message = create_error_message(&error, &core.api, &core.provider, &model.id);
-                        outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                        let message =
+                            create_error_message(&error, &core.api, &core.provider, &model.id);
+                        outer_for_task.push(AssistantMessageEvent::Error {
+                            reason: ErrorReason::Error,
+                            error: message.clone(),
+                        });
                         outer_for_task.end(Some(message));
                     }
                 }
@@ -939,9 +1162,16 @@ impl FauxCore {
         options: Option<crate::types::DeferredCancelOptions>,
     ) -> Result<(), String> {
         self.cancel_deferred(handle);
-        options.unwrap_or_default().apply_response_hook(
-            &crate::types::ProviderResponse { status: 200, headers: Default::default() }, model,
-        ).await
+        options
+            .unwrap_or_default()
+            .apply_response_hook(
+                &crate::types::ProviderResponse {
+                    status: 200,
+                    headers: self.response_headers.clone(),
+                },
+                model,
+            )
+            .await
     }
 }
 
@@ -953,8 +1183,14 @@ pub fn faux_streams(core: Arc<FauxCore>) -> Arc<dyn ProviderStreams> {
 }
 
 impl ProviderStreams for FauxStreams {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
-        self.0.run(model, context, options.unwrap_or_default(), None)
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
+        self.0
+            .run(model, context, options.unwrap_or_default(), None)
     }
 
     fn stream_simple(
@@ -964,7 +1200,8 @@ impl ProviderStreams for FauxStreams {
         options: Option<SimpleStreamOptions>,
     ) -> AssistantMessageEventStream {
         let options = options.unwrap_or_default();
-        self.0.run(model, context, options.stream.clone(), options.deferred)
+        self.0
+            .run(model, context, options.stream.clone(), options.deferred)
     }
 
     fn fetch_deferred(
@@ -987,7 +1224,10 @@ impl ProviderStreams for FauxStreams {
         options: Option<crate::types::DeferredCancelOptions>,
     ) -> crate::types::BoxFuture<'a, Result<(), String>> {
         let core = Arc::clone(&self.0);
-        Box::pin(async move { core.cancel_deferred_with_options(model, handle, options).await })
+        Box::pin(async move {
+            core.cancel_deferred_with_options(model, handle, options)
+                .await
+        })
     }
 
     fn supports_cancel_deferred(&self) -> bool {
@@ -996,12 +1236,34 @@ impl ProviderStreams for FauxStreams {
 }
 
 pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> {
-    let api = options.api.clone().unwrap_or_else(|| random_id(DEFAULT_API));
-    let provider = options.provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_owned());
-    let min_token_size =
-        std::cmp::max(1, std::cmp::min(options.token_size.and_then(|size| size.min).unwrap_or(DEFAULT_MIN_TOKEN_SIZE), options.token_size.and_then(|size| size.max).unwrap_or(DEFAULT_MAX_TOKEN_SIZE)));
-    let max_token_size =
-        std::cmp::max(min_token_size, options.token_size.and_then(|size| size.max).unwrap_or(DEFAULT_MAX_TOKEN_SIZE));
+    let api = options
+        .api
+        .clone()
+        .unwrap_or_else(|| random_id(DEFAULT_API));
+    let provider = options
+        .provider
+        .clone()
+        .unwrap_or_else(|| DEFAULT_PROVIDER.to_owned());
+    let min_token_size = std::cmp::max(
+        1,
+        std::cmp::min(
+            options
+                .token_size
+                .and_then(|size| size.min)
+                .unwrap_or(DEFAULT_MIN_TOKEN_SIZE),
+            options
+                .token_size
+                .and_then(|size| size.max)
+                .unwrap_or(DEFAULT_MAX_TOKEN_SIZE),
+        ),
+    );
+    let max_token_size = std::cmp::max(
+        min_token_size,
+        options
+            .token_size
+            .and_then(|size| size.max)
+            .unwrap_or(DEFAULT_MAX_TOKEN_SIZE),
+    );
 
     let model_definitions = match &options.models {
         Some(models) if !models.is_empty() => models.clone(),
@@ -1009,7 +1271,11 @@ pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> 
             id: DEFAULT_MODEL_ID.to_owned(),
             name: Some(DEFAULT_MODEL_NAME.to_owned()),
             reasoning: Some(false),
-            input: Some(vec![crate::types::InputModality::Text, crate::types::InputModality::Image]),
+            input: Some(vec![
+                crate::types::InputModality::Text,
+                crate::types::InputModality::Image,
+            ]),
+            input_limits: None,
             cost: Some(crate::types::ModelCost::default()),
             context_window: Some(DEFAULT_CONTEXT_WINDOW),
             max_tokens: Some(DEFAULT_MAX_TOKENS),
@@ -1018,7 +1284,12 @@ pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> 
     let models: Vec<Model> = model_definitions
         .into_iter()
         .map(|definition| Model {
-            name: definition.name.clone().unwrap_or_else(|| definition.id.clone()),
+            prompt_cache: None,
+            supports_assistant_prefill: None,
+            name: definition
+                .name
+                .clone()
+                .unwrap_or_else(|| definition.id.clone()),
             id: definition.id,
             api: api.clone(),
             provider: provider.clone(),
@@ -1026,7 +1297,12 @@ pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> 
             reasoning: definition.reasoning.unwrap_or(false),
             default_thinking_level: None,
             thinking_level_map: None,
-            input: definition.input.unwrap_or_else(|| vec![crate::types::InputModality::Text, crate::types::InputModality::Image]),
+            input: definition.input.unwrap_or_else(|| {
+                vec![
+                    crate::types::InputModality::Text,
+                    crate::types::InputModality::Image,
+                ]
+            }),
             cost: definition.cost.unwrap_or_default(),
             context_window: definition.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW),
             max_tokens: definition.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
@@ -1037,7 +1313,7 @@ pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> 
             service_tier: None,
             recover_text_tool_calls: None,
             compat: None,
-            input_limits: None,
+            input_limits: definition.input_limits,
         })
         .collect();
 
@@ -1048,6 +1324,7 @@ pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> 
         min_token_size,
         max_token_size,
         tokens_per_second: options.tokens_per_second,
+        response_headers: options.response_headers.clone().unwrap_or_default(),
         scheduler_hook: options.scheduler_hook.clone(),
         deferred_options: options.deferred.unwrap_or_default(),
         inner: Mutex::new(FauxInner {
@@ -1063,17 +1340,12 @@ pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> 
 static REGISTERED_FAUX_PROVIDERS: LazyLock<Mutex<IndexMap<String, Arc<FauxCore>>>> =
     LazyLock::new(|| Mutex::new(IndexMap::new()));
 
-fn lookup_faux_provider(api: &str) -> Option<crate::api_registry::ApiProviderInternal> {
-    let core = REGISTERED_FAUX_PROVIDERS
+pub fn get_registered_faux_provider(api: &str) -> Option<Arc<FauxCore>> {
+    REGISTERED_FAUX_PROVIDERS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(api)
-        .cloned()?;
-    Some(crate::api_registry::ApiProviderInternal::new(api, faux_streams(core)))
-}
-
-pub fn get_registered_faux_provider(api: &str) -> Option<Arc<FauxCore>> {
-    REGISTERED_FAUX_PROVIDERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(api).cloned()
+        .cloned()
 }
 
 pub fn faux_overflow_error(provider: &str, message: &str) -> AssistantMessage {
@@ -1091,6 +1363,7 @@ pub struct FauxProviderRegistration {
     pub api: String,
     pub models: Vec<Model>,
     pub core: Arc<FauxCore>,
+    pub(crate) source_id: Option<String>,
 }
 
 impl FauxProviderRegistration {
@@ -1118,8 +1391,17 @@ impl FauxProviderRegistration {
         self.core.get_call_log()
     }
 
-    pub fn unregister(&self) {
-        REGISTERED_FAUX_PROVIDERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).shift_remove(&self.api);
+    pub fn unregister(&self) -> Result<(), crate::api_registry::ApiRegistryError> {
+        match &self.source_id {
+            Some(source_id) => crate::api_registry::unregister_api_providers(source_id),
+            None => {
+                REGISTERED_FAUX_PROVIDERS
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .shift_remove(&self.api);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -1129,8 +1411,12 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(core.api.clone(), core.clone());
-    crate::api_registry::install_faux_provider_lookup(Some(lookup_faux_provider));
-    FauxProviderRegistration { api: core.api.clone(), models: core.models.clone(), core }
+    FauxProviderRegistration {
+        api: core.api.clone(),
+        models: core.models.clone(),
+        core,
+        source_id: None,
+    }
 }
 
 pub struct FauxProviderHandle {
@@ -1182,23 +1468,368 @@ impl crate::auth::types::ApiKeyAuth for FauxApiKeyAuth {
         _credential: Option<&crate::auth::types::ApiKeyCredential>,
         _signal: &crate::utils::abort::AbortSignal,
     ) -> anyhow::Result<Option<crate::auth::types::AuthResult>> {
-        Ok(Some(crate::auth::types::AuthResult { auth: Default::default(), env: None, source: None }))
+        Ok(Some(crate::auth::types::AuthResult {
+            ambient: false,
+            auth: Default::default(),
+            env: None,
+            source: None,
+        }))
     }
 }
 
-pub fn faux_provider(options: RegisterFauxProviderOptions) -> FauxProviderHandle {
+pub fn faux_provider(options: RegisterFauxProviderOptions) -> Result<FauxProviderHandle, crate::models::ModelsError> {
     let core = create_faux_core(&options);
     let provider = create_provider(CreateProviderOptions {
         id: core.provider.clone(),
         name: None,
         base_url: None,
         headers: None,
-        auth: Some(crate::auth::types::ProviderAuth { api_key: Some(Arc::new(FauxApiKeyAuth)), oauth: None }),
+        auth: Some(crate::auth::types::ProviderAuth {
+            api_key: Some(Arc::new(FauxApiKeyAuth)),
+            oauth: None,
+        }),
         models: core.models.clone(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,
+        images: indexmap::IndexMap::new(),
         api: ProviderApi::Single(faux_streams(core.clone())),
-    });
-    FauxProviderHandle { provider, api: core.api.clone(), models: core.models.clone(), core }
+    })?;
+    Ok(FauxProviderHandle {
+        provider,
+        api: core.api.clone(),
+        models: core.models.clone(),
+        core,
+    })
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+    use crate::types::{DeferredOption, ProviderRequestOptions, ProviderResponse};
+
+    #[test]
+    fn model_preserves_configured_input_limits() {
+        // Given a faux model with a nondefault image limit.
+        let limits = crate::model::ModelInputLimits {
+            images: Some(crate::model::ModelImageInputLimits {
+                resize: Some(crate::model::ModelImageResizeOptions {
+                    max_width: Some(640),
+                    max_height: Some(480),
+                    max_bytes: Some(4096),
+                    jpeg_quality: None,
+                }),
+                max_per_message: None,
+                max_per_request: None,
+            }),
+            max_request_bytes: None,
+        };
+        let options = RegisterFauxProviderOptions {
+            models: Some(vec![FauxModelDefinition {
+                id: "limited".into(),
+                input_limits: Some(limits.clone()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        // When the provider constructs its models.
+        let core = create_faux_core(&options);
+
+        // Then lookup exposes the configured limits without changing default models.
+        assert_eq!(
+            core.get_model(None).expect("model").input_limits,
+            Some(limits)
+        );
+        assert_eq!(
+            create_faux_core(&Default::default())
+                .get_model(None)
+                .expect("default model")
+                .input_limits,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn response_headers_reach_stream_fetch_and_cancel_hooks() {
+        // Given scripted headers and a hook recording real faux responses.
+        let headers = [("x-request-id".into(), "faux-request".into())]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<String, String>>();
+        let core = create_faux_core(&RegisterFauxProviderOptions {
+            response_headers: Some(headers.clone()),
+            scheduler_hook: Some(Arc::new(|| Box::pin(async {}))),
+            ..Default::default()
+        });
+        core.set_responses(vec![
+            faux_assistant_message("ready", Default::default()).into(),
+        ]);
+        let model = core.get_model(None).expect("model");
+        let responses = Arc::new(Mutex::new(Vec::new()));
+        let recorded = responses.clone();
+        let request = ProviderRequestOptions {
+            on_response: Some(Arc::new(move |response, _| {
+                recorded.lock().expect("responses").push(response.clone());
+            })),
+            ..Default::default()
+        };
+
+        // When submission, fetch and cancellation run through the provider surface.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let streams = faux_streams(core);
+            let submitted = streams
+                .stream_simple(
+                    &model,
+                    &Context::default(),
+                    Some(SimpleStreamOptions {
+                        stream: StreamOptions {
+                            request: request.clone(),
+                            ..Default::default()
+                        },
+                        deferred: Some(DeferredOption::Enabled(true)),
+                        ..Default::default()
+                    }),
+                )
+                .result()
+                .await
+                .expect("submission");
+            let handle = submitted.deferred.expect("handle");
+            streams
+                .fetch_deferred(
+                    &model,
+                    &handle,
+                    Some(DeferredFetchOptions {
+                        request: request.clone(),
+                        ..Default::default()
+                    }),
+                )
+                .expect("fetch stream")
+                .result()
+                .await
+                .expect("fetch");
+            streams
+                .cancel_deferred(&model, &handle, Some(request))
+                .await
+                .expect("cancel");
+        })
+        .await
+        .expect("response deadline");
+
+        // Then each operation reports the configured headers and successful status.
+        assert_eq!(
+            *responses.lock().expect("responses"),
+            vec![
+                ProviderResponse {
+                    status: 200,
+                    headers,
+                };
+                3
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_factory_receives_only_reusable_submission_options() {
+        // Given a submission with lifecycle hooks, a signal and reusable request settings.
+        let core = create_faux_core(&RegisterFauxProviderOptions {
+            scheduler_hook: Some(Arc::new(|| Box::pin(async {}))),
+            ..Default::default()
+        });
+        let controller = crate::utils::abort::AbortController::new();
+        core.set_responses(vec![FauxResponseStep::Factory(Arc::new(
+            |_, options, _, _| {
+                let options = options.expect("submission options");
+                assert!(options.deferred.is_none());
+                assert!(options.stream.request.signal.is_none());
+                assert!(options.stream.request.on_response.is_none());
+                assert!(options.stream.request.async_on_response.is_none());
+                assert_eq!(
+                    options.stream.session_id.as_deref(),
+                    Some("submission-session")
+                );
+                assert_eq!(options.stream.request.timeout_ms, Some(1234));
+                Box::pin(async { faux_assistant_message("ready", Default::default()) })
+            },
+        ))]);
+        let model = core.get_model(None).expect("model");
+        let streams = faux_streams(core);
+        let submitted = tokio::time::timeout(
+            Duration::from_secs(5),
+            streams
+                .stream_simple(
+                    &model,
+                    &Context::default(),
+                    Some(SimpleStreamOptions {
+                        stream: StreamOptions {
+                            request: ProviderRequestOptions {
+                                signal: Some(controller.signal()),
+                                on_response: Some(Arc::new(|_, _| {})),
+                                async_on_response: Some(Arc::new(|_, _| {
+                                    Box::pin(async { Ok(()) })
+                                })),
+                                timeout_ms: Some(1234),
+                                ..Default::default()
+                            },
+                            session_id: Some("submission-session".into()),
+                            ..Default::default()
+                        },
+                        deferred: Some(DeferredOption::Enabled(true)),
+                        ..Default::default()
+                    }),
+                )
+                .result(),
+        )
+        .await
+        .expect("submission deadline")
+        .expect("submission");
+        let handle = submitted.deferred.expect("handle");
+        controller.abort(None);
+
+        // When the deferred response resolves after the submission signal was aborted.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            streams
+                .fetch_deferred(&model, &handle, None)
+                .expect("fetch stream")
+                .result(),
+        )
+        .await
+        .expect("fetch deadline")
+        .expect("fetch");
+
+        // Then the factory completes using preserved settings, not submission lifecycle state.
+        assert_eq!(result.stop_reason, StopReason::Stop);
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    use crate::api_registry::{clear_api_providers, get_api_provider, get_api_providers};
+    use crate::compat::register_faux_provider;
+    use crate::node::provider_scope::{
+        ProviderScope, run_with_provider_scope, run_with_provider_scope_async,
+    };
+
+    #[tokio::test]
+    async fn scoped_faux_still_streams_after_clear() {
+        // Given a faux registration in the active overlay.
+        let scope = ProviderScope::new();
+        run_with_provider_scope_async(&scope, async {
+            let registration = register_faux_provider(RegisterFauxProviderOptions {
+                api: Some("faux-scoped-clear".into()),
+                scheduler_hook: Some(Arc::new(|| Box::pin(async {}))),
+                ..Default::default()
+            })
+            .expect("register");
+            registration.set_responses(vec![
+                faux_assistant_message("response", Default::default()).into(),
+            ]);
+            let model = registration.get_model(None).expect("model");
+
+            // When the active registry is cleared during reload.
+            clear_api_providers().expect("clear");
+
+            // Then compat dispatch still reaches the persistent faux streams.
+            let message = tokio::time::timeout(
+                Duration::from_secs(5),
+                crate::compat::complete(&model, &Context::default(), None),
+            )
+            .await
+            .expect("completion deadline")
+            .expect("complete");
+            assert_eq!(message.stop_reason, StopReason::Stop);
+            assert_eq!(registration.state().call_count, 1);
+            registration.unregister().expect("unregister");
+            assert!(
+                get_api_provider(&registration.api)
+                    .expect("lookup")
+                    .is_none()
+            );
+        })
+        .await
+        .expect("scope");
+    }
+
+    #[test]
+    fn faux_registration_is_isolated_between_scopes() {
+        // Given independent overlays using the same API id.
+        let first = ProviderScope::new();
+        let second = ProviderScope::new();
+        let api = "faux-scope-isolation";
+        let registration = run_with_provider_scope(&first, || {
+            register_faux_provider(RegisterFauxProviderOptions {
+                api: Some(api.into()),
+                ..Default::default()
+            })
+            .expect("register")
+        })
+        .expect("first scope");
+
+        // When another scope reads the registry.
+        let visible = run_with_provider_scope(&second, || get_api_provider(api).expect("lookup"))
+            .expect("second scope");
+
+        // Then only the registering scope can see its faux entry, including enumeration.
+        assert!(visible.is_none());
+        run_with_provider_scope(&first, || {
+            assert!(
+                get_api_providers()
+                    .expect("providers")
+                    .iter()
+                    .any(|provider| provider.api == api)
+            );
+            registration.unregister().expect("unregister");
+        })
+        .expect("first scope");
+    }
+
+    #[test]
+    fn old_faux_source_does_not_unregister_its_replacement() {
+        // Given two registrations for one API in an overlay.
+        let scope = ProviderScope::new();
+        run_with_provider_scope(&scope, || {
+            let options = RegisterFauxProviderOptions {
+                api: Some("faux-source-replacement".into()),
+                ..Default::default()
+            };
+            let old = register_faux_provider(options.clone()).expect("old");
+            let current = register_faux_provider(options).expect("current");
+            let before = get_api_provider(&current.api)
+                .expect("lookup")
+                .expect("provider");
+
+            // When the replaced source unregisters.
+            old.unregister().expect("unregister old");
+
+            // Then the replacement keeps its identity.
+            let after = get_api_provider(&current.api)
+                .expect("lookup")
+                .expect("provider");
+            assert!(Arc::ptr_eq(before.streams(), after.streams()));
+            current.unregister().expect("unregister current");
+        })
+        .expect("scope");
+    }
+
+    #[test]
+    fn faux_registration_rejects_a_closed_active_scope() {
+        // Given an active scope which closes before registration.
+        let scope = ProviderScope::new();
+        run_with_provider_scope(&scope, || {
+            scope.close();
+
+            // When registration attempts to mutate the closed overlay.
+            let result = register_faux_provider(RegisterFauxProviderOptions::default());
+
+            // Then the registry error is propagated rather than falling back globally.
+            assert!(matches!(
+                result,
+                Err(crate::api_registry::ApiRegistryError::Scope(
+                    crate::node::provider_scope::ProviderScopeError::Closed
+                ))
+            ));
+        })
+        .expect("scope entered before close");
+    }
 }

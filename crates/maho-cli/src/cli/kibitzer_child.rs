@@ -104,18 +104,18 @@ impl CliKibitzerChildSpawner {
         category: Option<String>,
         registry_for: SessionModelRegistry,
         resources: KibitzerChildResourcesFactory,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>, maho_ai::models::ModelsError> {
         let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
             auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")),
             ..Default::default()
-        });
+        })?;
         let factory = maho_core::sdk::HostRuntimeFactory {
             model_registry: maho_core::model_registry::ModelRegistry::new(model_runtime.clone()),
             model_runtime,
             extension_factories: Vec::new(),
         };
-        Self::new(executor, factory, (cwd, agent_dir), config, category, registry_for, resources)
+        Ok(Self::new(executor, factory, (cwd, agent_dir), config, category, registry_for, resources))
     }
 
     /// Publish nudges accepted this turn to the resident child's `subscribe_nudges` listeners.
