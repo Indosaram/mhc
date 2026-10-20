@@ -15,18 +15,18 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
 use maho_ai::api::cursor_agent::r#gen::agent_pb::{
-    agent_client_message, agent_server_message, conversation_action, exec_client_message, exec_server_message,
-    interaction_update, read_result, AgentClientMessage, AgentServerMessage, ConversationAction,
-    ExecServerMessage, InteractionUpdate, ReadArgs, ReadSuccess, TextDeltaUpdate, ThinkingDeltaUpdate,
-    TokenDeltaUpdate, TurnEndedUpdate,
+    AgentClientMessage, AgentServerMessage, ConversationAction, ExecServerMessage,
+    InteractionUpdate, ReadArgs, ReadSuccess, TextDeltaUpdate, ThinkingDeltaUpdate,
+    TokenDeltaUpdate, TurnEndedUpdate, agent_client_message, agent_server_message,
+    conversation_action, exec_client_message, exec_server_message, interaction_update, read_result,
 };
 use maho_ai::api::cursor_agent::types::{
     CursorAgentOptions, CursorExecHandlerResult, CursorExecHandlers, CursorToolResultHandler,
 };
 use maho_ai::api::cursor_agent::{frame_connect_message, stream_with_options};
 use maho_ai::types::{
-    AssistantMessageEvent, ContentBlock, Context, InputModality, Message, Model, ModelCost, StopReason,
-    ToolResultMessage, UserContent, UserMessage,
+    AssistantMessageEvent, ContentBlock, Context, InputModality, Message, Model, ModelCost,
+    StopReason, ToolResultMessage, UserContent, UserMessage,
 };
 
 const CONNECT_END_STREAM_FLAG: u8 = 0b0000_0010;
@@ -40,7 +40,10 @@ struct FrameReader {
 impl FrameReader {
     fn feed(&self, bytes: &[u8]) {
         let message = AgentClientMessage::decode(bytes).expect("client frame decodes");
-        self.messages.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(message);
+        self.messages
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(message);
         self.notify.notify_waiters();
     }
 
@@ -55,15 +58,15 @@ impl FrameReader {
 
     /// Bounded wait for a frame: `Notify::notified` is armed before the check so a
     /// frame that lands between the check and the wait cannot be missed.
-    async fn wait_for<T>(
-        &self,
-        predicate: impl Fn(&AgentClientMessage) -> Option<T>,
-    ) -> T {
+    async fn wait_for<T>(&self, predicate: impl Fn(&AgentClientMessage) -> Option<T>) -> T {
         let deadline = tokio::time::sleep(Duration::from_secs(10));
         tokio::pin!(deadline);
         loop {
             let notified = self.notify.notified();
-            if let Some(found) = self.find(|message| predicate(message).is_some()).and_then(|message| predicate(&message)) {
+            if let Some(found) = self
+                .find(|message| predicate(message).is_some())
+                .and_then(|message| predicate(&message))
+            {
                 return found;
             }
             tokio::select! {
@@ -96,44 +99,64 @@ fn server_frame(init: AgentServerMessage) -> Vec<u8> {
 
 fn text_delta_frame(text: &str) -> Vec<u8> {
     server_frame(AgentServerMessage {
-        message: Some(agent_server_message::Message::InteractionUpdate(InteractionUpdate {
-            message: Some(interaction_update::Message::TextDelta(TextDeltaUpdate { text: text.to_owned() })),
-        })),
+        message: Some(agent_server_message::Message::InteractionUpdate(
+            InteractionUpdate {
+                message: Some(interaction_update::Message::TextDelta(TextDeltaUpdate {
+                    text: text.to_owned(),
+                })),
+            },
+        )),
     })
 }
 
 fn thinking_delta_frame(text: &str) -> Vec<u8> {
     server_frame(AgentServerMessage {
-        message: Some(agent_server_message::Message::InteractionUpdate(InteractionUpdate {
-            message: Some(interaction_update::Message::ThinkingDelta(ThinkingDeltaUpdate { text: text.to_owned() })),
-        })),
+        message: Some(agent_server_message::Message::InteractionUpdate(
+            InteractionUpdate {
+                message: Some(interaction_update::Message::ThinkingDelta(
+                    ThinkingDeltaUpdate {
+                        text: text.to_owned(),
+                    },
+                )),
+            },
+        )),
     })
 }
 
 fn token_delta_frame(tokens: i32) -> Vec<u8> {
     server_frame(AgentServerMessage {
-        message: Some(agent_server_message::Message::InteractionUpdate(InteractionUpdate {
-            message: Some(interaction_update::Message::TokenDelta(TokenDeltaUpdate { tokens })),
-        })),
+        message: Some(agent_server_message::Message::InteractionUpdate(
+            InteractionUpdate {
+                message: Some(interaction_update::Message::TokenDelta(TokenDeltaUpdate {
+                    tokens,
+                })),
+            },
+        )),
     })
 }
 
 fn turn_ended_frame() -> Vec<u8> {
     server_frame(AgentServerMessage {
-        message: Some(agent_server_message::Message::InteractionUpdate(InteractionUpdate {
-            message: Some(interaction_update::Message::TurnEnded(TurnEndedUpdate::default())),
-        })),
+        message: Some(agent_server_message::Message::InteractionUpdate(
+            InteractionUpdate {
+                message: Some(interaction_update::Message::TurnEnded(
+                    TurnEndedUpdate::default(),
+                )),
+            },
+        )),
     })
 }
 
 fn exec_frame(message: exec_server_message::Message) -> Vec<u8> {
     server_frame(AgentServerMessage {
-        message: Some(agent_server_message::Message::ExecServerMessage(ExecServerMessage {
-            id: 7,
-            exec_id: "exec-7".to_owned(),
-            message: Some(message),
-            ..ExecServerMessage::default()
-        })),
+        message: Some(agent_server_message::Message::ExecServerMessage(
+            ExecServerMessage {
+                id: 7,
+                exec_id: "exec-7".to_owned(),
+                message: Some(message),
+                ..ExecServerMessage::default()
+            },
+        )),
     })
 }
 
@@ -152,7 +175,9 @@ where
     tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
         let mut connection = server::handshake(socket).await.expect("handshake");
-        let Some(Ok((request, mut respond))) = connection.accept().await else { return };
+        let Some(Ok((request, mut respond))) = connection.accept().await else {
+            return;
+        };
         let request_headers = request.headers().clone();
         let reader = FrameReader::default();
         let body_reader = reader.clone();
@@ -164,7 +189,9 @@ where
                 let _ = body.flow_control().release_capacity(chunk.len());
                 pending.extend_from_slice(&chunk);
                 while pending.len() >= 5 {
-                    let length = u32::from_be_bytes([pending[1], pending[2], pending[3], pending[4]]) as usize;
+                    let length =
+                        u32::from_be_bytes([pending[1], pending[2], pending[3], pending[4]])
+                            as usize;
                     if pending.len() < 5 + length {
                         break;
                     }
@@ -174,9 +201,16 @@ where
                 }
             }
         });
-        let send = respond.send_response(http::Response::new(()), false).expect("respond");
+        let send = respond
+            .send_response(http::Response::new(()), false)
+            .expect("respond");
         tokio::spawn(async move {
-            handler(ServerStream { reader, request_headers, send }).await;
+            handler(ServerStream {
+                reader,
+                request_headers,
+                send,
+            })
+            .await;
         });
         // The h2 connection future owns the socket IO, so it has to keep being
         // polled while the handler runs in its own task; this loop does that and
@@ -196,6 +230,8 @@ fn build_model(base_url: &str) -> Model {
         reasoning: true,
         default_thinking_level: None,
         thinking_level_map: None,
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         input: vec![InputModality::Text],
         cost: ModelCost::default(),
         context_window: 200_000,
@@ -213,13 +249,21 @@ fn build_model(base_url: &str) -> Model {
 
 fn hello_context() -> Context {
     Context {
+        active_tool_names: None,
         system_prompt: None,
-        messages: vec![Message::User(UserMessage { content: UserContent::Text("hello".to_owned()), timestamp: 0 })],
+        messages: vec![Message::User(UserMessage {
+            content: UserContent::Text("hello".to_owned()),
+            timestamp: 0,
+        })],
         tools: None,
     }
 }
 
-async fn collect(base_url: &str, options: CursorAgentOptions, context: Context) -> (Vec<AssistantMessageEvent>, maho_ai::types::AssistantMessage) {
+async fn collect(
+    base_url: &str,
+    options: CursorAgentOptions,
+    context: Context,
+) -> (Vec<AssistantMessageEvent>, maho_ai::types::AssistantMessage) {
     let stream = stream_with_options(&build_model(base_url), &context, Some(options));
     let events = stream.collect().await.expect("events");
     let message = stream.result().await.expect("result");
@@ -227,18 +271,20 @@ async fn collect(base_url: &str, options: CursorAgentOptions, context: Context) 
 }
 
 fn action_case(action: Option<ConversationAction>) -> Option<String> {
-    Some(match action?.action? {
-        conversation_action::Action::UserMessageAction(_) => "userMessageAction",
-        conversation_action::Action::ResumeAction(_) => "resumeAction",
-        _ => "other",
-    }
-    .to_owned())
+    Some(
+        match action?.action? {
+            conversation_action::Action::UserMessageAction(_) => "userMessageAction",
+            conversation_action::Action::ResumeAction(_) => "resumeAction",
+            _ => "other",
+        }
+        .to_owned(),
+    )
 }
 
 #[tokio::test]
 async fn streams_text_thinking_and_usage_ending_on_turn_ended() {
     let base_url = start_server(|mut stream| async move {
-                stream.send(thinking_delta_frame("pondering")).await;
+        stream.send(thinking_delta_frame("pondering")).await;
         stream.send(text_delta_frame("Hello ")).await;
         stream.send(text_delta_frame("world")).await;
         stream.send(token_delta_frame(7)).await;
@@ -249,13 +295,20 @@ async fn streams_text_thinking_and_usage_ending_on_turn_ended() {
 
     let (events, message) = collect(
         &base_url,
-        CursorAgentOptions { base: options_with_key("test-token"), ..CursorAgentOptions::default() },
+        CursorAgentOptions {
+            base: options_with_key("test-token"),
+            ..CursorAgentOptions::default()
+        },
         hello_context(),
     )
     .await;
 
     assert_eq!(message.stop_reason, StopReason::Stop);
-    let kinds: Vec<&str> = message.content.iter().map(ContentBlock::type_name).collect();
+    let kinds: Vec<&str> = message
+        .content
+        .iter()
+        .map(ContentBlock::type_name)
+        .collect();
     assert_eq!(kinds, vec!["thinking", "text"]);
     match &message.content[0] {
         ContentBlock::Thinking(thinking) => assert_eq!(thinking.thinking, "pondering"),
@@ -310,8 +363,11 @@ async fn sends_protocol_headers_and_sanitizes_caller_supplied_ones() {
     let base_url = start_server(move |mut stream| {
         let seen_handler = seen_handler.clone();
         async move {
-            *seen_handler.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(stream.request_headers.clone());
-                        stream.send(text_delta_frame("ok")).await;
+            *seen_handler
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some(stream.request_headers.clone());
+            stream.send(text_delta_frame("ok")).await;
             stream.send(turn_ended_frame()).await;
             stream.end();
         }
@@ -320,23 +376,65 @@ async fn sends_protocol_headers_and_sanitizes_caller_supplied_ones() {
 
     let mut base = options_with_key("test-token");
     base.request.headers = Some(std::collections::BTreeMap::from([
-        ("Authorization".to_owned(), Some("Bearer attacker-token".to_owned())),
+        (
+            "Authorization".to_owned(),
+            Some("Bearer attacker-token".to_owned()),
+        ),
         ("Connection".to_owned(), Some("keep-alive".to_owned())),
         ("Host".to_owned(), Some("evil.example".to_owned())),
         ("X-Trace-Id".to_owned(), Some("trace-123".to_owned())),
     ]));
-    let _ = collect(&base_url, CursorAgentOptions { base, ..CursorAgentOptions::default() }, hello_context()).await;
+    let _ = collect(
+        &base_url,
+        CursorAgentOptions {
+            base,
+            ..CursorAgentOptions::default()
+        },
+        hello_context(),
+    )
+    .await;
 
-    let headers = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone().expect("headers");
-    assert_eq!(headers.get("authorization").map(|v| v.to_str().unwrap_or_default()), Some("Bearer test-token"));
-    assert_eq!(headers.get("x-trace-id").map(|v| v.to_str().unwrap_or_default()), Some("trace-123"));
+    let headers = seen
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .expect("headers");
     assert_eq!(
-        headers.get("content-type").map(|v| v.to_str().unwrap_or_default()),
+        headers
+            .get("authorization")
+            .map(|v| v.to_str().unwrap_or_default()),
+        Some("Bearer test-token")
+    );
+    assert_eq!(
+        headers
+            .get("x-trace-id")
+            .map(|v| v.to_str().unwrap_or_default()),
+        Some("trace-123")
+    );
+    assert_eq!(
+        headers
+            .get("content-type")
+            .map(|v| v.to_str().unwrap_or_default()),
         Some("application/connect+proto")
     );
-    assert_eq!(headers.get("connect-protocol-version").map(|v| v.to_str().unwrap_or_default()), Some("1"));
-    assert_eq!(headers.get("x-ghost-mode").map(|v| v.to_str().unwrap_or_default()), Some("true"));
-    assert_eq!(headers.get("x-cursor-client-type").map(|v| v.to_str().unwrap_or_default()), Some("cli"));
+    assert_eq!(
+        headers
+            .get("connect-protocol-version")
+            .map(|v| v.to_str().unwrap_or_default()),
+        Some("1")
+    );
+    assert_eq!(
+        headers
+            .get("x-ghost-mode")
+            .map(|v| v.to_str().unwrap_or_default()),
+        Some("true")
+    );
+    assert_eq!(
+        headers
+            .get("x-cursor-client-type")
+            .map(|v| v.to_str().unwrap_or_default()),
+        Some("cli")
+    );
 }
 
 #[tokio::test]
@@ -400,17 +498,17 @@ async fn executes_a_server_requested_read_on_the_exec_channel_and_pairs_the_tran
         read: Some(Arc::new(move |args: ReadArgs| {
             let read_calls = read_calls_handler.clone();
             Box::pin(async move {
-                read_calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((
-                    args.path.clone(),
-                    args.offset,
-                    args.limit,
-                ));
+                read_calls
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push((args.path.clone(), args.offset, args.limit));
                 CursorExecHandlerResult::ToolResult(ToolResultMessage {
                     tool_call_id: args.tool_call_id.clone(),
                     tool_name: "read".to_owned(),
                     content: vec![ContentBlock::text("file contents here")],
                     details: None,
                     usage: None,
+                    nested_calls: None,
                     added_tool_names: None,
                     is_error: false,
                     timestamp: 0,
@@ -422,21 +520,31 @@ async fn executes_a_server_requested_read_on_the_exec_channel_and_pairs_the_tran
     let on_tool_result: CursorToolResultHandler = Arc::new(move |result| {
         let paired = paired_handler.clone();
         Box::pin(async move {
-            paired.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(result);
+            paired
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(result);
             None
         })
     });
 
-    let mut options = CursorAgentOptions { base: options_with_key("test-token"), ..CursorAgentOptions::default() };
+    let mut options = CursorAgentOptions {
+        base: options_with_key("test-token"),
+        ..CursorAgentOptions::default()
+    };
     options.exec_handlers = Some(handlers);
     options.on_tool_result = Some(on_tool_result);
     let (_events, message) = collect(&base_url, options, hello_context()).await;
 
     assert_eq!(
-        *read_calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+        *read_calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
         vec![("src/main.ts".to_owned(), Some(5), Some(10))]
     );
-    let paired = paired_results.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let paired = paired_results
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert_eq!(paired.len(), 1);
     assert_eq!(paired[0].tool_call_id, "call-42");
 
@@ -450,7 +558,10 @@ async fn executes_a_server_requested_read_on_the_exec_channel_and_pairs_the_tran
         .expect("synthesized tool call");
     assert_eq!(tool_call.id, "call-42");
     assert_eq!(tool_call.name, "read");
-    assert_eq!(tool_call.arguments.get("path"), Some(&serde_json::json!("src/main.ts")));
+    assert_eq!(
+        tool_call.arguments.get("path"),
+        Some(&serde_json::json!("src/main.ts"))
+    );
     assert_eq!(message.stop_reason, StopReason::Stop);
 }
 
@@ -516,7 +627,10 @@ async fn advertises_non_native_tools_through_the_request_context_handshake() {
     ]);
     let (_events, message) = collect(
         &base_url,
-        CursorAgentOptions { base: options_with_key("test-token"), ..CursorAgentOptions::default() },
+        CursorAgentOptions {
+            base: options_with_key("test-token"),
+            ..CursorAgentOptions::default()
+        },
         context,
     )
     .await;
@@ -526,37 +640,55 @@ async fn advertises_non_native_tools_through_the_request_context_handshake() {
 #[tokio::test]
 async fn surfaces_connect_end_stream_errors() {
     let base_url = start_server(|mut stream| async move {
-                stream.send(end_stream_error_frame("resource_exhausted", "quota exceeded")).await;
+        stream
+            .send(end_stream_error_frame(
+                "resource_exhausted",
+                "quota exceeded",
+            ))
+            .await;
         stream.end();
     })
     .await;
 
     let (_events, message) = collect(
         &base_url,
-        CursorAgentOptions { base: options_with_key("test-token"), ..CursorAgentOptions::default() },
+        CursorAgentOptions {
+            base: options_with_key("test-token"),
+            ..CursorAgentOptions::default()
+        },
         hello_context(),
     )
     .await;
     assert_eq!(message.stop_reason, StopReason::Error);
     let error = message.error_message.unwrap_or_default();
-    assert!(error.contains("Connect error resource_exhausted: quota exceeded"), "{error}");
+    assert!(
+        error.contains("Connect error resource_exhausted: quota exceeded"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
 async fn treats_a_stream_that_ends_without_turn_ended_as_incomplete() {
     let base_url = start_server(|mut stream| async move {
-                stream.send(text_delta_frame("partial")).await;
+        stream.send(text_delta_frame("partial")).await;
         stream.end();
     })
     .await;
 
-    let mut options = CursorAgentOptions { base: options_with_key("test-token"), ..CursorAgentOptions::default() };
+    let mut options = CursorAgentOptions {
+        base: options_with_key("test-token"),
+        ..CursorAgentOptions::default()
+    };
     options.stream_stall_max_retries = Some(0);
     let (_events, message) = collect(&base_url, options, hello_context()).await;
     assert_eq!(message.stop_reason, StopReason::Error);
     let error = message.error_message.unwrap_or_default();
     assert!(error.contains("ended before turnEnded"), "{error}");
-    let kinds: Vec<&str> = message.content.iter().map(ContentBlock::type_name).collect();
+    let kinds: Vec<&str> = message
+        .content
+        .iter()
+        .map(ContentBlock::type_name)
+        .collect();
     assert_eq!(kinds, vec!["text"]);
     match &message.content[0] {
         ContentBlock::Text(text) => assert_eq!(text.text, "partial"),
@@ -566,7 +698,12 @@ async fn treats_a_stream_that_ends_without_turn_ended_as_incomplete() {
 
 #[tokio::test]
 async fn fails_fast_without_an_access_token() {
-    let (_events, message) = collect("http://127.0.0.1:1", CursorAgentOptions::default(), hello_context()).await;
+    let (_events, message) = collect(
+        "http://127.0.0.1:1",
+        CursorAgentOptions::default(),
+        hello_context(),
+    )
+    .await;
     assert_eq!(message.stop_reason, StopReason::Error);
     let error = message.error_message.unwrap_or_default();
     assert!(error.contains("access token"), "{error}");
@@ -576,14 +713,18 @@ async fn fails_fast_without_an_access_token() {
 async fn awaits_payload_hook_before_actual_run_frame_and_ignores_replacement_as_source_does() {
     let (wire_tx, mut wire_rx) = tokio::sync::mpsc::unbounded_channel();
     let base_url = start_server(move |mut server| async move {
-        let request = server.reader.wait_for(|message| match &message.message {
-            Some(agent_client_message::Message::RunRequest(request)) => Some(request.clone()),
-            _ => None,
-        }).await;
+        let request = server
+            .reader
+            .wait_for(|message| match &message.message {
+                Some(agent_client_message::Message::RunRequest(request)) => Some(request.clone()),
+                _ => None,
+            })
+            .await;
         wire_tx.send(request).expect("wire run request");
         server.send(turn_ended_frame()).await;
         server.end();
-    }).await;
+    })
+    .await;
     let (hook_tx, mut hook_rx) = tokio::sync::mpsc::unbounded_channel();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let mut base = options_with_key("test-token");
@@ -596,18 +737,47 @@ async fn awaits_payload_hook_before_actual_run_frame_and_ignores_replacement_as_
                 assert!(payload.get("conversationId").is_some());
                 tx.send(()).expect("hook entered");
                 release.acquire().await.expect("permit").forget();
-                Ok(Some(serde_json::json!({"conversationId":"replacement-must-not-be-used"})))
+                Ok(Some(
+                    serde_json::json!({"conversationId":"replacement-must-not-be-used"}),
+                ))
             })
         }
     }));
-    let stream = stream_with_options(&build_model(&base_url), &hello_context(),
-        Some(CursorAgentOptions { base, ..Default::default() }));
-    assert_eq!(tokio::time::timeout(Duration::from_secs(10), hook_rx.recv()).await.expect("hook timeout"), Some(()));
-    assert!(matches!(wire_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+    let stream = stream_with_options(
+        &build_model(&base_url),
+        &hello_context(),
+        Some(CursorAgentOptions {
+            base,
+            ..Default::default()
+        }),
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), hook_rx.recv())
+            .await
+            .expect("hook timeout"),
+        Some(())
+    );
+    assert!(matches!(
+        wire_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
     release.add_permits(1);
-    let request = tokio::time::timeout(Duration::from_secs(10), wire_rx.recv()).await.expect("wire timeout").expect("run request");
-    assert_ne!(request.conversation_id.as_deref(), Some("replacement-must-not-be-used"));
-    assert_eq!(tokio::time::timeout(Duration::from_secs(10), stream.result()).await.expect("result timeout").expect("result").stop_reason, StopReason::Stop);
+    let request = tokio::time::timeout(Duration::from_secs(10), wire_rx.recv())
+        .await
+        .expect("wire timeout")
+        .expect("run request");
+    assert_ne!(
+        request.conversation_id.as_deref(),
+        Some("replacement-must-not-be-used")
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), stream.result())
+            .await
+            .expect("result timeout")
+            .expect("result")
+            .stop_reason,
+        StopReason::Stop
+    );
 }
 
 #[tokio::test]
@@ -638,14 +808,40 @@ async fn payload_hook_error_and_pending_cancellation_prevent_cursor_connection()
                 })
             }
         }));
-        let stream = stream_with_options(&build_model(&url), &hello_context(),
-            Some(CursorAgentOptions { base, ..Default::default() }));
-        assert_eq!(tokio::time::timeout(Duration::from_secs(10), hook_rx.recv()).await.expect("hook timeout"), Some(()));
-        if cancel { controller.abort(None); } else { release.add_permits(1); }
-        let result = tokio::time::timeout(Duration::from_secs(10), stream.result()).await.expect("result timeout").expect("result");
+        let stream = stream_with_options(
+            &build_model(&url),
+            &hello_context(),
+            Some(CursorAgentOptions {
+                base,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), hook_rx.recv())
+                .await
+                .expect("hook timeout"),
+            Some(())
+        );
+        if cancel {
+            controller.abort(None);
+        } else {
+            release.add_permits(1);
+        }
+        let result = tokio::time::timeout(Duration::from_secs(10), stream.result())
+            .await
+            .expect("result timeout")
+            .expect("result");
         assert!(result.content.is_empty());
-        if !cancel { assert_eq!(result.error_message.as_deref(), Some("cursor-payload-exact-error")); }
-        assert!(matches!(wire_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        if !cancel {
+            assert_eq!(
+                result.error_message.as_deref(),
+                Some("cursor-payload-exact-error")
+            );
+        }
+        assert!(matches!(
+            wire_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
         server.abort();
         assert!(server.await.expect_err("server aborted").is_cancelled());
     }
@@ -654,7 +850,7 @@ async fn payload_hook_error_and_pending_cancellation_prevent_cursor_connection()
 #[tokio::test]
 async fn aborts_cleanly_when_the_caller_cancels_mid_stream() {
     let base_url = start_server(|mut stream| async move {
-                stream.send(text_delta_frame("started")).await;
+        stream.send(text_delta_frame("started")).await;
         tokio::time::sleep(Duration::from_secs(30)).await;
     })
     .await;
@@ -662,12 +858,17 @@ async fn aborts_cleanly_when_the_caller_cancels_mid_stream() {
     let controller = maho_ai::utils::abort::AbortController::new();
     let mut base = options_with_key("test-token");
     base.request.signal = Some(controller.signal());
-    let options = CursorAgentOptions { base, ..CursorAgentOptions::default() };
+    let options = CursorAgentOptions {
+        base,
+        ..CursorAgentOptions::default()
+    };
     let stream = stream_with_options(&build_model(&base_url), &hello_context(), Some(options));
 
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let Ok(Some(event)) = stream.next().await else { return };
+            let Ok(Some(event)) = stream.next().await else {
+                return;
+            };
             if matches!(event, AssistantMessageEvent::TextDelta { .. }) {
                 controller.abort(None);
                 return;
@@ -684,7 +885,9 @@ async fn aborts_cleanly_when_the_caller_cancels_mid_stream() {
 #[tokio::test]
 async fn ignores_a_frame_the_client_never_asked_for() {
     let base_url = start_server(|mut stream| async move {
-                stream.send(frame_connect_message(&[0xff, 0xff, 0xff], 0)).await;
+        stream
+            .send(frame_connect_message(&[0xff, 0xff, 0xff], 0))
+            .await;
         stream.send(turn_ended_frame()).await;
         stream.end();
     })
@@ -692,7 +895,10 @@ async fn ignores_a_frame_the_client_never_asked_for() {
 
     let (_events, message) = collect(
         &base_url,
-        CursorAgentOptions { base: options_with_key("test-token"), ..CursorAgentOptions::default() },
+        CursorAgentOptions {
+            base: options_with_key("test-token"),
+            ..CursorAgentOptions::default()
+        },
         hello_context(),
     )
     .await;
@@ -707,7 +913,7 @@ async fn sends_a_user_message_action_for_the_active_turn() {
     let base_url = start_server(move |mut stream| {
         let captured_handler = captured_handler.clone();
         async move {
-                        let reader = stream.reader.clone();
+            let reader = stream.reader.clone();
             let request = reader
                 .wait_for(|message| match message.message.as_ref() {
                     Some(agent_client_message::Message::RunRequest(_)) => Some(message.clone()),
@@ -715,7 +921,9 @@ async fn sends_a_user_message_action_for_the_active_turn() {
                 })
                 .await;
             if let Some(agent_client_message::Message::RunRequest(run_request)) = request.message {
-                *captured_handler.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                *captured_handler
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                     action_case(run_request.action);
                 let state = run_request.conversation_state.expect("state");
                 assert!(!state.root_prompt_messages_json.is_empty());
@@ -728,12 +936,18 @@ async fn sends_a_user_message_action_for_the_active_turn() {
 
     let _ = collect(
         &base_url,
-        CursorAgentOptions { base: options_with_key("test-token"), ..CursorAgentOptions::default() },
+        CursorAgentOptions {
+            base: options_with_key("test-token"),
+            ..CursorAgentOptions::default()
+        },
         hello_context(),
     )
     .await;
     assert_eq!(
-        captured.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(),
+        captured
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
         Some("userMessageAction".to_owned())
     );
 }

@@ -78,7 +78,12 @@ fn native_child_transcript_preserves_exact_locator_on_create_and_resume() {
     assert_eq!(resumed.session_id(), session_id);
     assert_eq!(resumed.current_context().messages.len(), 2);
     assert_eq!(std::fs::read(&path).expect("retained transcript"), before);
-    assert_eq!(std::fs::read_dir(&session_dir).expect("child directory").count(), 1);
+    let transcripts = std::fs::read_dir(&session_dir).expect("child directory")
+        .map(|entry| entry.expect("child directory entry"))
+        .filter(|entry| entry.file_type().expect("child entry type").is_file()
+            && entry.path().extension().is_some_and(|extension| extension == "jsonl"))
+        .count();
+    assert_eq!(transcripts, 1);
 }
 
 #[test]
@@ -114,8 +119,8 @@ fn native_child_options_preserve_parent_handles_and_isolated_policy() {
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
         maho_core::model_runtime::CreateModelRuntimeOptions {
             credentials: Some(credentials.clone()), providers: Some(Vec::new()), ..Default::default()
-        });
-    let model = maho_ai::providers::faux::faux_provider(Default::default()).get_model(Some("faux-1")).expect("model");
+        }).expect("valid model runtime");
+    let model = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider").get_model(Some("faux-1")).expect("model");
     let spec = ChildSpec {
         cwd: cwd.clone(), agent_dir: Some("child-agent".into()),
         auth_storage: Some(credentials.clone()), model_runtime: Some(Arc::new(runtime.clone())),
@@ -217,10 +222,10 @@ async fn converted_child_options_drive_native_provider_and_restore_exact_transcr
     let dir = tempfile::tempdir().expect("isolated native child");
     let cwd = dir.path().to_string_lossy().into_owned();
     let session_dir = dir.path().join("children").join("child").to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("native child response", Default::default()).into()]);
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
-        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
+        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     let registry = maho_core::model_registry::ModelRegistry::new(runtime.clone());
     registry.auth_storage.set("faux", Some(serde_json::json!({"type":"api_key","key":"native-child-fixture"}))).expect("faux auth");
@@ -301,7 +306,7 @@ async fn child_registry_retains_native_credentials_and_retires_with_parent() {
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
         maho_core::model_runtime::CreateModelRuntimeOptions {
             credentials: Some(credentials.clone()), providers: Some(Vec::new()), ..Default::default()
-        });
+        }).expect("valid model runtime");
     runtime.register_provider("task-fixture", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider {
             api: Some("openai-completions".into()), api_key: Some("fixture-key".into()),
@@ -338,9 +343,9 @@ async fn shared_parent_tool_obeys_registered_admission_hooks() {
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     let dir = tempfile::tempdir().expect("isolated tool parent");
     let cwd = dir.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
-        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
+        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     let executions = Arc::new(AtomicUsize::new(0));
     let executed = executions.clone();
@@ -416,7 +421,7 @@ async fn native_child_tool_bridges_sync_execution_from_runtime_context() {
     let created = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(cwd.clone()),
         agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
-        model: Some(maho_ai::providers::faux::faux_provider(Default::default())
+        model: Some(maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider")
             .get_model(Some("faux-1")).expect("model")),
         session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
         tools: Some(vec!["sync_child_tool".into()]), custom_tools: vec![tool], minimal_resources: true,
@@ -443,7 +448,7 @@ async fn native_shared_definition_cancels_an_entered_parent_tool() {
     }
     let dir = tempfile::tempdir().expect("isolated shared cancellation");
     let cwd = dir.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let (entered, mut entries) = tokio::sync::mpsc::unbounded_channel();
     let (dropped, mut drops) = tokio::sync::mpsc::unbounded_channel();
     let tool = maho_ext_api::ToolDefinition::new("pending_child_tool", "pending child fixture",
@@ -488,7 +493,7 @@ async fn native_shared_definition_forwards_parent_tool_updates() {
     use std::sync::{Arc, Mutex};
     let dir = tempfile::tempdir().expect("shared updates");
     let cwd = dir.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let tool = maho_ext_api::ToolDefinition::new("updating_child_tool", "update fixture",
         serde_json::json!({"type":"object","properties":{}}), Arc::new(|call| Box::pin(async move {
             if let Some(update) = call.on_update { update(maho_ext_api::ToolResult::text(call.id))?; }
@@ -528,7 +533,7 @@ async fn shared_definition_normalizes_arguments_once_through_child_sdk() {
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     let dir = tempfile::tempdir().expect("shared normalization");
     let cwd = dir.path().to_string_lossy().into_owned();
-    let model = maho_ai::providers::faux::faux_provider(Default::default()).get_model(Some("faux-1")).expect("model");
+    let model = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider").get_model(Some("faux-1")).expect("model");
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
     let mut tool = maho_ext_api::ToolDefinition::new("normalizing_child_tool", "normalizing fixture",
@@ -575,9 +580,9 @@ async fn native_child_steer_and_follow_up_propagate_queue_errors() {
 
     let dir = tempfile::tempdir().expect("child session dir");
     let cwd = dir.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
-        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
+        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     let model = provider.get_model(Some("faux-1")).expect("model");
 

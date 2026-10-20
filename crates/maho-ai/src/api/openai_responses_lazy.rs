@@ -2,14 +2,22 @@
 
 use std::sync::Arc;
 
-use crate::api::lazy::{lazy_api, LazyApiCapabilities};
+use crate::api::lazy::{LazyApiCapabilities, lazy_api};
 use crate::api::openai_responses;
-use crate::types::{AssistantMessageEventStream, Context, Model, ProviderStreams, SimpleStreamOptions, StreamOptions};
+use crate::types::{
+    AssistantMessageEventStream, Context, Model, ProviderStreams, SimpleStreamOptions,
+    StreamOptions,
+};
 
 struct OpenAiResponsesModule;
 
 impl ProviderStreams for OpenAiResponsesModule {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         openai_responses::stream(model, context, options)
     }
 
@@ -24,6 +32,15 @@ impl ProviderStreams for OpenAiResponsesModule {
 }
 
 pub fn openai_responses_api() -> Arc<dyn ProviderStreams> {
+    crate::api::warm_prompt_cache::prompt_cache_warmers::register_prompt_cache_warmer(
+        "openai-responses",
+        Arc::new(|model, context, options| {
+            Box::pin(async move {
+                openai_responses::warm_openai_responses_prompt_cache(&model, &context, options)
+                    .await
+            })
+        }),
+    );
     lazy_api(
         Arc::new(|| Ok(Arc::new(OpenAiResponsesModule) as Arc<dyn ProviderStreams>)),
         LazyApiCapabilities::default(),
@@ -37,14 +54,18 @@ mod tests {
     #[tokio::test]
     async fn lazy_wrapper_forwards_to_the_concrete_module() {
         let api = openai_responses_api();
-        let mut model =
-            crate::models_generated::get_builtin_provider_models("openai").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("openai")
+            .expect("models")[0]
+            .clone();
         model.api = "openai-responses".into();
         let stream = api.stream(&model, &Context::default(), None);
         let message = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
             .await
             .expect("bounded wait")
             .expect("result");
-        assert_eq!(message.error_message.as_deref(), Some("No API key for provider: openai"));
+        assert_eq!(
+            message.error_message.as_deref(),
+            Some("No API key for provider: openai")
+        );
     }
 }

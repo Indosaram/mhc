@@ -18,7 +18,7 @@ async fn native_sdk_abort_drops_pending_payload_hook_without_transmitting() {
     let cwd = dir.path().to_string_lossy().into_owned();
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_provider("wire-cancel-fixture", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider {
             api: Some("openai-completions".into()), base_url: Some(format!("http://{address}/v1")), api_key: Some("fixture-key".into()),
@@ -85,7 +85,7 @@ async fn native_sdk_awaits_generated_payload_and_response_hooks_on_real_wire() {
     let cwd = dir.path().to_string_lossy().into_owned();
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_provider("wire-fixture", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider {
             api: Some("openai-completions".into()), base_url: Some(format!("http://{address}/v1")), api_key: Some("fixture-key".into()),
@@ -189,7 +189,7 @@ async fn native_sdk_payload_failure_is_reported_without_transmission() {
     let cwd = dir.path().to_string_lossy().into_owned();
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_provider("wire-error-fixture", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider {
             api: Some("openai-completions".into()), base_url: Some(format!("http://{address}/v1")), api_key: Some("fixture-key".into()),

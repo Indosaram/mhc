@@ -1,13 +1,14 @@
 //! Port of senpi packages/ai/src/api/transform-messages.ts.
 
 use crate::types::{
-    is_video_mime_type, AssistantMessage, ContentBlock, Message, Model, TextContent, ToolResultMessage,
-    UserContent,
+    AssistantMessage, ContentBlock, Message, Model, TextContent, ToolResultMessage, UserContent,
+    is_video_mime_type,
 };
 use crate::utils::diagnostics::now_ms;
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support images)";
-const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str = "(tool image omitted: model does not support images)";
+const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str =
+    "(tool image omitted: model does not support images)";
 const NO_VIDEO_USER_PLACEHOLDER: &str = "(video omitted: model does not support video input)";
 const NO_VIDEO_TOOL_PLACEHOLDER: &str = "(tool video omitted: model does not support video input)";
 
@@ -16,7 +17,10 @@ fn replace_media_with_placeholder(
     placeholder: &str,
     matches: impl Fn(&ContentBlock) -> bool,
 ) -> Vec<ContentBlock> {
-    if !content.iter().any(|block| block.type_name() == "image" && matches(block)) {
+    if !content
+        .iter()
+        .any(|block| block.type_name() == "image" && matches(block))
+    {
         return content.to_vec();
     }
     let mut result: Vec<ContentBlock> = Vec::with_capacity(content.len());
@@ -32,13 +36,17 @@ fn replace_media_with_placeholder(
         }
 
         result.push(block.clone());
-        previous_was_placeholder = matches!(block, ContentBlock::Text(text) if text.text == placeholder);
+        previous_was_placeholder =
+            matches!(block, ContentBlock::Text(text) if text.text == placeholder);
     }
 
     result
 }
 
-fn replace_images_with_placeholder(content: &[ContentBlock], placeholder: &str) -> Vec<ContentBlock> {
+fn replace_images_with_placeholder(
+    content: &[ContentBlock],
+    placeholder: &str,
+) -> Vec<ContentBlock> {
     let mut result: Vec<ContentBlock> = Vec::with_capacity(content.len());
     let mut previous_was_placeholder = false;
 
@@ -52,7 +60,8 @@ fn replace_images_with_placeholder(content: &[ContentBlock], placeholder: &str) 
         }
 
         result.push(block.clone());
-        previous_was_placeholder = matches!(block, ContentBlock::Text(text) if text.text == placeholder);
+        previous_was_placeholder =
+            matches!(block, ContentBlock::Text(text) if text.text == placeholder);
     }
 
     result
@@ -74,13 +83,22 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
         .iter()
         .map(|msg| match msg {
             Message::User(user) => {
-                let UserContent::Blocks(blocks) = &user.content else { return msg.clone() };
+                let UserContent::Blocks(blocks) = &user.content else {
+                    return msg.clone();
+                };
                 let mut content = blocks.clone();
                 if !supports_video {
-                    content = replace_media_with_placeholder(&content, NO_VIDEO_USER_PLACEHOLDER, is_video_block);
+                    content = replace_media_with_placeholder(
+                        &content,
+                        NO_VIDEO_USER_PLACEHOLDER,
+                        is_video_block,
+                    );
                 }
                 if !supports_images {
-                    content = replace_images_with_placeholder(&content, NON_VISION_USER_IMAGE_PLACEHOLDER);
+                    content = replace_images_with_placeholder(
+                        &content,
+                        NON_VISION_USER_IMAGE_PLACEHOLDER,
+                    );
                 }
                 let mut user = user.clone();
                 user.content = UserContent::Blocks(content);
@@ -89,10 +107,17 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
             Message::ToolResult(result) => {
                 let mut content = result.content.clone();
                 if !supports_video {
-                    content = replace_media_with_placeholder(&content, NO_VIDEO_TOOL_PLACEHOLDER, is_video_block);
+                    content = replace_media_with_placeholder(
+                        &content,
+                        NO_VIDEO_TOOL_PLACEHOLDER,
+                        is_video_block,
+                    );
                 }
                 if !supports_images {
-                    content = replace_images_with_placeholder(&content, NON_VISION_TOOL_IMAGE_PLACEHOLDER);
+                    content = replace_images_with_placeholder(
+                        &content,
+                        NON_VISION_TOOL_IMAGE_PLACEHOLDER,
+                    );
                 }
                 let mut result = result.clone();
                 result.content = content;
@@ -132,7 +157,8 @@ pub fn transform_messages(
     let preserve_thinking = options.preserve_thinking.unwrap_or(true);
     let preserve_text_signatures = options.preserve_text_signatures.unwrap_or(false);
     let preserve_unsigned_thinking = options.preserve_unsigned_thinking.unwrap_or(false);
-    let normalize_same_model_tool_call_ids = options.normalize_same_model_tool_call_ids.unwrap_or(false);
+    let normalize_same_model_tool_call_ids =
+        options.normalize_same_model_tool_call_ids.unwrap_or(false);
 
     let transformed: Vec<Message> = image_aware_messages
         .into_iter()
@@ -146,15 +172,19 @@ pub fn transform_messages(
                 }
                 _ => Message::ToolResult(result),
             },
-            Message::ConfigurationUpdate(_) => msg,
+            Message::System(_) | Message::ConfigurationUpdate(_) => msg,
             Message::Assistant(assistant) => {
                 let is_same_model = assistant.provider == model.provider
                     && assistant.api == model.api
                     && assistant.model == model.id;
-                let has_tool_calls = assistant.content.iter().any(|block| block.type_name() == "toolCall");
+                let has_tool_calls = assistant
+                    .content
+                    .iter()
+                    .any(|block| block.type_name() == "toolCall");
                 let preserve_provider_state = preserve_thinking || has_tool_calls;
 
-                let mut transformed_content: Vec<ContentBlock> = Vec::with_capacity(assistant.content.len());
+                let mut transformed_content: Vec<ContentBlock> =
+                    Vec::with_capacity(assistant.content.len());
                 for block in &assistant.content {
                     match block {
                         ContentBlock::Thinking(thinking) => {
@@ -168,7 +198,10 @@ pub fn transform_messages(
                                 .thinking_signature
                                 .as_ref()
                                 .is_some_and(|signature| !signature.trim().is_empty());
-                            if is_same_model && has_usable_signature && (preserve_provider_state || thinking.thinking.trim().is_empty()) {
+                            if is_same_model
+                                && has_usable_signature
+                                && (preserve_provider_state || thinking.thinking.trim().is_empty())
+                            {
                                 transformed_content.push(block.clone());
                                 continue;
                             }
@@ -176,7 +209,9 @@ pub fn transform_messages(
                                 continue;
                             }
                             if is_same_model {
-                                if preserve_provider_state || (preserve_unsigned_thinking && !has_usable_signature) {
+                                if preserve_provider_state
+                                    || (preserve_unsigned_thinking && !has_usable_signature)
+                                {
                                     transformed_content.push(block.clone());
                                 }
                                 continue;
@@ -187,7 +222,9 @@ pub fn transform_messages(
                             }));
                         }
                         ContentBlock::Text(text) => {
-                            if is_same_model && (preserve_provider_state || preserve_text_signatures) {
+                            if is_same_model
+                                && (preserve_provider_state || preserve_text_signatures)
+                            {
                                 transformed_content.push(block.clone());
                             } else {
                                 transformed_content.push(ContentBlock::Text(TextContent {
@@ -198,7 +235,9 @@ pub fn transform_messages(
                         }
                         ContentBlock::ToolCall(tool_call) => {
                             let mut normalized_tool_call = tool_call.clone();
-                            if (!is_same_model || !preserve_provider_state) && tool_call.thought_signature.is_some() {
+                            if (!is_same_model || !preserve_provider_state)
+                                && tool_call.thought_signature.is_some()
+                            {
                                 normalized_tool_call.thought_signature = None;
                             }
                             if (!is_same_model || normalize_same_model_tool_call_ids)
@@ -207,7 +246,8 @@ pub fn transform_messages(
                                 {
                                     let normalized_id = normalize(&tool_call.id, model, &assistant);
                                     if normalized_id != tool_call.id {
-                                        tool_call_id_map.insert(tool_call.id.clone(), normalized_id.clone());
+                                        tool_call_id_map
+                                            .insert(tool_call.id.clone(), normalized_id.clone());
                                         normalized_tool_call.id = normalized_id;
                                     }
                                 }
@@ -226,7 +266,8 @@ pub fn transform_messages(
         .collect();
 
     let mut result: Vec<Message> = Vec::with_capacity(transformed.len());
-    let mut tool_results_by_id: HashMap<String, Vec<(ToolResultMessage, usize, bool)>> = HashMap::new();
+    let mut tool_results_by_id: HashMap<String, Vec<(ToolResultMessage, usize, bool)>> =
+        HashMap::new();
     let mut next_tool_call_index_by_id: HashMap<String, Vec<usize>> = HashMap::new();
     let mut dropped_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -252,7 +293,10 @@ pub fn transform_messages(
                 }
                 for block in &assistant.content {
                     if let ContentBlock::ToolCall(tool_call) = block {
-                        next_tool_call_index_by_id.entry(tool_call.id.clone()).or_default().push(source_index);
+                        next_tool_call_index_by_id
+                            .entry(tool_call.id.clone())
+                            .or_default()
+                            .push(source_index);
                     }
                 }
             }
@@ -265,7 +309,9 @@ pub fn transform_messages(
             Message::ToolResult(result_message) => {
                 let entry = tool_results_by_id
                     .get(&result_message.tool_call_id)
-                    .and_then(|entries| entries.iter().find(|(_, index, _)| *index == source_index));
+                    .and_then(|entries| {
+                        entries.iter().find(|(_, index, _)| *index == source_index)
+                    });
                 let consumed = entry.is_some_and(|(_, _, consumed)| *consumed);
                 if !consumed
                     && (!dropped_call_ids.contains(&result_message.tool_call_id)
@@ -284,16 +330,24 @@ pub fn transform_messages(
 
                 result.push(message.clone());
                 for block in &assistant.content {
-                    let ContentBlock::ToolCall(tool_call) = block else { continue };
+                    let ContentBlock::ToolCall(tool_call) = block else {
+                        continue;
+                    };
                     let next_declaration_index = next_tool_call_index_by_id
                         .get(&tool_call.id)
-                        .and_then(|indexes| indexes.iter().copied().find(|index| *index > source_index))
-                        .unwrap_or(usize::MAX);
-                    let matched = tool_results_by_id.get_mut(&tool_call.id).and_then(|entries| {
-                        entries.iter_mut().find(|(_, index, consumed)| {
-                            !*consumed && *index > source_index && *index < next_declaration_index
+                        .and_then(|indexes| {
+                            indexes.iter().copied().find(|index| *index > source_index)
                         })
-                    });
+                        .unwrap_or(usize::MAX);
+                    let matched = tool_results_by_id
+                        .get_mut(&tool_call.id)
+                        .and_then(|entries| {
+                            entries.iter_mut().find(|(_, index, consumed)| {
+                                !*consumed
+                                    && *index > source_index
+                                    && *index < next_declaration_index
+                            })
+                        });
 
                     if let Some((matched_message, _, consumed)) = matched {
                         *consumed = true;
@@ -302,6 +356,7 @@ pub fn transform_messages(
                     }
 
                     result.push(Message::ToolResult(ToolResultMessage {
+                        nested_calls: None,
                         tool_call_id: tool_call.id.clone(),
                         tool_name: tool_call.name.clone(),
                         content: vec![ContentBlock::text("No result provided")],
@@ -323,10 +378,13 @@ pub fn transform_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ImageContent, InputModality, ProviderId, StopReason, ThinkingContent, ToolCall, Usage};
+    use crate::types::{
+        ImageContent, InputModality, ProviderId, StopReason, ThinkingContent, ToolCall, Usage,
+    };
 
     fn any_model() -> Model {
-        crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone()
+        crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0]
+            .clone()
     }
 
     fn model_with_input(input: Vec<InputModality>) -> Model {
@@ -341,6 +399,10 @@ mod tests {
 
     fn assistant_message(content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
         Message::Assistant(Box::new(AssistantMessage {
+            error_cause: None,
+            prompt_cache_diagnostics: None,
+            thinking_level: None,
+            provider_diagnostic: None,
             content,
             api: "anthropic-messages".into(),
             provider: ProviderId::from("anthropic"),
@@ -365,7 +427,10 @@ mod tests {
         Message::User(crate::types::UserMessage {
             content: UserContent::Blocks(vec![
                 ContentBlock::text("hi"),
-                ContentBlock::Image(ImageContent { data: "AA==".into(), mime_type: "image/png".into() }),
+                ContentBlock::Image(ImageContent {
+                    data: "AA==".into(),
+                    mime_type: "image/png".into(),
+                }),
             ]),
             timestamp: 0,
         })
@@ -375,17 +440,35 @@ mod tests {
     fn collapses_consecutive_unsupported_images_into_one_placeholder() {
         let messages = vec![Message::User(crate::types::UserMessage {
             content: UserContent::Blocks(vec![
-                ContentBlock::Image(ImageContent { data: "AA==".into(), mime_type: "image/png".into() }),
-                ContentBlock::Image(ImageContent { data: "AA==".into(), mime_type: "image/png".into() }),
+                ContentBlock::Image(ImageContent {
+                    data: "AA==".into(),
+                    mime_type: "image/png".into(),
+                }),
+                ContentBlock::Image(ImageContent {
+                    data: "AA==".into(),
+                    mime_type: "image/png".into(),
+                }),
                 ContentBlock::text("after"),
             ]),
             timestamp: 0,
         })];
-        let transformed = transform_messages(&messages, &text_model(), None, &TransformMessagesOptions::default());
-        let Message::User(user) = &transformed[0] else { panic!("user") };
-        let UserContent::Blocks(blocks) = &user.content else { panic!("blocks") };
+        let transformed = transform_messages(
+            &messages,
+            &text_model(),
+            None,
+            &TransformMessagesOptions::default(),
+        );
+        let Message::User(user) = &transformed[0] else {
+            panic!("user")
+        };
+        let UserContent::Blocks(blocks) = &user.content else {
+            panic!("blocks")
+        };
         assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0], ContentBlock::text(NON_VISION_USER_IMAGE_PLACEHOLDER));
+        assert_eq!(
+            blocks[0],
+            ContentBlock::text(NON_VISION_USER_IMAGE_PLACEHOLDER)
+        );
         assert_eq!(blocks[1], ContentBlock::text("after"));
     }
 
@@ -398,9 +481,18 @@ mod tests {
             })]),
             timestamp: 0,
         })];
-        let transformed = transform_messages(&messages, &text_model(), None, &TransformMessagesOptions::default());
-        let Message::User(user) = &transformed[0] else { panic!("user") };
-        let UserContent::Blocks(blocks) = &user.content else { panic!("blocks") };
+        let transformed = transform_messages(
+            &messages,
+            &text_model(),
+            None,
+            &TransformMessagesOptions::default(),
+        );
+        let Message::User(user) = &transformed[0] else {
+            panic!("user")
+        };
+        let UserContent::Blocks(blocks) = &user.content else {
+            panic!("blocks")
+        };
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0], ContentBlock::text(NO_VIDEO_USER_PLACEHOLDER));
     }
@@ -409,9 +501,18 @@ mod tests {
     fn keeps_images_for_vision_models() {
         let messages = vec![user_image_message()];
         let model = model_with_input(vec![InputModality::Text, InputModality::Image]);
-        let transformed = transform_messages(&messages, &model, None, &TransformMessagesOptions::default());
-        let Message::User(user) = &transformed[0] else { panic!("user") };
-        let UserContent::Blocks(blocks) = &user.content else { panic!("blocks") };
+        let transformed = transform_messages(
+            &messages,
+            &model,
+            None,
+            &TransformMessagesOptions::default(),
+        );
+        let Message::User(user) = &transformed[0] else {
+            panic!("user")
+        };
+        let UserContent::Blocks(blocks) = &user.content else {
+            panic!("blocks")
+        };
         assert_eq!(blocks.len(), 2);
     }
 
@@ -433,7 +534,9 @@ mod tests {
             None,
             &TransformMessagesOptions::default(),
         );
-        let Message::Assistant(assistant) = &same[0] else { panic!("assistant") };
+        let Message::Assistant(assistant) = &same[0] else {
+            panic!("assistant")
+        };
         assert_eq!(assistant.content[0], thinking);
 
         let mut other = model.clone();
@@ -444,7 +547,9 @@ mod tests {
             None,
             &TransformMessagesOptions::default(),
         );
-        let Message::Assistant(assistant) = &cross[0] else { panic!("assistant") };
+        let Message::Assistant(assistant) = &cross[0] else {
+            panic!("assistant")
+        };
         assert_eq!(assistant.content[0], ContentBlock::text("reasoning"));
     }
 
@@ -462,6 +567,7 @@ mod tests {
         let messages = vec![
             assistant_message(vec![call.clone()], StopReason::ToolUse),
             Message::ToolResult(ToolResultMessage {
+                nested_calls: None,
                 tool_call_id: "c1".into(),
                 tool_name: "t".into(),
                 content: vec![ContentBlock::text("ok")],
@@ -472,7 +578,12 @@ mod tests {
                 timestamp: 0,
             }),
         ];
-        let transformed = transform_messages(&messages, &text_model(), None, &TransformMessagesOptions::default());
+        let transformed = transform_messages(
+            &messages,
+            &text_model(),
+            None,
+            &TransformMessagesOptions::default(),
+        );
         assert_eq!(transformed.len(), 2);
         assert!(matches!(transformed[1], Message::ToolResult(_)));
 
@@ -482,7 +593,9 @@ mod tests {
             None,
             &TransformMessagesOptions::default(),
         );
-        let Message::ToolResult(result) = &orphan[1] else { panic!("tool result") };
+        let Message::ToolResult(result) = &orphan[1] else {
+            panic!("tool result")
+        };
         assert_eq!(result.content[0], ContentBlock::text("No result provided"));
         assert!(result.is_error);
     }
@@ -501,6 +614,7 @@ mod tests {
         let messages = vec![
             assistant_message(vec![call], StopReason::Error),
             Message::ToolResult(ToolResultMessage {
+                nested_calls: None,
                 tool_call_id: "c1".into(),
                 tool_name: "t".into(),
                 content: vec![ContentBlock::text("late")],
@@ -511,7 +625,12 @@ mod tests {
                 timestamp: 0,
             }),
         ];
-        let transformed = transform_messages(&messages, &text_model(), None, &TransformMessagesOptions::default());
+        let transformed = transform_messages(
+            &messages,
+            &text_model(),
+            None,
+            &TransformMessagesOptions::default(),
+        );
         assert!(transformed.is_empty());
     }
 }

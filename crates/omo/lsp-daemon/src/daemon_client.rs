@@ -15,7 +15,8 @@ pub use crate::daemon_failure_result::ToolExecutionResult;
 use crate::daemon_failure_result::daemon_failure_result;
 use crate::daemon_request_error::{DaemonCallError, DaemonRequestError, DaemonRequestErrorKind};
 use crate::ensure_daemon::{
-    BoxFuture, EnsureDaemonDeps, EnsureDaemonOptions, ensure_daemon_running,
+    BoxFuture, EnsureDaemonDeps, EnsureDaemonError, EnsureDaemonOptions, ProbeFn, SleepFn,
+    ensure_daemon_running,
 };
 use crate::ipc_protocol::{auth_envelope, is_auth_error_response, read_auth_token};
 use crate::paths::{DaemonPaths, daemon_paths};
@@ -25,6 +26,7 @@ use crate::socket_jsonrpc::{LineBuffer, encode_json_line};
 use crate::transport;
 
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
+const STARTUP_BACKOFF_MS: [u64; 3] = [0, 100, 300];
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 static NEXT_PROXY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -42,6 +44,8 @@ pub struct CallToolOptions {
     pub request_timeout_ms: Option<u64>,
     pub signal: Option<AbortSignal>,
     pub ensure: Option<EnsureFn>,
+    pub probe: Option<ProbeFn>,
+    pub sleep: Option<SleepFn>,
 }
 
 fn default_ensure() -> EnsureFn {
@@ -74,6 +78,9 @@ pub async fn call_tool_via_daemon(
         None => daemon_paths().map_err(|error| DaemonCallError::Other(error.to_string()))?,
     };
     let ensure = options.ensure.unwrap_or_else(default_ensure);
+    let defaults = EnsureDaemonDeps::default();
+    let probe = options.probe.unwrap_or(defaults.probe);
+    let sleep = options.sleep.unwrap_or(defaults.sleep);
     let timeout_ms = options
         .request_timeout_ms
         .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
@@ -86,20 +93,39 @@ pub async fn call_tool_via_daemon(
 
     let mut last_error = DaemonCallError::Other("daemon call did not run".to_string());
     let mut auth_refresh_used = false;
-    for _attempt in 0..3 {
-        let outcome = attempt(
-            &paths,
-            &ensure,
-            options.signal.as_ref(),
-            name,
-            &request_args,
-            timeout_ms,
-        )
-        .await;
+    for (attempt_index, backoff_ms) in STARTUP_BACKOFF_MS.into_iter().enumerate() {
+        let outcome = async {
+            if backoff_ms > 0 {
+                let delay = sleep(backoff_ms, options.signal.clone());
+                match options.signal.as_ref() {
+                    Some(signal) => tokio::select! {
+                        biased;
+                        () = signal.cancelled() => return Err(DaemonRequestError::cancelled(false).into()),
+                        () = delay => {}
+                    },
+                    None => delay.await,
+                }
+            }
+            if options.signal.as_ref().is_some_and(AbortSignal::aborted) {
+                return Err(DaemonRequestError::cancelled(false).into());
+            }
+            if attempt_index == 0 {
+                ensure_daemon_available(&paths, &ensure, options.signal.as_ref()).await?;
+            } else if !probe(paths.clone(), options.signal.clone()).await {
+                return Err(DaemonCallError::Other(EnsureDaemonError::Unreachable {
+                    socket: paths.socket.clone(),
+                }.to_string()));
+            }
+            attempt(&paths, options.signal.as_ref(), name, &request_args, timeout_ms).await
+        }.await;
         let error = match outcome {
             Ok(result) => return Ok(result),
             Err(error) => error,
         };
+        if options.signal.as_ref().is_some_and(AbortSignal::aborted) {
+            last_error = DaemonRequestError::cancelled(false).into();
+            break;
+        }
         let stop = match &error {
             DaemonCallError::Request(request) => match request.kind {
                 DaemonRequestErrorKind::AuthenticationRejected if !auth_refresh_used => {
@@ -125,13 +151,11 @@ pub async fn call_tool_via_daemon(
 
 async fn attempt(
     paths: &DaemonPaths,
-    ensure: &EnsureFn,
     signal: Option<&AbortSignal>,
     name: &str,
     args: &Map<String, Value>,
     timeout_ms: u64,
 ) -> Result<ToolExecutionResult, DaemonCallError> {
-    ensure_daemon_available(paths, ensure, signal).await?;
     let token = read_auth_token(paths)
         .ok_or_else(|| DaemonRequestError::new("daemon auth token missing", false))?;
     Ok(send_tool_call(paths, &token, name, args, timeout_ms, signal).await?)
@@ -146,6 +170,16 @@ pub async fn call_diagnostics_via_daemon(
     args.insert("filePath".to_string(), json!(file_path));
     args.insert("severity".to_string(), json!("error"));
     call_tool_via_daemon("diagnostics", args, options).await
+}
+
+/// TS `callFormatViaDaemon`.
+pub async fn call_format_via_daemon(
+    file_path: &str,
+    options: CallToolOptions,
+) -> Result<ToolExecutionResult, DaemonCallError> {
+    let mut args = Map::new();
+    args.insert("filePath".to_string(), json!(file_path));
+    call_tool_via_daemon("format", args, options).await
 }
 
 /// TS `currentRequestContext`: Codex defaults rooted at the process cwd and `HOME`.
@@ -352,4 +386,81 @@ fn allocate_proxy_request_id() -> u64 {
 /// Rename mutates the workspace, so it is never retried.
 pub fn is_retryable_tool(name: &str) -> bool {
     name != "rename" && name != "lsp_rename"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use lsp_core::abort::AbortController;
+
+    #[tokio::test]
+    async fn failed_startup_ensures_once_and_only_probes_after_backoff() {
+        let root = tempfile::tempdir().expect("temporary daemon root");
+        let ensures = Arc::new(AtomicUsize::new(0));
+        let probes = Arc::new(AtomicUsize::new(0));
+        let delays = Arc::new(Mutex::new(Vec::new()));
+        let options = CallToolOptions {
+            context: Some(current_request_context(&Env::new()).expect("valid process context")),
+            paths: Some(DaemonPaths::under_dir(root.path(), "1")),
+            ensure: Some(Arc::new({
+                let ensures = Arc::clone(&ensures);
+                move |_, _| {
+                    ensures.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { Err("startup failed".to_string()) })
+                }
+            })),
+            probe: Some(Arc::new({
+                let probes = Arc::clone(&probes);
+                move |_, _| {
+                    probes.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { false })
+                }
+            })),
+            sleep: Some(Arc::new({
+                let delays = Arc::clone(&delays);
+                move |ms, _| {
+                    delays.lock().expect("delay recorder").push(ms);
+                    Box::pin(async {})
+                }
+            })),
+            ..CallToolOptions::default()
+        };
+        let result = call_tool_via_daemon("status", Map::new(), options).await.expect("failure result");
+        assert!(result.is_error);
+        assert_eq!(ensures.load(Ordering::SeqCst), 1);
+        assert_eq!(probes.load(Ordering::SeqCst), 2);
+        assert_eq!(*delays.lock().expect("delay recorder"), [100, 300]);
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_backoff_does_not_probe() {
+        let controller = AbortController::new();
+        let root = tempfile::tempdir().expect("temporary daemon root");
+        let options = CallToolOptions {
+            context: Some(current_request_context(&Env::new()).expect("valid process context")),
+            paths: Some(DaemonPaths::under_dir(root.path(), "1")),
+            signal: Some(controller.signal()),
+            ensure: Some(Arc::new(|_, _| Box::pin(async { Err("startup failed".to_string()) }))),
+            sleep: Some(Arc::new(move |_, _| {
+                controller.abort();
+                Box::pin(async {})
+            })),
+            probe: Some(Arc::new(|_, _| panic!("cancelled retry must not probe"))),
+            ..CallToolOptions::default()
+        };
+        let result = call_tool_via_daemon("status", Map::new(), options).await.expect("failure result");
+        assert!(result.text().contains("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn format_without_context_rejects_before_dispatch() {
+        let options = CallToolOptions {
+            ensure: Some(Arc::new(|_, _| panic!("missing context must not dispatch"))),
+            ..CallToolOptions::default()
+        };
+        let error = call_format_via_daemon("/a.ts", options).await.expect_err("context required");
+        assert!(matches!(error, DaemonCallError::Request(request) if request.message == "daemon tool context is required"));
+    }
 }

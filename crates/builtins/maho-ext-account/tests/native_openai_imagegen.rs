@@ -12,7 +12,7 @@ impl ModelRegistry for Registry{
     fn has_configured_auth(&self,_:&Model)->bool{true}
     fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>>{Box::pin(async{panic!("resolved auth required")})}
     fn get_stored_credential_type(&self,_:&str)->Result<Option<maho_ai::auth::types::CredentialType>,ExtensionFailure>{Ok(Some(maho_ai::auth::types::CredentialType::ApiKey))}
-    fn get_provider_auth<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<maho_ai::models::AuthResolution>>{Box::pin(async{Ok(Some(maho_ai::models::AuthResolution{auth:maho_ai::models::ProviderAuthResult{api_key:Some("fixture-secret".into()),..Default::default()},env:None}))})}
+    fn get_provider_auth<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<maho_ai::models::AuthResolution>>{Box::pin(async{Ok(Some(maho_ai::models::AuthResolution{ambient:false,auth:maho_ai::models::ProviderAuthResult{api_key:Some("fixture-secret".into()),..Default::default()},env:None}))})}
 }
 #[tokio::test]
 async fn registered_native_image_handler_uses_effective_model_and_scrubs_history_bytes()->Result<(),Box<dyn std::error::Error>>{

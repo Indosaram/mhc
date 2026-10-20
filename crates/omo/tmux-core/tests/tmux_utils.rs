@@ -182,7 +182,7 @@ fn pane_title_removes_nuls_truncates_and_escapes_tmux_formats() {
 #[test]
 fn placeholder_removes_nuls_quotes_and_truncates_description() {
     let command = build_tmux_placeholder_command("a\0'b");
-    assert!(command.contains("a'b"));
+    assert!(command.contains(r"a'\\''b"));
     let long = build_tmux_placeholder_command(&"x".repeat(2_001));
     assert!(long.contains(&format!("{}…", "x".repeat(2_000))));
     assert!(!long.contains(&"x".repeat(2_001)));

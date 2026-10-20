@@ -25,6 +25,10 @@ fn entry(value: JsonValue) -> SessionEntry {
 }
 
 impl SessionManager for SessionView {
+    fn get_usage_totals(&self) -> Option<JsonValue> {
+        (self.session)().map(|session| session
+            .with_session_manager(|manager| manager.extension_usage_totals()))
+    }
     fn get_session_dir(&self) -> Option<std::path::PathBuf> {
         (self.session)().map(|session| session.with_session_manager(|manager| manager.session_dir().into()))
     }

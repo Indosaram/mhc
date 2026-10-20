@@ -1,0 +1,24 @@
+[package]
+name = "claude-code-compat-core"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "claude_code_compat_core"
+path = "src/lib.rs"
+
+[dependencies]
+dirs.workspace = true
+futures.workspace = true
+maho-model-core.workspace = true
+maho-utils.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

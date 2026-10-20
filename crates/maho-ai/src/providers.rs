@@ -1,12 +1,11 @@
 //! Module directory for senpi packages/ai/src/providers/.
 
 use crate::api_registry::get_builtin_api_provider;
-use crate::image_models_generated::IMAGE_MODELS;
 use crate::model_catalog::flatten_model_catalog;
 use crate::models_generated::get_builtin_provider_models;
 use crate::types::{
-    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredFetchOptions, DeferredHandle,
-    ImagesModel, Model, ProviderStreams, SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredFetchOptions,
+    DeferredHandle, ImagesModel, Model, ProviderStreams, SimpleStreamOptions, StreamOptions,
 };
 use crate::utils::lazy::error_stream;
 use indexmap::IndexMap;
@@ -24,8 +23,8 @@ pub mod anthropic_models;
 pub mod azure_openai_responses;
 pub mod azure_openai_responses_models;
 pub mod bai;
-pub mod bai_stream;
 pub mod bai_models;
+pub mod bai_stream;
 pub mod baseten;
 pub mod baseten_models;
 pub mod cerebras;
@@ -49,10 +48,10 @@ pub mod fireworks_models;
 pub mod github_copilot;
 pub mod github_copilot_models;
 pub mod google;
+pub mod google_models;
 pub mod google_shared;
 pub mod google_vertex;
 pub mod google_vertex_models;
-pub mod google_models;
 pub mod groq;
 pub mod groq_models;
 pub mod huggingface;
@@ -61,6 +60,7 @@ pub mod images;
 pub mod kimi_coding;
 pub mod kimi_coding_auth;
 pub mod kimi_coding_models;
+pub mod meta;
 pub mod minimax;
 pub mod minimax_cn;
 pub mod minimax_cn_models;
@@ -77,9 +77,9 @@ pub mod ollama;
 pub mod openai;
 pub mod openai_completions;
 pub mod openai_images;
+pub mod openai_models;
 pub mod openai_responses;
 pub mod openai_responses_shared;
-pub mod openai_models;
 pub mod opencode;
 pub mod opencode_go;
 pub mod opencode_go_models;
@@ -108,13 +108,13 @@ pub mod vercel_ai_gateway_models;
 pub mod xai;
 pub mod xai_models;
 pub mod xiaomi;
+pub mod xiaomi_models;
 pub mod xiaomi_token_plan_ams;
 pub mod xiaomi_token_plan_ams_models;
 pub mod xiaomi_token_plan_cn;
 pub mod xiaomi_token_plan_cn_models;
 pub mod xiaomi_token_plan_sgp;
 pub mod xiaomi_token_plan_sgp_models;
-pub mod xiaomi_models;
 pub mod zai;
 pub mod zai_coding_cn;
 pub mod zai_coding_cn_models;
@@ -131,10 +131,18 @@ struct BuiltinApiStreams {
 }
 
 impl ProviderStreams for BuiltinApiStreams {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         match get_builtin_api_provider(self.api_id) {
             Some(provider) => provider.streams().stream(model, context, options),
-            None => error_stream(model, &format!("No API provider registered for api: {}", self.api_id)),
+            None => error_stream(
+                model,
+                &format!("No API provider registered for api: {}", self.api_id),
+            ),
         }
     }
 
@@ -146,7 +154,10 @@ impl ProviderStreams for BuiltinApiStreams {
     ) -> AssistantMessageEventStream {
         match get_builtin_api_provider(self.api_id) {
             Some(provider) => provider.streams().stream_simple(model, context, options),
-            None => error_stream(model, &format!("No API provider registered for api: {}", self.api_id)),
+            None => error_stream(
+                model,
+                &format!("No API provider registered for api: {}", self.api_id),
+            ),
         }
     }
 
@@ -156,11 +167,14 @@ impl ProviderStreams for BuiltinApiStreams {
         handle: &DeferredHandle,
         options: Option<DeferredFetchOptions>,
     ) -> Option<AssistantMessageEventStream> {
-        get_builtin_api_provider(self.api_id)?.streams().fetch_deferred(model, handle, options)
+        get_builtin_api_provider(self.api_id)?
+            .streams()
+            .fetch_deferred(model, handle, options)
     }
 
     fn supports_deferred(&self) -> bool {
-        get_builtin_api_provider(self.api_id).is_some_and(|provider| provider.streams().supports_deferred())
+        get_builtin_api_provider(self.api_id)
+            .is_some_and(|provider| provider.streams().supports_deferred())
     }
 
     fn cancel_deferred<'a>(
@@ -180,7 +194,8 @@ impl ProviderStreams for BuiltinApiStreams {
     }
 
     fn supports_cancel_deferred(&self) -> bool {
-        get_builtin_api_provider(self.api_id).is_some_and(|provider| provider.streams().supports_cancel_deferred())
+        get_builtin_api_provider(self.api_id)
+            .is_some_and(|provider| provider.streams().supports_cancel_deferred())
     }
 }
 
@@ -198,7 +213,9 @@ pub fn builtin_api_streams(api_id: &'static str) -> Arc<dyn ProviderStreams> {
 /// `Object.values` on a statically known import).
 pub fn builtin_provider_models(provider: &str) -> Vec<Model> {
     get_builtin_provider_models(provider)
-        .unwrap_or_else(|error| panic!("embedded models.json is missing provider {provider}: {error}"))
+        .unwrap_or_else(|error| {
+            panic!("embedded models.json is missing provider {provider}: {error}")
+        })
         .into_iter()
         .cloned()
         .collect()
@@ -208,16 +225,24 @@ pub fn builtin_provider_models(provider: &str) -> Vec<Model> {
 /// `flattenModelCatalog`'s call shape even though `models_generated::MODELS` is pre-flattened.
 pub fn flatten_provider_models(provider: &str) -> IndexMap<String, Model> {
     let mut groups = IndexMap::new();
-    groups.insert(provider.to_owned(), builtin_provider_models(provider).into_iter().map(|m| (m.id.clone(), m)).collect());
+    groups.insert(
+        provider.to_owned(),
+        builtin_provider_models(provider)
+            .into_iter()
+            .map(|m| (m.id.clone(), m))
+            .collect(),
+    );
     flatten_model_catalog(provider, &groups)
 }
 
 /// Ports an images `*.models.ts` read: `Object.values(IMAGE_MODELS[provider])`.
 pub fn builtin_images_provider_models(provider: &str) -> Vec<ImagesModel> {
-    IMAGE_MODELS
-        .get(provider)
-        .unwrap_or_else(|| panic!("embedded image-models.json is missing provider {provider}"))
-        .values()
+    assert!(
+        crate::image_models::get_image_providers().contains(&provider),
+        "embedded image-models.json is missing provider {provider}"
+    );
+    crate::image_models::get_image_models(provider)
+        .into_iter()
         .cloned()
         .collect()
 }

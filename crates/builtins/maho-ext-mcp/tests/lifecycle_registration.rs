@@ -81,14 +81,14 @@ async fn session_start_registers_direct_mode_mcp_tools_into_the_real_session() {
     let temp = tempfile::tempdir().unwrap();
     let cwd: PathBuf = temp.path().to_path_buf();
     seed_direct_server(&cwd);
-    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() });
+    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("faux-1 model");
     provider.set_responses(vec![faux_assistant_message(vec![ContentBlock::text("ok")], FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]);
     let streams = faux_streams(provider.core.clone());
     let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model, context, options.map(|options| options.simple)));
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(cwd.join("models.json")), auth_path: Some(cwd.join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let cwd_string = cwd.to_string_lossy().into_owned();
     let session = AgentSession::new(AgentSessionConfig {
         agent: maho_agent::Agent::new(maho_agent::AgentOptions {
@@ -122,14 +122,14 @@ async fn session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_
     let temp = tempfile::tempdir().unwrap();
     let cwd: PathBuf = temp.path().to_path_buf();
     seed_direct_server(&cwd);
-    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() });
+    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("faux-1 model");
     provider.set_responses(vec![faux_assistant_message(vec![ContentBlock::text("ok")], FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]);
     let streams = faux_streams(provider.core.clone());
     let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model, context, options.map(|options| options.simple)));
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(cwd.join("models.json")), auth_path: Some(cwd.join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let cwd_string = cwd.to_string_lossy().into_owned();
     let session = AgentSession::new(AgentSessionConfig {
         agent: maho_agent::Agent::new(maho_agent::AgentOptions {

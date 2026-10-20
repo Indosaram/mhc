@@ -1,6 +1,7 @@
 use maho_ai::types::{TextContent,TextAudience};
 use serde_json::{Map,Value};
 use crate::manager::TerminalManager;
+#[derive(Debug)]
 pub struct TerminalToolResult {pub content:Vec<TextContent>,pub details:Option<Map<String,Value>>,pub is_error:Option<bool>}
 pub fn text_result(text:impl Into<String>)->TerminalToolResult {TerminalToolResult {content:vec![TextContent {text:text.into(),audience:None,text_signature:None}],details:None,is_error:None}}
 pub fn error_result(text:impl Into<String>)->TerminalToolResult {let mut result=text_result(text);result.is_error=Some(true);result}
