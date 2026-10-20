@@ -117,8 +117,28 @@ fn resource_indicator_normalizes_the_server_url() {
     let root=tempfile::tempdir().unwrap();
     let bare=McpOAuthProvider::new(McpTokenStore::new(root.path(),"bare","https://example.test"));
     let pathed=McpOAuthProvider::new(McpTokenStore::new(root.path(),"pathed","https://example.test/mcp"));
-    assert_eq!(bare.resource_indicator(),"https://example.test/");
+    assert_eq!(bare.resource_indicator(),"https://example.test");
     assert_eq!(pathed.resource_indicator(),"https://example.test/mcp");
+    let queried=McpOAuthProvider::new(McpTokenStore::new(root.path(),"queried","https://example.test/mcp/?tenant=one#fragment"));
+    assert_eq!(queried.resource_indicator(),"https://example.test/mcp");
+    let double_slash=McpOAuthProvider::new(McpTokenStore::new(root.path(),"double-slash","https://example.test/mcp//"));
+    assert_eq!(double_slash.resource_indicator(),"https://example.test/mcp/");
+}
+
+#[test]
+fn resource_parameter_replaces_duplicates_without_reordering_other_fields() {
+    use maho_ext_mcp::auth::resource_indicator::add_resource_to_params;
+    let mut params = vec![("state".into(), "s".into()), ("resource".into(), "old".into()), ("scope".into(), "read".into()), ("resource".into(), "duplicate".into())];
+    add_resource_to_params(&mut params, "https://example.test/mcp");
+    assert_eq!(params, vec![("state".into(), "s".into()), ("resource".into(), "https://example.test/mcp".into()), ("scope".into(), "read".into())]);
+}
+
+#[test]
+fn resource_parameter_is_appended_when_absent() {
+    use maho_ext_mcp::auth::resource_indicator::add_resource_to_params;
+    let mut params = vec![("state".into(), "s".into())];
+    add_resource_to_params(&mut params, "https://example.test");
+    assert_eq!(params, vec![("state".into(), "s".into()), ("resource".into(), "https://example.test".into())]);
 }
 
 #[tokio::test]

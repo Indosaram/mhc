@@ -34,6 +34,9 @@ pub struct ParentWatchdogConfig {
     pub poll_interval_ms: Option<u64>,
     /// Replaces the operating-system probe.
     pub probe_alive: Option<AliveProbe>,
+    /// Observes every completed probe on the polling thread, before a dead parent is handled.
+    /// Defaults to absent, so healthy polls emit nothing unless explicitly observed.
+    pub on_poll: Option<Arc<dyn Fn(bool) + Send + Sync>>,
 }
 
 /// A running watchdog; call [`ParentWatchdogHandle::clear`] to stop polling.
@@ -80,7 +83,11 @@ where
         if fired {
             return true;
         }
-        if probe_alive(parent_pid) {
+        let alive = probe_alive(parent_pid);
+        if let Some(on_poll) = &config.on_poll {
+            on_poll(alive);
+        }
+        if alive {
             return false;
         }
         fired = true;
@@ -156,6 +163,67 @@ impl IntervalThread {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn every_poll_is_reported_before_the_dead_parent_callback() {
+        // Given three healthy probes followed by a dead parent, with an observer subscribed.
+        let probes = AtomicUsize::new(0);
+        let (sender, events) = std::sync::mpsc::channel();
+        let polls = sender.clone();
+        let config = ParentWatchdogConfig {
+            parent_pid: Some(424_242),
+            poll_interval_ms: Some(1),
+            probe_alive: Some(Arc::new(move |pid| {
+                assert_eq!(pid, 424_242);
+                probes.fetch_add(1, Ordering::SeqCst) < 3
+            })),
+            on_poll: Some(Arc::new(move |alive| {
+                polls.send(Some(alive)).expect("poll receiver remains open");
+            })),
+        };
+
+        // When the watchdog polls until the parent dies.
+        let mut watchdog = create_parent_watchdog(Some(config), move |pid, interval| {
+            assert_eq!((pid, interval), (424_242, 1));
+            sender.send(None).expect("event receiver remains open");
+        });
+
+        // Then every result arrives in order, including false before the single exit callback.
+        for expected in [Some(true), Some(true), Some(true), Some(false), None] {
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(5)).expect("watchdog event"),
+                expected
+            );
+        }
+        watchdog.clear();
+        assert!(events.try_recv().is_err(), "polling stops after parent death");
+    }
+
+    #[test]
+    fn disabled_watchdog_never_probes_or_reports_a_poll() {
+        // Given a zero interval, neither callback may run.
+        let config = ParentWatchdogConfig {
+            poll_interval_ms: Some(0),
+            probe_alive: Some(Arc::new(|_| panic!("disabled watchdog probed"))),
+            on_poll: Some(Arc::new(|_| panic!("disabled watchdog reported a poll"))),
+            ..ParentWatchdogConfig::default()
+        };
+
+        // When the watchdog is created and cleared.
+        let mut watchdog = create_parent_watchdog(Some(config), |_, _| {
+            panic!("disabled watchdog reported parent death");
+        });
+        watchdog.clear();
+
+        // Then no polling thread was armed.
+        assert!(watchdog.poll.is_none());
     }
 }
 

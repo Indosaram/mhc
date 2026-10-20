@@ -37,6 +37,7 @@ pub struct Scanner<'a> {
     bytes: &'a [u8],
     pos: usize,
     error_count: usize,
+    token_error: Option<&'static str>,
 }
 
 impl<'a> Scanner<'a> {
@@ -46,6 +47,7 @@ impl<'a> Scanner<'a> {
             bytes: text.as_bytes(),
             pos: 0,
             error_count: 0,
+            token_error: None,
         }
     }
 
@@ -57,7 +59,12 @@ impl<'a> Scanner<'a> {
         self.text
     }
 
+    pub fn token_error(&self) -> Option<&'static str> {
+        self.token_error
+    }
+
     pub fn scan(&mut self) -> Token {
+        self.token_error = None;
         let len = self.bytes.len();
         if self.pos >= len {
             return Token {
@@ -114,12 +121,7 @@ impl<'a> Scanner<'a> {
             b'/' => self.scan_comment(),
             b'"' => self.scan_string(),
             b'-' | b'0'..=b'9' => self.scan_number(),
-            b't' | b'f' | b'n' => self.scan_keyword(),
-            _ => {
-                self.pos += 1;
-                self.error_count += 1;
-                TokenKind::Unknown
-            }
+            _ => self.scan_keyword(),
         };
         Token {
             kind,
@@ -163,6 +165,7 @@ impl<'a> Scanner<'a> {
                     self.pos += 1;
                 }
                 self.error_count += 1;
+                self.token_error = Some("UnexpectedEndOfComment");
                 TokenKind::BlockComment
             }
             _ => {
@@ -176,10 +179,9 @@ impl<'a> Scanner<'a> {
     fn scan_string(&mut self) -> TokenKind {
         let len = self.bytes.len();
         let mut index = self.pos + 1;
-        let mut valid = true;
         loop {
             if index >= len {
-                valid = false;
+                self.token_error = Some("UnexpectedEndOfString");
                 break;
             }
             let byte = self.bytes[index];
@@ -201,31 +203,39 @@ impl<'a> Scanner<'a> {
                         if complete {
                             index = hex_end;
                         } else {
-                            valid = false;
-                            index = hex_end.min(len);
-                            break;
+                            self.token_error = Some("InvalidUnicode");
+                            index = hex_start;
+                            while index < hex_end.min(len) && self.bytes[index].is_ascii_hexdigit() {
+                                index += 1;
+                            }
                         }
                     }
-                    _ => {
-                        valid = false;
+                    Some(_) => {
+                        self.token_error = Some("InvalidEscapeCharacter");
+                        index += 2;
+                    }
+                    None => {
+                        self.token_error = Some("UnexpectedEndOfString");
+                        index += 1;
                         break;
                     }
                 }
                 continue;
             }
             if byte < 0x20 {
-                valid = false;
-                break;
+                if matches!(byte, b'\r' | b'\n') {
+                    self.token_error = Some("UnexpectedEndOfString");
+                    break;
+                }
+                self.token_error = Some("InvalidCharacter");
             }
             index += 1;
         }
         self.pos = index;
-        if valid {
-            TokenKind::String
-        } else {
+        if self.token_error.is_some() {
             self.error_count += 1;
-            TokenKind::Unknown
         }
+        TokenKind::String
     }
 
     fn scan_number(&mut self) -> TokenKind {
@@ -235,34 +245,67 @@ impl<'a> Scanner<'a> {
                 TokenKind::Number
             }
             None => {
-                self.pos += 1;
-                while self.pos < self.bytes.len()
-                    && matches!(
-                        self.bytes[self.pos],
-                        b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-'
-                    )
+                if self.bytes[self.pos] == b'-'
+                    && !self.bytes.get(self.pos + 1).is_some_and(u8::is_ascii_digit)
                 {
                     self.pos += 1;
+                    self.error_count += 1;
+                    return TokenKind::Unknown;
+                }
+                if self.bytes[self.pos] == b'-' {
+                    self.pos += 1;
+                }
+                if self.bytes[self.pos] == b'0' {
+                    self.pos += 1;
+                } else {
+                    while self.bytes.get(self.pos).is_some_and(u8::is_ascii_digit) {
+                        self.pos += 1;
+                    }
+                }
+                if self.bytes.get(self.pos) == Some(&b'.') {
+                    self.pos += 1;
+                    if !self.bytes.get(self.pos).is_some_and(u8::is_ascii_digit) {
+                        self.error_count += 1;
+                        self.token_error = Some("UnexpectedEndOfNumber");
+                        return TokenKind::Number;
+                    }
+                    while self.bytes.get(self.pos).is_some_and(u8::is_ascii_digit) {
+                        self.pos += 1;
+                    }
+                }
+                if matches!(self.bytes.get(self.pos), Some(b'e' | b'E')) {
+                    self.pos += 1;
+                    if matches!(self.bytes.get(self.pos), Some(b'+' | b'-')) {
+                        self.pos += 1;
+                    }
+                    while self.bytes.get(self.pos).is_some_and(u8::is_ascii_digit) {
+                        self.pos += 1;
+                    }
                 }
                 self.error_count += 1;
-                TokenKind::Unknown
+                self.token_error = Some("UnexpectedEndOfNumber");
+                TokenKind::Number
             }
         }
     }
 
     fn scan_keyword(&mut self) -> TokenKind {
-        let rest = &self.text[self.pos..];
+        let start = self.pos;
+        while self.pos < self.bytes.len()
+            && !matches!(self.bytes[self.pos], b' ' | b'\t' | b'\r' | b'\n' | b'{' | b'}' | b'[' | b']' | b'"' | b':' | b',' | b'/')
+        {
+            self.pos += 1;
+        }
+        let rest = &self.text[start..self.pos];
         for (word, kind) in [
             ("true", TokenKind::True),
             ("false", TokenKind::False),
             ("null", TokenKind::Null),
         ] {
-            if rest.starts_with(word) {
-                self.pos += word.len();
+            if rest == word {
                 return kind;
             }
         }
-        self.pos += 1;
         self.error_count += 1;
         TokenKind::Unknown
     }

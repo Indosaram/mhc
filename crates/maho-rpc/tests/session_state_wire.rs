@@ -18,14 +18,14 @@ use serde_json::json;
 
 async fn session_in(temp: &tempfile::TempDir) -> maho_core::agent_session::AgentSession {
     let cwd = temp.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("the faux provider registers faux-1");
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(temp.path().join("models.json")),
         auth_path: Some(temp.path().join("auth.json")),
         providers: Some(vec![provider.provider]),
         ..Default::default()
-    });
+    }).expect("valid model runtime");
     create_agent_session(CreateAgentSessionOptions {
         cwd: Some(cwd.clone()),
         agent_dir: Some(cwd.clone()),

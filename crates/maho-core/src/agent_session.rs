@@ -21,6 +21,8 @@ mod monitor_invocation;
 tokio::task_local! {
     static EXTENSION_EVENT_SIGNAL: maho_ext_api::AbortSignal;
     static EXTENSION_COMPACTION_PREPARATION: maho_ext_api::CompactionPreparationDetails;
+    static NESTED_TOOL_SCOPE: (String, Arc<Mutex<crate::session_record::NestedCallRecorder>>, Arc<AtomicU64>);
+    static NESTED_TOOL_QUEUE_HELD: bool;
 }
 struct ExtensionEventSignalSubscription {
     signal: maho_ai::utils::abort::AbortSignal,
@@ -698,6 +700,7 @@ pub struct AgentSessionInner {
     fallback_validation_warnings: Vec<String>,
     agent_subscription: Mutex<Option<maho_agent::agent::AgentSubscription>>,
     prompt_admission: tokio::sync::Mutex<()>,
+    nested_tool_queue: tokio::sync::Mutex<()>,
     reload_admission: tokio::sync::Mutex<()>,
     binding_readiness: Mutex<Option<BindingPromptReadiness>>,
     retry_fallback: tokio::sync::Mutex<Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>>,
@@ -814,7 +817,7 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
     }
     fn get_provider_auth_status(&self, provider: &str) -> maho_ext_api::ProviderAuthStatus {
         let status = self.registry.get_provider_auth_status(provider);
-        maho_ext_api::ProviderAuthStatus { configured: status.configured, source: status.source, label: status.label }
+        maho_ext_api::ProviderAuthStatus { ambient: status.ambient, configured: status.configured, source: status.source, label: status.label }
     }
     fn get_stored_credential_type(&self, provider: &str) -> Result<Option<maho_ai::auth::types::CredentialType>, maho_ext_api::ExtensionFailure> {
         Ok(self.registry.auth_storage.get(provider).as_ref().and_then(crate::auth_storage::credential_kind).map(|kind| match kind {
@@ -831,7 +834,8 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
     fn get_api_key_and_headers_for_slot<'a>(&'a self, model: &'a Model, slot_name: Option<&'a str>) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ResolvedRequestAuth> {
         Box::pin(async move {
             match self.registry.get_api_key_and_headers_for_slot(model, slot_name).await {
-                crate::model_registry::ResolvedRequestAuth::Resolved { auth, compatibility, env } => Ok(maho_ext_api::ResolvedRequestAuth {
+                crate::model_registry::ResolvedRequestAuth::Resolved { ambient, auth, compatibility, env } => Ok(maho_ext_api::ResolvedRequestAuth {
+                    ambient,
                     auth, extra_body: compatibility.extra_body, upstream_model_id: compatibility.upstream_model_id,
                     service_tier: compatibility.service_tier, env,
                 }),
@@ -896,6 +900,10 @@ impl maho_ext_api::ToolSessionManager for ExtensionSessionManagerView {
     fn session_file(&self) -> Option<&std::path::Path> { self.file.as_deref() }
 }
 impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
+    fn get_usage_totals(&self) -> Option<Value> {
+        self.session.upgrade().map(|inner| AgentSession { inner }
+            .with_session_manager(|manager| manager.extension_usage_totals()))
+    }
     fn get_session_dir(&self) -> Option<std::path::PathBuf> {
         self.session.upgrade().map(|inner| AgentSession { inner }.with_session_manager(|manager| manager.session_dir().into()))
     }
@@ -1647,6 +1655,9 @@ impl maho_ext_api::ToolSessionManager for SessionContextManager {
 
 #[cfg(test)]
 impl maho_ext_api::SessionManager for SessionContextManager {
+    fn get_usage_totals(&self) -> Option<Value> {
+        Some(self.session.with_session_manager(|manager| manager.extension_usage_totals()))
+    }
     fn get_entries(&self) -> Vec<maho_ext_api::SessionEntry> {
         self.session.with_session_manager(|manager| manager.entries()).into_iter().map(session_entry_from_value).collect()
     }
@@ -1948,6 +1959,7 @@ impl AgentSession {
             fallback_validation_warnings,
             agent_subscription: Mutex::new(None),
             prompt_admission: tokio::sync::Mutex::new(()),
+            nested_tool_queue: tokio::sync::Mutex::new(()),
             reload_admission: tokio::sync::Mutex::new(()),
             binding_readiness: Mutex::new(None),
             retry_fallback: tokio::sync::Mutex::new(None),
@@ -2148,7 +2160,18 @@ impl AgentSession {
                 }
             };
             match replacement {
-                Ok(Some(replacement)) => {
+                Ok(Some(mut replacement)) => {
+                    match (&*message, &mut replacement) {
+                        (AgentMessage::Llm(maho_ai::types::Message::Assistant(original)),
+                         AgentMessage::Llm(maho_ai::types::Message::Assistant(rewritten))) => {
+                            if original.error_cause.is_some() { rewritten.error_cause = original.error_cause.clone(); }
+                        }
+                        (AgentMessage::Llm(maho_ai::types::Message::ToolResult(original)),
+                         AgentMessage::Llm(maho_ai::types::Message::ToolResult(rewritten))) => {
+                            if original.nested_calls.is_some() { rewritten.nested_calls = original.nested_calls.clone(); }
+                        }
+                        _ => {}
+                    }
                     if let Some(guard) = &_persistence
                         && let Some((_, pending)) = self.state().messages_awaiting_persistence.iter_mut().find(|(id, _)| *id == guard.id)
                     { *pending = replacement.clone(); }
@@ -2287,14 +2310,17 @@ impl AgentSession {
                 assistant_message_event: extension_assistant_message_event(assistant_message_event),
             },
             AgentEvent::MessageEnd { message } => ExtensionEvent::MessageEnd { message: message.clone() },
-            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => ExtensionEvent::ToolExecutionStart {
+            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args, parent_tool_call_id } => ExtensionEvent::ToolExecutionStart {
                 tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), args: args.clone(),
+                parent_tool_call_id: parent_tool_call_id.clone(),
             },
-            AgentEvent::ToolExecutionUpdate { tool_call_id, tool_name, args, partial_result } => ExtensionEvent::ToolExecutionUpdate {
+            AgentEvent::ToolExecutionUpdate { tool_call_id, tool_name, args, partial_result, parent_tool_call_id } => ExtensionEvent::ToolExecutionUpdate {
                 tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), args: args.clone(), partial_result: partial_result.clone(),
+                parent_tool_call_id: parent_tool_call_id.clone(),
             },
-            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => ExtensionEvent::ToolExecutionEnd {
+            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error, parent_tool_call_id } => ExtensionEvent::ToolExecutionEnd {
                 tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), result: result.clone(), is_error: *is_error,
+                parent_tool_call_id: parent_tool_call_id.clone(),
             },
         };
         // Boxed so the runner's `emit` state machine is not inlined into every caller's future.
@@ -3288,6 +3314,9 @@ impl AgentSession {
 
     /// `_terminalFailureText`: user-facing text for a turn that is really over.
     async fn terminal_failure_text(&self, message: &maho_ai::types::AssistantMessage, attempts: u32) -> Option<String> {
+        if crate::retry_fallback::usage_limit::usage_limit_scope(message).is_some() {
+            return crate::retry_fallback::usage_limit::describe_usage_limit_message(message).error_message;
+        }
         let model = self.model();
         let has_configured_chain = self.retry_fallback.lock().await.as_mut().is_some_and(|controller| controller.has_configured_chain());
         maho_ai::utils::provider_failure_description::describe_provider_failure_for_user(message.error_message.as_deref(),
@@ -3963,7 +3992,7 @@ impl AgentSession {
                     session.model_registry.has_configured_auth(&model));
                 session.emit_probe_events(events);
                 let Some(ticket) = ticket else { return; };
-                let context = maho_ai::types::Context {
+                let context = maho_ai::types::Context { active_tool_names: None,
                     system_prompt: Some("Reply with OK.".to_owned()),
                     messages: vec![maho_ai::types::Message::User(maho_ai::types::UserMessage {
                         content: maho_ai::types::UserContent::Text("OK".to_owned()), timestamp: session.fallback_now() as i64,
@@ -3981,7 +4010,14 @@ impl AgentSession {
                 let result = if ticket.index == 1 {
                     match tokio::time::timeout(std::time::Duration::from_secs_f64(remaining / 1000.0), settled).await {
                         Ok(result) => result.ok(),
-                        Err(_) => continue,
+                        Err(_) => {
+                            if let Err(error) = request.cancel().await {
+                                session.emit_probe_events(vec![crate::retry_fallback::probe_scheduler::ProbeBackEvent::Result {
+                                    selector: format!("{}/{}", model.provider, model.id), ok: false, error_message: Some(error.message),
+                                }]);
+                            }
+                            continue;
+                        }
                     }
                 } else { settled.await.ok() };
                 let ok = result.is_some_and(|message| !matches!(message.stop_reason, StopReason::Error | StopReason::Aborted));
@@ -4019,7 +4055,7 @@ impl AgentSession {
             0..=16_000 => 0.45, 16_001..=32_000 => 0.5, 32_001..=64_000 => 0.55,
             64_001..=128_000 => 0.6, 128_001..=512_000 => 0.7, _ => 0.8,
         };
-        let mut context = maho_ai::types::Context { system_prompt: Some(self.system_prompt()), messages: Vec::new(), tools: None };
+        let mut context = maho_ai::types::Context { active_tool_names: None, system_prompt: Some(self.system_prompt()), messages: Vec::new(), tools: None };
         let prompt_tokens = maho_ai::utils::estimate::estimate_context_tokens(&context).tokens;
         context.tools = Some(self.agent.state().tools().iter().map(|tool| tool.tool.clone()).collect());
         let tools = maho_ai::utils::estimate::estimate_context_tokens(&context).tokens.saturating_sub(prompt_tokens);
@@ -4159,7 +4195,7 @@ impl AgentSession {
         let (target_budget, _) = self.model_budget(&model, 0, false)?;
         let live = if model.context_window.saturating_sub(target_budget.required_tokens)
             < previous.context_window.saturating_sub(current_budget.required_tokens) {
-            let prefix = maho_ai::utils::estimate::estimate_context_tokens(&maho_ai::types::Context {
+            let prefix = maho_ai::utils::estimate::estimate_context_tokens(&maho_ai::types::Context { active_tool_names: None,
                 system_prompt: Some(self.system_prompt()), messages: Vec::new(),
                 tools: Some(self.agent.state().tools().iter().map(|tool| tool.tool.clone()).collect()),
             }).tokens;
@@ -4313,7 +4349,7 @@ impl AgentSession {
             let (target_budget, _) = self.model_budget(model, 0, false)?;
             if model.context_window.saturating_sub(target_budget.required_tokens)
                 >= current.context_window.saturating_sub(current_budget.required_tokens) { return Ok(0); }
-            let prefix = maho_ai::utils::estimate::estimate_context_tokens(&maho_ai::types::Context {
+            let prefix = maho_ai::utils::estimate::estimate_context_tokens(&maho_ai::types::Context { active_tool_names: None,
                 system_prompt: Some(self.system_prompt()), messages: Vec::new(),
                 tools: Some(self.agent.state().tools().iter().map(|tool| tool.tool.clone()).collect()),
             }).tokens;
@@ -4791,7 +4827,7 @@ impl AgentSession {
         let auth = self.get_summarization_request_auth(&model).await?;
         let AgentMessage::Llm(message) = make_user_message(&prompt, None) else { return Err("Invalid branch summary prompt".to_owned()); };
         let callbacks = self.summarization_retry_callbacks("branchSummary", None);
-        let response = self.complete_summary_stream(&auth.model, &maho_ai::types::Context {
+        let response = self.complete_summary_stream(&auth.model, &maho_ai::types::Context { active_tool_names: None,
             system_prompt: Some(utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()), messages: vec![message], tools: None,
         }, Some(maho_ai::types::StreamOptions {
             request: maho_ai::types::ProviderRequestOptions { api_key: auth.api_key, env: auth.env,
@@ -5333,7 +5369,7 @@ impl AgentSession {
             }
         };
         if let Some(result) = result
-            && (result.auth.api_key.is_some() || result.auth.headers.is_some())
+            && (result.auth.ambient || result.auth.api_key.is_some() || result.auth.headers.is_some())
         {
             let request_model = match &result.auth.base_url {
                 Some(base_url) => {
@@ -5460,7 +5496,7 @@ impl AgentSession {
             let system_prompt = self.agent.system_prompt();
             let tools = state.tools().to_vec();
             let build_source_context = |messages: Vec<AgentMessage>| {
-                let context = maho_agent::types::AgentContext { system_prompt: system_prompt.clone(), messages, tools: Some(tools.clone()) };
+                let context = maho_agent::types::AgentContext { declared_tools: None, system_prompt: system_prompt.clone(), messages, tools: Some(tools.clone()) };
                 let signal = signal.clone();
                 async move { self.agent.build_provider_context(&context, Some(signal)).await }
             };
@@ -6086,7 +6122,30 @@ impl AgentSession {
 
     /// Register a tool definition and its executable tool; used by the runtime build and by SDK
     /// custom tools.
-    pub fn register_tool_definition(&self, definition: ToolDefinition, source_info: SourceInfo, tool: AgentTool) {
+    pub fn register_tool_definition(&self, definition: ToolDefinition, source_info: SourceInfo, mut tool: AgentTool) {
+        let execute = tool.execute.clone();
+        tool.execute = Arc::new(move |id, args, signal, update| {
+            let execute = execute.clone();
+            let parent = NESTED_TOOL_SCOPE.try_with(|scope| scope.1.clone()).ok();
+            let queue_held = NESTED_TOOL_QUEUE_HELD.try_with(|held| *held).unwrap_or(false);
+            Box::pin(async move {
+                let root = parent.is_none();
+                let recorder = parent.unwrap_or_else(|| Arc::new(Mutex::new(Default::default())));
+                let mut result = NESTED_TOOL_QUEUE_HELD.scope(queue_held,
+                    NESTED_TOOL_SCOPE.scope((id.clone(), recorder.clone(), Arc::new(AtomicU64::new(1))),
+                        async move { execute(id, args, signal, update).await })).await;
+                if root {
+                    let recorder = lock(&recorder);
+                    result.nested_calls = recorder.snapshot();
+                    if let Some(usage) = &recorder.usage {
+                        result.usage = Some(match result.usage {
+                            Some(own) => crate::compaction::combine_usage(&own, usage), None => *usage,
+                        });
+                    }
+                }
+                result
+            })
+        });
         let mut state = self.state();
         if state.allowed_tool_names.as_ref().is_some_and(|names| !names.contains(&definition.name))
             || state.excluded_tool_names.as_ref().is_some_and(|names| names.contains(&definition.name)) {
@@ -6221,6 +6280,95 @@ impl AgentSession {
         tool_call_id: Option<&str>,
         arguments_prepared: bool,
     ) -> Result<AgentToolResult, ExecuteToolError> {
+        let nested = NESTED_TOOL_SCOPE.try_with(|(parent, recorder, sequence)| {
+            (format!("{parent}/{}", sequence.fetch_add(1, Ordering::SeqCst)), recorder.clone())
+        }).ok();
+        let record = nested.as_ref().and_then(|(id, recorder)| lock(recorder).start(id, tool_name, &params));
+        let started = std::time::Instant::now();
+        let caller = NESTED_TOOL_SCOPE.try_with(|scope| scope.0.clone()).ok();
+        let (updates, mut update_events) = tokio::sync::mpsc::unbounded_channel();
+        let on_update = if let Some((id, _)) = &nested {
+            let event = AgentEvent::ToolExecutionStart {
+                tool_call_id: id.clone(), tool_name: tool_name.into(), args: params.clone(), parent_tool_call_id: caller.clone(),
+            };
+            self.dispatch_agent_extension_event(&event, None, false).await;
+            self.emit(AgentSessionEvent::Agent(event));
+            let session = self.clone();
+            let id = id.clone();
+            let name = tool_name.to_owned();
+            let args = params.clone();
+            let caller = caller.clone();
+            Some(Arc::new(move |partial: AgentToolResult| {
+                let event = AgentEvent::ToolExecutionUpdate {
+                    tool_call_id: id.clone(), tool_name: name.clone(), args: args.clone(),
+                    partial_result: serde_json::to_value(&partial).expect("tool result is serializable"), parent_tool_call_id: caller.clone(),
+                };
+                let _ = updates.send(event.clone());
+                session.emit(AgentSessionEvent::Agent(event));
+                if let Some(update) = &on_update { update(partial); }
+            }) as maho_agent::types::AgentToolUpdateCallback)
+        } else { on_update };
+        let execution = async {
+        let held = NESTED_TOOL_QUEUE_HELD.try_with(|held| *held).unwrap_or(false);
+        let exclusive = nested.is_some() && !held && (self.agent.tool_execution() == maho_agent::types::ToolExecutionMode::Sequential
+            || self.state().tool_registry.get(tool_name).is_some_and(|tool| tool.execution_mode == Some(maho_agent::types::ToolExecutionMode::Sequential)));
+        let _queue = if exclusive {
+            Some(if let Some(signal) = &options.signal {
+                tokio::select! {
+                    biased;
+                    () = signal.cancelled() => return Err(ExecuteToolError { code: "blocked".into(), tool_name: tool_name.into(),
+                        message: "Tool execution cancelled".into(), active_tools: self.get_active_tool_names() }),
+                    queue = self.nested_tool_queue.lock() => queue,
+                }
+            } else { self.nested_tool_queue.lock().await })
+        } else { None };
+        let result = NESTED_TOOL_QUEUE_HELD.scope(held || exclusive,
+            self.execute_tool_with_updates_inner(tool_name, params, options, on_update,
+                nested.as_ref().map(|(id, _)| id.as_str()).or(tool_call_id), arguments_prepared)).await;
+        result
+        };
+        tokio::pin!(execution);
+        let result = loop {
+            tokio::select! {
+                biased;
+                Some(event) = update_events.recv() => self.dispatch_agent_extension_event(&event, None, false).await,
+                result = &mut execution => break result,
+            }
+        };
+        while let Ok(event) = update_events.try_recv() { self.dispatch_agent_extension_event(&event, None, false).await; }
+        if let Some((id, recorder)) = nested {
+            let event_result = match &result {
+                Ok(result) => result.clone(),
+                Err(error) => { let mut failed = AgentToolResult::text(error.message.clone()); failed.is_error = Some(true); failed }
+            };
+            let event = AgentEvent::ToolExecutionEnd {
+                tool_call_id: id, tool_name: tool_name.into(),
+                result: serde_json::to_value(&event_result).expect("tool result is serializable"),
+                is_error: event_result.is_error.unwrap_or(false), parent_tool_call_id: caller,
+            };
+            self.dispatch_agent_extension_event(&event, None, false).await;
+            self.emit(AgentSessionEvent::Agent(event));
+            match &result {
+                Ok(result) => lock(&recorder).finish(record, started.elapsed(), result),
+                Err(error) => {
+                    let mut failed = AgentToolResult::text(error.message.clone());
+                    failed.is_error = Some(true);
+                    lock(&recorder).finish(record, started.elapsed(), &failed);
+                }
+            }
+        }
+        result
+    }
+
+    async fn execute_tool_with_updates_inner(
+        &self,
+        tool_name: &str,
+        params: Value,
+        options: ExecuteToolOptions,
+        on_update: Option<maho_agent::types::AgentToolUpdateCallback>,
+        tool_call_id: Option<&str>,
+        arguments_prepared: bool,
+    ) -> Result<AgentToolResult, ExecuteToolError> {
         let (mut active_tools, mut tool) = self.agent.tool_names_and_find(tool_name);
         if tool.is_none() && self.is_eval_only_policy_armed() {
             let armed = self.state().eval_only_tool_names.clone().unwrap_or_default();
@@ -6254,7 +6402,8 @@ impl AgentSession {
             ..Default::default()
         };
         let prepared = if arguments_prepared { tool_call }
-            else { maho_agent::tool_arguments::prepare_agent_tool_call_arguments(&tool, &tool_call) };
+            else { maho_agent::tool_arguments::prepare_agent_tool_call_arguments(&tool, &tool_call)
+                .map_err(|message| ExecuteToolError { code: "invalid_params".to_owned(), tool_name: tool_name.to_owned(), message, active_tools: active_tools.clone() })? };
         let mut input = maho_ai::utils::validation::validate_tool_arguments(&tool.tool, &prepared)
             .map_err(|error| ExecuteToolError { code: "invalid_params".to_owned(), tool_name: tool_name.to_owned(),
                 message: error.to_string(), active_tools: active_tools.clone() })?;
@@ -6397,6 +6546,11 @@ impl AgentSession {
         self.extension_runner_snapshot()?.get_message_renderer(custom_type)
     }
 
+    /// Live extension figures, collected lazily by the on-demand memory report.
+    pub fn extension_memory_reporters(&self) -> Vec<maho_ext_api::NamedMemoryReporter> {
+        self.extension_runner_snapshot().map(|runner| runner.get_memory_reporters()).unwrap_or_default()
+    }
+
     /// senpi `getEntryRenderer(customType)` with its `getEntryRendererOptions(customType)`.
     pub fn extension_entry_renderer(&self, custom_type: &str) -> Option<(maho_ext_api::EntryRenderer, Option<maho_ext_api::EntryRendererOptions>)> {
         self.extension_runner_snapshot()?.get_entry_renderer_owned(custom_type)
@@ -6443,7 +6597,14 @@ impl AgentSession {
             let weak = weak.clone();
             let model = model.clone();
             let context = context.clone();
-            tokio::spawn(async move {
+            let cancellation = maho_ai::utils::abort::AbortController::new();
+            let cancelled = cancellation.signal();
+            stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
+                cancellation.abort(None);
+                Ok(())
+            })));
+            let relay = tokio::spawn(async move {
+                if cancelled.aborted() { output.end(None); return; }
                 let Some(inner) = weak.upgrade() else {
                     output.fail(maho_ai::utils::event_stream::StreamError::new("Session disposed")); return;
                 };
@@ -6521,15 +6682,28 @@ impl AgentSession {
                 }));
                 let upstream = session.model_runtime().stream_simple_with_transforms(&model, &context, Some(options.simple), transforms);
                 loop {
-                    match upstream.next().await {
+                    let next = tokio::select! {
+                        biased;
+                        _ = cancelled.cancelled() => break,
+                        next = upstream.next() => next,
+                    };
+                    match next {
                         Ok(Some(event)) => output.push(event),
-                        Ok(None) => { match upstream.result().await {
-                            Ok(message) => output.end(Some(message)), Err(error) => output.fail(error),
-                        }; return; }
-                        Err(error) => { output.fail(error); return; }
+                        Ok(None) => break,
+                        Err(error) => { output.fail(error); break; }
                     }
                 }
+                if let Err(error) = upstream.cancel().await {
+                    output.fail(error);
+                    return;
+                }
+                match upstream.result_if_ready() {
+                    Some(Ok(message)) => output.end(Some(message)),
+                    Some(Err(error)) => output.fail(error),
+                    None => output.end(None),
+                }
             });
+            stream.set_cancellation_task(relay);
             stream
         }));
     }
@@ -7148,7 +7322,7 @@ impl AgentSession {
                 }
                 let state = session.agent.state();
                 Some(maho_agent::types::AgentLoopTurnUpdate {
-                    context: Some(maho_agent::types::AgentContext {
+                    context: Some(maho_agent::types::AgentContext { declared_tools: None,
                         system_prompt: state.system_prompt.clone(),
                         messages: previous_context.messages,
                         tools: Some(state.tools().to_vec()),
@@ -7835,6 +8009,12 @@ impl AgentSession {
 
     /// Emit an event to all listeners.
     pub fn emit(&self, event: AgentSessionEvent) {
+        let mut event = event;
+        if let AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageEnd {
+            message: AgentMessage::Llm(maho_ai::types::Message::Assistant(message)),
+        }) = &mut event {
+            **message = crate::retry_fallback::usage_limit::describe_usage_limit_message(message);
+        }
         self.log_session_event(&event);
         let listeners = self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         for (_, listener) in listeners {
@@ -8952,6 +9132,7 @@ fn queue_mode_str(mode: maho_agent::types::QueueMode) -> &'static str {
 
 
 fn session_entry_from_value(entry: Value) -> maho_ext_api::SessionEntry {
+    let entry = crate::retry_fallback::usage_limit::describe_usage_limit_entry(entry);
     maho_ext_api::SessionEntry {
         id: entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
         parent_id: entry.get("parentId").and_then(Value::as_str).map(str::to_owned),
@@ -9076,6 +9257,229 @@ mod tests {
         assert_eq!(shortcuts.keys().map(String::as_str).collect::<Vec<_>>(), ["alt+k"]);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert!(session.extension_shortcut_context().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn extension_session_views_project_cached_usage_totals() {
+        // Given
+        use maho_ext_api::SessionManager as _;
+        let session = test_session();
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        assistant.usage.input = 25;
+        assistant.usage.cache_read = 75;
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::to_value(assistant).expect("assistant JSON")));
+        let expected = session.with_session_manager(|manager| manager.extension_usage_totals());
+        let bound = SessionContextManager::new(&session);
+        let weak = ExtensionSessionManagerView { session: Arc::downgrade(&session.inner), id: session.session_id(), file: None };
+        let sdk = crate::sdk::extension_context::create(&session);
+        // When
+        let bound_totals = bound.get_usage_totals();
+        let sdk_totals = sdk.session_manager.get_usage_totals();
+        // Then
+        assert_eq!(bound_totals, Some(expected.clone()));
+        assert_eq!(weak.get_usage_totals(), Some(expected.clone()));
+        assert_eq!(sdk_totals, Some(expected));
+        assert_eq!(sdk_totals.expect("cached totals")["latestCacheHitRate"], serde_json::json!(75.0));
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_session_stream_awaits_pending_header_setup_destruction() {
+        // Given
+        struct Capture(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Capture {
+            fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); }
+        }
+        let session = retry_session(Vec::new(), 0);
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".into()), ..Default::default() },
+            ..Default::default()
+        }).expect("configured faux auth");
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let capture = dropped.clone();
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(Mutex::new(Some(entered)));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:pending-headers>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::BeforeProviderHeaders, vec![Arc::new(move |_, _| {
+            let capture = Capture(capture.clone());
+            let entered = lock(&entered).take();
+            Box::pin(async move {
+                let _capture = capture;
+                if let Some(entered) = entered { entered.send(()).expect("setup observer"); }
+                std::future::pending().await
+            })
+        })]);
+        session.set_extension_runner(ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.install_default_stream_function();
+        let stream = session.agent.stream_function()(&session.model(), &maho_ai::types::Context::default(), None);
+        tokio::time::timeout(std::time::Duration::from_secs(5), observed).await.expect("bounded setup entry").expect("setup entered");
+        // When
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel()).await.expect("bounded awaited cancellation").expect("cancel");
+        // Then
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(session.with_session_manager(|manager| manager.entries().is_empty()));
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn message_end_replacement_retains_typed_error_cause_through_persistence() {
+        // Given
+        let session = test_session();
+        let cause = maho_ai::types::AssistantErrorCause::UsageLimit { scope: maho_ai::types::UsageLimitScope::Account };
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        assistant.stop_reason = StopReason::Error;
+        assistant.error_cause = Some(cause.clone());
+        let original = AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(assistant)));
+        session.agent.set_messages(vec![original.clone()]);
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:advice>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::MessageEnd, vec![Arc::new(|event, _| {
+            let mut message = match event { maho_ext_api::ExtensionEvent::MessageEnd { message } => message.clone(), _ => unreachable!() };
+            if let AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) = &mut message {
+                assistant.error_message = Some("replacement advice".into());
+                assistant.error_cause = None;
+            }
+            Box::pin(async move { Ok(maho_ext_api::EventResult::MessageEnd { message: Some(message) }) })
+        })]);
+        session.set_extension_runner(ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        // When
+        session.process_agent_event(maho_agent::types::AgentEvent::MessageEnd { message: original },
+            maho_ai::utils::abort::AbortController::new().signal()).await;
+        // Then
+        assert_eq!(session.messages()[0].as_assistant().expect("assistant").error_cause, Some(cause.clone()));
+        session.rebuild_session_context().expect("restore projected assistant");
+        assert_eq!(session.messages()[0].as_assistant().expect("restored assistant").error_cause, Some(cause));
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn memory_reporters_follow_factory_load_order_and_live_registration() {
+        // Given
+        struct Reporter(usize);
+        impl maho_ext_api::Extension for Reporter {
+            fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+                let bytes = self.0;
+                api.register_memory_reporter("cache", Arc::new(move || [("bytes".into(), bytes)].into()))
+                    .expect("register reporter");
+            }
+        }
+        let session = test_session();
+        assert!(session.extension_memory_reporters().is_empty());
+        let runner = ExtensionRunner::from_static(vec![Box::new(Reporter(17)), Box::new(Reporter(29))], test_extension_context(&session));
+        let runtime = runner.runtime.clone();
+        let first_path = runner.extensions[0].identity.path.clone();
+        session.set_extension_runner(runner).await;
+        runtime.register_memory_reporter(&first_path, "cache", Arc::new(|| [("bytes".into(), 31)].into()))
+            .expect("replace reporter");
+        // When
+        let figures: Vec<_> = session.extension_memory_reporters().into_iter()
+            .map(|named| (named.name, (named.reporter)()["bytes"])).collect();
+        // Then
+        assert_eq!(figures, vec![("cache".into(), 31), ("cache".into(), 29)]);
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn sequential_nested_call_can_reenter_without_waiting_on_its_own_queue() {
+        // Given
+        let session = test_session();
+        session.agent.set_tool_execution(maho_agent::types::ToolExecutionMode::Sequential);
+        let mut leaf = test_tool("leaf");
+        leaf.execute = Arc::new(|id, _, _, _| Box::pin(async move {
+            assert!(id.ends_with("/1/1"));
+            AgentToolResult::text("leaf")
+        }));
+        session.register_tool_definition(test_definition("leaf"), empty_source_info(), leaf);
+        for (name, child) in [("middle", "leaf"), ("root", "middle")] {
+            let weak = session.weak_accessor();
+            let mut tool = test_tool(name);
+            tool.execution_mode = Some(maho_agent::types::ToolExecutionMode::Sequential);
+            tool.execute = Arc::new(move |_, _, _, _| {
+                let session = weak().expect("live session");
+                Box::pin(async move {
+                    session.execute_tool(child, serde_json::json!({}), Default::default()).await.expect("child");
+                    AgentToolResult::text("parent")
+                })
+            });
+            session.register_tool_definition(test_definition(name), empty_source_info(), tool);
+        }
+        session.set_active_tools_by_name(vec!["root".into(), "middle".into(), "leaf".into()]);
+        // When
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5),
+            session.execute_tool("root", serde_json::json!({}), Default::default())).await.expect("reentrant queue").expect("root");
+        // Then
+        let nested = result.nested_calls.expect("actual children");
+        assert!(nested.complete);
+        assert_eq!(nested.calls.len(), 2);
+        assert_eq!(nested.calls[1].id, format!("{}/1", nested.calls[0].id));
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn nested_execute_tool_records_real_calls_and_persists_parent_result() {
+        // Given
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        assistant.stop_reason = StopReason::ToolUse;
+        assistant.content = vec![maho_ai::types::ContentBlock::ToolCall(maho_ai::types::ToolCall {
+            id: "parent".into(), name: "outer".into(), arguments: Map::new(), ..Default::default()
+        })];
+        let session = retry_session(vec![assistant, maho_ai::providers::faux::faux_assistant_message("done", Default::default())], 0);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::Agent(event) = event { lock(&captured).push(event.clone()); }
+        }));
+        let mut inner = test_tool("inner");
+        inner.execution_mode = Some(maho_agent::types::ToolExecutionMode::Sequential);
+        inner.execute = Arc::new(|id, _, _, update| Box::pin(async move {
+            assert_eq!(id, "parent/1");
+            if let Some(update) = update { update(AgentToolResult::text("progress")); }
+            let mut result = AgentToolResult::text("inner");
+            result.usage = Some(maho_ai::types::Usage { input: 7, total_tokens: 7, ..Default::default() });
+            result
+        }));
+        session.register_tool_definition(test_definition("inner"), empty_source_info(), inner);
+        let weak = session.weak_accessor();
+        let mut outer = test_tool("outer");
+        outer.execute = Arc::new(move |_, _, _, _| {
+            let session = weak().expect("live parent session");
+            Box::pin(async move {
+                session.execute_tool("inner", serde_json::json!({}), Default::default()).await.expect("nested execution");
+                AgentToolResult::text("outer")
+            })
+        });
+        session.register_tool_definition(test_definition("outer"), empty_source_info(), outer);
+        session.set_active_tools_by_name(vec!["outer".into(), "inner".into()]);
+        // When
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded nested turn").expect("prompt");
+        // Then
+        let results: Vec<_> = session.messages().into_iter().filter_map(|message| match message {
+            AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) => Some(result), _ => None,
+        }).collect();
+        assert_eq!(results.len(), 1);
+        let nested = results[0].nested_calls.as_ref().expect("real nested record");
+        assert!(nested.complete);
+        assert_eq!(nested.calls.len(), 1);
+        assert_eq!(nested.calls[0].id, "parent/1");
+        assert_eq!(nested.calls[0].name, "inner");
+        assert_eq!(nested.calls[0].status, maho_ai::types::NestedToolCallStatus::Ok);
+        assert_eq!(results[0].usage.expect("nested usage").input, 7);
+        let nested_events: Vec<_> = lock(&events).iter().filter_map(|event| match event {
+            AgentEvent::ToolExecutionStart { tool_call_id, parent_tool_call_id: Some(parent), .. } => Some(("start", tool_call_id.clone(), parent.clone())),
+            AgentEvent::ToolExecutionUpdate { tool_call_id, parent_tool_call_id: Some(parent), .. } => Some(("update", tool_call_id.clone(), parent.clone())),
+            AgentEvent::ToolExecutionEnd { tool_call_id, parent_tool_call_id: Some(parent), .. } => Some(("end", tool_call_id.clone(), parent.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(nested_events, vec![("start", "parent/1".into(), "parent".into()),
+            ("update", "parent/1".into(), "parent".into()), ("end", "parent/1".into(), "parent".into())]);
+        let persisted = session.with_session_manager(|manager| manager.entries()).into_iter()
+            .find(|entry| entry["message"]["toolCallId"] == "parent").expect("persisted parent");
+        assert_eq!(persisted["message"]["nestedCalls"], serde_json::to_value(nested).expect("nested JSON"));
+        session.rebuild_session_context().expect("restore transcript");
+        assert!(session.messages().iter().any(|message| matches!(message,
+            AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) if result.nested_calls.as_ref() == Some(nested))));
+        session.dispose().await;
     }
 
     #[tokio::test]
@@ -9874,7 +10278,7 @@ mod tests {
         let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
             providers: Some(Vec::new()),
             ..Default::default()
-        });
+        }).expect("valid model runtime");
         AgentSession::new(AgentSessionConfig {
             agent: stub_agent(),
             session_manager: manager,
@@ -9963,7 +10367,7 @@ mod tests {
         let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
             providers: Some(Vec::new()),
             ..Default::default()
-        });
+        }).expect("valid model runtime");
         AgentSession::new(AgentSessionConfig {
             agent: stub_agent(),
             session_manager: SessionManager::in_memory("/tmp", None, None),
@@ -10123,7 +10527,7 @@ mod tests {
         let session = test_session();
         let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
             tokens_per_second: Some(0.0), ..Default::default()
-        });
+        }).expect("valid faux provider");
         provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("configured stream", Default::default()).into()]);
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
@@ -10566,7 +10970,7 @@ mod tests {
     async fn extension_user_message_text_blocks_are_separated_by_newlines() {
         use maho_ext_api::ExtensionActions;
         let session = test_session();
-        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
         session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
@@ -10960,7 +11364,7 @@ mod tests {
                 id: id.to_owned(), reasoning: Some(true), context_window: Some(window), max_tokens: Some(1_024), ..Default::default()
             }).collect()),
             ..Default::default()
-        });
+        }).expect("valid faux provider");
         let session = test_session();
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
@@ -11348,7 +11752,7 @@ mod tests {
         let session = test_session_with_stream_function(false);
         session.agent().set_model(test_model());
         let mut runtime = session.model_runtime().clone();
-        runtime.register_native_provider(maho_ai::providers::faux::faux_provider(Default::default()).provider);
+        runtime.register_native_provider(maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider").provider);
         let calls = Arc::new(AtomicU64::new(0));
         let captured = calls.clone();
         session.agent().set_stream_function(Arc::new(move |_, _, _| {
@@ -11480,7 +11884,7 @@ mod tests {
         use maho_ai::providers::faux::{faux_provider, faux_streams, RegisterFauxProviderOptions};
         let provider = faux_provider(RegisterFauxProviderOptions {
             tokens_per_second: Some(0.0), ..Default::default()
-        });
+        }).expect("valid faux provider");
         provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("done", Default::default()).into()]);
         let streams = faux_streams(provider.core.clone());
         let session = test_session_with_stream_function(false);
@@ -11651,7 +12055,7 @@ mod tests {
                     released.wait_for(|value| *value).await.expect("release provider");
                 })
             })), ..Default::default()
-        });
+        }).expect("valid faux provider");
         provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("welcome", Default::default()).into()]);
         let streams = faux_streams(provider.core.clone());
         let session = test_session_with_stream_function(false);
@@ -12339,7 +12743,7 @@ mod tests {
         let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
             providers: Some(Vec::new()),
             ..Default::default()
-        });
+        }).expect("valid model runtime");
         AgentSession::new(AgentSessionConfig {
             agent: stub_agent(),
             session_manager: SessionManager::in_memory("/tmp", None, None),
@@ -12668,7 +13072,7 @@ mod tests {
         use maho_ai::providers::faux::{faux_provider, faux_streams, RegisterFauxProviderOptions};
         let provider = faux_provider(RegisterFauxProviderOptions {
             tokens_per_second: Some(0.0), ..Default::default()
-        });
+        }).expect("valid faux provider");
         provider.set_responses(responses.into_iter().map(Into::into).collect());
         let streams = faux_streams(provider.core.clone());
         let session = test_session_with_stream_function(false);
@@ -12688,7 +13092,7 @@ mod tests {
     #[tokio::test]
     async fn generated_branch_summary_is_attached_at_target_with_source_identity() {
         use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
-        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
         provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("branch digest", Default::default()).into()]);
         let session = test_session_with_stream_function(false);
         route_agent_stream_to_model_runtime(&session);
@@ -12735,7 +13139,8 @@ mod tests {
             id: model.provider.clone(), name: None, base_url: None, headers: None, auth: None,
             models: vec![model], fetch_models: None, restore_models: None, filter_models: None,
             api: maho_ai::models::ProviderApi::Single(streams.clone()),
-        });
+            images: Default::default(),
+        }).expect("valid stalled provider");
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider);
         runtime.register_provider("stalled-summary", crate::provider_composer::ProviderConfigInput {
@@ -12775,7 +13180,7 @@ mod tests {
     #[tokio::test]
     async fn aborted_branch_provider_response_preserves_navigation_context() {
         use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
-        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
         provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
             stop_reason: Some(StopReason::Aborted), ..Default::default()
         }).into()]);
@@ -12809,7 +13214,7 @@ mod tests {
                 maho_ai::providers::faux::FauxModelDefinition { id: "faux-1".to_owned(), ..Default::default() },
                 maho_ai::providers::faux::FauxModelDefinition { id: "summary".to_owned(), ..Default::default() },
             ]), ..Default::default()
-        });
+        }).expect("valid faux provider");
         provider.set_responses(vec![
             maho_ai::providers::faux::faux_assistant_message("digest", Default::default()).into(),
             maho_ai::providers::faux::faux_assistant_message("prefix digest", Default::default()).into(),
@@ -12848,7 +13253,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_compaction_hook_makes_no_summary_request() {
         use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
-        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
         let session = test_session_with_stream_function(false);
         session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
         let mut runtime = session.model_runtime().clone();
@@ -12909,7 +13314,7 @@ mod tests {
     async fn summary_retry_preserves_affinity_and_isolates_request_identity() {
         use maho_ai::providers::faux::{faux_provider, faux_assistant_message, FauxAssistantMessageOptions,
             FauxResponseStep, RegisterFauxProviderOptions};
-        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
         let options_seen = Arc::new(Mutex::new(Vec::new()));
         let make_response = |failure: bool| {
             let options_seen = options_seen.clone();
@@ -12955,7 +13360,7 @@ mod tests {
     async fn deterministic_summary_failure_preserves_explicit_retention_without_retry() {
         use maho_ai::providers::faux::{faux_provider, faux_assistant_message, FauxAssistantMessageOptions,
             FauxResponseStep, RegisterFauxProviderOptions};
-        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let captured = seen.clone();
         provider.set_responses(vec![FauxResponseStep::Factory(Arc::new(move |_, options, _, _| {
@@ -12999,7 +13404,7 @@ mod tests {
     #[tokio::test]
     async fn session_abort_cancels_started_summary_without_late_apply() {
         use maho_ai::providers::faux::{faux_provider, FauxResponseStep, RegisterFauxProviderOptions};
-        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
         let (started, entered) = tokio::sync::oneshot::channel();
         let started = Arc::new(Mutex::new(Some(started)));
         let (cancelled, observed) = tokio::sync::oneshot::channel();
@@ -13073,7 +13478,7 @@ mod tests {
                     released.wait_for(|released| *released).await.expect("release");
                 })
             })), ..Default::default()
-        });
+        }).expect("valid faux provider");
         provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("<title>Stale Title</title>", Default::default()).into()]);
         let session = test_session_with_stream_function(false);
         session.agent.set_timeout_ms(Some(12_345));
@@ -13109,7 +13514,7 @@ mod tests {
     #[tokio::test]
     async fn title_generation_retries_one_transient_error() {
         use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
-        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
         provider.set_responses(vec![
             maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
                 stop_reason: Some(StopReason::Error), error_message: Some("503 Service Unavailable".to_owned()), ..Default::default()
@@ -13921,10 +14326,10 @@ mod tests {
     async fn model_switch_engages_server_side_fallback_abort_only_with_configured_chain() {
         let session = retry_session(Vec::new(), 1);
         let mut runtime = session.model_runtime().clone();
-        runtime.register_native_provider(maho_ai::providers::faux::faux_provider(Default::default()).provider.clone());
+        runtime.register_native_provider(maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider").provider.clone());
         runtime.register_native_provider(maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
             provider: Some("anthropic-subscription".to_owned()), ..Default::default()
-        }).provider.clone());
+        }).expect("valid faux provider").provider.clone());
         runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
             config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
             ..Default::default()
@@ -13949,12 +14354,12 @@ mod tests {
     #[tokio::test]
     async fn subscription_auth_miss_does_not_admit_configured_provider_fallback() {
         let session = retry_session(Vec::new(), 1);
-        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
         let subscription = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
             provider: Some("anthropic-subscription".to_owned()), ..Default::default()
-        });
+        }).expect("valid faux provider");
         runtime.register_native_provider(subscription.provider.clone());
         runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
             config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
@@ -14018,7 +14423,7 @@ mod tests {
         for recovered in [true, false] {
             let provider = faux_provider(RegisterFauxProviderOptions {
                 provider: Some("anthropic-subscription".to_owned()), tokens_per_second: Some(0.0), ..Default::default()
-            });
+            }).expect("valid faux provider");
             let failure = || maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
                 stop_reason: Some(StopReason::Error), error_message: Some("invalid_request".to_owned()), ..Default::default()
             });
@@ -14239,12 +14644,12 @@ mod tests {
     #[tokio::test]
     async fn rejected_native_tool_search_retries_the_same_model_once() {
         let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("recovered", Default::default())], 1);
-        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
         let subscription = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
             provider: Some("anthropic-subscription".to_owned()), ..Default::default()
-        });
+        }).expect("valid faux provider");
         runtime.register_native_provider(subscription.provider.clone());
         runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
             config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
@@ -15313,7 +15718,7 @@ mod tests {
         let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
             providers: Some(Vec::new()),
             ..Default::default()
-        });
+        }).expect("valid model runtime");
         let session = AgentSession::new(AgentSessionConfig {
             agent: stub_agent(),
             session_manager: SessionManager::in_memory(&cwd, None, None),
@@ -15457,7 +15862,7 @@ mod tests {
             let root = tempfile::tempdir().expect("log fixture");
             let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
                 providers: Some(Vec::new()), ..Default::default()
-            });
+            }).expect("valid model runtime");
             let session = AgentSession::new(AgentSessionConfig {
                 agent: stub_agent(),
                 session_manager: SessionManager::in_memory("/tmp", None, None),

@@ -6,7 +6,7 @@ use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provide
 use crate::providers::builtin_api_streams;
 use std::sync::Arc;
 
-pub fn vercel_ai_gateway_provider() -> Arc<dyn Provider> {
+pub fn vercel_ai_gateway_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     create_provider(CreateProviderOptions {
         id: "vercel-ai-gateway".into(),
         name: Some("Vercel AI Gateway".into()),
@@ -17,6 +17,7 @@ pub fn vercel_ai_gateway_provider() -> Arc<dyn Provider> {
         fetch_models: None,
         restore_models: None,
         filter_models: None,
+        images: indexmap::IndexMap::new(),
         api: ProviderApi::Single(builtin_api_streams("anthropic-messages")),
     })
 }

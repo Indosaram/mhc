@@ -83,7 +83,7 @@ impl ModelRegistry for BtwRegistry {
         Box::pin(async { panic!("resolved auth required") })
     }
     fn get_api_key_and_headers<'a>(&'a self, _: &'a Model) -> ExtensionFuture<'a, ResolvedRequestAuth> {
-        Box::pin(async { Ok(ResolvedRequestAuth { auth: maho_ai::models::ProviderAuthResult { api_key: Some("side-secret".into()), ..Default::default() }, extra_body: None, upstream_model_id: None, service_tier: None, env: None }) })
+        Box::pin(async { Ok(ResolvedRequestAuth { ambient: false, auth: maho_ai::models::ProviderAuthResult { api_key: Some("side-secret".into()), ..Default::default() }, extra_body: None, upstream_model_id: None, service_tier: None, env: None }) })
     }
     fn stream_simple(&self, _: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> Result<AssistantMessageEventStream, ExtensionFailure> {
         let options = options.expect("options");

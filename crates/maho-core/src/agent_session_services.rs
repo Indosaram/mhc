@@ -183,20 +183,21 @@ pub fn apply_extension_flag_values(
 }
 
 /// Create cwd-bound runtime services (no AgentSession).
-pub async fn create_agent_session_services(mut options: CreateAgentSessionServicesOptions) -> AgentSessionServices {
+pub async fn create_agent_session_services(mut options: CreateAgentSessionServicesOptions) -> Result<AgentSessionServices, maho_ai::models::ModelsError> {
     let agent_dir = options.agent_dir.clone().unwrap_or_else(crate::config::get_agent_dir);
     let auth_path = std::path::Path::new(&agent_dir).join("auth.json");
     let auth_storage = Arc::new(AuthStorage::create(&auth_path.to_string_lossy()));
     let owns_model_runtime = options.model_runtime.is_none();
-    let mut model_runtime = options.model_runtime.take().unwrap_or_else(|| {
-        ModelRuntime::create_sync(CreateModelRuntimeOptions {
+    let mut model_runtime = match options.model_runtime.take() {
+        Some(runtime) => runtime,
+        None => ModelRuntime::create_sync(CreateModelRuntimeOptions {
             models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
             auth_path: Some(auth_path.clone()),
             credentials: Some(Arc::clone(&auth_storage)),
             providers: None,
             ..Default::default()
-        })
-    });
+        })?,
+    };
     let auth_storage = model_runtime.credentials.clone();
     let settings_manager = options
         .settings_manager
@@ -212,14 +213,14 @@ pub async fn create_agent_session_services(mut options: CreateAgentSessionServic
     // Extension flag values are validated by `create_agent_session_from_services`, once the
     // extensions that register them are loaded.
     let diagnostics = Vec::new();
-    AgentSessionServices {
+    Ok(AgentSessionServices {
         cwd: options.cwd.clone(),
         agent_dir,
         auth_storage,
         model_registry,
         settings_manager,
         diagnostics,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -277,7 +278,7 @@ mod tests {
             cwd: dir.path().to_string_lossy().into_owned(),
             agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
             ..Default::default()
-        }).await;
+        }).await.expect("session services");
         assert_eq!(services.cwd, dir.path().to_string_lossy());
         assert!(services.agent_dir.ends_with("agent"));
         assert!(services.diagnostics.is_empty());
@@ -289,12 +290,12 @@ mod tests {
         let credentials = Arc::new(AuthStorage::in_memory(Default::default()));
         let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
             credentials: Some(credentials.clone()), providers: Some(Vec::new()), ..Default::default()
-        });
+        }).expect("model runtime");
         let services = create_agent_session_services(CreateAgentSessionServicesOptions {
             cwd: dir.path().to_string_lossy().into_owned(),
             agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
             model_runtime: Some(runtime), ..Default::default()
-        }).await;
+        }).await.expect("session services");
         assert!(Arc::ptr_eq(&services.auth_storage, &credentials));
         assert!(Arc::ptr_eq(&services.auth_storage, &services.model_runtime().credentials));
         services.auth_storage.set("fixture", Some(serde_json::json!({"type":"api_key","key":"fixture-key"})))
@@ -313,8 +314,8 @@ mod tests {
         let services = create_agent_session_services(CreateAgentSessionServicesOptions {
             cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
             settings_manager: Some(settings), ..Default::default()
-        }).await;
-        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        }).await.expect("session services");
+        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("faux provider");
         let created = create_agent_session_from_services(services, CreateAgentSessionFromServicesOptions {
             model: provider.get_model(Some("faux-1")), tools: Some(Vec::new()), ..Default::default()
         }).await.expect("session");

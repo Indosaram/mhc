@@ -45,10 +45,15 @@ pub struct OmoComponentOptions {
 impl Default for OmoComponentOptions {
     fn default() -> Self {
         let env: BTreeMap<String, String> = std::env::vars().collect();
-        let telemetry_env: std::collections::HashMap<String, String> = env.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+        let telemetry_env: std::collections::HashMap<String, String> = env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
         Self {
             skills_root: builtin_skills_root(),
-            state_dir: maho_omo_telemetry::product_identity::get_omo_native_state_dir(&telemetry_env),
+            state_dir: maho_omo_telemetry::product_identity::get_omo_native_state_dir(
+                &telemetry_env,
+            ),
             env,
             facts_read_only_bootstrap: false,
         }
@@ -68,7 +73,9 @@ impl OmoComponentOptions {
 
     fn skills_root_string(&self) -> String {
         let mut root = self.skills_root.to_string_lossy().into_owned();
-        if !root.ends_with(std::path::MAIN_SEPARATOR) { root.push(std::path::MAIN_SEPARATOR); }
+        if !root.ends_with(std::path::MAIN_SEPARATOR) {
+            root.push(std::path::MAIN_SEPARATOR);
+        }
         root
     }
 }
@@ -80,7 +87,11 @@ pub struct MissingComponents {
 
 impl std::fmt::Display for MissingComponents {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the omo component list requires {}", self.names.join(", "))
+        write!(
+            f,
+            "the omo component list requires {}",
+            self.names.join(", ")
+        )
     }
 }
 
@@ -96,10 +107,15 @@ impl std::error::Error for MissingComponents {}
 pub fn memory_component_from(
     build: impl Fn() -> maho_omo_memory::composition::MemoryExtensionOptions + Send + Sync + 'static,
 ) -> OmoSenpiComponent {
-    OmoSenpiComponent::from_factory("memory", move || Box::new(maho_omo_memory::composition::MemoryExtension::new(build())))
+    OmoSenpiComponent::from_factory("memory", move || {
+        Box::new(maho_omo_memory::composition::MemoryExtension::new(build()))
+    })
 }
 
-fn component(name: &'static str, extension: impl maho_ext_api::Extension + 'static) -> OmoSenpiComponent {
+fn component(
+    name: &'static str,
+    extension: impl maho_ext_api::Extension + 'static,
+) -> OmoSenpiComponent {
     OmoSenpiComponent::new(name, Box::new(extension))
 }
 
@@ -112,25 +128,57 @@ pub fn omo_components(
     let skills_root = options.skills_root.clone();
     let mut components = Vec::with_capacity(24);
     let config_startup = if options.facts_read_only_bootstrap {
-        maho_omo_config_startup::ConfigStartupComponent { run_migration: Some(std::sync::Arc::new(|_| Default::default())), load_config: None }
-    } else { maho_omo_config_startup::ConfigStartupComponent::default() };
+        maho_omo_config_startup::ConfigStartupComponent {
+            run_migration: Some(std::sync::Arc::new(|_| Default::default())),
+            load_config: None,
+        }
+    } else {
+        maho_omo_config_startup::ConfigStartupComponent::default()
+    };
     components.push(component("config-startup", config_startup));
-    components.push(component("model-profile", maho_omo_model_profile::ModelProfileComponent::new(
-        maho_omo_model_profile::ModelProfileComponentOptions { load_config: None, env: Some(options.env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()) })));
-    components.push(component("bundled-skills", maho_omo_bundled_skills::BundledSkillsComponent::new(
-        maho_omo_bundled_skills::BundledSkillsComponentOptions { env: Some(options.env.clone()), skills_dir: Some(skills_root.clone()) })));
+    components.push(component(
+        "model-profile",
+        maho_omo_model_profile::ModelProfileComponent::new(
+            maho_omo_model_profile::ModelProfileComponentOptions {
+                load_config: None,
+                env: Some(
+                    options
+                        .env
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
+            },
+        ),
+    ));
+    components.push(component(
+        "bundled-skills",
+        maho_omo_bundled_skills::BundledSkillsComponent::new(
+            maho_omo_bundled_skills::BundledSkillsComponentOptions {
+                env: Some(options.env.clone()),
+                skills_dir: Some(skills_root.clone()),
+            },
+        ),
+    ));
     let skill_commands_env = options.env.clone();
     let skill_commands_root = skills_root.clone();
-    components.push(OmoSenpiComponent::from_context_register("skill-commands", move |api, runtime| {
-        use maho_ext_api::Extension;
-        let component = maho_omo_skill_commands::SkillCommandsComponent::new(
-            maho_omo_skill_commands::SkillCommandsComponentOptions {
-                skills_dir: Some(skill_commands_root.clone()),
-                env: Some(skill_commands_env.clone()),
-                logger: Some(runtime.logger()),
-            });
-        component.register(api);
-    }));
+    components.push(OmoSenpiComponent::from_context_register(
+        "skill-commands",
+        move |api, runtime| {
+            use maho_ext_api::Extension;
+            let component = maho_omo_skill_commands::SkillCommandsComponent::new(
+                maho_omo_skill_commands::SkillCommandsComponentOptions {
+                    skills_dir: Some(skill_commands_root.clone()),
+                    env: Some(skill_commands_env.clone()),
+                    logger: Some(runtime.logger()),
+                },
+            );
+            component.register(api);
+            if let Err(error) = crate::claude_compat::register(api, &skill_commands_env) {
+                maho_ext_api::diagnostic(&format!("Claude compatibility loading failed: {error}"));
+            }
+        },
+    ));
     components.push(component(
         "onboarding",
         maho_omo_onboarding::OnboardingComponent {
@@ -138,57 +186,142 @@ pub fn omo_components(
             skills_root: options.skills_root_string(),
         },
     ));
-    components.push(component("init-deep-advisor", maho_omo_init_deep_advisor::index::InitDeepAdvisorComponent::new(skills_root.clone())));
+    components.push(component(
+        "init-deep-advisor",
+        maho_omo_init_deep_advisor::index::InitDeepAdvisorComponent::new(skills_root.clone()),
+    ));
+    components.push(component(
+        "side-panel",
+        maho_omo_side_panel::native::NativeSidePanel,
+    ));
     components.push(component(
         "telemetry",
         maho_omo_telemetry::omo_native_component::OmoNativeTelemetryComponent::with_default_config(
             maho_omo_telemetry::index::SenpiTelemetryOptions {
-                env: Some(options.env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()),
+                env: Some(
+                    options
+                        .env
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
                 state_dir: Some(options.state_dir.clone()),
                 ..Default::default()
             },
             skills_root.clone(),
         ),
     ));
-    components.push(component("ultrawork", maho_omo_ultrawork::UltraworkComponent::default()));
-    components.push(component("skill-pointers", maho_omo_skill_pointers::SkillPointersComponent::new(options.skills_root_string())));
-    components.push(component("ulw-execute-continuation", maho_omo_start_work_continuation::StartWorkContinuationComponent::default()));
+    components.push(component(
+        "ultrawork",
+        maho_omo_ultrawork::UltraworkComponent::default(),
+    ));
+    components.push(component(
+        "skill-pointers",
+        maho_omo_skill_pointers::SkillPointersComponent::new(options.skills_root_string()),
+    ));
+    components.push(component(
+        "ulw-execute-continuation",
+        maho_omo_start_work_continuation::StartWorkContinuationComponent::default(),
+    ));
     // The loop's registration-time log has no context; bind the shared runtime logger at
     // construction (same pattern as config-watch below) so the production path logs too.
-    components.push(OmoSenpiComponent::from_context_register("ulw-loop", move |api, runtime| {
-        use maho_ext_api::Extension;
-        let component = maho_omo_ulw_loop::index::UlwLoopComponent {
-            logger: Some(runtime.logger()),
-            ..Default::default()
-        };
-        component.register(api);
-    }));
-    components.push(component("todo-fanout-reminder", maho_omo_todo_fanout_reminder::TodoFanoutReminderComponent::default()));
-    components.push(component("git-master", maho_omo_git_master::GitMasterAttributionComponent::new(
-        maho_omo_git_master::GitMasterAttributionComponentOptions { load_settings: None, env: Some(options.env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()) })));
-    components.push(component("fallback-architect", maho_omo_fallback_architect::FallbackArchitectComponent::default()));
-    components.push(component("comment-checker", maho_omo_comment_checker::CommentCheckerComponent::default()));
-    components.push(component("ast-grep", maho_omo_ast_grep::AstGrepComponent::default()));
-    components.push(component("builtin-mcps", maho_omo_builtin_mcps::BuiltinMcpsComponent::from_env(&options.env)));
-    let x_search_env=options.env.clone();
-    components.push(OmoSenpiComponent::from_context_register("x-search",move |api,runtime| {
-        use maho_ext_api::Extension;
-        maho_omo_x_search::XSearchComponent::new(maho_omo_x_search::XSearchComponentOptions {
-            env:Some(x_search_env.clone()),logger:Some(runtime.logger()),..Default::default()
-        }).register(api);
-    }));
-    components.push(component("browser-bridge", maho_omo_browser_bridge::BrowserBridgeComponent::default()));
-    components.push(component("lsp", maho_omo_lsp::LspComponent));
+    components.push(OmoSenpiComponent::from_context_register(
+        "ulw-loop",
+        move |api, runtime| {
+            use maho_ext_api::Extension;
+            let component = maho_omo_ulw_loop::index::UlwLoopComponent {
+                logger: Some(runtime.logger()),
+                ..Default::default()
+            };
+            component.register(api);
+        },
+    ));
+    components.push(component(
+        "todo-fanout-reminder",
+        maho_omo_todo_fanout_reminder::TodoFanoutReminderComponent::default(),
+    ));
+    components.push(component(
+        "question-gates",
+        maho_omo_question_gates::create_question_gates_component(),
+    ));
+    components.push(component(
+        "git-master",
+        maho_omo_git_master::GitMasterAttributionComponent::new(
+            maho_omo_git_master::GitMasterAttributionComponentOptions {
+                load_settings: None,
+                env: Some(
+                    options
+                        .env
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
+            },
+        ),
+    ));
+    components.push(component(
+        "fallback-architect",
+        maho_omo_fallback_architect::FallbackArchitectComponent::default(),
+    ));
+    components.push(component(
+        "comment-checker",
+        maho_omo_comment_checker::CommentCheckerComponent::default(),
+    ));
+    components.push(component(
+        "ast-grep",
+        maho_omo_ast_grep::AstGrepComponent::default(),
+    ));
+    components.push(component(
+        "builtin-mcps",
+        maho_omo_builtin_mcps::BuiltinMcpsComponent::from_env(&options.env),
+    ));
+    let x_search_env = options.env.clone();
+    components.push(OmoSenpiComponent::from_context_register(
+        "x-search",
+        move |api, runtime| {
+            use maho_ext_api::Extension;
+            maho_omo_x_search::XSearchComponent::new(maho_omo_x_search::XSearchComponentOptions {
+                env: Some(x_search_env.clone()),
+                logger: Some(runtime.logger()),
+                ..Default::default()
+            })
+            .register(api);
+        },
+    ));
+    components.push(component(
+        "browser-bridge",
+        maho_omo_browser_bridge::BrowserBridgeComponent::default(),
+    ));
+    components.push(OmoSenpiComponent::from_context_register(
+        "lsp",
+        |api, runtime| {
+            maho_omo_lsp::LspComponent.register_with_startup_deferral(
+                api,
+                maho_omo_lsp::LspComponentOptions::default(),
+                Some(runtime.defer_macrotask()),
+            );
+        },
+    ));
     components.push(task);
     components.push(memory);
-    components.push(component("gateway",maho_omo_gateway::GatewayComponent::new(Default::default())));
-    let watch = std::sync::Arc::new(std::sync::Mutex::new(maho_omo_config_watch::index::ConfigWatchComponent::default()));
-    components.push(OmoSenpiComponent::from_context_register("config-watch", move |api, runtime| {
-        use maho_ext_api::Extension;
-        let mut watch = watch.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        watch.options.logger = Some(runtime.logger());
-        watch.register(api);
-    }));
+    components.push(component(
+        "gateway",
+        maho_omo_gateway::GatewayComponent::new(Default::default()),
+    ));
+    let watch = std::sync::Arc::new(std::sync::Mutex::new(
+        maho_omo_config_watch::index::ConfigWatchComponent::default(),
+    ));
+    components.push(OmoSenpiComponent::from_context_register(
+        "config-watch",
+        move |api, runtime| {
+            use maho_ext_api::Extension;
+            let mut watch = watch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            watch.options.logger = Some(runtime.logger());
+            watch.register(api);
+        },
+    ));
     components
 }
 
@@ -221,12 +354,14 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "skill-commands",
         "onboarding",
         "init-deep-advisor",
+        "side-panel",
         "telemetry",
         "ultrawork",
         "skill-pointers",
         "ulw-execute-continuation",
         "ulw-loop",
         "todo-fanout-reminder",
+        "question-gates",
         "git-master",
         "fallback-architect",
         "comment-checker",
@@ -249,13 +384,23 @@ mod tests {
 
     #[test]
     fn a_set_non_empty_env_root_overrides_the_packaged_skills_dir() {
-        assert_eq!(skills_root_from(Some("/custom/omo/skills".to_owned())), PathBuf::from("/custom/omo/skills"));
+        assert_eq!(
+            skills_root_from(Some("/custom/omo/skills".to_owned())),
+            PathBuf::from("/custom/omo/skills")
+        );
     }
 
     #[test]
     fn an_unset_or_empty_env_root_falls_back_to_the_packaged_skills_dir() {
         let fallback = skills_root_from(None);
-        assert!(fallback.ends_with("skills"), "packaged fallback stays under a skills dir: {fallback:?}");
-        assert_eq!(skills_root_from(Some(String::new())), fallback, "an empty override is treated as unset");
+        assert!(
+            fallback.ends_with("skills"),
+            "packaged fallback stays under a skills dir: {fallback:?}"
+        );
+        assert_eq!(
+            skills_root_from(Some(String::new())),
+            fallback,
+            "an empty override is treated as unset"
+        );
     }
 }
