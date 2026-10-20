@@ -7,23 +7,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use maho_ext_api::{
-    BuildSystemPromptOptions, ComponentLogger, EventBus, EventKind, EventResult,
-    ExecOptions, ExecResult, ExecuteToolError, ExecuteToolErrorCode, ExecuteToolFuture,
-    ExecuteToolOptions, Extension, ExtensionApi, ExtensionContext,
-    ExtensionFailure, ExtensionFuture, ExtensionMode, ExtensionRuntime, ExtensionSessionActions,
-    ExtensionSessionProfile, ExtensionUi, ExtensionUiDialogOptions, JsonValue,
-    LazyToolActivator, LoadedExtension, Model, ModelRegistry, NotificationType,
-    ResourcesDiscoverEvent, SessionEntry, SessionManager, SessionReason, SlashCommandInfo,
-    SourceInfo, SourceOrigin, SourceScope, Theme, ThinkingLevel, ToolExposure,
+    BuildSystemPromptOptions, ComponentLogger, EventBus, EventKind, EventResult, ExecOptions,
+    ExecResult, ExecuteToolError, ExecuteToolErrorCode, ExecuteToolFuture, ExecuteToolOptions,
+    Extension, ExtensionApi, ExtensionContext, ExtensionFailure, ExtensionFuture, ExtensionMode,
+    ExtensionRuntime, ExtensionSessionActions, ExtensionSessionProfile, ExtensionUi,
+    ExtensionUiDialogOptions, JsonValue, LazyToolActivator, LoadedExtension, Model, ModelRegistry,
+    NotificationType, ResourcesDiscoverEvent, SessionEntry, SessionManager, SessionReason,
+    SlashCommandInfo, SourceInfo, SourceOrigin, SourceScope, Theme, ThinkingLevel, ToolExposure,
     ToolSessionManager, UiFuture,
 };
 use maho_omo_x_search::client::{XSearchFetch, XSearchHttpResponse};
 use maho_omo_x_search::index::{
-    create_x_search_component, resolve_x_search_skill_path,
-    XSearchComponentOptions,
+    XSearchComponentOptions, create_x_search_component, resolve_x_search_skill_path,
 };
 use maho_omo_x_search::tool::X_SEARCH_TOOL_NAME;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn probe_fixture() -> Value {
     let content = include_str!("./__fixtures__/x-search-response.probe.json");
@@ -48,7 +46,10 @@ impl ModelRegistry for MockModelRegistry {
     fn has_configured_auth(&self, _model: &Model) -> bool {
         false
     }
-    fn get_api_key_for_provider<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Option<String>> {
+    fn get_api_key_for_provider<'a>(
+        &'a self,
+        _provider: &'a str,
+    ) -> ExtensionFuture<'a, Option<String>> {
         Box::pin(async { Ok(None) })
     }
     fn get_stored_credential_type(
@@ -69,6 +70,7 @@ impl ModelRegistry for MockModelRegistry {
         Box::pin(async move {
             if provider == "xai" {
                 Ok(key.map(|k| maho_ai::models::AuthResolution {
+                    ambient: false,
                     auth: maho_ai::models::ProviderAuthResult {
                         api_key: Some(k),
                         ..Default::default()
@@ -108,18 +110,39 @@ impl SessionManager for DummySession {
 
 struct DummyUi;
 impl ExtensionUi for DummyUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, _: &str, _: NotificationType) {}
     fn set_status(&self, _: &str, _: Option<&str>) {}
-    fn set_widget(&self, _: &str, _: Option<maho_ext_api::WidgetContent>, _: maho_ext_api::ExtensionWidgetOptions) {}
+    fn set_widget(
+        &self,
+        _: &str,
+        _: Option<maho_ext_api::WidgetContent>,
+        _: maho_ext_api::ExtensionWidgetOptions,
+    ) {
+    }
     fn set_header(&self, _: Option<maho_ext_api::ComponentFactory>) {}
     fn set_footer(&self, _: Option<maho_ext_api::ComponentFactory>) {}
     fn set_title(&self, _: &str) {}
@@ -128,7 +151,11 @@ impl ExtensionUi for DummyUi {
     fn get_editor_text(&self) -> String {
         String::new()
     }
-    fn custom(&self, _: maho_ext_api::ComponentFactory, _: maho_ext_api::CustomUiOptions) -> ExtensionFuture<'_, Value> {
+    fn custom(
+        &self,
+        _: maho_ext_api::ComponentFactory,
+        _: maho_ext_api::CustomUiOptions,
+    ) -> ExtensionFuture<'_, Value> {
         Box::pin(async { Ok(Value::Null) })
     }
     fn theme(&self) -> Theme {
@@ -150,7 +177,12 @@ impl ExtensionSessionActions for FakeSessionActions {
     fn set_label(&self, _: &str, _: Option<&str>) -> Result<(), ExtensionFailure> {
         Ok(())
     }
-    fn execute_tool<'a>(&'a self, _: &'a str, _: JsonValue, _: ExecuteToolOptions) -> ExecuteToolFuture<'a> {
+    fn execute_tool<'a>(
+        &'a self,
+        _: &'a str,
+        _: JsonValue,
+        _: ExecuteToolOptions,
+    ) -> ExecuteToolFuture<'a> {
         Box::pin(async {
             Err(ExecuteToolError {
                 code: ExecuteToolErrorCode::UnknownTool,
@@ -196,7 +228,13 @@ impl ExtensionSessionActions for FakeSessionActions {
     fn set_session_fast_mode(&self, _: bool) -> Result<(), ExtensionFailure> {
         Ok(())
     }
-    fn exec<'a>(&'a self, _: &'a str, _: &'a [String], _: &'a Path, _: ExecOptions) -> ExtensionFuture<'a, ExecResult> {
+    fn exec<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: &'a Path,
+        _: ExecOptions,
+    ) -> ExtensionFuture<'a, ExecResult> {
         Box::pin(async { Err(ExtensionFailure::new("unexpected exec")) })
     }
 }
@@ -234,13 +272,22 @@ struct RecordingLogger {
 
 impl ComponentLogger for RecordingLogger {
     fn info(&self, message: &str, _details: Option<&JsonValue>) {
-        self.entries.lock().expect("lock entries").push(("info".to_string(), message.to_string()));
+        self.entries
+            .lock()
+            .expect("lock entries")
+            .push(("info".to_string(), message.to_string()));
     }
     fn warn(&self, message: &str, _details: Option<&JsonValue>) {
-        self.entries.lock().expect("lock entries").push(("warn".to_string(), message.to_string()));
+        self.entries
+            .lock()
+            .expect("lock entries")
+            .push(("warn".to_string(), message.to_string()));
     }
     fn error(&self, message: &str, _details: Option<&JsonValue>) {
-        self.entries.lock().expect("lock entries").push(("error".to_string(), message.to_string()));
+        self.entries
+            .lock()
+            .expect("lock entries")
+            .push(("error".to_string(), message.to_string()));
     }
 }
 
@@ -294,7 +341,10 @@ fn make_context(
 #[tokio::test]
 async fn test_given_host_already_loaded_user_skill_when_discover_then_yields() {
     let agent_dir = tempfile::tempdir().expect("tempdir");
-    write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "oauth", "refresh": "r" } }));
+    write_auth_json(
+        agent_dir.path(),
+        &json!({ "xai": { "type": "oauth", "refresh": "r" } }),
+    );
 
     let home_dir = tempfile::tempdir().expect("tempdir");
     let omo_dir = home_dir.path().join(".omo");
@@ -302,8 +352,14 @@ async fn test_given_host_already_loaded_user_skill_when_discover_then_yields() {
     fs::write(omo_dir.join("omo.jsonc"), "{}").expect("write omo.jsonc");
 
     let mut env = BTreeMap::new();
-    env.insert("HOME".to_string(), home_dir.path().to_string_lossy().to_string());
-    env.insert("USERPROFILE".to_string(), home_dir.path().to_string_lossy().to_string());
+    env.insert(
+        "HOME".to_string(),
+        home_dir.path().to_string_lossy().to_string(),
+    );
+    env.insert(
+        "USERPROFILE".to_string(),
+        home_dir.path().to_string_lossy().to_string(),
+    );
 
     let existing_commands = vec![SlashCommandInfo {
         name: "skill:x-search".to_string(),
@@ -322,7 +378,11 @@ async fn test_given_host_already_loaded_user_skill_when_discover_then_yields() {
     let comp = create_x_search_component(XSearchComponentOptions {
         agent_dir: Some(agent_dir.path().to_path_buf()),
         env: Some(env),
-        resolve_skill_path: Some(Arc::new(|| Some(PathBuf::from("/plugin/skills-conditional/x-search/SKILL.md")))),
+        resolve_skill_path: Some(Arc::new(|| {
+            Some(PathBuf::from(
+                "/plugin/skills-conditional/x-search/SKILL.md",
+            ))
+        })),
         ..Default::default()
     });
     comp.register(&mut api);
@@ -354,22 +414,39 @@ async fn test_given_host_already_loaded_user_skill_when_discover_then_yields() {
 #[tokio::test]
 async fn test_given_disabled_skills_names_x_search_when_discover_then_not_contributed() {
     let agent_dir = tempfile::tempdir().expect("tempdir");
-    write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "oauth", "refresh": "r" } }));
+    write_auth_json(
+        agent_dir.path(),
+        &json!({ "xai": { "type": "oauth", "refresh": "r" } }),
+    );
 
     let home_dir = tempfile::tempdir().expect("tempdir");
     let omo_dir = home_dir.path().join(".omo");
     fs::create_dir_all(&omo_dir).expect("create .omo");
-    fs::write(omo_dir.join("omo.jsonc"), json!({ "disabled_skills": ["x-search"] }).to_string()).expect("write omo.jsonc");
+    fs::write(
+        omo_dir.join("omo.jsonc"),
+        json!({ "disabled_skills": ["x-search"] }).to_string(),
+    )
+    .expect("write omo.jsonc");
 
     let mut env = BTreeMap::new();
-    env.insert("HOME".to_string(), home_dir.path().to_string_lossy().to_string());
-    env.insert("USERPROFILE".to_string(), home_dir.path().to_string_lossy().to_string());
+    env.insert(
+        "HOME".to_string(),
+        home_dir.path().to_string_lossy().to_string(),
+    );
+    env.insert(
+        "USERPROFILE".to_string(),
+        home_dir.path().to_string_lossy().to_string(),
+    );
 
     let mut api = fake_api("test", Vec::new());
     let comp = create_x_search_component(XSearchComponentOptions {
         agent_dir: Some(agent_dir.path().to_path_buf()),
         env: Some(env),
-        resolve_skill_path: Some(Arc::new(|| Some(PathBuf::from("/plugin/skills-conditional/x-search/SKILL.md")))),
+        resolve_skill_path: Some(Arc::new(|| {
+            Some(PathBuf::from(
+                "/plugin/skills-conditional/x-search/SKILL.md",
+            ))
+        })),
         ..Default::default()
     });
     comp.register(&mut api);
@@ -400,7 +477,10 @@ async fn test_given_disabled_skills_names_x_search_when_discover_then_not_contri
 #[tokio::test]
 async fn test_given_no_same_name_skill_and_empty_denylist_when_discover_then_contributed() {
     let agent_dir = tempfile::tempdir().expect("tempdir");
-    write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "oauth", "refresh": "r" } }));
+    write_auth_json(
+        agent_dir.path(),
+        &json!({ "xai": { "type": "oauth", "refresh": "r" } }),
+    );
 
     let home_dir = tempfile::tempdir().expect("tempdir");
     let omo_dir = home_dir.path().join(".omo");
@@ -408,8 +488,14 @@ async fn test_given_no_same_name_skill_and_empty_denylist_when_discover_then_con
     fs::write(omo_dir.join("omo.jsonc"), "{}").expect("write omo.jsonc");
 
     let mut env = BTreeMap::new();
-    env.insert("HOME".to_string(), home_dir.path().to_string_lossy().to_string());
-    env.insert("USERPROFILE".to_string(), home_dir.path().to_string_lossy().to_string());
+    env.insert(
+        "HOME".to_string(),
+        home_dir.path().to_string_lossy().to_string(),
+    );
+    env.insert(
+        "USERPROFILE".to_string(),
+        home_dir.path().to_string_lossy().to_string(),
+    );
 
     let existing_commands = vec![SlashCommandInfo {
         name: "skill:frontend".to_string(),
@@ -428,7 +514,11 @@ async fn test_given_no_same_name_skill_and_empty_denylist_when_discover_then_con
     let comp = create_x_search_component(XSearchComponentOptions {
         agent_dir: Some(agent_dir.path().to_path_buf()),
         env: Some(env),
-        resolve_skill_path: Some(Arc::new(|| Some(PathBuf::from("/plugin/skills-conditional/x-search/SKILL.md")))),
+        resolve_skill_path: Some(Arc::new(|| {
+            Some(PathBuf::from(
+                "/plugin/skills-conditional/x-search/SKILL.md",
+            ))
+        })),
         ..Default::default()
     });
     comp.register(&mut api);
@@ -449,30 +539,47 @@ async fn test_given_no_same_name_skill_and_empty_denylist_when_discover_then_con
         panic!("expected ResourcesDiscover");
     };
     assert_eq!(d.skill_paths.len(), 1);
-    assert_eq!(d.skill_paths[0].path, "/plugin/skills-conditional/x-search/SKILL.md");
+    assert_eq!(
+        d.skill_paths[0].path,
+        "/plugin/skills-conditional/x-search/SKILL.md"
+    );
 }
 
 #[tokio::test]
 async fn test_given_stored_xai_oauth_entry_when_registering_then_tool_and_skill_registered() {
     let agent_dir = tempfile::tempdir().expect("tempdir");
-    write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "oauth", "refresh": "r" } }));
+    write_auth_json(
+        agent_dir.path(),
+        &json!({ "xai": { "type": "oauth", "refresh": "r" } }),
+    );
 
     let mut api = fake_api("test", Vec::new());
     let test_env = BTreeMap::from([
-        ("HOME".to_string(), agent_dir.path().to_string_lossy().to_string()),
-        ("USERPROFILE".to_string(), agent_dir.path().to_string_lossy().to_string()),
+        (
+            "HOME".to_string(),
+            agent_dir.path().to_string_lossy().to_string(),
+        ),
+        (
+            "USERPROFILE".to_string(),
+            agent_dir.path().to_string_lossy().to_string(),
+        ),
     ]);
     let comp = create_x_search_component(XSearchComponentOptions {
         agent_dir: Some(agent_dir.path().to_path_buf()),
         env: Some(test_env),
-        resolve_skill_path: Some(Arc::new(|| Some(PathBuf::from("/test/x-search/skill/SKILL.md")))),
+        resolve_skill_path: Some(Arc::new(|| {
+            Some(PathBuf::from("/test/x-search/skill/SKILL.md"))
+        })),
         ..Default::default()
     });
     comp.register(&mut api);
 
     assert_eq!(api.registered.tools.len(), 1);
     assert_eq!(api.registered.tools[0].definition.name, "x_search");
-    assert_eq!(api.registered.tools[0].definition.exposure, Some(ToolExposure::Search));
+    assert_eq!(
+        api.registered.tools[0].definition.exposure,
+        Some(ToolExposure::Search)
+    );
 
     let handlers = api
         .runtime
@@ -501,10 +608,14 @@ fn test_given_connected_credential_when_registering_then_startup_stays_quiet_on_
 
     let skill_dir = tempfile::tempdir().expect("tempdir");
     let skill_file = skill_dir.path().join("SKILL.md");
-    fs::write(&skill_file, "---
+    fs::write(
+        &skill_file,
+        "---
 name: x-search
 ---
-").expect("write skill");
+",
+    )
+    .expect("write skill");
     let skill_file_clone = skill_file.clone();
 
     let logger = Arc::new(RecordingLogger::default());
@@ -527,7 +638,10 @@ name: x-search
 #[test]
 fn test_packaged_plugin_layout_skill_path_resolution() {
     let plugin_root = tempfile::tempdir().expect("tempdir");
-    let root = plugin_root.path().canonicalize().expect("canonical tempdir");
+    let root = plugin_root
+        .path()
+        .canonicalize()
+        .expect("canonical tempdir");
     let cond_dir = root.join("skills-conditional/x-search");
     fs::create_dir_all(&cond_dir).expect("create dir");
     fs::write(cond_dir.join("SKILL.md"), "---\nname: x-search\n---\n").expect("write");
@@ -566,16 +680,27 @@ fn test_given_connected_credential_but_no_resolvable_skill_warns_and_registers_t
     comp.register(&mut api);
 
     assert_eq!(api.registered.tools.len(), 1);
-    assert!(api.runtime.live_handlers("test", EventKind::ResourcesDiscover).is_none());
+    assert!(
+        api.runtime
+            .live_handlers("test", EventKind::ResourcesDiscover)
+            .is_none()
+    );
 
     let entries = logger.entries.lock().expect("lock entries");
-    assert!(entries.iter().any(|(lvl, msg)| lvl == "warn" && msg.contains("x-search skill missing")));
+    assert!(
+        entries
+            .iter()
+            .any(|(lvl, msg)| lvl == "warn" && msg.contains("x-search skill missing"))
+    );
 }
 
 #[test]
 fn test_given_no_xai_entry_and_no_xai_api_key_skips_registration() {
     let agent_dir = tempfile::tempdir().expect("tempdir");
-    write_auth_json(agent_dir.path(), &json!({ "anthropic": { "type": "oauth" } }));
+    write_auth_json(
+        agent_dir.path(),
+        &json!({ "anthropic": { "type": "oauth" } }),
+    );
 
     let logger = Arc::new(RecordingLogger::default());
     let mut api = fake_api("test", Vec::new());
@@ -588,7 +713,11 @@ fn test_given_no_xai_entry_and_no_xai_api_key_skips_registration() {
     comp.register(&mut api);
 
     assert_eq!(api.registered.tools.len(), 0);
-    assert!(api.runtime.live_handlers("test", EventKind::ResourcesDiscover).is_none());
+    assert!(
+        api.runtime
+            .live_handlers("test", EventKind::ResourcesDiscover)
+            .is_none()
+    );
 
     let entries = logger.entries.lock().expect("lock entries");
     // Skipping registration is silent on debug channel, so logger entries are empty
@@ -615,7 +744,10 @@ fn test_given_no_stored_entry_but_xai_api_key_then_tool_registers() {
 #[test]
 fn test_given_malformed_stored_xai_entry_plus_xai_api_key_stored_owns_decision() {
     let agent_dir = tempfile::tempdir().expect("tempdir");
-    write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "totally-unknown" } }));
+    write_auth_json(
+        agent_dir.path(),
+        &json!({ "xai": { "type": "totally-unknown" } }),
+    );
 
     let mut env = BTreeMap::new();
     env.insert("XAI_API_KEY".to_string(), "env-token".to_string());
@@ -629,7 +761,11 @@ fn test_given_malformed_stored_xai_entry_plus_xai_api_key_stored_owns_decision()
     comp.register(&mut api);
 
     assert_eq!(api.registered.tools.len(), 0);
-    assert!(api.runtime.live_handlers("test", EventKind::ResourcesDiscover).is_none());
+    assert!(
+        api.runtime
+            .live_handlers("test", EventKind::ResourcesDiscover)
+            .is_none()
+    );
 }
 
 #[test]
@@ -657,7 +793,10 @@ fn test_given_no_agent_dir_option_then_home_resolved_from_env() {
     write_auth_json(agent_dir.path(), &json!({ "xai": { "type": "api_key" } }));
 
     let mut env = BTreeMap::new();
-    env.insert("OMO_CODING_AGENT_DIR".to_string(), agent_dir.path().to_string_lossy().to_string());
+    env.insert(
+        "OMO_CODING_AGENT_DIR".to_string(),
+        agent_dir.path().to_string_lossy().to_string(),
+    );
 
     let mut api = fake_api("test", Vec::new());
     let comp = create_x_search_component(XSearchComponentOptions {
@@ -753,15 +892,9 @@ async fn test_registered_tool_returns_auth_error_when_no_bearer() {
         .expect("registered tool executor");
     let ctx = make_context(None, None, PathBuf::from("/tmp"));
 
-    let result = executor(
-        "call-1",
-        json!({ "query": "Grok CLI" }),
-        None,
-        None,
-        &ctx,
-    )
-    .await
-    .expect("execution succeeds");
+    let result = executor("call-1", json!({ "query": "Grok CLI" }), None, None, &ctx)
+        .await
+        .expect("execution succeeds");
 
     let text = match &result.content[0] {
         maho_ext_api::ContentBlock::Text(t) => t.text.clone(),

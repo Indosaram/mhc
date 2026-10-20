@@ -21,6 +21,14 @@ use crate::types::{BoulderWorkInput, CompleteBoulderInput, WorkOwner};
 
 const GITIGNORE_CONTENT: &str = "*\n!/rules/\n!/rules/**\n";
 
+pub fn try_write_boulder_state(directory: &Path, state: &BoulderState) -> bool {
+    write_boulder_state(directory, state).is_ok()
+}
+
+pub fn try_clear_boulder_state(directory: &Path) -> bool {
+    clear_boulder_state(directory).is_ok()
+}
+
 /// Persist `state` as `JSON.stringify(state, null, 2)`, first syncing the active work
 /// entry from the root mirror. Creating `.omo/` also writes its self-ignoring
 /// `.gitignore`.
@@ -229,8 +237,7 @@ pub fn select_active_work(
     next_state.set("works", Js::Object(all_works));
     project_work_to_mirror(&mut next_state, &next_work);
     let next_state = BoulderState::from_doc(next_state);
-    write_boulder_state(directory, &next_state)?;
-    Ok(Some(next_state))
+    Ok(try_write_boulder_state(directory, &next_state).then_some(next_state))
 }
 
 /// Add a new active work for `input.plan_path` next to the existing works and persist;
@@ -261,8 +268,7 @@ pub fn add_boulder_work(
     next_state.set("active_work_id", Js::string(&work_id));
     project_work_to_mirror(&mut next_state, &next_work);
     let next_state = BoulderState::from_doc(next_state);
-    write_boulder_state(directory, &next_state)?;
-    Ok(Some(next_state))
+    Ok(try_write_boulder_state(directory, &next_state).then_some(next_state))
 }
 
 /// Where a work lives inside the document.
@@ -346,6 +352,5 @@ pub fn complete_boulder(
         project_work_to_mirror(&mut doc, &work);
     }
     let state = BoulderState::from_doc(doc);
-    write_boulder_state(directory, &state)?;
-    Ok(Some(state))
+    Ok(try_write_boulder_state(directory, &state).then_some(state))
 }

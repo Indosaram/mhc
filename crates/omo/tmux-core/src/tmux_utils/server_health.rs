@@ -1,7 +1,5 @@
 //! OpenCode server health check with a per-URL success cache.
 
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -63,43 +61,27 @@ fn is_ok_status(status: u16) -> bool {
     (200..300).contains(&status)
 }
 
-/// Default fetcher: a plain HTTP/1.1 `GET` (only `http://` URLs are supported).
+/// Default fetcher with HTTPS and Fetch's limit of 20 redirects.
 fn http_get_status(target: &str, timeout: Duration) -> Result<u16, String> {
-    let parsed = url::Url::parse(target).map_err(|error| error.to_string())?;
-    if parsed.scheme() != "http" {
-        return Err(format!("unsupported scheme: {}", parsed.scheme()));
-    }
-    let host = parsed.host_str().ok_or("missing host")?;
-    let port = parsed.port_or_known_default().ok_or("missing port")?;
-    let address = (host.trim_start_matches('[').trim_end_matches(']'), port)
-        .to_socket_addrs()
-        .map_err(|error| error.to_string())?
-        .next()
-        .ok_or("unresolved host")?;
-    let mut stream =
-        TcpStream::connect_timeout(&address, timeout).map_err(|error| error.to_string())?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|error| error.to_string())?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(|error| error.to_string())?;
-    let request = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        parsed.path(),
-        &parsed[url::Position::BeforeHost..url::Position::AfterPort],
-    );
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|error| error.to_string())?;
-    let mut head = [0_u8; 64];
-    let read = stream.read(&mut head).map_err(|error| error.to_string())?;
-    let status_line = String::from_utf8_lossy(&head[..read]);
-    status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|code| code.parse().ok())
-        .ok_or_else(|| "malformed HTTP response".to_owned())
+    // A blocking client must be created and dropped outside any caller's Tokio runtime.
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(timeout)
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() > 20 {
+                        attempt.error("too many redirects")
+                    } else {
+                        attempt.follow()
+                    }
+                }))
+                .build()
+                .map_err(|error| error.to_string())?;
+            client.get(target).send()
+                .map(|response| response.status().as_u16())
+                .map_err(|error| error.to_string())
+        }).join().map_err(|_| "health fetch thread panicked".to_owned())?
+    })
 }
 
 fn health_url(server_url: &str) -> Option<String> {

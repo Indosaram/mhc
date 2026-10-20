@@ -1,34 +1,105 @@
-#[path="native_account/support.rs"]
-pub mod support;
-#[path="native_account/native_state.rs"]
+#[path = "native_account/native_state.rs"]
 mod native_state;
+#[path = "native_account/support.rs"]
+pub mod support;
+use maho_ai::types::{
+    AssistantImages, BoxFuture, ContentBlock, ImageContent, ImagesBackground, ImagesContext,
+    ImagesModel, ImagesOptions, ImagesStopReason, ProviderImages, TextContent,
+};
 use maho_ext_api::*;
-use maho_ai::types::{ProviderImages,ImagesModel,ImagesContext,ImagesOptions,AssistantImages,ImagesStopReason,ImagesBackground,BoxFuture,ContentBlock,ImageContent,TextContent};
-use std::sync::{Arc,Mutex};
+use std::sync::{Arc, Mutex};
 struct Registry;
-impl ModelRegistry for Registry{
-    fn get_all(&self)->Vec<Model>{vec![]}
-    fn get_available(&self)->Vec<Model>{vec![]}
-    fn find(&self,_:&str,_:&str)->Option<Model>{None}
-    fn has_configured_auth(&self,_:&Model)->bool{true}
-    fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>>{Box::pin(async{panic!("client must use resolved provider auth")})}
-    fn get_stored_credential_type(&self,_:&str)->Result<Option<maho_ai::auth::types::CredentialType>,ExtensionFailure>{Ok(Some(maho_ai::auth::types::CredentialType::ApiKey))}
-    fn get_provider_auth<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<maho_ai::models::AuthResolution>>{
-        Box::pin(async{Ok(Some(maho_ai::models::AuthResolution{auth:maho_ai::models::ProviderAuthResult{api_key:Some("fixture-image-secret".into()),headers:Some(std::collections::BTreeMap::from([("X-Fixture".into(),Some("image".into()))])),base_url:None},env:None}))})
+impl ModelRegistry for Registry {
+    fn get_all(&self) -> Vec<Model> {
+        vec![]
+    }
+    fn get_available(&self) -> Vec<Model> {
+        vec![]
+    }
+    fn find(&self, _: &str, _: &str) -> Option<Model> {
+        None
+    }
+    fn has_configured_auth(&self, _: &Model) -> bool {
+        true
+    }
+    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> {
+        Box::pin(async { panic!("client must use resolved provider auth") })
+    }
+    fn get_stored_credential_type(
+        &self,
+        _: &str,
+    ) -> Result<Option<maho_ai::auth::types::CredentialType>, ExtensionFailure> {
+        Ok(Some(maho_ai::auth::types::CredentialType::ApiKey))
+    }
+    fn get_provider_auth<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+        Box::pin(async {
+            Ok(Some(maho_ai::models::AuthResolution {
+                ambient: false,
+                auth: maho_ai::models::ProviderAuthResult {
+                    api_key: Some("fixture-image-secret".into()),
+                    headers: Some(std::collections::BTreeMap::from([(
+                        "X-Fixture".into(),
+                        Some("image".into()),
+                    )])),
+                    base_url: None,
+                },
+                env: None,
+            }))
+        })
     }
 }
-struct Provider{calls:Mutex<Vec<(ImagesModel,ImagesContext,ImagesOptions)>>}
-impl ProviderImages for Provider{
-    fn generate_images<'a>(&'a self,model:&'a ImagesModel,context:&'a ImagesContext,options:Option<ImagesOptions>)->BoxFuture<'a,AssistantImages>{
-        self.calls.lock().expect("calls").push((model.clone(),context.clone(),options.expect("options")));
-        Box::pin(async move{AssistantImages{api:model.api.clone(),provider:model.provider.clone(),model:model.id.clone(),output:vec![ContentBlock::Text(TextContent{text:"revised".into(),..Default::default()}),ContentBlock::Image(ImageContent{data:"AQID".into(),mime_type:"image/jpeg".into()})],response_id:None,usage:None,background:Some(ImagesBackground::Opaque),stop_reason:ImagesStopReason::Stop,error_message:None,timestamp:0}})
+struct Provider {
+    calls: Mutex<Vec<(ImagesModel, ImagesContext, ImagesOptions)>>,
+}
+impl ProviderImages for Provider {
+    fn generate_images<'a>(
+        &'a self,
+        model: &'a ImagesModel,
+        context: &'a ImagesContext,
+        options: Option<ImagesOptions>,
+    ) -> BoxFuture<'a, Result<AssistantImages, String>> {
+        self.calls.lock().expect("calls").push((
+            model.clone(),
+            context.clone(),
+            options.expect("options"),
+        ));
+        Box::pin(async move {
+            Ok(AssistantImages {
+                api: model.api.clone(),
+                provider: model.provider.clone(),
+                model: model.id.clone(),
+                output: vec![
+                    ContentBlock::Text(TextContent {
+                        text: "revised".into(),
+                        ..Default::default()
+                    }),
+                    ContentBlock::Image(ImageContent {
+                        data: "AQID".into(),
+                        mime_type: "image/jpeg".into(),
+                    }),
+                ],
+                response_id: None,
+                usage: None,
+                background: Some(ImagesBackground::Opaque),
+                stop_reason: ImagesStopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            })
+        })
     }
 }
 #[tokio::test]
-async fn registered_image_client_preserves_auth_and_delivered_file_format()->Result<(),Box<dyn std::error::Error>>{
-    let _guard=native_state::GlobalNativeStateGuard::acquire().await;
-    let root=tempfile::tempdir()?;let scope=maho_ai::node::provider_scope::ProviderScope::new();
-    let provider=Arc::new(Provider{calls:Mutex::new(vec![])});
+async fn registered_image_client_preserves_auth_and_delivered_file_format()
+-> Result<(), Box<dyn std::error::Error>> {
+    let _guard = native_state::GlobalNativeStateGuard::acquire().await;
+    let root = tempfile::tempdir()?;
+    let scope = maho_ai::node::provider_scope::ProviderScope::new();
+    let provider = Arc::new(Provider {
+        calls: Mutex::new(vec![]),
+    });
     let outcome=maho_ai::node::provider_scope::run_with_provider_scope_async(&scope,async{
         maho_ai::images_api_registry::register_images_api_provider("openai-images",provider.clone(),Some("native-image-fixture"))?;
         let mut context=support::context(Arc::new(Registry),Arc::new(support::TestUi::default()));context.cwd=root.path().into();
@@ -50,5 +121,8 @@ async fn registered_image_client_preserves_auth_and_delivered_file_format()->Res
         assert_eq!(calls[0].1.input.len(),1);assert!(!serde_json::to_string(&result)?.contains("fixture-image-secret"));
         Ok::<(),Box<dyn std::error::Error>>(())
     }).await;
-    scope.close();root.close()?;outcome??;Ok(())
+    scope.close();
+    root.close()?;
+    outcome??;
+    Ok(())
 }

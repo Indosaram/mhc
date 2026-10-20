@@ -2,7 +2,7 @@
 use std::{path::PathBuf, sync::{Arc, Mutex, OnceLock, PoisonError}};
 use serde_json::Value;
 use senpi_task::{completion::{CompletionNotifier, CompletionNotifierDeps, create_completion_notifier}, lifecycle::{LifecycleDeps, TaskLifecycle, TaskSettings, create_task_lifecycle}, manager::{TaskManager, types::{ManagedRunners, TaskManagerOptions, ManagerConfig}}, store::{StateDirConfig, TaskRecordStore}};
-use crate::{runtime_context::TaskRuntimeContext, parent_notifier::{TaskParentNotifier, CompletionCoordinator}, residency_registry::ManagerResidencyRegistry, lifecycle_adapters::{TaskLifecycleDestruction, admit_lifecycle}, planner::create_task_child_planner, engine_runners::resolve_task_agents};
+use crate::{runtime_context::TaskRuntimeContext, parent_notifier::{TaskParentNotifier, CompletionCoordinator}, residency_registry::ManagerResidencyRegistry, lifecycle_adapters::{TaskLifecycleDestruction, admit_lifecycle}, planner::create_task_child_planner};
 
 pub struct ComposeTaskEngineDeps {
     pub cwd: PathBuf,
@@ -57,7 +57,8 @@ pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: 
     lifecycle_deps.host_transport = deps.host_transport;
     lifecycle_deps.isolation = Some(isolation_runtime.clone());
     let lifecycle = Arc::new(create_task_lifecycle(lifecycle_deps));
-    let agents = resolve_task_agents(&deps.config);
+    let claude_dir = claude_code_compat_core::shared::get_claude_config_dir();
+    let agents = crate::engine_runners::resolve_task_agents_with_compat(&deps.config, &deps.cwd, &claude_dir);
     let planner = create_task_child_planner(deps.config.clone(), agents.clone().into_iter().collect(), deps.resolve_registry);
     let state = runtime.clone();
     let warning_state = runtime.clone();

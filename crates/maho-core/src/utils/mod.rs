@@ -17,6 +17,17 @@ mod image_resize {
 
     pub struct ImageResizeOptions { pub max_width: u32, pub max_height: u32, pub max_bytes: f64, pub jpeg_quality: u8 }
     impl Default for ImageResizeOptions { fn default() -> Self { Self { max_width: 2000, max_height: 2000, max_bytes: 4.5 * 1024.0 * 1024.0, jpeg_quality: 80 } } }
+    impl From<&maho_ai::model::ModelImageResizeOptions> for ImageResizeOptions {
+        fn from(options: &maho_ai::model::ModelImageResizeOptions) -> Self {
+            let defaults = Self::default();
+            Self {
+                max_width: options.max_width.unwrap_or(defaults.max_width),
+                max_height: options.max_height.unwrap_or(defaults.max_height),
+                max_bytes: options.max_bytes.map_or(defaults.max_bytes, |bytes| bytes as f64),
+                jpeg_quality: options.jpeg_quality.unwrap_or(defaults.jpeg_quality),
+            }
+        }
+    }
     pub struct ResizedImage { pub data: String, pub mime_type: String, pub original_width: u32, pub original_height: u32, pub width: u32, pub height: u32, pub was_resized: bool }
 
     fn resize_image_in_process(bytes: &[u8], mime: &str, options: &ImageResizeOptions) -> Option<ResizedImage> {

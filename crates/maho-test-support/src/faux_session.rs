@@ -169,7 +169,7 @@ impl FauxSession {
             ].into_iter().collect()))),
             providers: Some(vec![provider.provider.clone()]),
             ..Default::default()
-        });
+        })?;
         Ok(AgentSession::new(AgentSessionConfig {
             agent: maho_agent::Agent::new(maho_agent::AgentOptions {
                 initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
@@ -201,7 +201,7 @@ impl FauxSession {
             api: Some("faux".to_owned()), tokens_per_second: Some(0.0),
             models: (!self.faux_models.is_empty()).then(|| self.faux_models.clone()),
             ..Default::default()
-        });
+        })?;
         let model = provider.get_model(Some("faux-1")).ok_or("Missing faux-1 model")?;
         let script = self.scripted_messages()?;
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -338,6 +338,7 @@ impl NativeSession {
         let mut runner = self.runner.clone();
         let combined = runner.emit_before_agent_start(maho_ext_api::BeforeAgentStartEvent {
             prompt: prompt.to_owned(), images: None, system_prompt: system_prompt.to_owned(),
+            trigger: "prompt".into(), preview: false,
             system_prompt_options: Default::default(),
         }).await.map_err(|error| error.message)?;
         Ok(combined.and_then(|combined| combined.system_prompt))

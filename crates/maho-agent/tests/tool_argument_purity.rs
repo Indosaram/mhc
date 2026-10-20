@@ -30,7 +30,7 @@ fn in_place_normalizing_tool() -> AgentTool {
                 *value = Value::String("normalized".to_owned());
             }
         }
-        args
+        Ok(args)
     });
     let execute: support::ToolExecuteFn = Arc::new(|_id, _args, _signal, _on_update| {
         Box::pin(async { maho_agent::AgentToolResult::text("") })
@@ -58,7 +58,7 @@ fn key_deleting_tool() -> AgentTool {
         if let Some(record) = args.as_object_mut() {
             record.remove("summary");
         }
-        args
+        Ok(args)
     });
     AgentTool { prepare_arguments: Some(shim), ..in_place_normalizing_tool() }
 }
@@ -79,7 +79,7 @@ fn tool_call_with(args: Value) -> AgentToolCall {
 fn keeps_the_providers_arguments_when_the_shim_normalizes_in_place() {
     let tool_call = tool_call_with(json!({ "summary": "original summary", "nested": { "value": "original" } }));
 
-    let prepared = prepare_agent_tool_call_arguments(&in_place_normalizing_tool(), &tool_call);
+    let prepared = prepare_agent_tool_call_arguments(&in_place_normalizing_tool(), &tool_call).expect("prepared arguments");
 
     assert_eq!(
         Value::Object(tool_call.arguments.clone()),
@@ -95,7 +95,7 @@ fn keeps_the_providers_arguments_when_the_shim_normalizes_in_place() {
 fn keeps_the_providers_arguments_when_the_shim_deletes_a_key() {
     let tool_call = tool_call_with(json!({ "summary": "original summary" }));
 
-    let prepared = prepare_agent_tool_call_arguments(&key_deleting_tool(), &tool_call);
+    let prepared = prepare_agent_tool_call_arguments(&key_deleting_tool(), &tool_call).expect("prepared arguments");
 
     assert_eq!(Value::Object(tool_call.arguments.clone()), json!({ "summary": "original summary" }));
     assert_eq!(Value::Object(prepared.arguments.clone()), json!({}));
@@ -105,7 +105,7 @@ fn keeps_the_providers_arguments_when_the_shim_deletes_a_key() {
 fn keeps_nested_provider_arguments_when_the_shim_mutates_a_nested_object() {
     let tool_call = tool_call_with(json!({ "nested": { "value": "original" } }));
 
-    prepare_agent_tool_call_arguments(&in_place_normalizing_tool(), &tool_call);
+    prepare_agent_tool_call_arguments(&in_place_normalizing_tool(), &tool_call).expect("prepared arguments");
 
     assert_eq!(tool_call.arguments["nested"]["value"], json!("original"));
 }
@@ -115,7 +115,7 @@ fn leaves_a_tool_without_a_shim_on_its_original_arguments_object() {
     let tool_call = tool_call_with(json!({ "summary": "original summary" }));
     let without_shim = AgentTool { prepare_arguments: None, ..in_place_normalizing_tool() };
 
-    let prepared = prepare_agent_tool_call_arguments(&without_shim, &tool_call);
+    let prepared = prepare_agent_tool_call_arguments(&without_shim, &tool_call).expect("prepared arguments");
 
     assert_eq!(prepared.arguments, tool_call.arguments);
     assert_eq!(prepared.id, tool_call.id);

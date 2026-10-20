@@ -400,6 +400,7 @@ mod tests {
 
     fn tool_result(content: &[ContentBlock], is_error: bool, details: Option<Value>) -> ToolResultMessage {
         ToolResultMessage {
+            nested_calls: None,
             tool_call_id: "call-1".to_owned(),
             tool_name: "read".to_owned(),
             content: content.to_vec(),

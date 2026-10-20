@@ -53,7 +53,7 @@ async fn native_non_fable_refusal_falls_back_without_architect_injection() {
         tokens_per_second: Some(0.0),
         models: Some(["faux-1", "faux-2"].into_iter().map(|id| FauxModelDefinition { id: id.into(), ..Default::default() }).collect()),
         ..Default::default()
-    });
+    }).expect("valid faux provider");
     let mut refusal = faux_assistant_message("", FauxAssistantMessageOptions { stop_reason: Some(maho_ai::types::StopReason::Error), timestamp: Some(0), ..Default::default() });
     refusal.stop_details = Some(serde_json::from_value(serde_json::json!({"type":"refusal"})).expect("typed refusal"));
     provider.set_responses(vec![FauxResponseStep::Message(Box::new(refusal)), FauxResponseStep::Message(Box::new(faux_assistant_message("recovered", FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() })))]);
@@ -62,7 +62,7 @@ async fn native_non_fable_refusal_falls_back_without_architect_injection() {
         credentials: Some(Arc::new(maho_core::auth_storage::AuthStorage::in_memory([("faux".into(), serde_json::json!({"type":"api_key","key":"fixture"}))].into_iter().collect()))),
         providers: Some(vec![provider.provider.clone()]),
             ..Default::default()
-        });
+        }).expect("valid model runtime");
     let mut settings = maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false);
     settings.apply_overrides(&serde_json::Map::from_iter([("retry".into(), serde_json::json!({"enabled":true,"maxRetries":0,"modelFallback":true,"baseDelayMs":0,"fallbackChains":{"faux/faux-1":["faux/faux-2"]}}))]));
     let events = Arc::new(Mutex::new(Vec::new()));

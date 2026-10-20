@@ -4,9 +4,11 @@
 //! refreshed before network access; the exchange is joined without owning it, so superseding the
 //! catalog refresh stops waiting but never aborts a token exchange another lane may be relying on.
 
-use crate::auth::oauth_refresh::{refresh_oauth_credential, OAuthRefreshRequest};
-use crate::auth::resolve::{oauth_refresh_models_error, ModelsError};
-use crate::auth::types::{ApiKeyCredential, AuthContext, Credential, CredentialStore, OAuthCredential, ProviderAuth};
+use crate::auth::oauth_refresh::{OAuthRefreshRequest, refresh_oauth_credential};
+use crate::auth::resolve::{ModelsError, oauth_refresh_models_error};
+use crate::auth::types::{
+    ApiKeyCredential, AuthContext, Credential, CredentialStore, OAuthCredential, ProviderAuth,
+};
 use crate::utils::abort::AbortSignal;
 use std::sync::Arc;
 
@@ -19,7 +21,9 @@ pub async fn resolve_refresh_credential(
     signal: &AbortSignal,
 ) -> Result<Option<Credential>, ModelsError> {
     if let Some(Credential::OAuth(stored)) = stored {
-        let Some(oauth) = &provider_auth.oauth else { return Ok(None) };
+        let Some(oauth) = &provider_auth.oauth else {
+            return Ok(None);
+        };
         if (crate::utils::diagnostics::now_ms() as f64) < stored.expires {
             return Ok(Some(Credential::OAuth(stored.clone())));
         }
@@ -32,7 +36,9 @@ pub async fn resolve_refresh_credential(
             oauth: oauth.clone(),
             stale: stored.clone(),
             slot_name: None,
-            is_stale: Arc::new(|credential: &OAuthCredential| crate::utils::diagnostics::now_ms() as f64 >= credential.expires),
+            is_stale: Arc::new(|credential: &OAuthCredential| {
+                crate::utils::diagnostics::now_ms() as f64 >= credential.expires
+            }),
             signal: signal.clone(),
             owning: false,
         })
@@ -41,20 +47,30 @@ pub async fn resolve_refresh_credential(
         return Ok(post.filter(|post| matches!(post, Credential::OAuth(_))));
     }
 
-    let Some(api_key) = &provider_auth.api_key else { return Ok(None) };
+    let Some(api_key) = &provider_auth.api_key else {
+        return Ok(None);
+    };
     let credential = stored.and_then(Credential::as_api_key);
     let result = api_key
         .resolve(ctx, credential, signal)
         .await
         .map_err(|error| ModelsError::new("auth", error.to_string()))?;
-    Ok(result.map(|result| Credential::ApiKey(ApiKeyCredential { key: result.auth.api_key, env: result.env })))
+    Ok(result.map(|result| {
+        Credential::ApiKey(ApiKeyCredential {
+            key: result.auth.api_key,
+            env: result.env,
+            extra: credential.map(|credential| credential.extra.clone()).unwrap_or_default(),
+        })
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::credential_store::InMemoryCredentialStore;
-    use crate::auth::types::{ApiKeyAuth, AuthResult, ModelAuth, OAuthAuth, ProviderAuthInteraction};
+    use crate::auth::types::{
+        ApiKeyAuth, AuthResult, ModelAuth, OAuthAuth, ProviderAuthInteraction,
+    };
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -85,7 +101,11 @@ mod tests {
             _signal: &AbortSignal,
         ) -> anyhow::Result<Option<AuthResult>> {
             Ok(ctx.env("KEY").await.map(|value| AuthResult {
-                auth: ModelAuth { api_key: Some(value), ..Default::default() },
+                ambient: false,
+                auth: ModelAuth {
+                    api_key: Some(value),
+                    ..Default::default()
+                },
                 env: None,
                 source: Some("KEY".into()),
             }))
@@ -100,15 +120,29 @@ mod tests {
         fn name(&self) -> &str {
             "faux-oauth"
         }
-        async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+        async fn login(
+            &self,
+            _interaction: &ProviderAuthInteraction,
+        ) -> anyhow::Result<OAuthCredential> {
             anyhow::bail!("login is not exercised")
         }
-        async fn refresh(&self, _credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+        async fn refresh(
+            &self,
+            _credential: &OAuthCredential,
+            _signal: &AbortSignal,
+        ) -> anyhow::Result<OAuthCredential> {
             self.refresh_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(OAuthCredential::new("refreshed-access", "refreshed-token", 999_999_999_999_999.0))
+            Ok(OAuthCredential::new(
+                "refreshed-access",
+                "refreshed-token",
+                999_999_999_999_999.0,
+            ))
         }
         async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-            Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+            Ok(ModelAuth {
+                api_key: Some(credential.access.clone()),
+                ..Default::default()
+            })
         }
     }
 
@@ -118,18 +152,45 @@ mod tests {
 
     async fn seeded(credential: Credential) -> Arc<dyn CredentialStore> {
         let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
-        credentials.modify("p", Box::new(move |_| Box::pin(async move { Ok(Some(credential)) })), None).await.unwrap();
+        credentials
+            .modify(
+                "p",
+                Box::new(move |_| Box::pin(async move { Ok(Some(credential)) })),
+                None,
+            )
+            .await
+            .unwrap();
         credentials
     }
 
     #[tokio::test]
     async fn unexpired_oauth_credential_is_returned_without_refresh() {
-        let stored = Credential::OAuth(OAuthCredential::new("still-valid", "r1", 999_999_999_999_999.0));
+        let stored = Credential::OAuth(OAuthCredential::new(
+            "still-valid",
+            "r1",
+            999_999_999_999_999.0,
+        ));
         let credentials = seeded(stored.clone()).await;
         let refresh_calls = Arc::new(AtomicUsize::new(0));
-        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(FauxOAuthAuth { refresh_calls: refresh_calls.clone() })) };
-        let ctx = FauxCtx { env: HashMap::new() };
-        let result = resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, Some(&stored), &signal()).await.unwrap();
+        let provider_auth = ProviderAuth {
+            api_key: None,
+            oauth: Some(Arc::new(FauxOAuthAuth {
+                refresh_calls: refresh_calls.clone(),
+            })),
+        };
+        let ctx = FauxCtx {
+            env: HashMap::new(),
+        };
+        let result = resolve_refresh_credential(
+            "p",
+            &provider_auth,
+            &credentials,
+            &ctx,
+            Some(&stored),
+            &signal(),
+        )
+        .await
+        .unwrap();
         assert_eq!(result, Some(stored));
         assert_eq!(refresh_calls.load(Ordering::SeqCst), 0);
     }
@@ -139,13 +200,27 @@ mod tests {
         let stored = Credential::OAuth(OAuthCredential::new("expired", "r1", 1.0));
         let credentials = seeded(stored.clone()).await;
         let refresh_calls = Arc::new(AtomicUsize::new(0));
-        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(FauxOAuthAuth { refresh_calls: refresh_calls.clone() })) };
-        let ctx = FauxCtx { env: HashMap::new() };
-        let result = resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, Some(&stored), &signal())
-            .await
-            .unwrap()
-            .and_then(Credential::into_oauth)
-            .expect("refreshed oauth credential");
+        let provider_auth = ProviderAuth {
+            api_key: None,
+            oauth: Some(Arc::new(FauxOAuthAuth {
+                refresh_calls: refresh_calls.clone(),
+            })),
+        };
+        let ctx = FauxCtx {
+            env: HashMap::new(),
+        };
+        let result = resolve_refresh_credential(
+            "p",
+            &provider_auth,
+            &credentials,
+            &ctx,
+            Some(&stored),
+            &signal(),
+        )
+        .await
+        .unwrap()
+        .and_then(Credential::into_oauth)
+        .expect("refreshed oauth credential");
         assert_eq!(result.access, "refreshed-access");
         assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
     }
@@ -153,18 +228,67 @@ mod tests {
     #[tokio::test]
     async fn ambient_api_key_resolves_into_a_credential() {
         let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
-        let provider_auth = ProviderAuth { api_key: Some(Arc::new(FauxApiKeyAuth)), oauth: None };
-        let ctx = FauxCtx { env: [("KEY".to_string(), "env-value".to_string())].into() };
-        let result = resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, None, &signal()).await.unwrap();
-        assert_eq!(result, Some(Credential::ApiKey(ApiKeyCredential { key: Some("env-value".into()), env: None })));
+        let provider_auth = ProviderAuth {
+            api_key: Some(Arc::new(FauxApiKeyAuth)),
+            oauth: None,
+        };
+        let ctx = FauxCtx {
+            env: [("KEY".to_string(), "env-value".to_string())].into(),
+        };
+        let result =
+            resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, None, &signal())
+                .await
+                .unwrap();
+        assert_eq!(
+            result,
+            Some(Credential::ApiKey(ApiKeyCredential {
+                key: Some("env-value".into()),
+                env: None,
+                ..Default::default()
+            }))
+        );
     }
 
     #[tokio::test]
     async fn returns_none_when_no_credential_and_no_provider_auth_matches() {
         let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
-        let provider_auth = ProviderAuth { api_key: None, oauth: None };
-        let ctx = FauxCtx { env: HashMap::new() };
-        let result = resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, None, &signal()).await.unwrap();
+        let provider_auth = ProviderAuth {
+            api_key: None,
+            oauth: None,
+        };
+        let ctx = FauxCtx {
+            env: HashMap::new(),
+        };
+        let result =
+            resolve_refresh_credential("p", &provider_auth, &credentials, &ctx, None, &signal())
+                .await
+                .unwrap();
         assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn api_key_catalog_refresh_preserves_stored_pool_metadata() {
+        // Given
+        let stored: Credential = serde_json::from_value(serde_json::json!({
+            "type": "api_key", "key": "old",
+            "accounts": [{"name": "work", "key": "sibling"}],
+            "pinned": "work", "order": ["work"]
+        })).unwrap();
+        let credentials = seeded(stored.clone()).await;
+        let provider_auth = ProviderAuth {
+            api_key: Some(Arc::new(FauxApiKeyAuth)),
+            oauth: None,
+        };
+        let ctx = FauxCtx { env: [("KEY".into(), "resolved".into())].into() };
+
+        // When
+        let result = resolve_refresh_credential(
+            "p", &provider_auth, &credentials, &ctx, Some(&stored), &signal(),
+        ).await.unwrap().unwrap();
+
+        // Then
+        let key = result.as_api_key().unwrap();
+        assert_eq!(key.key.as_deref(), Some("resolved"));
+        assert_eq!(key.extra, stored.as_api_key().unwrap().extra);
     }
 }

@@ -1,10 +1,33 @@
 //! Port of senpi packages/ai/src/model-catalog.ts.
 
-use crate::types::Model;
+use crate::types::{Model, ModelThinkingLevel};
 use indexmap::IndexMap;
+use std::collections::HashSet;
+use std::sync::LazyLock;
 
 /// API -> model id -> model groups, as the per-provider `*.models.ts` shards are keyed.
 pub type ModelGroups = IndexMap<String, IndexMap<String, Model>>;
+
+/// Exact-ID lookup: provider namespaces remain part of the model ID.
+pub fn builtin_catalog_advertises_max(model_id: &str) -> bool {
+    static MAX_EFFORT_MODEL_IDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+        crate::models_generated::MODELS
+            .values()
+            .flat_map(|models| models.values())
+            .filter(|model| {
+                matches!(
+                    model
+                        .thinking_level_map
+                        .as_ref()
+                        .and_then(|map| map.get(&ModelThinkingLevel::Max)),
+                    Some(Some(_))
+                )
+            })
+            .map(|model| model.id.as_str())
+            .collect()
+    });
+    MAX_EFFORT_MODEL_IDS.contains(model_id)
+}
 
 /// `Object.assign({}, ...Object.values(groups))`: later groups overwrite earlier ids in place.
 pub fn flatten_model_catalog(_provider: &str, groups: &ModelGroups) -> IndexMap<String, Model> {
@@ -21,6 +44,47 @@ pub fn flatten_model_catalog(_provider: &str, groups: &ModelGroups) -> IndexMap<
 mod tests {
     use super::*;
     use crate::models_generated::{MODELS, get_builtin_provider_models};
+    use crate::types::ThinkingLevelMap;
+
+    #[test]
+    fn inherits_max_from_exact_builtin_id_when_discovery_has_no_map() {
+        let mut model = model_in("alibaba-token-plan", "deepseek-v4-flash").clone();
+        model.provider = "custom-provider".into();
+        model.api = "custom-api".into();
+        model.thinking_level_map = None;
+        let supported = crate::models::supports_max(&model);
+        assert!(supported);
+    }
+
+    #[test]
+    fn does_not_inherit_max_for_nonexact_ids_or_disabled_reasoning() {
+        for (id, reasoning) in [
+            ("custom/deepseek-v4-flash", true),
+            ("deepseek-v4-flash-custom", true),
+            ("DEEPSEEK-V4-FLASH", true),
+            ("deepseek-v4-flash", false),
+        ] {
+            let mut model = model_in("alibaba-token-plan", "deepseek-v4-flash").clone();
+            model.id = id.into();
+            model.reasoning = reasoning;
+            model.thinking_level_map = None;
+            let supported = crate::models::supports_max(&model);
+            assert!(!supported, "{id}, reasoning={reasoning}");
+        }
+    }
+
+    #[test]
+    fn explicit_map_overrides_builtin_max_advertisement() {
+        for map in [
+            ThinkingLevelMap::new(),
+            [(ModelThinkingLevel::Max, None)].into_iter().collect(),
+        ] {
+            let mut model = model_in("alibaba-token-plan", "deepseek-v4-flash").clone();
+            model.thinking_level_map = Some(map);
+            let supported = crate::models::supports_max(&model);
+            assert!(!supported);
+        }
+    }
 
     // senpi test/model-catalog-types.test.ts has 4 `it()` cases. The `expectTypeOf` half of
     // "derives model API, ID, and provider literals from grouped model data" is TS-only
@@ -31,7 +95,9 @@ mod tests {
     // `XAI_MODELS`/`GITHUB_COPILOT_MODELS`/`XIAOMI_MODELS`.
 
     fn model_in<'a>(provider: &str, id: &'a str) -> &'a crate::types::Model {
-        MODELS[provider].get(id).unwrap_or_else(|| panic!("{provider}/{id} missing from flattened catalog"))
+        MODELS[provider]
+            .get(id)
+            .unwrap_or_else(|| panic!("{provider}/{id} missing from flattened catalog"))
     }
 
     #[test]
@@ -47,25 +113,46 @@ mod tests {
             ("xiaomi", "mimo-v2.6-pro", "openai-completions"),
         ] {
             let model = model_in(provider, id);
-            assert_eq!((model.id.as_str(), model.provider.as_str(), model.api.as_str()), (id, provider, api), "{title}");
+            assert_eq!(
+                (
+                    model.id.as_str(),
+                    model.provider.as_str(),
+                    model.api.as_str()
+                ),
+                (id, provider, api),
+                "{title}"
+            );
         }
     }
 
     #[test]
     fn routes_github_copilot_grok_4_5_through_the_responses_api() {
         let title = "routes GitHub Copilot Grok 4.5 through the Responses API";
-        assert_eq!(model_in("github-copilot", "grok-4.5").api, "openai-responses", "{title}");
+        assert_eq!(
+            model_in("github-copilot", "grok-4.5").api,
+            "openai-responses",
+            "{title}"
+        );
     }
 
     // Regression test for https://github.com/earendil-works/pi/issues/9209
     #[test]
     fn routes_all_github_copilot_gpt_models_through_the_responses_api() {
         let title = "routes all GitHub Copilot GPT models through the Responses API";
-        let gpt_models: Vec<&crate::types::Model> =
-            MODELS["github-copilot"].values().filter(|m| m.id.starts_with("gpt-")).collect();
+        let gpt_models: Vec<&crate::types::Model> = MODELS["github-copilot"]
+            .values()
+            .filter(|m| m.id.starts_with("gpt-"))
+            .collect();
         assert!(!gpt_models.is_empty(), "{title}");
-        assert!(gpt_models.iter().all(|m| m.api == "openai-responses"), "{title}");
-        assert_eq!(model_in("github-copilot", "gpt-6-astra").api, "openai-responses", "{title}");
+        assert!(
+            gpt_models.iter().all(|m| m.api == "openai-responses"),
+            "{title}"
+        );
+        assert_eq!(
+            model_in("github-copilot", "gpt-6-astra").api,
+            "openai-responses",
+            "{title}"
+        );
     }
 
     // Grok 4.7 and MiMo V2.6 Pro must be reachable on their DIRECT provider shards
@@ -77,14 +164,29 @@ mod tests {
         let title = "ships grok-4.7 and mimo-v2.6-pro on their direct provider shards and the builtin registry";
         assert_eq!(model_in("xai", "grok-4.6").id, "grok-4.6", "{title}");
         assert_eq!(model_in("xai", "grok-4.7").id, "grok-4.7", "{title}");
-        assert_eq!(model_in("xiaomi", "mimo-v2.5-pro").id, "mimo-v2.5-pro", "{title}");
-        assert_eq!(model_in("xiaomi", "mimo-v2.6-pro").id, "mimo-v2.6-pro", "{title}");
+        assert_eq!(
+            model_in("xiaomi", "mimo-v2.5-pro").id,
+            "mimo-v2.5-pro",
+            "{title}"
+        );
+        assert_eq!(
+            model_in("xiaomi", "mimo-v2.6-pro").id,
+            "mimo-v2.6-pro",
+            "{title}"
+        );
 
-        let xai_ids: Vec<&str> = get_builtin_provider_models("xai").expect("xai").iter().map(|m| m.id.as_str()).collect();
+        let xai_ids: Vec<&str> = get_builtin_provider_models("xai")
+            .expect("xai")
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
         assert!(xai_ids.contains(&"grok-4.6"), "{title}");
         assert!(xai_ids.contains(&"grok-4.7"), "{title}");
-        let xiaomi_ids: Vec<&str> =
-            get_builtin_provider_models("xiaomi").expect("xiaomi").iter().map(|m| m.id.as_str()).collect();
+        let xiaomi_ids: Vec<&str> = get_builtin_provider_models("xiaomi")
+            .expect("xiaomi")
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
         assert!(xiaomi_ids.contains(&"mimo-v2.5-pro"), "{title}");
         assert!(xiaomi_ids.contains(&"mimo-v2.6-pro"), "{title}");
     }
