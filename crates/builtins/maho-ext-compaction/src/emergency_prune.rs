@@ -1,51 +1,120 @@
+use crate::{
+    overflow_retry::{estimate_total_tokens, prune_old_messages_to_budget},
+    tool_truncation::{pre_prune_tool_outputs_to_budget, truncate_oversized_tool_results},
+};
 use maho_ext_api::{ToolContent, ToolResult};
 use serde_json::Value;
-use crate::{overflow_retry::{estimate_total_tokens, prune_old_messages_to_budget}, tool_truncation::{pre_prune_tool_outputs_to_budget, truncate_oversized_tool_results}};
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct EmergencyPruneLatch { pub engaged: bool }
+pub struct EmergencyPruneLatch {
+    pub engaged: bool,
+}
 #[derive(Clone, Debug)]
-pub struct EmergencyPruneResult { pub messages: Vec<Value>, pub needs_aggressive_compaction: bool }
-fn transform_results(messages: &[Value], transform: impl FnOnce(&[ToolResult]) -> Vec<ToolResult>) -> Vec<Value> {
-    let results: Vec<_> = messages.iter().filter(|m| m.get("role").and_then(Value::as_str) == Some("toolResult"))
+pub struct EmergencyPruneResult {
+    pub messages: Vec<Value>,
+    pub needs_aggressive_compaction: bool,
+}
+fn transform_results(
+    messages: &[Value],
+    transform: impl FnOnce(&[ToolResult]) -> Vec<ToolResult>,
+) -> Vec<Value> {
+    let results: Vec<_> = messages
+        .iter()
+        .filter(|m| m.get("role").and_then(Value::as_str) == Some("toolResult"))
         .map(|m| {
-            let content=m["content"].as_array().into_iter().flatten().filter_map(|block| {
-                match block["type"].as_str()? {
-                    "text"=>block["text"].as_str().map(ToolContent::text),
-                    "image"=>block["data"].as_str().map(|data|ToolContent::Image {data:data.to_owned(),mime_type:block["mimeType"].as_str().unwrap_or_default().to_owned()}),
-                    _=>None,
-                }
-            }).collect();
-            ToolResult {content,details:None, structured_content: None }
-        }).collect();
-    if results.is_empty() { return messages.to_vec(); }
+            let content = m["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|block| match block["type"].as_str()? {
+                    "text" => block["text"].as_str().map(ToolContent::text),
+                    "image" => block["data"].as_str().map(|data| ToolContent::Image {
+                        data: data.to_owned(),
+                        mime_type: block["mimeType"].as_str().unwrap_or_default().to_owned(),
+                    }),
+                    _ => None,
+                })
+                .collect();
+            ToolResult {
+                content,
+                details: None,
+                structured_content: None,
+                is_error: None,
+            }
+        })
+        .collect();
+    if results.is_empty() {
+        return messages.to_vec();
+    }
     let transformed = transform(&results);
     let mut next = transformed.into_iter();
-    messages.iter().map(|message| {
-        let mut message = message.clone();
-        if message.get("role").and_then(Value::as_str) == Some("toolResult") && let Some(result) = next.next() && let Ok(value)=serde_json::to_value(result.content) {
-            message["content"] = value;
-        }
-        message
-    }).collect()
+    messages
+        .iter()
+        .map(|message| {
+            let mut message = message.clone();
+            if message.get("role").and_then(Value::as_str) == Some("toolResult")
+                && let Some(result) = next.next()
+                && let Ok(value) = serde_json::to_value(result.content)
+            {
+                message["content"] = value;
+            }
+            message
+        })
+        .collect()
 }
 pub fn prune_tool_results(messages: &[Value], window: u64, budget_ratio: f64) -> Vec<Value> {
-    transform_results(messages, |results| pre_prune_tool_outputs_to_budget(results, (window as f64 * budget_ratio).floor() as usize))
+    transform_results(messages, |results| {
+        pre_prune_tool_outputs_to_budget(results, (window as f64 * budget_ratio).floor() as usize)
+    })
 }
-pub fn truncate_context_messages(messages: &[Value]) -> Vec<Value> { transform_results(messages, truncate_oversized_tool_results) }
-pub fn hard_limit_emergency_prune(messages: &[Value], window: u64, latch: Option<&mut EmergencyPruneLatch>) -> EmergencyPruneResult {
-    engaged_emergency_prune(messages, window, latch).unwrap_or_else(|| EmergencyPruneResult { messages: messages.to_vec(), needs_aggressive_compaction: false })
+pub fn truncate_context_messages(messages: &[Value]) -> Vec<Value> {
+    transform_results(messages, truncate_oversized_tool_results)
+}
+pub fn hard_limit_emergency_prune(
+    messages: &[Value],
+    window: u64,
+    latch: Option<&mut EmergencyPruneLatch>,
+) -> EmergencyPruneResult {
+    engaged_emergency_prune(messages, window, latch).unwrap_or_else(|| EmergencyPruneResult {
+        messages: messages.to_vec(),
+        needs_aggressive_compaction: false,
+    })
 }
 /// [`hard_limit_emergency_prune`] that returns `None` instead of a copy when the latch stays released.
-pub(crate) fn engaged_emergency_prune(messages: &[Value], window: u64, latch: Option<&mut EmergencyPruneLatch>) -> Option<EmergencyPruneResult> {
+pub(crate) fn engaged_emergency_prune(
+    messages: &[Value],
+    window: u64,
+    latch: Option<&mut EmergencyPruneLatch>,
+) -> Option<EmergencyPruneResult> {
     let target = (window as f64 * 0.95).floor() as u64;
     let release = (window as f64 * 0.85).floor() as u64;
     let total = estimate_total_tokens(messages);
-    let engaged = latch.as_ref().map_or(total > target, |latch| if latch.engaged { total > release } else { total > target });
-    if let Some(latch) = latch { latch.engaged = engaged; }
-    if !engaged { return None; }
-    let pruned = truncate_context_messages(&prune_tool_results(messages, window, crate::overflow_retry::SUMMARIZATION_INPUT_BUDGET_RATIO));
-    if estimate_total_tokens(&pruned) <= target { return Some(EmergencyPruneResult { messages: pruned, needs_aggressive_compaction: false }); }
-    Some(EmergencyPruneResult { messages: prune_old_messages_to_budget(&pruned, target), needs_aggressive_compaction: true })
+    let engaged = latch.as_ref().map_or(total > target, |latch| {
+        if latch.engaged {
+            total > release
+        } else {
+            total > target
+        }
+    });
+    if let Some(latch) = latch {
+        latch.engaged = engaged;
+    }
+    if !engaged {
+        return None;
+    }
+    let pruned = truncate_context_messages(&prune_tool_results(
+        messages,
+        window,
+        crate::overflow_retry::SUMMARIZATION_INPUT_BUDGET_RATIO,
+    ));
+    if estimate_total_tokens(&pruned) <= target {
+        return Some(EmergencyPruneResult {
+            messages: pruned,
+            needs_aggressive_compaction: false,
+        });
+    }
+    Some(EmergencyPruneResult {
+        messages: prune_old_messages_to_budget(&pruned, target),
+        needs_aggressive_compaction: true,
+    })
 }
-

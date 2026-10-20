@@ -216,7 +216,7 @@ impl ModelRegistry for TestRegistry {
         Box::pin(async move {
             match failure {
                 Some(error) => Err(error),
-                None => Ok(ResolvedRequestAuth {
+                None => Ok(ResolvedRequestAuth { ambient: false,
                     auth: maho_ai::models::ProviderAuthResult::default(),
                     extra_body: None,
                     upstream_model_id: None,

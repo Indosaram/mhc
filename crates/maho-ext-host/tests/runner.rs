@@ -998,7 +998,7 @@ async fn typed_tool_decodes_parameters_and_serializes_detail_updates() {
     let definition = ToolDefinition::new("typed", "typed", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })));
     api.register_typed_tool(definition, Arc::new(|_, params: BTreeMap<String, u64>, _, update: Option<TypedToolUpdateCallback<u64>>, _| Box::pin(async move {
         let value = params["value"];
-        let result = TypedAgentToolResult { content: vec![ContentBlock::text("done")], details: value, usage: None, added_tool_names: None, terminate: Some(true), is_error: None };
+        let result = TypedAgentToolResult { content: vec![ContentBlock::text("done")], details: value, usage: None, nested_calls: None, added_tool_names: None, terminate: Some(true), is_error: None };
         if let Some(update) = update { update(result.clone())?; }
         Ok(result)
     }))).unwrap();

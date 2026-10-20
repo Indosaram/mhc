@@ -44,10 +44,10 @@ impl McpOAuthProvider {
     pub fn client_metadata(&self) -> Value {
         json!({"redirect_uris":self.redirect_url.iter().collect::<Vec<_>>(),"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","client_name":"oh-my-openagent"})
     }
-    /// The RFC 8707 resource indicator: the server URL normalised exactly as the pinned
-    /// `discoverOAuthServerMetadata` normalises it (`new URL(serverUrl).toString()`).
+    /// The RFC 8707 resource indicator, normalized by the pinned `getResourceIndicator`.
     pub fn resource_indicator(&self) -> String {
-        url::Url::parse(&self.store.server_url).map_or_else(|_|self.store.server_url.clone(),|url|url.to_string())
+        super::resource_indicator::get_resource_indicator(&self.store.server_url)
+            .unwrap_or_else(|_| self.store.server_url.clone())
     }
     /// Pinned `oauth-handler.ts::handleStepUpIfNeeded` -> `mergeScopes`: the challenge scopes are
     /// unioned into the requested scope set so the next authorization asks for them.

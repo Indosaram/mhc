@@ -10,14 +10,22 @@ pub struct SplitTools {
 }
 
 /// Split current tools into prefix and transcript-loaded definitions.
-pub fn split_deferred_tools(context: &Context, enabled: bool, normalize_name: Option<&dyn Fn(&str) -> String>) -> SplitTools {
+pub fn split_deferred_tools(
+    context: &Context,
+    enabled: bool,
+    normalize_name: Option<&dyn Fn(&str) -> String>,
+) -> SplitTools {
     let normalize = |name: &str| normalize_name.map_or_else(|| name.to_owned(), |f| f(name));
     let mut unique: IndexMap<String, Tool> = IndexMap::new();
-    for tool in context.tools.iter().flatten() {
-        unique.insert(normalize(&tool.name), tool.clone());
+    let transcript = crate::types::transcript::normalize_context(context);
+    for tool in crate::types::transcript::get_declared_tools(&transcript.messages) {
+        unique.insert(normalize(&tool.name), tool);
     }
     if !enabled {
-        return SplitTools { immediate: unique.into_values().collect(), deferred: IndexMap::new() };
+        return SplitTools {
+            immediate: unique.into_values().collect(),
+            deferred: IndexMap::new(),
+        };
     }
 
     let mut deferred_names = HashSet::new();
@@ -52,7 +60,10 @@ pub fn split_deferred_tools(context: &Context, enabled: bool, normalize_name: Op
             immediate.push(tool);
         }
     }
-    SplitTools { immediate, deferred }
+    SplitTools {
+        immediate,
+        deferred,
+    }
 }
 
 #[cfg(test)]
@@ -97,7 +108,10 @@ mod tests {
         let ctx = context(base_context());
         let split = split_deferred_tools(&ctx, true, None);
         assert_eq!(tool_names(split.immediate), vec!["base_tool"]);
-        assert_eq!(split.deferred.keys().cloned().collect::<Vec<_>>(), vec!["late_tool"]);
+        assert_eq!(
+            split.deferred.keys().cloned().collect::<Vec<_>>(),
+            vec!["late_tool"]
+        );
     }
 
     #[test]
@@ -111,7 +125,8 @@ mod tests {
     #[test]
     fn keeps_a_tool_immediate_when_it_was_used_before_its_marker() {
         let mut value = base_context();
-        value["messages"][1]["content"] = json!([{"type": "toolCall", "id": "call_1", "name": "late_tool", "arguments": {}}]);
+        value["messages"][1]["content"] =
+            json!([{"type": "toolCall", "id": "call_1", "name": "late_tool", "arguments": {}}]);
         let ctx = context(value);
         let split = split_deferred_tools(&ctx, true, None);
         assert_eq!(tool_names(split.immediate), vec!["base_tool", "late_tool"]);
@@ -131,7 +146,8 @@ mod tests {
     #[test]
     fn normalizes_names_before_checking_prior_usage_and_markers() {
         let mut value = base_context();
-        value["messages"][1]["content"] = json!([{"type": "toolCall", "id": "call_1", "name": "LATE_TOOL", "arguments": {}}]);
+        value["messages"][1]["content"] =
+            json!([{"type": "toolCall", "id": "call_1", "name": "LATE_TOOL", "arguments": {}}]);
         let ctx = context(value);
         let lower = |name: &str| name.to_lowercase();
         let split = split_deferred_tools(&ctx, true, Some(&lower));

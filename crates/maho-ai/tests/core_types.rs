@@ -1,6 +1,8 @@
 //! Port of senpi packages/ai/test/types.provider-native.test.ts.
 
-use maho_ai::types::{AssistantMessage, ContentBlock, ProviderNativeContent, StopReason, TextContent, Usage};
+use maho_ai::types::{
+    AssistantMessage, ContentBlock, ProviderNativeContent, StopReason, TextContent, Usage,
+};
 use serde_json::json;
 
 #[test]
@@ -15,8 +17,13 @@ fn provider_native_content_allows_provider_native_blocks_in_assistant_message_co
     });
 
     let message = AssistantMessage {
+        thinking_level: None,
+        provider_diagnostic: None,
         content: vec![
-            ContentBlock::Text(TextContent { text: "native block follows".to_owned(), ..Default::default() }),
+            ContentBlock::Text(TextContent {
+                text: "native block follows".to_owned(),
+                ..Default::default()
+            }),
             provider_native_block.clone(),
         ],
         api: "anthropic-messages".to_owned(),
