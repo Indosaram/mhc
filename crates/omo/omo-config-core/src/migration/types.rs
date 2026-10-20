@@ -45,26 +45,38 @@ impl<F: Fn(u32) -> bool> ProcessLiveness for F {
 pub fn default_is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        let output = std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .output();
-        match output {
-            Ok(out) => {
-                if out.status.success() {
-                    true
-                } else {
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    !stderr.contains("No such process") && !stderr.contains("ESRCH")
-                }
-            }
-            Err(_) => false,
-        }
+        let Ok(pid) = libc::pid_t::try_from(pid) else { return false; };
+        // SAFETY: FFI boundary: kill accepts an integer PID and signal 0 only probes existence.
+        let result = unsafe { libc::kill(pid, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit_handle: i32, pid: u32) -> *mut c_void;
+            fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
+            fn GetLastError() -> u32;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+        }
+        // SAFETY: FFI boundary: OpenProcess accepts scalar arguments; null is checked below.
+        let handle = unsafe { OpenProcess(0x1000, 0, pid) };
+        if handle.is_null() {
+            // SAFETY: FFI boundary: GetLastError takes no pointers and reads thread-local state.
+            return unsafe { GetLastError() } != 87; // ERROR_INVALID_PARAMETER => ESRCH
+        }
+        let mut exit_code = 0u32;
+        // SAFETY: FFI boundary: handle is open and exit_code is a live aligned u32 output.
+        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+        // SAFETY: Double free: this owned OpenProcess handle is closed exactly once.
+        unsafe { CloseHandle(handle) };
+        queried == 0 || exit_code == 259 // STILL_ACTIVE
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
-        false
+        true
     }
 }
 
@@ -238,6 +250,7 @@ pub struct MigrationPreview {
 pub struct MigrationRunResult {
     pub diagnostics: Vec<String>,
     pub journal_resumed: bool,
+    pub target_backup_path: Option<String>,
     pub preview: Option<MigrationPreview>,
     pub status: MigrationStatus,
 }
@@ -245,6 +258,7 @@ pub struct MigrationRunResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MigrationBatchRunResult {
     pub journal_resumed: bool,
+    pub resumed_target_backup_path: Option<String>,
     pub results: Vec<MigrationRunResult>,
     pub status: MigrationBatchStatus,
 }
@@ -315,8 +329,13 @@ pub struct MigrationTargetWriterInput<'a> {
     pub target_path: &'a str,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MigrationTargetWriteResult {
+    pub backup_path: Option<String>,
+}
+
 pub type MigrationTargetWriter<'a> =
-    dyn Fn(MigrationTargetWriterInput<'_>) -> Result<(), MigrationError> + 'a;
+    dyn Fn(MigrationTargetWriterInput<'_>) -> Result<MigrationTargetWriteResult, MigrationError> + 'a;
 
 pub type MigrationTransform<'a> =
     dyn Fn(&[LoadedMigrationSource]) -> Result<MigrationTransformResult, MigrationError> + 'a;

@@ -7,7 +7,8 @@ use crate::protocol::{
     codec::{MessageDecoder, MessageKind, encode_client_message},
     messages::PROTOCOL_VERSION,
 };
-use serde_json::{Value, json};
+use maho_chord::types::JsonValue as Value;
+use crate::transport_json as json;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -267,7 +268,7 @@ impl Connection {
         match self.state() {
             ConnectionState::Disconnected => Ok(()),
             ConnectionState::Connecting => {
-                if message["type"] == "hello_error" {
+                if message["type"].as_str() == Some("hello_error") {
                     return Err(ClientError::Server {
                         code: message["error"]["code"].as_str().unwrap_or_default().into(),
                         message: message["error"]["message"]
@@ -276,14 +277,14 @@ impl Connection {
                             .into(),
                     });
                 }
-                if message["type"] != "hello" {
+                if message["type"].as_str() != Some("hello") {
                     return Err(ClientError::Protocol(
                         "Expected server hello as first message".into(),
                     ));
                 }
                 if message["serverId"].as_str() != Some(self.options.server_id.as_str()) {
                     return Err(ClientError::Protocol(format!(
-                        "Connected server {} does not match {}",
+                        "Connected server {:?} does not match {:?}",
                         message["serverId"],
                         json!(self.options.server_id)
                     )));
@@ -326,7 +327,7 @@ impl Connection {
                 Ok(())
             }
             ConnectionState::Connected => {
-                if message["type"] == "hello" || message["type"] == "hello_error" {
+                if message["type"].as_str() == Some("hello") || message["type"].as_str() == Some("hello_error") {
                     return Err(ClientError::Protocol("Unexpected handshake message".into()));
                 }
                 (self.options.on_message)(message)

@@ -34,6 +34,9 @@ semver = "=1.0.27"
 base64 = "=0.22.1"
 photon-rs = { version = "=0.3.3", default-features = false }
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.28.0", features = ["signal", "process", "user", "feature"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 flate2 = { workspace = true }

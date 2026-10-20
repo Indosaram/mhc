@@ -5,22 +5,28 @@
 //! `POST {endpoint}/model/{modelId}/converse-stream` plus the AWS event-stream binary framing.
 
 use base64::Engine;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::api::constrained_sampling::{get_json_schema_tool_parameters, resolve_json_schema_strict_sampling};
-use crate::api::simple_options::{
-    adjust_max_tokens_for_thinking, apply_extra_body, build_base_options, clamp_max_tokens_to_context, clamp_reasoning,
-    BEDROCK_RESERVED_BODY_KEYS,
+use crate::api::constrained_sampling::{
+    get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
 };
-use crate::api::transform_messages::{transform_messages, TransformMessagesOptions};
+use crate::api::simple_options::{
+    BEDROCK_RESERVED_BODY_KEYS, adjust_max_tokens_for_thinking, apply_extra_body,
+    build_base_options, clamp_max_tokens_to_context, clamp_reasoning,
+};
+use crate::api::transform_messages::{TransformMessagesOptions, transform_messages};
 use crate::models::calculate_cost;
 use crate::types::{
-    AssistantMessage, AssistantMessageEvent, CacheRetention, ContentBlock, Context, DoneReason, ErrorReason, Model,
-    ProviderEnv, SimpleStreamOptions, StopReason, StreamOptions, TextContent, ThinkingBudgets, ThinkingContent,
-    ThinkingLevel, Tool, ToolCall,
+    AssistantMessage, AssistantMessageEvent, CacheRetention, ContentBlock, Context, DoneReason,
+    ErrorReason, Model, ProviderEnv, SimpleStreamOptions, StopReason, StreamOptions, TextContent,
+    ThinkingBudgets, ThinkingContent, ThinkingLevel, Tool, ToolCall,
 };
-use crate::utils::diagnostics::{append_assistant_message_diagnostic, now_ms, AssistantMessageDiagnostic};
-use crate::utils::event_stream::{create_assistant_message_event_stream, AssistantMessageEventStream};
+use crate::utils::diagnostics::{
+    AssistantMessageDiagnostic, append_assistant_message_diagnostic, now_ms,
+};
+use crate::utils::event_stream::{
+    AssistantMessageEventStream, create_assistant_message_event_stream,
+};
 use crate::utils::json_parse::parse_streaming_json;
 use crate::utils::prompt_cache_ttl::{
     get_bedrock_model_match_candidates, supports_one_hour_cache_ttl, supports_prompt_caching,
@@ -34,7 +40,8 @@ pub use crate::utils::prompt_cache_ttl::supports_prompt_caching as bedrock_suppo
 pub const EMPTY_TEXT_PLACEHOLDER: &str = "<empty>";
 pub const REDACTED_THINKING_PLACEHOLDER: &str = "[Reasoning redacted]";
 
-const BEDROCK_DATA_RETENTION_DOCS_URL: &str = "https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html";
+const BEDROCK_DATA_RETENTION_DOCS_URL: &str =
+    "https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html";
 const MAX_BEDROCK_DIAGNOSTIC_VALUE_CHARS: usize = 200;
 const DEFAULT_REGION: &str = "us-east-1";
 
@@ -81,7 +88,11 @@ fn thinking_level_as_str(level: ThinkingLevel) -> &'static str {
 }
 
 fn format_bedrock_error(failure: &BedrockFailure) -> String {
-    let data_retention_hint = if failure.message.to_lowercase().contains("data retention mode") {
+    let data_retention_hint = if failure
+        .message
+        .to_lowercase()
+        .contains("data retention mode")
+    {
         format!(" See {BEDROCK_DATA_RETENTION_DOCS_URL} for supported data retention modes.")
     } else {
         String::new()
@@ -113,7 +124,11 @@ fn append_bedrock_failure_diagnostic(output: &mut AssistantMessage, failure: &Be
     if let Some(code) = failure.code.as_deref().and_then(normalize_diagnostic_value) {
         details.insert("errorCode".into(), Value::from(code));
     }
-    if let Some(request_id) = failure.request_id.as_deref().and_then(normalize_diagnostic_value) {
+    if let Some(request_id) = failure
+        .request_id
+        .as_deref()
+        .and_then(normalize_diagnostic_value)
+    {
         details.insert("requestId".into(), Value::from(request_id));
     }
     if details.is_empty() {
@@ -132,6 +147,10 @@ fn append_bedrock_failure_diagnostic(output: &mut AssistantMessage, failure: &Be
 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        error_cause: None,
+        prompt_cache_diagnostics: None,
+        thinking_level: None,
+        provider_diagnostic: None,
         content: Vec::new(),
         api: "bedrock-converse-stream".into(),
         provider: model.provider.clone(),
@@ -168,7 +187,9 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 
 fn flush_redacted_content(meta: &mut BlockMeta, block: &mut ContentBlock) {
-    let Some(chunks) = meta.redacted_chunks.take() else { return };
+    let Some(chunks) = meta.redacted_chunks.take() else {
+        return;
+    };
     if let ContentBlock::Thinking(thinking) = block {
         let joined: Vec<u8> = chunks.concat();
         thinking.thinking_signature = Some(base64_encode(&joined));
@@ -190,12 +211,18 @@ fn map_stop_reason(reason: Option<&str>) -> (StopReason, Option<String>) {
         Some("end_turn") | Some("stop_sequence") => (StopReason::Stop, None),
         Some("max_tokens") | Some("model_context_window_exceeded") => (StopReason::Length, None),
         Some("tool_use") => (StopReason::ToolUse, None),
-        Some(other) => (StopReason::Error, Some(format!("Provider stopped with: {other}"))),
+        Some(other) => (
+            StopReason::Error,
+            Some(format!("Provider stopped with: {other}")),
+        ),
         None => (StopReason::Error, None),
     }
 }
 
-fn resolve_cache_retention(cache_retention: Option<CacheRetention>, env: Option<&ProviderEnv>) -> CacheRetention {
+fn resolve_cache_retention(
+    cache_retention: Option<CacheRetention>,
+    env: Option<&ProviderEnv>,
+) -> CacheRetention {
     if let Some(cache_retention) = cache_retention {
         return cache_retention;
     }
@@ -216,27 +243,31 @@ fn is_anthropic_claude_model(model: &Model) -> bool {
 }
 
 fn supports_adaptive_thinking(model: &Model) -> bool {
-    get_bedrock_model_match_candidates(&model.id, Some(&model.name)).iter().any(|candidate| {
-        candidate.contains("opus-4-6")
-            || candidate.contains("opus-4-7")
-            || candidate.contains("opus-4-8")
-            || candidate.contains("opus-5")
-            || candidate.contains("sonnet-4-6")
-            || candidate.contains("sonnet-5")
-            || candidate.contains("fable-5")
-            || candidate.contains("mythos-5")
-    })
+    get_bedrock_model_match_candidates(&model.id, Some(&model.name))
+        .iter()
+        .any(|candidate| {
+            candidate.contains("opus-4-6")
+                || candidate.contains("opus-4-7")
+                || candidate.contains("opus-4-8")
+                || candidate.contains("opus-5")
+                || candidate.contains("sonnet-4-6")
+                || candidate.contains("sonnet-5")
+                || candidate.contains("fable-5")
+                || candidate.contains("mythos-5")
+        })
 }
 
 fn supports_native_xhigh_effort(model: &Model) -> bool {
-    get_bedrock_model_match_candidates(&model.id, Some(&model.name)).iter().any(|candidate| {
-        candidate.contains("opus-4-7")
-            || candidate.contains("opus-4-8")
-            || candidate.contains("opus-5")
-            || candidate.contains("sonnet-5")
-            || candidate.contains("fable-5")
-            || candidate.contains("mythos-5")
-    })
+    get_bedrock_model_match_candidates(&model.id, Some(&model.name))
+        .iter()
+        .any(|candidate| {
+            candidate.contains("opus-4-7")
+                || candidate.contains("opus-4-8")
+                || candidate.contains("opus-5")
+                || candidate.contains("sonnet-5")
+                || candidate.contains("fable-5")
+                || candidate.contains("mythos-5")
+        })
 }
 
 fn rejects_disabled_thinking(model: &Model) -> bool {
@@ -331,7 +362,9 @@ fn convert_tool_result_content(content: &[ContentBlock]) -> Result<Vec<Value>, S
     let mut result: Vec<Value> = Vec::new();
     for block in content {
         match block {
-            ContentBlock::Image(image) => result.push(json!({ "image": create_image_block(&image.mime_type, &image.data)? })),
+            ContentBlock::Image(image) => {
+                result.push(json!({ "image": create_image_block(&image.mime_type, &image.data)? }))
+            }
             ContentBlock::Text(text) => {
                 if let Some(text_block) = create_non_blank_text_block(&text.text) {
                     result.push(text_block);
@@ -379,12 +412,18 @@ fn convert_messages(
     preserve_thinking: bool,
     env: Option<&ProviderEnv>,
 ) -> Result<Vec<Value>, String> {
-    let normalize = |id: &str, _model: &Model, _assistant: &AssistantMessage| normalize_tool_call_id(id);
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
+    let normalize =
+        |id: &str, _model: &Model, _assistant: &AssistantMessage| normalize_tool_call_id(id);
     let transformed = transform_messages(
         &context.messages,
         model,
         Some(&normalize),
-        &TransformMessagesOptions { preserve_thinking: Some(preserve_thinking), ..TransformMessagesOptions::default() },
+        &TransformMessagesOptions {
+            preserve_thinking: Some(preserve_thinking),
+            ..TransformMessagesOptions::default()
+        },
     );
 
     let mut result: Vec<Value> = Vec::new();
@@ -394,7 +433,9 @@ fn convert_messages(
             crate::types::Message::User(user) => {
                 let mut content: Vec<Value> = Vec::new();
                 match &user.content {
-                    crate::types::UserContent::Text(text) => content.push(create_required_text_block(text)),
+                    crate::types::UserContent::Text(text) => {
+                        content.push(create_required_text_block(text))
+                    }
                     crate::types::UserContent::Blocks(blocks) => {
                         for block in blocks {
                             match block {
@@ -483,7 +524,9 @@ fn convert_messages(
 
                 let mut lookahead = index + 1;
                 while lookahead < transformed.len() {
-                    let crate::types::Message::ToolResult(next) = &transformed[lookahead] else { break };
+                    let crate::types::Message::ToolResult(next) = &transformed[lookahead] else {
+                        break;
+                    };
                     tool_results.push(json!({
                         "toolResult": {
                             "toolUseId": next.tool_call_id,
@@ -497,16 +540,22 @@ fn convert_messages(
 
                 result.push(json!({ "role": "user", "content": tool_results }));
             }
-            crate::types::Message::ConfigurationUpdate(_) => {}
+            crate::types::Message::System(_) | crate::types::Message::ConfigurationUpdate(_) => {}
         }
         index += 1;
     }
 
-    if cache_retention != CacheRetention::None && supports_prompt_caching(model, env) && !result.is_empty() {
+    if cache_retention != CacheRetention::None
+        && supports_prompt_caching(model, env)
+        && !result.is_empty()
+    {
         let last = result.len() - 1;
         if result[last].get("role").and_then(Value::as_str) == Some("user") {
             let point = cache_point(cache_retention, model);
-            if let Some(content) = result[last].get_mut("content").and_then(Value::as_array_mut) {
+            if let Some(content) = result[last]
+                .get_mut("content")
+                .and_then(Value::as_array_mut)
+            {
                 content.push(point);
             }
         }
@@ -520,7 +569,9 @@ fn convert_tool_config(
     tool_choice: Option<&Value>,
     supports_strict_mode: bool,
 ) -> Result<Option<Value>, String> {
-    let Some(tools) = tools.filter(|tools| !tools.is_empty()) else { return Ok(None) };
+    let Some(tools) = tools.filter(|tools| !tools.is_empty()) else {
+        return Ok(None);
+    };
     if tool_choice.and_then(Value::as_str) == Some("none") {
         return Ok(None);
     }
@@ -529,10 +580,13 @@ fn convert_tool_config(
     for tool in tools {
         let mut wire_tool = tool.clone();
         if let Some(schema) = tool.parameters.as_object() {
-            wire_tool.parameters = Value::Object(crate::utils::tool_schema_compat::normalize_tool_parameters_for_bedrock(schema));
+            wire_tool.parameters = Value::Object(
+                crate::utils::tool_schema_compat::normalize_tool_parameters_for_bedrock(schema),
+            );
         }
         let strict = resolve_json_schema_strict_sampling(&wire_tool, supports_strict_mode)?;
-        let parameters = get_json_schema_tool_parameters(&wire_tool, strict).map_err(|error| error.to_string())?;
+        let parameters = get_json_schema_tool_parameters(&wire_tool, strict)
+            .map_err(|error| error.to_string())?;
         let mut spec = Map::new();
         spec.insert("name".into(), Value::from(tool.name.clone()));
         spec.insert("description".into(), Value::from(tool.description.clone()));
@@ -546,7 +600,9 @@ fn convert_tool_config(
     let bedrock_tool_choice = match tool_choice {
         Some(Value::String(choice)) if choice == "auto" => Some(json!({ "auto": {} })),
         Some(Value::String(choice)) if choice == "any" => Some(json!({ "any": {} })),
-        Some(Value::Object(choice)) if choice.get("type").and_then(Value::as_str) == Some("tool") => {
+        Some(Value::Object(choice))
+            if choice.get("type").and_then(Value::as_str) == Some("tool") =>
+        {
             Some(json!({ "tool": { "name": choice.get("name").cloned().unwrap_or(Value::Null) } }))
         }
         _ => None,
@@ -567,17 +623,27 @@ fn get_configured_bedrock_region(options: &StreamOptions) -> Option<String> {
 }
 
 fn option_str(options: &StreamOptions, key: &str) -> Option<String> {
-    options.extra.get(key).and_then(Value::as_str).map(str::to_owned)
+    options
+        .extra
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 fn option_bool(options: &StreamOptions, key: &str) -> Option<bool> {
     options.extra.get(key).and_then(Value::as_bool)
 }
 
-fn get_configured_bedrock_credentials(env: Option<&ProviderEnv>) -> Option<(String, String, Option<String>)> {
+fn get_configured_bedrock_credentials(
+    env: Option<&ProviderEnv>,
+) -> Option<(String, String, Option<String>)> {
     let access_key_id = get_provider_env_value("AWS_ACCESS_KEY_ID", env)?;
     let secret_access_key = get_provider_env_value("AWS_SECRET_ACCESS_KEY", env)?;
-    Some((access_key_id, secret_access_key, get_provider_env_value("AWS_SESSION_TOKEN", env)))
+    Some((
+        access_key_id,
+        secret_access_key,
+        get_provider_env_value("AWS_SESSION_TOKEN", env),
+    ))
 }
 
 fn get_standard_bedrock_endpoint_region(base_url: &str) -> Option<String> {
@@ -586,7 +652,9 @@ fn get_standard_bedrock_endpoint_region(base_url: &str) -> Option<String> {
     let rest = hostname.strip_prefix("bedrock-runtime")?;
     let rest = rest.strip_prefix("-fips").unwrap_or(rest);
     let rest = rest.strip_prefix('.')?;
-    let region = rest.strip_suffix(".amazonaws.com").or_else(|| rest.strip_suffix(".amazonaws.com.cn"))?;
+    let region = rest
+        .strip_suffix(".amazonaws.com")
+        .or_else(|| rest.strip_suffix(".amazonaws.com.cn"))?;
     if region.is_empty() {
         return None;
     }
@@ -619,7 +687,8 @@ fn build_additional_model_request_fields(model: &Model, options: &StreamOptions)
         return None;
     }
 
-    let reasoning = option_str(options, "reasoning").and_then(|level| thinking_level_from_str(&level));
+    let reasoning =
+        option_str(options, "reasoning").and_then(|level| thinking_level_from_str(&level));
 
     if reasoning.is_none() {
         if !is_anthropic_claude_model(model) || !supports_adaptive_thinking(model) {
@@ -671,7 +740,12 @@ fn build_additional_model_request_fields(model: &Model, options: &StreamOptions)
             .get("thinkingBudgets")
             .and_then(|budgets| budgets.get(level))
             .and_then(Value::as_u64)
-            .or_else(|| default_budgets.iter().find(|(name, _)| *name == thinking_level_as_str(reasoning)).map(|(_, budget)| *budget))
+            .or_else(|| {
+                default_budgets
+                    .iter()
+                    .find(|(name, _)| *name == thinking_level_as_str(reasoning))
+                    .map(|(_, budget)| *budget)
+            })
             .unwrap_or(0);
         let mut thinking = Map::new();
         thinking.insert("type".into(), Value::from("enabled"));
@@ -686,7 +760,10 @@ fn build_additional_model_request_fields(model: &Model, options: &StreamOptions)
         && option_bool(options, "interleavedThinking").unwrap_or(true)
         && let Some(object) = result.as_object_mut()
     {
-        object.insert("anthropic_beta".into(), json!(["interleaved-thinking-2025-05-14"]));
+        object.insert(
+            "anthropic_beta".into(),
+            json!(["interleaved-thinking-2025-05-14"]),
+        );
     }
 
     Some(result)
@@ -742,8 +819,16 @@ struct SigV4Request<'a> {
 }
 
 fn sigv4_authorization(request: &SigV4Request<'_>) -> String {
-    let SigV4Request { access_key_id, secret_access_key, session_token, region, host, canonical_path, payload, amz_date } =
-        request;
+    let SigV4Request {
+        access_key_id,
+        secret_access_key,
+        session_token,
+        region,
+        host,
+        canonical_path,
+        payload,
+        amz_date,
+    } = request;
     let date = &amz_date[..8];
     let payload_hash = sha256_hex(payload);
 
@@ -762,8 +847,11 @@ fn sigv4_authorization(request: &SigV4Request<'_>) -> String {
         .iter()
         .map(|(name, value)| format!("{name}:{}\n", value.trim()))
         .collect();
-    let signed_header_names: String =
-        signed_headers.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(";");
+    let signed_header_names: String = signed_headers
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(";");
 
     let canonical_request = format!(
         "POST\n{canonical_path}\n\n{canonical_headers}\n{signed_header_names}\n{payload_hash}"
@@ -774,7 +862,11 @@ fn sigv4_authorization(request: &SigV4Request<'_>) -> String {
         sha256_hex(canonical_request.as_bytes())
     );
 
-    let mut signing_key = hmac_sha256(format!("AWS4{secret_access_key}").as_bytes(), date.as_bytes()).to_vec();
+    let mut signing_key = hmac_sha256(
+        format!("AWS4{secret_access_key}").as_bytes(),
+        date.as_bytes(),
+    )
+    .to_vec();
     for part in [region, "bedrock", "aws4_request"] {
         signing_key = hmac_sha256(&signing_key, part.as_bytes()).to_vec();
     }
@@ -838,7 +930,8 @@ fn parse_event_stream_frame(bytes: &[u8]) -> Result<Option<(EventFrame, usize)>,
             }
             7 => {
                 let length = u16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]) as usize;
-                let value = String::from_utf8_lossy(&bytes[cursor + 2..cursor + 2 + length]).into_owned();
+                let value =
+                    String::from_utf8_lossy(&bytes[cursor + 2..cursor + 2 + length]).into_owned();
                 (value, 2 + length)
             }
             _ => (String::new(), 0),
@@ -858,7 +951,15 @@ fn parse_event_stream_frame(bytes: &[u8]) -> Result<Option<(EventFrame, usize)>,
         Value::Null
     };
 
-    Ok(Some((EventFrame { event_type, message_type, exception_type, payload }, total_length)))
+    Ok(Some((
+        EventFrame {
+            event_type,
+            message_type,
+            exception_type,
+            payload,
+        },
+        total_length,
+    )))
 }
 
 fn frame_error(frame: &EventFrame) -> BedrockFailure {
@@ -874,11 +975,27 @@ fn frame_error(frame: &EventFrame) -> BedrockFailure {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
-        .unwrap_or_else(|| frame.exception_type.clone().unwrap_or_else(|| "UnknownError".into()));
-    BedrockFailure { message, code: frame.exception_type.clone(), status: None, request_id: None }
+        .unwrap_or_else(|| {
+            frame
+                .exception_type
+                .clone()
+                .unwrap_or_else(|| "UnknownError".into())
+        });
+    BedrockFailure {
+        message,
+        code: frame.exception_type.clone(),
+        status: None,
+        request_id: None,
+    }
 }
 
-pub fn stream(model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+pub fn stream(
+    model: &Model,
+    context: &Context,
+    options: Option<StreamOptions>,
+) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let stream = create_assistant_message_event_stream();
     let model = model.clone();
     let context = context.clone();
@@ -890,7 +1007,12 @@ pub fn stream(model: &Model, context: &Context, options: Option<StreamOptions>) 
     stream
 }
 
-async fn run_stream(model: Model, context: Context, options: StreamOptions, sink: AssistantMessageEventStream) {
+async fn run_stream(
+    model: Model,
+    context: Context,
+    options: StreamOptions,
+    sink: AssistantMessageEventStream,
+) {
     let mut output = create_output(&model);
     let outcome = drive(&model, &context, &options, &mut output, &sink).await;
     if let Err(failure) = outcome {
@@ -899,17 +1021,28 @@ async fn run_stream(model: Model, context: Context, options: StreamOptions, sink
             let _ = index;
             finalize_streaming_block(&mut meta, block);
         }
-        output.stop_reason = if options.request.signal.as_ref().is_some_and(|signal| signal.aborted()) {
+        output.stop_reason = if options
+            .request
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.aborted())
+        {
             StopReason::Aborted
         } else {
             StopReason::Error
         };
         output.error_message = Some(format_bedrock_error(&failure));
+        output.provider_diagnostic =
+            crate::utils::event_stream::StreamError::diagnostic_from_status(failure.status);
         if output.stop_reason == StopReason::Error {
             append_bedrock_failure_diagnostic(&mut output, &failure);
         }
         sink.push(AssistantMessageEvent::Error {
-            reason: if output.stop_reason == StopReason::Aborted { ErrorReason::Aborted } else { ErrorReason::Error },
+            reason: if output.stop_reason == StopReason::Aborted {
+                ErrorReason::Aborted
+            } else {
+                ErrorReason::Error
+            },
             error: output,
         });
     }
@@ -922,20 +1055,36 @@ async fn drive(
     output: &mut AssistantMessage,
     sink: &AssistantMessageEventStream,
 ) -> Result<(), BedrockFailure> {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let env = options.request.env.as_ref();
-    let options_profile = option_str(options, "profile").or_else(|| {
-        env.and_then(|env| env.get("AWS_PROFILE").cloned())
-    });
+    let options_profile = option_str(options, "profile")
+        .or_else(|| env.and_then(|env| env.get("AWS_PROFILE").cloned()));
     let configured_region = get_configured_bedrock_region(options);
     let has_ambient_configured_profile = get_provider_env_value("AWS_PROFILE", None).is_some();
     let endpoint_region = get_standard_bedrock_endpoint_region(&model.base_url);
-    let use_explicit_endpoint =
-        should_use_explicit_bedrock_endpoint(&model.base_url, configured_region.as_deref(), has_ambient_configured_profile);
+    let use_explicit_endpoint = should_use_explicit_bedrock_endpoint(
+        &model.base_url,
+        configured_region.as_deref(),
+        has_ambient_configured_profile,
+    );
 
     let region = arn_region(&model.id)
         .or(configured_region.clone())
-        .or_else(|| if use_explicit_endpoint { endpoint_region.clone() } else { None })
-        .or_else(|| if !has_ambient_configured_profile { Some(DEFAULT_REGION.to_owned()) } else { None })
+        .or_else(|| {
+            if use_explicit_endpoint {
+                endpoint_region.clone()
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            if !has_ambient_configured_profile {
+                Some(DEFAULT_REGION.to_owned())
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| DEFAULT_REGION.to_owned());
 
     let skip_auth = get_provider_env_value("AWS_BEDROCK_SKIP_AUTH", env).as_deref() == Some("1");
@@ -945,7 +1094,11 @@ async fn drive(
     let use_bearer_token = bearer_token.is_some() && !skip_auth;
 
     let credentials = if skip_auth {
-        Some(("dummy-access-key".to_owned(), "dummy-secret-key".to_owned(), None))
+        Some((
+            "dummy-access-key".to_owned(),
+            "dummy-secret-key".to_owned(),
+            None,
+        ))
     } else if options_profile.is_none() {
         get_configured_bedrock_credentials(env)
     } else {
@@ -968,14 +1121,19 @@ async fn drive(
         Some(port) => format!("{}:{port}", parsed.host_str().unwrap_or_default()),
         None => parsed.host_str().unwrap_or_default().to_owned(),
     };
-    let canonical_path = if parsed.path().is_empty() { "/" } else { parsed.path() };
+    let canonical_path = if parsed.path().is_empty() {
+        "/"
+    } else {
+        parsed.path()
+    };
 
     let supports_strict_mode = model
         .compat
         .as_ref()
         .map(|compat| compat.bedrock().supports_strict_mode.unwrap_or(false))
         .unwrap_or(false);
-    let cache_retention = resolve_cache_retention(options.cache_retention.or(model.cache_retention), env);
+    let cache_retention =
+        resolve_cache_retention(options.cache_retention.or(model.cache_retention), env);
     let inference_max_tokens = options.max_tokens.or_else(|| {
         if is_anthropic_claude_model(model) {
             Some(model.max_tokens)
@@ -991,13 +1149,23 @@ async fn drive(
         option_str(options, "reasoning").is_some(),
         env,
     )
-    .map_err(|message| BedrockFailure { message, code: None, status: None, request_id: None })?;
+    .map_err(|message| BedrockFailure {
+        message,
+        code: None,
+        status: None,
+        request_id: None,
+    })?;
     let tool_config = convert_tool_config(
         context.tools.as_deref(),
         options.extra.get("toolChoice"),
         supports_strict_mode,
     )
-    .map_err(|message| BedrockFailure { message, code: None, status: None, request_id: None })?;
+    .map_err(|message| BedrockFailure {
+        message,
+        code: None,
+        status: None,
+        request_id: None,
+    })?;
 
     let mut inference_config = Map::new();
     if let Some(max_tokens) = inference_max_tokens {
@@ -1010,7 +1178,12 @@ async fn drive(
     let mut command_input = Map::new();
     command_input.insert("modelId".into(), Value::from(model.id.clone()));
     command_input.insert("messages".into(), Value::Array(messages));
-    if let Some(system) = build_system_prompt(context.system_prompt.as_deref(), model, cache_retention, env) {
+    if let Some(system) = build_system_prompt(
+        context.system_prompt.as_deref(),
+        model,
+        cache_retention,
+        env,
+    ) {
         command_input.insert("system".into(), Value::Array(system));
     }
     command_input.insert("inferenceConfig".into(), Value::Object(inference_config));
@@ -1028,18 +1201,30 @@ async fn drive(
 
     let mut command_input = Value::Object(command_input);
     if let Some(object) = command_input.as_object_mut() {
-        apply_extra_body(object, options.extra_body.as_ref(), &BEDROCK_RESERVED_BODY_KEYS);
+        apply_extra_body(
+            object,
+            options.extra_body.as_ref(),
+            &BEDROCK_RESERVED_BODY_KEYS,
+        );
     }
-    if let Some(next) = options.request.apply_payload_hook(&command_input, model, None)
-        .await.map_err(failure_from)?
+    if let Some(next) = options
+        .request
+        .apply_payload_hook(&command_input, model, None)
+        .await
+        .map_err(failure_from)?
     {
         command_input = next;
     }
 
     let payload = command_input.to_string().into_bytes();
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(reqwest::header::CONTENT_TYPE, reqwest::header::HeaderValue::from_static("application/json"));
-    if let Some(custom) = crate::utils::headers::provider_headers_to_record(options.request.headers.as_ref()) {
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    if let Some(custom) =
+        crate::utils::headers::provider_headers_to_record(options.request.headers.as_ref())
+    {
         for (name, value) in custom {
             if is_reserved_header(&name) {
                 continue;
@@ -1075,12 +1260,14 @@ async fn drive(
         });
         headers.insert(
             reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&authorization).map_err(|error| failure_from(error.to_string()))?,
+            reqwest::header::HeaderValue::from_str(&authorization)
+                .map_err(|error| failure_from(error.to_string()))?,
         );
     }
     headers.insert(
         reqwest::header::HeaderName::from_static("x-amz-date"),
-        reqwest::header::HeaderValue::from_str(&amz_date).map_err(|error| failure_from(error.to_string()))?,
+        reqwest::header::HeaderValue::from_str(&amz_date)
+            .map_err(|error| failure_from(error.to_string()))?,
     );
     headers.insert(
         reqwest::header::HeaderName::from_static("x-amz-content-sha256"),
@@ -1090,10 +1277,42 @@ async fn drive(
     if let Some((_, _, Some(session_token))) = &credentials
         && let Ok(value) = reqwest::header::HeaderValue::from_str(session_token)
     {
-        headers.insert(reqwest::header::HeaderName::from_static("x-amz-security-token"), value);
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-amz-security-token"),
+            value,
+        );
     }
 
-    let client = options.request.fetch.clone().unwrap_or_default();
+    let client = match &options.request.fetch {
+        Some(client) => client.clone(),
+        None => {
+            let proxy = crate::utils::node_http_proxy::resolve_http_proxy_url_for_target(
+                &model.base_url,
+                env,
+            )
+            .map_err(|error| failure_from(error.to_string()))?;
+            let force_http1 = proxy.is_some()
+                || crate::utils::provider_env::get_provider_env_value(
+                    "AWS_BEDROCK_FORCE_HTTP1",
+                    env,
+                )
+                .as_deref()
+                    == Some("1");
+            let mut builder = reqwest::Client::builder().no_proxy();
+            if let Some(proxy) = proxy {
+                builder = builder.proxy(
+                    reqwest::Proxy::all(proxy.as_str())
+                        .map_err(|error| failure_from(error.to_string()))?,
+                );
+            }
+            if force_http1 {
+                builder = builder.http1_only();
+            }
+            builder
+                .build()
+                .map_err(|error| failure_from(error.to_string()))?
+        }
+    };
     let response = client
         .post(&url)
         .headers(headers)
@@ -1108,13 +1327,17 @@ async fn drive(
         .get("x-amzn-requestid")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    options.request.apply_response_hook(
+    options
+        .request
+        .apply_response_hook(
             &crate::types::ProviderResponse {
                 status,
                 headers: crate::utils::headers::headers_to_record(response.headers()),
             },
             model,
-        ).await.map_err(failure_from)?;
+        )
+        .await
+        .map_err(failure_from)?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -1135,7 +1358,11 @@ async fn drive(
         buffer.extend_from_slice(&chunk);
 
         loop {
-            let Some((frame, consumed)) = parse_event_stream_frame(&buffer).map_err(failure_from)? else { break };
+            let Some((frame, consumed)) =
+                parse_event_stream_frame(&buffer).map_err(failure_from)?
+            else {
+                break;
+            };
             buffer.drain(..consumed);
             if frame.message_type == "exception" || frame.event_type.ends_with("Exception") {
                 let mut failure = frame_error(&frame);
@@ -1147,15 +1374,25 @@ async fn drive(
         }
     }
 
-    if options.request.signal.as_ref().is_some_and(|signal| signal.aborted()) {
+    if options
+        .request
+        .signal
+        .as_ref()
+        .is_some_and(|signal| signal.aborted())
+    {
         return Err(failure_from("Request was aborted".to_owned()));
     }
     if output.stop_reason == StopReason::Pending {
-        return Err(failure_from("Bedrock stream ended without a stop reason".to_owned()));
+        return Err(failure_from(
+            "Bedrock stream ended without a stop reason".to_owned(),
+        ));
     }
     if output.stop_reason == StopReason::Error || output.stop_reason == StopReason::Aborted {
         return Err(failure_from(
-            output.error_message.clone().unwrap_or_else(|| "An unknown error occurred".to_owned()),
+            output
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "An unknown error occurred".to_owned()),
         ));
     }
 
@@ -1177,7 +1414,12 @@ async fn drive(
 }
 
 fn failure_from(message: String) -> BedrockFailure {
-    BedrockFailure { message, code: None, status: None, request_id: None }
+    BedrockFailure {
+        message,
+        code: None,
+        status: None,
+        request_id: None,
+    }
 }
 
 fn format_body_failure(status: u16, body: &str) -> String {
@@ -1193,7 +1435,9 @@ fn format_body_failure(status: u16, body: &str) -> String {
 }
 
 fn amz_datetime() -> String {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     let total_seconds = now.as_secs() as i64;
     let days = total_seconds.div_euclid(86_400);
     let seconds_of_day = total_seconds.rem_euclid(86_400);
@@ -1226,14 +1470,15 @@ fn is_reserved_header(key: &str) -> bool {
 
 fn arn_region(model_id: &str) -> Option<String> {
     let parts: Vec<&str> = model_id.split(':').collect();
-    if parts.len() < 4 || parts[0] != "arn" || !parts[1].starts_with("aws") || parts[2] != "bedrock" {
+    if parts.len() < 4 || parts[0] != "arn" || !parts[1].starts_with("aws") || parts[2] != "bedrock"
+    {
         return None;
     }
     let region = parts[3];
     let valid = !region.is_empty()
-        && region
-            .chars()
-            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-');
+        && region.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        });
     if valid {
         return Some(region.to_owned());
     }
@@ -1243,7 +1488,9 @@ fn arn_region(model_id: &str) -> Option<String> {
 #[allow(dead_code)]
 fn arn_region_legacy(model_id: &str) -> Option<String> {
     let rest = model_id.strip_prefix("arn:aws")?;
-    let rest = rest.strip_prefix(":").or_else(|| rest.find(':').map(|index| &rest[index..]))?;
+    let rest = rest
+        .strip_prefix(":")
+        .or_else(|| rest.find(':').map(|index| &rest[index..]))?;
     let rest = rest.strip_prefix(":bedrock:")?;
     let end = rest.find(':')?;
     let region = &rest[..end];
@@ -1263,13 +1510,20 @@ fn handle_event(
 ) -> Result<(), BedrockFailure> {
     match frame.event_type.as_str() {
         "messageStart" => {
-            let role = frame.payload.get("role").and_then(Value::as_str).unwrap_or("assistant");
+            let role = frame
+                .payload
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("assistant");
             if role != "assistant" {
                 return Err(failure_from(
-                    "Unexpected assistant message start but got user message start instead".to_owned(),
+                    "Unexpected assistant message start but got user message start instead"
+                        .to_owned(),
                 ));
             }
-            sink.push(AssistantMessageEvent::Start { partial: output.clone() });
+            sink.push(AssistantMessageEvent::Start {
+                partial: output.clone(),
+            });
         }
         "contentBlockStart" => handle_content_block_start(&frame.payload, blocks, output, sink),
         "contentBlockDelta" => handle_content_block_delta(&frame.payload, blocks, output, sink)?,
@@ -1290,11 +1544,25 @@ fn handle_event(
 }
 
 fn handle_metadata(payload: &Value, model: &Model, output: &mut AssistantMessage) {
-    let Some(usage) = payload.get("usage") else { return };
-    output.usage.input = usage.get("inputTokens").and_then(Value::as_u64).unwrap_or(0);
-    output.usage.output = usage.get("outputTokens").and_then(Value::as_u64).unwrap_or(0);
-    output.usage.cache_read = usage.get("cacheReadInputTokens").and_then(Value::as_u64).unwrap_or(0);
-    output.usage.cache_write = usage.get("cacheWriteInputTokens").and_then(Value::as_u64).unwrap_or(0);
+    let Some(usage) = payload.get("usage") else {
+        return;
+    };
+    output.usage.input = usage
+        .get("inputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    output.usage.output = usage
+        .get("outputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    output.usage.cache_read = usage
+        .get("cacheReadInputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    output.usage.cache_write = usage
+        .get("cacheWriteInputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     output.usage.total_tokens = usage
         .get("totalTokens")
         .and_then(Value::as_u64)
@@ -1308,12 +1576,24 @@ fn handle_content_block_start(
     output: &mut AssistantMessage,
     sink: &AssistantMessageEventStream,
 ) {
-    let Some(content_block_index) = payload.get("contentBlockIndex").and_then(Value::as_u64) else { return };
-    let Some(tool_use) = payload.get("start").and_then(|start| start.get("toolUse")) else { return };
+    let Some(content_block_index) = payload.get("contentBlockIndex").and_then(Value::as_u64) else {
+        return;
+    };
+    let Some(tool_use) = payload.get("start").and_then(|start| start.get("toolUse")) else {
+        return;
+    };
 
     output.content.push(ContentBlock::ToolCall(ToolCall {
-        id: tool_use.get("toolUseId").and_then(Value::as_str).unwrap_or_default().to_owned(),
-        name: tool_use.get("name").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        id: tool_use
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        name: tool_use
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         arguments: Map::new(),
         incomplete: None,
         error_message: None,
@@ -1337,15 +1617,23 @@ fn handle_content_block_delta(
     output: &mut AssistantMessage,
     sink: &AssistantMessageEventStream,
 ) -> Result<(), BedrockFailure> {
-    let Some(content_block_index) = payload.get("contentBlockIndex").and_then(Value::as_u64) else { return Ok(()) };
+    let Some(content_block_index) = payload.get("contentBlockIndex").and_then(Value::as_u64) else {
+        return Ok(());
+    };
     let content_block_index = content_block_index as usize;
-    let Some(delta) = payload.get("delta") else { return Ok(()) };
+    let Some(delta) = payload.get("delta") else {
+        return Ok(());
+    };
 
-    let mut index = blocks.iter().position(|block| block.content_block_index == Some(content_block_index));
+    let mut index = blocks
+        .iter()
+        .position(|block| block.content_block_index == Some(content_block_index));
 
     if let Some(text) = delta.get("text").and_then(Value::as_str) {
         if index.is_none() {
-            output.content.push(ContentBlock::Text(TextContent::default()));
+            output
+                .content
+                .push(ContentBlock::Text(TextContent::default()));
             blocks.push(BlockMeta {
                 content_block_index: Some(content_block_index),
                 partial_json: String::new(),
@@ -1369,7 +1657,11 @@ fn handle_content_block_delta(
         return Ok(());
     }
 
-    if let Some(input) = delta.get("toolUse").and_then(|tool_use| tool_use.get("input")).and_then(Value::as_str) {
+    if let Some(input) = delta
+        .get("toolUse")
+        .and_then(|tool_use| tool_use.get("input"))
+        .and_then(Value::as_str)
+    {
         let Some(index) = index else { return Ok(()) };
         if matches!(output.content.get(index), Some(ContentBlock::ToolCall(_))) {
             let meta = &mut blocks[index];
@@ -1387,7 +1679,9 @@ fn handle_content_block_delta(
         return Ok(());
     }
 
-    let Some(reasoning) = delta.get("reasoningContent") else { return Ok(()) };
+    let Some(reasoning) = delta.get("reasoningContent") else {
+        return Ok(());
+    };
     if index.is_none() {
         output.content.push(ContentBlock::Thinking(ThinkingContent {
             thinking_signature: Some(String::new()),
@@ -1442,7 +1736,10 @@ fn handle_content_block_delta(
             });
         }
         if let Some(bytes) = base64_decode(redacted) {
-            blocks[index].redacted_chunks.get_or_insert_with(Vec::new).push(bytes);
+            blocks[index]
+                .redacted_chunks
+                .get_or_insert_with(Vec::new)
+                .push(bytes);
         }
     }
 
@@ -1455,8 +1752,12 @@ fn handle_content_block_stop(
     output: &mut AssistantMessage,
     sink: &AssistantMessageEventStream,
 ) -> Result<(), BedrockFailure> {
-    let Some(content_block_index) = payload.get("contentBlockIndex").and_then(Value::as_u64) else { return Ok(()) };
-    let Some(index) = blocks.iter().position(|block| block.content_block_index == Some(content_block_index as usize))
+    let Some(content_block_index) = payload.get("contentBlockIndex").and_then(Value::as_u64) else {
+        return Ok(());
+    };
+    let Some(index) = blocks
+        .iter()
+        .position(|block| block.content_block_index == Some(content_block_index as usize))
     else {
         return Ok(());
     };
@@ -1504,19 +1805,27 @@ pub fn stream_simple(
     context: &Context,
     options: Option<SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let simple = options.unwrap_or_default();
     let mut base = match build_base_options(model, context, Some(&simple), None) {
         Ok(base) => base,
         Err(error) => {
             let stream = create_assistant_message_event_stream();
             let message = crate::utils::lazy::setup_error_message(model, &error.to_string());
-            stream.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+            stream.push(AssistantMessageEvent::Error {
+                reason: ErrorReason::Error,
+                error: message.clone(),
+            });
             stream.end(Some(message));
             return stream;
         }
     };
     if let Some(tool_choice) = simple.tool_choice {
-        base.extra.insert("toolChoice".into(), serde_json::to_value(tool_choice).unwrap_or(Value::Null));
+        base.extra.insert(
+            "toolChoice".into(),
+            serde_json::to_value(tool_choice).unwrap_or(Value::Null),
+        );
     }
 
     let Some(reasoning) = simple.reasoning else {
@@ -1525,9 +1834,15 @@ pub fn stream_simple(
 
     if is_anthropic_claude_model(model) {
         if supports_adaptive_thinking(model) {
-            base.extra.insert("reasoning".into(), serde_json::to_value(reasoning).unwrap_or(Value::Null));
+            base.extra.insert(
+                "reasoning".into(),
+                serde_json::to_value(reasoning).unwrap_or(Value::Null),
+            );
             if let Some(budgets) = simple.thinking_budgets {
-                base.extra.insert("thinkingBudgets".into(), serde_json::to_value(budgets).unwrap_or(Value::Null));
+                base.extra.insert(
+                    "thinkingBudgets".into(),
+                    serde_json::to_value(budgets).unwrap_or(Value::Null),
+                );
             }
             return stream(model, context, Some(base));
         }
@@ -1543,7 +1858,10 @@ pub fn stream_simple(
             Err(error) => {
                 let stream = create_assistant_message_event_stream();
                 let message = crate::utils::lazy::setup_error_message(model, &error.to_string());
-                stream.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                stream.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error: message.clone(),
+                });
                 stream.end(Some(message));
                 return stream;
             }
@@ -1551,18 +1869,32 @@ pub fn stream_simple(
 
         let mut budgets: ThinkingBudgets = simple.thinking_budgets.clone().unwrap_or_default();
         let level = clamp_reasoning(reasoning).unwrap_or(reasoning);
-        let budget = adjusted.thinking_budget.min(max_tokens.saturating_sub(1024));
+        let budget = adjusted
+            .thinking_budget
+            .min(max_tokens.saturating_sub(1024));
         set_budget(&mut budgets, level, budget);
 
         base.max_tokens = Some(max_tokens);
-        base.extra.insert("reasoning".into(), serde_json::to_value(reasoning).unwrap_or(Value::Null));
-        base.extra.insert("thinkingBudgets".into(), serde_json::to_value(budgets).unwrap_or(Value::Null));
+        base.extra.insert(
+            "reasoning".into(),
+            serde_json::to_value(reasoning).unwrap_or(Value::Null),
+        );
+        base.extra.insert(
+            "thinkingBudgets".into(),
+            serde_json::to_value(budgets).unwrap_or(Value::Null),
+        );
         return stream(model, context, Some(base));
     }
 
-    base.extra.insert("reasoning".into(), serde_json::to_value(reasoning).unwrap_or(Value::Null));
+    base.extra.insert(
+        "reasoning".into(),
+        serde_json::to_value(reasoning).unwrap_or(Value::Null),
+    );
     if let Some(budgets) = simple.thinking_budgets {
-        base.extra.insert("thinkingBudgets".into(), serde_json::to_value(budgets).unwrap_or(Value::Null));
+        base.extra.insert(
+            "thinkingBudgets".into(),
+            serde_json::to_value(budgets).unwrap_or(Value::Null),
+        );
     }
     stream(model, context, Some(base))
 }
@@ -1584,14 +1916,19 @@ mod tests {
     #[test]
     fn tool_wire_schema_flattens_root_intersections() {
         let tool = Tool {
-            name: "combined".into(), description: "combined arguments".into(),
+            name: "combined".into(),
+            description: "combined arguments".into(),
             parameters: json!({"allOf":[
                 {"properties":{"left":{"type":"string"}},"required":["left"]},
                 {"properties":{"right":{"type":"integer"}},"required":["right"]}
             ]}),
-            output_schema: None, freeform: None, constrained_sampling: None,
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
         };
-        let config = convert_tool_config(Some(std::slice::from_ref(&tool)), None, false).expect("config").expect("tools");
+        let config = convert_tool_config(Some(std::slice::from_ref(&tool)), None, false)
+            .expect("config")
+            .expect("tools");
         let schema = &config["tools"][0]["toolSpec"]["inputSchema"]["json"];
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["required"], json!(["left", "right"]));
@@ -1600,7 +1937,8 @@ mod tests {
     }
 
     fn any_model() -> Model {
-        crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone()
+        crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0]
+            .clone()
     }
 
     fn bedrock_model(id: &str) -> Model {
@@ -1612,7 +1950,6 @@ mod tests {
         model.base_url = "https://bedrock-runtime.us-east-1.amazonaws.com".into();
         model
     }
-
 
     #[test]
     fn arn_regions_are_extracted_from_inference_profiles() {
@@ -1630,11 +1967,20 @@ mod tests {
             Some("us-west-2".to_owned())
         );
         assert_eq!(
-            get_standard_bedrock_endpoint_region("https://bedrock-runtime-fips.eu-central-1.amazonaws.com"),
+            get_standard_bedrock_endpoint_region(
+                "https://bedrock-runtime-fips.eu-central-1.amazonaws.com"
+            ),
             Some("eu-central-1".to_owned())
         );
-        assert_eq!(get_standard_bedrock_endpoint_region("https://gateway.example.com"), None);
-        assert!(should_use_explicit_bedrock_endpoint("https://gateway.example.com", None, false));
+        assert_eq!(
+            get_standard_bedrock_endpoint_region("https://gateway.example.com"),
+            None
+        );
+        assert!(should_use_explicit_bedrock_endpoint(
+            "https://gateway.example.com",
+            None,
+            false
+        ));
         assert!(should_use_explicit_bedrock_endpoint(
             "https://bedrock-runtime.us-west-2.amazonaws.com",
             None,
@@ -1650,13 +1996,28 @@ mod tests {
     #[test]
     fn stop_reasons_map_like_the_sdk_enum_switch() {
         assert_eq!(map_stop_reason(Some("end_turn")), (StopReason::Stop, None));
-        assert_eq!(map_stop_reason(Some("stop_sequence")), (StopReason::Stop, None));
-        assert_eq!(map_stop_reason(Some("max_tokens")), (StopReason::Length, None));
-        assert_eq!(map_stop_reason(Some("model_context_window_exceeded")), (StopReason::Length, None));
-        assert_eq!(map_stop_reason(Some("tool_use")), (StopReason::ToolUse, None));
+        assert_eq!(
+            map_stop_reason(Some("stop_sequence")),
+            (StopReason::Stop, None)
+        );
+        assert_eq!(
+            map_stop_reason(Some("max_tokens")),
+            (StopReason::Length, None)
+        );
+        assert_eq!(
+            map_stop_reason(Some("model_context_window_exceeded")),
+            (StopReason::Length, None)
+        );
+        assert_eq!(
+            map_stop_reason(Some("tool_use")),
+            (StopReason::ToolUse, None)
+        );
         assert_eq!(
             map_stop_reason(Some("guardrail_intervened")),
-            (StopReason::Error, Some("Provider stopped with: guardrail_intervened".into()))
+            (
+                StopReason::Error,
+                Some("Provider stopped with: guardrail_intervened".into())
+            )
         );
         assert_eq!(map_stop_reason(None), (StopReason::Error, None));
     }
@@ -1692,8 +2053,13 @@ mod tests {
             payload: b"{}",
             amz_date: "20260930T000000Z",
         });
-        assert!(authorization.starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260930/us-east-1/bedrock/aws4_request, "));
-        assert!(authorization.contains("SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date"));
+        assert!(authorization.starts_with(
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260930/us-east-1/bedrock/aws4_request, "
+        ));
+        assert!(
+            authorization
+                .contains("SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date")
+        );
         assert!(authorization.contains(", Signature="));
         assert_eq!(hmac_sha256(b"key", b"msg").len(), 32);
     }
@@ -1718,12 +2084,21 @@ mod tests {
         frame.extend_from_slice(payload);
         frame.extend_from_slice(&0u32.to_be_bytes());
 
-        let (parsed, consumed) = parse_event_stream_frame(&frame).expect("parse").expect("frame");
+        let (parsed, consumed) = parse_event_stream_frame(&frame)
+            .expect("parse")
+            .expect("frame");
         assert_eq!(consumed, total);
         assert_eq!(parsed.event_type, "messageStop");
         assert_eq!(parsed.message_type, "event");
-        assert_eq!(parsed.payload.get("stopReason").and_then(Value::as_str), Some("end_turn"));
-        assert!(parse_event_stream_frame(&frame[..8]).expect("partial").is_none());
+        assert_eq!(
+            parsed.payload.get("stopReason").and_then(Value::as_str),
+            Some("end_turn")
+        );
+        assert!(
+            parse_event_stream_frame(&frame[..8])
+                .expect("partial")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1731,49 +2106,72 @@ mod tests {
         let model = bedrock_model("anthropic.claude-3-5-sonnet");
         let context = Context {
             messages: vec![
-            crate::types::Message::User(crate::types::UserMessage {
-                content: crate::types::UserContent::Text("  ".into()),
-                timestamp: 0,
-            }),
-            crate::types::Message::ToolResult(crate::types::ToolResultMessage {
-                tool_call_id: "a".into(),
-                tool_name: "t".into(),
-                content: vec![],
-                details: None,
-                usage: None,
-                added_tool_names: None,
-                is_error: true,
-                timestamp: 0,
-            }),
-            crate::types::Message::ToolResult(crate::types::ToolResultMessage {
-                tool_call_id: "b".into(),
-                tool_name: "t".into(),
-                content: vec![ContentBlock::text("ok")],
-                details: None,
-                usage: None,
-                added_tool_names: None,
-                is_error: false,
-                timestamp: 0,
-            }),
+                crate::types::Message::User(crate::types::UserMessage {
+                    content: crate::types::UserContent::Text("  ".into()),
+                    timestamp: 0,
+                }),
+                crate::types::Message::ToolResult(crate::types::ToolResultMessage {
+                    nested_calls: None,
+                    tool_call_id: "a".into(),
+                    tool_name: "t".into(),
+                    content: vec![],
+                    details: None,
+                    usage: None,
+                    added_tool_names: None,
+                    is_error: true,
+                    timestamp: 0,
+                }),
+                crate::types::Message::ToolResult(crate::types::ToolResultMessage {
+                    nested_calls: None,
+                    tool_call_id: "b".into(),
+                    tool_name: "t".into(),
+                    content: vec![ContentBlock::text("ok")],
+                    details: None,
+                    usage: None,
+                    added_tool_names: None,
+                    is_error: false,
+                    timestamp: 0,
+                }),
             ],
             ..Context::default()
         };
-        let converted = convert_messages(&context, &model, CacheRetention::None, false, None).expect("messages");
-        assert_eq!(converted[0]["content"][0]["text"], json!(EMPTY_TEXT_PLACEHOLDER));
+        let converted = convert_messages(&context, &model, CacheRetention::None, false, None)
+            .expect("messages");
+        assert_eq!(
+            converted[0]["content"][0]["text"],
+            json!(EMPTY_TEXT_PLACEHOLDER)
+        );
         assert_eq!(converted[1]["role"], json!("user"));
         assert_eq!(converted[1]["content"].as_array().map(Vec::len), Some(2));
-        assert_eq!(converted[1]["content"][0]["toolResult"]["status"], json!("error"));
-        assert_eq!(converted[1]["content"][0]["toolResult"]["content"][0]["text"], json!(EMPTY_TEXT_PLACEHOLDER));
+        assert_eq!(
+            converted[1]["content"][0]["toolResult"]["status"],
+            json!("error")
+        );
+        assert_eq!(
+            converted[1]["content"][0]["toolResult"]["content"][0]["text"],
+            json!(EMPTY_TEXT_PLACEHOLDER)
+        );
     }
 
     #[test]
     fn cache_points_follow_the_retention_and_ttl_support() {
         let model = bedrock_model("anthropic.claude-3-5-sonnet");
-        assert_eq!(cache_point(CacheRetention::Short, &model), json!({ "cachePoint": { "type": "default" } }));
+        assert_eq!(
+            cache_point(CacheRetention::Short, &model),
+            json!({ "cachePoint": { "type": "default" } })
+        );
         assert_eq!(resolve_cache_retention(None, None), CacheRetention::Short);
-        let env: ProviderEnv = [("PI_CACHE_RETENTION".to_owned(), "long".to_owned())].into_iter().collect();
-        assert_eq!(resolve_cache_retention(None, Some(&env)), CacheRetention::Long);
-        assert_eq!(resolve_cache_retention(Some(CacheRetention::None), Some(&env)), CacheRetention::None);
+        let env: ProviderEnv = [("PI_CACHE_RETENTION".to_owned(), "long".to_owned())]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            resolve_cache_retention(None, Some(&env)),
+            CacheRetention::Long
+        );
+        assert_eq!(
+            resolve_cache_retention(Some(CacheRetention::None), Some(&env)),
+            CacheRetention::None
+        );
     }
 
     #[test]
@@ -1792,14 +2190,22 @@ mod tests {
         assert_eq!(config["tools"][0]["toolSpec"]["name"], json!("t"));
         assert!(config.get("toolChoice").is_none());
 
-        let auto = convert_tool_config(Some(std::slice::from_ref(&tool)), Some(&json!("auto")), false)
-            .expect("config")
-            .expect("some");
+        let auto = convert_tool_config(
+            Some(std::slice::from_ref(&tool)),
+            Some(&json!("auto")),
+            false,
+        )
+        .expect("config")
+        .expect("some");
         assert_eq!(auto["toolChoice"], json!({ "auto": {} }));
 
-        let forced = convert_tool_config(Some(&[tool]), Some(&json!({ "type": "tool", "name": "t" })), true)
-            .expect("config")
-            .expect("some");
+        let forced = convert_tool_config(
+            Some(&[tool]),
+            Some(&json!({ "type": "tool", "name": "t" })),
+            true,
+        )
+        .expect("config")
+        .expect("some");
         assert_eq!(forced["toolChoice"], json!({ "tool": { "name": "t" } }));
         assert_eq!(
             convert_tool_config(None, Some(&json!("none")), false).expect("config"),
@@ -1822,29 +2228,53 @@ mod tests {
     #[test]
     fn redacted_content_round_trips_through_base64() {
         let encoded = base64_encode(&[1u8, 2, 3]);
-        assert_eq!(decode_redacted_content(Some(&encoded)), Some(vec![1u8, 2, 3]));
+        assert_eq!(
+            decode_redacted_content(Some(&encoded)),
+            Some(vec![1u8, 2, 3])
+        );
         assert_eq!(decode_redacted_content(None), None);
         assert_eq!(decode_redacted_content(Some("not base64!")), None);
     }
 
     #[test]
     fn adaptive_thinking_and_disabled_rejection_follow_the_family_markers() {
-        assert!(supports_adaptive_thinking(&bedrock_model("arn:aws:bedrock:us-east-1:1:inference-profile/opus-4-8-x")));
-        assert!(!supports_adaptive_thinking(&bedrock_model("anthropic.claude-3-5-sonnet")));
+        assert!(supports_adaptive_thinking(&bedrock_model(
+            "arn:aws:bedrock:us-east-1:1:inference-profile/opus-4-8-x"
+        )));
+        assert!(!supports_adaptive_thinking(&bedrock_model(
+            "anthropic.claude-3-5-sonnet"
+        )));
         assert!(rejects_disabled_thinking(&bedrock_model("fable-5-preview")));
-        assert!(!rejects_disabled_thinking(&bedrock_model("anthropic.claude-3-5-sonnet")));
+        assert!(!rejects_disabled_thinking(&bedrock_model(
+            "anthropic.claude-3-5-sonnet"
+        )));
     }
 
     #[test]
     fn thinking_effort_maps_through_the_model_map_and_native_xhigh() {
         let model = bedrock_model("opus-4-8-x");
-        assert_eq!(map_thinking_level_to_effort(&model, Some(ThinkingLevel::Xhigh)), "xhigh");
+        assert_eq!(
+            map_thinking_level_to_effort(&model, Some(ThinkingLevel::Xhigh)),
+            "xhigh"
+        );
         let mut claude = bedrock_model("anthropic.claude-3");
-        assert_eq!(map_thinking_level_to_effort(&claude, Some(ThinkingLevel::Xhigh)), "xhigh");
+        assert_eq!(
+            map_thinking_level_to_effort(&claude, Some(ThinkingLevel::Xhigh)),
+            "xhigh"
+        );
         claude.thinking_level_map = None;
-        assert_eq!(map_thinking_level_to_effort(&claude, Some(ThinkingLevel::Xhigh)), "max");
-        assert_eq!(map_thinking_level_to_effort(&claude, Some(ThinkingLevel::Minimal)), "low");
-        assert_eq!(map_thinking_level_to_effort(&claude, Some(ThinkingLevel::High)), "high");
+        assert_eq!(
+            map_thinking_level_to_effort(&claude, Some(ThinkingLevel::Xhigh)),
+            "max"
+        );
+        assert_eq!(
+            map_thinking_level_to_effort(&claude, Some(ThinkingLevel::Minimal)),
+            "low"
+        );
+        assert_eq!(
+            map_thinking_level_to_effort(&claude, Some(ThinkingLevel::High)),
+            "high"
+        );
         assert_eq!(map_thinking_level_to_effort(&claude, None), "high");
     }
 
@@ -1854,7 +2284,10 @@ mod tests {
         model.reasoning = true;
         let mut options = StreamOptions::default();
 
-        assert_eq!(build_additional_model_request_fields(&model, &options), None);
+        assert_eq!(
+            build_additional_model_request_fields(&model, &options),
+            None
+        );
 
         let mut adaptive = bedrock_model("anthropic.claude-opus-4-8");
         adaptive.reasoning = true;
@@ -1875,9 +2308,13 @@ mod tests {
         assert_eq!(fields["thinking"]["type"], json!("enabled"));
         assert_eq!(fields["thinking"]["budget_tokens"], json!(8192));
         assert_eq!(fields["thinking"]["display"], json!("summarized"));
-        assert_eq!(fields["anthropic_beta"], json!(["interleaved-thinking-2025-05-14"]));
+        assert_eq!(
+            fields["anthropic_beta"],
+            json!(["interleaved-thinking-2025-05-14"])
+        );
 
-        let adaptive_fields = build_additional_model_request_fields(&adaptive, &options).expect("fields");
+        let adaptive_fields =
+            build_additional_model_request_fields(&adaptive, &options).expect("fields");
         assert_eq!(adaptive_fields["thinking"]["type"], json!("adaptive"));
         assert_eq!(adaptive_fields["output_config"]["effort"], json!("medium"));
     }
@@ -1919,11 +2356,22 @@ mod tests {
             &sink,
         )
         .expect("delta");
-        handle_content_block_stop(&json!({ "contentBlockIndex": 0 }), &mut blocks, &mut output, &sink)
-            .expect("stop");
+        handle_content_block_stop(
+            &json!({ "contentBlockIndex": 0 }),
+            &mut blocks,
+            &mut output,
+            &sink,
+        )
+        .expect("stop");
 
         let events = sink.queue();
-        assert!(matches!(events[0], AssistantMessageEvent::TextStart { content_index: 0, .. }));
+        assert!(matches!(
+            events[0],
+            AssistantMessageEvent::TextStart {
+                content_index: 0,
+                ..
+            }
+        ));
         assert!(matches!(events[1], AssistantMessageEvent::TextDelta { .. }));
         assert!(matches!(events[3], AssistantMessageEvent::TextEnd { .. }));
         assert_eq!(output.content[0], ContentBlock::text("Hi there"));
@@ -1944,12 +2392,22 @@ mod tests {
             &sink,
         )
         .expect("delta");
-        handle_content_block_stop(&json!({ "contentBlockIndex": 0 }), &mut blocks, &mut output, &sink)
-            .expect("stop");
+        handle_content_block_stop(
+            &json!({ "contentBlockIndex": 0 }),
+            &mut blocks,
+            &mut output,
+            &sink,
+        )
+        .expect("stop");
 
-        let ContentBlock::Thinking(thinking) = &output.content[0] else { panic!("thinking") };
+        let ContentBlock::Thinking(thinking) = &output.content[0] else {
+            panic!("thinking")
+        };
         assert_eq!(thinking.redacted, Some(true));
         assert!(thinking.thinking.contains(REDACTED_THINKING_PLACEHOLDER));
-        assert_eq!(thinking.thinking_signature.as_deref(), Some(encoded.as_str()));
+        assert_eq!(
+            thinking.thinking_signature.as_deref(),
+            Some(encoded.as_str())
+        );
     }
 }

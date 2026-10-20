@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use maho_ai::model::Model;
 use maho_ai::types::{
-    AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, BoxFuture, Context as AiContext, Message,
-    SimpleStreamOptions, StreamOptions, ThinkingLevel, Tool,
+    AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, BoxFuture,
+    Context as AiContext, Message, SimpleStreamOptions, StreamOptions, ThinkingLevel, Tool,
 };
 use serde_json::{Map, Value};
 
@@ -35,7 +35,11 @@ pub trait AssistantStreamObserver: Send + Sync {
         event: AssistantMessageEvent,
         context: &'a Context,
     ) -> BoxFuture<'a, ()>;
-    fn end<'a>(&'a self, message: SettledAssistantMessage, context: &'a Context) -> BoxFuture<'a, ()>;
+    fn end<'a>(
+        &'a self,
+        message: SettledAssistantMessage,
+        context: &'a Context,
+    ) -> BoxFuture<'a, ()>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,23 +48,38 @@ pub enum AfterResponseError {
     Other(String),
 }
 
-pub type TransformContextFn =
-    Arc<dyn Fn(TransformContextRequest, Context) -> BoxFuture<'static, TransformContextRequest> + Send + Sync>;
+pub type TransformContextFn = Arc<
+    dyn Fn(TransformContextRequest, Context) -> BoxFuture<'static, TransformContextRequest>
+        + Send
+        + Sync,
+>;
 pub type ToProviderMessagesFn =
     Arc<dyn Fn(Vec<AgentMessage>, Context) -> BoxFuture<'static, Vec<Message>> + Send + Sync>;
-pub type BeforePayloadFn = Arc<dyn Fn(Value, Model, Context) -> BoxFuture<'static, Option<Value>> + Send + Sync>;
+pub type BeforePayloadFn =
+    Arc<dyn Fn(Value, Model, Context) -> BoxFuture<'static, Option<Value>> + Send + Sync>;
 pub type AfterResponseFn = Arc<
-    dyn Fn(SettledAssistantMessage, AssistantResponseMetadata, Context) -> BoxFuture<'static, Result<SettledAssistantMessage, AfterResponseError>>
+    dyn Fn(
+            SettledAssistantMessage,
+            AssistantResponseMetadata,
+            Context,
+        ) -> BoxFuture<'static, Result<SettledAssistantMessage, AfterResponseError>>
         + Send
         + Sync,
 >;
 pub type AssistantRequestFn = Arc<
-    dyn Fn(AiContext, SimpleStreamOptions, Context) -> BoxFuture<'static, Result<AssistantMessageEventStream, String>>
+    dyn Fn(
+            AiContext,
+            SimpleStreamOptions,
+            Context,
+        ) -> BoxFuture<'static, Result<AssistantMessageEventStream, String>>
         + Send
         + Sync,
 >;
 pub type AfterResponseCaptureFn = Arc<
-    dyn Fn(SettledAssistantMessage, Context) -> BoxFuture<'static, Result<SettledAssistantMessage, AfterResponseError>>
+    dyn Fn(
+            SettledAssistantMessage,
+            Context,
+        ) -> BoxFuture<'static, Result<SettledAssistantMessage, AfterResponseError>>
         + Send
         + Sync,
 >;
@@ -112,12 +131,16 @@ pub fn create_request_options(
         let context = context.clone();
         stream.request.async_on_payload = Some(Arc::new(move |payload, model, _metadata| {
             let replacement = before_payload(payload, model, context.clone());
-            let future: BoxFuture<'static, Result<Option<Value>, String>> = Box::pin(async move { Ok(replacement.await) });
+            let future: BoxFuture<'static, Result<Option<Value>, String>> =
+                Box::pin(async move { Ok(replacement.await) });
             future
         }));
     }
     stream.request.on_response = Some(Arc::new(move |response, _| {
-        capture_metadata(AssistantResponseMetadata { status: Some(response.status), headers: Some(response.headers.clone()) });
+        capture_metadata(AssistantResponseMetadata {
+            status: Some(response.status),
+            headers: Some(response.headers.clone()),
+        });
     }));
     SimpleStreamOptions {
         stream,
@@ -130,7 +153,9 @@ pub fn create_request_options(
 pub fn is_update_event(event: &AssistantMessageEvent) -> bool {
     !matches!(
         event,
-        AssistantMessageEvent::Start { .. } | AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+        AssistantMessageEvent::Start { .. }
+            | AssistantMessageEvent::Done { .. }
+            | AssistantMessageEvent::Error { .. }
     )
 }
 
@@ -140,45 +165,71 @@ pub async fn consume_assistant_stream(
     after_response: Option<AfterResponseCaptureFn>,
     context: &Context,
 ) -> Result<SettledAssistantMessage, String> {
-    let mut started = false;
-    while let Some(event) = stream.next().await.map_err(|error| error.message)? {
-        match &event {
-            AssistantMessageEvent::Start { partial } => {
-                if started {
-                    return Err("Assistant message stream emitted more than one start event".to_owned());
+    let consume = async {
+        let mut started = false;
+        while let Some(event) = stream.next().await.map_err(|error| error.message)? {
+            match &event {
+                AssistantMessageEvent::Start { partial } => {
+                    if started {
+                        return Err(
+                            "Assistant message stream emitted more than one start event".to_owned()
+                        );
+                    }
+                    started = true;
+                    observer
+                        .start(partial.clone(), event.clone(), context)
+                        .await;
                 }
-                started = true;
-                observer.start(partial.clone(), event.clone(), context).await;
-            }
-            AssistantMessageEvent::Done { .. } => {
-                if !started {
-                    return Err("Assistant message stream emitted done before start".to_owned());
+                AssistantMessageEvent::Done { .. } => {
+                    if !started {
+                        return Err("Assistant message stream emitted done before start".to_owned());
+                    }
                 }
-            }
-            AssistantMessageEvent::Error { .. } => {}
-            update => {
-                if !started {
-                    return Err(format!("Assistant message stream emitted {} before start", event_type(update)));
+                AssistantMessageEvent::Error { .. } => {}
+                update => {
+                    if !started {
+                        return Err(format!(
+                            "Assistant message stream emitted {} before start",
+                            event_type(update)
+                        ));
+                    }
+                    let partial = partial_of(update);
+                    observer.update(partial, update.clone(), context).await;
                 }
-                let partial = partial_of(update);
-                observer.update(partial, update.clone(), context).await;
             }
         }
-    }
 
-    let settled = stream.result().await.map_err(|error| error.message)?;
-    let mut final_message = settle(settled)?;
-    if let Some(after_response) = after_response {
-        match after_response(final_message.clone(), context.clone()).await {
-            Ok(message) => final_message = message,
-            Err(AfterResponseError::Abort(abort)) => {
-                abort.wait().await;
+        let settled = stream.result().await.map_err(|error| error.message)?;
+        stream.cancel().await.map_err(|error| error.message)?;
+        let mut final_message = settle(settled)?;
+        if let Some(after_response) = after_response {
+            match after_response(final_message.clone(), context.clone()).await {
+                Ok(message) => final_message = message,
+                Err(AfterResponseError::Abort(abort)) => {
+                    abort.wait().await;
+                }
+                Err(AfterResponseError::Other(error)) => return Err(error),
             }
-            Err(AfterResponseError::Other(error)) => return Err(error),
         }
+        observer.end(final_message.clone(), context).await;
+        Ok(final_message)
+    };
+    let signal = context.abort_signal();
+    let outcome = tokio::select! {
+        biased;
+        _ = async {
+            match signal {
+                Some(signal) => signal.cancelled().await,
+                None => std::future::pending::<()>().await,
+            }
+        } => Err("Assistant stream consumption was aborted".to_owned()),
+        outcome = consume => outcome,
+    };
+    let cancellation = stream.cancel().await.map_err(|error| error.message);
+    match outcome {
+        Err(error) => Err(error),
+        Ok(message) => { cancellation?; Ok(message) }
     }
-    observer.end(final_message.clone(), context).await;
-    Ok(final_message)
 }
 
 pub async fn stream_harness_assistant(
@@ -186,16 +237,21 @@ pub async fn stream_harness_assistant(
     config: Arc<HarnessAssistantStreamConfig>,
     context: &Context,
 ) -> Result<SettledAssistantMessage, String> {
-    let mut request_context = TransformContextRequest { messages, system_prompt: config.system_prompt.clone() };
+    let mut request_context = TransformContextRequest {
+        messages,
+        system_prompt: config.system_prompt.clone(),
+    };
     if let Some(transform_context) = config.transform_context.clone() {
         request_context = transform_context(request_context, context.clone()).await;
     }
 
-    let provider_messages = (config.to_provider_messages)(request_context.messages.clone(), context.clone()).await;
+    let provider_messages =
+        (config.to_provider_messages)(request_context.messages.clone(), context.clone()).await;
     let ai_context = AiContext {
         system_prompt: Some(request_context.system_prompt.clone()),
         messages: provider_messages,
         tools: config.tools.clone(),
+        active_tool_names: None,
     };
 
     let metadata = Arc::new(std::sync::Mutex::new(AssistantResponseMetadata::default()));
@@ -203,7 +259,9 @@ pub async fn stream_harness_assistant(
     let request_options = create_request_options(
         &config,
         Arc::new(move |next| {
-            *capture.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
+            *capture
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
         }),
         context,
     );
@@ -213,7 +271,10 @@ pub async fn stream_harness_assistant(
     let after_response = config.after_response.clone().map(|after_response| {
         let metadata = metadata.clone();
         let captured: AfterResponseCaptureFn = Arc::new(move |message, after_context| {
-            let metadata = metadata.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+            let metadata = metadata
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
             after_response(message, metadata, after_context)
         });
         captured
@@ -269,4 +330,75 @@ pub fn abort_requested(cancellation: Cancellation) -> AbortRequested {
 
 pub fn empty_headers() -> Option<Map<String, Value>> {
     None
+}
+
+#[cfg(test)]
+mod closure_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    struct Observer(Arc<AtomicBool>);
+
+    impl AssistantStreamObserver for Observer {
+        fn start<'a>(&'a self, _: AssistantMessage, _: AssistantMessageEvent, _: &'a Context) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn update<'a>(&'a self, _: AssistantMessage, _: AssistantMessageEvent, _: &'a Context) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn end<'a>(&'a self, _: SettledAssistantMessage, _: &'a Context) -> BoxFuture<'a, ()> {
+            Box::pin(async move { assert!(self.0.load(Ordering::SeqCst)); })
+        }
+    }
+
+    #[tokio::test]
+    async fn normal_and_malformed_exits_acknowledge_cleanup() {
+        for malformed in [false, true] {
+            let closed = Arc::new(AtomicBool::new(false));
+            let closure = closed.clone();
+            let stream = AssistantMessageEventStream::assistant();
+            stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
+                closure.store(true, Ordering::SeqCst);
+                Ok(())
+            })));
+            let model = crate::agent::default_model();
+            let message = crate::assistant_terminal_state::create_terminal_failure_assistant_message(
+                &model, maho_ai::types::StopReason::Stop,
+                &crate::assistant_terminal_state::AgentStreamError::OAuthRefreshUnavailable { message: String::new() }, None,
+            );
+            if !malformed { stream.push(AssistantMessageEvent::Start { partial: message.clone() }); }
+            stream.push(AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message });
+            let observer: Arc<dyn AssistantStreamObserver> = Arc::new(Observer(closed.clone()));
+            let outcome = tokio::time::timeout(Duration::from_secs(1), consume_assistant_stream(
+                &stream, &observer, None, &crate::harness::context::BACKGROUND_CONTEXT,
+            )).await.expect("consumer exits");
+            assert_eq!(outcome.is_err(), malformed);
+            assert!(closed.load(Ordering::SeqCst));
+        }
+    }
+
+    #[tokio::test]
+    async fn abandoned_pending_stream_awaits_cleanup() {
+        let (context, cancel) = crate::harness::context::with_cancel(&crate::harness::context::BACKGROUND_CONTEXT);
+        let closed = Arc::new(AtomicBool::new(false));
+        let closure = closed.clone();
+        let stream = AssistantMessageEventStream::assistant();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
+            entered_tx.send(()).expect("cleanup entered");
+            release_rx.await.expect("cleanup released");
+            closure.store(true, Ordering::SeqCst);
+            Ok(())
+        })));
+        let observer: Arc<dyn AssistantStreamObserver> = Arc::new(Observer(closed.clone()));
+        let consumer = tokio::spawn(async move { consume_assistant_stream(&stream, &observer, None, &context).await });
+        cancel.cancel(None);
+        tokio::time::timeout(Duration::from_secs(1), entered_rx).await.expect("cleanup starts").expect("entered");
+        assert!(!consumer.is_finished());
+        release_tx.send(()).expect("release");
+        assert!(tokio::time::timeout(Duration::from_secs(1), consumer).await.expect("consumer exits").expect("join").is_err());
+        assert!(closed.load(Ordering::SeqCst));
+    }
 }

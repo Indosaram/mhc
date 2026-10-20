@@ -19,6 +19,8 @@ pub struct PooledCredential {
     pub accounts: Option<Vec<CredentialSlot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned: Option<String>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl PooledCredential {
@@ -55,6 +57,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pooled_metadata_round_trips_as_siblings() {
+        let raw = serde_json::json!({"type":"api_key","key":"flat","env":{"REGION":"r"},"accounts":[{"name":"a","key":"slot"}],"pinned":"a","providerMetadata":{"tenant":"t"}});
+        let pool: PooledCredential = serde_json::from_value(raw.clone()).expect("pool");
+        let stored = serde_json::to_value(pool).expect("serialize pool");
+        assert_eq!(stored, raw);
+    }
+
+    #[test]
     fn list_slots_prefers_accounts_and_falls_back_to_the_flat_fields() {
         let pooled = PooledCredential {
             credential_type: "api_key".to_owned(),
@@ -64,6 +74,7 @@ mod tests {
             expires: None,
             accounts: Some(vec![CredentialSlot { name: "login-1".to_owned(), key: Some("a".to_owned()), ..CredentialSlot::default() }]),
             pinned: None,
+            extra: Default::default(),
         };
         assert_eq!(pooled.list_slots().len(), 1);
         assert_eq!(pooled.list_slots()[0].name, "login-1");
@@ -76,10 +87,11 @@ mod tests {
             expires: None,
             accounts: None,
             pinned: None,
+            extra: Default::default(),
         };
         assert_eq!(flat.list_slots()[0].name, DEFAULT_SLOT_NAME);
         assert_eq!(flat.list_slots()[0].key.as_deref(), Some("flat"));
-        let empty = PooledCredential { credential_type: "oauth".to_owned(), key: None, access: None, refresh: None, expires: None, accounts: None, pinned: None };
+        let empty = PooledCredential { credential_type: "oauth".to_owned(), key: None, access: None, refresh: None, expires: None, accounts: None, pinned: None, extra: Default::default() };
         assert!(empty.list_slots().is_empty());
     }
 

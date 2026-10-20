@@ -100,6 +100,27 @@ impl CredentialStore for InMemoryCredentialStore {
         self.enqueue(provider_id, task, signal_opts).await?
     }
 
+    async fn modify_or_delete(
+        &self,
+        provider_id: &str,
+        f: Box<dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>> + Send>,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>> {
+        let provider_id_owned = provider_id.to_owned();
+        let task = async move {
+            let current = self.credentials.lock().unwrap_or_else(|p| p.into_inner())
+                .get(&provider_id_owned).cloned();
+            let next = f(current).await?;
+            let mut credentials = self.credentials.lock().unwrap_or_else(|p| p.into_inner());
+            match &next {
+                Some(credential) => { credentials.insert(provider_id_owned, credential.clone()); }
+                None => { credentials.remove(&provider_id_owned); }
+            }
+            Ok(next)
+        };
+        self.enqueue(provider_id, task, options).await?
+    }
+
     async fn delete(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<()> {
         let provider_id_owned = provider_id.to_string();
         let credentials_lock = &self.credentials;
@@ -116,6 +137,48 @@ impl CredentialStore for InMemoryCredentialStore {
 mod tests {
     use super::*;
     use crate::auth::types::{ApiKeyCredential, OAuthCredential};
+
+    #[tokio::test]
+    async fn conditional_delete_serializes_with_a_concurrent_login() {
+        // Given a conditional deletion holding the provider's mutation lock.
+        let store = InMemoryCredentialStore::new();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let deletion = store.modify_or_delete("p", Box::new(move |_| Box::pin(async move {
+            entered_tx.send(()).expect("entered subscriber");
+            release_rx.await.expect("release");
+            Ok(None)
+        })), None);
+        tokio::pin!(deletion);
+        assert!(futures::poll!(deletion.as_mut()).is_pending());
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await.expect("entry deadline").expect("entered");
+        let login = store.modify("p", Box::new(|current| Box::pin(async move {
+            assert!(current.is_none());
+            Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("new".into()), ..Default::default() })))
+        })), None);
+        tokio::pin!(login);
+        assert!(futures::poll!(login.as_mut()).is_pending());
+        // When deletion completes and the queued login obtains the same lock.
+        release_tx.send(()).expect("release subscriber");
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), deletion).await.expect("delete deadline").expect("delete").is_none());
+        tokio::time::timeout(std::time::Duration::from_secs(5), login).await.expect("login deadline").expect("login");
+        // Then no trailing delete can remove the new login.
+        assert_eq!(store.read("p", None).await.expect("read").expect("credential").as_api_key().and_then(|c| c.key.as_deref()), Some("new"));
+    }
+
+    #[tokio::test]
+    async fn conditional_delete_failure_leaves_existing_credential_unchanged() {
+        // Given a stored credential.
+        let store = InMemoryCredentialStore::new();
+        let initial = Credential::ApiKey(ApiKeyCredential { key: Some("old".into()), ..Default::default() });
+        let seed = initial.clone();
+        store.modify("p", Box::new(move |_| Box::pin(async move { Ok(Some(seed)) })), None).await.expect("seed");
+        // When the conditional mutation fails.
+        let result = store.modify_or_delete("p", Box::new(|_| Box::pin(async { anyhow::bail!("failed mutation") })), None).await;
+        // Then failure does not commit a deletion or replacement.
+        assert!(result.is_err());
+        assert_eq!(store.read("p", None).await.expect("read"), Some(initial));
+    }
 
     fn box_fut<F>(f: F) -> BoxFuture<'static, anyhow::Result<Option<Credential>>>
     where
@@ -136,7 +199,7 @@ mod tests {
         let written = store
             .modify(
                 "anthropic",
-                Box::new(|_current| box_fut(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("k".into()), env: None }))) })),
+                Box::new(|_current| box_fut(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("k".into()), env: None, ..Default::default() }))) })),
                 None,
             )
             .await
@@ -168,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn list_reports_metadata_without_secrets() {
         let store = InMemoryCredentialStore::new();
-        store.modify("p1", Box::new(|_| box_fut(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("secret".into()), env: None }))) })), None).await.unwrap();
+        store.modify("p1", Box::new(|_| box_fut(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("secret".into()), env: None, ..Default::default() }))) })), None).await.unwrap();
         let listed = store.list(None).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].provider_id, "p1");
@@ -190,7 +253,7 @@ mod tests {
                     entered_tx.send(()).unwrap();
                     release_rx.await.unwrap();
                     o1.lock().unwrap_or_else(|p| p.into_inner()).push(1);
-                    Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("1".into()), env: None })))
+                    Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("1".into()), env: None, ..Default::default() })))
                 })),
                 None,
             )
@@ -202,7 +265,7 @@ mod tests {
             Box::new(move |current| box_fut(async move {
                 assert_eq!(current.and_then(|c| c.as_api_key().and_then(|c| c.key.clone())), Some("1".into()));
                 o2.lock().unwrap_or_else(|p| p.into_inner()).push(2);
-                Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("2".into()), env: None })))
+                Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("2".into()), env: None, ..Default::default() })))
             })),
             None,
         ));

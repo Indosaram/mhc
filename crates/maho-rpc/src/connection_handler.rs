@@ -467,11 +467,14 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         },
         RpcCommandBody::GetAuthProviders=>{
             let registry=session.model_registry();
-            let providers=maho_core::auth_providers::build_login_provider_infos(registry,Some(maho_core::auth_storage::CredentialKind::Oauth)).into_iter().chain(maho_core::auth_providers::build_login_provider_infos(registry,Some(maho_core::auth_storage::CredentialKind::ApiKey))).map(|info|{
+            let providers=maho_core::auth_providers::build_login_provider_infos(registry,Some(maho_core::auth_storage::CredentialKind::Oauth)).and_then(|oauth| {
+                let api_keys=maho_core::auth_providers::build_login_provider_infos(registry,Some(maho_core::auth_storage::CredentialKind::ApiKey))?;
+                Ok(oauth.into_iter().chain(api_keys).map(|info|{
                 let status=registry.get_provider_auth_status(&info.id);
                 serde_json::json!({"id":info.id,"name":info.name,"authType":match info.auth_type{maho_core::auth_storage::CredentialKind::Oauth=>"oauth",maho_core::auth_storage::CredentialKind::ApiKey=>"api_key"},"status":{"configured":status.configured,"source":status.source,"label":status.label}})
-            }).collect::<Vec<_>>();
-            ("get_auth_providers",Ok(Some(serde_json::json!({"providers":providers}))))
+                }).collect::<Vec<_>>())
+            }).map_err(|error|error.to_string());
+            ("get_auth_providers",providers.map(|providers|Some(serde_json::json!({"providers":providers}))))
         },
         RpcCommandBody::LoginStart{provider}=>{
             let sink=sink.unwrap_or_else(||std::sync::Arc::new(|_|{}));
@@ -977,7 +980,7 @@ mod new_session_tests{
     use std::sync::Arc;
 
     fn session()->AgentSession{
-        let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions{providers:Some(vec![]),..Default::default()});
+        let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions{providers:Some(vec![]),..Default::default()}).expect("model runtime");
         AgentSession::new(maho_core::agent_session::AgentSessionConfig{
             agent:maho_agent::Agent::new(maho_agent::AgentOptions{stream_fn:Some(Arc::new(|_,_,_|maho_ai::types::AssistantMessageEventStream::assistant())),..Default::default()}),
             session_manager:maho_core::session_manager::SessionManager::in_memory("/tmp",None,None),
@@ -1237,7 +1240,7 @@ mod connection_events_tests{
     use super::*;
     use std::sync::{Arc,Mutex};
     fn session()->AgentSession{
-        let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions{providers:Some(vec![]),..Default::default()});
+        let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions{providers:Some(vec![]),..Default::default()}).expect("model runtime");
         AgentSession::new(maho_core::agent_session::AgentSessionConfig{
             agent:maho_agent::Agent::new(maho_agent::AgentOptions{stream_fn:Some(Arc::new(|_,_,_|maho_ai::types::AssistantMessageEventStream::assistant())),..Default::default()}),
             session_manager:maho_core::session_manager::SessionManager::in_memory("/tmp",None,None),

@@ -192,6 +192,7 @@ async fn given_a_matching_interactive_prompt_when_research_is_mentioned_then_the
     expect_pointer_injections(&harness, &result, &[
         ExpectedPointer { custom_type: MASS_ULW_CUSTOM_TYPE, skill_name: "mass-ulw" },
         ExpectedPointer { custom_type: ULW_RESEARCH_CUSTOM_TYPE, skill_name: "ulw-research" },
+        ExpectedPointer { custom_type: BROWSER_CUSTOM_TYPE, skill_name: "browser" },
         ExpectedPointer { custom_type: ULTIMATE_BROWSING_CUSTOM_TYPE, skill_name: "ultimate-browsing" },
     ]);
 }

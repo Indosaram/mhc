@@ -5,4 +5,7 @@ pub mod index;
 pub mod strip_quoted_regions;
 
 pub use index::*;
-pub use strip_quoted_regions::strip_quoted_regions;
+pub use strip_quoted_regions::{
+    mask_negated_invocations, strip_quoted_regions, strip_quoted_spans,
+    NOT_AFTER_IDENTIFIER, NOT_BEFORE_PATH, NOT_INTO_IDENTIFIER,
+};

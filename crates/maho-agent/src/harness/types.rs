@@ -30,7 +30,9 @@ pub struct UnknownError {
 
 impl UnknownError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -106,7 +108,7 @@ pub type AgentHarnessToolExecute<TContext> = Arc<
 #[derive(Clone)]
 pub struct AgentHarnessTool<TContext> {
     pub label: String,
-    pub prepare_arguments: Option<Arc<dyn Fn(Value) -> Value + Send + Sync>>,
+    pub prepare_arguments: Option<crate::types::ToolArgumentShim>,
     pub execute: AgentHarnessToolExecute<TContext>,
     pub replay: Option<ReplayPolicy>,
     pub tool: Tool,
@@ -120,7 +122,9 @@ impl<TContext> AgentHarnessTool<TContext> {
 
 impl<TContext> fmt::Debug for AgentHarnessTool<TContext> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AgentHarnessTool").field("label", &self.label).finish_non_exhaustive()
+        f.debug_struct("AgentHarnessTool")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
     }
 }
 
@@ -224,7 +228,12 @@ pub struct FileError {
 
 impl FileError {
     pub fn new(code: FileErrorCode, message: impl Into<String>, path: Option<String>) -> Self {
-        Self { code, message: message.into(), path, cause: None }
+        Self {
+            code,
+            message: message.into(),
+            path,
+            cause: None,
+        }
     }
 
     pub fn with_cause(mut self, cause: impl Into<String>) -> Self {
@@ -278,11 +287,17 @@ pub struct ExecutionError {
     pub code: ExecutionErrorCode,
     pub message: String,
     pub cause: Option<String>,
+    pub spill_path: Option<String>,
 }
 
 impl ExecutionError {
     pub fn new(code: ExecutionErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), cause: None }
+        Self {
+            code,
+            message: message.into(),
+            cause: None,
+            spill_path: None,
+        }
     }
 }
 
@@ -361,7 +376,10 @@ pub struct TextLine {
 /// `TextLineReader`.
 pub trait TextLineReader: Send + Sync {
     /// `readLine(context)`.
-    fn read_line<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, Result<Option<TextLine>, FileError>>;
+    fn read_line<'a>(
+        &'a self,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Option<TextLine>, FileError>>;
 
     /// `close(context)`. Must be best-effort and must not throw.
     fn close<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, ()>;
@@ -445,10 +463,21 @@ pub struct ShellOutputView {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ShellOutputUpdate {
-    Replace { output: ShellOutputView },
-    Append { text: String, metadata: ShellOutputMetadata },
-    Slide { drop: u64, text: String, metadata: ShellOutputMetadata },
-    Metadata { metadata: ShellOutputMetadata },
+    Replace {
+        output: ShellOutputView,
+    },
+    Append {
+        text: String,
+        metadata: ShellOutputMetadata,
+    },
+    Slide {
+        drop: u64,
+        text: String,
+        metadata: ShellOutputMetadata,
+    },
+    Metadata {
+        metadata: ShellOutputMetadata,
+    },
 }
 
 /// `ShellExecResult`.
@@ -465,7 +494,7 @@ pub struct ShellExecResult {
 
 /// `ShellExecOptions.onUpdate`.
 pub type ShellOutputUpdateHandler =
-    Arc<dyn Fn(ShellOutputUpdate, Context) -> BoxFuture<'static, ()> + Send + Sync>;
+    Arc<dyn Fn(ShellOutputUpdate, Context) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// `ShellExecOptions`.
 #[derive(Default)]
@@ -505,9 +534,21 @@ impl fmt::Debug for ShellExecOptions {
 /// encoded in the returned `Result`.
 pub trait FileSystem: Send + Sync {
     fn cwd(&self) -> &str;
-    fn absolute_path<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<String, FileError>>;
-    fn join_path<'a>(&'a self, parts: Vec<String>, context: &'a Context) -> BoxFuture<'a, Result<String, FileError>>;
-    fn read_text_file<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<String, FileError>>;
+    fn absolute_path<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, FileError>>;
+    fn join_path<'a>(
+        &'a self,
+        parts: Vec<String>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, FileError>>;
+    fn read_text_file<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, FileError>>;
     fn open_text_line_reader<'a>(
         &'a self,
         path: &'a str,
@@ -519,7 +560,11 @@ pub trait FileSystem: Send + Sync {
         max_lines: Option<u64>,
         context: &'a Context,
     ) -> BoxFuture<'a, Result<Vec<String>, FileError>>;
-    fn read_binary_file<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<Vec<u8>, FileError>>;
+    fn read_binary_file<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<u8>, FileError>>;
     fn write_file<'a>(
         &'a self,
         path: &'a str,
@@ -538,10 +583,26 @@ pub trait FileSystem: Send + Sync {
         destination_path: &'a str,
         context: &'a Context,
     ) -> BoxFuture<'a, Result<(), FileError>>;
-    fn file_info<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<FileInfo, FileError>>;
-    fn list_dir<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<Vec<FileInfo>, FileError>>;
-    fn canonical_path<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<String, FileError>>;
-    fn exists<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<bool, FileError>>;
+    fn file_info<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<FileInfo, FileError>>;
+    fn list_dir<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<FileInfo>, FileError>>;
+    fn canonical_path<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, FileError>>;
+    fn exists<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<bool, FileError>>;
     fn create_dir<'a>(
         &'a self,
         path: &'a str,
