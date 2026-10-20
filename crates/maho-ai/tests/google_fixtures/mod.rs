@@ -10,8 +10,9 @@ pub mod server;
 
 use maho_ai::api::google_shared::ConvertMessagesOptions;
 use maho_ai::types::{
-    AssistantMessage, ContentBlock, Context, ImageContent, InputModality, Message, Model, ProviderEnv, StopReason,
-    TextContent, ThinkingContent, Tool, ToolCall, ToolResultMessage, Usage, UserContent, UserMessage,
+    AssistantMessage, ContentBlock, Context, ImageContent, InputModality, Message, Model,
+    ProviderEnv, StopReason, TextContent, ThinkingContent, Tool, ToolCall, ToolResultMessage,
+    Usage, UserContent, UserMessage,
 };
 use serde_json::Value;
 
@@ -26,8 +27,16 @@ pub fn builtin_model(provider: &str, id: &str) -> Model {
 /// The TS suites build these models inline, so the base only supplies the cost/context fields and
 /// every identity field the case cares about is overridden.
 pub fn model_with(api: &str, provider: &str, id: &str) -> Model {
-    let base = if api == "google-vertex" { "gemini-3-flash-preview" } else { "gemini-2.5-flash" };
-    let catalog_provider = if api == "google-vertex" { "google-vertex" } else { "google" };
+    let base = if api == "google-vertex" {
+        "gemini-3-flash-preview"
+    } else {
+        "gemini-2.5-flash"
+    };
+    let catalog_provider = if api == "google-vertex" {
+        "google-vertex"
+    } else {
+        "google"
+    };
     let mut model = builtin_model(catalog_provider, base);
     model.id = id.to_owned();
     model.name = id.to_owned();
@@ -52,15 +61,26 @@ pub fn image_model(api: &str, provider: &str, id: &str) -> Model {
 }
 
 pub fn context(messages: Vec<Message>) -> Context {
-    Context { system_prompt: None, messages, tools: None }
+    Context {
+        active_tool_names: None,
+        system_prompt: None,
+        messages,
+        tools: None,
+    }
 }
 
 pub fn user_text(text: &str) -> Message {
-    Message::User(UserMessage { content: UserContent::Text(text.to_owned()), timestamp: 0 })
+    Message::User(UserMessage {
+        content: UserContent::Text(text.to_owned()),
+        timestamp: 0,
+    })
 }
 
 pub fn text(text: &str) -> ContentBlock {
-    ContentBlock::Text(TextContent { text: text.to_owned(), ..TextContent::default() })
+    ContentBlock::Text(TextContent {
+        text: text.to_owned(),
+        ..TextContent::default()
+    })
 }
 
 pub fn text_with_signature(text: &str, signature: &str) -> ContentBlock {
@@ -72,7 +92,10 @@ pub fn text_with_signature(text: &str, signature: &str) -> ContentBlock {
 }
 
 pub fn thinking(text: &str) -> ContentBlock {
-    ContentBlock::Thinking(ThinkingContent { thinking: text.to_owned(), ..ThinkingContent::default() })
+    ContentBlock::Thinking(ThinkingContent {
+        thinking: text.to_owned(),
+        ..ThinkingContent::default()
+    })
 }
 
 pub fn thinking_with_signature(text: &str, signature: &str) -> ContentBlock {
@@ -92,7 +115,12 @@ pub fn tool_call(id: &str, name: &str, arguments: Value) -> ContentBlock {
     })
 }
 
-pub fn tool_call_with_signature(id: &str, name: &str, arguments: Value, signature: &str) -> ContentBlock {
+pub fn tool_call_with_signature(
+    id: &str,
+    name: &str,
+    arguments: Value,
+    signature: &str,
+) -> ContentBlock {
     ContentBlock::ToolCall(ToolCall {
         id: id.to_owned(),
         name: name.to_owned(),
@@ -103,12 +131,17 @@ pub fn tool_call_with_signature(id: &str, name: &str, arguments: Value, signatur
 }
 
 pub fn image(data: &str, mime_type: &str) -> ContentBlock {
-    ContentBlock::Image(ImageContent { data: data.to_owned(), mime_type: mime_type.to_owned() })
+    ContentBlock::Image(ImageContent {
+        data: data.to_owned(),
+        mime_type: mime_type.to_owned(),
+    })
 }
 
 /// An assistant turn the adapters replay (`role: "assistant"` with the provider metadata attached).
 pub fn assistant(model: &Model, content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
     Message::Assistant(Box::new(AssistantMessage {
+        thinking_level: None,
+        provider_diagnostic: None,
         content,
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -129,7 +162,12 @@ pub fn assistant(model: &Model, content: Vec<ContentBlock>, stop_reason: StopRea
     }))
 }
 
-pub fn tool_result(tool_call_id: &str, tool_name: &str, content: Vec<ContentBlock>, is_error: bool) -> Message {
+pub fn tool_result(
+    tool_call_id: &str,
+    tool_name: &str,
+    content: Vec<ContentBlock>,
+    is_error: bool,
+) -> Message {
     Message::ToolResult(ToolResultMessage {
         tool_call_id: tool_call_id.to_owned(),
         tool_name: tool_name.to_owned(),
@@ -155,9 +193,14 @@ pub fn tool(name: &str, description: &str, parameters: Value) -> Tool {
 
 /// The adapter-level options `convertMessages(model, context, options?)` carries.
 pub fn preserve_thinking(value: bool) -> ConvertMessagesOptions {
-    ConvertMessagesOptions { preserve_thinking: Some(value) }
+    ConvertMessagesOptions {
+        preserve_thinking: Some(value),
+    }
 }
 
 pub fn env(entries: &[(&str, &str)]) -> ProviderEnv {
-    entries.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect()
+    entries
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect()
 }

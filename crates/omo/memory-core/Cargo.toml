@@ -11,6 +11,10 @@ path = "src/lib.rs"
 
 [dependencies]
 
+loro = "=1.16.2"
+saphyr-parser = "=0.2.2"
+url.workspace = true
+aws-lc-rs = "=1.18.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 unicode-general-category.workspace = true

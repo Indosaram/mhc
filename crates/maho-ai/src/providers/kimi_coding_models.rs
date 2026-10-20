@@ -41,6 +41,8 @@ fn model(
     levels: Option<ThinkingLevelMap>,
 ) -> Model {
     Model {
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         id: id.to_owned(),
         name: name.to_owned(),
         api: "anthropic-messages".to_owned(),
@@ -50,7 +52,14 @@ fn model(
         default_thinking_level: None,
         thinking_level_map: levels,
         input: input.to_vec(),
-        cost: ModelCost { input: cost.0, output: cost.1, cache_read: cost.2, cache_write: 0.0, tiers: None },
+        cost: ModelCost {
+            effective_rates: None,
+            input: cost.0,
+            output: cost.1,
+            cache_read: cost.2,
+            cache_write: 0.0,
+            tiers: None,
+        },
         context_window,
         max_tokens,
         sampling_params: None,
@@ -70,7 +79,11 @@ pub fn kimi_coding_models() -> Vec<Model> {
             "k3",
             "Kimi K3",
             true,
-            &[InputModality::Text, InputModality::Image, InputModality::Video],
+            &[
+                InputModality::Text,
+                InputModality::Image,
+                InputModality::Video,
+            ],
             (3.0, 15.0, 0.3),
             1048576,
             131072,

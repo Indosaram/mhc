@@ -17,9 +17,9 @@ async fn persisted_fork_clone_tree_and_import_preserve_source() {
     let assistant = manager.append_message(json!({"role":"assistant","content":[{"type":"text","text":"source answer"}],"api":"openai-completions","provider":"faux","model":"faux-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
     let source = manager.session_file().expect("source path").to_owned();
     let bytes = std::fs::read(&source).expect("persisted source");
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("model");
-    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(vec![provider.provider]), ..Default::default() });
+    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(vec![provider.provider]), ..Default::default() }).expect("valid model runtime");
     let session = create_agent_session(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(cwd), model_runtime: Some(runtime), model: Some(model), session_manager: Some(manager), settings_manager: Some(SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()), false)), no_tools: Some(NoToolsMode::All), auto_title_sessions: Some(false), ..Default::default() }).await.expect("session").session;
     let response = command(&session, json!({"type":"get_tree"})).await;
     assert_eq!(response["success"], true);

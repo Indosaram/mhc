@@ -8,21 +8,26 @@ use std::sync::{Arc, Mutex};
 
 use maho_agent::agent_loop::{AgentEventSink, agent_loop};
 use maho_agent::{
-    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentStreamOptions, AgentTool, AgentToolResult,
-    AgentToolUpdateCallback, StreamFn, identity_convert_to_llm,
+    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentStreamOptions, AgentTool,
+    AgentToolResult, AgentToolUpdateCallback, StreamFn, identity_convert_to_llm,
 };
 use maho_ai::model::Model;
 use maho_ai::types::{
-    Api, AssistantMessage, AssistantMessageEvent, AssistantStopDetails, BoxFuture, ContentBlock, Context, DoneReason,
-    ErrorReason, InputModality, Message, ModelCost, ProviderId, StopReason, TextContent, Tool, ToolCall,
-    ToolResultMessage, Usage, UserContent, UserMessage,
+    Api, AssistantMessage, AssistantMessageEvent, AssistantStopDetails, BoxFuture, ContentBlock,
+    Context, DoneReason, ErrorReason, InputModality, Message, ModelCost, ProviderId, StopReason,
+    TextContent, Tool, ToolCall, ToolResultMessage, Usage, UserContent, UserMessage,
 };
 use maho_ai::utils::abort::AbortSignal;
 use maho_ai::utils::event_stream::AssistantMessageEventStream;
 use serde_json::{Value, json};
 
 pub type ToolExecuteFn = Arc<
-    dyn Fn(String, Value, Option<AbortSignal>, Option<AgentToolUpdateCallback>) -> BoxFuture<'static, AgentToolResult>
+    dyn Fn(
+            String,
+            Value,
+            Option<AbortSignal>,
+            Option<AgentToolUpdateCallback>,
+        ) -> BoxFuture<'static, AgentToolResult>
         + Send
         + Sync,
 >;
@@ -54,12 +59,21 @@ pub fn test_model() -> Model {
         reasoning: false,
         thinking_level_map: None,
         input: vec![InputModality::Text],
-        cost: ModelCost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, tiers: None },
+        cost: ModelCost {
+            effective_rates: None,
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            tiers: None,
+        },
         context_window: 8192,
         max_tokens: 2048,
         sampling_params: None,
         headers: None,
         cache_retention: None,
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         upstream_model_id: None,
         service_tier: None,
         recover_text_tool_calls: None,
@@ -71,6 +85,8 @@ pub fn test_model() -> Model {
 
 pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> AssistantMessage {
     AssistantMessage {
+        thinking_level: None,
+        provider_diagnostic: None,
         content,
         api: "openai-responses".to_owned() as Api,
         provider: "openai".to_owned() as ProviderId,
@@ -84,6 +100,7 @@ pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> Assista
         stop_details: None,
         deferred: None,
         error_message: None,
+        error_cause: None,
         abort_source: None,
         raw_stop_reason: None,
         end_turn: None,
@@ -92,7 +109,11 @@ pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> Assista
 }
 
 pub fn text_block(text: impl Into<String>) -> ContentBlock {
-    ContentBlock::Text(TextContent { text: text.into(), audience: None, text_signature: None })
+    ContentBlock::Text(TextContent {
+        text: text.into(),
+        audience: None,
+        text_signature: None,
+    })
 }
 
 /// An assistant message carrying the extra terminal fields the TS fixtures spread in.
@@ -133,7 +154,10 @@ pub fn result_tool(name: &str, result: AgentToolResult) -> AgentTool {
 }
 
 /// A tool whose `execute` returns `result`, counting its invocations.
-pub fn counting_result_tool(name: &str, result: AgentToolResult) -> (AgentTool, Arc<std::sync::atomic::AtomicUsize>) {
+pub fn counting_result_tool(
+    name: &str,
+    result: AgentToolResult,
+) -> (AgentTool, Arc<std::sync::atomic::AtomicUsize>) {
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
     let execute: ToolExecuteFn = Arc::new(move |_id, _args, _signal, _on_update| {
@@ -184,7 +208,10 @@ pub fn done_reason(stop_reason: StopReason) -> DoneReason {
 /// `done` event in a microtask; here it is queued before the stream is handed over.
 pub fn message_stream(message: AssistantMessage) -> AssistantMessageEventStream {
     let stream = AssistantMessageEventStream::assistant();
-    stream.push(AssistantMessageEvent::Done { reason: done_reason(message.stop_reason), message });
+    stream.push(AssistantMessageEvent::Done {
+        reason: done_reason(message.stop_reason),
+        message,
+    });
     stream
 }
 
@@ -194,22 +221,32 @@ pub fn error_stream(message: AssistantMessage) -> AssistantMessageEventStream {
         StopReason::Aborted => ErrorReason::Aborted,
         _ => ErrorReason::Error,
     };
-    stream.push(AssistantMessageEvent::Error { reason, error: message });
+    stream.push(AssistantMessageEvent::Error {
+        reason,
+        error: message,
+    });
     stream
 }
 
 /// Hands out `messages` in order; once exhausted it repeats the last one.
 pub fn scripted_stream_fn(messages: Vec<AssistantMessage>) -> StreamFn {
     let queue = Arc::new(Mutex::new(messages));
-    Arc::new(move |_model: &Model, _context: &Context, _options: Option<AgentStreamOptions>| {
-        let mut queue = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let message = if queue.len() > 1 {
-            queue.remove(0)
-        } else {
-            queue.first().cloned().unwrap_or_else(|| assistant(vec![text_block("")], StopReason::Stop))
-        };
-        message_stream(message)
-    })
+    Arc::new(
+        move |_model: &Model, _context: &Context, _options: Option<AgentStreamOptions>| {
+            let mut queue = queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let message = if queue.len() > 1 {
+                queue.remove(0)
+            } else {
+                queue
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| assistant(vec![text_block("")], StopReason::Stop))
+            };
+            message_stream(message)
+        },
+    )
 }
 
 /// Records every call's `(model, context, options)` and returns the next scripted message.
@@ -220,27 +257,38 @@ pub struct RecordingStreamFn {
 
 impl RecordingStreamFn {
     pub fn new(messages: Vec<AssistantMessage>) -> Self {
-        Self { calls: Arc::new(Mutex::new(Vec::new())), stream: scripted_stream_fn(messages) }
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            stream: scripted_stream_fn(messages),
+        }
     }
 
     pub fn stream_fn(&self) -> StreamFn {
         let calls = Arc::clone(&self.calls);
         let inner = Arc::clone(&self.stream);
-        Arc::new(move |model: &Model, context: &Context, options: Option<AgentStreamOptions>| {
-            calls
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push((model.clone(), context.clone(), options.clone()));
-            inner(model, context, options)
-        })
+        Arc::new(
+            move |model: &Model, context: &Context, options: Option<AgentStreamOptions>| {
+                calls
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push((model.clone(), context.clone(), options.clone()));
+                inner(model, context, options)
+            },
+        )
     }
 
     pub fn call_count(&self) -> usize {
-        self.calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len()
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     pub fn calls(&self) -> Vec<(Model, Context, Option<AgentStreamOptions>)> {
-        self.calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
@@ -264,8 +312,13 @@ pub fn recording_tool(name: &str) -> (AgentTool, Arc<Mutex<Vec<Value>>>) {
     let sink = Arc::clone(&seen);
     let tool_name = name.to_owned();
     let execute: ToolExecuteFn = Arc::new(move |_id, args, _signal, _on_update| {
-        sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(args.clone());
-        let text = format!("{tool_name}:{}", args.get("city").and_then(Value::as_str).unwrap_or(""));
+        sink.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(args.clone());
+        let text = format!(
+            "{tool_name}:{}",
+            args.get("city").and_then(Value::as_str).unwrap_or("")
+        );
         Box::pin(async move { AgentToolResult::text(text) })
     });
     let tool = AgentTool {
@@ -302,7 +355,9 @@ pub fn text_of(result: &ToolResultMessage) -> String {
         .join("\n")
 }
 
-pub async fn collect_events(stream: &maho_ai::utils::event_stream::EventStream<AgentEvent, Vec<AgentMessage>>) -> Vec<AgentEvent> {
+pub async fn collect_events(
+    stream: &maho_ai::utils::event_stream::EventStream<AgentEvent, Vec<AgentMessage>>,
+) -> Vec<AgentEvent> {
     let mut events = Vec::new();
     while let Some(event) = stream.next().await.expect("stream ok") {
         events.push(event);
@@ -333,7 +388,9 @@ pub fn recording_sink() -> (AgentEventSink, Arc<Mutex<Vec<AgentEvent>>>) {
     let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
     let emit: AgentEventSink = Arc::new(move |event: AgentEvent| {
-        sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(event);
+        sink.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(event);
         Box::pin(async {})
     });
     (emit, events)
@@ -345,10 +402,21 @@ pub async fn run_agent_loop(
     stream_fn: StreamFn,
     configure: impl FnOnce(&mut AgentLoopConfig),
 ) -> Vec<AgentEvent> {
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: Some(tools) };
+    let context = AgentContext {
+        declared_tools: None,
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Some(tools),
+    };
     let mut config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
     configure(&mut config);
-    let stream = agent_loop(vec![user_message(prompt)], context, config, None, Some(stream_fn));
+    let stream = agent_loop(
+        vec![user_message(prompt)],
+        context,
+        config,
+        None,
+        Some(stream_fn),
+    );
     collect_events(&stream).await
 }
 
@@ -358,7 +426,9 @@ pub struct EventCounter {
 
 impl EventCounter {
     pub fn new() -> Self {
-        Self { count: AtomicUsize::new(0) }
+        Self {
+            count: AtomicUsize::new(0),
+        }
     }
 
     pub fn bump(&self) -> usize {
@@ -427,15 +497,27 @@ impl FileSystem for ObservingFileSystem {
         self.inner.cwd()
     }
 
-    fn absolute_path<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<String>> {
+    fn absolute_path<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<String>> {
         delegate!(self, absolute_path, (path, context))
     }
 
-    fn join_path<'a>(&'a self, parts: Vec<String>, context: &'a HarnessContext) -> FileFuture<'a, FileResult<String>> {
+    fn join_path<'a>(
+        &'a self,
+        parts: Vec<String>,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<String>> {
         delegate!(self, join_path, (parts, context))
     }
 
-    fn read_text_file<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<String>> {
+    fn read_text_file<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<String>> {
         delegate!(self, read_text_file, (path, context))
     }
 
@@ -456,7 +538,11 @@ impl FileSystem for ObservingFileSystem {
         delegate!(self, read_text_lines, (path, max_lines, context))
     }
 
-    fn read_binary_file<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<Vec<u8>>> {
+    fn read_binary_file<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<Vec<u8>>> {
         delegate!(self, read_binary_file, (path, context))
     }
 
@@ -478,7 +564,9 @@ impl FileSystem for ObservingFileSystem {
         Box::pin(async move {
             if self
                 .remaining_append_failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| remaining.checked_sub(1))
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
                 .is_ok()
             {
                 return Err(FileError::new(
@@ -501,30 +589,51 @@ impl FileSystem for ObservingFileSystem {
             let destination_exists = self.inner.exists(destination_path, context).await;
             let staged = self.inner.read_text_file(source_path, context).await;
             if let (Ok(destination_existed), Ok(staged_content)) = (destination_exists, staged) {
-                self.publications.lock().expect("publications").push(ObservedPublication {
-                    source_path: source_path.to_owned(),
-                    destination_path: destination_path.to_owned(),
-                    destination_existed,
-                    staged_content,
-                });
+                self.publications
+                    .lock()
+                    .expect("publications")
+                    .push(ObservedPublication {
+                        source_path: source_path.to_owned(),
+                        destination_path: destination_path.to_owned(),
+                        destination_existed,
+                        staged_content,
+                    });
             }
-            self.inner.rename_file(source_path, destination_path, context).await
+            self.inner
+                .rename_file(source_path, destination_path, context)
+                .await
         })
     }
 
-    fn file_info<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<FileInfo>> {
+    fn file_info<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<FileInfo>> {
         delegate!(self, file_info, (path, context))
     }
 
-    fn list_dir<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<Vec<FileInfo>>> {
+    fn list_dir<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<Vec<FileInfo>>> {
         delegate!(self, list_dir, (path, context))
     }
 
-    fn canonical_path<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<String>> {
+    fn canonical_path<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<String>> {
         delegate!(self, canonical_path, (path, context))
     }
 
-    fn exists<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<bool>> {
+    fn exists<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<bool>> {
         delegate!(self, exists, (path, context))
     }
 

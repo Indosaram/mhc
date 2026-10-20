@@ -60,7 +60,9 @@ fn find_invoke_open_tag_from(text: &str, from_index: usize) -> Option<InvokeOpen
         while cursor < bytes.len() && is_ws(bytes[cursor]) {
             cursor += 1;
         }
-        let ns_slice: String = bytes[cursor..bytes.len().min(cursor + ANTML_NAMESPACE.len())].iter().collect();
+        let ns_slice: String = bytes[cursor..bytes.len().min(cursor + ANTML_NAMESPACE.len())]
+            .iter()
+            .collect();
         if ns_slice == ANTML_NAMESPACE {
             cursor += ANTML_NAMESPACE.len();
         }
@@ -69,7 +71,11 @@ fn find_invoke_open_tag_from(text: &str, from_index: usize) -> Option<InvokeOpen
             cursor += 1;
         }
         let word: String = bytes[word_start..cursor].iter().collect();
-        if word != "invoke" {
+        if word != "invoke"
+            || chars
+                .get(cursor)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+        {
             i += 1;
             continue;
         }
@@ -111,7 +117,7 @@ fn find_invoke_open_tag_from(text: &str, from_index: usize) -> Option<InvokeOpen
         while cursor < bytes.len() && bytes[cursor] != quote {
             cursor += 1;
         }
-        if cursor >= bytes.len() {
+        if cursor >= bytes.len() || cursor == value_start {
             i += 1;
             continue;
         }
@@ -137,7 +143,10 @@ fn find_invoke_open_tag_from(text: &str, from_index: usize) -> Option<InvokeOpen
 }
 
 fn char_index_to_byte(text: &str, char_index: usize) -> usize {
-    text.char_indices().nth(char_index).map(|(b, _)| b).unwrap_or(text.len())
+    text.char_indices()
+        .nth(char_index)
+        .map(|(b, _)| b)
+        .unwrap_or(text.len())
 }
 
 fn byte_to_char_index(text: &str, byte_index: usize) -> usize {
@@ -149,7 +158,10 @@ pub fn find_invoke_open_tag(text: &str, from_index: usize) -> Option<InvokeOpenT
     find_invoke_open_tag_from(text, char_from)
 }
 
-pub fn find_incomplete_invoke_open_tag(text: &str, from_index: usize) -> Option<InvokeOpenTagMatch> {
+pub fn find_incomplete_invoke_open_tag(
+    text: &str,
+    from_index: usize,
+) -> Option<InvokeOpenTagMatch> {
     let index = from_index;
     let candidate = &text[index.min(text.len())..];
     let chars: Vec<char> = candidate.chars().collect();
@@ -161,7 +173,9 @@ pub fn find_incomplete_invoke_open_tag(text: &str, from_index: usize) -> Option<
     while cursor < chars.len() && is_ws(chars[cursor]) {
         cursor += 1;
     }
-    let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())].iter().collect();
+    let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())]
+        .iter()
+        .collect();
     if ns == ANTML_NAMESPACE {
         cursor += ANTML_NAMESPACE.len();
     }
@@ -203,16 +217,29 @@ pub fn find_incomplete_invoke_open_tag(text: &str, from_index: usize) -> Option<
     match closing {
         None => {
             let tool_name = decode_xml_entities(&chars[value_start..].iter().collect::<String>());
-            if tool_name.is_empty() { None } else { Some(InvokeOpenTagMatch { index, length: candidate.len(), tool_name }) }
+            if tool_name.is_empty() {
+                None
+            } else {
+                Some(InvokeOpenTagMatch {
+                    index,
+                    length: candidate.len(),
+                    tool_name,
+                })
+            }
         }
         Some(rel) => {
             let closing_index = value_start + rel;
-            let tool_name = decode_xml_entities(&chars[value_start..closing_index].iter().collect::<String>());
+            let tool_name =
+                decode_xml_entities(&chars[value_start..closing_index].iter().collect::<String>());
             let rest: String = chars[closing_index + 1..].iter().collect();
             if tool_name.is_empty() || !rest.trim().is_empty() {
                 None
             } else {
-                Some(InvokeOpenTagMatch { index, length: candidate.len(), tool_name })
+                Some(InvokeOpenTagMatch {
+                    index,
+                    length: candidate.len(),
+                    tool_name,
+                })
             }
         }
     }
@@ -239,7 +266,9 @@ fn find_tag_close(tag: &str, text: &str, from_char: usize) -> Option<(usize, usi
         while cursor < chars.len() && is_ws(chars[cursor]) {
             cursor += 1;
         }
-        let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())].iter().collect();
+        let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())]
+            .iter()
+            .collect();
         if ns == ANTML_NAMESPACE {
             cursor += ANTML_NAMESPACE.len();
         }
@@ -285,7 +314,9 @@ fn find_nested_invoke_open(text: &str, from_char: usize) -> Option<(usize, usize
         while cursor < chars.len() && is_ws(chars[cursor]) {
             cursor += 1;
         }
-        let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())].iter().collect();
+        let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())]
+            .iter()
+            .collect();
         if ns == ANTML_NAMESPACE {
             cursor += ANTML_NAMESPACE.len();
         }
@@ -329,7 +360,9 @@ fn find_parameter_markup(text: &str, from_char: usize) -> Option<(usize, usize)>
                 cursor += 1;
             }
         }
-        let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())].iter().collect();
+        let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())]
+            .iter()
+            .collect();
         if ns == ANTML_NAMESPACE {
             cursor += ANTML_NAMESPACE.len();
         }
@@ -338,7 +371,11 @@ fn find_parameter_markup(text: &str, from_char: usize) -> Option<(usize, usize)>
             cursor += 1;
         }
         let word: String = chars[word_start..cursor].iter().collect();
-        if word == "parameter" {
+        if word == "parameter"
+            && !chars
+                .get(cursor)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+        {
             return Some((i, 1));
         }
         i += 1;
@@ -356,7 +393,9 @@ pub fn find_parameter_open_tag_at(text: &str, char_index: usize) -> Option<Param
     while cursor < chars.len() && is_ws(chars[cursor]) {
         cursor += 1;
     }
-    let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())].iter().collect();
+    let ns: String = chars[cursor..chars.len().min(cursor + ANTML_NAMESPACE.len())]
+        .iter()
+        .collect();
     if ns == ANTML_NAMESPACE {
         cursor += ANTML_NAMESPACE.len();
     }
@@ -398,7 +437,7 @@ pub fn find_parameter_open_tag_at(text: &str, char_index: usize) -> Option<Param
     while cursor < chars.len() && chars[cursor] != quote {
         cursor += 1;
     }
-    if cursor >= chars.len() {
+    if cursor >= chars.len() || cursor == value_start {
         return None;
     }
     let name_raw: String = chars[value_start..cursor].iter().collect();
@@ -410,7 +449,11 @@ pub fn find_parameter_open_tag_at(text: &str, char_index: usize) -> Option<Param
         return None;
     }
     cursor += 1;
-    Some(ParameterOpenTagMatch { index: char_index, length: cursor - char_index, name: decode_xml_entities(&name_raw) })
+    Some(ParameterOpenTagMatch {
+        index: char_index,
+        length: cursor - char_index,
+        name: decode_xml_entities(&name_raw),
+    })
 }
 
 /// Forward search for a full parameter open tag (name attribute plus closing `>`),
@@ -437,10 +480,14 @@ pub fn find_parameter_boundary(text: &str, from_char: usize) -> Option<Parameter
         let invoke_open = find_nested_invoke_open(text, cursor);
         let invoke_close = find_invoke_close_tag(text, cursor);
 
-        let next_index = [parameter_close.map(|m| m.0), invoke_open.map(|m| m.0), invoke_close.map(|m| m.0)]
-            .into_iter()
-            .flatten()
-            .min();
+        let next_index = [
+            parameter_close.map(|m| m.0),
+            invoke_open.map(|m| m.0),
+            invoke_close.map(|m| m.0),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
 
         let next_index = next_index?;
 
@@ -470,7 +517,10 @@ pub fn find_parameter_boundary(text: &str, from_char: usize) -> Option<Parameter
             && idx == next_index
         {
             if nested_invoke_depth == 0 {
-                return Some(ParameterBoundary::InvokeClose(TagMatch { index: idx, length: len }));
+                return Some(ParameterBoundary::InvokeClose(TagMatch {
+                    index: idx,
+                    length: len,
+                }));
             }
             nested_invoke_depth -= 1;
             cursor = idx + len;
@@ -479,7 +529,10 @@ pub fn find_parameter_boundary(text: &str, from_char: usize) -> Option<Parameter
 
         if let Some((idx, len)) = parameter_close {
             if nested_invoke_depth == 0 {
-                return Some(ParameterBoundary::ParameterClose(TagMatch { index: idx, length: len }));
+                return Some(ParameterBoundary::ParameterClose(TagMatch {
+                    index: idx,
+                    length: len,
+                }));
             }
             cursor = idx + len;
         }
@@ -489,7 +542,8 @@ pub fn find_parameter_boundary(text: &str, from_char: usize) -> Option<Parameter
 pub fn scan_invoke_block(text: &str, opening_tag: &InvokeOpenTagMatch) -> Option<InvokeBlockMatch> {
     let chars: Vec<char> = text.chars().collect();
     let opening_char_index = byte_to_char_index(text, opening_tag.index);
-    let opening_char_length = byte_to_char_index(text, opening_tag.index + opening_tag.length) - opening_char_index;
+    let opening_char_length =
+        byte_to_char_index(text, opening_tag.index + opening_tag.length) - opening_char_index;
     let mut parameters: Vec<InvokeParameter> = Vec::new();
     let mut cursor = opening_char_index + opening_char_length;
 
@@ -503,12 +557,17 @@ pub fn scan_invoke_block(text: &str, opening_tag: &InvokeOpenTagMatch) -> Option
 
         if let Some((n_idx, _)) = nested_invoke_open
             && n_idx < invoke_close.0
-            && parameter_markup.map(|(p_idx, _)| n_idx < p_idx).unwrap_or(true)
+            && parameter_markup
+                .map(|(p_idx, _)| n_idx < p_idx)
+                .unwrap_or(true)
         {
             return None;
         }
 
-        if parameter_markup.map(|(p_idx, _)| invoke_close.0 < p_idx).unwrap_or(true) {
+        if parameter_markup
+            .map(|(p_idx, _)| invoke_close.0 < p_idx)
+            .unwrap_or(true)
+        {
             return Some(InvokeBlockMatch {
                 content_end: char_index_to_byte(text, invoke_close.0),
                 end: char_index_to_byte(text, invoke_close.0 + invoke_close.1),
@@ -516,7 +575,8 @@ pub fn scan_invoke_block(text: &str, opening_tag: &InvokeOpenTagMatch) -> Option
             });
         }
 
-        let (p_idx, _) = parameter_markup.expect("the guard above returns when parameter_markup is None");
+        let (p_idx, _) =
+            parameter_markup.expect("the guard above returns when parameter_markup is None");
         let Some(parameter_open) = find_parameter_open_tag_at(text, p_idx) else {
             return Some(InvokeBlockMatch {
                 content_end: char_index_to_byte(text, invoke_close.0),
@@ -538,7 +598,10 @@ pub fn scan_invoke_block(text: &str, opening_tag: &InvokeOpenTagMatch) -> Option
             }
             ParameterBoundary::ParameterClose(m) => {
                 let raw_value: String = chars[value_start..m.index].iter().collect();
-                parameters.push(InvokeParameter { name: parameter_open.name, raw_value });
+                parameters.push(InvokeParameter {
+                    name: parameter_open.name,
+                    raw_value,
+                });
                 cursor = m.index + m.length;
             }
         }
@@ -546,8 +609,14 @@ pub fn scan_invoke_block(text: &str, opening_tag: &InvokeOpenTagMatch) -> Option
 }
 
 fn is_attribute_prefix(remainder: &str) -> bool {
-    let trimmed_leading: String = remainder.chars().skip_while(|c| c.is_whitespace()).collect();
-    let attribute_name: String = trimmed_leading.chars().take_while(|c| c.is_alphabetic()).collect();
+    let trimmed_leading: String = remainder
+        .chars()
+        .skip_while(|c| c.is_whitespace())
+        .collect();
+    let attribute_name: String = trimmed_leading
+        .chars()
+        .take_while(|c| c.is_alphabetic())
+        .collect();
     let after_attribute_name = &trimmed_leading[attribute_name.len()..];
 
     if attribute_name.len() < "name".len() {
@@ -560,14 +629,22 @@ fn is_attribute_prefix(remainder: &str) -> bool {
         return true;
     }
 
-    let after_ws: String = after_attribute_name.chars().skip_while(|c| c.is_whitespace()).collect();
-    let Some(rest) = after_ws.strip_prefix('=') else { return false };
+    let after_ws: String = after_attribute_name
+        .chars()
+        .skip_while(|c| c.is_whitespace())
+        .collect();
+    let Some(rest) = after_ws.strip_prefix('=') else {
+        return false;
+    };
     let value_prefix: String = rest.chars().skip_while(|c| c.is_whitespace()).collect();
     if value_prefix.is_empty() {
         return true;
     }
 
-    let quote = value_prefix.chars().next().expect("value_prefix is non-empty");
+    let quote = value_prefix
+        .chars()
+        .next()
+        .expect("value_prefix is non-empty");
     if quote != '"' && quote != '\'' {
         return false;
     }
@@ -580,7 +657,10 @@ fn is_attribute_prefix(remainder: &str) -> bool {
 
 pub fn find_parameter_markup_pub(text: &str, from_index: usize) -> Option<TagMatch> {
     let from_char = byte_to_char_index(text, from_index);
-    find_parameter_markup(text, from_char).map(|(idx, len)| TagMatch { index: char_index_to_byte(text, idx), length: len })
+    find_parameter_markup(text, from_char).map(|(idx, len)| TagMatch {
+        index: char_index_to_byte(text, idx),
+        length: len,
+    })
 }
 
 pub fn is_whitespace_or_invoke_close_prefix(remainder: &str) -> bool {
@@ -588,8 +668,26 @@ pub fn is_whitespace_or_invoke_close_prefix(remainder: &str) -> bool {
     if compact.is_empty() {
         return true;
     }
-    let prefix = "</invoke>";
-    prefix.starts_with(&compact) && compact != prefix
+    ["</invoke>", "</antml:invoke>"]
+        .iter()
+        .any(|prefix| prefix.starts_with(&compact) && compact != *prefix)
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+
+    #[test]
+    fn complete_open_tags_reject_empty_names() {
+        assert!(find_invoke_open_tag("<invoke name=\"\">", 0).is_none());
+        assert!(find_parameter_open_tag_at("<parameter name=\"\">", 0).is_none());
+    }
+
+    #[test]
+    fn nested_markup_requires_word_boundary() {
+        assert!(find_nested_invoke_open("<invoke_foo>", 0).is_none());
+        assert!(find_parameter_markup("<parameter_foo>", 0).is_none());
+    }
 }
 
 pub fn is_potential_protocol_start(candidate: &str) -> bool {
@@ -621,7 +719,11 @@ pub fn is_potential_protocol_start(candidate: &str) -> bool {
         if remainder.contains('>') {
             return false;
         }
-        return if tag_name == "function_calls" { remainder.trim().is_empty() } else { is_attribute_prefix(remainder) };
+        return if tag_name == "function_calls" {
+            remainder.trim().is_empty()
+        } else {
+            is_attribute_prefix(remainder)
+        };
     }
 
     false
@@ -669,7 +771,8 @@ mod tests {
 
     #[test]
     fn find_incomplete_invoke_open_tag_accepts_a_truncated_open_tag() {
-        let m = find_incomplete_invoke_open_tag(r#"<invoke name="get_weat"#, 0).expect("incomplete");
+        let m =
+            find_incomplete_invoke_open_tag(r#"<invoke name="get_weat"#, 0).expect("incomplete");
         assert_eq!(m.tool_name, "get_weat");
     }
 

@@ -147,27 +147,19 @@ fn neither_deep_lane_carries_the_other_lanes_model() {
 }
 
 #[test]
-fn visual_engineering_starts_with_fable_5_1_max() {
+fn visual_engineering_starts_with_argon_low() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain.first(),
-        Some(&entry(
-            &[
-                "anthropic",
-                "anthropic-api",
-                "github-copilot",
-                "opencode"
-            ],
-            "claude-fable-5-1",
-            Some("max")
-        ))
+        Some(&entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("low")))
     );
 }
 
 #[test]
-fn visual_engineering_follows_the_approved_3_rung_chain() {
+fn visual_engineering_follows_the_approved_4_rung_chain() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain,
         vec![
+            entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("low")),
             entry(
                 &[
                     "anthropic",
@@ -212,6 +204,7 @@ fn quick_follows_the_approved_9_rung_chain() {
                 "gpt-6-luna-fast",
                 Some("low")
             ),
+            entry(&["anthropic", "anthropic-api", "github-copilot"], "claude-haiku-5-5", Some("medium")),
             entry(&["deepseek"], "deepseek-flash", Some("off")),
             entry(
                 &[
@@ -225,15 +218,6 @@ fn quick_follows_the_approved_9_rung_chain() {
             entry(&["opencode-go"], "minimax-m3", Some("max")),
             entry(&["opencode-go"], "minimax-m2.7", Some("max")),
             entry(&["xai"], "grok-4.20-0309-non-reasoning", None),
-            entry(
-                &[
-                    "anthropic",
-                    "anthropic-api",
-                    "github-copilot"
-                ],
-                "claude-haiku-4-5",
-                Some("off")
-            ),
             entry(&["zai-coding-plan"], "glm-5.3-flash", Some("low")),
             entry(&["xiaomi"], "mimo-v2.6-flash", Some("low")),
         ]
@@ -241,7 +225,7 @@ fn quick_follows_the_approved_9_rung_chain() {
 }
 
 #[test]
-fn unspecified_low_follows_the_approved_8_rung_chain_headed_by_claude_sonnet_5_5_medium() {
+fn unspecified_low_follows_the_approved_10_rung_chain_headed_by_claude_sonnet_5_5_medium() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["unspecified-low"].fallback_chain,
         vec![
@@ -265,6 +249,8 @@ fn unspecified_low_follows_the_approved_8_rung_chain_headed_by_claude_sonnet_5_5
                 "grok-4.7",
                 Some("xhigh")
             ),
+            entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("high")),
+            entry(&["openai", "chatgpt-subscription"], "gpt-6.1-sol", Some("medium")),
             entry(
                 &[
                     "openai",
@@ -272,8 +258,8 @@ fn unspecified_low_follows_the_approved_8_rung_chain_headed_by_claude_sonnet_5_5
                     "github-copilot",
                     "opencode"
                 ],
-                "gpt-5.6-terra",
-                Some("high")
+                "gpt-5.6-sol",
+                Some("medium")
             ),
             entry(
                 &[
@@ -383,13 +369,14 @@ fn artistry_follows_the_approved_3_rung_chain() {
 }
 
 #[test]
-fn writing_leads_with_claude_opus_5_5_low_and_no_longer_carries_claude_fable_5_1() {
+fn writing_leads_with_argon_low_then_opus_without_fable() {
     let chain = &CATEGORY_MODEL_REQUIREMENTS["writing"].fallback_chain;
 
     assert!(!chain.iter().any(|entry| entry.model == "claude-fable-5-1"));
     assert_eq!(
         chain,
         &vec![
+            entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("low")),
             entry(
                 &[
                     "anthropic",

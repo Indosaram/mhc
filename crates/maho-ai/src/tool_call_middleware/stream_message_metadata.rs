@@ -12,6 +12,8 @@ fn clone_usage(usage: &Usage) -> Usage {
 /// forward).
 fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -> AssistantMessage {
     AssistantMessage {
+        thinking_level: None,
+        provider_diagnostic: None,
         content,
         api: source.api.clone(),
         provider: source.provider.clone(),
@@ -43,8 +45,13 @@ fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -
 
 /// Field-by-field copy of every metadata field, so the source `content` is never deep-cloned only
 /// to be replaced.
-pub fn clone_message_with_content(source: &AssistantMessage, content: Vec<ContentBlock>) -> AssistantMessage {
+pub fn clone_message_with_content(
+    source: &AssistantMessage,
+    content: Vec<ContentBlock>,
+) -> AssistantMessage {
     AssistantMessage {
+        thinking_level: source.thinking_level,
+        provider_diagnostic: source.provider_diagnostic.clone(),
         content,
         api: source.api.clone(),
         provider: source.provider.clone(),
@@ -77,7 +84,11 @@ pub fn clone_assistant_message_metadata(
     let mut message = clone_message_with_content(source, content);
     let mut diagnostics = message.diagnostics.take().unwrap_or_default();
     diagnostics.extend(projected_diagnostics.iter().cloned());
-    message.diagnostics = if diagnostics.is_empty() { None } else { Some(diagnostics) };
+    message.diagnostics = if diagnostics.is_empty() {
+        None
+    } else {
+        Some(diagnostics)
+    };
     message
 }
 
@@ -100,7 +111,9 @@ pub fn sync_assistant_message_metadata(
 mod tests {
     use super::*;
     use crate::types::{StopReason, UsageCost};
-    use crate::utils::diagnostics::{create_assistant_message_diagnostic, DiagnosticErrorInfo, Thrown};
+    use crate::utils::diagnostics::{
+        DiagnosticErrorInfo, Thrown, create_assistant_message_diagnostic,
+    };
 
     fn usage(reasoning: Option<u64>) -> Usage {
         Usage {
@@ -111,12 +124,20 @@ mod tests {
             cache_write_1h: Some(5),
             reasoning,
             total_tokens: 6,
-            cost: UsageCost { input: 0.1, output: 0.2, cache_read: 0.3, cache_write: 0.4, total: 1.0 },
+            cost: UsageCost {
+                input: 0.1,
+                output: 0.2,
+                cache_read: 0.3,
+                cache_write: 0.4,
+                total: 1.0,
+            },
         }
     }
 
     fn message() -> AssistantMessage {
         AssistantMessage {
+            thinking_level: None,
+            provider_diagnostic: None,
             content: vec![ContentBlock::text("hi")],
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -153,8 +174,14 @@ mod tests {
     #[test]
     fn preserve_all_clone_carries_full_usage_and_appends_diagnostics() {
         let source = message();
-        let diagnostic = create_assistant_message_diagnostic("retry", &Thrown::error("E", "boom"), None);
-        let cloned = clone_assistant_message_metadata(&source, vec![], std::slice::from_ref(&diagnostic), true);
+        let diagnostic =
+            create_assistant_message_diagnostic("retry", &Thrown::error("E", "boom"), None);
+        let cloned = clone_assistant_message_metadata(
+            &source,
+            vec![],
+            std::slice::from_ref(&diagnostic),
+            true,
+        );
         assert_eq!(cloned.usage.cache_write_1h, Some(5));
         assert_eq!(cloned.usage.reasoning, Some(9));
         assert_eq!(cloned.response_model, source.response_model);
@@ -173,7 +200,11 @@ mod tests {
     fn sync_legacy_replaces_metadata_but_keeps_content() {
         let mut target = message();
         target.content = vec![ContentBlock::text("outer")];
-        let source = AssistantMessage { model: "other".into(), timestamp: 99, ..message() };
+        let source = AssistantMessage {
+            model: "other".into(),
+            timestamp: 99,
+            ..message()
+        };
         sync_assistant_message_metadata(&mut target, &source, &[], false);
         assert_eq!(target.model, "other");
         assert_eq!(target.timestamp, 99);
@@ -184,8 +215,14 @@ mod tests {
     fn sync_preserve_all_keeps_content_and_appends_diagnostics() {
         let mut target = message();
         target.content = vec![ContentBlock::text("outer")];
-        let diagnostic = create_assistant_message_diagnostic("retry", &Thrown::error("E", "boom"), None);
-        sync_assistant_message_metadata(&mut target, &message(), std::slice::from_ref(&diagnostic), true);
+        let diagnostic =
+            create_assistant_message_diagnostic("retry", &Thrown::error("E", "boom"), None);
+        sync_assistant_message_metadata(
+            &mut target,
+            &message(),
+            std::slice::from_ref(&diagnostic),
+            true,
+        );
         assert_eq!(target.content, vec![ContentBlock::text("outer")]);
         assert_eq!(target.diagnostics.as_ref().map(Vec::len), Some(1));
     }

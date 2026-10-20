@@ -12,6 +12,7 @@ thiserror = "=2.0.18"
 uuid = { version = "=1.20.0", features = ["v4", "v7"] }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "cache"] }
 maho-agent = { path = "../maho-agent" }
+maho-chord = { path = "../maho-chord" }
 maho-core = { path = "../maho-core" }
 maho-rpc = { path = "../maho-rpc" }
 maho-tui = { path = "../maho-tui" }
