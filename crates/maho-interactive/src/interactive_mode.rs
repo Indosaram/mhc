@@ -49,6 +49,9 @@ const FOOTER_POLL_INTERVAL_MS: f64 = 250.0;
 type PendingBash = (Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, Pin<Box<dyn Future<Output = Result<(maho_tools::bash_executor::BashResult, bool), String>>>>);
 /// A running `flushCompactionQueue`; resolves to the failure notice it reported, if any.
 type CompactionFlush = Pin<Box<dyn Future<Output = Option<String>>>>;
+/// A running manual `/compact` (senpi's un-awaited `handleCompactCommand` promise); its outcome is
+/// presented by the `compaction_end` event, so the future resolves to nothing.
+type CompactFuture = Pin<Box<dyn Future<Output = ()>>>;
 
 /// senpi `compactionQueuedMessages` / `compactionInFlightMessages`, shared with the running flush.
 #[derive(Default)]
@@ -525,6 +528,9 @@ pub struct InteractiveMode {
     /// senpi's compaction queue: submissions typed while compaction runs.
     compaction_queue: Rc<RefCell<CompactionQueueState>>,
     pending_compaction_flush: Option<CompactionFlush>,
+    /// The manual `/compact` in flight: `submit_start` initiates it, `poll_turn` advances it so the
+    /// loop keeps rendering and reading input (Esc aborts) while compaction runs.
+    pending_compact: Option<CompactFuture>,
     queued_compaction_flushes: std::collections::VecDeque<crate::compaction_queue_transfer::TransferOptions>,
     /// The local `!` command in flight (senpi `bashComponent` + `session.isBashRunning`).
     pending_bash: Option<PendingBash>,
@@ -1289,7 +1295,7 @@ impl InteractiveMode {
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
         let invalidate_ui = Arc::downgrade(&extension_ui);
         session.set_before_session_invalidate(Some(Arc::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } })));
-        Self { ulw_turn_glow:false, provider_count_key:None, footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, pending_selection_copy:false, selection_copy_available:false, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None, extension_editor_dialog: None, pending_dialog_external_edit: Default::default(), footer_poll_ms: None, footer_event_generation: 0, footer_stats_cache: RefCell::new(None), footer_subscription_cache: RefCell::new(None), keybindings_cache: RefCell::new(None), assistant_segment_seen: BTreeMap::new() }
+        Self { ulw_turn_glow:false, provider_count_key:None, footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, pending_compact:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, pending_selection_copy:false, selection_copy_available:false, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None, extension_editor_dialog: None, pending_dialog_external_edit: Default::default(), footer_poll_ms: None, footer_event_generation: 0, footer_stats_cache: RefCell::new(None), footer_subscription_cache: RefCell::new(None), keybindings_cache: RefCell::new(None), assistant_segment_seen: BTreeMap::new() }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -2659,6 +2665,7 @@ impl InteractiveMode {
         let had_turn = self.pending_turn.is_some();
         let disposition = self.submit_start(text, options).await?;
         if self.pending_bash.is_some() { self.await_bash().await; }
+        if self.pending_compact.is_some() { self.await_compact().await; }
         if !had_turn && self.pending_turn.is_some() { self.await_turn().await; }
         Ok(disposition)
     }
@@ -2926,24 +2933,22 @@ impl InteractiveMode {
             // warning with no core call, not the core "session too small" error.
             let message_count = self.session.with_session_manager(|manager| manager.entries().iter().filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("message")).count());
             if message_count < 2 { self.show_warning("Nothing to compact (no messages yet)"); return Ok(PromptDisposition::Handled); }
-            if self.session_host.is_some() {
-                // senpi `handleCompactCommand`: failures arrive as `compaction_end` events.
-                self.clear_status_indicator(None);
-                drop(self.host_compact(text.trim().strip_prefix("/compact ").map(str::to_owned)).await);
-                return Ok(PromptDisposition::Handled);
-            }
+            // senpi `handleCompactCommand`: failures arrive as `compaction_end` events, so the
+            // rejection is ignored. The compaction is not awaited here: `poll_turn` drives it so the
+            // production loop keeps rendering and reading input (Esc aborts) while it runs.
             self.clear_status_indicator(None);
-            let session = self.session.clone();
-            let compact = session.compact(text.trim().strip_prefix("/compact "));
-            tokio::pin!(compact);
-            let result = loop { tokio::select! {
-                result = &mut compact => break result,
-                Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
-                Some(event) = self.events.recv() => self.handle_session_event(&event),
-            }};
-            // senpi ignores the rejection: the outcome is presented by the `compaction_end` event.
-            drop(result);
-            self.drain_events();
+            let instructions = text.trim().strip_prefix("/compact ").map(str::to_owned);
+            let compact: CompactFuture = match self.session_host.clone() {
+                Some(host) => Box::pin(async move { drop(host.compact(instructions).await); }),
+                None => { let session = self.session.clone(); Box::pin(async move { drop(session.compact(instructions.as_deref()).await); }) }
+            };
+            // A second `/compact` supersedes the first inside the session; keep driving the first to
+            // its own settlement instead of dropping it mid-flight.
+            let prior = self.pending_compact.take();
+            self.pending_compact = Some(match prior {
+                Some(prior) => Box::pin(async move { tokio::join!(prior, compact); }),
+                None => compact,
+            });
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/new" {
@@ -3129,6 +3134,9 @@ impl InteractiveMode {
             while let Ok(event) = self.events.try_recv() { self.route_bash_event(&component, &event); }
             self.finish_bash(component, result);
         }
+        if self.pending_compact.as_mut().is_some_and(|compact| compact.as_mut().poll(&mut context).is_ready()) {
+            self.pending_compact = None;
+        }
         let flush_result = self.pending_compaction_flush.as_mut().and_then(|flush| match flush.as_mut().poll(&mut context) {
             std::task::Poll::Pending => None,
             std::task::Poll::Ready(failure) => Some(failure),
@@ -3146,6 +3154,21 @@ impl InteractiveMode {
 
     /// Whether a provider turn is currently in flight.
     pub fn has_pending_turn(&self) -> bool { self.pending_turn.is_some() }
+
+    /// Whether a manual `/compact` is currently in flight.
+    pub fn has_pending_compaction(&self) -> bool { self.pending_compact.is_some() }
+
+    /// Await the in-flight `/compact` for direct `submit` callers, consuming session events and UI
+    /// requests while it runs; the production loop uses `poll_turn` instead.
+    async fn await_compact(&mut self) {
+        let Some(mut compact) = self.pending_compact.take() else { return; };
+        loop { tokio::select! {
+            () = &mut compact => break,
+            Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
+            Some(event) = self.events.recv() => self.handle_session_event(&event),
+        }}
+        self.drain_events();
+    }
 
     /// Await the in-flight turn to completion, consuming session events while it runs. Direct
     /// `submit` callers use this; the production loop uses `poll_turn` instead.
