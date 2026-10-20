@@ -7,7 +7,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 use tmux_core::{
     IsServerRunningOptions, RunTmuxOptions, SweepTmuxSessionsDeps, SweepTmuxSessionsOptions,
-    TmuxCommandResult, close_tmux_pane, is_server_running, run_tmux_command,
+    TmuxCommandResult, close_tmux_pane, escape_tmux_format, is_server_running, run_tmux_command,
     sweep_tmux_sessions_with,
 };
 
@@ -219,7 +219,7 @@ fn build_split_args(
 ) -> Vec<String> {
     let mut args = vec!["split-window".to_owned()];
     args.extend(build_pane_environment_args(deps));
-    let directory = pane_working_directory(member, deps);
+    let directory = escape_tmux_format(&pane_working_directory(member, deps));
     if teammate_panes.is_empty() {
         args.extend(strings(&[
             "-t",
@@ -254,6 +254,25 @@ fn build_split_args(
         &directory,
     ]));
     args
+}
+
+#[cfg(test)]
+mod split_format_tests {
+    use super::*;
+
+    #[test]
+    fn split_directories_escape_format_syntax_for_first_and_later_panes() {
+        let deps = TeamLayoutDeps { env: Arc::new(|_| None), ..TeamLayoutDeps::default() };
+        for (panes, path, expected) in [
+            (vec![], "/tmp/#{session_name}/#(touch c)", "/tmp/##{session_name}/##(touch c)"),
+            (vec!["%2".to_owned()], "./w/#{pane_id}", "./w/##{pane_id}"),
+        ] {
+            let member = TeamLayoutMember { name: "m1".to_owned(), session_id: "s-m1".to_owned(), worktree_path: Some(path.to_owned()) };
+            let args = build_split_args("%1", &panes, &member, &deps);
+            let index = args.iter().position(|arg| arg == "-c").expect("directory flag");
+            assert_eq!(args[index + 1], expected);
+        }
+    }
 }
 
 fn create_team_layout_in_caller_window(

@@ -13,8 +13,9 @@ use maho_agent::harness::env::nodejs::{
 #[cfg(unix)]
 use maho_agent::harness::types::FileKind;
 use maho_agent::harness::types::{
-    ExecutionErrorCode, FileErrorCode, FileSystem, Shell, ShellExecOptions, ShellOutputCaptureOptions,
-    ShellOutputLimits, ShellOutputRetention, ShellOutputUpdate, TextLineReader,
+    ExecutionErrorCode, FileErrorCode, FileSystem, Shell, ShellExecOptions,
+    ShellOutputCaptureOptions, ShellOutputLimits, ShellOutputRetention, ShellOutputUpdate,
+    TextLineReader,
 };
 use maho_ai::utils::abort::{AbortController, AbortReason};
 use serde_json::json;
@@ -45,7 +46,11 @@ fn expect_reader_err(
 
 fn capture_options(max_bytes: u64, spill: bool) -> ShellOutputCaptureOptions {
     ShellOutputCaptureOptions {
-        limits: ShellOutputLimits { max_bytes, max_lines: 1000, retain: Some(ShellOutputRetention::Tail) },
+        limits: ShellOutputLimits {
+            max_bytes,
+            max_lines: 1000,
+            retain: Some(ShellOutputRetention::Tail),
+        },
         spill: Some(spill),
     }
 }
@@ -56,16 +61,39 @@ async fn reads_writes_lists_and_removes_files_and_directories() {
     let env = env_for(&dir);
     let context = bg_context();
 
-    env.write_file("a/b.txt", b"hello", &context).await.expect("write");
-    assert_eq!(env.read_text_file("a/b.txt", &context).await.expect("read"), "hello");
-    env.append_file("a/b.txt", b" world", &context).await.expect("append");
-    assert_eq!(env.read_text_file("a/b.txt", &context).await.expect("read"), "hello world");
-    assert_eq!(env.read_binary_file("a/b.txt", &context).await.expect("binary"), b"hello world".to_vec());
+    env.write_file("a/b.txt", b"hello", &context)
+        .await
+        .expect("write");
+    assert_eq!(
+        env.read_text_file("a/b.txt", &context).await.expect("read"),
+        "hello"
+    );
+    env.append_file("a/b.txt", b" world", &context)
+        .await
+        .expect("append");
+    assert_eq!(
+        env.read_text_file("a/b.txt", &context).await.expect("read"),
+        "hello world"
+    );
+    assert_eq!(
+        env.read_binary_file("a/b.txt", &context)
+            .await
+            .expect("binary"),
+        b"hello world".to_vec()
+    );
 
     let entries = env.list_dir("a", &context).await.expect("list");
-    assert_eq!(entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(), vec!["b.txt"]);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["b.txt"]
+    );
 
-    env.remove("a", Some(true), Some(false), &context).await.expect("remove");
+    env.remove("a", Some(true), Some(false), &context)
+        .await
+        .expect("remove");
     assert!(!env.exists("a", &context).await.expect("exists"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -85,11 +113,15 @@ async fn expands_home_relative_paths_and_file_urls() {
         std::path::Path::new(&home).join("x").to_string_lossy()
     );
     assert_eq!(
-        env.absolute_path("file:///tmp/x", &context).await.expect("file url"),
+        env.absolute_path("file:///tmp/x", &context)
+            .await
+            .expect("file url"),
         std::path::Path::new(if cfg!(windows) { r"C:\tmp\x" } else { "/tmp/x" }).to_string_lossy()
     );
     assert_eq!(
-        env.absolute_path("rel/../other", &context).await.expect("relative"),
+        env.absolute_path("rel/../other", &context)
+            .await
+            .expect("relative"),
         dir.join("other").to_string_lossy()
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -101,8 +133,12 @@ async fn returns_file_info_for_files_directories_and_symlinks_without_following_
     let dir = unique_dir("info");
     let env = env_for(&dir);
     let context = bg_context();
-    env.write_file("file.txt", b"abc", &context).await.expect("write");
-    env.create_dir("sub", Some(true), &context).await.expect("mkdir");
+    env.write_file("file.txt", b"abc", &context)
+        .await
+        .expect("write");
+    env.create_dir("sub", Some(true), &context)
+        .await
+        .expect("mkdir");
     std::os::unix::fs::symlink(dir.join("file.txt"), dir.join("link.txt")).expect("symlink");
 
     let file = env.file_info("file.txt", &context).await.expect("file");
@@ -116,8 +152,17 @@ async fn returns_file_info_for_files_directories_and_symlinks_without_following_
     let link = env.file_info("link.txt", &context).await.expect("link");
     assert_eq!(link.kind, FileKind::Symlink);
 
-    let canonical = env.canonical_path("link.txt", &context).await.expect("canonical");
-    assert_eq!(canonical, std::fs::canonicalize(&dir).expect("canonical temp dir").join("file.txt").to_string_lossy());
+    let canonical = env
+        .canonical_path("link.txt", &context)
+        .await
+        .expect("canonical");
+    assert_eq!(
+        canonical,
+        std::fs::canonicalize(&dir)
+            .expect("canonical temp dir")
+            .join("file.txt")
+            .to_string_lossy()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -127,11 +172,16 @@ async fn lists_symlinks_as_symlinks() {
     let dir = unique_dir("listsym");
     let env = env_for(&dir);
     let context = bg_context();
-    env.write_file("target.txt", b"x", &context).await.expect("write");
+    env.write_file("target.txt", b"x", &context)
+        .await
+        .expect("write");
     std::os::unix::fs::symlink(dir.join("target.txt"), dir.join("link.txt")).expect("symlink");
 
     let entries = env.list_dir(".", &context).await.expect("list");
-    let link = entries.iter().find(|entry| entry.name == "link.txt").expect("link entry");
+    let link = entries
+        .iter()
+        .find(|entry| entry.name == "link.txt")
+        .expect("link entry");
     assert_eq!(link.kind, FileKind::Symlink);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -141,11 +191,28 @@ async fn stops_reading_text_lines_at_the_requested_limit() {
     let dir = unique_dir("maxlines");
     let env = env_for(&dir);
     let context = bg_context();
-    env.write_file("lines.txt", b"one\ntwo\nthree\n", &context).await.expect("write");
+    env.write_file("lines.txt", b"one\ntwo\nthree\n", &context)
+        .await
+        .expect("write");
 
-    assert_eq!(env.read_text_lines("lines.txt", Some(2), &context).await.expect("lines"), vec!["one", "two"]);
-    assert_eq!(env.read_text_lines("lines.txt", None, &context).await.expect("all"), vec!["one", "two", "three"]);
-    assert!(env.read_text_lines("lines.txt", Some(0), &context).await.expect("zero").is_empty());
+    assert_eq!(
+        env.read_text_lines("lines.txt", Some(2), &context)
+            .await
+            .expect("lines"),
+        vec!["one", "two"]
+    );
+    assert_eq!(
+        env.read_text_lines("lines.txt", None, &context)
+            .await
+            .expect("all"),
+        vec!["one", "two", "three"]
+    );
+    assert!(
+        env.read_text_lines("lines.txt", Some(0), &context)
+            .await
+            .expect("zero")
+            .is_empty()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -155,9 +222,15 @@ async fn returns_file_error_for_missing_paths_and_keeps_exists_false_for_missing
     let env = env_for(&dir);
     let context = bg_context();
 
-    let error = env.read_text_file("nope.txt", &context).await.expect_err("missing");
+    let error = env
+        .read_text_file("nope.txt", &context)
+        .await
+        .expect_err("missing");
     assert_eq!(error.code, FileErrorCode::NotFound);
-    assert_eq!(error.path.as_deref(), Some(dir.join("nope.txt").to_string_lossy().as_ref()));
+    assert_eq!(
+        error.path.as_deref(),
+        Some(dir.join("nope.txt").to_string_lossy().as_ref())
+    );
     assert!(!env.exists("nope.txt", &context).await.expect("exists"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -167,9 +240,14 @@ async fn returns_file_error_for_listing_non_directories() {
     let dir = unique_dir("notdir");
     let env = env_for(&dir);
     let context = bg_context();
-    env.write_file("file.txt", b"x", &context).await.expect("write");
+    env.write_file("file.txt", b"x", &context)
+        .await
+        .expect("write");
 
-    let error = env.list_dir("file.txt", &context).await.expect_err("not a dir");
+    let error = env
+        .list_dir("file.txt", &context)
+        .await
+        .expect_err("not a dir");
     assert_eq!(error.code, FileErrorCode::NotDirectory);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -180,9 +258,18 @@ async fn appends_to_new_files_and_creates_parent_directories() {
     let env = env_for(&dir);
     let context = bg_context();
 
-    env.append_file("deep/nested/file.txt", b"first", &context).await.expect("append");
-    env.append_file("deep/nested/file.txt", b"second", &context).await.expect("append");
-    assert_eq!(env.read_text_file("deep/nested/file.txt", &context).await.expect("read"), "firstsecond");
+    env.append_file("deep/nested/file.txt", b"first", &context)
+        .await
+        .expect("append");
+    env.append_file("deep/nested/file.txt", b"second", &context)
+        .await
+        .expect("append");
+    assert_eq!(
+        env.read_text_file("deep/nested/file.txt", &context)
+            .await
+            .expect("read"),
+        "firstsecond"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -191,11 +278,22 @@ async fn atomically_renames_a_file_and_replaces_the_destination() {
     let dir = unique_dir("rename");
     let env = env_for(&dir);
     let context = bg_context();
-    env.write_file("source.txt", b"source", &context).await.expect("write");
-    env.write_file("destination.txt", b"destination", &context).await.expect("write");
+    env.write_file("source.txt", b"source", &context)
+        .await
+        .expect("write");
+    env.write_file("destination.txt", b"destination", &context)
+        .await
+        .expect("write");
 
-    env.rename_file("source.txt", "destination.txt", &context).await.expect("rename");
-    assert_eq!(env.read_text_file("destination.txt", &context).await.expect("read"), "source");
+    env.rename_file("source.txt", "destination.txt", &context)
+        .await
+        .expect("rename");
+    assert_eq!(
+        env.read_text_file("destination.txt", &context)
+            .await
+            .expect("read"),
+        "source"
+    );
     assert!(!env.exists("source.txt", &context).await.expect("exists"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -206,9 +304,15 @@ async fn reports_the_source_path_when_rename_fails_because_the_source_is_missing
     let env = env_for(&dir);
     let context = bg_context();
 
-    let error = env.rename_file("missing.txt", "destination.txt", &context).await.expect_err("rename");
+    let error = env
+        .rename_file("missing.txt", "destination.txt", &context)
+        .await
+        .expect_err("rename");
     assert_eq!(error.code, FileErrorCode::NotFound);
-    assert_eq!(error.path.as_deref(), Some(dir.join("missing.txt").to_string_lossy().as_ref()));
+    assert_eq!(
+        error.path.as_deref(),
+        Some(dir.join("missing.txt").to_string_lossy().as_ref())
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -220,9 +324,18 @@ async fn creates_temporary_directories_and_files() {
 
     let temp_dir = env.create_temp_dir(None, &context).await.expect("temp dir");
     assert!(Path::new(&temp_dir).is_dir());
-    assert!(Path::new(&temp_dir).file_name().unwrap().to_string_lossy().starts_with("tmp-"));
+    assert!(
+        Path::new(&temp_dir)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("tmp-")
+    );
 
-    let temp_file = env.create_temp_file(None, None, &context).await.expect("temp file");
+    let temp_file = env
+        .create_temp_file(None, None, &context)
+        .await
+        .expect("temp file");
     assert!(Path::new(&temp_file).is_file());
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -234,18 +347,32 @@ async fn honors_create_dir_recursive_false_and_remove_recursive_force_options() 
     let env = env_for(&dir);
     let context = bg_context();
 
-    env.create_dir("a", Some(true), &context).await.expect("mkdir a");
-    let error = env.create_dir("a", Some(false), &context).await.expect_err("existing dir");
+    env.create_dir("a", Some(true), &context)
+        .await
+        .expect("mkdir a");
+    let error = env
+        .create_dir("a", Some(false), &context)
+        .await
+        .expect_err("existing dir");
     assert_eq!(error.code, FileErrorCode::Unknown);
 
-    env.create_dir("a/b", Some(true), &context).await.expect("mkdir a/b");
-    let error = env.remove("a", Some(false), Some(false), &context).await.expect_err("non-empty dir");
+    env.create_dir("a/b", Some(true), &context)
+        .await
+        .expect("mkdir a/b");
+    let error = env
+        .remove("a", Some(false), Some(false), &context)
+        .await
+        .expect_err("non-empty dir");
     assert_eq!(error.code, FileErrorCode::Unknown);
 
-    env.remove("a", Some(true), Some(false), &context).await.expect("recursive remove");
+    env.remove("a", Some(true), Some(false), &context)
+        .await
+        .expect("recursive remove");
     assert!(!env.exists("a", &context).await.expect("exists"));
 
-    env.remove("missing", Some(false), Some(true), &context).await.expect("force remove");
+    env.remove("missing", Some(false), Some(true), &context)
+        .await
+        .expect("force remove");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -257,12 +384,45 @@ async fn returns_aborted_results_for_pre_aborted_cancellable_file_operations() {
     controller.abort(Some(AbortReason::dom_default()));
     let context = with_abort_signal(controller.signal(), &bg_context());
 
-    assert_eq!(env.read_text_file("a.txt", &context).await.expect_err("read").code, FileErrorCode::Aborted);
-    assert_eq!(env.read_binary_file("a.txt", &context).await.expect_err("binary").code, FileErrorCode::Aborted);
-    assert_eq!(env.write_file("a.txt", b"x", &context).await.expect_err("write").code, FileErrorCode::Aborted);
-    assert_eq!(env.file_info("a.txt", &context).await.expect_err("info").code, FileErrorCode::Aborted);
-    assert_eq!(env.list_dir(".", &context).await.expect_err("list").code, FileErrorCode::Aborted);
-    assert_eq!(env.canonical_path("a.txt", &context).await.expect_err("canonical").code, FileErrorCode::Aborted);
+    assert_eq!(
+        env.read_text_file("a.txt", &context)
+            .await
+            .expect_err("read")
+            .code,
+        FileErrorCode::Aborted
+    );
+    assert_eq!(
+        env.read_binary_file("a.txt", &context)
+            .await
+            .expect_err("binary")
+            .code,
+        FileErrorCode::Aborted
+    );
+    assert_eq!(
+        env.write_file("a.txt", b"x", &context)
+            .await
+            .expect_err("write")
+            .code,
+        FileErrorCode::Aborted
+    );
+    assert_eq!(
+        env.file_info("a.txt", &context)
+            .await
+            .expect_err("info")
+            .code,
+        FileErrorCode::Aborted
+    );
+    assert_eq!(
+        env.list_dir(".", &context).await.expect_err("list").code,
+        FileErrorCode::Aborted
+    );
+    assert_eq!(
+        env.canonical_path("a.txt", &context)
+            .await
+            .expect_err("canonical")
+            .code,
+        FileErrorCode::Aborted
+    );
     assert_eq!(
         expect_reader_err(env.open_text_line_reader("a.txt", &context).await).code,
         FileErrorCode::Aborted
@@ -288,7 +448,13 @@ async fn executes_commands_in_cwd_with_env_overrides() {
     let result = env
         .exec(
             "printf '%s' \"$PI_T15\"",
-            Some(ShellExecOptions { env: Some(serde_json::Map::from_iter([("PI_T15".to_string(), json!("yes"))])), ..Default::default() }),
+            Some(ShellExecOptions {
+                env: Some(serde_json::Map::from_iter([(
+                    "PI_T15".to_string(),
+                    json!("yes"),
+                )])),
+                ..Default::default()
+            }),
             &context,
         )
         .await
@@ -296,7 +462,11 @@ async fn executes_commands_in_cwd_with_env_overrides() {
     assert_eq!(result.exit_code, 0);
 
     let cwd_result = env
-        .exec("printf '%s' \"$(pwd)\"", Some(ShellExecOptions::default()), &context)
+        .exec(
+            "printf '%s' \"$(pwd)\"",
+            Some(ShellExecOptions::default()),
+            &context,
+        )
         .await
         .expect("exec");
     assert_eq!(cwd_result.exit_code, 0);
@@ -310,7 +480,11 @@ async fn can_replace_rather_than_inherit_the_default_shell_environment() {
     let context = bg_context();
 
     let inherited = env
-        .exec("printf '%s' \"${PI_T15_MARKER-unset}\"", Some(ShellExecOptions::default()), &context)
+        .exec(
+            "printf '%s' \"${PI_T15_MARKER-unset}\"",
+            Some(ShellExecOptions::default()),
+            &context,
+        )
         .await
         .expect("exec");
     assert_eq!(inherited.exit_code, 0);
@@ -319,7 +493,10 @@ async fn can_replace_rather_than_inherit_the_default_shell_environment() {
         .exec(
             "printf '%s' \"${PI_T15_MARKER-unset}\"",
             Some(ShellExecOptions {
-                env: Some(serde_json::Map::from_iter([("PI_T15_MARKER".to_string(), json!("only"))])),
+                env: Some(serde_json::Map::from_iter([(
+                    "PI_T15_MARKER".to_string(),
+                    json!("only"),
+                )])),
                 inherit_env: Some(false),
                 ..Default::default()
             }),
@@ -376,17 +553,18 @@ async fn combines_stdout_and_stderr_into_one_bounded_view() {
             "printf 'out'; printf 'err' 1>&2",
             Some(ShellExecOptions {
                 capture: Some(capture_options(1024, false)),
-                on_update: Some(std::sync::Arc::new(move |update: ShellOutputUpdate, _context: Context| {
-                    let text = match &update {
-                        ShellOutputUpdate::Replace { output } => output.text.clone(),
-                        ShellOutputUpdate::Append { text, .. } | ShellOutputUpdate::Slide { text, .. } => {
-                            text.clone()
-                        }
-                        ShellOutputUpdate::Metadata { .. } => String::new(),
-                    };
-                    seen_updates.lock().expect("seen poisoned").push(text);
-                    Box::pin(async {})
-                })),
+                on_update: Some(std::sync::Arc::new(
+                    move |update: ShellOutputUpdate, _context: Context| {
+                        let text = match &update {
+                            ShellOutputUpdate::Replace { output } => output.text.clone(),
+                            ShellOutputUpdate::Append { text, .. }
+                            | ShellOutputUpdate::Slide { text, .. } => text.clone(),
+                            ShellOutputUpdate::Metadata { .. } => String::new(),
+                        };
+                        seen_updates.lock().expect("seen poisoned").push(text);
+                        Box::pin(async { Ok(()) })
+                    },
+                )),
                 ..Default::default()
             }),
             &context,
@@ -407,7 +585,10 @@ async fn reports_a_missing_working_directory_before_spawning() {
     let error = env
         .exec(
             "printf 'x'",
-            Some(ShellExecOptions { cwd: Some("nope".to_string()), ..Default::default() }),
+            Some(ShellExecOptions {
+                cwd: Some("nope".to_string()),
+                ..Default::default()
+            }),
             &context,
         )
         .await
@@ -423,7 +604,10 @@ async fn returns_non_zero_command_exit_codes_as_successful_execution_results() {
     let env = env_for(&dir);
     let context = bg_context();
 
-    let result = env.exec("exit 7", Some(ShellExecOptions::default()), &context).await.expect("exec");
+    let result = env
+        .exec("exit 7", Some(ShellExecOptions::default()), &context)
+        .await
+        .expect("exec");
     assert_eq!(result.exit_code, 7);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -435,14 +619,28 @@ async fn returns_timeout_errors_for_commands_exceeding_the_timeout() {
     let context = bg_context();
 
     let error = env
-        .exec("sleep 30", Some(ShellExecOptions { timeout: Some(0.2), ..Default::default() }), &context)
+        .exec(
+            "sleep 30",
+            Some(ShellExecOptions {
+                timeout: Some(0.2),
+                ..Default::default()
+            }),
+            &context,
+        )
         .await
         .expect_err("timeout");
     assert_eq!(error.code, ExecutionErrorCode::Timeout);
     assert_eq!(error.message, "timeout:0.2");
 
     let invalid = env
-        .exec("true", Some(ShellExecOptions { timeout: Some(0.0), ..Default::default() }), &context)
+        .exec(
+            "true",
+            Some(ShellExecOptions {
+                timeout: Some(0.0),
+                ..Default::default()
+            }),
+            &context,
+        )
         .await
         .expect_err("invalid timeout");
     assert_eq!(invalid.code, ExecutionErrorCode::Timeout);
@@ -456,9 +654,16 @@ async fn returns_shell_unavailable_and_spawn_errors() {
     let env = env_for(&dir).with_shell_path(Some("/nonexistent/bash".to_string()));
     let context = bg_context();
 
-    let error = env.exec("printf 'x'", Some(ShellExecOptions::default()), &context).await.expect_err("shell");
+    let error = env
+        .exec("printf 'x'", Some(ShellExecOptions::default()), &context)
+        .await
+        .expect_err("shell");
     assert_eq!(error.code, ExecutionErrorCode::ShellUnavailable);
-    assert!(error.message.contains("Custom shell path not found: /nonexistent/bash"));
+    assert!(
+        error
+            .message
+            .contains("Custom shell path not found: /nonexistent/bash")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -470,7 +675,10 @@ async fn returns_an_aborted_result_for_aborted_commands() {
     controller.abort(Some(AbortReason::dom_default()));
     let context = with_abort_signal(controller.signal(), &bg_context());
 
-    let error = env.exec("printf 'x'", Some(ShellExecOptions::default()), &context).await.expect_err("aborted");
+    let error = env
+        .exec("printf 'x'", Some(ShellExecOptions::default()), &context)
+        .await
+        .expect_err("aborted");
     assert_eq!(error.code, ExecutionErrorCode::Aborted);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -484,7 +692,10 @@ async fn does_not_create_a_spill_before_bounded_output_crosses_its_limits() {
     let result = env
         .exec(
             "printf 'small'",
-            Some(ShellExecOptions { capture: Some(capture_options(1024, true)), ..Default::default() }),
+            Some(ShellExecOptions {
+                capture: Some(capture_options(1024, true)),
+                ..Default::default()
+            }),
             &context,
         )
         .await
@@ -503,7 +714,10 @@ async fn captures_large_shell_output_to_a_full_output_file() {
     let result = env
         .exec(
             "printf 'x%.0s' $(seq 1 4000)",
-            Some(ShellExecOptions { capture: Some(capture_options(64, true)), ..Default::default() }),
+            Some(ShellExecOptions {
+                capture: Some(capture_options(64, true)),
+                ..Default::default()
+            }),
             &context,
         )
         .await
@@ -527,7 +741,10 @@ async fn preserves_exact_raw_bytes_in_the_spill_while_decoding_a_bounded_text_vi
     let result = env
         .exec(
             "printf 'héllo wörld '; printf 'x%.0s' $(seq 1 2000)",
-            Some(ShellExecOptions { capture: Some(capture_options(32, true)), ..Default::default() }),
+            Some(ShellExecOptions {
+                capture: Some(capture_options(32, true)),
+                ..Default::default()
+            }),
             &context,
         )
         .await
@@ -547,14 +764,35 @@ async fn decodes_unicode_blank_lines_and_a_torn_final_line() {
     let dir = unique_dir("tlr");
     let env = env_for(&dir);
     let context = bg_context();
-    env.write_file("lines.txt", "α\n\nb😀".as_bytes(), &context).await.expect("write");
+    env.write_file("lines.txt", "α\n\nb😀".as_bytes(), &context)
+        .await
+        .expect("write");
 
-    let reader = env.open_text_line_reader("lines.txt", &context).await.expect("open");
-    assert_eq!(reader.read_line(&context).await.expect("line").expect("some").text, "α");
-    let blank = reader.read_line(&context).await.expect("line").expect("some");
+    let reader = env
+        .open_text_line_reader("lines.txt", &context)
+        .await
+        .expect("open");
+    assert_eq!(
+        reader
+            .read_line(&context)
+            .await
+            .expect("line")
+            .expect("some")
+            .text,
+        "α"
+    );
+    let blank = reader
+        .read_line(&context)
+        .await
+        .expect("line")
+        .expect("some");
     assert_eq!(blank.text, "");
     assert!(blank.terminated);
-    let torn = reader.read_line(&context).await.expect("line").expect("some");
+    let torn = reader
+        .read_line(&context)
+        .await
+        .expect("line")
+        .expect("some");
     assert_eq!(torn.text, "b😀");
     assert!(!torn.terminated);
     assert!(reader.read_line(&context).await.expect("line").is_none());
@@ -567,9 +805,14 @@ async fn reads_an_empty_file() {
     let dir = unique_dir("tlrempty");
     let env = env_for(&dir);
     let context = bg_context();
-    env.write_file("empty.txt", b"", &context).await.expect("write");
+    env.write_file("empty.txt", b"", &context)
+        .await
+        .expect("write");
 
-    let reader = env.open_text_line_reader("empty.txt", &context).await.expect("open");
+    let reader = env
+        .open_text_line_reader("empty.txt", &context)
+        .await
+        .expect("open");
     assert!(reader.read_line(&context).await.expect("line").is_none());
     reader.close(&context).await;
     let _ = std::fs::remove_dir_all(&dir);
@@ -584,13 +827,26 @@ async fn decodes_multibyte_characters_split_across_64_kib_chunks() {
     content.push('😀');
     content.push('\n');
     content.push_str("tail\n");
-    env.write_file("big.txt", content.as_bytes(), &context).await.expect("write");
+    env.write_file("big.txt", content.as_bytes(), &context)
+        .await
+        .expect("write");
 
-    let reader = env.open_text_line_reader("big.txt", &context).await.expect("open");
-    let first = reader.read_line(&context).await.expect("line").expect("some");
+    let reader = env
+        .open_text_line_reader("big.txt", &context)
+        .await
+        .expect("open");
+    let first = reader
+        .read_line(&context)
+        .await
+        .expect("line")
+        .expect("some");
     assert!(first.text.ends_with('😀'));
     assert!(first.terminated);
-    let second = reader.read_line(&context).await.expect("line").expect("some");
+    let second = reader
+        .read_line(&context)
+        .await
+        .expect("line")
+        .expect("some");
     assert_eq!(second.text, "tail");
     reader.close(&context).await;
     let _ = std::fs::remove_dir_all(&dir);
@@ -600,7 +856,9 @@ async fn decodes_multibyte_characters_split_across_64_kib_chunks() {
 async fn rejects_an_open_with_a_pre_aborted_context() {
     let dir = unique_dir("tlrabort");
     let env = env_for(&dir);
-    env.write_file("a.txt", b"x\n", &bg_context()).await.expect("write");
+    env.write_file("a.txt", b"x\n", &bg_context())
+        .await
+        .expect("write");
     let controller = AbortController::new();
     controller.abort(Some(AbortReason::dom_default()));
     let context = with_abort_signal(controller.signal(), &bg_context());
@@ -614,11 +872,24 @@ async fn rejects_an_open_with_a_pre_aborted_context() {
 async fn closes_idempotently_even_with_an_aborted_context_and_rejects_later_reads() {
     let dir = unique_dir("tlrclose");
     let env = env_for(&dir);
-    env.write_file("a.txt", b"one\ntwo\n", &bg_context()).await.expect("write");
+    env.write_file("a.txt", b"one\ntwo\n", &bg_context())
+        .await
+        .expect("write");
     let context = bg_context();
 
-    let reader = env.open_text_line_reader("a.txt", &context).await.expect("open");
-    assert_eq!(reader.read_line(&context).await.expect("line").expect("some").text, "one");
+    let reader = env
+        .open_text_line_reader("a.txt", &context)
+        .await
+        .expect("open");
+    assert_eq!(
+        reader
+            .read_line(&context)
+            .await
+            .expect("line")
+            .expect("some")
+            .text,
+        "one"
+    );
     reader.close(&context).await;
     reader.close(&context).await;
 

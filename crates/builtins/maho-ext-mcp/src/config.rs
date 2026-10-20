@@ -49,7 +49,7 @@ fn validate_schema_value(raw:&Value,path:&str)->Result<(),McpConfigValidationErr
                             "connectTimeoutMs"|"requestTimeoutMs"|"startupTimeoutMs"|"idleTimeoutMin"=>check_type(value,&path,"number")?,
                             "args"|"includeTools"|"excludeTools"=>check_strings(value,&path)?,
                             "env"|"headers"=>{let map=value.as_object().ok_or_else(||schema_error(&path,"must be object"))?;for (name,value) in map {check_type(value,&format!("{path}.{name}"),"string")?;}}
-                            "type"=>check_literals(value,&path,&["stdio","http"] )?,
+                            "type"=>check_literals(value,&path,&["stdio","http","sse"] )?,
                             "lifecycle"=>check_literals(value,&path,&["lazy","eager","keep-alive"] )?,
                             "exposure"=>check_literals(value,&path,&["auto","direct","search","proxy"] )?,
                             "logLevel"=>check_literals(value,&path,&["debug","info","notice","warning","error","critical","alert","emergency"] )?,

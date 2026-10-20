@@ -1,14 +1,15 @@
 //! Port of the pure-helper cases of senpi packages/agent/test/harness/compaction.test.ts.
 
 use maho_agent::harness::compaction::compaction::{
-    CompactionSettings, calculate_context_tokens, estimate_context_tokens, estimate_tokens, find_cut_point,
-    find_turn_start_index, get_last_assistant_usage, prepare_compaction, serialize_conversation, should_compact,
-    DEFAULT_COMPACTION_SETTINGS,
+    CompactionSettings, DEFAULT_COMPACTION_SETTINGS, calculate_context_tokens,
+    estimate_context_tokens, estimate_tokens, find_cut_point, find_turn_start_index,
+    get_last_assistant_usage, prepare_compaction, serialize_conversation, should_compact,
 };
 use maho_agent::harness::session::types::{Entry, EntryKind, NewEntry};
 use maho_agent::types::AgentMessage;
 use maho_ai::types::{
-    Api, AssistantMessage, ContentBlock, Message, ProviderId, StopReason, Usage, UsageCost, UserContent, UserMessage,
+    Api, AssistantMessage, ContentBlock, Message, ProviderId, StopReason, Usage, UsageCost,
+    UserContent, UserMessage,
 };
 
 fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Usage {
@@ -39,6 +40,8 @@ fn user_message(text: &str) -> AgentMessage {
 
 fn assistant_message(text: &str, usage: Usage) -> AgentMessage {
     AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage {
+        thinking_level: None,
+        provider_diagnostic: None,
         content: vec![ContentBlock::text(text)],
         api: Api::from("anthropic-messages"),
         provider: ProviderId::from("anthropic"),
@@ -52,6 +55,7 @@ fn assistant_message(text: &str, usage: Usage) -> AgentMessage {
         stop_details: None,
         deferred: None,
         error_message: None,
+        error_cause: None,
         abort_source: None,
         raw_stop_reason: None,
         end_turn: None,
@@ -145,7 +149,10 @@ fn finds_a_cut_point_based_on_token_differences() {
     }
 
     let result = find_cut_point(&entries, 0, entries.len(), 2500);
-    assert_eq!(entries[result.first_kept_entry_index].entry_type(), maho_agent::harness::session::types::EntryType::Message);
+    assert_eq!(
+        entries[result.first_kept_entry_index].entry_type(),
+        maho_agent::harness::session::types::EntryType::Message
+    );
 }
 
 #[test]
@@ -171,8 +178,14 @@ fn covers_cut_point_and_turn_start_edge_cases() {
             from_hook: false,
         },
     };
-    assert_eq!(find_turn_start_index(&[first_custom.clone(), branch_summary.clone()], 1, 0), 1);
-    assert_eq!(find_turn_start_index(&[first_custom.clone(), second_custom_for_turn], 1, 0), -1);
+    assert_eq!(
+        find_turn_start_index(&[first_custom.clone(), branch_summary.clone()], 1, 0),
+        1
+    );
+    assert_eq!(
+        find_turn_start_index(&[first_custom.clone(), second_custom_for_turn], 1, 0),
+        -1
+    );
 
     let result = find_cut_point(&[first_custom, branch_summary], 0, 2, 1);
     assert_eq!(result.first_kept_entry_index, 0);
@@ -187,6 +200,7 @@ fn covers_cut_point_and_turn_start_edge_cases() {
             details: None,
             usage: None,
             added_tool_names: None,
+            nested_calls: None,
             is_error: false,
             timestamp: 1,
         })),
@@ -212,7 +226,12 @@ fn covers_cut_point_and_turn_start_edge_cases() {
             from_hook: false,
         },
     };
-    let assistant = message_entry("assistant", Some("compaction"), assistant_message("assistant", usage(0, 100, 0, 0)), 3);
+    let assistant = message_entry(
+        "assistant",
+        Some("compaction"),
+        assistant_message("assistant", usage(0, 100, 0, 0)),
+        3,
+    );
     assert_eq!(
         find_cut_point(&[user, compaction, assistant], 0, 3, 1).first_kept_entry_index,
         2
@@ -227,12 +246,14 @@ fn estimates_tokens_for_every_message_kind() {
     let assistant = assistant_message("12345678", usage(1, 1, 0, 0));
     assert_eq!(estimate_tokens(&assistant), 2);
 
-    let branch_summary = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::BranchSummary(
-        maho_agent::harness::messages::create_branch_summary_message("12345678", None, 1),
-    ));
-    let compaction_summary = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::CompactionSummary(
-        maho_agent::harness::messages::create_compaction_summary_message("12345678", 1, 1),
-    ));
+    let branch_summary =
+        AgentMessage::Custom(maho_agent::types::CustomAgentMessage::BranchSummary(
+            maho_agent::harness::messages::create_branch_summary_message("12345678", None, 1),
+        ));
+    let compaction_summary =
+        AgentMessage::Custom(maho_agent::types::CustomAgentMessage::CompactionSummary(
+            maho_agent::harness::messages::create_compaction_summary_message("12345678", 1, 1),
+        ));
     assert!(estimate_tokens(&branch_summary) > 0);
     assert!(estimate_tokens(&compaction_summary) > 0);
 }
@@ -241,7 +262,12 @@ fn estimates_tokens_for_every_message_kind() {
 fn returns_usage_from_the_last_valid_assistant_message() {
     let entries = vec![
         message_entry("u1", None, user_message("one"), 1),
-        message_entry("a1", Some("u1"), assistant_message("one", usage(1, 2, 3, 4)), 2),
+        message_entry(
+            "a1",
+            Some("u1"),
+            assistant_message("one", usage(1, 2, 3, 4)),
+            2,
+        ),
     ];
     assert_eq!(get_last_assistant_usage(&entries), Some(usage(1, 2, 3, 4)));
 
@@ -279,10 +305,12 @@ fn serializes_a_conversation_for_summarization() {
             content: UserContent::Blocks(vec![ContentBlock::text("hello")]),
             timestamp: 1,
         }),
-        Message::Assistant(Box::new(match assistant_message("world", usage(1, 1, 0, 0)) {
-            AgentMessage::Llm(Message::Assistant(assistant)) => *assistant,
-            _ => unreachable!(),
-        })),
+        Message::Assistant(Box::new(
+            match assistant_message("world", usage(1, 1, 0, 0)) {
+                AgentMessage::Llm(Message::Assistant(assistant)) => *assistant,
+                _ => unreachable!(),
+            },
+        )),
     ];
     let serialized = serialize_conversation(&messages);
     assert_eq!(serialized, "[User]: hello\n\n[Assistant]: world");
@@ -290,7 +318,11 @@ fn serializes_a_conversation_for_summarization() {
 
 #[test]
 fn prepare_compaction_returns_none_for_empty_paths_and_trailing_compactions() {
-    assert!(prepare_compaction(&[], DEFAULT_COMPACTION_SETTINGS).expect("prepare").is_none());
+    assert!(
+        prepare_compaction(&[], DEFAULT_COMPACTION_SETTINGS)
+            .expect("prepare")
+            .is_none()
+    );
 
     let entries = vec![Entry {
         id: "c1".to_owned(),
@@ -306,7 +338,11 @@ fn prepare_compaction_returns_none_for_empty_paths_and_trailing_compactions() {
             from_hook: false,
         },
     }];
-    assert!(prepare_compaction(&entries, DEFAULT_COMPACTION_SETTINGS).expect("prepare").is_none());
+    assert!(
+        prepare_compaction(&entries, DEFAULT_COMPACTION_SETTINGS)
+            .expect("prepare")
+            .is_none()
+    );
 }
 
 #[test]

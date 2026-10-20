@@ -12,13 +12,17 @@ use super::types::{
     TombstoneResult, resolve_state_dir,
 };
 use crate::state::{
-    TaskId, TaskRecord, TaskTransition, TaskTransitionResult, parse_task_id, transition_task_record,
+    TaskId, TaskRecord, TaskStatus, TaskTransition, TaskTransitionResult, parse_task_id,
+    transition_task_record,
 };
 
 const TOMBSTONE_SUFFIX: &str = ".json.expunging";
 
 /// The post-commit observer every manager/lifecycle clone shares.
 type MutationListener = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// Committed record and its status read under the same record lock, delivered after unlocking.
+pub type WriteListener = std::sync::Arc<dyn Fn(&TaskRecord, Option<TaskStatus>) + Send + Sync>;
 
 /// A parsed record plus the length and hash of the file text it was parsed from. Reuse is keyed
 /// on content, not metadata: a same-length rewrite inside one mtime tick (or onto a reused inode)
@@ -51,12 +55,15 @@ type ListCache = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathB
 pub struct TaskRecordStore {
     state_dir: PathBuf,
     mutation_listener: std::sync::Arc<std::sync::Mutex<Option<MutationListener>>>,
+    write_listener: std::sync::Arc<std::sync::Mutex<Option<WriteListener>>>,
     list_cache: ListCache,
 }
 
 impl std::fmt::Debug for TaskRecordStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TaskRecordStore").field("state_dir", &self.state_dir).finish_non_exhaustive()
+        f.debug_struct("TaskRecordStore")
+            .field("state_dir", &self.state_dir)
+            .finish_non_exhaustive()
     }
 }
 
@@ -70,6 +77,7 @@ impl TaskRecordStore {
         Self {
             state_dir: resolve_state_dir(config),
             mutation_listener: Default::default(),
+            write_listener: Default::default(),
             list_cache: Default::default(),
         }
     }
@@ -80,12 +88,45 @@ impl TaskRecordStore {
 
     /// All manager/lifecycle clones share the post-commit observer. Clear it during shutdown.
     pub fn set_mutation_listener(&self, listener: Option<MutationListener>) {
-        *self.mutation_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
+        *self
+            .mutation_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
+    }
+
+    /// Independent of the payload-free mutation observer; shared by all store clones.
+    pub fn set_write_listener(&self, listener: Option<WriteListener>) {
+        *self
+            .write_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
+    }
+
+    fn notify_write(&self, record: &TaskRecord, previous_status: Option<TaskStatus>) {
+        let listener = self
+            .write_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener
+            && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                listener(record, previous_status)
+            }))
+            .is_err()
+        {
+            eprintln!("task write observer panicked after commit");
+        }
     }
 
     fn notify_mutation(&self) {
-        let listener = self.mutation_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        if let Some(listener) = listener { listener(); }
+        let listener = self
+            .mutation_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener {
+            listener();
+        }
     }
 
     fn tasks_dir(&self) -> PathBuf {
@@ -103,7 +144,10 @@ impl TaskRecordStore {
 
     /// Creates a new record file; an existing file for the id is a [`StoreError::Collision`].
     pub fn save(&self, record: &TaskRecord) -> Result<(), StoreError> {
-        self.write_record(record, WriteMode::Create)?;
+        let path = self.task_path(parse_task_id(&record.task_id)?);
+        std::fs::create_dir_all(self.tasks_dir())?;
+        with_task_record_lock(&path, || self.write_record(record, WriteMode::Create))?;
+        self.notify_write(record, None);
         self.notify_mutation();
         Ok(())
     }
@@ -111,7 +155,16 @@ impl TaskRecordStore {
     /// Manager-owned overwrite for bookkeeping outside the transition table.
     pub fn replace(&self, record: &TaskRecord) -> Result<(), StoreError> {
         let path = self.task_path(parse_task_id(&record.task_id)?);
-        with_task_record_lock(&path, || self.write_record(record, WriteMode::Replace))?;
+        let previous_status = with_task_record_lock(&path, || {
+            // An unreadable old record must not prevent a manager-owned replacement.
+            let previous = read_record(&path, &mut Vec::new())
+                .ok()
+                .flatten()
+                .map(|old| old.status);
+            self.write_record(record, WriteMode::Replace)?;
+            Ok(previous)
+        })?;
+        self.notify_write(record, previous_status);
         self.notify_mutation();
         Ok(())
     }
@@ -124,16 +177,20 @@ impl TaskRecordStore {
         mutation: impl FnOnce(&TaskRecord) -> TaskRecord,
     ) -> Result<Option<TaskRecord>, StoreError> {
         let path = self.task_path(parse_task_id(task_id)?);
-        let result = with_task_record_lock(&path, || {
+        let (result, previous_status, written) = with_task_record_lock(&path, || {
             let Some(current) = read_record(&path, &mut Vec::new())? else {
-                return Ok(None);
+                return Ok((None, None, false));
             };
             let next = mutation(&current);
-            if next != current {
+            let written = next != current;
+            if written {
                 self.write_record(&next, WriteMode::Replace)?;
             }
-            Ok(Some(next))
+            Ok((Some(next), Some(current.status), written))
         })?;
+        if written && let Some(record) = &result {
+            self.notify_write(record, previous_status);
+        }
         self.notify_mutation();
         Ok(result)
     }
@@ -167,7 +224,10 @@ impl TaskRecordStore {
                 Err(error) => return Err(error.into()),
             };
             {
-                let cache = self.list_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let cache = self
+                    .list_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(cached) = cache.get(&path).filter(|cached| cached.matches(&text)) {
                     records.push(cached.record.clone());
                     diagnostics.extend(cached.warnings.iter().map(|message| {
@@ -228,7 +288,10 @@ impl TaskRecordStore {
                 Err(error) => return Err(error.into()),
             };
             {
-                let cache = self.list_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let cache = self
+                    .list_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(cached) = cache.get(&path).filter(|cached| cached.matches(&text)) {
                     if pred(&cached.record) {
                         return Ok(Some(cached.record.clone()));
@@ -256,7 +319,10 @@ impl TaskRecordStore {
         let parsed = parse_record_text(path, &text, warnings);
         let (len, hash) = (text.len(), text_hash(&text));
         drop(text);
-        let mut cache = self.list_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self
+            .list_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &parsed {
             Ok(Some(record)) => {
                 cache.insert(
@@ -291,7 +357,9 @@ impl TaskRecordStore {
     ) -> Result<TaskTransitionResult, StoreError> {
         self.transition_expected_epoch(task_id, transition, None)
             .and_then(|result| {
-                result.ok_or_else(|| StoreError::Parse("unfenced transition was unexpectedly stale".to_string()))
+                result.ok_or_else(|| {
+                    StoreError::Parse("unfenced transition was unexpectedly stale".to_string())
+                })
             })
     }
 
@@ -303,11 +371,12 @@ impl TaskRecordStore {
     ) -> Result<Option<TaskTransitionResult>, StoreError> {
         let parsed = parse_task_id(task_id)?;
         let path = self.task_path(parsed);
-        let result = with_task_record_lock(&path, || {
+        let (result, previous_status) = with_task_record_lock(&path, || {
             let record = read_record(&path, &mut Vec::new())?
                 .ok_or_else(|| StoreError::NotFound(task_id.to_string()))?;
-            if expected_run_epoch.is_some_and(|expected| record.notification.run_epoch != expected) {
-                return Ok(None);
+            if expected_run_epoch.is_some_and(|expected| record.notification.run_epoch != expected)
+            {
+                return Ok((None, Some(record.status)));
             }
             let result = transition_task_record(&record, transition);
             let payload = serde_json::to_value(&result.audit).unwrap_or(Value::Null);
@@ -322,8 +391,13 @@ impl TaskRecordStore {
             if result.applied {
                 self.write_record(&result.record, WriteMode::Replace)?;
             }
-            Ok(Some(result))
+            Ok((Some(result), Some(record.status)))
         })?;
+        if let Some(result) = &result
+            && result.applied
+        {
+            self.notify_write(&result.record, previous_status);
+        }
         if result.is_some() {
             self.notify_mutation();
         }
@@ -358,7 +432,9 @@ impl TaskRecordStore {
             std::fs::rename(&path, self.tombstone_path(parsed))?;
             Ok(TombstoneResult::Tombstoned(Box::new(current)))
         })?;
-        if matches!(result, TombstoneResult::Tombstoned(_)) { self.notify_mutation(); }
+        if matches!(result, TombstoneResult::Tombstoned(_)) {
+            self.notify_mutation();
+        }
         Ok(result)
     }
 
@@ -439,10 +515,117 @@ fn read_record(path: &Path, warnings: &mut Vec<String>) -> Result<Option<TaskRec
     parse_record_text(path, &text, warnings)
 }
 
-fn parse_record_text(path: &Path, text: &str, warnings: &mut Vec<String>) -> Result<Option<TaskRecord>, StoreError> {
+fn parse_record_text(
+    path: &Path,
+    text: &str,
+    warnings: &mut Vec<String>,
+) -> Result<Option<TaskRecord>, StoreError> {
     let value: Value = serde_json::from_str(text)
         .map_err(|error| StoreError::Parse(format!("JSON Parse error: {error}")))?;
     parse_task_record(&value, &path.to_string_lossy(), warnings)
         .map(Some)
         .map_err(StoreError::Parse)
+}
+
+#[cfg(test)]
+mod write_observer_tests {
+    use super::*;
+    use crate::state::{TaskRecordInput, create_task_record};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn observes_committed_status_and_preserves_mutation_callback_after_unlock() {
+        // Given
+        let root = tempfile::tempdir().expect("state");
+        let store = TaskRecordStore::new(&StateDirConfig {
+            project_dir: root.path().into(),
+            task_state_dir: None,
+        });
+        let mut record = create_task_record(
+            TaskRecordInput {
+                execution_mode: "in-process".into(),
+                ..Default::default()
+            },
+            Some(0),
+        )
+        .expect("record");
+        store.save(&record).expect("save");
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let output = observed.clone();
+        let reader = store.clone();
+        store.set_write_listener(Some(Arc::new(move |record, previous| {
+            assert_eq!(
+                reader.load(&record.task_id).expect("read"),
+                Some(record.clone())
+            );
+            assert!(
+                !reader
+                    .task_path(parse_task_id(&record.task_id).expect("id"))
+                    .with_extension("json.lock")
+                    .exists()
+            );
+            output
+                .lock()
+                .expect("edges")
+                .push((previous, record.status));
+        })));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = calls.clone();
+        store.set_mutation_listener(Some(Arc::new(move || {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+        record.status = TaskStatus::Lost;
+        // When
+        store.clone().replace(&record).expect("replace");
+        // Then
+        assert_eq!(
+            *observed.lock().expect("edges"),
+            vec![(Some(TaskStatus::Pending), TaskStatus::Lost)]
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn does_not_observe_failed_stale_or_unchanged_writes() {
+        // Given
+        let root = tempfile::tempdir().expect("state");
+        let store = TaskRecordStore::new(&StateDirConfig {
+            project_dir: root.path().into(),
+            task_state_dir: None,
+        });
+        let record = create_task_record(
+            TaskRecordInput {
+                execution_mode: "in-process".into(),
+                ..Default::default()
+            },
+            Some(0),
+        )
+        .expect("record");
+        store.save(&record).expect("save");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = calls.clone();
+        store.set_write_listener(Some(Arc::new(move |_, _| {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+        // When
+        assert!(store.save(&record).is_err());
+        store
+            .mutate(&record.task_id, Clone::clone)
+            .expect("unchanged");
+        assert!(
+            store
+                .transition_expected_epoch(
+                    &record.task_id,
+                    &TaskTransition::Lose {
+                        timestamp: record.updated_at.clone(),
+                        error_message: "lost".into()
+                    },
+                    Some(1)
+                )
+                .expect("stale")
+                .is_none()
+        );
+        // Then
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
 }

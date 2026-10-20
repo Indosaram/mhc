@@ -56,9 +56,14 @@ impl StreamMessageProjection {
         options: StreamMessageProjectionOptions,
     ) -> Self {
         let projected_diagnostics = Vec::new();
-        let message =
-            clone_assistant_message_metadata(&source, Vec::new(), &projected_diagnostics, options.preserve_source_metadata);
-        let thinking = StreamThinkingProjection::new(stream.clone(), options.preserve_source_metadata);
+        let message = clone_assistant_message_metadata(
+            &source,
+            Vec::new(),
+            &projected_diagnostics,
+            options.preserve_source_metadata,
+        );
+        let thinking =
+            StreamThinkingProjection::new(stream.clone(), options.preserve_source_metadata);
         Self {
             message,
             stream,
@@ -78,45 +83,84 @@ impl StreamMessageProjection {
         // Only metadata is read back from `self.source` (by `append_diagnostic`), so keep it
         // without the content blocks instead of deep-cloning the partial on every delta.
         self.source = clone_message_with_content(source, Vec::new());
-        sync_assistant_message_metadata(&mut self.message, source, &self.projected_diagnostics, self.preserve_source_metadata);
+        sync_assistant_message_metadata(
+            &mut self.message,
+            source,
+            &self.projected_diagnostics,
+            self.preserve_source_metadata,
+        );
     }
 
     pub fn append_diagnostic(&mut self, diagnostic: AssistantMessageDiagnostic) {
         self.projected_diagnostics.push(diagnostic);
-        sync_assistant_message_metadata(&mut self.message, &self.source, &self.projected_diagnostics, self.preserve_source_metadata);
+        sync_assistant_message_metadata(
+            &mut self.message,
+            &self.source,
+            &self.projected_diagnostics,
+            self.preserve_source_metadata,
+        );
     }
 
-    pub fn start_text(&mut self, content_index: usize, source_block: Option<&ContentBlock>) -> usize {
+    pub fn start_text(
+        &mut self,
+        content_index: usize,
+        source_block: Option<&ContentBlock>,
+    ) -> usize {
         self.current_inner_text_index = Some(content_index);
         let outer_index = self.message.content.len();
         if self.preserve_source_metadata {
             let block = match source_block {
-                Some(ContentBlock::Text(text)) => TextContent { text: String::new(), ..text.clone() },
+                Some(ContentBlock::Text(text)) => TextContent {
+                    text: String::new(),
+                    ..text.clone()
+                },
                 _ => TextContent::default(),
             };
             self.message.content.push(ContentBlock::Text(block));
-            self.text_block_index_by_inner_index.insert(content_index, Some(outer_index));
-            self.last_text_block_index_by_inner_index.insert(content_index, outer_index);
+            self.text_block_index_by_inner_index
+                .insert(content_index, Some(outer_index));
+            self.last_text_block_index_by_inner_index
+                .insert(content_index, outer_index);
         } else {
-            self.text_block_index_by_inner_index.insert(content_index, None);
+            self.text_block_index_by_inner_index
+                .insert(content_index, None);
         }
-        self.stream.push(AssistantMessageEvent::TextStart { content_index: outer_index, partial: self.message.clone() });
+        self.stream.push(AssistantMessageEvent::TextStart {
+            content_index: outer_index,
+            partial: self.message.clone(),
+        });
         outer_index
     }
 
     pub fn start_thinking(&mut self, content_index: usize, source: &AssistantMessage) -> usize {
-        self.thinking.start(&mut self.message, content_index, source)
+        self.thinking
+            .start(&mut self.message, content_index, source)
     }
 
-    pub fn project_thinking_delta(&mut self, content_index: usize, delta: &str, source: &AssistantMessage) {
-        self.thinking.delta(&mut self.message, content_index, delta, source);
+    pub fn project_thinking_delta(
+        &mut self,
+        content_index: usize,
+        delta: &str,
+        source: &AssistantMessage,
+    ) {
+        self.thinking
+            .delta(&mut self.message, content_index, delta, source);
     }
 
-    pub fn finish_thinking(&mut self, content_index: usize, content: &str, source: &AssistantMessage) {
-        self.thinking.end(&mut self.message, content_index, content, source);
+    pub fn finish_thinking(
+        &mut self,
+        content_index: usize,
+        content: &str,
+        source: &AssistantMessage,
+    ) {
+        self.thinking
+            .end(&mut self.message, content_index, content, source);
     }
 
-    pub fn project_parser_events(&mut self, events: &[StreamParserEvent]) -> ParserProjectionResult {
+    pub fn project_parser_events(
+        &mut self,
+        events: &[StreamParserEvent],
+    ) -> ParserProjectionResult {
         let mut saw_tool_call = false;
         let mut completed_tool_calls = Vec::new();
         for event in events {
@@ -126,21 +170,39 @@ impl StreamMessageProjection {
                     saw_tool_call = true;
                     self.start_tool_call(*index, name, id);
                 }
-                StreamParserEvent::ToolcallDelta { index, arguments_delta } => {
+                StreamParserEvent::ToolcallDelta {
+                    index,
+                    arguments_delta,
+                } => {
                     saw_tool_call = true;
                     self.update_tool_call(*index, arguments_delta);
                 }
-                StreamParserEvent::ToolcallEnd { index, name, id, arguments, incomplete, error_message } => {
+                StreamParserEvent::ToolcallEnd {
+                    index,
+                    name,
+                    id,
+                    arguments,
+                    incomplete,
+                    error_message,
+                } => {
                     saw_tool_call = true;
-                    if let Some(completed) =
-                        self.end_tool_call(*index, name, id, arguments.clone(), *incomplete, error_message.clone())
-                    {
+                    if let Some(completed) = self.end_tool_call(
+                        *index,
+                        name,
+                        id,
+                        arguments.clone(),
+                        *incomplete,
+                        error_message.clone(),
+                    ) {
                         completed_tool_calls.push(completed);
                     }
                 }
             }
         }
-        ParserProjectionResult { saw_tool_call, completed_tool_calls }
+        ParserProjectionResult {
+            saw_tool_call,
+            completed_tool_calls,
+        }
     }
 
     pub fn finish_text(&mut self) {
@@ -151,7 +213,9 @@ impl StreamMessageProjection {
                 .flatten()
                 .or_else(|| {
                     if self.preserve_source_metadata {
-                        self.last_text_block_index_by_inner_index.get(&inner).copied()
+                        self.last_text_block_index_by_inner_index
+                            .get(&inner)
+                            .copied()
                     } else {
                         None
                     }
@@ -177,12 +241,15 @@ impl StreamMessageProjection {
             .iter()
             .enumerate()
             .filter_map(|(index, block)| {
-                let is_partial = matches!(block, ContentBlock::ToolCall(_)) && self.partial_tool_calls.contains_key(&index);
+                let is_partial = matches!(block, ContentBlock::ToolCall(_))
+                    && self.partial_tool_calls.contains_key(&index);
                 is_partial.then_some(index)
             })
             .collect();
         for content_index in dangling {
-            let Some(ContentBlock::ToolCall(existing)) = self.message.content.get(content_index).cloned() else {
+            let Some(ContentBlock::ToolCall(existing)) =
+                self.message.content.get(content_index).cloned()
+            else {
                 continue;
             };
             let final_tool_call = ToolCall {
@@ -213,7 +280,11 @@ impl StreamMessageProjection {
         }
     }
 
-    pub fn finalize(&self, done_message: &AssistantMessage, saw_tool_call: bool) -> AssistantMessage {
+    pub fn finalize(
+        &self,
+        done_message: &AssistantMessage,
+        saw_tool_call: bool,
+    ) -> AssistantMessage {
         let mut final_message = clone_assistant_message_metadata(
             done_message,
             self.message.content.clone(),
@@ -221,7 +292,10 @@ impl StreamMessageProjection {
             self.preserve_source_metadata,
         );
         if (saw_tool_call || self.has_finalized_tool_call_content())
-            && matches!(final_message.stop_reason, crate::types::StopReason::Stop | crate::types::StopReason::Length)
+            && matches!(
+                final_message.stop_reason,
+                crate::types::StopReason::Stop | crate::types::StopReason::Length
+            )
         {
             final_message.stop_reason = crate::types::StopReason::ToolUse;
         }
@@ -229,25 +303,45 @@ impl StreamMessageProjection {
     }
 
     pub fn has_finalized_tool_call_content(&self) -> bool {
-        self.message.content.iter().enumerate().any(|(index, block)| {
-            matches!(block, ContentBlock::ToolCall(_)) && !self.partial_tool_calls.contains_key(&index)
-        })
+        self.message
+            .content
+            .iter()
+            .enumerate()
+            .any(|(index, block)| {
+                matches!(block, ContentBlock::ToolCall(_))
+                    && !self.partial_tool_calls.contains_key(&index)
+            })
     }
 
     fn push_text(&mut self, text: &str) {
-        let Some(inner) = self.current_inner_text_index else { return };
-        let mut content_index = self.text_block_index_by_inner_index.get(&inner).copied().flatten();
+        let Some(inner) = self.current_inner_text_index else {
+            return;
+        };
+        let mut content_index = self
+            .text_block_index_by_inner_index
+            .get(&inner)
+            .copied()
+            .flatten();
         if content_index.is_none() {
             let new_index = self.message.content.len();
-            self.message.content.push(ContentBlock::Text(TextContent { text: text.to_string(), ..TextContent::default() }));
-            self.text_block_index_by_inner_index.insert(inner, Some(new_index));
-            self.last_text_block_index_by_inner_index.insert(inner, new_index);
+            self.message.content.push(ContentBlock::Text(TextContent {
+                text: text.to_string(),
+                ..TextContent::default()
+            }));
+            self.text_block_index_by_inner_index
+                .insert(inner, Some(new_index));
+            self.last_text_block_index_by_inner_index
+                .insert(inner, new_index);
             content_index = Some(new_index);
         } else if let Some(index) = content_index {
-            let Some(ContentBlock::Text(block)) = self.message.content.get_mut(index) else { return };
+            let Some(ContentBlock::Text(block)) = self.message.content.get_mut(index) else {
+                return;
+            };
             block.text.push_str(text);
         }
-        let Some(content_index) = content_index else { return };
+        let Some(content_index) = content_index else {
+            return;
+        };
         self.stream.push(AssistantMessageEvent::TextDelta {
             content_index,
             delta: text.to_string(),
@@ -257,8 +351,13 @@ impl StreamMessageProjection {
 
     fn start_tool_call(&mut self, parser_index: usize, name: &str, id: &str) {
         if let Some(inner) = self.current_inner_text_index {
-            let text_index = self.text_block_index_by_inner_index.get(&inner).copied().flatten();
-            let is_trailing_empty_text = text_index == Some(self.message.content.len().saturating_sub(1))
+            let text_index = self
+                .text_block_index_by_inner_index
+                .get(&inner)
+                .copied()
+                .flatten();
+            let is_trailing_empty_text = text_index
+                == Some(self.message.content.len().saturating_sub(1))
                 && matches!(
                     text_index.and_then(|i| self.message.content.get(i)),
                     Some(ContentBlock::Text(t)) if t.text.is_empty() && t.text_signature.is_none()
@@ -277,24 +376,34 @@ impl StreamMessageProjection {
             thought_signature: None,
             namespace: None,
         }));
-        self.partial_tool_calls.insert(content_index, PartialToolCallState::default());
-        self.tool_call_index_by_parser_index.insert(parser_index, content_index);
+        self.partial_tool_calls
+            .insert(content_index, PartialToolCallState::default());
+        self.tool_call_index_by_parser_index
+            .insert(parser_index, content_index);
         if let Some(inner) = self.current_inner_text_index {
             self.text_block_index_by_inner_index.insert(inner, None);
         }
-        self.stream.push(AssistantMessageEvent::ToolcallStart { content_index, partial: self.message.clone() });
+        self.stream.push(AssistantMessageEvent::ToolcallStart {
+            content_index,
+            partial: self.message.clone(),
+        });
     }
 
     fn update_tool_call(&mut self, parser_index: usize, delta: &str) {
-        let Some(&content_index) = self.tool_call_index_by_parser_index.get(&parser_index) else { return };
-        let Some(state) = self.partial_tool_calls.get_mut(&content_index) else { return };
+        let Some(&content_index) = self.tool_call_index_by_parser_index.get(&parser_index) else {
+            return;
+        };
+        let Some(state) = self.partial_tool_calls.get_mut(&content_index) else {
+            return;
+        };
         state.partial_json.push_str(delta);
         let arguments = parse_streaming_json(Some(&state.partial_json));
         let arguments_map = match arguments {
             Value::Object(map) => map,
             _ => Map::new(),
         };
-        if let Some(ContentBlock::ToolCall(tool_call)) = self.message.content.get_mut(content_index) {
+        if let Some(ContentBlock::ToolCall(tool_call)) = self.message.content.get_mut(content_index)
+        {
             tool_call.arguments = arguments_map;
         }
         self.stream.push(AssistantMessageEvent::ToolcallDelta {
@@ -314,7 +423,10 @@ impl StreamMessageProjection {
         incomplete: bool,
         error_message: Option<String>,
     ) -> Option<ToolCall> {
-        let content_index = self.tool_call_index_by_parser_index.get(&parser_index).copied()?;
+        let content_index = self
+            .tool_call_index_by_parser_index
+            .get(&parser_index)
+            .copied()?;
         let final_tool_call = ToolCall {
             id: id.to_string(),
             name: name.to_string(),
@@ -344,6 +456,8 @@ mod tests {
 
     fn message() -> AssistantMessage {
         AssistantMessage {
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -367,7 +481,11 @@ mod tests {
     #[tokio::test]
     async fn text_events_accumulate_into_one_block_and_emit_start_delta_end() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream.clone(), message(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(
+            stream.clone(),
+            message(),
+            StreamMessageProjectionOptions::default(),
+        );
         projection.start_text(0, None);
         let result = projection.project_parser_events(&[
             StreamParserEvent::Text { text: "hel".into() },
@@ -379,19 +497,42 @@ mod tests {
             ContentBlock::Text(text) => assert_eq!(text.text, "hello"),
             other => panic!("expected text block, got {other:?}"),
         }
-        assert!(matches!(stream.next().await, Ok(Some(AssistantMessageEvent::TextStart { .. }))));
-        assert!(matches!(stream.next().await, Ok(Some(AssistantMessageEvent::TextDelta { .. }))));
-        assert!(matches!(stream.next().await, Ok(Some(AssistantMessageEvent::TextDelta { .. }))));
-        assert!(matches!(stream.next().await, Ok(Some(AssistantMessageEvent::TextEnd { .. }))));
+        assert!(matches!(
+            stream.next().await,
+            Ok(Some(AssistantMessageEvent::TextStart { .. }))
+        ));
+        assert!(matches!(
+            stream.next().await,
+            Ok(Some(AssistantMessageEvent::TextDelta { .. }))
+        ));
+        assert!(matches!(
+            stream.next().await,
+            Ok(Some(AssistantMessageEvent::TextDelta { .. }))
+        ));
+        assert!(matches!(
+            stream.next().await,
+            Ok(Some(AssistantMessageEvent::TextEnd { .. }))
+        ));
     }
 
     #[tokio::test]
     async fn tool_call_lifecycle_projects_start_delta_end_and_returns_completed() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream.clone(), message(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(
+            stream.clone(),
+            message(),
+            StreamMessageProjectionOptions::default(),
+        );
         let result = projection.project_parser_events(&[
-            StreamParserEvent::ToolcallStart { index: 0, name: "get_weather".into(), id: "id-1".into() },
-            StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"city":"Seoul"}"#.into() },
+            StreamParserEvent::ToolcallStart {
+                index: 0,
+                name: "get_weather".into(),
+                id: "id-1".into(),
+            },
+            StreamParserEvent::ToolcallDelta {
+                index: 0,
+                arguments_delta: r#"{"city":"Seoul"}"#.into(),
+            },
             StreamParserEvent::ToolcallEnd {
                 index: 0,
                 name: "get_weather".into(),
@@ -414,11 +555,22 @@ mod tests {
     #[tokio::test]
     async fn tool_call_start_pops_trailing_empty_text_block() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream.clone(), message(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(
+            stream.clone(),
+            message(),
+            StreamMessageProjectionOptions::default(),
+        );
         projection.start_text(0, None);
-        projection.project_parser_events(&[StreamParserEvent::ToolcallStart { index: 0, name: "t".into(), id: "i".into() }]);
+        projection.project_parser_events(&[StreamParserEvent::ToolcallStart {
+            index: 0,
+            name: "t".into(),
+            id: "i".into(),
+        }]);
         assert_eq!(projection.message.content.len(), 1);
-        assert!(matches!(projection.message.content[0], ContentBlock::ToolCall(_)));
+        assert!(matches!(
+            projection.message.content[0],
+            ContentBlock::ToolCall(_)
+        ));
         let _ = stream.next().await;
         let _ = stream.next().await;
     }
@@ -426,18 +578,32 @@ mod tests {
     #[tokio::test]
     async fn finalize_dangling_tool_calls_marks_incomplete_and_emits_end() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream.clone(), message(), StreamMessageProjectionOptions::default());
-        projection.project_parser_events(&[StreamParserEvent::ToolcallStart { index: 0, name: "t".into(), id: "i".into() }]);
+        let mut projection = StreamMessageProjection::new(
+            stream.clone(),
+            message(),
+            StreamMessageProjectionOptions::default(),
+        );
+        projection.project_parser_events(&[StreamParserEvent::ToolcallStart {
+            index: 0,
+            name: "t".into(),
+            id: "i".into(),
+        }]);
         let _ = stream.next().await;
         projection.finalize_dangling_tool_calls();
         match &projection.message.content[0] {
             ContentBlock::ToolCall(tc) => {
                 assert_eq!(tc.incomplete, Some(true));
-                assert_eq!(tc.error_message.as_deref(), Some("Tool call stream ended before completion"));
+                assert_eq!(
+                    tc.error_message.as_deref(),
+                    Some("Tool call stream ended before completion")
+                );
             }
             other => panic!("expected tool call, got {other:?}"),
         }
-        assert!(matches!(stream.next().await, Ok(Some(AssistantMessageEvent::ToolcallEnd { .. }))));
+        assert!(matches!(
+            stream.next().await,
+            Ok(Some(AssistantMessageEvent::ToolcallEnd { .. }))
+        ));
         // senpi's finalized block carries no partialJson, so it counts as finalized content.
         assert!(projection.has_finalized_tool_call_content());
     }
@@ -445,7 +611,11 @@ mod tests {
     #[test]
     fn finalize_upgrades_stop_and_length_to_tool_use_when_tool_call_seen() {
         let stream = AssistantMessageEventStream::assistant();
-        let projection = StreamMessageProjection::new(stream, message(), StreamMessageProjectionOptions::default());
+        let projection = StreamMessageProjection::new(
+            stream,
+            message(),
+            StreamMessageProjectionOptions::default(),
+        );
         let mut done = message();
         done.stop_reason = StopReason::Stop;
         let finalized = projection.finalize(&done, true);
@@ -465,7 +635,11 @@ mod tests {
     #[test]
     fn finalize_leaves_stop_reason_alone_when_no_tool_call_seen() {
         let stream = AssistantMessageEventStream::assistant();
-        let projection = StreamMessageProjection::new(stream, message(), StreamMessageProjectionOptions::default());
+        let projection = StreamMessageProjection::new(
+            stream,
+            message(),
+            StreamMessageProjectionOptions::default(),
+        );
         let mut done = message();
         done.stop_reason = StopReason::Stop;
         let finalized = projection.finalize(&done, false);

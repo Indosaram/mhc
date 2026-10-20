@@ -1,15 +1,40 @@
 //! Port of senpi `packages/coding-agent/src/nearest-parent-config.ts`.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
+
+fn normalize(path: &str) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.file_name().is_some_and(|name| name != "..") {
+                    normalized.pop();
+                } else if !normalized.has_root() {
+                    normalized.push("..");
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        normalized.push(".");
+    }
+    normalized
+}
 
 pub const MAX_PARENT_CONFIG_SEARCH_DEPTH: usize = 100;
 
 fn is_directory(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).map(|metadata| metadata.is_dir()).unwrap_or(false)
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 fn is_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).map(|metadata| metadata.is_file()).unwrap_or(false)
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
 }
 
 pub fn find_nearest_parent_config_dir(
@@ -19,8 +44,8 @@ pub fn find_nearest_parent_config_dir(
     required_child_dir: Option<&str>,
     required_child_file: Option<&str>,
 ) -> Option<String> {
-    let normalized_home_dir = Path::new(home_dir);
-    let mut current_dir = Path::new(cwd).to_path_buf();
+    let normalized_home_dir = normalize(home_dir);
+    let mut current_dir = normalize(cwd);
 
     for _ in 0..=MAX_PARENT_CONFIG_SEARCH_DEPTH {
         if current_dir == normalized_home_dir {
@@ -30,7 +55,9 @@ pub fn find_nearest_parent_config_dir(
         let config_dir = current_dir.join(config_dir_name);
         let has_required_child = match required_child_file {
             Some(required_child_file) => is_file(&config_dir.join(required_child_file)),
-            None => required_child_dir.map(|required_child_dir| is_directory(&config_dir.join(required_child_dir))).unwrap_or(true),
+            None => required_child_dir
+                .map(|required_child_dir| is_directory(&config_dir.join(required_child_dir)))
+                .unwrap_or(true),
         };
         if is_directory(&config_dir) && has_required_child {
             return Some(config_dir.to_string_lossy().into_owned());
@@ -51,6 +78,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalized_home_is_excluded_before_matching() {
+        // Given
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(home.join(".omo/agent")).expect("config");
+        // When
+        let found = find_nearest_parent_config_dir(
+            &home.join("absent/..").to_string_lossy(),
+            &home.join("./").to_string_lossy(),
+            ".omo",
+            Some("agent"),
+            None,
+        );
+        // Then
+        assert!(found.is_none());
+        assert_eq!(normalize("../../child/.."), PathBuf::from("../.."));
+    }
+
+    #[test]
     fn finds_the_nearest_project_config_dir_and_returns_the_config_dir() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
@@ -66,7 +112,10 @@ mod tests {
             Some("agent"),
             None,
         );
-        assert_eq!(found.as_deref(), Some(project.join(".omo").to_string_lossy().as_ref()));
+        assert_eq!(
+            found.as_deref(),
+            Some(project.join(".omo").to_string_lossy().as_ref())
+        );
     }
 
     #[test]
@@ -75,7 +124,16 @@ mod tests {
         let home = tmp.path().join("home");
         let nested = home.join("a/b");
         std::fs::create_dir_all(&nested).expect("mkdir");
-        assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".omo", Some("agent"), None).is_none());
+        assert!(
+            find_nearest_parent_config_dir(
+                &nested.to_string_lossy(),
+                &home.to_string_lossy(),
+                ".omo",
+                Some("agent"),
+                None
+            )
+            .is_none()
+        );
     }
 
     #[cfg(unix)]
@@ -89,7 +147,16 @@ mod tests {
         std::fs::create_dir_all(&nested).expect("mkdir");
         std::fs::create_dir_all(home.join("real/.omo/agent")).expect("mkdir");
         std::os::unix::fs::symlink(home.join("real/.omo"), project.join(".omo")).expect("symlink");
-        assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".omo", Some("agent"), None).is_none());
+        assert!(
+            find_nearest_parent_config_dir(
+                &nested.to_string_lossy(),
+                &home.to_string_lossy(),
+                ".omo",
+                Some("agent"),
+                None
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -101,10 +168,26 @@ mod tests {
         std::fs::create_dir_all(project.join(".omo")).expect("mkdir");
         std::fs::create_dir_all(&nested).expect("mkdir");
         std::fs::create_dir_all(&home).expect("mkdir");
-        assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".omo", None, Some("settings.json")).is_none());
+        assert!(
+            find_nearest_parent_config_dir(
+                &nested.to_string_lossy(),
+                &home.to_string_lossy(),
+                ".omo",
+                None,
+                Some("settings.json")
+            )
+            .is_none()
+        );
         std::fs::write(project.join(".omo/settings.json"), "{}").expect("write");
         assert_eq!(
-            find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".omo", None, Some("settings.json")).as_deref(),
+            find_nearest_parent_config_dir(
+                &nested.to_string_lossy(),
+                &home.to_string_lossy(),
+                ".omo",
+                None,
+                Some("settings.json")
+            )
+            .as_deref(),
             Some(project.join(".omo").to_string_lossy().as_ref())
         );
     }

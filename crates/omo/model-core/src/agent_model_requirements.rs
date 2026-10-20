@@ -123,6 +123,11 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             Some("high"),
                         ),
                         entry(
+                            &["google", "google-vertex", "opencode"],
+                            "gemini-4-argon",
+                            Some("high"),
+                        ),
+                        entry(
                             &["google", "github-copilot", "opencode"],
                             "gemini-3.1-pro",
                             Some("high"),
@@ -152,6 +157,11 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             Some("low"),
                         ),
                         entry(
+                            &["anthropic", "github-copilot"],
+                            "claude-haiku-5-5",
+                            Some("medium"),
+                        ),
+                        entry(
                             &["deepseek"],
                             "deepseek-flash",
                             Some("max"),
@@ -162,11 +172,6 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             None,
                         ),
                         entry(&["opencode-go"], "minimax-m2.7", None),
-                        entry(
-                            &["anthropic", "github-copilot"],
-                            "claude-haiku-4-5",
-                            None,
-                        ),
                     ],
                     ..ModelRequirement::default()
                 },
@@ -186,6 +191,11 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             Some("low"),
                         ),
                         entry(
+                            &["anthropic", "github-copilot"],
+                            "claude-haiku-5-5",
+                            Some("medium"),
+                        ),
+                        entry(
                             &["deepseek"],
                             "deepseek-flash",
                             Some("max"),
@@ -196,11 +206,6 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             None,
                         ),
                         entry(&["opencode-go"], "minimax-m2.7", None),
-                        entry(
-                            &["anthropic", "github-copilot"],
-                            "claude-haiku-4-5",
-                            None,
-                        ),
                     ],
                     ..ModelRequirement::default()
                 },
@@ -311,6 +316,11 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             Some("max"),
                         ),
                         entry(
+                            &["google", "google-vertex", "opencode"],
+                            "gemini-4-argon",
+                            Some("high"),
+                        ),
+                        entry(
                             &["google", "github-copilot", "opencode"],
                             "gemini-3.1-pro",
                             Some("high"),
@@ -385,3 +395,40 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
             ),
         ])
     });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argon_high_precedes_previous_pro_without_copilot() {
+        for (agent, index) in [("oracle", 2), ("momus", 4)] {
+            let chain = &AGENT_MODEL_REQUIREMENTS[agent].fallback_chain;
+            assert_eq!(chain[index], entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("high")));
+            assert_eq!(chain[index + 1], entry(&["google", "github-copilot", "opencode"], "gemini-3.1-pro", Some("high")));
+        }
+        let argon: Vec<_> = AGENT_MODEL_REQUIREMENTS.values()
+            .flat_map(|requirement| &requirement.fallback_chain)
+            .filter(|rung| rung.model == "gemini-4-argon")
+            .collect();
+        assert_eq!(argon.len(), 2);
+        for rung in argon {
+            assert!(matches!(rung.variant.as_deref(), Some("low" | "medium" | "high")));
+            assert!(!rung.providers.iter().any(|provider| provider == "github-copilot"));
+        }
+    }
+
+    #[test]
+    fn fast_agents_use_haiku_medium_as_third_rung() {
+        for agent in ["librarian", "explore"] {
+            assert_eq!(AGENT_MODEL_REQUIREMENTS[agent].fallback_chain, vec![
+                entry(&["kimi-for-coding"], "kimi-for-coding-highspeed", Some("off")),
+                entry(&["openai", "chatgpt-subscription"], "gpt-6-luna-fast", Some("low")),
+                entry(&["anthropic", "github-copilot"], "claude-haiku-5-5", Some("medium")),
+                entry(&["deepseek"], "deepseek-flash", Some("max")),
+                entry(&["opencode-go", "bailian-coding-plan"], "qwen3.7-plus", None),
+                entry(&["opencode-go"], "minimax-m2.7", None),
+            ]);
+        }
+    }
+}

@@ -54,15 +54,39 @@ pub struct HandlerErrorPayload {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HarnessEventPayload {
-    RunStart { run_id: String, started_at: i64 },
-    RunResume { run_id: String },
-    RunSuspend { run_id: String, deferred: DeferredHandle, poll: u32 },
-    OperationAbort { operation_id: String, steer: Vec<AgentMessage>, follow_up: Vec<AgentMessage> },
+    RunStart {
+        run_id: String,
+        started_at: i64,
+    },
+    RunResume {
+        run_id: String,
+    },
+    RunSuspend {
+        run_id: String,
+        deferred: DeferredHandle,
+        poll: u32,
+    },
+    OperationAbort {
+        operation_id: String,
+        steer: Vec<AgentMessage>,
+        follow_up: Vec<AgentMessage>,
+    },
     RunEnd(RunEndPayload),
-    Fault { code: String, message: String },
+    Fault {
+        code: String,
+        message: String,
+    },
     HandlerError(HandlerErrorPayload),
-    TurnStart { run_id: String, turn_id: String },
-    TurnEnd { run_id: String, turn_id: String, message: Box<AssistantMessage>, tool_results: Vec<ToolResultMessage> },
+    TurnStart {
+        run_id: String,
+        turn_id: String,
+    },
+    TurnEnd {
+        run_id: String,
+        turn_id: String,
+        message: Box<AssistantMessage>,
+        tool_results: Vec<ToolResultMessage>,
+    },
     RetryScheduled {
         run_id: String,
         step: String,
@@ -72,24 +96,100 @@ pub enum HarnessEventPayload {
         not_before: i64,
         error_message: String,
     },
-    RetryStart { run_id: String, step: String, attempt: u32 },
-    RetryEnd { run_id: String, step: String, attempt: u32, success: bool, final_error: Option<String> },
-    MessageStart { run_id: Option<String>, message: AgentMessage },
-    MessageUpdate { run_id: String, message: AgentMessage, event: Box<maho_ai::types::AssistantMessageEvent>, frame: Option<maho_ai::utils::assistant_message_frame::AssistantMessageFrame> },
-    MessageEnd { run_id: Option<String>, message: AgentMessage, entry_id: Option<String> },
-    ToolStart { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, args: JsonValue },
-    ToolUpdate { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, partial_result: AgentToolResult },
-    ToolEnd { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, result: AgentToolResult, is_error: bool, terminate: bool },
-    EntryAdded { entry: Box<Entry> },
-    QueueUpdate { queues: Vec<LaneQueuedItem> },
-    ValueUpdate { value: String, name: Option<String>, target_id: Option<String>, label: Option<String> },
-    ConfigUpdate { property: String, value: JsonValue, previous: JsonValue },
-    CompactionStart { run_id: String, reason: String, started_at: i64 },
-    CompactionEnd { run_id: String, reason: String, ended_at: i64, status: String, entry_id: Option<String> },
-    NavigationStart { run_id: String, target_id: Option<String>, started_at: i64 },
+    RetryStart {
+        run_id: String,
+        step: String,
+        attempt: u32,
+    },
+    RetryEnd {
+        run_id: String,
+        step: String,
+        attempt: u32,
+        success: bool,
+        final_error: Option<String>,
+    },
+    MessageStart {
+        run_id: Option<String>,
+        message: AgentMessage,
+    },
+    MessageUpdate {
+        run_id: String,
+        message: AgentMessage,
+        event: Box<maho_ai::types::AssistantMessageEvent>,
+        frame: Option<maho_ai::utils::assistant_message_frame::AssistantMessageFrame>,
+    },
+    MessageEnd {
+        run_id: Option<String>,
+        message: AgentMessage,
+        entry_id: Option<String>,
+    },
+    ToolStart {
+        run_id: String,
+        turn_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        args: JsonValue,
+    },
+    ToolUpdate {
+        run_id: String,
+        turn_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        partial_result: AgentToolResult,
+    },
+    ToolEnd {
+        run_id: String,
+        turn_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        result: AgentToolResult,
+        is_error: bool,
+        terminate: bool,
+    },
+    EntryAdded {
+        entry: Box<Entry>,
+    },
+    QueueUpdate {
+        queues: Vec<LaneQueuedItem>,
+    },
+    ValueUpdate {
+        value: String,
+        name: Option<String>,
+        target_id: Option<String>,
+        label: Option<String>,
+    },
+    ConfigUpdate {
+        property: String,
+        value: JsonValue,
+        previous: JsonValue,
+    },
+    CompactionStart {
+        run_id: String,
+        reason: String,
+        started_at: i64,
+    },
+    CompactionEnd {
+        run_id: String,
+        reason: String,
+        ended_at: i64,
+        status: String,
+        entry_id: Option<String>,
+        error: Option<OperationError>,
+    },
+    NavigationStart {
+        run_id: String,
+        target_id: Option<String>,
+        started_at: i64,
+    },
     NavigationEnd(NavigationEndPayload),
-    LaneCreated { at: Option<String> },
-    Usage { lane: String, row: UsageRow, totals: Usage },
+    LaneCreated {
+        at: Option<String>,
+    },
+    Usage {
+        lane: String,
+        row: UsageRow,
+        totals: Usage,
+    },
 }
 
 impl HarnessEventPayload {
@@ -145,7 +245,9 @@ impl HarnessEventPayload {
             | Self::NavigationStart { run_id, .. } => Some(run_id),
             Self::RunEnd(payload) => Some(&payload.run_id),
             Self::NavigationEnd(payload) => Some(&payload.run_id),
-            Self::MessageStart { run_id, .. } | Self::MessageEnd { run_id, .. } => run_id.as_deref(),
+            Self::MessageStart { run_id, .. } | Self::MessageEnd { run_id, .. } => {
+                run_id.as_deref()
+            }
             _ => None,
         }
     }
@@ -159,9 +261,14 @@ impl HarnessEventPayload {
 
     pub fn config_active_tools(&self) -> Option<Vec<String>> {
         match self {
-            Self::ConfigUpdate { property, value, .. } if property == "activeTools" => value
-                .as_array()
-                .map(|values| values.iter().filter_map(|value| value.as_str().map(ToOwned::to_owned)).collect()),
+            Self::ConfigUpdate {
+                property, value, ..
+            } if property == "activeTools" => value.as_array().map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                    .collect()
+            }),
             _ => None,
         }
     }
@@ -176,7 +283,11 @@ pub struct HarnessEvent {
 
 impl HarnessEvent {
     pub fn new(payload: HarnessEventPayload, lane: Option<String>) -> Self {
-        Self { lane, recovery: None, payload }
+        Self {
+            lane,
+            recovery: None,
+            payload,
+        }
     }
 
     pub fn event_type(&self) -> &'static str {
@@ -188,10 +299,21 @@ impl HarnessEvent {
     }
 
     pub fn run_start(run_id: impl Into<String>, started_at: i64, lane: impl Into<String>) -> Self {
-        Self::new(HarnessEventPayload::RunStart { run_id: run_id.into(), started_at }, Some(lane.into()))
+        Self::new(
+            HarnessEventPayload::RunStart {
+                run_id: run_id.into(),
+                started_at,
+            },
+            Some(lane.into()),
+        )
     }
 
-    pub fn handler_error(error: impl Into<String>, kind: &str, event: &str, lane: Option<String>) -> Self {
+    pub fn handler_error(
+        error: impl Into<String>,
+        kind: &str,
+        event: &str,
+        lane: Option<String>,
+    ) -> Self {
         Self::new(
             HarnessEventPayload::HandlerError(HandlerErrorPayload {
                 error: error.into(),
@@ -225,7 +347,12 @@ impl HarnessEvent {
         }
     }
 
-    pub fn navigation_end(run_id: impl Into<String>, status: &str, ended_at: i64, lane: impl Into<String>) -> Self {
+    pub fn navigation_end(
+        run_id: impl Into<String>,
+        status: &str,
+        ended_at: i64,
+        lane: impl Into<String>,
+    ) -> Self {
         Self::new(
             HarnessEventPayload::NavigationEnd(NavigationEndPayload {
                 run_id: run_id.into(),
@@ -240,7 +367,10 @@ impl HarnessEvent {
     }
 
     pub fn queue_update(queues: Vec<LaneQueuedItem>, lane: impl Into<String>) -> Self {
-        Self::new(HarnessEventPayload::QueueUpdate { queues }, Some(lane.into()))
+        Self::new(
+            HarnessEventPayload::QueueUpdate { queues },
+            Some(lane.into()),
+        )
     }
 
     pub fn queued_entry_ids(&self) -> Vec<String> {
@@ -252,12 +382,32 @@ impl HarnessEvent {
         }
     }
 
-    pub fn config_update(property: &str, value: JsonValue, previous: JsonValue, lane: Option<String>) -> Self {
-        Self::new(HarnessEventPayload::ConfigUpdate { property: property.to_owned(), value, previous }, lane)
+    pub fn config_update(
+        property: &str,
+        value: JsonValue,
+        previous: JsonValue,
+        lane: Option<String>,
+    ) -> Self {
+        Self::new(
+            HarnessEventPayload::ConfigUpdate {
+                property: property.to_owned(),
+                value,
+                previous,
+            },
+            lane,
+        )
     }
 
     pub fn value_update(value: &str, name: Option<String>, lane: Option<String>) -> Self {
-        Self::new(HarnessEventPayload::ValueUpdate { value: value.to_owned(), name, target_id: None, label: None }, lane)
+        Self::new(
+            HarnessEventPayload::ValueUpdate {
+                value: value.to_owned(),
+                name,
+                target_id: None,
+                label: None,
+            },
+            lane,
+        )
     }
 
     pub fn lane_created(at: Option<String>, lane: Option<String>) -> Self {
@@ -265,7 +415,13 @@ impl HarnessEvent {
     }
 
     pub fn fault(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(HarnessEventPayload::Fault { code: code.into(), message: message.into() }, None)
+        Self::new(
+            HarnessEventPayload::Fault {
+                code: code.into(),
+                message: message.into(),
+            },
+            None,
+        )
     }
 }
 
@@ -277,8 +433,18 @@ impl HarnessEvent {
 /// that boundary: consumers convert with `JsonValue::from(&event)` instead of re-deriving the shape.
 pub fn event_to_value(event: &HarnessEvent) -> JsonValue {
     let mut object = serde_json::Map::new();
-    object.insert("type".into(), JsonValue::String(event.payload.event_type().into()));
-    wire_insert_optional(&mut object, "lane", event.lane.as_ref().map(|lane| JsonValue::String(lane.clone())));
+    object.insert(
+        "type".into(),
+        JsonValue::String(event.payload.event_type().into()),
+    );
+    wire_insert_optional(
+        &mut object,
+        "lane",
+        event
+            .lane
+            .as_ref()
+            .map(|lane| JsonValue::String(lane.clone())),
+    );
     wire_insert_optional(&mut object, "recovery", event.recovery.map(JsonValue::Bool));
     match &event.payload {
         HarnessEventPayload::RunStart { run_id, started_at } => {
@@ -288,37 +454,63 @@ pub fn event_to_value(event: &HarnessEvent) -> JsonValue {
         HarnessEventPayload::RunResume { run_id } => {
             object.insert("runId".into(), serde_json::json!(run_id));
         }
-        HarnessEventPayload::RunSuspend { run_id, deferred, poll } => {
+        HarnessEventPayload::RunSuspend {
+            run_id,
+            deferred,
+            poll,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("reason".into(), serde_json::json!("deferred"));
             object.insert("deferred".into(), wire_value_of(deferred));
             object.insert("poll".into(), serde_json::json!(poll));
         }
-        HarnessEventPayload::OperationAbort { operation_id, steer, follow_up } => {
+        HarnessEventPayload::OperationAbort {
+            operation_id,
+            steer,
+            follow_up,
+        } => {
             object.insert("operationId".into(), serde_json::json!(operation_id));
             object.insert("steer".into(), wire_value_of(steer));
             object.insert("followUp".into(), wire_value_of(follow_up));
         }
         HarnessEventPayload::RunEnd(payload) => {
-            if let JsonValue::Object(fields) = wire_run_end(payload) { object.extend(fields); }
+            if let JsonValue::Object(fields) = wire_run_end(payload) {
+                object.extend(fields);
+            }
         }
         HarnessEventPayload::Fault { code, message } => {
             object.insert("code".into(), serde_json::json!(code));
             object.insert("message".into(), serde_json::json!(message));
         }
         HarnessEventPayload::HandlerError(payload) => {
-            if let JsonValue::Object(fields) = wire_handler_error(payload) { object.extend(fields); }
+            if let JsonValue::Object(fields) = wire_handler_error(payload) {
+                object.extend(fields);
+            }
         }
         HarnessEventPayload::TurnStart { run_id, turn_id } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("turnId".into(), serde_json::json!(turn_id));
         }
-        HarnessEventPayload::TurnEnd { run_id, turn_id, message, tool_results } => {
+        HarnessEventPayload::TurnEnd {
+            run_id,
+            turn_id,
+            message,
+            tool_results,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("turnId".into(), serde_json::json!(turn_id));
             object.insert("message".into(), wire_value_of(message.as_ref()));
             object.insert("toolResults".into(), wire_value_of(tool_results));
         }
-        HarnessEventPayload::RetryScheduled { run_id, step, attempt, max_attempts, delay_ms, not_before, error_message } => {
+        HarnessEventPayload::RetryScheduled {
+            run_id,
+            step,
+            attempt,
+            max_attempts,
+            delay_ms,
+            not_before,
+            error_message,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("step".into(), serde_json::json!(step));
             object.insert("attempt".into(), serde_json::json!(attempt));
@@ -327,48 +519,103 @@ pub fn event_to_value(event: &HarnessEvent) -> JsonValue {
             object.insert("notBefore".into(), serde_json::json!(not_before));
             object.insert("errorMessage".into(), serde_json::json!(error_message));
         }
-        HarnessEventPayload::RetryStart { run_id, step, attempt } => {
+        HarnessEventPayload::RetryStart {
+            run_id,
+            step,
+            attempt,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("step".into(), serde_json::json!(step));
             object.insert("attempt".into(), serde_json::json!(attempt));
         }
-        HarnessEventPayload::RetryEnd { run_id, step, attempt, success, final_error } => {
+        HarnessEventPayload::RetryEnd {
+            run_id,
+            step,
+            attempt,
+            success,
+            final_error,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("step".into(), serde_json::json!(step));
             object.insert("attempt".into(), serde_json::json!(attempt));
             object.insert("success".into(), serde_json::json!(success));
-            wire_insert_optional(&mut object, "finalError", final_error.as_ref().map(|value| serde_json::json!(value)));
+            wire_insert_optional(
+                &mut object,
+                "finalError",
+                final_error.as_ref().map(|value| serde_json::json!(value)),
+            );
         }
         HarnessEventPayload::MessageStart { run_id, message } => {
-            wire_insert_optional(&mut object, "runId", run_id.as_ref().map(|id| serde_json::json!(id)));
+            wire_insert_optional(
+                &mut object,
+                "runId",
+                run_id.as_ref().map(|id| serde_json::json!(id)),
+            );
             object.insert("message".into(), wire_value_of(message));
         }
-        HarnessEventPayload::MessageUpdate { run_id, message, event: update, frame } => {
+        HarnessEventPayload::MessageUpdate {
+            run_id,
+            message,
+            event: update,
+            frame,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("message".into(), wire_value_of(message));
             object.insert("event".into(), wire_value_of(update.as_ref()));
             wire_insert_optional(&mut object, "frame", frame.as_ref().map(wire_value_of));
         }
-        HarnessEventPayload::MessageEnd { run_id, message, entry_id } => {
-            wire_insert_optional(&mut object, "runId", run_id.as_ref().map(|id| serde_json::json!(id)));
+        HarnessEventPayload::MessageEnd {
+            run_id,
+            message,
+            entry_id,
+        } => {
+            wire_insert_optional(
+                &mut object,
+                "runId",
+                run_id.as_ref().map(|id| serde_json::json!(id)),
+            );
             object.insert("message".into(), wire_value_of(message));
-            wire_insert_optional(&mut object, "entryId", entry_id.as_ref().map(|id| serde_json::json!(id)));
+            wire_insert_optional(
+                &mut object,
+                "entryId",
+                entry_id.as_ref().map(|id| serde_json::json!(id)),
+            );
         }
-        HarnessEventPayload::ToolStart { run_id, turn_id, tool_call_id, tool_name, args } => {
+        HarnessEventPayload::ToolStart {
+            run_id,
+            turn_id,
+            tool_call_id,
+            tool_name,
+            args,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("turnId".into(), serde_json::json!(turn_id));
             object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
             object.insert("toolName".into(), serde_json::json!(tool_name));
             object.insert("args".into(), args.clone());
         }
-        HarnessEventPayload::ToolUpdate { run_id, turn_id, tool_call_id, tool_name, partial_result } => {
+        HarnessEventPayload::ToolUpdate {
+            run_id,
+            turn_id,
+            tool_call_id,
+            tool_name,
+            partial_result,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("turnId".into(), serde_json::json!(turn_id));
             object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
             object.insert("toolName".into(), serde_json::json!(tool_name));
             object.insert("partialResult".into(), wire_value_of(partial_result));
         }
-        HarnessEventPayload::ToolEnd { run_id, turn_id, tool_call_id, tool_name, result, is_error, terminate } => {
+        HarnessEventPayload::ToolEnd {
+            run_id,
+            turn_id,
+            tool_call_id,
+            tool_name,
+            result,
+            is_error,
+            terminate,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("turnId".into(), serde_json::json!(turn_id));
             object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
@@ -381,41 +628,87 @@ pub fn event_to_value(event: &HarnessEvent) -> JsonValue {
             object.insert("entry".into(), wire_value_of(entry.as_ref()));
         }
         HarnessEventPayload::QueueUpdate { queues } => {
-            object.insert("queues".into(), JsonValue::Array(queues.iter().map(wire_queued_item).collect()));
+            object.insert(
+                "queues".into(),
+                JsonValue::Array(queues.iter().map(wire_queued_item).collect()),
+            );
         }
-        HarnessEventPayload::ValueUpdate { value, name, target_id, label } => {
+        HarnessEventPayload::ValueUpdate {
+            value,
+            name,
+            target_id,
+            label,
+        } => {
             object.insert("value".into(), serde_json::json!(value));
-            wire_insert_optional(&mut object, "name", name.as_ref().map(|value| serde_json::json!(value)));
-            wire_insert_optional(&mut object, "targetId", target_id.as_ref().map(|value| serde_json::json!(value)));
-            wire_insert_optional(&mut object, "label", label.as_ref().map(|value| serde_json::json!(value)));
+            wire_insert_optional(
+                &mut object,
+                "name",
+                name.as_ref().map(|value| serde_json::json!(value)),
+            );
+            wire_insert_optional(
+                &mut object,
+                "targetId",
+                target_id.as_ref().map(|value| serde_json::json!(value)),
+            );
+            wire_insert_optional(
+                &mut object,
+                "label",
+                label.as_ref().map(|value| serde_json::json!(value)),
+            );
         }
-        HarnessEventPayload::ConfigUpdate { property, value, previous } => {
+        HarnessEventPayload::ConfigUpdate {
+            property,
+            value,
+            previous,
+        } => {
             object.insert("property".into(), serde_json::json!(property));
             object.insert("value".into(), value.clone());
             object.insert("previous".into(), previous.clone());
         }
-        HarnessEventPayload::CompactionStart { run_id, reason, started_at } => {
+        HarnessEventPayload::CompactionStart {
+            run_id,
+            reason,
+            started_at,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("reason".into(), serde_json::json!(reason));
             object.insert("startedAt".into(), serde_json::json!(started_at));
         }
-        HarnessEventPayload::CompactionEnd { run_id, reason, ended_at, status, entry_id } => {
+        HarnessEventPayload::CompactionEnd {
+            run_id,
+            reason,
+            ended_at,
+            status,
+            entry_id,
+            error,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("reason".into(), serde_json::json!(reason));
             object.insert("endedAt".into(), serde_json::json!(ended_at));
             object.insert("status".into(), serde_json::json!(status));
-            wire_insert_optional(&mut object, "entryId", entry_id.as_ref().map(|id| serde_json::json!(id)));
+            wire_insert_optional(
+                &mut object,
+                "entryId",
+                entry_id.as_ref().map(|id| serde_json::json!(id)),
+            );
+            wire_insert_optional(&mut object, "error", error.as_ref().map(wire_value_of));
         }
-        HarnessEventPayload::NavigationStart { run_id, target_id, started_at } => {
+        HarnessEventPayload::NavigationStart {
+            run_id,
+            target_id,
+            started_at,
+        } => {
             object.insert("runId".into(), serde_json::json!(run_id));
-            wire_insert_optional(&mut object, "targetId", target_id.as_ref().map(|id| serde_json::json!(id)));
+            object.insert("targetId".into(), serde_json::json!(target_id));
             object.insert("startedAt".into(), serde_json::json!(started_at));
         }
         HarnessEventPayload::NavigationEnd(payload) => {
-            if let JsonValue::Object(fields) = wire_navigation_end(payload) { object.extend(fields); }
+            if let JsonValue::Object(fields) = wire_navigation_end(payload) {
+                object.extend(fields);
+            }
         }
         HarnessEventPayload::LaneCreated { at } => {
-            wire_insert_optional(&mut object, "at", at.as_ref().map(|id| serde_json::json!(id)));
+            object.insert("at".into(), serde_json::json!(at));
         }
         HarnessEventPayload::Usage { lane, row, totals } => {
             object.insert("lane".into(), serde_json::json!(lane));
@@ -430,7 +723,11 @@ fn wire_value_of<T: serde::Serialize>(value: &T) -> JsonValue {
     serde_json::to_value(value).unwrap_or(JsonValue::Null)
 }
 
-fn wire_insert_optional(object: &mut serde_json::Map<String, JsonValue>, key: &str, value: Option<JsonValue>) {
+fn wire_insert_optional(
+    object: &mut serde_json::Map<String, JsonValue>,
+    key: &str,
+    value: Option<JsonValue>,
+) {
     if let Some(value) = value
         && !value.is_null()
     {
@@ -441,32 +738,52 @@ fn wire_insert_optional(object: &mut serde_json::Map<String, JsonValue>, key: &s
 fn wire_run_end(payload: &RunEndPayload) -> JsonValue {
     let mut object = serde_json::Map::new();
     object.insert("runId".into(), serde_json::json!(payload.run_id));
-    wire_insert_optional(&mut object, "fromTipId", payload.from_tip_id.as_ref().map(|value| serde_json::json!(value)));
-    wire_insert_optional(&mut object, "tipId", payload.tip_id.as_ref().map(|value| serde_json::json!(value)));
+    object.insert("fromTipId".into(), serde_json::json!(payload.from_tip_id));
+    object.insert("tipId".into(), serde_json::json!(payload.tip_id));
     object.insert("endedAt".into(), serde_json::json!(payload.ended_at));
     object.insert("status".into(), serde_json::json!(payload.status));
-    wire_insert_optional(&mut object, "error", payload.error.as_ref().map(wire_value_of));
+    wire_insert_optional(
+        &mut object,
+        "error",
+        payload.error.as_ref().map(wire_value_of),
+    );
     JsonValue::Object(object)
 }
 
 fn wire_navigation_end(payload: &NavigationEndPayload) -> JsonValue {
     let mut object = serde_json::Map::new();
     object.insert("runId".into(), serde_json::json!(payload.run_id));
-    wire_insert_optional(&mut object, "fromTipId", payload.from_tip_id.as_ref().map(|value| serde_json::json!(value)));
-    wire_insert_optional(&mut object, "tipId", payload.tip_id.as_ref().map(|value| serde_json::json!(value)));
+    object.insert("fromTipId".into(), serde_json::json!(payload.from_tip_id));
+    object.insert("tipId".into(), serde_json::json!(payload.tip_id));
     object.insert("endedAt".into(), serde_json::json!(payload.ended_at));
     object.insert("status".into(), serde_json::json!(payload.status));
-    wire_insert_optional(&mut object, "error", payload.error.as_ref().map(wire_value_of));
+    wire_insert_optional(
+        &mut object,
+        "error",
+        payload.error.as_ref().map(wire_value_of),
+    );
     JsonValue::Object(object)
 }
 
 fn wire_handler_error(payload: &HandlerErrorPayload) -> JsonValue {
     let mut object = serde_json::Map::new();
     object.insert("error".into(), serde_json::json!(payload.error));
-    wire_insert_optional(&mut object, "stack", payload.stack.as_ref().map(|value| serde_json::json!(value)));
+    wire_insert_optional(
+        &mut object,
+        "stack",
+        payload.stack.as_ref().map(|value| serde_json::json!(value)),
+    );
     object.insert("kind".into(), serde_json::json!(payload.kind));
-    wire_insert_optional(&mut object, "hook", payload.hook.as_ref().map(|value| serde_json::json!(value)));
-    wire_insert_optional(&mut object, "event", payload.event.as_ref().map(|value| serde_json::json!(value)));
+    wire_insert_optional(
+        &mut object,
+        "hook",
+        payload.hook.as_ref().map(|value| serde_json::json!(value)),
+    );
+    wire_insert_optional(
+        &mut object,
+        "event",
+        payload.event.as_ref().map(|value| serde_json::json!(value)),
+    );
     JsonValue::Object(object)
 }
 
@@ -475,8 +792,18 @@ fn wire_queued_item(item: &LaneQueuedItem) -> JsonValue {
     object.insert("entryId".into(), serde_json::json!(item.entry_id));
     object.insert("kind".into(), serde_json::json!(item.kind));
     object.insert("type".into(), serde_json::json!(item.item_type));
-    wire_insert_optional(&mut object, "message", item.message.as_ref().map(wire_value_of));
-    wire_insert_optional(&mut object, "customType", item.custom_type.as_ref().map(|value| serde_json::json!(value)));
+    wire_insert_optional(
+        &mut object,
+        "message",
+        item.message.as_ref().map(wire_value_of),
+    );
+    wire_insert_optional(
+        &mut object,
+        "customType",
+        item.custom_type
+            .as_ref()
+            .map(|value| serde_json::json!(value)),
+    );
     wire_insert_optional(&mut object, "data", item.data.clone());
     JsonValue::Object(object)
 }
@@ -493,14 +820,16 @@ impl From<HarnessEvent> for JsonValue {
     }
 }
 
-pub type UntypedEventListener = Arc<dyn Fn(HarnessEvent, Context) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type UntypedEventListener =
+    Arc<dyn Fn(HarnessEvent, Context) -> BoxFuture<'static, ()> + Send + Sync>;
 pub type EventListener = UntypedEventListener;
 pub type EventFilter = Arc<dyn Fn(&HarnessEvent) -> bool + Send + Sync>;
 pub type ResnapshotCapture<T> =
     Arc<dyn Fn(Context, Arc<dyn Fn() + Send + Sync>) -> BoxFuture<'static, T> + Send + Sync>;
 pub type SnapshotCapture<T> = Arc<dyn Fn(Context) -> BoxFuture<'static, T> + Send + Sync>;
-pub type WatcherErrorFn =
-    Arc<dyn Fn(String, &'static str, Option<String>, Context) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type WatcherErrorFn = Arc<
+    dyn Fn(String, &'static str, Option<String>, Context) -> BoxFuture<'static, ()> + Send + Sync,
+>;
 pub type WatchListenerFilter = Arc<dyn Fn(&HarnessEvent) -> bool + Send + Sync>;
 
 type Job = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
@@ -527,7 +856,9 @@ impl Default for HarnessEventBus {
 
 impl Clone for HarnessEventBus {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -545,10 +876,17 @@ impl HarnessEventBus {
         tokio::spawn(async move {
             loop {
                 let job = {
-                    let mut queue = worker.queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let mut queue = worker
+                        .queue
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let job = queue.pop_front();
                     if job.is_none()
-                        && worker.closed_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some()
+                        && worker
+                            .closed_error
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .is_some()
                     {
                         worker.worker_exited.store(true, Ordering::SeqCst);
                         break;
@@ -565,7 +903,11 @@ impl HarnessEventBus {
     }
 
     pub fn closed_error(&self) -> Option<String> {
-        self.inner.closed_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        self.inner
+            .closed_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn on(&self, event_type: &str, listener: UntypedEventListener) -> Unsubscribe {
@@ -582,7 +924,10 @@ impl HarnessEventBus {
         let inner = self.inner.clone();
         let event_type = event_type.to_owned();
         Unsubscribe::new(move || {
-            let mut listeners = inner.listeners.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut listeners = inner
+                .listeners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(entry) = listeners.get_mut(&event_type) {
                 entry.retain(|candidate| !Arc::ptr_eq(candidate, &listener));
             }
@@ -598,7 +943,11 @@ impl HarnessEventBus {
     }
 
     /// Bind current recipients synchronously, then append one contiguous batch to the delivery tail.
-    pub fn begin_emit_batch(&self, events: Vec<HarnessEvent>, context: Context) -> BoxFuture<'static, ()> {
+    pub fn begin_emit_batch(
+        &self,
+        events: Vec<HarnessEvent>,
+        context: Context,
+    ) -> BoxFuture<'static, ()> {
         if self.closed_error().is_some() || events.is_empty() {
             return Box::pin(async {});
         }
@@ -662,7 +1011,11 @@ impl HarnessEventBus {
 
     pub fn close(&self, error: impl Into<String>) {
         {
-            let mut closed = self.inner.closed_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut closed = self
+                .inner
+                .closed_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if closed.is_none() {
                 *closed = Some(error.into());
             }
@@ -670,15 +1023,27 @@ impl HarnessEventBus {
         let inner = self.inner.clone();
         self.push_job(Box::new(move || {
             Box::pin(async move {
-                inner.listeners.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
-                inner.watch_listeners.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+                inner
+                    .listeners
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
+                inner
+                    .watch_listeners
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
             })
         }));
     }
 
     fn push_job(&self, job: Job) {
         {
-            let mut queue = self.inner.queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut queue = self
+                .inner
+                .queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if self.inner.worker_exited.load(Ordering::SeqCst) {
                 // The closed bus already drained every earlier job; run late jobs directly.
                 drop(queue);
@@ -707,7 +1072,11 @@ impl HarnessEventBus {
                     if event_type == "handler_error" {
                         return;
                     }
-                    bus.emit(HarnessEvent::handler_error(error, "event", event_type, lane), context).await;
+                    bus.emit(
+                        HarnessEvent::handler_error(error, "event", event_type, lane),
+                        context,
+                    )
+                    .await;
                 })
             })
         };
@@ -732,9 +1101,11 @@ impl HarnessEventBus {
             .push(watch_listener.clone());
         let inner = self.inner.clone();
         watcher.set_unsubscribe(Arc::new(move || {
-            inner.watch_listeners.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).retain(|candidate| {
-                !Arc::ptr_eq(candidate, &watch_listener)
-            });
+            inner
+                .watch_listeners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .retain(|candidate| !Arc::ptr_eq(candidate, &watch_listener));
         }));
         watcher
     }
@@ -742,13 +1113,22 @@ impl HarnessEventBus {
     fn snapshot_recipients(&self, event: &HarnessEvent) -> Vec<UntypedEventListener> {
         let mut recipients = Vec::new();
         {
-            let listeners = self.inner.listeners.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let listeners = self
+                .inner
+                .listeners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(entry) = listeners.get(event.event_type()) {
                 recipients.extend(entry.iter().cloned());
             }
         }
         recipients.extend(
-            self.inner.watch_listeners.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().cloned(),
+            self.inner
+                .watch_listeners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .cloned(),
         );
         recipients
     }
@@ -767,33 +1147,59 @@ async fn deliver(
     let last = recipients.len().saturating_sub(1);
     let mut owned = Some(event);
     for (index, listener) in recipients.iter().enumerate() {
-        let delivered = if index == last { owned.take() } else { owned.clone() };
+        let delivered = if index == last {
+            owned.take()
+        } else {
+            owned.clone()
+        };
         let Some(delivered) = delivered else {
             break;
         };
-        let result = std::panic::AssertUnwindSafe(listener(delivered, context.clone())).catch_unwind().await;
+        let result = std::panic::AssertUnwindSafe(listener(delivered, context.clone()))
+            .catch_unwind()
+            .await;
         if let Err(payload) = result {
             if !report_errors || event_type == "handler_error" {
                 continue;
             }
             let message = panic_message(&payload);
-            let handler_error = HarnessEvent::handler_error(message, "event", event_type, lane.clone());
+            let handler_error =
+                HarnessEvent::handler_error(message, "event", event_type, lane.clone());
             let recipients = snapshot_recipients_of(inner, &handler_error);
-            Box::pin(deliver(inner, handler_error, &recipients, false, context.clone())).await;
+            Box::pin(deliver(
+                inner,
+                handler_error,
+                &recipients,
+                false,
+                context.clone(),
+            ))
+            .await;
         }
     }
 }
 
-fn snapshot_recipients_of(inner: &Arc<BusInner>, event: &HarnessEvent) -> Vec<UntypedEventListener> {
+fn snapshot_recipients_of(
+    inner: &Arc<BusInner>,
+    event: &HarnessEvent,
+) -> Vec<UntypedEventListener> {
     let mut recipients = Vec::new();
     {
-        let listeners = inner.listeners.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let listeners = inner
+            .listeners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(entry) = listeners.get(event.event_type()) {
             recipients.extend(entry.iter().cloned());
         }
     }
-    recipients
-        .extend(inner.watch_listeners.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().cloned());
+    recipients.extend(
+        inner
+            .watch_listeners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned(),
+    );
     recipients
 }
 
@@ -813,7 +1219,9 @@ pub struct Unsubscribe {
 
 impl Unsubscribe {
     fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { callback: Arc::new(callback) }
+        Self {
+            callback: Arc::new(callback),
+        }
     }
 
     pub fn call(&self) {
@@ -845,8 +1253,14 @@ struct ResnapshotState {
 impl<T> WatcherInner<T> {
     fn mark_resnapshot_boundary(&self) {
         {
-            let mut state = self.resnapshot_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(state) = state.as_mut().filter(|state| state.phase == ResnapshotPhase::Dropping) {
+            let mut state = self
+                .resnapshot_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(state) = state
+                .as_mut()
+                .filter(|state| state.phase == ResnapshotPhase::Dropping)
+            {
                 state.phase = ResnapshotPhase::Holding;
             }
         }
@@ -891,15 +1305,25 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
         let worker = inner.clone();
         tokio::spawn(async move {
             loop {
-                if *worker.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) == WatcherState::Unsubscribed {
+                if *worker
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    == WatcherState::Unsubscribed
+                {
                     break;
                 }
                 let job = {
-                    let mut queue = worker.queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let mut queue = worker
+                        .queue
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     queue.pop_front()
                 };
                 match job {
-                    Some((event, context, epoch)) => deliver_watcher(&worker, event, context, epoch).await,
+                    Some((event, context, epoch)) => {
+                        deliver_watcher(&worker, event, context, epoch).await
+                    }
                     None => worker.notify.notified().await,
                 }
             }
@@ -917,32 +1341,60 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
     }
 
     pub(crate) fn set_snapshot(&self, snapshot: T) {
-        *self.inner.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
+        *self
+            .inner
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
     }
 
     fn set_bus(&self, bus: HarnessEventBus) {
-        *self.inner.bus.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(bus);
+        *self
+            .inner
+            .bus
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(bus);
     }
 
     fn set_on_error(&self, on_error: WatcherErrorFn) {
-        *self.inner.on_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(on_error);
+        *self
+            .inner
+            .on_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(on_error);
     }
 
     fn state(&self) -> WatcherState {
-        *self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        *self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub async fn start(&self, listener: UntypedEventListener) {
         {
-            let mut state = self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if *state != WatcherState::Buffering {
                 panic!("WatchHandle.start() may be called only once");
             }
             *state = WatcherState::Started;
         }
-        *self.inner.listener.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(listener);
+        *self
+            .inner
+            .listener
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(listener);
         let buffered = {
-            let mut buffer = self.inner.buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut buffer = self
+                .inner
+                .buffer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             std::mem::take(&mut *buffer)
         };
         for (event, context, epoch) in buffered {
@@ -961,7 +1413,12 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
             .expect("WatchHandle does not support resnapshot");
-        let bus = self.inner.bus.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let bus = self
+            .inner
+            .bus
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let weak = Arc::downgrade(&self.inner);
         let marked = Arc::new(AtomicBool::new(false));
         let mark: Arc<dyn Fn() + Send + Sync> = {
@@ -983,14 +1440,25 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
             })
         };
         {
-            let mut state = self.inner.resnapshot_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .inner
+                .resnapshot_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.is_some() {
                 panic!("WatchHandle resnapshot is already in progress");
             }
-            *state = Some(ResnapshotState { phase: ResnapshotPhase::Dropping, held: Vec::new() });
+            *state = Some(ResnapshotState {
+                phase: ResnapshotPhase::Dropping,
+                held: Vec::new(),
+            });
         }
         {
-            let mut epoch = self.inner.epoch.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut epoch = self
+                .inner
+                .epoch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             *epoch += 1;
         }
         let snapshot = raw(context, mark).await;
@@ -999,7 +1467,11 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
         }
         loop {
             {
-                let state = self.inner.resnapshot_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let state = self
+                    .inner
+                    .resnapshot_state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let holding = match state.as_ref() {
                     None => true,
                     Some(state) => state.phase == ResnapshotPhase::Holding,
@@ -1012,7 +1484,11 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
         }
         self.set_snapshot(snapshot.clone());
         let held = {
-            let mut state = self.inner.resnapshot_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .inner
+                .resnapshot_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.take().map(|state| state.held).unwrap_or_default()
         };
         for (event, context) in held {
@@ -1021,19 +1497,34 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
         snapshot
     }
 
-
-
     pub fn unsubscribe(&self) {
         {
-            let mut state = self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if *state == WatcherState::Unsubscribed {
                 return;
             }
             *state = WatcherState::Unsubscribed;
         }
-        self.inner.buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
-        *self.inner.listener.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        let callback = self.inner.unsubscribe_callback.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        self.inner
+            .buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        *self
+            .inner
+            .listener
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let callback = self
+            .inner
+            .unsubscribe_callback
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
         if let Some(callback) = callback {
             callback();
         }
@@ -1041,7 +1532,11 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
     }
 
     fn set_unsubscribe(&self, callback: Arc<dyn Fn() + Send + Sync>) {
-        *self.inner.unsubscribe_callback.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(callback);
+        *self
+            .inner
+            .unsubscribe_callback
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(callback);
     }
 
     fn push(&self, event: HarnessEvent, context: Context) {
@@ -1049,7 +1544,11 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
             return;
         }
         {
-            let mut state = self.inner.resnapshot_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .inner
+                .resnapshot_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(state) = state.as_mut() {
                 match state.phase {
                     ResnapshotPhase::Dropping => return,
@@ -1061,7 +1560,11 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
             }
         }
         if self.state() == WatcherState::Buffering {
-            let epoch = *self.inner.epoch.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let epoch = *self
+                .inner
+                .epoch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             self.inner
                 .buffer
                 .lock()
@@ -1069,7 +1572,11 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
                 .push((event, context, epoch));
             return;
         }
-        let epoch = *self.inner.epoch.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let epoch = *self
+            .inner
+            .epoch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.enqueue(event, context, epoch);
     }
 
@@ -1089,26 +1596,49 @@ async fn deliver_watcher<T: Clone + Send + Sync + 'static>(
     context: Context,
     epoch: u64,
 ) {
-    if *inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) != WatcherState::Started {
+    if *inner
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        != WatcherState::Started
+    {
         return;
     }
-    let current = *inner.epoch.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current = *inner
+        .epoch
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if epoch != current {
         return;
     }
-    let listener = inner.listener.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    let listener = inner
+        .listener
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     let Some(listener) = listener else {
         return;
     };
     let event_type = event.event_type();
     let lane = event.lane.clone();
-    let result = std::panic::AssertUnwindSafe(listener(event, context.clone())).catch_unwind().await;
+    let result = std::panic::AssertUnwindSafe(listener(event, context.clone()))
+        .catch_unwind()
+        .await;
     if let Err(payload) = result {
-        let on_error = inner.on_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let on_error = inner
+            .on_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         if let Some(on_error) = on_error {
-            let _ = std::panic::AssertUnwindSafe(on_error(panic_message(&payload), event_type, lane, context))
-                .catch_unwind()
-                .await;
+            let _ = std::panic::AssertUnwindSafe(on_error(
+                panic_message(&payload),
+                event_type,
+                lane,
+                context,
+            ))
+            .catch_unwind()
+            .await;
         }
     }
 }
@@ -1117,6 +1647,34 @@ async fn deliver_watcher<T: Clone + Send + Sync + 'static>(
 mod wire_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn failed_compaction_serializes_the_operation_error() {
+        // Given the original failure, including provider-specific details.
+        let event = HarnessEvent::new(HarnessEventPayload::CompactionEnd {
+            run_id: "op".into(), reason: "overflow".into(), ended_at: 9,
+            status: "failed".into(), entry_id: None,
+            error: Some(OperationError { code: "provider_failure".into(), message: "summary failed".into(), details: Some(json!({"requestId": "req"})) }),
+        }, Some("main".into()));
+        // When the event crosses the public JSON boundary.
+        let value = event_to_value(&event);
+        // Then the complete failure survives, without a success-only entry ID.
+        assert_eq!(value["error"], json!({"code": "provider_failure", "message": "summary failed", "details": {"requestId": "req"}}));
+        assert!(value.get("entryId").is_none());
+    }
+
+    #[test]
+    fn nonfailed_compaction_omits_error() {
+        for status in ["completed", "declined", "aborted"] {
+            // Given a nonfailed terminal event.
+            let event = HarnessEvent::new(HarnessEventPayload::CompactionEnd {
+                run_id: "op".into(), reason: "manual".into(), ended_at: 9,
+                status: status.into(), entry_id: (status == "completed").then(|| "entry".into()), error: None,
+            }, None);
+            // When serialized, then no failure property is emitted.
+            assert!(event_to_value(&event).get("error").is_none());
+        }
+    }
 
     #[test]
     fn hook_handler_error_carries_hook_kind_and_name() {
@@ -1130,7 +1688,10 @@ mod wire_tests {
     #[test]
     fn run_start_carries_type_lane_and_camelcase_fields() {
         let event = HarnessEvent::new(
-            HarnessEventPayload::RunStart { run_id: "op".into(), started_at: 7 },
+            HarnessEventPayload::RunStart {
+                run_id: "op".into(),
+                started_at: 7,
+            },
             Some("main".into()),
         );
         assert_eq!(
@@ -1163,13 +1724,95 @@ mod wire_tests {
     #[test]
     fn optional_fields_are_omitted_when_absent() {
         let event = HarnessEvent::new(
-            HarnessEventPayload::MessageStart { run_id: None, message: crate::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Text("hi".into()), timestamp: 1 })) },
+            HarnessEventPayload::MessageStart {
+                run_id: None,
+                message: crate::types::AgentMessage::Llm(maho_ai::types::Message::User(
+                    maho_ai::types::UserMessage {
+                        content: maho_ai::types::UserContent::Text("hi".into()),
+                        timestamp: 1,
+                    },
+                )),
+            },
             None,
         );
         let value = event_to_value(&event);
         assert!(value.get("lane").is_none());
         assert!(value.get("runId").is_none());
         assert_eq!(value["type"], json!("message_start"));
+    }
+
+    #[test]
+    fn required_nullable_fields_are_present_at_root() {
+        // Given events without a current or previous tip.
+        let cases = [
+            (
+                HarnessEventPayload::NavigationStart {
+                    run_id: "op".into(),
+                    target_id: None,
+                    started_at: 1,
+                },
+                vec!["targetId"],
+            ),
+            (HarnessEventPayload::LaneCreated { at: None }, vec!["at"]),
+            (
+                HarnessEventPayload::RunEnd(RunEndPayload {
+                    run_id: "op".into(),
+                    from_tip_id: None,
+                    tip_id: None,
+                    ended_at: 2,
+                    status: "completed".into(),
+                    error: None,
+                }),
+                vec!["fromTipId", "tipId"],
+            ),
+            (
+                HarnessEventPayload::NavigationEnd(NavigationEndPayload {
+                    run_id: "op".into(),
+                    from_tip_id: None,
+                    tip_id: None,
+                    ended_at: 2,
+                    status: "completed".into(),
+                    error: None,
+                }),
+                vec!["fromTipId", "tipId"],
+            ),
+        ];
+        for (payload, fields) in cases {
+            // When serializing the event.
+            let value = event_to_value(&HarnessEvent::new(payload, None));
+            // Then required nullable keys exist, unlike absent optional keys.
+            for field in fields {
+                assert_eq!(value.get(field), Some(&JsonValue::Null));
+            }
+            assert!(value.get("error").is_none());
+        }
+    }
+
+    #[test]
+    fn suspension_serializes_the_deferred_reason() {
+        // Given a provider-deferred run.
+        let event = HarnessEvent::new(
+            HarnessEventPayload::RunSuspend {
+                run_id: "op".into(),
+                deferred: DeferredHandle {
+                    provider: "p".into(),
+                    model_id: "m".into(),
+                    api: "a".into(),
+                    id: "d".into(),
+                    expires_at: None,
+                    poll_after_ms: None,
+                    data: None,
+                },
+                poll: 3,
+            },
+            None,
+        );
+        // When serializing its suspension.
+        let value = event_to_value(&event);
+        // Then the public discriminant and handle survive.
+        assert_eq!(value["reason"], json!("deferred"));
+        assert_eq!(value["deferred"]["id"], json!("d"));
+        assert_eq!(value["poll"], json!(3));
     }
 
     #[test]
@@ -1209,7 +1852,13 @@ mod wire_tests {
         let value = event_to_value(&event);
         assert_eq!(value["type"], json!("tool_update"));
         assert_eq!(value["toolCallId"], json!("call"));
-        assert_eq!(value["partialResult"], serde_json::to_value(&partial_result).expect("partial result wire"));
-        assert_eq!(value["partialResult"]["content"][0]["text"], json!("partial"));
+        assert_eq!(
+            value["partialResult"],
+            serde_json::to_value(&partial_result).expect("partial result wire")
+        );
+        assert_eq!(
+            value["partialResult"]["content"][0]["text"],
+            json!("partial")
+        );
     }
 }

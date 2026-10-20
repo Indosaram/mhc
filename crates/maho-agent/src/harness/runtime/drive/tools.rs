@@ -88,6 +88,7 @@ fn synthetic_message(
         details: checkpoint.map(|result| result.details.clone()),
         usage: checkpoint.and_then(|result| result.usage),
         added_tool_names: None,
+        nested_calls: checkpoint.and_then(|result| result.nested_calls.clone()),
         is_error: true,
         timestamp,
     }
@@ -262,9 +263,9 @@ pub async fn publish_tool_outcome(
                 end.recovery = recovery.then_some(true);
                 events.push(end);
                 let pending = crate::harness::session::types::PendingEntry::Message {
-                    payload: crate::types::AgentMessage::Llm(maho_ai::types::Message::ToolResult(
+                    payload: Box::new(crate::types::AgentMessage::Llm(maho_ai::types::Message::ToolResult(
                         message,
-                    )),
+                    ))),
                 };
                 let mut writes = vec![
                     crate::harness::session::types::Write::Value(

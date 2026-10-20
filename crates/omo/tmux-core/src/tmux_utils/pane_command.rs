@@ -14,14 +14,6 @@ fn shell_quote_for_nested_command(value: &str) -> String {
         .replace('"', "\\\"")
 }
 
-fn double_quote_shell_argument(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('$', "\\$")
-        .replace('`', "\\`")
-        .replace('"', "\\\"")
-}
-
 fn current_dir() -> String {
     std::env::current_dir()
         .map(|path| path.to_string_lossy().into_owned())
@@ -68,10 +60,10 @@ pub fn build_tmux_placeholder_command(description: &str) -> String {
     } else {
         clean
     };
-    let banner = double_quote_shell_argument(&format!("OMO subagent pane ready: {shown}"));
-    let hint = double_quote_shell_argument("Focus this pane to attach.");
+    let banner = shell_quote_for_nested_command(&format!("OMO subagent pane ready: {shown}"));
+    let hint = shell_quote_for_nested_command("Focus this pane to attach.");
     format!(
-        r#"{TMUX_COMMAND_SHELL} -c "printf '%s\n%s\n' \"{banner}\" \"{hint}\"; while :; do sleep 86400; done""#
+        r#"{TMUX_COMMAND_SHELL} -c "printf '%s\n%s\n' {banner} {hint}; while :; do sleep 86400; done""#
     )
 }
 
@@ -95,4 +87,56 @@ pub fn build_pane_auth_environment_args_from(environment: &dyn EnvSource) -> Vec
 #[must_use]
 pub fn build_pane_auth_environment_args() -> Vec<String> {
     build_pane_auth_environment_args_from(&ProcessEnv)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn run_placeholder(description: &str) -> String {
+        let temp = tempfile::tempdir().expect("temporary placeholder directory");
+        let sleep = temp.path().join("sleep");
+        std::fs::write(&sleep, "#!/bin/sh\nkill -TERM \"$PPID\"\n")
+            .expect("write fake sleep that terminates the idle shell");
+        std::fs::set_permissions(&sleep, std::fs::Permissions::from_mode(0o755))
+            .expect("make fake sleep executable");
+        let command = build_tmux_placeholder_command(description);
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .env("PATH", format!("{}:{}", temp.path().display(), std::env::var("PATH").unwrap_or_default()))
+            .env("OMO_TMUX_CANARY_VAR", "LEAKED")
+            .output()
+            .expect("run nested placeholder shell");
+        String::from_utf8(output.stdout).expect("UTF-8 placeholder banner")
+    }
+
+    #[test]
+    fn placeholder_prints_shell_syntax_and_edge_cases_literally() {
+        let temp = tempfile::tempdir().expect("temporary canary directory");
+        let canary = temp.path().join("canary");
+        for description in [
+            "Fix Bob's 100% broken pane".to_owned(),
+            format!("run $(touch {}) `touch {}` $HOME \"quoted\" a;b|c&d #e (f) back\\slash", canary.display(), canary.display()),
+            format!("first line\nsecond line $(touch {})", canary.display()),
+            "ends in a backslash \\".to_owned(),
+            "expands ${OMO_TMUX_CANARY_VAR} and $OMO_TMUX_CANARY_VAR".to_owned(),
+            "before\0after".to_owned(),
+        ] {
+            let output = run_placeholder(&description);
+            assert_eq!(output, format!("OMO subagent pane ready: {}\nFocus this pane to attach.\n", description.replace('\0', "")));
+            assert!(!canary.exists());
+        }
+    }
+
+    #[test]
+    fn placeholder_caps_long_descriptions_before_shell_execution() {
+        let description = "$(printf UNEXPECTED) ".repeat(2_000);
+        let command = build_tmux_placeholder_command(&description);
+        assert!(command.len() < 12_000);
+        assert_eq!(run_placeholder(&description), format!(
+            "OMO subagent pane ready: {}…\nFocus this pane to attach.\n",
+            &description[..2_000],
+        ));
+    }
 }
