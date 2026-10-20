@@ -10,3 +10,6 @@ pub mod kimi_xtml;
 pub mod morph_xml;
 pub mod xml_tool_tag_scanner;
 pub mod yaml_xml;
+
+#[cfg(test)]
+mod audit_regressions;

@@ -238,6 +238,8 @@ pub fn factories_with_mcp_registry(widget_sender: tokio::sync::mpsc::UnboundedSe
     let tool_search_service: Arc<std::sync::Mutex<Option<super::tool_search::SharedToolSearchService>>> = Arc::new(std::sync::Mutex::new(None));
     let tool_search_slot = tool_search_service.clone();
     vec![
+            #[cfg(windows)]
+            factory("memory-report", super::memory_report_registry::MemoryReportCommand),
             factory("recommended-models", maho_ext_recommended_models::RecommendedModels),
             factory("permission-system", maho_ext_permission_system::PermissionSystem),
             factory("gpt-apply-patch", maho_ext_gpt_apply_patch::index::ApplyPatchExtension),

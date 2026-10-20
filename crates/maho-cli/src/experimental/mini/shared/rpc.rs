@@ -2,53 +2,74 @@ use std::{collections::{HashMap, HashSet}, future::Future, pin::Pin, sync::{Arc,
 use maho_ai::utils::abort::{AbortController, AbortReason, AbortSignal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use maho_chord::types::JsString;
 use tokio::{io::{AsyncRead, AsyncWrite, AsyncWriteExt}, sync::{mpsc, oneshot}};
 use super::{protocol::ServiceToken, transport::JsonConnection};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Frame {
     Call { id: u64, method: String, args: Vec<Value> },
     Result { id: u64, result: Value },
     Error { id: u64, error: String },
     Cancel { id: u64 },
-    Event { service: String, payload: Value, #[serde(skip_serializing_if = "Option::is_none")] to: Option<String> },
-    Announce { services: Vec<String> },
+    Event { service: JsString, payload: Value, #[serde(skip_serializing_if = "Option::is_none")] to: Option<String> },
+    Announce { services: Vec<JsString> },
     Ping,
+}
+impl<'de> Deserialize<'de> for Frame {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = maho_chord::types::JsonValue::deserialize(deserializer)?;
+        fn field<T: serde::de::DeserializeOwned, E: serde::de::Error>(value: &maho_chord::types::JsonValue, key: &str) -> Result<T, E> {
+            let text = serde_json::to_string(&value[key]).map_err(E::custom)?;
+            serde_json::from_str(&text).map_err(E::custom)
+        }
+        match value["kind"].as_str() {
+            Some("call") => Ok(Self::Call { id: field(&value, "id")?, method: field(&value, "method")?, args: field(&value, "args")? }),
+            Some("result") => Ok(Self::Result { id: field(&value, "id")?, result: field(&value, "result")? }),
+            Some("error") => Ok(Self::Error { id: field(&value, "id")?, error: field(&value, "error")? }),
+            Some("cancel") => Ok(Self::Cancel { id: field(&value, "id")? }),
+            Some("event") => Ok(Self::Event { service: field(&value, "service")?, payload: field(&value, "payload")?, to: field(&value, "to")? }),
+            Some("announce") => Ok(Self::Announce { services: field(&value, "services")? }),
+            Some("ping") => Ok(Self::Ping),
+            _ => Err(serde::de::Error::custom("invalid RPC frame kind")),
+        }
+    }
 }
 pub type HandlerFuture = Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
 pub type Handler = Arc<dyn Fn(Vec<Value>, AbortSignal) -> HandlerFuture + Send + Sync>;
 pub type Forward = Arc<dyn Fn(String, Vec<Value>) -> HandlerFuture + Send + Sync>;
-pub type EventHandler = Arc<dyn Fn(&str, &Value, Option<&str>) + Send + Sync>;
+pub type EventHandler = Arc<dyn Fn(&JsString, &Value, Option<&str>) + Send + Sync>;
 #[derive(Default)]
 pub struct CallOptions { pub signal: Option<AbortSignal>, pub timeout_ms: Option<u64> }
 pub struct PeerOptions { pub forward: Option<Forward>, pub dead_ms: u64 }
 impl Default for PeerOptions { fn default() -> Self { Self { forward: None, dead_ms: 15_000 } } }
 struct State {
-    services: HashMap<String, HashMap<String, Handler>>, provided: Vec<String>, announced: HashSet<String>,
+    services: HashMap<JsString, HashMap<String, Handler>>, provided: Vec<JsString>, announced: HashSet<JsString>,
     pending: HashMap<u64, oneshot::Sender<Result<Value, String>>>, inflight: HashMap<u64, AbortController>,
     events: Vec<EventHandler>, close_handlers: Vec<Arc<dyn Fn() + Send + Sync>>, next_id: u64, closed: bool,
 }
 pub struct RpcPeer { state: Arc<Mutex<State>>, outgoing: mpsc::UnboundedSender<Frame>, close: AbortController }
 impl RpcPeer {
-    pub fn provide(&self, token: ServiceToken, implementation: HashMap<String, Handler>) {
+    pub fn provide(&self, token: &ServiceToken, implementation: HashMap<String, Handler>) {
         let services = {
             let mut state = self.state.lock().expect("RPC state lock");
-            state.services.insert(token.name.to_owned(), implementation);
-            if !state.provided.iter().any(|name| name == token.name) { state.provided.push(token.name.to_owned()); }
+            state.services.insert(token.id.clone(), implementation);
+            if !state.provided.iter().any(|name| name == &token.id) { state.provided.push(token.id.clone()); }
             state.provided.clone()
         };
         self.send(Frame::Announce { services });
     }
-    pub fn provided(&self) -> Vec<String> { self.state.lock().expect("RPC state lock").provided.clone() }
-    pub fn announced(&self) -> HashSet<String> { self.state.lock().expect("RPC state lock").announced.clone() }
-    pub fn emit(&self, token: ServiceToken, payload: Value) { self.emit_raw(token.name, payload, None); }
-    pub fn emit_to(&self, token: ServiceToken, payload: Value, to: &str) { self.emit_raw(token.name, payload, Some(to)); }
-    pub fn emit_raw(&self, service: &str, payload: Value, to: Option<&str>) { self.send(Frame::Event { service: service.to_owned(), payload, to: to.map(str::to_owned) }); }
-    pub fn on(&self, token: ServiceToken, handler: impl Fn(&Value) + Send + Sync + 'static) {
-        self.on_event(move |name, payload, _| { if name == token.name { handler(payload); } });
+    pub fn provided(&self) -> Vec<JsString> { self.state.lock().expect("RPC state lock").provided.clone() }
+    pub fn announced(&self) -> HashSet<JsString> { self.state.lock().expect("RPC state lock").announced.clone() }
+    pub fn emit(&self, token: &ServiceToken, payload: Value) { self.emit_raw(&token.id, payload, None); }
+    pub fn emit_to(&self, token: &ServiceToken, payload: Value, to: &str) { self.emit_raw(&token.id, payload, Some(to)); }
+    pub fn emit_raw(&self, service: &JsString, payload: Value, to: Option<&str>) { self.send(Frame::Event { service: service.clone(), payload, to: to.map(str::to_owned) }); }
+    pub fn on(&self, token: &ServiceToken, handler: impl Fn(&Value) + Send + Sync + 'static) {
+        let id = token.id.clone();
+        self.on_event(move |name, payload, _| { if name == &id { handler(payload); } });
     }
-    pub fn on_event(&self, handler: impl Fn(&str, &Value, Option<&str>) + Send + Sync + 'static) { self.state.lock().expect("RPC state lock").events.push(Arc::new(handler)); }
+    pub fn on_event(&self, handler: impl Fn(&JsString, &Value, Option<&str>) + Send + Sync + 'static) { self.state.lock().expect("RPC state lock").events.push(Arc::new(handler)); }
     pub fn on_close(&self, handler: impl Fn() + Send + Sync + 'static) { self.state.lock().expect("RPC state lock").close_handlers.push(Arc::new(handler)); }
     pub fn close(&self) { self.close.abort(None); }
     pub fn is_closed(&self) -> bool { self.state.lock().expect("RPC state lock").closed }
@@ -111,10 +132,10 @@ where R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'sta
                     if reader_outgoing.send(Frame::Ping).is_err() { break; }
                     continue;
                 }
-                value = connection.receive() => match value { Ok(Some(value)) => value, _ => break },
+                value = connection.receive_typed::<Frame>() => match value { Ok(Some(value)) => value, _ => break },
             };
             last_frame = tokio::time::Instant::now();
-            let frame: Frame = match serde_json::from_value(value) { Ok(frame) => frame, Err(_) => break };
+            let frame = value;
             match frame {
                 Frame::Event { service, payload, to } => {
                     let handlers = reader_state.lock().expect("RPC state lock").events.clone();
@@ -136,7 +157,7 @@ where R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'sta
                     let (local, handler) = {
                         let mut state = reader_state.lock().expect("RPC state lock");
                         state.inflight.insert(id, controller.clone());
-                        let service = method.split_once('.').and_then(|(name, _)| state.services.get(name));
+                        let service = method.split_once('.').and_then(|(name, _)| state.services.get(&JsString::from(name)));
                         let handler = method.split_once('.').and_then(|(_, name)| service.and_then(|service| service.get(name))).cloned();
                         (service.is_some(), handler)
                     };

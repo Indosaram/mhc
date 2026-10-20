@@ -131,7 +131,10 @@ if [ \"$OMO_MEMORY_PUSH_SYNC\" = \"1\" ]; then\n\
   exit 0\n\
 fi\n\
 \n\
-push_to_mirror &\n\
+# Detach the background push from git's stdout/stderr: a child that keeps them open makes the\n\
+# commit wait for it (omo #10199). A bare exec redirects for good; a redirect on the function\n\
+# call would make dash keep saved copies of the originals open for the whole push.\n\
+( exec </dev/null >/dev/null 2>&1; push_to_mirror ) &\n\
 exit 0\n"
 }
 
@@ -343,3 +346,63 @@ impl<'a> MirrorSync<'a> {
 #[cfg(test)]
 #[path = "mirror_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod hook_detachment_tests {
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn background_push_when_hook_has_pipes_then_closes_inherited_output_descriptors() {
+        // Given: piped hook output and a push probe inspecting the shell's saved descriptors.
+        let temp = tempfile::tempdir().expect("temporary repository");
+        let script = super::get_post_commit_hook_script();
+        // Wait only in the test harness so log assertions observe the completed background job.
+        let script = script.strip_suffix("exit 0\n").expect("hook exit");
+        let harness = format!(
+            "hook_stdout=$(readlink /proc/$$/fd/1)
+hook_stderr=$(readlink /proc/$$/fd/2)
+git() {{
+  case \"$1\" in
+    config) printf 'mirror\\n' ;;
+    symbolic-ref) printf 'main\\n' ;;
+    rev-parse) printf '.\\n' ;;
+    push)
+      read -r push_pid rest < /proc/self/stat
+      for fd in /proc/\"$push_pid\"/fd/*; do
+        target=$(readlink \"$fd\") || continue
+        if [ \"$target\" = \"$hook_stdout\" ] || [ \"$target\" = \"$hook_stderr\" ]; then
+          printf 'inherited-output\\n'
+        fi
+      done
+      printf 'push-stdout\\n'
+      printf 'push-stderr\\n' >&2
+      ;;
+    *) return 1 ;;
+  esac
+}}
+{script}wait\n"
+        );
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(harness)
+            .current_dir(temp.path())
+            .env_remove(super::SYNC_PUSH_ENV)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start hook");
+        // When: the generated hook runs its background push to completion.
+        let output = child.wait_with_output().expect("finish hook");
+
+        // Then: no original output pipe is retained, and push output still reaches the log.
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+        let log = std::fs::read_to_string(temp.path().join(super::LOG_NAME)).expect("push log");
+        assert!(!log.contains("inherited-output\n"));
+        assert!(log.contains("push-stdout\n"));
+        assert!(log.contains("push-stderr\n"));
+        assert!(log.contains("exit=0\n"));
+    }
+}

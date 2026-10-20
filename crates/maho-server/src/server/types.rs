@@ -1,16 +1,11 @@
 use super::errors::ServerError;
-use serde_json::Value;
+pub use maho_chord::types::ContextRef as Context;
+use maho_chord::types::JsonValue as Value;
 use std::{future::Future, pin::Pin, sync::Arc};
-use tokio::sync::watch;
 
 pub type ServerFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ServerError>> + Send + 'a>>;
 pub type TerminationFuture = Pin<Box<dyn Future<Output = Option<ServerError>> + Send + 'static>>;
-pub type Publisher = Arc<dyn Fn(String, Value) -> ServerFuture<'static, ()> + Send + Sync>;
-
-#[derive(Clone)]
-pub struct Context {
-    pub cancelled: watch::Receiver<bool>,
-}
+pub type Publisher = Arc<dyn Fn(maho_chord::types::JsString, Value, Context) -> ServerFuture<'static, ()> + Send + Sync>;
 
 pub trait RoutedSessionAttachment: Send + Sync {
     fn invoke_service<'a>(
@@ -19,13 +14,16 @@ pub trait RoutedSessionAttachment: Send + Sync {
         publish: Publisher,
         context: Context,
     ) -> ServerFuture<'a, Option<Value>>;
-    fn release(&self) -> ServerFuture<'_, ()>;
+    fn release(&self, context: Context) -> ServerFuture<'_, ()>;
 }
 pub trait RoutedSessionHandle: Send + Sync {
-    fn attach_client(&self) -> ServerFuture<'_, Arc<dyn RoutedSessionAttachment>>;
+    fn attach_client(&self, context: Context)
+    -> ServerFuture<'_, Arc<dyn RoutedSessionAttachment>>;
     /// Resolves with an error for unexpected termination, or `None` after an expected close.
-    fn terminated(&self) -> Option<TerminationFuture> { None }
-    fn close(&self) -> ServerFuture<'_, ()>;
+    fn terminated(&self) -> Option<TerminationFuture> {
+        None
+    }
+    fn close(&self, context: Context) -> ServerFuture<'_, ()>;
 }
 pub trait RoutedServerServiceAttachment: Send + Sync {
     fn invoke_service<'a>(
@@ -34,23 +32,36 @@ pub trait RoutedServerServiceAttachment: Send + Sync {
         publish: Publisher,
         context: Context,
     ) -> ServerFuture<'a, Option<Value>>;
-    fn release(&self) -> ServerFuture<'_, ()>;
+    fn release(&self, context: Context) -> ServerFuture<'_, ()>;
 }
 pub trait RoutedServerServiceHost: Send + Sync {
     fn attach_client(
         &self,
         presentation: Arc<dyn RoutedServerPresentation>,
+        context: Context,
     ) -> ServerFuture<'_, Arc<dyn RoutedServerServiceAttachment>>;
 }
 pub trait RoutedServerPresentation: Send + Sync {
-    fn attach_session<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()>;
-    fn detach_session(&self) -> ServerFuture<'_, ()>;
-    fn prepare_session_removal<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()>;
+    fn attach_session<'a>(&'a self, session_id: &'a str, context: Context) -> ServerFuture<'a, ()>;
+    fn detach_session(&self, context: Context) -> ServerFuture<'_, ()>;
+    fn prepare_session_removal<'a>(
+        &'a self,
+        session_id: &'a str,
+        context: Context,
+    ) -> ServerFuture<'a, ()>;
 }
 pub trait ServerHost: Send + Sync {
     fn server_services(&self) -> &dyn RoutedServerServiceHost;
-    fn resolve_session<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, Value>;
-    fn open_session(&self, metadata: Value) -> ServerFuture<'_, Arc<dyn RoutedSessionHandle>>;
+    fn resolve_session<'a>(
+        &'a self,
+        session_id: &'a str,
+        context: Context,
+    ) -> ServerFuture<'a, Value>;
+    fn open_session(
+        &self,
+        metadata: Value,
+        context: Context,
+    ) -> ServerFuture<'_, Arc<dyn RoutedSessionHandle>>;
 }
 
 pub trait ByteConnection: Send + Sync {

@@ -9,6 +9,7 @@
 //! `notice.ts` -> [`notice`].
 pub mod builtin_profiles;
 pub mod credential_policy;
+pub mod default_profile;
 pub mod index;
 pub mod notice;
 pub mod request_auth;

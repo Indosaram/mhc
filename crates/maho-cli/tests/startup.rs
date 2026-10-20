@@ -8,7 +8,7 @@ fn cli_model_selection_reports_the_origin_the_profile_gate_reads() {
     std::fs::create_dir_all(&agent).unwrap();
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(dir.path().join("models.json")), auth_path: Some(dir.path().join("auth.json")), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent.to_string_lossy(), &cwd, false);
     let model = runtime.get_models(None).remove(0);
     let pinned = build_session_options(
@@ -55,7 +55,7 @@ async fn prepared_message_uses_real_file_and_keeps_private_input_out_of_title() 
 fn scoped_startup_model_and_tool_suppression_preserve_explicit_thinking_off() {
     use maho_ai::types::ModelThinkingLevel;
     let dir = tempfile::tempdir().unwrap(); let cwd = dir.path().to_string_lossy();
-    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: Some(dir.path().join("models.json")), auth_path: Some(dir.path().join("auth.json")), ..Default::default() });
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: Some(dir.path().join("models.json")), auth_path: Some(dir.path().join("auth.json")), ..Default::default() }).expect("valid model runtime");
     let model = runtime.get_models(None).remove(0);
     let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &dir.path().join("agent").to_string_lossy(), &cwd, false);
     let scoped = [maho_core::model_resolver::ScopedModel { model: model.clone(), thinking_level: Some(ModelThinkingLevel::High), thinking_selection: None, service_tier: Some("priority".to_owned()) }];
