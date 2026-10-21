@@ -125,4 +125,13 @@ mod tests {
         assert_eq!(saved, value);
         assert_eq!(std::fs::read_dir(dir.path()).expect("entries").count(), 1);
     }
+
+    #[test]
+    fn publication_failure_does_not_leave_a_partial_artifact() {
+        let dir = tempfile::tempdir().expect("directory");
+        std::fs::create_dir(dir.path().join("blocked.json")).expect("blocked target");
+        let result = write_report(dir.path(), "blocked", &serde_json::json!({"sessionId":"test"}));
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).expect("entries").count(), 1);
+    }
 }
