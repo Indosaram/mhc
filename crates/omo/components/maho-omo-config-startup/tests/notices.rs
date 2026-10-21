@@ -128,12 +128,14 @@ fn notification_messages_join_every_migration_diagnostic_once() {
             omo_config_core::MigrationRunResult {
                 diagnostics: vec!["first".into()],
                 journal_resumed: false,
+                target_backup_path: None,
                 preview: None,
                 status: MigrationStatus::Migrated,
             },
             omo_config_core::MigrationRunResult {
                 diagnostics: vec!["second".into()],
                 journal_resumed: false,
+                target_backup_path: None,
                 preview: None,
                 status: MigrationStatus::Migrated,
             },

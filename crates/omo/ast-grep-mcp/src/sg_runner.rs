@@ -1,6 +1,8 @@
 //! Spawns `sg` with streamed JSON output under record, payload, stderr and time bounds.
 
 use std::io::Read;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Child;
 use std::process::Command;
@@ -409,6 +411,8 @@ pub fn spawn_sg_runner(input: SgRunnerInput<'_>) -> Result<SgRunnerResult, SgRun
     let timeout = Duration::from_millis(input.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
 
     let mut command = Command::new(input.sg_path);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: upstream windowsHide: true.
     command
         .args(&input.args)
         .current_dir(Path::new(input.workdir))
@@ -416,7 +420,7 @@ pub fn spawn_sg_runner(input: SgRunnerInput<'_>) -> Result<SgRunnerResult, SgRun
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(env) = &input.env {
-        command.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+        command.env_clear().envs(env);
     }
     let mut child = command.spawn().map_err(|error| {
         runner_error(

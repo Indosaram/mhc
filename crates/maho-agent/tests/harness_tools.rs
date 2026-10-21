@@ -1,3 +1,6 @@
+use maho_agent::harness::utils::adaptive_publisher::{
+    AdaptivePublisher, AdaptivePublisherOptions, PublisherClock,
+};
 use maho_agent::{
     harness::{
         context::{Context, background_context, with_abort_signal},
@@ -25,7 +28,6 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
-use maho_agent::harness::utils::adaptive_publisher::{AdaptivePublisher, AdaptivePublisherOptions, PublisherClock};
 
 struct Invocation;
 impl AgentHarnessToolInvocation for Invocation {
@@ -290,7 +292,8 @@ async fn delegates_image_conversion_and_resize_options() {
     let seen = Arc::new(Mutex::new(None));
     let observed = seen.clone();
     let processor: ReadImageProcessor = Arc::new(move |bytes, mime, options, _| {
-        *observed.lock().expect("tool test operation must succeed") = Some((bytes, mime, options.auto_resize_images));
+        *observed.lock().expect("tool test operation must succeed") =
+            Some((bytes, mime, options.auto_resize_images));
         Box::pin(async {
             ReadImageProcessorResult::Ok {
                 data: "converted".into(),
@@ -340,7 +343,12 @@ async fn applies_disjoint_edits_with_both_diff_formats() {
         text(&result),
         "Successfully replaced 2 block(s) in edit.txt."
     );
-    assert!(result.details["diff"].as_str().expect("tool test operation must succeed").contains("GAMMA"));
+    assert!(
+        result.details["diff"]
+            .as_str()
+            .expect("tool test operation must succeed")
+            .contains("GAMMA")
+    );
     assert!(
         result.details["patch"]
             .as_str()
@@ -380,7 +388,8 @@ async fn rejects_missing_and_duplicate_targets() {
 async fn serializes_canonical_and_symlink_edits() {
     let f = Fixture::new();
     f.put("target.txt", "alpha\nbeta\ngamma\n");
-    std::os::unix::fs::symlink("target.txt", f.dir.join("link.txt")).expect("tool test operation must succeed");
+    std::os::unix::fs::symlink("target.txt", f.dir.join("link.txt"))
+        .expect("tool test operation must succeed");
     let (a, b) = tokio::join!(
         f.run(
             create_edit_tool(),
@@ -400,7 +409,8 @@ async fn serializes_canonical_and_symlink_edits() {
 async fn edits_regular_files_through_symlinks() {
     let f = Fixture::new();
     f.put("target.txt", "before\n");
-    std::os::unix::fs::symlink("target.txt", f.dir.join("link.txt")).expect("tool test operation must succeed");
+    std::os::unix::fs::symlink("target.txt", f.dir.join("link.txt"))
+        .expect("tool test operation must succeed");
     f.run(
         create_edit_tool(),
         json!({"path":"link.txt","edits":[{"oldText":"before","newText":"after"}]}),
@@ -497,7 +507,10 @@ async fn prepares_command_cwd_and_explicit_environment() {
         .map(|rest| format!(r"\\{rest}"))
         .or_else(|| canonical_str.strip_prefix(r"\\?\").map(str::to_owned))
         .unwrap_or_else(|| canonical_str.into_owned());
-    let expected = std::path::Path::new(&stripped).join("workspace").to_string_lossy().into_owned();
+    let expected = std::path::Path::new(&stripped)
+        .join("workspace")
+        .to_string_lossy()
+        .into_owned();
     let target = expected.clone();
     let prepare: BashPrepare<ExecutionToolContext> = Arc::new(move |execution, _, _| {
         execution.cwd = target.clone();
@@ -547,7 +560,10 @@ async fn prepares_command_cwd_and_explicit_environment() {
         } else {
             pwd.replace('/', "\\")
         };
-        assert_eq!(win_pwd.to_lowercase(), expected.replace('/', "\\").to_lowercase());
+        assert_eq!(
+            win_pwd.to_lowercase(),
+            expected.replace('/', "\\").to_lowercase()
+        );
     } else {
         assert_eq!(output, format!("ready:explicit:{expected}"));
     }
@@ -561,10 +577,20 @@ async fn coalesces_updates_and_spills_full_output() {
     let published_updates = coalesced_updates.clone();
     let publisher = AdaptivePublisher::new(
         AdaptivePublisherOptions {
-            snapshot: Box::new(move || snapshot_value.lock().expect("tool test operation must succeed").clone()),
+            snapshot: Box::new(move || {
+                snapshot_value
+                    .lock()
+                    .expect("tool test operation must succeed")
+                    .clone()
+            }),
             update: Box::new(|_previous: Option<&String>, current: &String| Some(current.clone())),
             measure: Box::new(|update: &String| update.len() as u64),
-            publish: Box::new(move |update| published_updates.lock().expect("tool test operation must succeed").push(update)),
+            publish: Box::new(move |update| {
+                published_updates
+                    .lock()
+                    .expect("tool test operation must succeed")
+                    .push(update)
+            }),
             on_error: Box::new(|message| panic!("{message}")),
             min_interval_ms: Some(100),
             target_bytes_per_second: Some(u64::MAX),
@@ -578,7 +604,9 @@ async fn coalesces_updates_and_spills_full_output() {
     }
     clock.advance(100);
     {
-        let published = coalesced_updates.lock().expect("tool test operation must succeed");
+        let published = coalesced_updates
+            .lock()
+            .expect("tool test operation must succeed");
         assert_eq!(published.len(), 2);
         assert_eq!(published.last().map(String::as_str), Some("line-3000"));
     }
@@ -591,14 +619,21 @@ async fn coalesces_updates_and_spills_full_output() {
         json!({"command":"i=1; while [ $i -le 3000 ]; do echo line-$i; i=$((i + 1)); done"}),
         f.context.clone(),
         background_context(),
-        Arc::new(move |update, _| observed.lock().expect("tool test operation must succeed").push(update)),
+        Arc::new(move |update, _| {
+            observed
+                .lock()
+                .expect("tool test operation must succeed")
+                .push(update)
+        }),
     )
     .await
     .expect("tool test operation must succeed");
     assert_eq!(result.details["truncation"]["totalLines"], 3000);
     assert_eq!(result.details["truncation"]["outputLines"], 2000);
     assert!(text(&result).contains("line-3000"));
-    let path = result.details["fullOutputPath"].as_str().expect("tool test operation must succeed");
+    let path = result.details["fullOutputPath"]
+        .as_str()
+        .expect("tool test operation must succeed");
     let full = std::fs::read_to_string(path).expect("tool test operation must succeed");
     assert!(full.contains("line-1\nline-2"));
     assert!(full.contains("line-2999\nline-3000"));
@@ -622,7 +657,9 @@ impl ManualPublisherClock {
             let mut state = self.state.lock().expect("tool test operation must succeed");
             state.now_ms += ms;
             match state.pending.as_ref() {
-                Some((deadline, _)) if *deadline <= state.now_ms => state.pending.take().map(|(_, callback)| callback),
+                Some((deadline, _)) if *deadline <= state.now_ms => {
+                    state.pending.take().map(|(_, callback)| callback)
+                }
                 _ => None,
             }
         };
@@ -634,7 +671,10 @@ impl ManualPublisherClock {
 
 impl PublisherClock for ManualPublisherClock {
     fn now_ms(&self) -> i64 {
-        self.state.lock().expect("tool test operation must succeed").now_ms
+        self.state
+            .lock()
+            .expect("tool test operation must succeed")
+            .now_ms
     }
 
     fn set_timeout(&self, wait_ms: u64, callback: Box<dyn FnOnce() + Send>) {
@@ -643,7 +683,10 @@ impl PublisherClock for ManualPublisherClock {
     }
 
     fn clear_timeout(&self) {
-        self.state.lock().expect("tool test operation must succeed").pending = None;
+        self.state
+            .lock()
+            .expect("tool test operation must succeed")
+            .pending = None;
     }
 }
 
@@ -817,7 +860,10 @@ fn detects_gif_and_webp() {
 fn rejects_gif_without_a_supported_version_signature() {
     assert_eq!(detect_supported_image_mime_type(b"GIF"), None);
     assert_eq!(detect_supported_image_mime_type(b"GIF90a"), None);
-    assert_eq!(detect_supported_image_mime_type(b"GIF87a"), Some("image/gif"));
+    assert_eq!(
+        detect_supported_image_mime_type(b"GIF87a"),
+        Some("image/gif")
+    );
 }
 #[test]
 fn validates_bmp_header() {
@@ -895,12 +941,16 @@ async fn resolves_decomposed_read_filename() {
 
     let f = Fixture::new();
     f.put("e\u{301}.txt", "x");
-    let created = std::fs::metadata(f.dir.join("e\u{301}.txt")).expect("tool test operation must succeed");
+    let created =
+        std::fs::metadata(f.dir.join("e\u{301}.txt")).expect("tool test operation must succeed");
     let resolved = resolve_read_tool_path(f.context.env.as_ref(), "é.txt", &background_context())
         .await
         .expect("tool test operation must succeed");
     let resolved = std::fs::metadata(resolved).expect("tool test operation must succeed");
-    assert_eq!((created.dev(), created.ino()), (resolved.dev(), resolved.ino()));
+    assert_eq!(
+        (created.dev(), created.ino()),
+        (resolved.dev(), resolved.ino())
+    );
 }
 #[tokio::test]
 async fn resolves_smart_quote_read_filename() {
@@ -1047,10 +1097,19 @@ impl FileSystem for ControlledEnv {
         Box::pin(async move {
             let first = self.writes.fetch_add(1, Ordering::SeqCst) == 0;
             if first {
-                if let Some(started) = self.started.lock().expect("tool test operation must succeed").take() {
+                if let Some(started) = self
+                    .started
+                    .lock()
+                    .expect("tool test operation must succeed")
+                    .take()
+                {
                     started.send(()).expect("tool test operation must succeed");
                 }
-                let release = self.release.lock().expect("tool test operation must succeed").take();
+                let release = self
+                    .release
+                    .lock()
+                    .expect("tool test operation must succeed")
+                    .take();
                 if let Some(release) = release {
                     release.await.expect("tool test operation must succeed");
                 }
@@ -1096,7 +1155,8 @@ async fn emit(options: &ShellExecOptions, text: &str, spill: Option<String>) -> 
             },
             background_context(),
         )
-        .await;
+        .await
+        .expect("output observer settles");
     }
     ShellExecResult {
         exit_code: 0,
@@ -1118,7 +1178,8 @@ impl Shell for ControlledEnv {
                 Script::Native => self.inner.exec(command, Some(options), context).await,
                 Script::Late => {
                     let result = emit(&options, "before\n", None).await;
-                    *self.late.lock().expect("tool test operation must succeed") = options.on_update;
+                    *self.late.lock().expect("tool test operation must succeed") =
+                        options.on_update;
                     Ok(result)
                 }
                 Script::Checkpoints => {
@@ -1163,11 +1224,20 @@ async fn ignores_callbacks_after_shell_settles() {
             post_mutate: None,
         },
         background_context(),
-        Arc::new(move |update, _| seen.lock().expect("tool test operation must succeed").push(text(&update))),
+        Arc::new(move |update, _| {
+            seen.lock()
+                .expect("tool test operation must succeed")
+                .push(text(&update))
+        }),
     )
     .await
     .expect("tool test operation must succeed");
-    let callback = env.late.lock().expect("tool test operation must succeed").take().expect("tool test operation must succeed");
+    let callback = env
+        .late
+        .lock()
+        .expect("tool test operation must succeed")
+        .take()
+        .expect("tool test operation must succeed");
     let options = ShellExecOptions {
         on_update: Some(callback),
         ..Default::default()
@@ -1198,14 +1268,18 @@ async fn requests_distinct_checkpoints_at_two_second_intervals() {
         background_context(),
         Arc::new(move |update, options| {
             if options.and_then(|options| options.checkpoint) == Some(true) {
-                seen.lock().expect("tool test operation must succeed").push(text(&update));
+                seen.lock()
+                    .expect("tool test operation must succeed")
+                    .push(text(&update));
             }
         }),
     )
     .await
     .expect("tool test operation must succeed");
     assert_eq!(
-        *checkpoints.lock().expect("tool test operation must succeed"),
+        *checkpoints
+            .lock()
+            .expect("tool test operation must succeed"),
         vec!["one\ntwo\n", "one\ntwo\nthree\nfour\n"]
     );
 }
@@ -1285,9 +1359,14 @@ async fn aborted_mutation_keeps_queue(editing: bool) {
     tokio::pin!(second);
     assert!(futures::poll!(&mut second).is_pending());
     assert_eq!(env.writes.load(Ordering::SeqCst), 1);
-    release_tx.send(()).expect("tool test operation must succeed");
+    release_tx
+        .send(())
+        .expect("tool test operation must succeed");
     let (first, second) = tokio::join!(first, second);
-    assert_eq!(first.expect_err("first mutation must observe cancellation"), "Operation aborted");
+    assert_eq!(
+        first.expect_err("first mutation must observe cancellation"),
+        "Operation aborted"
+    );
     second.expect("tool test operation must succeed");
     assert_eq!(
         f.get("file.txt"),

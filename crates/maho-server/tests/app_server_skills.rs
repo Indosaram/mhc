@@ -78,7 +78,7 @@ async fn loaded_thread_cwd_uses_its_live_session_skills_and_falls_back_only_when
         settings_manager: SettingsManager::from_storage(Box::<InMemorySettingsStorage>::default(), false),
         cwd: thread_cwd.clone(), agent_dir: Some(agent.display().to_string()), fallback_now: None, retry_random: None,
         scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
-        model_runtime: Some(ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() })),
+        model_runtime: Some(ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime")),
         model_registry: None, uses_default_stream_function: Some(false), initial_active_tool_names: None, default_tool_names: None,
         eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
         session_start_event: None, auto_title_sessions: Some(false),

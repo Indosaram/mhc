@@ -1,32 +1,100 @@
-use maho_ai::{types::{AssistantMessage,AssistantMessageEvent as Event,ContentBlock,TextContent,ThinkingContent,Usage,StopReason,DoneReason},model::Model,utils::{event_stream::{AssistantMessageEventStream,create_assistant_message_event_stream},diagnostics::{create_assistant_message_diagnostic,Thrown}}};
-use serde_json::{Value,json};
+use maho_ai::{
+    model::Model,
+    types::{
+        AssistantMessage, AssistantMessageEvent as Event, ContentBlock, DoneReason, StopReason,
+        TextContent, ThinkingContent, Usage,
+    },
+    utils::{
+        diagnostics::{Thrown, create_assistant_message_diagnostic},
+        event_stream::{AssistantMessageEventStream, create_assistant_message_event_stream},
+    },
+};
+use serde_json::{Value, json};
 pub struct StreamDeps {
-    pub cwd:std::path::PathBuf,pub agent_dir:std::path::PathBuf,pub executable:std::path::PathBuf,
-    pub store:std::sync::Arc<dyn maho_ai::auth::types::CredentialStore>,pub oauth:std::sync::Arc<dyn maho_ai::auth::types::OAuthAuth>,
-    pub settings:crate::settings::CursorCliOauthProviderSettings,pub router:std::sync::Arc<tokio::sync::Mutex<crate::session_router::SessionRouter>>,
-    pub environment:std::collections::BTreeMap<String,String>,pub now:std::sync::Arc<dyn Fn()->i64+Send+Sync>,
+    pub cwd: std::path::PathBuf,
+    pub agent_dir: std::path::PathBuf,
+    pub executable: std::path::PathBuf,
+    pub store: std::sync::Arc<dyn maho_ai::auth::types::CredentialStore>,
+    pub oauth: std::sync::Arc<dyn maho_ai::auth::types::OAuthAuth>,
+    pub settings: crate::settings::CursorCliOauthProviderSettings,
+    pub router: std::sync::Arc<tokio::sync::Mutex<crate::session_router::SessionRouter>>,
+    pub environment: std::collections::BTreeMap<String, String>,
+    pub now: std::sync::Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 /// A turn refused before any spawn (senpi `stream.ts` catch path): one error event, then the end.
-pub fn failed_stream(model:&Model,at:i64,message:&str)->AssistantMessageEventStream {
-    let mut mapper=StreamMapper::new(model,at);
-    mapper.output.stop_reason=StopReason::Error;mapper.output.error_message=Some(message.into());
-    mapper.stream.push(Event::Error {reason:maho_ai::types::ErrorReason::Error,error:mapper.output.clone()});mapper.stream.end(None);
+pub fn failed_stream(model: &Model, at: i64, message: &str) -> AssistantMessageEventStream {
+    let mut mapper = StreamMapper::new(model, at);
+    mapper.output.stop_reason = StopReason::Error;
+    mapper.output.error_message = Some(message.into());
+    mapper.stream.push(Event::Error {
+        reason: maho_ai::types::ErrorReason::Error,
+        error: mapper.output.clone(),
+    });
+    mapper.stream.end(None);
     mapper.stream
 }
-pub fn stream_cursor_cli(model:Model,context:maho_ai::types::Context,options:Option<maho_ai::types::SimpleStreamOptions>,deps:StreamDeps)->AssistantMessageEventStream {
-    let mut mapper=StreamMapper::new(&model,(deps.now)());let stream=mapper.stream.clone();
+pub fn stream_cursor_cli(
+    model: Model,
+    context: maho_ai::types::Context,
+    options: Option<maho_ai::types::SimpleStreamOptions>,
+    deps: StreamDeps,
+) -> AssistantMessageEventStream {
+    let mut mapper = StreamMapper::new(&model, (deps.now)());
+    let stream = mapper.stream.clone();
     tokio::spawn(async move {
-        use maho_ai::types::{Message,UserContent,ErrorReason};
-        let text=|blocks:&[ContentBlock]|blocks.iter().filter_map(|b|match b {ContentBlock::Text(t) if !t.text.is_empty()=>Some(t.text.as_str()),_=>None}).collect::<Vec<_>>().join("\n");
-        let user_text=|content:&UserContent|match content {UserContent::Text(s)=>s.clone(),UserContent::Blocks(blocks)=>text(blocks)};
-        let signal=options.as_ref().and_then(|o|o.stream.request.signal.clone());
-        let session=options.as_ref().and_then(|o|o.stream.request.affinity_session_id.clone().or_else(||o.stream.session_id.clone())).unwrap_or_else(||crate::affinity::DEFAULT_CURSOR_AFFINITY_KEY.into());
-        let prompt=context.messages.iter().rev().find_map(|m|match m {Message::User(u)=>Some(user_text(&u.content)),_=>None});
-        let recent:Vec<_>=context.messages.iter().filter_map(|m|match m {
-            Message::User(u)=>Some(crate::session_router::RecapExchange {role:crate::session_router::ExchangeRole::User,text:user_text(&u.content)}),
-            Message::Assistant(a)=>Some(crate::session_router::RecapExchange {role:crate::session_router::ExchangeRole::Assistant,text:text(&a.content)}),_=>None,
-        }).filter(|e|!e.text.is_empty()).collect();let recent=&recent[recent.len().saturating_sub(12)..];
-        let spawn_model=crate::spawn_model::resolve_cursor_cli_spawn_model(&model,options.as_ref().and_then(|o|o.thinking_selection.as_ref()));
+        use maho_ai::types::{ErrorReason, Message, UserContent};
+        let text = |blocks: &[ContentBlock]| {
+            blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text(t) if !t.text.is_empty() => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let user_text = |content: &UserContent| match content {
+            UserContent::Text(s) => s.clone(),
+            UserContent::Blocks(blocks) => text(blocks),
+        };
+        let signal = options
+            .as_ref()
+            .and_then(|o| o.stream.request.signal.clone());
+        let session = options
+            .as_ref()
+            .and_then(|o| {
+                o.stream
+                    .request
+                    .affinity_session_id
+                    .clone()
+                    .or_else(|| o.stream.session_id.clone())
+            })
+            .unwrap_or_else(|| crate::affinity::DEFAULT_CURSOR_AFFINITY_KEY.into());
+        let prompt = context.messages.iter().rev().find_map(|m| match m {
+            Message::User(u) => Some(user_text(&u.content)),
+            _ => None,
+        });
+        let recent: Vec<_> = context
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::User(u) => Some(crate::session_router::RecapExchange {
+                    role: crate::session_router::ExchangeRole::User,
+                    text: user_text(&u.content),
+                }),
+                Message::Assistant(a) => Some(crate::session_router::RecapExchange {
+                    role: crate::session_router::ExchangeRole::Assistant,
+                    text: text(&a.content),
+                }),
+                _ => None,
+            })
+            .filter(|e| !e.text.is_empty())
+            .collect();
+        let recent = &recent[recent.len().saturating_sub(12)..];
+        let spawn_model = crate::spawn_model::resolve_cursor_cli_spawn_model(
+            &model,
+            options.as_ref().and_then(|o| o.thinking_selection.as_ref()),
+        );
         let result=async {
             if deps.settings.explicitly_disabled {return Err(json!({"message":"disabled by settings"}));}
             let policy=crate::guardrails::resolve_execution_policy(&deps.settings,&mut Default::default(),&deps.settings.deny_commands).map_err(|e|json!({"message":e.to_string()}))?;
@@ -72,24 +140,67 @@ pub fn stream_cursor_cli(model:Model,context:maho_ai::types::Context,options:Opt
             },||(deps.now)() as f64,|event|mapper.apply(&event,&model,emitted_tokens.load(std::sync::atomic::Ordering::Relaxed))).await;
             outcome.map_err(|error|match error {crate::failover::RunError::Attempt(e)=>e.original,crate::failover::RunError::Store(e)=>json!({"message":e.to_string()}),crate::failover::RunError::AllBlocked(e)=>json!({"message":e.to_string()})})
         }.await;
-        match result {Ok(())=>mapper.finish(),Err(error)=>{
-            mapper.close_open();let aborted=signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted)||error["kind"]=="aborted";
-            mapper.output.stop_reason=if aborted {StopReason::Aborted} else {StopReason::Error};mapper.output.error_message=Some(error["message"].as_str().or_else(||error["stderr"].as_str()).unwrap_or("Cursor CLI turn failed").into());
-            mapper.stream.push(Event::Error {reason:if aborted {ErrorReason::Aborted} else {ErrorReason::Error},error:mapper.output.clone()});mapper.stream.end(None);
-        }}
-    });stream
+        match result {
+            Ok(()) => mapper.finish(),
+            Err(error) => {
+                mapper.close_open();
+                let aborted = signal
+                    .as_ref()
+                    .is_some_and(maho_ai::utils::abort::AbortSignal::aborted)
+                    || error["kind"] == "aborted";
+                mapper.output.stop_reason = if aborted {
+                    StopReason::Aborted
+                } else {
+                    StopReason::Error
+                };
+                mapper.output.error_message = Some(
+                    error["message"]
+                        .as_str()
+                        .or_else(|| error["stderr"].as_str())
+                        .unwrap_or("Cursor CLI turn failed")
+                        .into(),
+                );
+                mapper.stream.push(Event::Error {
+                    reason: if aborted {
+                        ErrorReason::Aborted
+                    } else {
+                        ErrorReason::Error
+                    },
+                    error: mapper.output.clone(),
+                });
+                mapper.stream.end(None);
+            }
+        }
+    });
+    stream
 }
 pub struct SpawnAttemptInput {
-    pub executable:std::path::PathBuf,pub cwd:std::path::PathBuf,pub agent_dir:std::path::PathBuf,pub slot:crate::accounts::CursorCliAccountSlot,
-    pub attempt:crate::session_router::SessionAttempt,pub model:String,pub policy:crate::guardrails::ExecutionDecision,
-    pub environment:std::collections::BTreeMap<String,String>,pub signal:Option<maho_ai::utils::abort::AbortSignal>,
+    pub executable: std::path::PathBuf,
+    pub cwd: std::path::PathBuf,
+    pub agent_dir: std::path::PathBuf,
+    pub slot: crate::accounts::CursorCliAccountSlot,
+    pub attempt: crate::session_router::SessionAttempt,
+    pub model: String,
+    pub policy: crate::guardrails::ExecutionDecision,
+    pub environment: std::collections::BTreeMap<String, String>,
+    pub signal: Option<maho_ai::utils::abort::AbortSignal>,
 }
-pub fn spawn_attempt(input:SpawnAttemptInput)->crate::session_router::AttemptReceiver {
-    let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
+pub fn spawn_attempt(input: SpawnAttemptInput) -> crate::session_router::AttemptReceiver {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
-    let SpawnAttemptInput {executable,cwd,agent_dir,slot,attempt,model,policy,environment,signal}=input;
-    let producer=sender.clone();
-    let result=crate::home_store::run_in_account_home(&agent_dir,&slot,move |home|async move {
+        let SpawnAttemptInput {
+            executable,
+            cwd,
+            agent_dir,
+            slot,
+            attempt,
+            model,
+            policy,
+            environment,
+            signal,
+        } = input;
+        let producer = sender.clone();
+        let result=crate::home_store::run_in_account_home(&agent_dir,&slot,move |home|async move {
         let sender=producer;
         crate::guardrails::apply_deny_config(&home.home,&policy.deny_commands)?;
         let args=crate::spawn_args::CursorCliArgsInput {prompt:&attempt.prompt,model:Some(&model),resume_chat_id:attempt.resume_chat_id.as_deref(),force:policy.force,
@@ -114,80 +225,262 @@ pub fn spawn_attempt(input:SpawnAttemptInput)->crate::session_router::AttemptRec
         }
         Ok(())
     },|_|{}).await;
-    if let Err(error)=result {let _=sender.send(Err(json!({"message":error.to_string()})));}
-    });receiver
+        if let Err(error) = result {
+            let _ = sender.send(Err(json!({"message":error.to_string()})));
+        }
+    });
+    receiver
 }
-#[derive(Clone,Copy,PartialEq)]
-enum OpenKind {Text,Thinking}
-pub struct StreamMapper {pub stream:AssistantMessageEventStream,pub output:AssistantMessage,started:bool,open:Option<OpenKind>,index:usize,accumulated:String}
+#[derive(Clone, Copy, PartialEq)]
+enum OpenKind {
+    Text,
+    Thinking,
+}
+pub struct StreamMapper {
+    pub stream: AssistantMessageEventStream,
+    pub output: AssistantMessage,
+    started: bool,
+    open: Option<OpenKind>,
+    index: usize,
+    accumulated: String,
+}
 impl StreamMapper {
-    pub fn new(model:&Model,at:i64)->Self {
-        Self {stream:create_assistant_message_event_stream(),output:AssistantMessage {content:Vec::new(),api:model.api.clone(),provider:model.provider.clone(),model:model.id.clone(),response_model:None,response_id:None,provider_thinking_level:None,diagnostics:None,usage:Usage::default(),stop_reason:StopReason::Stop,stop_details:None,deferred:None,error_message:None,abort_source:None,raw_stop_reason:None,end_turn:None,timestamp:at},started:false,open:None,index:0,accumulated:String::new()}
+    pub fn new(model: &Model, at: i64) -> Self {
+        Self {
+            stream: create_assistant_message_event_stream(),
+            output: AssistantMessage {
+                thinking_level: None,
+                provider_diagnostic: None,
+                prompt_cache_diagnostics: None,
+                content: Vec::new(),
+                api: model.api.clone(),
+                provider: model.provider.clone(),
+                model: model.id.clone(),
+                response_model: None,
+                response_id: None,
+                provider_thinking_level: None,
+                diagnostics: None,
+                usage: Usage::default(),
+                stop_reason: StopReason::Stop,
+                stop_details: None,
+                deferred: None,
+                error_message: None,
+                error_cause: None,
+                abort_source: None,
+                raw_stop_reason: None,
+                end_turn: None,
+                timestamp: at,
+            },
+            started: false,
+            open: None,
+            index: 0,
+            accumulated: String::new(),
+        }
     }
     fn close_open(&mut self) {
-        if let Some(kind)=self.open.take() {
-            let content=match &self.output.content[self.index] {ContentBlock::Text(block)=>block.text.clone(),ContentBlock::Thinking(block)=>block.thinking.clone(),_=>String::new()};
-            let event=match kind {OpenKind::Text=>Event::TextEnd {content_index:self.index,content,partial:self.output.clone()},OpenKind::Thinking=>Event::ThinkingEnd {content_index:self.index,content,partial:self.output.clone()}};self.stream.push(event);
+        if let Some(kind) = self.open.take() {
+            let content = match &self.output.content[self.index] {
+                ContentBlock::Text(block) => block.text.clone(),
+                ContentBlock::Thinking(block) => block.thinking.clone(),
+                _ => String::new(),
+            };
+            let event = match kind {
+                OpenKind::Text => Event::TextEnd {
+                    content_index: self.index,
+                    content,
+                    partial: self.output.clone(),
+                },
+                OpenKind::Thinking => Event::ThinkingEnd {
+                    content_index: self.index,
+                    content,
+                    partial: self.output.clone(),
+                },
+            };
+            self.stream.push(event);
         }
     }
-    fn ensure_open(&mut self,kind:OpenKind) {
-        if self.open==Some(kind) {return;}self.close_open();
-        if !self.started {self.started=true;self.stream.push(Event::Start {partial:self.output.clone()});}
-        self.output.content.push(match kind {OpenKind::Text=>ContentBlock::Text(TextContent::default()),OpenKind::Thinking=>ContentBlock::Thinking(ThinkingContent::default())});
-        self.index=self.output.content.len()-1;self.open=Some(kind);self.accumulated.clear();
-        self.stream.push(match kind {OpenKind::Text=>Event::TextStart {content_index:self.index,partial:self.output.clone()},OpenKind::Thinking=>Event::ThinkingStart {content_index:self.index,partial:self.output.clone()}});
+    fn ensure_open(&mut self, kind: OpenKind) {
+        if self.open == Some(kind) {
+            return;
+        }
+        self.close_open();
+        if !self.started {
+            self.started = true;
+            self.stream.push(Event::Start {
+                partial: self.output.clone(),
+            });
+        }
+        self.output.content.push(match kind {
+            OpenKind::Text => ContentBlock::Text(TextContent::default()),
+            OpenKind::Thinking => ContentBlock::Thinking(ThinkingContent::default()),
+        });
+        self.index = self.output.content.len() - 1;
+        self.open = Some(kind);
+        self.accumulated.clear();
+        self.stream.push(match kind {
+            OpenKind::Text => Event::TextStart {
+                content_index: self.index,
+                partial: self.output.clone(),
+            },
+            OpenKind::Thinking => Event::ThinkingStart {
+                content_index: self.index,
+                partial: self.output.clone(),
+            },
+        });
     }
-    fn delta(&mut self,text:&str) {
-        match &mut self.output.content[self.index] {ContentBlock::Text(block)=>block.text.push_str(text),ContentBlock::Thinking(block)=>block.thinking.push_str(text),_=>{}}
-        self.stream.push(match self.open {Some(OpenKind::Thinking)=>Event::ThinkingDelta {content_index:self.index,delta:text.into(),partial:self.output.clone()},_=>Event::TextDelta {content_index:self.index,delta:text.into(),partial:self.output.clone()}});
+    fn delta(&mut self, text: &str) {
+        match &mut self.output.content[self.index] {
+            ContentBlock::Text(block) => block.text.push_str(text),
+            ContentBlock::Thinking(block) => block.thinking.push_str(text),
+            _ => {}
+        }
+        self.stream.push(match self.open {
+            Some(OpenKind::Thinking) => Event::ThinkingDelta {
+                content_index: self.index,
+                delta: text.into(),
+                partial: self.output.clone(),
+            },
+            _ => Event::TextDelta {
+                content_index: self.index,
+                delta: text.into(),
+                partial: self.output.clone(),
+            },
+        });
     }
-    pub fn apply(&mut self,event:&Value,model:&Model,sent_prompt_tokens:u64) {
+    pub fn apply(&mut self, event: &Value, model: &Model, sent_prompt_tokens: u64) {
         match event["type"].as_str() {
-            Some("thinking")=> {
-                if event["subtype"]=="completed" {if self.open==Some(OpenKind::Thinking) {self.close_open();}}
-                else if let Some(text)=event["text"].as_str().filter(|s|!s.is_empty()) {self.ensure_open(OpenKind::Thinking);self.delta(text);}
-            },
-            Some("assistant")=> {
-                if let Some(blocks)=event["message"]["content"].as_array() {
-                    for block in blocks {if let Some(fragment)=block["text"].as_str().filter(|s|!s.is_empty()) {
-                        self.ensure_open(OpenKind::Text);
-                        let delta=if fragment.len()>=self.accumulated.len()&&fragment.starts_with(&self.accumulated) {let delta=fragment[self.accumulated.len()..].to_owned();self.accumulated=fragment.into();delta}
-                            else {self.accumulated.push_str(fragment);fragment.into()};
-                        if !delta.is_empty() {self.delta(&delta);}
-                    }}
+            Some("thinking") => {
+                if event["subtype"] == "completed" {
+                    if self.open == Some(OpenKind::Thinking) {
+                        self.close_open();
+                    }
+                } else if let Some(text) = event["text"].as_str().filter(|s| !s.is_empty()) {
+                    self.ensure_open(OpenKind::Thinking);
+                    self.delta(text);
                 }
-            },
-            Some("tool_call")=>{self.close_open();self.accumulated.clear();},
-            Some("cursor_account_changed"|"cursor_chat_restarted")=>{if let Some(message)=event["message"].as_str() {self.ensure_open(OpenKind::Text);self.delta(&format!("{message}\n"));}},
-            Some("result") if event["subtype"]=="success"&&event["is_error"]!=true=> {
-                self.output.usage.input=sent_prompt_tokens;self.output.usage.output=event["usage"]["outputTokens"].as_u64().unwrap_or(0);self.output.usage.cache_read=0;self.output.usage.cache_write=0;self.output.usage.total_tokens=0;
-                self.output.usage.cost=maho_ai::models::calculate_cost(model,&mut self.output.usage);
-                let details=json!({"inputTokens":event["usage"]["inputTokens"],"outputTokens":event["usage"]["outputTokens"],"cacheReadTokens":event["usage"]["cacheReadTokens"],"cacheWriteTokens":event["usage"]["cacheWriteTokens"],"requestId":event["request_id"],"durationMs":event["duration_ms"]});
+            }
+            Some("assistant") => {
+                if let Some(blocks) = event["message"]["content"].as_array() {
+                    for block in blocks {
+                        if let Some(fragment) = block["text"].as_str().filter(|s| !s.is_empty()) {
+                            self.ensure_open(OpenKind::Text);
+                            let delta = if fragment.len() >= self.accumulated.len()
+                                && fragment.starts_with(&self.accumulated)
+                            {
+                                let delta = fragment[self.accumulated.len()..].to_owned();
+                                self.accumulated = fragment.into();
+                                delta
+                            } else {
+                                self.accumulated.push_str(fragment);
+                                fragment.into()
+                            };
+                            if !delta.is_empty() {
+                                self.delta(&delta);
+                            }
+                        }
+                    }
+                }
+            }
+            Some("tool_call") => {
+                self.close_open();
+                self.accumulated.clear();
+            }
+            Some("cursor_account_changed" | "cursor_chat_restarted") => {
+                if let Some(message) = event["message"].as_str() {
+                    self.ensure_open(OpenKind::Text);
+                    self.delta(&format!("{message}\n"));
+                }
+            }
+            Some("result") if event["subtype"] == "success" && event["is_error"] != true => {
+                self.output.usage.input = sent_prompt_tokens;
+                self.output.usage.output = event["usage"]["outputTokens"].as_u64().unwrap_or(0);
+                self.output.usage.cache_read = 0;
+                self.output.usage.cache_write = 0;
+                self.output.usage.total_tokens = 0;
+                self.output.usage.cost =
+                    maho_ai::models::calculate_cost(model, &mut self.output.usage);
+                let details = json!({"inputTokens":event["usage"]["inputTokens"],"outputTokens":event["usage"]["outputTokens"],"cacheReadTokens":event["usage"]["cacheReadTokens"],"cacheWriteTokens":event["usage"]["cacheWriteTokens"],"requestId":event["request_id"],"durationMs":event["duration_ms"]});
                 self.output.diagnostics.get_or_insert_with(Vec::new).push(create_assistant_message_diagnostic("cursor_cli_oauth_cli_usage",&Thrown::Value(json!("cursor-agent reported usage (telemetry only; never used for senpi context accounting)")),details.as_object().cloned()));
-            },
-            _=>{},
+            }
+            _ => {}
         }
     }
-    pub fn finish(&mut self) {self.close_open();self.stream.push(Event::Done {reason:DoneReason::Stop,message:self.output.clone()});self.stream.end(None);}
+    pub fn finish(&mut self) {
+        self.close_open();
+        self.stream.push(Event::Done {
+            reason: DoneReason::Stop,
+            message: self.output.clone(),
+        });
+        self.stream.end(None);
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn model()->Model {
+    fn model() -> Model {
         serde_json::from_value(json!({"id":"test","name":"Test","api":"cursor-agent","provider":"cursor-cli-oauth","baseUrl":"cursor-cli-oauth","reasoning":true,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":64000})).expect("model")
     }
     #[tokio::test]
+    async fn failure_text_does_not_invent_a_structured_limit_cause() {
+        let model = model();
+
+        let events = failed_stream(&model, 123, "account usage limit").collect().await.expect("events");
+
+        let Some(Event::Error { error, .. }) = events.first() else { panic!("error event"); };
+        assert_eq!(error.error_cause, None);
+        assert!(serde_json::to_value(error).expect("message").get("errorCause").is_none());
+    }
+    #[tokio::test]
     async fn snapshots_tool_boundaries_and_telemetry() {
-        let model=model();let mut mapper=StreamMapper::new(&model,1);
-        for text in ["STREAM","TEST OK","STREAMTEST OK"] {mapper.apply(&json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}}),&model,7);}
-        mapper.apply(&json!({"type":"tool_call","call_id":"secret-tool-frame"}),&model,7);
-        mapper.apply(&json!({"type":"thinking","subtype":"delta","text":"thinking"}),&model,7);
+        let model = model();
+        let mut mapper = StreamMapper::new(&model, 1);
+        for text in ["STREAM", "TEST OK", "STREAMTEST OK"] {
+            mapper.apply(
+                &json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}}),
+                &model,
+                7,
+            );
+        }
+        mapper.apply(
+            &json!({"type":"tool_call","call_id":"secret-tool-frame"}),
+            &model,
+            7,
+        );
+        mapper.apply(
+            &json!({"type":"thinking","subtype":"delta","text":"thinking"}),
+            &model,
+            7,
+        );
         mapper.apply(&json!({"type":"result","subtype":"success","usage":{"inputTokens":900000,"outputTokens":3,"cacheReadTokens":10000,"cacheWriteTokens":5000},"request_id":"r","duration_ms":1,"is_error":false}),&model,7);
-        mapper.finish();let events=mapper.stream.collect().await.expect("events");
-        assert!(matches!(events.first(),Some(Event::Start {..})));
-        assert_eq!(events.iter().filter_map(|e|match e {Event::TextDelta {delta,..}=>Some(delta.as_str()),_=>None}).collect::<Vec<_>>(),["STREAM","TEST OK"]);
-        assert_eq!(mapper.output.usage.input,7);assert_eq!(mapper.output.usage.output,3);assert_eq!(mapper.output.usage.cache_read,0);
-        assert_eq!(mapper.output.diagnostics.as_ref().expect("telemetry")[0].details.as_ref().expect("details")["inputTokens"],900000);
-        assert!(!mapper.output.content.iter().any(|b|matches!(b,ContentBlock::ToolCall(_))));
+        mapper.finish();
+        let events = mapper.stream.collect().await.expect("events");
+        assert!(matches!(events.first(), Some(Event::Start { .. })));
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::TextDelta { delta, .. } => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            ["STREAM", "TEST OK"]
+        );
+        assert_eq!(mapper.output.usage.input, 7);
+        assert_eq!(mapper.output.usage.output, 3);
+        assert_eq!(mapper.output.usage.cache_read, 0);
+        assert_eq!(
+            mapper.output.diagnostics.as_ref().expect("telemetry")[0]
+                .details
+                .as_ref()
+                .expect("details")["inputTokens"],
+            900000
+        );
+        assert!(
+            !mapper
+                .output
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolCall(_)))
+        );
     }
 }

@@ -215,8 +215,8 @@ fn builtin_definition(id: &str, builtin: &BuiltinModelProfile) -> ModelProfileDe
             id: id.to_owned(),
             display_name: builtin.display_name.to_owned(),
             source: ModelProfileSource::Builtin,
-            family: builtin.family,
-            tier: builtin.tier,
+            family: Some(builtin.family),
+            tier: Some(builtin.tier),
         },
         models: builtin.models.iter().map(builtin_rung).collect(),
     }

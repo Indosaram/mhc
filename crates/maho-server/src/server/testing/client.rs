@@ -1,5 +1,6 @@
 use crate::{protocol::{codec::{MessageDecoder,encode_client_message},framing::DEFAULT_MAX_FRAME_LENGTH,messages::PROTOCOL_VERSION},server::{errors::ServerError,types::ServerFuture}};
-use serde_json::{Value,json};
+use maho_chord::types::JsonValue as Value;
+use crate::transport_json as json;
 use std::sync::{Arc,Mutex};
 #[cfg(unix)]
 use std::path::Path;
@@ -28,7 +29,7 @@ impl ProtocolTestClient {
     }
     pub async fn request_service(&self,target:Value,call:Value,id:Option<String>)->Result<Value,ServerError> {
         let id=id.unwrap_or_else(|| {let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.request_sequence+=1;format!("request-{}",state.request_sequence)});
-        let response_id=id.clone();let response=self.next(move |message|message["type"]=="response" && message["id"]==response_id);
+        let response_id=id.clone();let response=self.next(move |message|message["type"].as_str()==Some("response") && message["id"].as_str()==Some(response_id.as_str()));
         self.send_message(&json!({"type":"request","id":id,"target":target,"call":call})).await?;
         response.await
     }
@@ -37,7 +38,7 @@ impl ProtocolTestClient {
     }
     pub async fn request_session_service(&self,server_id:&str,session_id:&str,call:Value,id:Option<String>)->Result<Value,ServerError> {
         let target={let state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let attachment_id=state.attachment.as_ref().filter(|attachment|attachment["sessionId"]==session_id).and_then(|attachment|attachment["attachmentId"].as_str()).unwrap_or("missing-attachment");
+            let attachment_id=state.attachment.as_ref().filter(|attachment|attachment["sessionId"].as_str()==Some(session_id)).and_then(|attachment|attachment["attachmentId"].as_str()).unwrap_or("missing-attachment");
             json!({"serverId":server_id,"sessionId":session_id,"attachmentId":attachment_id})};
         self.request_service(target,call,id).await
     }
@@ -62,7 +63,7 @@ impl ProtocolTestClient {
     pub fn receive(&self,chunk:&[u8]) {
         let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match state.decoder.push(chunk) {Ok(messages)=>for message in messages {
-            if message["type"]=="attachment" {state.attachment=(!message["attachment"].is_null()).then(||message["attachment"].clone());}state.messages.push(message.clone());
+            if message["type"].as_str()==Some("attachment") {state.attachment=(!matches!(message["attachment"], Value::Null)).then(||message["attachment"].clone());}state.messages.push(message.clone());
             let mut remaining=Vec::new();for waiter in std::mem::take(&mut state.waiters) {if (waiter.predicate)(&message) {let _delivery=waiter.resolve.send(Ok(message.clone()));} else if !waiter.resolve.is_closed() {remaining.push(waiter);}}state.waiters=remaining;
         },Err(error)=>{let error=ServerError::new("invalid_request",&error.to_string());for waiter in state.waiters.drain(..) {let _delivery=waiter.resolve.send(Err(error.clone()));}}}
         drop(state);self.changed.send_modify(|sequence|*sequence+=1);
