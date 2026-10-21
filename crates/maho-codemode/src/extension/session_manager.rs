@@ -18,6 +18,7 @@ pub struct CreateCodemodeSessionManagerOptions {
 }
 
 pub struct CodemodeSessionManager {
+    registrations: std::sync::Mutex<super::kernel_registration::SessionKernelRegistrations>,
         options: CreateCodemodeSessionManagerOptions,
     bridge: BridgeServerHandle,
     javascript: tokio::sync::Mutex<Option<Arc<crate::kernels::js::context_manager::JavaScriptKernel>>>,
@@ -74,7 +75,7 @@ impl CodemodeSessionManager {
                 })
             }),
         }).await?;
-        Ok(Self { options, bridge, javascript:tokio::sync::Mutex::new(None), disposed:AtomicBool::new(false), javascript_shutdown:maho_ai::utils::abort::AbortController::new(),dispose_result:tokio::sync::OnceCell::new(),contexts,session_context })
+        Ok(Self { registrations:std::sync::Mutex::new(super::kernel_registration::SessionKernelRegistrations::new(options.session_id.clone())), options, bridge, javascript:tokio::sync::Mutex::new(None), disposed:AtomicBool::new(false), javascript_shutdown:maho_ai::utils::abort::AbortController::new(),dispose_result:tokio::sync::OnceCell::new(),contexts,session_context })
     }
 
     pub fn bridge_endpoint(&self) -> Result<(u16, &str), String> {
@@ -95,6 +96,7 @@ impl CodemodeSessionManager {
         let memory=crate::bridge::protocol::KernelMemoryThresholds {gc_watermark_bytes:settings.memory_gc_watermark_bytes as u64,notice_bytes:settings.memory_notice_bytes as u64,ceiling_bytes:settings.memory_ceiling_bytes as u64};
         let kernel=Arc::new(crate::kernels::js::context_manager::JavaScriptKernel::start_with_memory(&self.options.cwd,&self.options.session_id,crate::kernels::js::context_manager::JavaScriptKernelStart {parallel_pool_width:if width.is_finite() {width.trunc().max(1.0) as u64} else {1},session_env:self.options.session_env.clone(),connection:BridgeConnectionConfig {port:self.bridge.port,token:self.bridge.token.clone(),local_roots:roots,artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()),parallel_pool_width:None},names,shutdown:self.javascript_shutdown.clone(),memory}).await.map_err(|error|error.to_string())?);
         if self.disposed.load(Ordering::SeqCst) {kernel.close().await.map_err(|error|error.to_string())?;return Err("codemode session manager is disposed".into());}
+        self.registrations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).register(EvalLanguage::Js, Some(super::kernel_registration::java_script_kernel_memory(kernel.clone())));
         *javascript=Some(kernel.clone());Ok(kernel)
     }
 
@@ -103,7 +105,9 @@ impl CodemodeSessionManager {
         self.javascript_shutdown.abort(None);
         self.dispose_result.get_or_init(|| async {
             let mut failures=Vec::new();
-            if let Some(kernel)=self.javascript.lock().await.take() && let Err(error)=kernel.close().await {failures.push(error.to_string());}
+            let kernel=self.javascript.lock().await.take();
+            self.registrations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+            if let Some(kernel)=kernel && let Err(error)=kernel.close().await {failures.push(error.to_string());}
             self.bridge.close().await;
             if failures.is_empty() {Ok(())} else {Err(format!("Failed to dispose codemode session manager: {}",failures.join("; ")))}
         }).await.clone()

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build a release mhc on GitHub Actions (.github/workflows/mhc-binary.yml) and install it locally
 # as a dated dev build (YYYY.MM.DD-N, N counts installs made on that date).
+# The workflow artifact is a complete release package; it is installed through install.sh as
+# versions/<version>/ under the install root with the stable root launcher and current.json.
 # Snapshots HEAD plus staged, unstaged and untracked changes into one commit on a temporary
 # `build/<version>` branch; the local branch, index and working tree are never touched.
 set -euo pipefail
@@ -23,13 +25,14 @@ if [[ $(git rev-parse --is-bare-repository 2>/dev/null) == true ]]; then
   export GIT_WORK_TREE=$PWD
 fi
 cd "$(git rev-parse --show-toplevel)"
+repo_root=$PWD
 slug=$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
 # Push and query as the repository owner's gh account, never the globally active one.
 export GH_TOKEN=${GH_TOKEN:-$(gh auth token --hostname github.com --user "${slug%%/*}")}
 push_url="https://x-access-token:${GH_TOKEN}@github.com/${slug}.git"
 
 mkdir -p "$install_dir" "$bin_dir"
-# The ~200 MB binary does not fit in a quota-limited /tmp, so stage it beside the install.
+# The complete package does not fit in a quota-limited /tmp, so stage it beside the install.
 work=$(mktemp -d "$install_dir/.gh-install.XXXXXX")
 branch="build/$version"
 cleanup() { rm -rf "$work"; git push -q "$push_url" --delete "$branch" 2>/dev/null || true; }
@@ -61,9 +64,11 @@ if ! gh run watch -R "$slug" "$run_id" --exit-status --interval 30 >/dev/null; t
 fi
 
 gh run download -R "$slug" "$run_id" -n mhc-linux-x86_64 -D "$work/out"
-install -m 755 "$work/out/mhc" "$install_dir/mhc.new"
-mv "$install_dir/mhc.new" "$install_dir/mhc"
-ln -sfn "$install_dir/mhc" "$bin_dir/mhc"
+(cd "$work/out" && sha256sum -c mhc-linux-x86_64.tar.gz.sha256)
+tar -xzf "$work/out/mhc-linux-x86_64.tar.gz" -C "$work/out"
+[[ -x $work/out/mhc-linux-x86_64/mhc && -x $work/out/mhc-linux-x86_64/mhc-launcher ]] \
+  || { echo "artifact is not a complete package (mhc and mhc-launcher expected)" >&2; exit 1; }
+MHC_PACKAGE_DIR="$work/out/mhc-linux-x86_64" MHC_INSTALL_DIR="$install_dir" MHC_BIN_DIR="$bin_dir" sh "$repo_root/install.sh"
 
 installed="$("$bin_dir/mhc" --version)"
 if [ "$installed" != "$version" ]; then

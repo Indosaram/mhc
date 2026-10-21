@@ -20,6 +20,7 @@ impl PendingJavaScriptRun {
 
 #[derive(Default)]
 pub struct JavaScriptRunQueue {
+    cached_memory: std::sync::Arc<std::sync::Mutex<Option<u64>>>,
     queue: VecDeque<PendingJavaScriptRun>,
     active: Option<PendingJavaScriptRun>,
 }
@@ -29,6 +30,24 @@ pub fn stopped_result(cell_id: &str, message: &str) -> Value {
 }
 
 impl JavaScriptRunQueue {
+    pub fn with_memory_cache(cached_memory: std::sync::Arc<std::sync::Mutex<Option<u64>>>) -> Self {
+        Self { cached_memory, ..Default::default() }
+    }
+    pub fn observe_memory(&self, message: &Value) {
+        let reading = match message["type"].as_str() {
+            Some("result") => message["memory"]["liveBytes"].as_u64(),
+            Some("memory-query-result" | "kernel-memory-collected") => message["liveBytes"].as_u64(),
+            Some("status") if message["event"]["op"] == "kernel-memory-collected" => message["event"]["liveBytes"].as_u64(),
+            _ => None,
+        };
+        if let Some(bytes) = reading {
+            *self.cached_memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bytes);
+        }
+    }
+
+    pub fn clear_memory(&self) {
+        *self.cached_memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
     pub fn active(&self) -> Option<&PendingJavaScriptRun> { self.active.as_ref() }
     pub fn active_mut(&mut self) -> Option<&mut PendingJavaScriptRun> { self.active.as_mut() }
     pub fn has_waiting(&self) -> bool { !self.queue.is_empty() }
@@ -89,5 +108,18 @@ impl JavaScriptRunQueue {
             run.settled = true;
             run.settlement.send_replace(Some(Err(error.into())));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_collection_updates_shared_report_cache() {
+        let cache = std::sync::Arc::new(std::sync::Mutex::new(Some(900)));
+        let runs = JavaScriptRunQueue::with_memory_cache(cache.clone());
+        runs.observe_memory(&json!({"type":"status","event":{"op":"kernel-memory-collected","liveBytes":123,"measure":"heap"}}));
+        assert_eq!(*cache.lock().expect("cache"), Some(123));
     }
 }

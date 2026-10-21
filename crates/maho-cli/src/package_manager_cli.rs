@@ -196,6 +196,14 @@ impl From<String> for PackageCommandError { fn from(message: String) -> Self { S
 impl From<&str> for PackageCommandError { fn from(message: &str) -> Self { Self::Failed(message.to_owned()) } }
 
 pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), PackageCommandError> {
+    if options.command == PackageCommand::Update && options.omo_local_update_worker {
+        return Err("Legacy update workers are unsupported; run mhc update directly".into());
+    }
+    if options.command == PackageCommand::Update
+        && matches!(options.update_target, None | Some(UpdateTarget::SelfOnly))
+    {
+        return crate::native_update::update().await.map_err(PackageCommandError::from);
+    }
     if options.command == PackageCommand::Update && options.update_target == Some(UpdateTarget::Models) {
         let agent_dir = std::path::PathBuf::from(maho_core::config::get_agent_dir());
         let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
@@ -267,9 +275,12 @@ pub async fn execute_package_command(options: &PackageCommandOptions, manager: &
                 }
                 UpdateTarget::All => {
                     manager.update(None).await.map_err(|error| error.to_string())?;
-                    return Err("Updated resource packages; native self-update is replaced by mhc import-omo".into());
+                    crate::native_update::update().await?;
+                    "Updated resource packages\n".into()
                 }
-                UpdateTarget::SelfOnly => return Err("Native self-update is replaced by mhc import-omo".into()),
+                UpdateTarget::SelfOnly => {
+                    return crate::native_update::update().await.map_err(PackageCommandError::from);
+                }
                 UpdateTarget::Models => return Err("Model catalog refresh requires the model-runtime owner's refresh API".into()),
             }
         }

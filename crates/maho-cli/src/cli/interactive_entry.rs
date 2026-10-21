@@ -124,8 +124,8 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     let (notice_sender, mut notices) = tokio::sync::mpsc::unbounded_channel::<StartupNotice>();
     let version_sender = notice_sender.clone();
     tokio::spawn(async move {
-        if let Some(release) = crate::utils::version_check::check_for_new_version(env!("CARGO_PKG_VERSION")).await {
-            let _ = version_sender.send(StartupNotice::NewVersion(release.version));
+        if let Some(release) = crate::native_update::release::available_cached().await {
+            let _ = version_sender.send(StartupNotice::NewVersion(release));
         }
     });
     tokio::spawn(async move {
@@ -180,11 +180,10 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             }
             while let Ok(notice) = notices.try_recv() {
                 match notice {
-                    StartupNotice::NewVersion(version) => {
-                        let brand = maho_core::brand::brand_profile();
-                        let action = brand.update.as_ref().map_or_else(|| format!("{} update", maho_core::config::app_name()), |channel| channel.command.clone());
-                        let url = crate::utils::version_check::get_release_changelog_url(&version, brand.update.as_ref().and_then(|channel| channel.changelog_url.as_deref()));
-                        mode.show_new_version_notification(&version, &action, &url);
+                    StartupNotice::NewVersion(release) => {
+                        let action = format!("{} update", maho_core::config::app_name());
+                        let url = format!("https://github.com/Indosaram/mhc/releases/tag/{}", release.tag);
+                        mode.show_new_version_notification(&release.version, &action, &url);
                     }
                     StartupNotice::Warning(warning) => mode.show_warning(&warning),
                 }
@@ -399,7 +398,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
 
 /// A startup check result delivered to the render loop (senpi's `.then` callbacks in `run()`).
 enum StartupNotice {
-    NewVersion(String),
+    NewVersion(crate::native_update::release::Release),
     Warning(String),
 }
 

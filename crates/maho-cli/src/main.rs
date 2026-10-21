@@ -46,10 +46,10 @@ fn ensure_managed_tool(tool: maho_tools::managed_tools::ManagedTool, on_status: 
 }
 fn run() -> Result<(), String> {
     use std::path::PathBuf;
+    let mut argv: Vec<String> = std::env::args().skip(1).collect();
     // senpi main.ts `main()`: `resetTimings()` opens the startup phase timeline (`PI_TIMING=1`).
     maho_core::timings::reset_timings(maho_core::timings::TimingLabel::Main);
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
-    let mut argv: Vec<String> = std::env::args().skip(1).collect();
     // senpi rpc-entry.ts: the `<app>-rpc` entry is `main(["--mode", "rpc", ...argv])`; the single native
     // binary answers it when invoked through an argv0 ending in `-rpc` (a symlink or copy).
     if std::env::args_os().next().and_then(|argv0| std::path::Path::new(&argv0).file_stem().map(|stem| stem.to_string_lossy().ends_with("-rpc"))).unwrap_or(false) {
@@ -60,6 +60,12 @@ fn run() -> Result<(), String> {
     let _ = maho_core::brand::brand_profile();
     let startup_env = maho_core::config::current_env();
     maho_process_env::apply(&startup_env, &maho_cli::cli::setup::startup_process_env(&argv, &startup_env));
+    // Shared lock on this payload's own `versions/<v>.lock`: lets `mhc update` retire old versions without
+    // ever deleting one a running session uses. It never blocks or refuses a session.
+    let _version_lease = maho_cli::native_update::install::session_lease().unwrap_or_else(|error| {
+        eprintln!("warning: {error}; this session is not protected from old-version cleanup");
+        None
+    });
     // senpi bun/runtime-modules.ts `registerBunRuntimeModules`: the standalone binary registers its
     // statically embedded OAuth flows once per process before any login/auth resolution.
     maho_ai::bun_oauth::register_bun_oauth_flows();

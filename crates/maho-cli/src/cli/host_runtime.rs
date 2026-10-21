@@ -459,6 +459,7 @@ pub async fn mount_agent_session_runtime(
     }
     theme_paths.extend(config.resolved_theme_paths().into_iter().map(PathBuf::from));
     super::default_extensions::configure_rpc_html_theme_with_paths(&created.session, theme_paths);
+    super::memory_report_registry::register_session(&created.session);
     task_parent.set(created.session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
     created.session.set_extension_runtime_factory(super::default_extensions::reloading_runtime_factory(
         reload_widget_sender, task_parent.clone(), reload_mcp_registry, config.resolved_extension_paths(), config.no_extensions, session_profile,

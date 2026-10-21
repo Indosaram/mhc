@@ -260,12 +260,12 @@ fn memory_executable_path(executable: std::path::PathBuf) -> std::path::PathBuf 
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::ffi::OsStrExt;
-        if !executable.is_file() {
-            if let Some(original) = executable.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
-                let replacement = Path::new(std::ffi::OsStr::from_bytes(original));
-                if replacement.is_file() {
-                    return replacement.to_path_buf();
-                }
+        if !executable.is_file()
+            && let Some(original) = executable.as_os_str().as_bytes().strip_suffix(b" (deleted)")
+        {
+            let replacement = Path::new(std::ffi::OsStr::from_bytes(original));
+            if replacement.is_file() {
+                return replacement.to_path_buf();
             }
         }
     }
