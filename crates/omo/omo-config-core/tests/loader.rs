@@ -1125,12 +1125,12 @@ EVAL-FIRST: `eval` is your default execution surface. Before acting, ask "how do
         },
     });
 
-    let residency = std::cmp::max(
+    let global_concurrency = std::cmp::max(
         8,
         std::thread::available_parallelism()
             .map(|value| value.get())
             .unwrap_or(1)
-            * 3,
+            * 2,
     );
     let expected = json!({
         "agents": {
@@ -1158,13 +1158,15 @@ EVAL-FIRST: `eval` is your default execution surface. Before acting, ask "how do
         },
         "task": {
             "default_concurrency": 5,
+            "global_concurrency": global_concurrency,
             "default_execution_mode": "auto",
             "host_engine_policy": "upgrade",
             "host_shard_prewarm": "first-turn",
             "isolation": { "enabled": false, "backend": "auto", "apply": true, "merge": "patch", "commits": "generic" },
             "max_depth": 1,
             "process_runner": "host",
-            "residency_max_children": residency,
+            "residency_max_children": "unlimited",
+            "resident_idle_timeout_ms": 900000,
             "resume_children": true,
             "team": { "max_members": 8, "max_parallel_members": 4, "max_wall_clock_minutes": 120 },
             "ttl_ms": 86_400_000,

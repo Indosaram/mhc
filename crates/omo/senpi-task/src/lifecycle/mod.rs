@@ -3,6 +3,7 @@
 pub mod admission_lease;
 pub mod context;
 pub mod create;
+pub mod deferred_revival_reasons;
 pub mod destroy;
 pub mod errors;
 pub mod host_session;

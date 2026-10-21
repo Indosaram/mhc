@@ -76,7 +76,8 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let maho_ext_api::ExtensionEvent::MessageEnd {message}=event else {return Ok(maho_ext_api::EventResult::None);};
                     if message.as_assistant().is_some_and(|assistant|assistant.stop_reason==maho_ai::types::StopReason::Aborted) {
                         generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
-                        if let Some(job)=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {job.controller.abort(None);}
+                        let retired = { warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() };
+                        if let Some(job) = retired { job.cancel().await; }
                     }
                     if lane_policy::live_disables_senpi_compaction(&lane,context) {return Ok(maho_ext_api::EventResult::None);}
                     let mut degradation=degradation.lock().await;
@@ -141,8 +142,11 @@ impl maho_ext_api::Extension for CompactionExtension {
                 idle.store(false,std::sync::atomic::Ordering::SeqCst);
                 *reminder.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=token_budget_reminder::create_initial_reminder_state();
                 generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
-                if let Some(job) = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {job.controller.abort(None);}
-                Box::pin(async {Ok(maho_ext_api::EventResult::None)})
+                let retired = { warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() };
+                Box::pin(async move {
+                    if let Some(job) = retired { job.cancel().await; }
+                    Ok(maho_ext_api::EventResult::None)
+                })
             }));
         }
         {
@@ -152,28 +156,34 @@ impl maho_ext_api::Extension for CompactionExtension {
             let live_api = std::sync::Arc::clone(&live_api);
             let lane = std::sync::Arc::clone(&lane);
             api.on(maho_ext_api::EventKind::ModelSelect,std::sync::Arc::new(move |event,context| {
-                let result = (|| {
+                let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let state=std::sync::Arc::clone(&state);let live_api=std::sync::Arc::clone(&live_api);let lane=std::sync::Arc::clone(&lane);
+                Box::pin(async move {
                     let maho_ext_api::ExtensionEvent::ModelSelect(event) = event else {return Ok(maho_ext_api::EventResult::None);};
                     let external = lane_policy::live_disables_senpi_compaction(&lane,context);
                     let mut settings = maho_core::compaction::settings::default_compaction_settings();
                     if !external {
                         settings = extension_wiring::live_settings(context)?;
                     }
+                    let (retired,start,epoch) = {
+                        let mut job = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let (mut invalidate,mut start) = (false,false);
+                        model_selection::handle_live_compaction_model_select(event,context,&state,job.as_ref().map(|job|&job.snapshot),&settings,external,(||invalidate=true,||start=true))?;
+                        let retired = if invalidate {
+                            generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                            job.take()
+                        } else {None};
+                        (retired,start,generation.load(std::sync::atomic::Ordering::SeqCst))
+                    };
+                    if let Some(job) = retired { job.cancel().await; }
+                    if generation.load(std::sync::atomic::Ordering::SeqCst)!=epoch {return Ok(maho_ext_api::EventResult::None);}
                     let mut job = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let (mut invalidate,mut start) = (false,false);
-                    model_selection::handle_live_compaction_model_select(event,context,&state,job.as_ref().map(|job|&job.snapshot),&settings,external,(||invalidate=true,||start=true))?;
-                    if invalidate {
-                        generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
-                        if let Some(previous) = job.take() {previous.controller.abort(None);}
-                    }
                     if start && job.is_none() {
                         let next = generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
                         *job = speculative_job::start_live_speculative_job(&live_api,context,next,"Proactively compact before the next agent turn.".into())?;
                     }
                     Ok(maho_ext_api::EventResult::None)
-                })();
-                Box::pin(async move {result})
+                })
             }));
         }
         {
@@ -199,29 +209,43 @@ impl maho_ext_api::Extension for CompactionExtension {
             let idle_since_end = std::sync::Arc::clone(&idle_since_end);
             let idle_lane = std::sync::Arc::clone(&lane);
             api.on(maho_ext_api::EventKind::AgentEnd,std::sync::Arc::new(move |event,context| {
-                let result = (|| {
+                let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let idle_state=std::sync::Arc::clone(&idle_state);let live_api=std::sync::Arc::clone(&live_api);let idle_since_end=std::sync::Arc::clone(&idle_since_end);let idle_lane=std::sync::Arc::clone(&idle_lane);
+                Box::pin(async move {
                     let maho_ext_api::ExtensionEvent::AgentEnd {aborted,will_retry,..} = event else {return Ok(maho_ext_api::EventResult::None);};
                     if lane_policy::live_disables_senpi_compaction(&idle_lane,context) || !matches!(context.mode,maho_ext_api::ExtensionMode::Tui | maho_ext_api::ExtensionMode::Rpc) {return Ok(maho_ext_api::EventResult::None);}
                     let settings = extension_wiring::live_settings(context)?;
                     let usage = context.get_context_usage()?;
-                    let state = idle_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let decision = idle::IdleCompactionDecision {will_retry:will_retry.unwrap_or(false),aborted:aborted.unwrap_or(false),settings:&settings,tokens:usage.as_ref().and_then(|usage|usage.tokens).map(|tokens|tokens as f64),context_window:usage.as_ref().map_or_else(||context.model.as_ref().map_or(200000,|model|model.context_window),|usage|usage.context_window) as f64,breaker_tripped:circuit_breaker::is_tripped(&state,chrono::Utc::now().timestamp_millis() as f64),last_yield:state.last_yield,mode:context.mode};
+                    let (last_yield,tripped) = {let state=idle_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);(state.last_yield,circuit_breaker::is_tripped(&state,chrono::Utc::now().timestamp_millis() as f64))};
+                    let decision = idle::IdleCompactionDecision {will_retry:will_retry.unwrap_or(false),aborted:aborted.unwrap_or(false),settings:&settings,tokens:usage.as_ref().and_then(|usage|usage.tokens).map(|tokens|tokens as f64),context_window:usage.as_ref().map_or_else(||context.model.as_ref().map_or(200000,|model|model.context_window),|usage|usage.context_window) as f64,breaker_tripped:tripped,last_yield,mode:context.mode};
                     let above_threshold = idle::should_run_idle_compaction(&decision);
                     if !above_threshold && openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()) {return Ok(maho_ext_api::EventResult::None);}
+                    let (retired,action,epoch) = {
+                        let mut job = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let action = orchestration::resolve_idle_warm_action(&decision,job.as_ref().map(|job|job.armed_at_tokens as f64));
+                        let retired = if action == orchestration::IdleWarmAction::Replace {
+                            generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                            job.take()
+                        } else {None};
+                        (retired,action,generation.load(std::sync::atomic::Ordering::SeqCst))
+                    };
+                    if let Some(job) = retired {job.cancel().await;}
+                    if generation.load(std::sync::atomic::Ordering::SeqCst)!=epoch {return Ok(maho_ext_api::EventResult::None);}
+                    let watching = {
                     let mut job = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let action = orchestration::resolve_idle_warm_action(&decision,job.as_ref().map(|job|job.armed_at_tokens as f64));
-                    if action == orchestration::IdleWarmAction::Replace && let Some(previous) = job.take() {previous.controller.abort(None);}
                     if (above_threshold || action != orchestration::IdleWarmAction::None) && job.is_none() {
                         let next = generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
                         *job = speculative_job::start_live_speculative_job(&live_api,context,next,idle::IDLE_COMPACTION_INSTRUCTIONS.into())?;
                     }
-                    if let Some(mut watching) = job.as_ref().cloned() {
+                    job.as_ref().cloned()
+                    };
+                    if let Some(mut watching) = watching {
                         idle_since_end.store(true,std::sync::atomic::Ordering::SeqCst);
                         let context=context.clone();let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let idle=std::sync::Arc::clone(&idle_since_end);let state=std::sync::Arc::clone(&idle_state);let api=std::sync::Arc::clone(&live_api);
                         tokio::spawn(async move {
                             let mut attempt=0;
                             let settled=loop {
                                 let settled=watching.settled().await;
+                                watching.cancel().await;
                                 if settled.error.is_none() {break settled;}
                                 if !idle.load(std::sync::atomic::Ordering::SeqCst) || generation.load(std::sync::atomic::Ordering::SeqCst)!=watching.generation {return;}
                                 let Ok(Some(usage))=context.get_context_usage() else {return;};
@@ -230,9 +254,15 @@ impl maho_ext_api::Extension for CompactionExtension {
                                 if !idle_retry::should_retry_idle_warmup(&idle_retry::IdleWarmupRetryDecision {attempt,transient:settled.error.as_ref().is_some_and(|error|transient_failure::is_transient_summarization_failure(error.classification,&error.message)),is_idle:context.is_idle(),breaker_tripped:tripped,still_warm_eligible:idle::should_warm_at_idle(&decision)}) {return;}
                                 tokio::time::sleep(std::time::Duration::from_millis(idle_retry::IDLE_WARMUP_RETRY_DELAY_MS)).await;
                                 if !idle.load(std::sync::atomic::Ordering::SeqCst) || !context.is_idle() || generation.load(std::sync::atomic::Ordering::SeqCst)!=watching.generation {return;}
+                                let retired = {
+                                    let mut current=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    if current.as_ref().is_none_or(|job|job.generation!=watching.generation) {return;}
+                                    current.take()
+                                };
+                                if let Some(job) = retired {job.cancel().await;}
+                                if !idle.load(std::sync::atomic::Ordering::SeqCst) || !context.is_idle() || generation.load(std::sync::atomic::Ordering::SeqCst)!=watching.generation {return;}
                                 let mut current=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                                if current.as_ref().is_none_or(|job|job.generation!=watching.generation) {return;}
-                                watching.controller.abort(None);
+                                if current.is_some() {return;}
                                 let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
                                 let Ok(Some(replacement))=speculative_job::start_live_speculative_job(&api,&context,next,idle::IDLE_COMPACTION_INSTRUCTIONS.into()) else {return;};
                                 watching=replacement.clone();*current=Some(replacement);attempt+=1;
@@ -250,8 +280,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                         });
                     }
                     Ok(maho_ext_api::EventResult::None)
-                })();
-                Box::pin(async move {result})
+                })
             }));
             let state = std::sync::Arc::clone(&state);
             let logger = std::sync::Arc::clone(&logger);
@@ -313,15 +342,15 @@ impl maho_ext_api::Extension for CompactionExtension {
             let generation = std::sync::Arc::clone(&generation);
             let lane = std::sync::Arc::clone(&lane);
             api.on(maho_ext_api::EventKind::SessionBeforeCompact, std::sync::Arc::new(move |event, context| {
-                let claimed = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
-                    if event.signal.is_aborted() {None} else {
+                let (claimed,retired) = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
+                    if event.signal.is_aborted() {(None,None)} else {
                         let mut job = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         let claimed = speculative_job::claim_live_warm_job(&mut job,event,context);
-                        if let Some(job) = job.take() {job.controller.abort(None);}
+                        let retired = job.take();
                         generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
-                        claimed
+                        (claimed,retired)
                     }
-                } else {None};
+                } else {(None,None)};
                 let gate = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
                     let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if !event.signal.is_aborted() && !lane_policy::live_owns_compaction(&lane, context, event.reason) {
@@ -333,8 +362,11 @@ impl maho_ext_api::Extension for CompactionExtension {
                     } else { None }
                 } else { None };
                 if let Some(gate) = gate {
-                    if let Some(job) = claimed {job.controller.abort(None);}
-                    return Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(gate)) });
+                    return Box::pin(async move {
+                        if let Some(job) = retired {job.cancel().await;}
+                        if let Some(job) = claimed {job.cancel().await;}
+                        Ok(maho_ext_api::EventResult::SessionBefore(gate))
+                    });
                 }
                 let result = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
                     if event.signal.is_aborted() { Ok(()) } else {
@@ -353,17 +385,23 @@ impl maho_ext_api::Extension for CompactionExtension {
                 let live_api = std::sync::Arc::clone(&live_api);
                 let pending = std::sync::Arc::clone(&pending);
                 Box::pin(async move {
+                    if let Some(job) = retired {job.cancel().await;}
                     if let Err(error) = result {
-                        if let Some(job) = claimed {job.controller.abort(None);}
+                        if let Some(job) = claimed {job.cancel().await;}
                         return Err(error);
                     }
                     let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { return Ok(maho_ext_api::EventResult::None); };
+                    if event.signal.is_aborted() {
+                        if let Some(job) = claimed {job.cancel().await;}
+                        return Ok(maho_ext_api::EventResult::None);
+                    }
                     if let Some(job) = claimed {
                         let settled = tokio::select! {
-                            () = event.signal.cancelled() => {job.controller.abort(None);return Ok(maho_ext_api::EventResult::None);}
+                            biased;
+                            () = event.signal.cancelled() => {job.cancel().await;return Ok(maho_ext_api::EventResult::None);}
                             settled = job.settled() => settled,
                         };
-                        job.controller.abort(None);
+                        job.cancel().await;
                         if let Some(compaction) = settled.result {
                             return Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {compaction:Some(compaction),..Default::default()}));
                         }
@@ -449,8 +487,10 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let threshold = !tripped && policy::should_trigger_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield);
                     let in_flight = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|job|!job.completed());
                     if settings.enabled && (hard || (threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,settings.ideal.grace_band_enabled))) {
-                        if let Some(job)=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {job.controller.abort(None);}
                         let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+                        let retired = {warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()};
+                        if let Some(job) = retired {job.cancel().await;}
+                        if generation.load(std::sync::atomic::Ordering::SeqCst)!=next {return result;}
                         let instructions=if hard {"EMERGENCY: hard context limit reached. Produce an aggressive recovery summary that preserves current goal, constraints, files touched, tool outcomes, and exact next steps. Prefer concise factual state over transcript detail."} else {"Proactively compact before the next agent turn."};
                         extension_wiring::apply_live_blocking_compaction(&live_api,context,next,instructions.into()).await?;
                     } else if settings.enabled && !tripped && !openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()) && policy::should_start_speculative_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield,Some(geometry.lead_tokens)) {

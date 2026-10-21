@@ -1,7 +1,8 @@
 name: mhc-binary
 
-# Release mhc binary for a local install. scripts/gh-install.sh pushes `build/<version>`;
-# the branch name after `build/` becomes MHC_BUILD_VERSION (what `mhc --version` prints).
+# Complete mhc package (payload, launcher, siblings, skills, manifest) for a local install.
+# scripts/gh-install.sh pushes `build/<version>`; the branch name after `build/` becomes
+# MHC_BUILD_VERSION (what `mhc --version` prints) and the versions/<version>/ directory name.
 on:
   push:
     branches: ["build/**"]
@@ -27,13 +28,44 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: release
-      - name: build release mhc
+      - name: build release binaries
         run: |
           export MHC_BUILD_VERSION="${GITHUB_REF_NAME#build/}"
-          cargo build --release --locked -p maho-cli --bin mhc
-          ./target/release/mhc --version
+          cargo build --release --locked -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
+          test "$(./target/release/mhc --version)" = "$MHC_BUILD_VERSION"
+          test -x target/release/mhc-launcher
+
+      - name: materialize browser skill runtime
+        run: |
+          commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)')
+          git init -q "$RUNNER_TEMP/omowright"
+          git -C "$RUNNER_TEMP/omowright" fetch -q --depth 1 https://github.com/code-yeongyu/omowright.git "$commit"
+          git -C "$RUNNER_TEMP/omowright" checkout -q FETCH_HEAD
+          (cd "$RUNNER_TEMP/omowright" && bun install --frozen-lockfile --ignore-scripts --production)
+          node assets/omo-latest/stage-omowright-runtime.mjs --source "$RUNNER_TEMP/omowright" --target "$RUNNER_TEMP/omowright-runtime"
+
+      - name: package
+        run: |
+          export MHC_BUILD_VERSION="${GITHUB_REF_NAME#build/}"
+          name=mhc-linux-x86_64
+          bun tools/package-native.mjs --binary target/release/mhc --launcher-binary target/release/mhc-launcher --output "dist/$name" --skill-source latest \
+            --git-bash-binary target/release/omo-git-bash --desktop-engine-binary target/release/senpi-desktop-engine \
+            --omowright-runtime "$RUNNER_TEMP/omowright-runtime"
+          bun tools/package-native.mjs --verify-only "dist/$name"
+          test -x "dist/$name/mhc" && test -x "dist/$name/mhc-launcher"
+          test "$("dist/$name/mhc" --version)" = "$MHC_BUILD_VERSION"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          listing=$(tar -tzf "dist/$name.tar.gz")
+          for exe in mhc mhc-launcher; do
+            printf '%s\n' "$listing" | grep -Fx "$name/$exe" > /dev/null || { echo "dist/$name.tar.gz lacks $name/$exe" >&2; exit 1; }
+          done
+
       - uses: actions/upload-artifact@v7
         with:
           name: mhc-linux-x86_64
-          path: target/release/mhc
+          path: |
+            dist/mhc-linux-x86_64.tar.gz
+            dist/mhc-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
           retention-days: 3

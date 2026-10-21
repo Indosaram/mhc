@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn kimi_coding_declares_the_kimi_code_profile() {
-        let provider = crate::providers::kimi_coding::kimi_coding_provider();
+        let provider = crate::providers::kimi_coding::kimi_coding_provider().expect("provider");
         assert_eq!(provider.retry_policy().map(|profile| profile.id), Some("kimi-code"));
     }
 

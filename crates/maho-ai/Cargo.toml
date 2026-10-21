@@ -21,6 +21,7 @@ path = "src/bin/pi-ai.rs"
 prost-build = "=0.14.4"
 
 [dependencies]
+maho-chord = { path = "../maho-chord" }
 anyhow = "=1.0.104"
 async-trait = "=0.1.92"
 base64 = "=0.22.1"

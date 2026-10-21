@@ -17,7 +17,7 @@ pub fn register_remote_status_method(registry:&mut MethodRegistry,agent_dir:Stri
         })
     })});
 }
-pub fn register_model_list_method(registry: &mut MethodRegistry, models: Arc<dyn Fn() -> Vec<Model> + Send + Sync>) {
+pub fn register_model_list_method(registry: &mut MethodRegistry, models: Arc<dyn Fn() -> Result<Vec<Model>, JsonRpcError> + Send + Sync>) {
     registry.register("model/list".into(), MethodRegistration { requires_init:true, experimental:false, scope:MethodScope::None, handler:Arc::new(move |context| {
         let models = models.clone(); Box::pin(async move {
             let params = if context.request["params"].is_object() { context.request["params"].clone() } else { json!({}) };
@@ -25,7 +25,7 @@ pub fn register_model_list_method(registry: &mut MethodRegistry, models: Arc<dyn
                 if params.get(key).is_some_and(|value| !value.is_null()) && !valid { return Err(JsonRpcError::new(-32600,format!("model/list received an invalid {key}"))); }
             }
             // The runtime's model loader reads models.json/auth.json synchronously.
-            let models = tokio::task::spawn_blocking(move || models()).await.map_err(|error| JsonRpcError::new(-32603,error.to_string()))?;
+            let models = tokio::task::spawn_blocking(move || models()).await.map_err(|error| JsonRpcError::new(-32603,error.to_string()))??;
             let wire = models.iter().map(native_wire_model).collect::<Result<Vec<_>,_>>()?;
             build_model_list_response(&wire,&params)
         })

@@ -8,7 +8,8 @@
 //
 // The staged layout is exactly what the native runtime resolves at startup:
 //
-//   <staging>/mhc             the CLI binary
+//   <staging>/mhc             the payload CLI binary (runs from R/versions/<version>/ once installed)
+//   <staging>/mhc-launcher    the stable launcher: installers copy it to the install root as `mhc` and updates never replace it
 //   <staging>/lsp-daemon      the native LSP daemon binary (packaged_runtime_defaults: exe sibling)
 //   <staging>/ast-grep-mcp    the native ast-grep MCP server (AstGrepComponent entry: exe sibling)
 //   <staging>/omo-git-bash    the git-bash MCP sibling (required by --skill-source latest, optional in pinned)
@@ -59,8 +60,15 @@
 // runtime, `skills/browser/scripts/omowright.mjs` throws "omowright is not staged in this skill".
 // The pinned baseline stages no browser runtime (its pinned pool has no `browser` skill).
 //
+// The manifest's `versions.mhc` is the real build version of the payload CLI (what `mhc --version`
+// prints, i.e. MHC_BUILD_VERSION at build time): it is read by running the staged payload, or taken from
+// --build-version when the payload cannot run on the packaging host. It is never read from Cargo.toml.
+// Installers use it as the `versions/<version>/` directory name.
+//
 // Options:
-//   --binary <path>        the built `mhc` executable (required unless --verify-only/--self-test)
+//   --binary <path>        the built payload `mhc` executable (required unless --verify-only/--self-test)
+//   --launcher-binary <p>  the built `mhc-launcher` executable to stage as `mhc-launcher` (default: <binary dir>/mhc-launcher)
+//   --build-version <v>    build version of the payload (default: the output of `<binary> --version`)
 //   --output <dir>         the staging directory to create (required unless --verify-only/--self-test)
 //   --ast-grep-mcp <path>  native ast-grep MCP binary (default: <binary dir>/ast-grep-mcp)
 //   --omo-root <dir>       pinned oh-my-openagent checkout (default: $OMO_SRC, else $HOME/code/oh-my-openagent); unused by --skill-source latest
@@ -96,6 +104,8 @@ const LICENSES_DIR = "licenses";
 // Windows executables carry `.exe`; the runtime resolves every sibling by that platform name.
 const EXE_SUFFIX = process.platform === "win32" ? ".exe" : "";
 const CLI_BINARY_NAME = `mhc${EXE_SUFFIX}`;
+const LAUNCHER_NAME = `mhc-launcher${EXE_SUFFIX}`;
+const BUILD_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
 const AST_GREP_MCP_NAME = `ast-grep-mcp${EXE_SUFFIX}`;
 const LSP_DAEMON_NAME = `lsp-daemon${EXE_SUFFIX}`;
 const SCHEMA_VERSION = 1;
@@ -161,7 +171,7 @@ const IGNORED_DIR_NAMES = new Set([".git", ".omo", ".mypy_cache", ".pytest_cache
 const IGNORED_FILE_NAMES = new Set([".gitignore", ".npmignore", "pyrightconfig.json", "openai.yaml"]);
 
 function usage() {
-	console.log(`usage: bun tools/package-native.mjs --binary <mhc> --output <dir> [--ast-grep-mcp <path>] [--lsp-daemon-binary <path>] [--desktop-engine-binary <path>] [--omo-root <dir>] [--repo-root <dir>] [--schema <path>] [--force]
+	console.log(`usage: bun tools/package-native.mjs --binary <mhc> --output <dir> [--launcher-binary <path>] [--build-version <v>] [--ast-grep-mcp <path>] [--lsp-daemon-binary <path>] [--desktop-engine-binary <path>] [--omo-root <dir>] [--repo-root <dir>] [--schema <path>] [--force]
        bun tools/package-native.mjs --binary <mhc> --output <dir> --skill-source latest --git-bash-binary <path> [--lsp-daemon-binary <path>] [--desktop-engine-binary <path>] --omowright-runtime <dir> [--latest-assets <dir>]
        bun tools/package-native.mjs --verify-only <dir>
        bun tools/package-native.mjs --self-test`);
@@ -249,7 +259,7 @@ async function parseNames(path, pattern) {
  */
 export async function parseBuiltinSkillNames(repoRoot, omoRoot) {
 	const rustPath = join(repoRoot, "crates/omo/components/maho-omo-telemetry/src/product_identity.rs");
-	const tsPath = join(omoRoot, "packages/omo-senpi/src/components/telemetry/product-identity.ts");
+	const tsPath = join(omoRoot, "packages/omo-senpi/src/components/telemetry/event-schemas.ts");
 	const rustNames = await parseNames(rustPath, /BUILTIN_SKILL_NAMES\s*:\s*&\[&str\]\s*=\s*&\[([\s\S]*?)\]\s*;/);
 	const tsNames = await parseNames(tsPath, /BUILTIN_SKILL_NAMES\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\s*as const\)/);
 	if (rustNames.length === 0) throw new Error(`could not read BUILTIN_SKILL_NAMES from ${rustPath}`);
@@ -262,6 +272,32 @@ export async function parseBuiltinSkillNames(repoRoot, omoRoot) {
 		throw new Error(`builtin skill list drifted between the native runtime and the pinned checkout: native-only=[${onlyRust.join(", ")}] omo-only=[${onlyTs.join(", ")}]`);
 	}
 	return [...new Set(rustNames)].sort();
+}
+
+/** Normalizes a build version to the string `mhc --version` prints, without a leading `v`. */
+function normalizeBuildVersion(raw, source) {
+	const text = String(raw ?? "").replace(/\r/g, "").trim();
+	const version = text.startsWith("v") || text.startsWith("V") ? text.slice(1) : text;
+	if (!BUILD_VERSION_PATTERN.test(version)) throw new Error(`${source} did not yield a usable build version (got ${JSON.stringify(text.slice(0, 80))})`);
+	return version;
+}
+
+/** The real build version of the payload: its own `--version` output, bounded by a timeout. */
+async function payloadBuildVersion(binary) {
+	let child;
+	try {
+		child = Bun.spawn([binary, "--version"], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+	} catch (error) {
+		throw new Error(`cannot run ${binary} --version to read the build version (pass --build-version for a payload that cannot run here): ${error.message}`);
+	}
+	const timer = setTimeout(() => child.kill(), 30000);
+	try {
+		const [stdout, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+		if (code !== 0) throw new Error(`${binary} --version exited with ${code}`);
+		return normalizeBuildVersion(stdout, `${binary} --version`);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 async function parseWorkspaceVersion(repoRoot) {
@@ -549,6 +585,11 @@ async function fileEntry(output, relPath, source) {
 export async function stage(options) {
 	const binary = resolve(options.binary);
 	if (!existsSync(binary) || !(await stat(binary)).isFile()) throw new Error(`--binary is not a regular file: ${binary}`);
+	const launcher = resolve(options.launcherBinary ?? join(dirname(binary), LAUNCHER_NAME));
+	if (!existsSync(launcher) || !(await stat(launcher)).isFile()) {
+		throw new Error(`mhc launcher not found at ${launcher}: build the maho-cli bins (cargo build -p maho-cli --bins) so ${LAUNCHER_NAME} sits beside ${CLI_BINARY_NAME}, or pass --launcher-binary`);
+	}
+	const buildVersion = options.buildVersion ? normalizeBuildVersion(options.buildVersion, "--build-version") : await payloadBuildVersion(binary);
 	const astGrepMcp = resolve(options.astGrepMcp ?? join(dirname(binary), AST_GREP_MCP_NAME));
 	if (!existsSync(astGrepMcp) || !(await stat(astGrepMcp)).isFile()) {
 		throw new Error(`native ast-grep MCP server not found at ${astGrepMcp}: build the workspace bins (cargo build --workspace --bins) so ${AST_GREP_MCP_NAME} sits beside ${CLI_BINARY_NAME}, or pass --ast-grep-mcp`);
@@ -676,6 +717,8 @@ export async function stage(options) {
 	const executables = [];
 	await copyExecutable(binary, join(output, CLI_BINARY_NAME));
 	executables.push(await fileEntry(output, CLI_BINARY_NAME, binary));
+	await copyExecutable(launcher, join(output, LAUNCHER_NAME));
+	executables.push(await fileEntry(output, LAUNCHER_NAME, launcher));
 	await copyExecutable(astGrepMcp, join(output, AST_GREP_MCP_NAME));
 	executables.push(await fileEntry(output, AST_GREP_MCP_NAME, astGrepMcp));
 	if (gitBashMcp !== null) {
@@ -720,7 +763,7 @@ export async function stage(options) {
 		}
 	}
 
-	const layout = { binary: CLI_BINARY_NAME, lspDaemon: LSP_DAEMON_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
+	const layout = { binary: CLI_BINARY_NAME, launcher: LAUNCHER_NAME, lspDaemon: LSP_DAEMON_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
 	const conditionalSkillPath = `${CONDITIONAL_SKILLS_DIR}/x-search/SKILL.md`;
 	await mkdir(dirname(join(output, conditionalSkillPath)), { recursive: true });
 	await copyFile(xSearchSkill, join(output, conditionalSkillPath));
@@ -737,7 +780,7 @@ export async function stage(options) {
 		generator: "tools/package-native.mjs",
 		layout,
 		versions: {
-			mhc: workspaceVersion,
+			mhc: buildVersion,
 			astGrepMcp: workspaceVersion,
 			omoSenpi: omoSenpiVersion,
 			sharedSkills: sharedSkillsVersion,
@@ -776,7 +819,7 @@ export async function verify(directory) {
 	// schema version and the exact layout the runtime resolves. An empty or foreign object must not
 	// pass just because its optional arrays are absent.
 	if (manifest.schemaVersion !== SCHEMA_VERSION) errors.push(`unsupported schemaVersion: ${JSON.stringify(manifest.schemaVersion)} (expected ${SCHEMA_VERSION})`);
-	const expectedLayout = { binary: CLI_BINARY_NAME, lspDaemon: LSP_DAEMON_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
+	const expectedLayout = { binary: CLI_BINARY_NAME, launcher: LAUNCHER_NAME, lspDaemon: LSP_DAEMON_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
 	for (const [key, value] of Object.entries(expectedLayout)) {
 		if (manifest.layout?.[key] !== value) errors.push(`layout.${key} must be ${JSON.stringify(value)} (found ${JSON.stringify(manifest.layout?.[key])})`);
 	}
@@ -829,9 +872,13 @@ export async function verify(directory) {
 		!conditionalSkillFiles.some((entry) => entry?.path === conditionalSkillPath)) {
 		errors.push("required conditional x-search skill missing from the manifest");
 	}
-	// Required entries: the three executables the runtime resolves as binary siblings and both
+	// versions.mhc is the install directory name (versions/<version>/): it must be the concrete build version.
+	if (typeof manifest.versions?.mhc !== "string" || !BUILD_VERSION_PATTERN.test(manifest.versions.mhc)) {
+		errors.push(`versions.mhc must be the payload build version (found ${JSON.stringify(manifest.versions?.mhc)})`);
+	}
+	// Required entries: the four executables the runtime resolves as binary siblings and both
 	// retained license texts must be present, so a manifest cannot omit a shipped asset.
-	for (const required of [CLI_BINARY_NAME, LSP_DAEMON_NAME, AST_GREP_MCP_NAME]) {
+	for (const required of [CLI_BINARY_NAME, LAUNCHER_NAME, LSP_DAEMON_NAME, AST_GREP_MCP_NAME]) {
 		if (!executables.some((entry) => entry?.path === required)) errors.push(`required executable missing from the manifest: ${required}`);
 	}
 	// The published config schema is a required shipped asset: the manifest must carry it, it must be
@@ -929,7 +976,7 @@ async function selfTest() {
 		await mkdir(join(omo, "packages/shared-skills/skills"), { recursive: true });
 		await writeFile(join(omo, "packages/omo-senpi/package.json"), JSON.stringify({ name: "@oh-my-opencode/omo-senpi", version: "5.0.0-beta.9" }, null, 2));
 		await writeFile(join(omo, "packages/shared-skills/package.json"), JSON.stringify({ name: "@oh-my-opencode/shared-skills", version: "0.1.0" }, null, 2));
-		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/product-identity.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  ${names.map((name) => `"${name}"`).join(", ")},\n] as const)\n`);
+		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/event-schemas.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  ${names.map((name) => `"${name}"`).join(", ")},\n] as const)\n`);
 
 		// alpha lives in both roots (the native override wins), beta only in the shared pool,
 		// gamma only in the native root.
@@ -957,7 +1004,9 @@ async function selfTest() {
 		);
 
 		await mkdir(binDir, { recursive: true });
-		await writeFile(join(binDir, "mhc"), "#!/bin/sh\necho mhc\n");
+		await writeFile(join(binDir, "mhc"), "#!/bin/sh\necho v2026.1.2-fixture\n");
+		await writeFile(join(binDir, LAUNCHER_NAME), "#!/bin/sh\necho launcher\n");
+		await chmod(join(binDir, "mhc"), 0o755);
 		await writeFile(join(binDir, "ast-grep-mcp"), "#!/bin/sh\necho ast-grep-mcp\n");
 		await writeFile(join(binDir, LSP_DAEMON_NAME), "#!/bin/sh\necho lsp-daemon\n");
 
@@ -972,7 +1021,13 @@ async function selfTest() {
 		check("shared-only skill staged", (await readFile(join(out, "skills/beta/SKILL.md"), "utf8")).includes("shared"));
 		check("skill debris excluded", !existsSync(join(out, "skills/alpha/.gitignore")) && !existsSync(join(out, "skills/alpha/junk.test.ts")));
 		check("licenses retained", existsSync(join(out, "licenses/MIT.txt")) && existsSync(join(out, "licenses/SUL-1.0.md")));
-		check("versions recorded", result.manifest.versions.mhc === "9.9.9" && result.manifest.versions.omoSenpi === "5.0.0-beta.9");
+		check("versions recorded", result.manifest.versions.omoSenpi === "5.0.0-beta.9");
+		check("versions.mhc is the payload build version, not Cargo.toml", result.manifest.versions.mhc === "2026.1.2-fixture" && result.manifest.versions.mhc !== "9.9.9");
+		check("launcher staged as a tracked executable beside the payload", existsSync(join(out, LAUNCHER_NAME)) && result.manifest.layout.launcher === LAUNCHER_NAME && result.manifest.executables.some((entry) => entry.path === LAUNCHER_NAME) && ((await stat(join(out, LAUNCHER_NAME))).mode & 0o111) !== 0);
+		const overrideOut = join(root, "build-version-override");
+		const overridden = await stage({ binary: join(binDir, "mhc"), output: overrideOut, omoRoot: omo, repoRoot: repo, buildVersion: "v7.7.7" });
+		check("--build-version overrides the payload probe and drops a leading v", overridden.manifest.versions.mhc === "7.7.7");
+		await expectReject("an unusable build version is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "bad-build-version"), omoRoot: omo, repoRoot: repo, buildVersion: "../evil" }), "build version");
 		check("source pins recorded", result.manifest.pins.omo === omoCommit && result.manifest.pins.senpi === "a".repeat(40));
 		check("staged executables carry the exec bit", ((await stat(join(out, "mhc"))).mode & 0o111) !== 0 && ((await stat(join(out, LSP_DAEMON_NAME))).mode & 0o111) !== 0 && ((await stat(join(out, "ast-grep-mcp"))).mode & 0o111) !== 0);
 		check("manifest verifies the staged tree", (await verify(out)).ok);
@@ -1013,6 +1068,20 @@ async function selfTest() {
 		await writeFile(join(omittedExecutableDir, MANIFEST_NAME), `${JSON.stringify(omittedManifest, null, 2)}\n`);
 		const omittedExecutable = await verify(omittedExecutableDir);
 		check("manifest omitting a required executable is rejected", !omittedExecutable.ok && omittedExecutable.errors.some((error) => error.includes("required executable missing") && error.includes(AST_GREP_MCP_NAME)));
+
+		const launcherOmittedDir = join(root, "launcher-omitted");
+		await copyTree(out, launcherOmittedDir);
+		const launcherOmitted = JSON.parse(await readFile(join(launcherOmittedDir, MANIFEST_NAME), "utf8"));
+		launcherOmitted.executables = launcherOmitted.executables.filter((entry) => entry.path !== LAUNCHER_NAME);
+		await writeFile(join(launcherOmittedDir, MANIFEST_NAME), `${JSON.stringify(launcherOmitted, null, 2)}\n`);
+		const launcherOmittedResult = await verify(launcherOmittedDir);
+		check("manifest omitting the launcher is rejected", !launcherOmittedResult.ok && launcherOmittedResult.errors.some((error) => error.includes("required executable missing") && error.includes(LAUNCHER_NAME)));
+
+		const launcherTamperedDir = join(root, "launcher-tampered");
+		await copyTree(out, launcherTamperedDir);
+		await writeFile(join(launcherTamperedDir, LAUNCHER_NAME), "#!/bin/sh\necho tampered\n");
+		const launcherTamperedResult = await verify(launcherTamperedDir);
+		check("tampered launcher fails verification", !launcherTamperedResult.ok && launcherTamperedResult.errors.some((error) => error.includes("sha256 mismatch") && error.includes(LAUNCHER_NAME)));
 
 		const lspDroppedBothDir = join(root, "lsp-dropped-both");
 		await copyTree(out, lspDroppedBothDir);
@@ -1082,6 +1151,11 @@ async function selfTest() {
 		await expectReject("a missing published schema is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "no-schema"), omoRoot: omo, repoRoot: repo }), "published config schema not found");
 		await writeFile(join(repo, "assets/omo.schema.json"), schemaFixture);
 
+		await rm(join(binDir, LAUNCHER_NAME));
+		await expectReject("missing launcher is diagnosed", stage({ binary: join(binDir, "mhc"), output: join(root, "missing-launcher"), omoRoot: omo, repoRoot: repo }), "launcher");
+		check("no placeholder launcher is written", !existsSync(join(root, "missing-launcher", LAUNCHER_NAME)));
+		await writeFile(join(binDir, LAUNCHER_NAME), "#!/bin/sh\necho launcher\n");
+
 		await rm(join(binDir, LSP_DAEMON_NAME));
 		const missingLspHelper = join(root, "missing-lsp-helper");
 		await expectReject("missing lsp-daemon helper is diagnosed", stage({ binary: join(binDir, "mhc"), output: missingLspHelper, omoRoot: omo, repoRoot: repo }), "lsp-daemon");
@@ -1095,10 +1169,10 @@ async function selfTest() {
 		await writeFile(join(binDir, "ast-grep-mcp"), "#!/bin/sh\necho ast-grep-mcp\n");
 
 		await writeFile(join(repo, "crates/omo/components/maho-omo-telemetry/src/product_identity.rs"), `pub const BUILTIN_SKILL_NAMES: &[&str] = &["alpha", "missing-skill"];\n`);
-		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/product-identity.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  "alpha", "missing-skill",\n] as const)\n`);
+		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/event-schemas.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  "alpha", "missing-skill",\n] as const)\n`);
 		await expectReject("builtin skill absent from both roots is diagnosed", stage({ binary: join(binDir, "mhc"), output: join(root, "missing-skill"), omoRoot: omo, repoRoot: repo }), "missing-skill");
 
-		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/product-identity.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  "alpha",\n] as const)\n`);
+		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/event-schemas.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  "alpha",\n] as const)\n`);
 		await expectReject("drifted builtin skill lists are diagnosed", stage({ binary: join(binDir, "mhc"), output: join(root, "drift"), omoRoot: omo, repoRoot: repo }), "drifted");
 
 		await expectReject("non-empty staging directory is refused", stage({ binary: join(binDir, "mhc"), output: out, omoRoot: omo, repoRoot: repo }), "not empty");
@@ -1115,7 +1189,7 @@ async function selfTest() {
 		// The pinned lists were mutated above; restore them so the source-selection cases below can
 		// stage the pinned default again and prove the two modes are independent.
 		await writeFile(join(repo, "crates/omo/components/maho-omo-telemetry/src/product_identity.rs"), `pub const BUILTIN_SKILL_NAMES: &[&str] = &[${names.map((name) => `"${name}"`).join(", ")}];\n`);
-		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/product-identity.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  ${names.map((name) => `"${name}"`).join(", ")},\n] as const)\n`);
+		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/event-schemas.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  ${names.map((name) => `"${name}"`).join(", ")},\n] as const)\n`);
 
 		// The selected product staging (`--skill-source latest`) requires both the git-bash and
 		// desktop engine siblings, so the built siblings are present before the latest cases run.
@@ -1310,6 +1384,8 @@ async function main(argv) {
 	let binary = null;
 	let output = null;
 	let astGrepMcp = null;
+	let launcherBinary = null;
+	let buildVersion = null;
 	let omoRoot = null;
 	let repoRoot = null;
 	let skillSource = null;
@@ -1333,6 +1409,8 @@ async function main(argv) {
 		if (argument === "--binary") binary = next(argument);
 		else if (argument === "--output") output = next(argument);
 		else if (argument === "--ast-grep-mcp") astGrepMcp = next(argument);
+		else if (argument === "--launcher-binary") launcherBinary = next(argument);
+		else if (argument === "--build-version") buildVersion = next(argument);
 		else if (argument === "--omo-root") omoRoot = next(argument);
 		else if (argument === "--repo-root") repoRoot = next(argument);
 		else if (argument === "--skill-source") skillSource = next(argument);
@@ -1363,7 +1441,7 @@ async function main(argv) {
 		process.exit(1);
 	}
 	if (binary === null || output === null) usageError("--binary and --output are required");
-	const result = await stage({ binary, output, astGrepMcp, omoRoot, repoRoot, force, skillSource, latestAssets, gitBashBinary, lspDaemonBinary, desktopEngineBinary, omowrightRuntime, schema });
+	const result = await stage({ binary, output, astGrepMcp, launcherBinary, buildVersion, omoRoot, repoRoot, force, skillSource, latestAssets, gitBashBinary, lspDaemonBinary, desktopEngineBinary, omowrightRuntime, schema });
 	console.log(`package-native: staged ${result.manifest.executables.length} executable(s), ${result.manifest.skills.names.length} skill(s) (${result.manifest.skills.files.length} files) and ${result.manifest.licenses.length} license(s) into ${result.output}`);
 	console.log(`package-native: skill source ${result.manifest.skills.source}`);
 	console.log(`package-native: manifest ${result.manifestPath}`);

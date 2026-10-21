@@ -41,3 +41,36 @@ async fn overflow_json_optional_numbers_are_ignored_at_file_boundary() {
     assert_eq!(provider.config.max_results,None);assert_eq!(provider.config.timeout_ms,None);
     assert_eq!(provider.priority,None);assert_eq!(provider.weight,None);
 }
+
+#[tokio::test]
+async fn raw_config_preserves_finite_numbers_types_and_last_duplicate_key() {
+    let cwd=tempfile::tempdir().unwrap();let home=tempfile::tempdir().unwrap();
+    std::fs::create_dir(cwd.path().join(".senpi")).unwrap();
+    std::fs::write(cwd.path().join(".senpi/websearch.json"),r#"{
+        "providers":[null,{"provider":"duckduckgo-html","maxResults":1e400,"maxResults":2.5,
+            "timeoutMs":1e-3,"priority":-0.5,"weight":1e-400,"id":"1e400",
+            "allowedDomains":["1e400"],"blockedDomains":[1e400],
+            "userLocation":{"country":"US","city":1e400}}],
+        "auto":false,"fallback":false,"ignored":{"nested":[1e400,-1e400]}
+    }"#).unwrap();
+    let ConfigLoadResult::Ok{config,..}=maho_ext_websearch::websearch::config::load_websearch_config(cwd.path(),home.path()).await.unwrap() else {panic!("expected raw configuration")};
+    assert!(!config.auto);assert!(!config.fallback);
+    let provider=&config.providers[0];
+    assert_eq!(provider.config.max_results,Some(2.5));assert_eq!(provider.config.timeout_ms,Some(0.001));
+    assert_eq!(provider.priority,Some(-0.5));assert_eq!(provider.weight,None);
+    assert_eq!(provider.config.id.as_deref(),Some("1e400"));
+    assert_eq!(provider.config.allowed_domains,Some(vec!["1e400".into()]));
+    assert_eq!(provider.config.blocked_domains,None);
+    assert_eq!(provider.config.user_location,Some(json!({"country":"US"})));
+}
+
+#[tokio::test]
+async fn raw_config_rejects_malformed_json_even_in_ignored_fields() {
+    let cwd=tempfile::tempdir().unwrap();let home=tempfile::tempdir().unwrap();
+    std::fs::create_dir(cwd.path().join(".senpi")).unwrap();
+    for value in ["NaN","Infinity","01","1e+","[1e400,]","{\"x\":1e400,}"] {
+        std::fs::write(cwd.path().join(".senpi/websearch.json"),format!(r#"{{"provider":"duckduckgo-html","ignored":{value}}}"#)).unwrap();
+        let result=maho_ext_websearch::websearch::config::load_websearch_config(cwd.path(),home.path()).await.unwrap();
+        assert!(matches!(result,ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,..}),"{value}");
+    }
+}

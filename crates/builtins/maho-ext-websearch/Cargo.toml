@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 url = "=2.5.8"
-serde_json = { version = "=1.0.149", features = ["arbitrary_precision"] }
+serde_json = { version = "=1.0.149", features = ["raw_value"] }
 regex = "=1.12.3"
 sha2.workspace = true
 maho-ext-api = { path = "../../maho-ext-api" }

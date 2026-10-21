@@ -10,15 +10,12 @@ use senpi_desktop_service::rpc_client::DesktopError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::cua_actions::{
-    actions_of, actions_script, parse_computer_actions,
-    ScreenshotBounds,
-};
+use crate::cua_actions::{ScreenshotBounds, actions_of, actions_script, parse_computer_actions};
 use crate::cua_definition::computer_actions_tool_definition;
-use crate::cua_errors::{computer_failure, ComputerFailure};
+use crate::cua_errors::{ComputerFailure, computer_failure};
 use crate::params::{DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS};
 use crate::session::ComputerHostContext;
-use crate::tool::{run_computer, ComputerToolDeps};
+use crate::tool::{ComputerToolDeps, run_computer};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,7 +57,11 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
 
             let context = match call.context {
                 Some(ctx) => ComputerHostContext::from_tool_context(ctx),
-                None => return Err(ToolError::Message("Missing required ToolContext for computer actions".into())),
+                None => {
+                    return Err(ToolError::Message(
+                        "Missing required ToolContext for computer actions".into(),
+                    ));
+                }
             };
 
             let params = match parse_computer_actions(input) {
@@ -69,7 +70,9 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
                     let failure = computer_failure(&e.code, &e.reason, &stop_hotkey, None);
                     return Ok(ToolResult {
                         content: vec![ToolContent::text(&failure.message)],
-                        details: Some(json!({ "value": failure, "isError": true })), structured_content: None
+                        details: Some(json!({ "value": failure, "isError": true })),
+                        structured_content: None,
+                        is_error: None,
                     });
                 }
             };
@@ -83,26 +86,37 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
             let current_bounds = bounds_mutex.lock().await.clone();
             let code = actions_script(&actions_of(&params), current_bounds.as_ref());
 
-            let result = match run_computer(&deps, &context, code, read_only, timeout_seconds, signal).await {
-                Ok(r) => r,
-                Err(err) => {
-                    let (reason, message, perm) = match &err {
-                        DesktopRunError::Engine(DesktopError::Rpc(rpc)) => {
-                            match &rpc.data {
-                                Some(senpi_desktop_protocol::JsonRpcErrorData::Engine(data)) => (data.code.as_str().to_string(),rpc.message.clone(),data.permission.clone()),
-                                _ => ("Error".to_string(),rpc.message.clone(),None),
+            let result =
+                match run_computer(&deps, &context, code, read_only, timeout_seconds, signal).await
+                {
+                    Ok(r) => r,
+                    Err(err) => {
+                        let (reason, message, perm) = match &err {
+                            DesktopRunError::Engine(DesktopError::Rpc(rpc)) => match &rpc.data {
+                                Some(senpi_desktop_protocol::JsonRpcErrorData::Engine(data)) => (
+                                    data.code.as_str().to_string(),
+                                    rpc.message.clone(),
+                                    data.permission.clone(),
+                                ),
+                                _ => ("Error".to_string(), rpc.message.clone(), None),
+                            },
+                            DesktopRunError::Engine(other) => {
+                                ("Error".to_string(), other.to_string(), None)
                             }
-                        }
-                        DesktopRunError::Engine(other) => ("Error".to_string(), other.to_string(), None),
-                        DesktopRunError::ComputerRun(c) => (c.reason.as_str().to_string(), c.message.clone(), None),
-                    };
-                    let failure = computer_failure(&reason, &message, &stop_hotkey, perm.as_ref());
-                    return Ok(ToolResult {
-                        content: vec![ToolContent::text(&failure.message)],
-                        details: Some(json!({ "value": failure, "isError": true })), structured_content: None
-                    });
-                }
-            };
+                            DesktopRunError::ComputerRun(c) => {
+                                (c.reason.as_str().to_string(), c.message.clone(), None)
+                            }
+                        };
+                        let failure =
+                            computer_failure(&reason, &message, &stop_hotkey, perm.as_ref());
+                        return Ok(ToolResult {
+                            content: vec![ToolContent::text(&failure.message)],
+                            details: Some(json!({ "value": failure, "isError": true })),
+                            structured_content: None,
+                            is_error: None,
+                        });
+                    }
+                };
 
             let Some(raw_value) = result.details.value.clone() else {
                 return Ok(result.to_tool_result());
@@ -139,7 +153,9 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
                     content.push(ToolContent::text(text));
                     Ok(ToolResult {
                         content,
-                        details: serde_json::to_value(&result.details).ok(), structured_content: None
+                        details: serde_json::to_value(&result.details).ok(),
+                        structured_content: None,
+                        is_error: None,
                     })
                 }
                 Some(idx) => {
@@ -186,7 +202,9 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
 
                     Ok(ToolResult {
                         content,
-                        details: Some(details), structured_content: None
+                        details: Some(details),
+                        structured_content: None,
+                        is_error: None,
                     })
                 }
             }

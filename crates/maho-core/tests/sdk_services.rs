@@ -17,9 +17,9 @@ async fn services_mount_preserves_settings_and_consumes_loaded_factory_once() {
         maho_core::agent_session_services::CreateAgentSessionServicesOptions {
             cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
             model_runtime: Some(maho_core::model_runtime::ModelRuntime::create_sync(
-                maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() })),
+                maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime")),
             ..Default::default()
-        }).await;
+        }).await.expect("valid session services");
     services.settings_manager.apply_overrides(&serde_json::Map::from_iter([("fixtureSetting".into(), 7.into())]));
     let model = serde_json::from_value(serde_json::json!({"id":"fixture","name":"fixture","api":"faux","provider":"faux",
         "baseUrl":"","reasoning":false,"input":[],"contextWindow":128000,"maxTokens":4096,
