@@ -1,6 +1,27 @@
 use std::path::Path;
-use serde_json::{Value,Map};
+use serde_json::{Value,Map,value::RawValue};
 use super::{types::*,provider_endpoints::is_allowed_provider_base_url};
+// RawValue validates JSON without converting overflow literals to bounded numbers.
+// Only this ingestion boundary projects nonfinite numbers to null, which the
+// optional config accessors ignore just as they ignore JSON.parse's infinities.
+fn config_value(raw:&RawValue,depth:usize)->Result<Value,serde_json::Error> {
+    let text=raw.get();
+    if depth>=127 && matches!(text.as_bytes().first(),Some(b'{'|b'[')) {
+        return Err(serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData,"recursion limit exceeded")));
+    }
+    match text.as_bytes().first() {
+        Some(b'{')=>{
+            let fields:std::collections::BTreeMap<String,&RawValue>=serde_json::from_str(text)?;
+            fields.into_iter().map(|(key,value)|Ok((key,config_value(value,depth+1)?))).collect::<Result<Map<String,Value>,serde_json::Error>>().map(Value::Object)
+        }
+        Some(b'[')=>{
+            let values:Vec<&RawValue>=serde_json::from_str(text)?;
+            values.into_iter().map(|value|config_value(value,depth+1)).collect::<Result<Vec<_>,_>>().map(Value::Array)
+        }
+        Some(b'-'|b'0'..=b'9')=>Ok(text.parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(Value::Null,Value::Number)),
+        _=>serde_json::from_str(text),
+    }
+}
 fn string(raw:&Value,key:&str)->Option<String> { raw.get(key).and_then(Value::as_str).filter(|s|!s.is_empty()).map(str::to_owned) }
 fn number(raw:&Value,key:&str)->Option<f64> { raw.get(key).and_then(Value::as_f64).filter(|n|n.is_finite()) }
 fn strings(raw:&Value,key:&str)->Option<Vec<String>> { raw.get(key)?.as_array()?.iter().map(|value|value.as_str().map(str::to_owned)).collect() }
@@ -45,7 +66,7 @@ pub async fn load_websearch_config(cwd:&Path,home:&Path)->Result<ConfigLoadResul
     let mut seen=Vec::new();
     for path in paths { if seen.contains(&path) { continue; } seen.push(path.clone()); if tokio::fs::metadata(&path).await.is_err() { continue; }
         let bytes=tokio::fs::read(&path).await?; let text=String::from_utf8_lossy(&bytes); let source=path.to_string_lossy().into_owned();
-        let raw:Value=match serde_json::from_str::<Value>(&text) { Ok(value) if value.is_object()=>value,_=>return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid JSON object in {source}"),source:Some(source)}) };
+        let raw:Value=match serde_json::from_str::<&RawValue>(&text).and_then(|raw|config_value(raw,0)) { Ok(value) if value.is_object()=>value,_=>return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid JSON object in {source}"),source:Some(source)}) };
         let Some(config)=config_from_object(&raw) else { return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid provider config in {source}"),source:Some(source)}); };
         return Ok(match validate_websearch_config(&config) { Ok(())=>ConfigLoadResult::Ok{config,source},Err((reason,message))=>ConfigLoadResult::Err{reason,message,source:Some(source)} });
     }

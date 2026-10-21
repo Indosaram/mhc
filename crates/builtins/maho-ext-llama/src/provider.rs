@@ -7,8 +7,8 @@ use maho_ai::types::{InputModality, ModelCost};
 use maho_ext_api::{ExtensionFailure, ProviderConfig, ProviderModelConfig, ProviderRefresh};
 use serde_json::{Map, Value};
 
-use crate::client::{LlamaClient, LlamaModelInfo, llama_inference_url, normalize_llama_server_url};
 use crate::client::LlamaServerProps;
+use crate::client::{LlamaClient, LlamaModelInfo, llama_inference_url, normalize_llama_server_url};
 
 pub const LLAMA_PROVIDER_ID: &str = "llama.cpp";
 pub const DEFAULT_LLAMA_SERVER_URL: &str = "http://127.0.0.1:8080";
@@ -16,28 +16,46 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
 
 fn credential_server_url(credential: &Value) -> Option<String> {
     let value = credential.get("env")?.get("LLAMA_BASE_URL")?.as_str()?;
-    (!value.trim().is_empty()).then(|| normalize_llama_server_url(value).ok()).flatten()
+    (!value.trim().is_empty())
+        .then(|| normalize_llama_server_url(value).ok())
+        .flatten()
 }
 
 fn resolve_server_url(credential: Option<&Value>) -> Option<String> {
     credential.and_then(credential_server_url).or_else(|| {
-        std::env::var("LLAMA_BASE_URL").ok().map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()).and_then(|value| normalize_llama_server_url(&value).ok())
+        std::env::var("LLAMA_BASE_URL")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .and_then(|value| normalize_llama_server_url(&value).ok())
     })
 }
 
 fn model_is_selectable(model: &LlamaModelInfo, router_autoload: bool) -> bool {
     match model.status.value.as_str() {
         "loaded" | "sleeping" => true,
-        "unloaded" => router_autoload && model.status.failed != Some(true) && model.source.as_deref() == Some("preset"),
+        "unloaded" => {
+            router_autoload
+                && model.status.failed != Some(true)
+                && model.source.as_deref() == Some("preset")
+        }
         _ => false,
     }
 }
 
 async fn router_autoload_enabled(client: &LlamaClient, catalog: &[LlamaModelInfo]) -> bool {
-    if !catalog.iter().any(|model| model.status.value == "unloaded" && model.source.as_deref() == Some("preset")) {
+    if !catalog
+        .iter()
+        .any(|model| model.status.value == "unloaded" && model.source.as_deref() == Some("preset"))
+    {
         return false;
     }
-    client.props(None).await.ok().and_then(|props| props.models_autoload) == Some(true)
+    client
+        .props(None)
+        .await
+        .ok()
+        .and_then(|props| props.models_autoload)
+        == Some(true)
 }
 
 fn llama_compat() -> ModelCompat {
@@ -47,35 +65,64 @@ fn llama_compat() -> ModelCompat {
     compat.insert("supportsReasoningEffort".to_owned(), Value::Bool(false));
     compat.insert("supportsUsageInStreaming".to_owned(), Value::Bool(true));
     compat.insert("supportsStrictMode".to_owned(), Value::Bool(false));
-    compat.insert("maxTokensField".to_owned(), Value::String("max_tokens".to_owned()));
+    compat.insert(
+        "maxTokensField".to_owned(),
+        Value::String("max_tokens".to_owned()),
+    );
     ModelCompat(compat)
 }
 
 fn configured_context_window(model: &LlamaModelInfo) -> Option<u64> {
     let args = model.status.args.as_deref().unwrap_or_default();
     args.windows(2).find_map(|pair| {
-        if !matches!(pair[0].as_str(), "--ctx-size" | "-c" | "-ctx") { return None; }
+        if !matches!(pair[0].as_str(), "--ctx-size" | "-c" | "-ctx") {
+            return None;
+        }
         pair[1].parse::<u64>().ok().filter(|value| *value > 0)
     })
 }
 
 fn context_window_of(model: &LlamaModelInfo, cached_context_window: Option<u64>) -> u64 {
-    model.meta.as_ref().and_then(|meta| meta.n_ctx).filter(|value| *value > 0)
+    model
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.n_ctx)
+        .filter(|value| *value > 0)
         .or_else(|| configured_context_window(model))
         .or_else(|| cached_context_window.filter(|value| *value > 0))
-        .or_else(|| model.meta.as_ref().and_then(|meta| meta.n_ctx_train).filter(|value| *value > 0))
+        .or_else(|| {
+            model
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.n_ctx_train)
+                .filter(|value| *value > 0)
+        })
         .unwrap_or(DEFAULT_CONTEXT_WINDOW)
 }
 
-fn to_provider_model_config(model: &LlamaModelInfo, server_url: &str, props: Option<&LlamaServerProps>, cached_context_window: Option<u64>) -> ProviderModelConfig {
+fn to_provider_model_config(
+    model: &LlamaModelInfo,
+    server_url: &str,
+    props: Option<&LlamaServerProps>,
+    cached_context_window: Option<u64>,
+) -> ProviderModelConfig {
     let context_window = context_window_of(model, cached_context_window);
-    let reasoning = props.and_then(|props| props.chat_template.as_deref()).is_some_and(|template| template.contains("enable_thinking"));
+    let reasoning = props
+        .and_then(|props| props.chat_template.as_deref())
+        .is_some_and(|template| template.contains("enable_thinking"));
     let has_image = model
         .architecture
         .as_ref()
         .and_then(|architecture| architecture.input_modalities.as_ref())
         .is_some_and(|modalities| modalities.iter().any(|value| value == "image"));
     ProviderModelConfig {
+        model_type: None,
+        output: None,
+        image_cost: None,
+        input_limits: None,
+        prompt_cache: None,
+        supports_assistant_prefill: None,
+        default_thinking_level: None,
         id: model.id.clone(),
         name: model.id.clone(),
         upstream_model_id: None,
@@ -84,43 +131,82 @@ fn to_provider_model_config(model: &LlamaModelInfo, server_url: &str, props: Opt
         reasoning,
         recover_text_tool_calls: None,
         thinking_level_map: None,
-        input: if has_image { vec![InputModality::Text, InputModality::Image] } else { vec![InputModality::Text] },
-        cost: ModelCost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, tiers: None },
+        input: if has_image {
+            vec![InputModality::Text, InputModality::Image]
+        } else {
+            vec![InputModality::Text]
+        },
+        cost: ModelCost {
+            effective_rates: None,
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            tiers: None,
+        },
         context_window,
         max_tokens: context_window,
         headers: None,
         extra_body: None,
         compat: Some({
             let mut compat = llama_compat();
-            if reasoning { compat.0.insert("thinkingFormat".to_owned(), Value::String("qwen-chat-template".to_owned())); }
+            if reasoning {
+                compat.0.insert(
+                    "thinkingFormat".to_owned(),
+                    Value::String("qwen-chat-template".to_owned()),
+                );
+            }
             compat
         }),
     }
 }
 
-pub async fn refresh_models(credential: Option<&Value>, allow_network: bool) -> Result<Vec<ProviderModelConfig>, String> {
-    let Some(server_url) = resolve_server_url(credential) else { return Ok(Vec::new()); };
+pub async fn refresh_models(
+    credential: Option<&Value>,
+    allow_network: bool,
+) -> Result<Vec<ProviderModelConfig>, String> {
+    let Some(server_url) = resolve_server_url(credential) else {
+        return Ok(Vec::new());
+    };
     if !allow_network {
         return Ok(Vec::new());
     }
-    let api_key = credential.and_then(|credential| credential.get("key")).and_then(Value::as_str);
+    let api_key = credential
+        .and_then(|credential| credential.get("key"))
+        .and_then(Value::as_str);
     let client = LlamaClient::new(&server_url, api_key)?;
     let catalog = client.list(false, None).await?;
     let router_autoload = router_autoload_enabled(&client, &catalog).await;
     let mut models = Vec::new();
-    for model in catalog.iter().filter(|model| model_is_selectable(model, router_autoload)) {
-        let props = if model.status.value == "loaded" { client.props(None).await.ok() } else { None };
-        models.push(to_provider_model_config(model, &server_url, props.as_ref(), None));
+    for model in catalog
+        .iter()
+        .filter(|model| model_is_selectable(model, router_autoload))
+    {
+        let props = if model.status.value == "loaded" {
+            client.props(None).await.ok()
+        } else {
+            None
+        };
+        models.push(to_provider_model_config(
+            model,
+            &server_url,
+            props.as_ref(),
+            None,
+        ));
     }
     Ok(models)
 }
 
 pub fn llama_provider_config() -> ProviderConfig {
-        let refresh: ProviderRefresh = Arc::new(|context| {
-            let credential = context.credential.clone();
-            let allow_network = context.allow_network;
-            Box::pin(async move { refresh_models(credential.as_ref(), allow_network).await.map_err(ExtensionFailure::new) })
-        });
+    let refresh: ProviderRefresh = Arc::new(|context| {
+        let credential = context.credential.clone();
+        let allow_network = context.allow_network;
+        Box::pin(async move {
+            refresh_models(credential.as_ref(), allow_network)
+                .await
+                .map_err(ExtensionFailure::new)
+        })
+    });
     ProviderConfig {
         name: Some("llama.cpp".to_owned()),
         base_url: Some(llama_inference_url(DEFAULT_LLAMA_SERVER_URL).unwrap_or_default()),
@@ -137,7 +223,15 @@ mod tests {
     use crate::client::{LlamaModelArchitecture, LlamaModelInfo, LlamaModelMeta, LlamaModelState};
 
     fn model(status: &str, source: Option<&str>) -> LlamaModelInfo {
-        LlamaModelInfo { id: "m".to_owned(), status: LlamaModelState { value: status.to_owned(), ..Default::default() }, source: source.map(str::to_owned), ..Default::default() }
+        LlamaModelInfo {
+            id: "m".to_owned(),
+            status: LlamaModelState {
+                value: status.to_owned(),
+                ..Default::default()
+            },
+            source: source.map(str::to_owned),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -145,8 +239,14 @@ mod tests {
         assert!(model_is_selectable(&model("loaded", None), false));
         assert!(model_is_selectable(&model("sleeping", None), false));
         assert!(!model_is_selectable(&model("unloaded", None), false));
-        assert!(model_is_selectable(&model("unloaded", Some("preset")), true));
-        assert!(!model_is_selectable(&model("unloaded", Some("preset")), false));
+        assert!(model_is_selectable(
+            &model("unloaded", Some("preset")),
+            true
+        ));
+        assert!(!model_is_selectable(
+            &model("unloaded", Some("preset")),
+            false
+        ));
         let mut failed = model("unloaded", Some("preset"));
         failed.status.failed = Some(true);
         assert!(!model_is_selectable(&failed, true));
@@ -155,16 +255,28 @@ mod tests {
     #[test]
     fn context_window_defaults_and_uses_reported_meta() {
         let mut reported = model("loaded", None);
-        reported.meta = Some(LlamaModelMeta { n_ctx: Some(4096), ..Default::default() });
-        assert_eq!(to_provider_model_config(&reported, "http://x", None, None).context_window, 4096);
-        assert_eq!(to_provider_model_config(&model("loaded", None), "http://x", None, None).context_window, DEFAULT_CONTEXT_WINDOW);
+        reported.meta = Some(LlamaModelMeta {
+            n_ctx: Some(4096),
+            ..Default::default()
+        });
+        assert_eq!(
+            to_provider_model_config(&reported, "http://x", None, None).context_window,
+            4096
+        );
+        assert_eq!(
+            to_provider_model_config(&model("loaded", None), "http://x", None, None).context_window,
+            DEFAULT_CONTEXT_WINDOW
+        );
     }
 
     #[test]
     fn context_window_prefers_runtime_args_then_cache_then_training_metadata() {
         let mut configured = model("loaded", None);
         configured.status.args = Some(vec!["-c".to_owned(), "8192".to_owned()]);
-        configured.meta = Some(LlamaModelMeta { n_ctx_train: Some(4096), ..Default::default() });
+        configured.meta = Some(LlamaModelMeta {
+            n_ctx_train: Some(4096),
+            ..Default::default()
+        });
         assert_eq!(context_window_of(&configured, Some(2048)), 8192);
         configured.status.args = None;
         assert_eq!(context_window_of(&configured, Some(2048)), 2048);
@@ -173,17 +285,38 @@ mod tests {
 
     #[test]
     fn chat_template_metadata_enables_reasoning_compatibility() {
-        let props = LlamaServerProps { chat_template: Some("enable_thinking".to_owned()), models_autoload: None };
-        let config = to_provider_model_config(&model("loaded", None), "http://x", Some(&props), None);
+        let props = LlamaServerProps {
+            chat_template: Some("enable_thinking".to_owned()),
+            models_autoload: None,
+        };
+        let config =
+            to_provider_model_config(&model("loaded", None), "http://x", Some(&props), None);
         assert!(config.reasoning);
-        assert_eq!(config.compat.as_ref().and_then(|compat| compat.get("thinkingFormat")).and_then(Value::as_str), Some("qwen-chat-template"));
+        assert_eq!(
+            config
+                .compat
+                .as_ref()
+                .and_then(|compat| compat.get("thinkingFormat"))
+                .and_then(Value::as_str),
+            Some("qwen-chat-template")
+        );
     }
 
     #[test]
     fn image_input_modality_maps_from_architecture() {
         let mut with_image = model("loaded", None);
-        with_image.architecture = Some(LlamaModelArchitecture { input_modalities: Some(vec!["text".to_owned(), "image".to_owned()]), output_modalities: None });
-        assert!(to_provider_model_config(&with_image, "http://x", None, None).input.contains(&InputModality::Image));
-        assert_eq!(to_provider_model_config(&model("loaded", None), "http://x", None, None).input, vec![InputModality::Text]);
+        with_image.architecture = Some(LlamaModelArchitecture {
+            input_modalities: Some(vec!["text".to_owned(), "image".to_owned()]),
+            output_modalities: None,
+        });
+        assert!(
+            to_provider_model_config(&with_image, "http://x", None, None)
+                .input
+                .contains(&InputModality::Image)
+        );
+        assert_eq!(
+            to_provider_model_config(&model("loaded", None), "http://x", None, None).input,
+            vec![InputModality::Text]
+        );
     }
 }

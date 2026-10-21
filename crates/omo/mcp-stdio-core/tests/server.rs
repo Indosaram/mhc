@@ -184,6 +184,7 @@ fn an_idle_server_settles_with_an_idle_timeout() {
 fn a_dead_watched_parent_settles_the_server_and_fires_the_hook() {
     let events = EventLog::default();
     let exits = Arc::new(Mutex::new(0_u32));
+    let (poll_sender, polls) = std::sync::mpsc::channel();
     let mut run = start_server(silent_handler(), SharedWriter::default(), {
         let events = events.clone();
         let exits = Arc::clone(&exits);
@@ -192,6 +193,9 @@ fn a_dead_watched_parent_settles_the_server_and_fires_the_hook() {
                 parent_pid: Some(424_242),
                 poll_interval_ms: Some(10),
                 probe_alive: Some(Arc::new(|_pid| false)),
+                on_poll: Some(Arc::new(move |alive| {
+                    poll_sender.send(alive).expect("poll receiver remains open");
+                })),
             });
             config.on_parent_exit = Some(Arc::new(move || {
                 *exits.lock().unwrap_or_else(PoisonError::into_inner) += 1;
@@ -201,6 +205,7 @@ fn a_dead_watched_parent_settles_the_server_and_fires_the_hook() {
     });
 
     assert_eq!(run.wait_outcome(), ServerOutcome::ParentExit);
+    assert_eq!(polls.try_iter().collect::<Vec<_>>(), vec![false]);
     assert_eq!(*exits.lock().unwrap_or_else(PoisonError::into_inner), 1);
     assert_eq!(
         events.events(),
@@ -218,6 +223,7 @@ fn a_parent_exit_stops_the_poll_after_the_first_report() {
                 parent_pid: Some(424_242),
                 poll_interval_ms: Some(10),
                 probe_alive: Some(Arc::new(|_pid| false)),
+                on_poll: None,
             });
             config.log = Some(Arc::new(events.record()));
         }
@@ -237,8 +243,9 @@ fn a_parent_exit_stops_the_poll_after_the_first_report() {
 
 #[test]
 fn a_denied_probe_is_treated_as_alive_and_the_server_keeps_serving() {
-    let (probe, probed) =
+    let (probe, _probed) =
         recording_probe(|_pid| classify_probe_error(Some(EPERM)) == ProcessLiveness::Alive);
+    let (poll_sender, polls) = std::sync::mpsc::channel();
     let events = EventLog::default();
     let output = SharedWriter::default();
     let mut run = start_server(acknowledging_handler(), output.clone(), {
@@ -248,13 +255,16 @@ fn a_denied_probe_is_treated_as_alive_and_the_server_keeps_serving() {
                 parent_pid: Some(424_242),
                 poll_interval_ms: Some(10),
                 probe_alive: Some(probe),
+                on_poll: Some(Arc::new(move |alive| {
+                    poll_sender.send(alive).expect("poll receiver remains open");
+                })),
             });
             config.log = Some(Arc::new(events.record()));
         }
     });
 
     for _ in 0..3 {
-        probed.recv_timeout(WAIT).expect("three liveness polls");
+        assert!(polls.recv_timeout(WAIT).expect("healthy poll observed"));
     }
     run.send_line("{\"jsonrpc\":\"2.0\",\"id\":\"alive\",\"method\":\"ping\"}\n");
     assert_eq!(
@@ -275,6 +285,7 @@ fn a_configured_parent_pid_is_probed_instead_of_the_current_parent() {
             parent_pid: Some(424_242),
             poll_interval_ms: Some(10),
             probe_alive: Some(probe),
+            on_poll: None,
         });
     });
 
@@ -296,6 +307,7 @@ fn the_current_parent_is_probed_when_no_parent_pid_is_configured() {
             parent_pid: None,
             poll_interval_ms: Some(10),
             probe_alive: Some(probe),
+            on_poll: None,
         });
     });
 
@@ -321,6 +333,7 @@ fn a_killed_watched_parent_settles_the_server_through_the_real_probe() {
                 parent_pid: Some(parent_pid),
                 poll_interval_ms: Some(20),
                 probe_alive: None,
+                on_poll: None,
             });
             config.on_parent_exit = Some(Arc::new(move || {
                 *exits.lock().unwrap_or_else(PoisonError::into_inner) += 1;
@@ -341,15 +354,20 @@ fn a_live_watched_parent_keeps_the_server_serving() {
     let mut watched = WatchedParent::spawn();
     let parent_pid = watched.pid();
     let output = SharedWriter::default();
+    let (poll_sender, polls) = std::sync::mpsc::channel();
     let mut run = start_server(acknowledging_handler(), output.clone(), move |config| {
         config.parent_watchdog = Some(ParentWatchdogConfig {
             parent_pid: Some(parent_pid),
             poll_interval_ms: Some(20),
             probe_alive: None,
+            on_poll: Some(Arc::new(move |alive| {
+                poll_sender.send(alive).expect("poll receiver remains open");
+            })),
         });
     });
 
     for index in 0..3 {
+        assert!(polls.recv_timeout(WAIT).expect("live parent poll observed"));
         run.send_line(&format!(
             "{{\"jsonrpc\":\"2.0\",\"id\":\"qa-{index}\",\"method\":\"ping\"}}\n"
         ));

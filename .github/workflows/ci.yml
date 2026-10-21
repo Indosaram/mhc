@@ -22,7 +22,7 @@ env:
   # Must equal PINNED_VERSION in assets/omo-latest/skills/ast-grep/install.sh.
   AST_GREP_VERSION: "0.45.0"
   # Must equal SENPI_PIN in tools/golden/pin.mjs; golden tests refuse any other senpi commit.
-  SENPI_PIN: cf69f5e72eb325219a93e17bb54bbd4ba787899e
+  SENPI_PIN: 903b83367545bea516f35fc7f7c7cb692847988d
 
 jobs:
   clippy:
@@ -34,7 +34,7 @@ jobs:
         with:
           cache-key: clippy
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
       - name: disk usage
         if: always()
         run: df -h / && du -sh target 2>/dev/null || true
@@ -93,7 +93,13 @@ jobs:
         with:
           cache-key: macos
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: native update integration tests
+        run: "cargo nextest run --locked -p maho-cli -E 'binary(/^native_update/)'"
 
   windows:
     runs-on: windows-2025
@@ -108,7 +114,7 @@ jobs:
         with:
           cache-key: windows
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
       - name: build mhc binary
         run: cargo build -p maho-cli --locked
 

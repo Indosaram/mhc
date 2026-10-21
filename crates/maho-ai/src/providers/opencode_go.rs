@@ -7,7 +7,7 @@ use crate::providers::{builtin_api_streams, opencode_headers::with_open_code_ses
 use indexmap::IndexMap;
 use std::sync::Arc;
 
-pub fn opencode_go_provider() -> Arc<dyn Provider> {
+pub fn opencode_go_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     let mut api = IndexMap::new();
     for id in ["anthropic-messages", "openai-completions", "openai-responses"] {
         api.insert(id.to_owned(), with_open_code_session_header(builtin_api_streams(id)));
@@ -22,6 +22,7 @@ pub fn opencode_go_provider() -> Arc<dyn Provider> {
         fetch_models: None,
         restore_models: None,
         filter_models: None,
+        images: indexmap::IndexMap::new(),
         api: ProviderApi::ByApi(api),
     })
 }

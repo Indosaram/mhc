@@ -16,17 +16,18 @@ use std::time::Duration;
 use maho_ai::api::azure_openai_responses;
 use maho_ai::api::openai_responses;
 use maho_ai::api::openai_responses_shared::{
-    convert_responses_messages, convert_responses_tools, process_responses_events,
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ResponsesStreamOptions,
+    convert_responses_messages, convert_responses_tools, process_responses_events,
 };
 use maho_ai::types::{
-    AssistantMessage, AssistantMessageEvent, CacheRetention, ConstrainedSampling, ConstrainedSamplingConfig,
-    ContentBlock, Context, FreeformToolFormat, InputModality, JsonSchemaStrictness, Message, Model, ModelCost,
-    ProviderEnv, ProviderHeaders, SimpleStreamOptions, StopReason, StreamOptions, ThinkingContent, ThinkingLevel, Tool,
-    ToolCall, ToolChoice, ToolResultMessage, Usage, UserContent, UserMessage,
+    AssistantMessage, AssistantMessageEvent, CacheRetention, ConstrainedSampling,
+    ConstrainedSamplingConfig, ContentBlock, Context, FreeformToolFormat, InputModality,
+    JsonSchemaStrictness, Message, Model, ModelCost, ProviderEnv, ProviderHeaders,
+    SimpleStreamOptions, StopReason, StreamOptions, ThinkingContent, ThinkingLevel, Tool, ToolCall,
+    ToolChoice, ToolResultMessage, Usage, UserContent, UserMessage,
 };
-use serde_json::{json, Value};
-use support::mock_server::{with_timeout, Fixture, MockFixtureServer};
+use serde_json::{Value, json};
+use support::mock_server::{Fixture, MockFixtureServer, with_timeout};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -34,8 +35,74 @@ const ALLOWED_TOOL_CALL_PROVIDERS: [&str; 3] = ["openai", "chatgpt-subscription"
 const VALID_IMAGE_BASE64: &str = "iVBORw0KGgo=";
 const MAX_NATIVE_IMAGE_BASE64_CHARS: usize = 24 * 1024 * 1024;
 
+#[tokio::test]
+async fn allowed_tools_refusal_retries_once_and_caches_only_accepted_restriction() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let requests = captured.clone();
+    let router = axum::Router::new().fallback(axum::routing::post(move |axum::Json(payload): axum::Json<Value>| {
+        let requests = requests.clone();
+        async move {
+            requests.lock().expect("requests").push(payload.clone());
+            if payload.get("tool_choice").is_some() {
+                axum::http::Response::builder().status(400).body(axum::body::Body::from("Invalid value: 'allowed_tools'" )).expect("refusal")
+            } else {
+                axum::http::Response::builder().header("content-type", "text/event-stream").body(axum::body::Body::from("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"retry-response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n")).expect("accepted")
+            }
+        }
+    }));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+    let mut target = model("openai-responses", "openai", "allowed-tools-retry-test");
+    target.base_url = format!("http://{address}/v1");
+    let mut options = StreamOptions::default();
+    options.request.api_key = Some("test-key".into());
+    options.request.max_retries = Some(0);
+    options.request.on_payload = Some(Arc::new(|payload, _, _| {
+        let mut payload = payload.clone();
+        payload["tools"] = json!([{"type":"function","name":"active","parameters":{}},{"type":"function","name":"inactive","parameters":{}}]);
+        payload["tool_choice"] = json!({"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"active"}]});
+        Some(payload)
+    }));
+    for _ in 0..2 {
+        let result = with_timeout(
+            3,
+            openai_responses::stream(&target, &Context::default(), Some(options.clone())).result(),
+        )
+        .await
+        .expect("result");
+        assert_eq!(result.stop_reason, StopReason::Stop);
+    }
+    server.abort();
+    let requests = captured.lock().expect("requests");
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[0]["tools"]
+            .as_array()
+            .expect("declared tools")
+            .len(),
+        2
+    );
+    for request in &requests[1..] {
+        assert!(request.get("tool_choice").is_none());
+        assert_eq!(
+            request["tools"].as_array().expect("restricted tools").len(),
+            1
+        );
+        assert_eq!(request["tools"][0]["name"], "active");
+    }
+    assert!(
+        maho_ai::api::openai_responses_allowed_tools::has_refused_allowed_tools_choice(&target)
+    );
+}
+
 fn allowed(providers: &[&str]) -> BTreeSet<String> {
-    providers.iter().map(|provider| (*provider).to_owned()).collect()
+    providers
+        .iter()
+        .map(|provider| (*provider).to_owned())
+        .collect()
 }
 
 fn model(api: &str, provider: &str, id: &str) -> Model {
@@ -47,6 +114,8 @@ fn model(api: &str, provider: &str, id: &str) -> Model {
         base_url: String::new(),
         reasoning: false,
         thinking_level_map: None,
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         input: vec![InputModality::Text, InputModality::Image],
         cost: ModelCost::default(),
         context_window: 400_000,
@@ -64,11 +133,19 @@ fn model(api: &str, provider: &str, id: &str) -> Model {
 }
 
 fn azure_model() -> Model {
-    model("azure-openai-responses", "azure-openai-responses", "gpt-5-mini")
+    model(
+        "azure-openai-responses",
+        "azure-openai-responses",
+        "gpt-5-mini",
+    )
 }
 
 fn output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        thinking_level: None,
+        provider_diagnostic: None,
+        prompt_cache_diagnostics: None,
+        error_cause: None,
         content: Vec::new(),
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -90,11 +167,19 @@ fn output(model: &Model) -> AssistantMessage {
 }
 
 fn user_message(text: &str) -> Message {
-    Message::User(UserMessage { content: UserContent::Text(text.into()), timestamp: 0 })
+    Message::User(UserMessage {
+        content: UserContent::Text(text.into()),
+        timestamp: 0,
+    })
 }
 
 fn context_with(messages: Vec<Message>) -> Context {
-    Context { system_prompt: Some("You are concise.".into()), messages, tools: None }
+    Context {
+        active_tool_names: None,
+        system_prompt: Some("You are concise.".into()),
+        messages,
+        tools: None,
+    }
 }
 
 fn convert(model: &Model, context: &Context) -> Vec<Value> {
@@ -126,13 +211,18 @@ fn assistant(model: &Model, content: Vec<ContentBlock>) -> Message {
 }
 
 fn items_of<'a>(items: &'a [Value], kind: &str) -> Vec<&'a Value> {
-    items.iter().filter(|item| item.get("type").and_then(Value::as_str) == Some(kind)).collect()
+    items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some(kind))
+        .collect()
 }
 
 fn assistant_texts(items: &[Value]) -> Vec<String> {
     let mut texts = Vec::new();
     for item in items_of(items, "message") {
-        let Some(content) = item.get("content").and_then(Value::as_array) else { continue };
+        let Some(content) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
         for block in content {
             if let Some(text) = block.get("text").and_then(Value::as_str) {
                 texts.push(text.to_owned());
@@ -147,7 +237,9 @@ fn assistant_texts(items: &[Value]) -> Vec<String> {
 // =============================================================================
 
 fn golden_path(case: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/replay").join(format!("{case}.json"))
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden/replay")
+        .join(format!("{case}.json"))
 }
 
 fn case_path(case: &str) -> std::path::PathBuf {
@@ -158,8 +250,10 @@ fn case_path(case: &str) -> std::path::PathBuf {
 
 fn load_case(case: &str) -> Value {
     let path = case_path(case);
-    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}")))
-        .expect("replay case JSON")
+    serde_json::from_str(
+        &std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}")),
+    )
+    .expect("replay case JSON")
 }
 
 fn sse_frames(case: &str) -> Vec<(Option<String>, String)> {
@@ -169,8 +263,14 @@ fn sse_frames(case: &str) -> Vec<(Option<String>, String)> {
         .iter()
         .map(|event| {
             (
-                event.get("event").and_then(Value::as_str).map(str::to_owned),
-                event["data"].as_str().expect("fixture event data").to_owned(),
+                event
+                    .get("event")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                event["data"]
+                    .as_str()
+                    .expect("fixture event data")
+                    .to_owned(),
             )
         })
         .collect()
@@ -193,7 +293,11 @@ fn final_message(events: &[Value]) -> Value {
         .iter()
         .rev()
         .find_map(|event| {
-            event.get("message").or_else(|| event.get("error")).filter(|value| value.get("role").is_some()).cloned()
+            event
+                .get("message")
+                .or_else(|| event.get("error"))
+                .filter(|value| value.get("role").is_some())
+                .cloned()
         })
         .expect("a terminal message");
     if let Some(object) = message.as_object_mut() {
@@ -209,7 +313,9 @@ fn normalize_event(mut event: Value, final_message: &Value, shared_containers: &
         if !is_message {
             continue;
         }
-        let Some(object) = event.get_mut(key).and_then(Value::as_object_mut) else { continue };
+        let Some(object) = event.get_mut(key).and_then(Value::as_object_mut) else {
+            continue;
+        };
         if let Some(content) = final_message.get("content") {
             object.insert("content".into(), content.clone());
         }
@@ -235,10 +341,15 @@ fn normalize_event(mut event: Value, final_message: &Value, shared_containers: &
 /// mutates in place shows its final state in every earlier event; this reproduces that aliasing
 /// before comparing, so event type, order, deltas, ids and usage are still compared as emitted.
 fn assert_matches_golden(case: &str, events: &[AssistantMessageEvent], shared_containers: &[&str]) {
-    let raw: Vec<Value> = events.iter().map(|event| serde_json::to_value(event).expect("event JSON")).collect();
+    let raw: Vec<Value> = events
+        .iter()
+        .map(|event| serde_json::to_value(event).expect("event JSON"))
+        .collect();
     let terminal = final_message(&raw);
-    let actual: Vec<Value> =
-        raw.into_iter().map(|event| normalize_event(event, &terminal, shared_containers)).collect();
+    let actual: Vec<Value> = raw
+        .into_iter()
+        .map(|event| normalize_event(event, &terminal, shared_containers))
+        .collect();
     let path = golden_path(case);
     let golden: Value = serde_json::from_str(
         &std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}")),
@@ -257,11 +368,17 @@ fn first_difference(golden: &Value, actual: &Value, path: &str) -> Option<String
             for (key, expected) in golden {
                 match actual.get(key) {
                     Some(produced) => {
-                        if let Some(difference) = first_difference(expected, produced, &format!("{path}.{key}")) {
+                        if let Some(difference) =
+                            first_difference(expected, produced, &format!("{path}.{key}"))
+                        {
                             return Some(difference);
                         }
                     }
-                    None => return Some(format!("{path}.{key}: missing on the maho side: {expected}")),
+                    None => {
+                        return Some(format!(
+                            "{path}.{key}: missing on the maho side: {expected}"
+                        ));
+                    }
                 }
             }
             actual
@@ -271,12 +388,19 @@ fn first_difference(golden: &Value, actual: &Value, path: &str) -> Option<String
         }
         (Value::Array(golden), Value::Array(actual)) => {
             for (index, (expected, produced)) in golden.iter().zip(actual).enumerate() {
-                if let Some(difference) = first_difference(expected, produced, &format!("{path}[{index}]")) {
+                if let Some(difference) =
+                    first_difference(expected, produced, &format!("{path}[{index}]"))
+                {
                     return Some(difference);
                 }
             }
-            (golden.len() != actual.len())
-                .then(|| format!("{path}: senpi recorded {} element(s), maho produced {}", golden.len(), actual.len()))
+            (golden.len() != actual.len()).then(|| {
+                format!(
+                    "{path}: senpi recorded {} element(s), maho produced {}",
+                    golden.len(),
+                    actual.len()
+                )
+            })
         }
         (Value::String(golden), Value::String(actual)) if golden != actual => Some(format!(
             "{path}: senpi len {} bytes {:?} vs maho len {} bytes {:?}",
@@ -294,18 +418,30 @@ fn values_equal(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Number(left), Value::Number(right)) => left.as_f64() == right.as_f64(),
         (Value::Array(left), Value::Array(right)) => {
-            left.len() == right.len() && left.iter().zip(right).all(|(left, right)| values_equal(left, right))
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| values_equal(left, right))
         }
         (Value::Object(left), Value::Object(right)) => {
             left.len() == right.len()
-                && left.iter().all(|(key, value)| right.get(key).is_some_and(|other| values_equal(value, other)))
+                && left.iter().all(|(key, value)| {
+                    right
+                        .get(key)
+                        .is_some_and(|other| values_equal(value, other))
+                })
         }
         _ => left == right,
     }
 }
 
-async fn collect(stream: maho_ai::types::AssistantMessageEventStream) -> Vec<AssistantMessageEvent> {
-    with_timeout(30, stream.collect()).await.expect("stream collected")
+async fn collect(
+    stream: maho_ai::types::AssistantMessageEventStream,
+) -> Vec<AssistantMessageEvent> {
+    with_timeout(30, stream.collect())
+        .await
+        .expect("stream collected")
 }
 
 fn responses_options() -> StreamOptions {
@@ -338,18 +474,31 @@ fn replay_model(case: &str, base_url: String) -> Model {
 }
 
 fn hello_context() -> Context {
-    Context { system_prompt: None, messages: vec![user_message("Hello")], tools: None }
+    Context {
+        active_tool_names: None,
+        system_prompt: None,
+        messages: vec![user_message("Hello")],
+        tools: None,
+    }
 }
 
 #[tokio::test]
 async fn openai_responses_replays_the_recorded_stream() {
     let case = "ai-replay-openai-responses-basic";
     let server = MockFixtureServer::start(Fixture::sse(
-        sse_frames(case).iter().map(|(event, data)| (event.as_deref(), data.as_str())).collect::<Vec<_>>(),
+        sse_frames(case)
+            .iter()
+            .map(|(event, data)| (event.as_deref(), data.as_str()))
+            .collect::<Vec<_>>(),
     ))
     .await;
     let model = replay_model(case, server.base_url().to_owned());
-    let events = collect(openai_responses::stream(&model, &hello_context(), Some(responses_options()))).await;
+    let events = collect(openai_responses::stream(
+        &model,
+        &hello_context(),
+        Some(responses_options()),
+    ))
+    .await;
     assert_matches_golden(case, &events, &[]);
 }
 
@@ -357,11 +506,19 @@ async fn openai_responses_replays_the_recorded_stream() {
 async fn openai_responses_replays_a_two_tool_call_stream() {
     let case = "ai-replay-openai-responses-tool-calls";
     let server = MockFixtureServer::start(Fixture::sse(
-        sse_frames(case).iter().map(|(event, data)| (event.as_deref(), data.as_str())).collect::<Vec<_>>(),
+        sse_frames(case)
+            .iter()
+            .map(|(event, data)| (event.as_deref(), data.as_str()))
+            .collect::<Vec<_>>(),
     ))
     .await;
     let model = replay_model(case, server.base_url().to_owned());
-    let events = collect(openai_responses::stream(&model, &hello_context(), Some(responses_options()))).await;
+    let events = collect(openai_responses::stream(
+        &model,
+        &hello_context(),
+        Some(responses_options()),
+    ))
+    .await;
     let tool_ends = events
         .iter()
         .filter(|event| matches!(event, AssistantMessageEvent::ToolcallEnd { .. }))
@@ -374,23 +531,39 @@ async fn openai_responses_replays_a_two_tool_call_stream() {
 async fn openai_responses_mid_stream_close_ends_with_a_typed_error() {
     let case = "ai-replay-openai-responses-eof-truncated";
     let bytes = sse_fixture_bytes(case);
-    let cut = load_case(case)["fixture"]["closeAfterBytes"].as_u64().expect("closeAfterBytes") as usize;
-    assert!(cut < bytes.len(), "the case cuts the fixture before its terminator frame");
+    let cut = load_case(case)["fixture"]["closeAfterBytes"]
+        .as_u64()
+        .expect("closeAfterBytes") as usize;
+    assert!(
+        cut < bytes.len(),
+        "the case cuts the fixture before its terminator frame"
+    );
     let server = MockFixtureServer::start(
         Fixture::sse(
-            sse_frames(case).iter().map(|(event, data)| (event.as_deref(), data.as_str())).collect::<Vec<_>>(),
+            sse_frames(case)
+                .iter()
+                .map(|(event, data)| (event.as_deref(), data.as_str()))
+                .collect::<Vec<_>>(),
         )
         .closed_after(cut),
     )
     .await;
     let model = replay_model(case, server.base_url().to_owned());
-    let events = collect(openai_responses::stream(&model, &hello_context(), Some(responses_options()))).await;
+    let events = collect(openai_responses::stream(
+        &model,
+        &hello_context(),
+        Some(responses_options()),
+    ))
+    .await;
     let last = events.last().expect("a terminal event");
     let AssistantMessageEvent::Error { error, .. } = last else {
         panic!("a mid-stream close must end with a typed error event, got {last:?}")
     };
     assert_eq!(error.stop_reason, StopReason::Error);
-    assert_eq!(error.error_message.as_deref(), Some("OpenAI Responses stream ended without a stop reason"));
+    assert_eq!(
+        error.error_message.as_deref(),
+        Some("OpenAI Responses stream ended without a stop reason")
+    );
     assert_matches_golden(case, &events, &[]);
 }
 
@@ -403,13 +576,17 @@ fn empty_tool_result_uses_the_no_tool_output_placeholder() {
     let model = model("openai-responses", "openai", "gpt-4o-mini");
     let context = context_with(vec![
         user_message("Run the command"),
-        assistant(&model, vec![tool_call("tool-1", "bash", json!({ "command": "true" }))]),
+        assistant(
+            &model,
+            vec![tool_call("tool-1", "bash", json!({ "command": "true" }))],
+        ),
         Message::ToolResult(ToolResultMessage {
             tool_call_id: "tool-1".into(),
             tool_name: "bash".into(),
             content: vec![ContentBlock::text("")],
             details: None,
             usage: None,
+            nested_calls: None,
             added_tool_names: None,
             is_error: false,
             timestamp: 1,
@@ -473,7 +650,9 @@ fn foreign_thinking_signatures_are_demoted_or_dropped() {
                 &model,
                 vec![ContentBlock::Thinking(maho_ai::types::ThinkingContent {
                     thinking: String::new(),
-                    thinking_signature: Some(json!({ "type": "message", "id": "msg_x" }).to_string()),
+                    thinking_signature: Some(
+                        json!({ "type": "message", "id": "msg_x" }).to_string(),
+                    ),
                     ..Default::default()
                 })],
             ),
@@ -489,7 +668,10 @@ fn foreign_thinking_signatures_are_demoted_or_dropped() {
                 &model,
                 vec![ContentBlock::Thinking(maho_ai::types::ThinkingContent {
                     thinking: String::new(),
-                    thinking_signature: Some(json!({ "type": "reasoning", "id": "rs_abc123", "summary": [] }).to_string()),
+                    thinking_signature: Some(
+                        json!({ "type": "reasoning", "id": "rs_abc123", "summary": [] })
+                            .to_string(),
+                    ),
                     ..Default::default()
                 })],
             ),
@@ -509,7 +691,11 @@ fn foreign_copilot_tool_item_ids_are_hashed_into_a_bounded_fc_id() {
     foreign.provider = "github-copilot".into();
     foreign.model = "gpt-5.5".into();
     foreign.stop_reason = StopReason::ToolUse;
-    foreign.content = vec![tool_call(COPILOT_RAW_TOOL_CALL_ID, "edit", json!({ "path": "src/styles/app.css" }))];
+    foreign.content = vec![tool_call(
+        COPILOT_RAW_TOOL_CALL_ID,
+        "edit",
+        json!({ "path": "src/styles/app.css" }),
+    )];
     let context = context_with(vec![
         user_message("Use the tool."),
         Message::Assistant(Box::new(foreign)),
@@ -519,6 +705,7 @@ fn foreign_copilot_tool_item_ids_are_hashed_into_a_bounded_fc_id() {
             content: vec![ContentBlock::text("ok")],
             details: None,
             usage: None,
+            nested_calls: None,
             added_tool_names: None,
             is_error: false,
             timestamp: 2,
@@ -550,14 +737,20 @@ fn fallback_message_ids_are_unique_per_text_block() {
         }),
         ContentBlock::text("visible answer"),
     ];
-    let context = context_with(vec![user_message("hello"), Message::Assistant(Box::new(foreign))]);
+    let context = context_with(vec![
+        user_message("hello"),
+        Message::Assistant(Box::new(foreign)),
+    ]);
 
     let input = convert(&model, &context);
     let ids: Vec<String> = items_of(&input, "message")
         .iter()
         .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
         .collect();
-    assert_eq!(ids, vec![String::from("msg_pi_1"), String::from("msg_pi_1_1")]);
+    assert_eq!(
+        ids,
+        vec![String::from("msg_pi_1"), String::from("msg_pi_1_1")]
+    );
     assert_eq!(ids.iter().collect::<BTreeSet<_>>().len(), ids.len());
 }
 
@@ -569,7 +762,10 @@ fn namespaces_round_trip_only_when_the_target_can_replay_them() {
         ContentBlock::ToolCall(ToolCall {
             id: "call_function|fc_test".into(),
             name: "lookup".into(),
-            arguments: json!({ "value": "hello" }).as_object().cloned().unwrap_or_default(),
+            arguments: json!({ "value": "hello" })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
             incomplete: None,
             error_message: None,
             thought_signature: None,
@@ -578,7 +774,10 @@ fn namespaces_round_trip_only_when_the_target_can_replay_them() {
         ContentBlock::ToolCall(ToolCall {
             id: "call_custom|ctc_test".into(),
             name: "query".into(),
-            arguments: json!({ "input": "hello" }).as_object().cloned().unwrap_or_default(),
+            arguments: json!({ "input": "hello" })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
             incomplete: None,
             error_message: None,
             thought_signature: None,
@@ -586,7 +785,9 @@ fn namespaces_round_trip_only_when_the_target_can_replay_them() {
         }),
     ];
     let options = ConvertResponsesMessagesOptions {
-        grammar_tool_input_properties: [("query".to_owned(), "input".to_owned())].into_iter().collect(),
+        grammar_tool_input_properties: [("query".to_owned(), "input".to_owned())]
+            .into_iter()
+            .collect(),
         ..ConvertResponsesMessagesOptions::default()
     };
 
@@ -596,12 +797,26 @@ fn namespaces_round_trip_only_when_the_target_can_replay_them() {
         &allowed(&ALLOWED_TOOL_CALL_PROVIDERS),
         &options,
     );
-    assert_eq!(items_of(&same_model, "function_call")[0]["namespace"].as_str(), Some("dynamic_tools"));
-    assert_eq!(items_of(&same_model, "custom_tool_call")[0]["namespace"].as_str(), Some("dynamic_tools"));
+    assert_eq!(
+        items_of(&same_model, "function_call")[0]["namespace"].as_str(),
+        Some("dynamic_tools")
+    );
+    assert_eq!(
+        items_of(&same_model, "custom_tool_call")[0]["namespace"].as_str(),
+        Some("dynamic_tools")
+    );
 
     let other_model = model("openai-responses", "openai", "gpt-5.2");
-    let other_provider = model("azure-openai-responses", "azure-openai-responses", "gpt-5.4");
-    let other_api = model("openai-codex-responses", "chatgpt-subscription", "gpt-5.3-codex-spark");
+    let other_provider = model(
+        "azure-openai-responses",
+        "azure-openai-responses",
+        "gpt-5.4",
+    );
+    let other_api = model(
+        "openai-codex-responses",
+        "chatgpt-subscription",
+        "gpt-5.3-codex-spark",
+    );
     for target in [other_model, other_provider, other_api] {
         let replayed = convert_responses_messages(
             &target,
@@ -622,9 +837,16 @@ fn namespaces_round_trip_only_when_the_target_can_replay_them() {
 fn ordinary_function_calls_gain_no_namespace() {
     let model = model("openai-responses", "openai", "gpt-5.4");
     let mut produced = output(&model);
-    produced.content = vec![tool_call("call_test|fc_test", "lookup", json!({ "value": "hello" }))];
+    produced.content = vec![tool_call(
+        "call_test|fc_test",
+        "lookup",
+        json!({ "value": "hello" }),
+    )];
 
-    let input = convert(&model, &context_with(vec![Message::Assistant(Box::new(produced))]));
+    let input = convert(
+        &model,
+        &context_with(vec![Message::Assistant(Box::new(produced))]),
+    );
     let function_calls = items_of(&input, "function_call");
     assert_eq!(function_calls.len(), 1);
     assert!(function_calls[0].get("namespace").is_none());
@@ -641,7 +863,8 @@ fn run_events_with(
 ) -> (AssistantMessage, Vec<AssistantMessageEvent>) {
     let mut produced = output(model);
     let stream = maho_ai::types::AssistantMessageEventStream::assistant();
-    process_responses_events(events, &mut produced, &stream, model, &options).expect("stream processed");
+    process_responses_events(events, &mut produced, &stream, model, &options)
+        .expect("stream processed");
     let events = stream.queue();
     (produced, events)
 }
@@ -695,8 +918,7 @@ fn image_generation_call_frames_reconcile_into_one_final_block() {
 #[test]
 fn completed_image_keeps_a_nonempty_revised_prompt_and_drops_blank_ones() {
     let model = model("openai-responses", "openai", "gpt-5.4");
-    let without_prompt =
-        json!({ "type": "image_generation_call", "id": "ig_no_prompt", "status": "completed", "result": VALID_IMAGE_BASE64 });
+    let without_prompt = json!({ "type": "image_generation_call", "id": "ig_no_prompt", "status": "completed", "result": VALID_IMAGE_BASE64 });
     let empty_prompt = json!({
         "type": "image_generation_call",
         "id": "ig_empty_prompt",
@@ -771,8 +993,7 @@ fn failed_and_unknown_image_statuses_survive_verbatim() {
         "result": VALID_IMAGE_BASE64,
         "revised_prompt": "must not survive",
     });
-    let unknown =
-        json!({ "type": "image_generation_call", "id": "ig_unknown", "status": "provider_specific_state", "result": VALID_IMAGE_BASE64 });
+    let unknown = json!({ "type": "image_generation_call", "id": "ig_unknown", "status": "provider_specific_state", "result": VALID_IMAGE_BASE64 });
     let (message, _) = run_events(
         &model,
         vec![
@@ -808,13 +1029,18 @@ fn partial_image_events_are_ignored_entirely() {
         ],
     );
     assert!(provider_native_raw(&message).is_empty());
-    assert!(!serde_json::to_string(&message.content).expect("content JSON").contains(VALID_IMAGE_BASE64));
+    assert!(
+        !serde_json::to_string(&message.content)
+            .expect("content JSON")
+            .contains(VALID_IMAGE_BASE64)
+    );
 }
 
 #[test]
 fn terminal_output_backfills_an_image_whose_done_frame_is_absent() {
     let model = model("openai-responses", "openai", "gpt-5.4");
-    let added = json!({ "type": "image_generation_call", "id": "ig_backfill", "status": "in_progress" });
+    let added =
+        json!({ "type": "image_generation_call", "id": "ig_backfill", "status": "in_progress" });
     let completed = json!({
         "type": "image_generation_call",
         "id": "ig_backfill",
@@ -861,7 +1087,11 @@ fn oversized_aggregate_image_results_fail_without_retaining_base64() {
         &ResponsesStreamOptions::default(),
     )
     .expect_err("the aggregate must be rejected");
-    assert!(error.message.contains("Native image generation results exceed the 24 MiB base64 limit"));
+    assert!(
+        error
+            .message
+            .contains("Native image generation results exceed the 24 MiB base64 limit")
+    );
     assert_eq!(
         provider_native_raw(&produced),
         vec![json!({ "type": "image_generation_call", "id": "ig_large_1", "status": "malformed" })]
@@ -871,7 +1101,8 @@ fn oversized_aggregate_image_results_fail_without_retaining_base64() {
 #[test]
 fn unknown_output_items_surface_as_provider_native_content() {
     let model = model("openai-responses", "openai", "gpt-5.4");
-    let web_search = json!({ "type": "web_search_call", "id": "ws_1", "status": "completed", "query": "hello" });
+    let web_search =
+        json!({ "type": "web_search_call", "id": "ws_1", "status": "completed", "query": "hello" });
     let file_search = json!({ "type": "file_search_call", "id": "fs_1", "status": "completed", "query": "world" });
     let (message, _) = run_events(
         &model,
@@ -902,7 +1133,10 @@ fn image_provider_native_blocks_are_dropped_from_assistant_replay() {
         }),
     ];
 
-    let input = convert(&model, &context_with(vec![Message::Assistant(Box::new(produced))]));
+    let input = convert(
+        &model,
+        &context_with(vec![Message::Assistant(Box::new(produced))]),
+    );
     let messages = items_of(&input, "message");
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["role"].as_str(), Some("assistant"));
@@ -933,8 +1167,7 @@ fn an_absent_error_message_stays_absent() {
 #[test]
 fn function_namespaces_round_trip_from_output_item_done() {
     let model = model("openai-responses", "openai", "gpt-5.4");
-    let added =
-        json!({ "type": "function_call", "id": "fc_test", "call_id": "call_test", "name": "lookup", "arguments": "" });
+    let added = json!({ "type": "function_call", "id": "fc_test", "call_id": "call_test", "name": "lookup", "arguments": "" });
     let done = json!({
         "type": "function_call",
         "id": "fc_test",
@@ -952,27 +1185,41 @@ fn function_namespaces_round_trip_from_output_item_done() {
         ],
     );
 
-    let ContentBlock::ToolCall(tool_call) = &message.content[0] else { panic!("expected a toolCall block") };
+    let ContentBlock::ToolCall(tool_call) = &message.content[0] else {
+        panic!("expected a toolCall block")
+    };
     assert_eq!(tool_call.id, "call_test|fc_test");
     assert_eq!(tool_call.name, "lookup");
-    assert_eq!(Value::Object(tool_call.arguments.clone()), json!({ "value": "hello" }));
+    assert_eq!(
+        Value::Object(tool_call.arguments.clone()),
+        json!({ "value": "hello" })
+    );
     assert_eq!(tool_call.namespace.as_deref(), Some("dynamic_tools"));
-    assert!(events.iter().any(|event| matches!(event, AssistantMessageEvent::ToolcallEnd { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AssistantMessageEvent::ToolcallEnd { .. }))
+    );
 
-    let input = convert(&model, &context_with(vec![Message::Assistant(Box::new(message))]));
+    let input = convert(
+        &model,
+        &context_with(vec![Message::Assistant(Box::new(message))]),
+    );
     let replayed = items_of(&input, "function_call");
     assert_eq!(replayed.len(), 1);
     assert_eq!(replayed[0]["id"].as_str(), Some("fc_test"));
     assert_eq!(replayed[0]["call_id"].as_str(), Some("call_test"));
-    assert_eq!(replayed[0]["arguments"].as_str(), Some("{\"value\":\"hello\"}"));
+    assert_eq!(
+        replayed[0]["arguments"].as_str(),
+        Some("{\"value\":\"hello\"}")
+    );
     assert_eq!(replayed[0]["namespace"].as_str(), Some("dynamic_tools"));
 }
 
 #[test]
 fn custom_tool_namespaces_round_trip_from_output_item_done() {
     let model = model("openai-responses", "openai", "gpt-5.4");
-    let added =
-        json!({ "type": "custom_tool_call", "id": "ctc_test", "call_id": "call_test", "name": "query", "input": "" });
+    let added = json!({ "type": "custom_tool_call", "id": "ctc_test", "call_id": "call_test", "name": "query", "input": "" });
     let done = json!({
         "type": "custom_tool_call",
         "id": "ctc_test",
@@ -995,10 +1242,15 @@ fn custom_tool_namespaces_round_trip_from_output_item_done() {
         options,
     );
 
-    let ContentBlock::ToolCall(tool_call) = &message.content[0] else { panic!("expected a toolCall block") };
+    let ContentBlock::ToolCall(tool_call) = &message.content[0] else {
+        panic!("expected a toolCall block")
+    };
     assert_eq!(tool_call.id, "call_test|ctc_test");
     assert_eq!(tool_call.name, "query");
-    assert_eq!(Value::Object(tool_call.arguments.clone()), json!({ "input": "hello" }));
+    assert_eq!(
+        Value::Object(tool_call.arguments.clone()),
+        json!({ "input": "hello" })
+    );
     assert_eq!(tool_call.namespace.as_deref(), Some("dynamic_tools"));
 
     let convert_options = ConvertResponsesMessagesOptions {
@@ -1022,8 +1274,7 @@ fn custom_tool_namespaces_round_trip_from_output_item_done() {
 #[test]
 fn persisted_tool_call_blocks_carry_parsed_arguments_and_no_scratch_buffer() {
     let model = model("openai-responses", "openai", "gpt-5-mini");
-    let added =
-        json!({ "type": "function_call", "id": "fc_test", "call_id": "call_test", "name": "edit", "arguments": "" });
+    let added = json!({ "type": "function_call", "id": "fc_test", "call_id": "call_test", "name": "edit", "arguments": "" });
     let arguments_json = "{\"path\":\"README.md\",\"content\":\"updated\"}";
     let done = json!({
         "type": "function_call",
@@ -1045,9 +1296,18 @@ fn persisted_tool_call_blocks_carry_parsed_arguments_and_no_scratch_buffer() {
     );
 
     assert_eq!(message.content.len(), 1);
-    let ContentBlock::ToolCall(persisted) = &message.content[0] else { panic!("expected a toolCall block") };
-    assert_eq!(Value::Object(persisted.arguments.clone()), json!({ "path": "README.md", "content": "updated" }));
-    assert!(!serde_json::to_string(persisted).expect("tool call JSON").contains("partialJson"));
+    let ContentBlock::ToolCall(persisted) = &message.content[0] else {
+        panic!("expected a toolCall block")
+    };
+    assert_eq!(
+        Value::Object(persisted.arguments.clone()),
+        json!({ "path": "README.md", "content": "updated" })
+    );
+    assert!(
+        !serde_json::to_string(persisted)
+            .expect("tool call JSON")
+            .contains("partialJson")
+    );
 
     let toolcall_end = events
         .iter()
@@ -1057,7 +1317,11 @@ fn persisted_tool_call_blocks_carry_parsed_arguments_and_no_scratch_buffer() {
         })
         .expect("a toolcall_end event");
     assert_eq!(toolcall_end.arguments, persisted.arguments);
-    assert!(!serde_json::to_string(toolcall_end).expect("tool call JSON").contains("partialJson"));
+    assert!(
+        !serde_json::to_string(toolcall_end)
+            .expect("tool call JSON")
+            .contains("partialJson")
+    );
 }
 
 #[test]
@@ -1075,9 +1339,18 @@ fn final_custom_tool_input_is_persisted_from_output_item_done() {
     );
 
     assert_eq!(message.content.len(), 1);
-    let ContentBlock::ToolCall(persisted) = &message.content[0] else { panic!("expected a toolCall block") };
-    assert_eq!(Value::Object(persisted.arguments.clone()), json!({ "input": input }));
-    assert!(events.iter().any(|event| matches!(event, AssistantMessageEvent::ToolcallEnd { .. })));
+    let ContentBlock::ToolCall(persisted) = &message.content[0] else {
+        panic!("expected a toolCall block")
+    };
+    assert_eq!(
+        Value::Object(persisted.arguments.clone()),
+        json!({ "input": input })
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AssistantMessageEvent::ToolcallEnd { .. }))
+    );
 }
 
 // =============================================================================
@@ -1087,22 +1360,53 @@ fn final_custom_tool_input_is_persisted_from_output_item_done() {
 fn azure_options(env: &[(&str, &str)]) -> StreamOptions {
     let mut options = StreamOptions::default();
     options.request.api_key = Some("test-api-key".into());
-    options.request.env = Some(env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect::<ProviderEnv>());
+    options.request.env = Some(
+        env.iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect::<ProviderEnv>(),
+    );
     options
 }
 
 #[test]
 fn azure_base_urls_normalize_to_the_openai_v1_root() {
     let cases = [
-        ("https://marc-quicktests-resource.cognitiveservices.azure.com", "https://marc-quicktests-resource.cognitiveservices.azure.com/openai/v1"),
-        ("https://marc-quicktests-resource.ai.azure.com", "https://marc-quicktests-resource.ai.azure.com/openai/v1"),
-        ("https://my-resource.openai.azure.com", "https://my-resource.openai.azure.com/openai/v1"),
-        ("https://my-resource.cognitiveservices.azure.com/openai", "https://my-resource.cognitiveservices.azure.com/openai/v1"),
-        ("https://my-resource.cognitiveservices.azure.com/openai/v1", "https://my-resource.cognitiveservices.azure.com/openai/v1"),
-        ("https://my-resource.services.ai.azure.com/openai/v1/responses", "https://my-resource.services.ai.azure.com/openai/v1"),
-        ("https://my-proxy.example.com/v1", "https://my-proxy.example.com/v1"),
-        ("https://my-resource.openai.azure.com/openai?api-version=2024-12-01", "https://my-resource.openai.azure.com/openai/v1"),
-        ("https://my-proxy.example.com/v1?custom=true", "https://my-proxy.example.com/v1?custom=true"),
+        (
+            "https://marc-quicktests-resource.cognitiveservices.azure.com",
+            "https://marc-quicktests-resource.cognitiveservices.azure.com/openai/v1",
+        ),
+        (
+            "https://marc-quicktests-resource.ai.azure.com",
+            "https://marc-quicktests-resource.ai.azure.com/openai/v1",
+        ),
+        (
+            "https://my-resource.openai.azure.com",
+            "https://my-resource.openai.azure.com/openai/v1",
+        ),
+        (
+            "https://my-resource.cognitiveservices.azure.com/openai",
+            "https://my-resource.cognitiveservices.azure.com/openai/v1",
+        ),
+        (
+            "https://my-resource.cognitiveservices.azure.com/openai/v1",
+            "https://my-resource.cognitiveservices.azure.com/openai/v1",
+        ),
+        (
+            "https://my-resource.services.ai.azure.com/openai/v1/responses",
+            "https://my-resource.services.ai.azure.com/openai/v1",
+        ),
+        (
+            "https://my-proxy.example.com/v1",
+            "https://my-proxy.example.com/v1",
+        ),
+        (
+            "https://my-resource.openai.azure.com/openai?api-version=2024-12-01",
+            "https://my-resource.openai.azure.com/openai/v1",
+        ),
+        (
+            "https://my-proxy.example.com/v1?custom=true",
+            "https://my-proxy.example.com/v1?custom=true",
+        ),
     ];
     for (input, expected) in cases {
         assert_eq!(
@@ -1121,9 +1425,14 @@ fn azure_base_urls_normalize_to_the_openai_v1_root() {
 #[test]
 fn azure_config_prefers_the_option_then_the_env_and_the_resource_name() {
     let model = azure_model();
-    let (base_url, api_version) =
-        azure_openai_responses::resolve_azure_config(&model, &azure_options(&[("AZURE_OPENAI_BASE_URL", "https://my-resource.openai.azure.com")]))
-            .expect("resolves");
+    let (base_url, api_version) = azure_openai_responses::resolve_azure_config(
+        &model,
+        &azure_options(&[(
+            "AZURE_OPENAI_BASE_URL",
+            "https://my-resource.openai.azure.com",
+        )]),
+    )
+    .expect("resolves");
     assert_eq!(base_url, "https://my-resource.openai.azure.com/openai/v1");
     assert_eq!(api_version, "v1");
 
@@ -1135,9 +1444,15 @@ fn azure_config_prefers_the_option_then_the_env_and_the_resource_name() {
     assert_eq!(base_url, "https://my-resource.openai.azure.com/openai/v1");
 
     let mut options = azure_options(&[]);
-    options.extra.insert("azureBaseUrl".into(), json!("https://my-resource.openai.azure.com"));
-    options.extra.insert("azureApiVersion".into(), json!("2025-01-01"));
-    let (base_url, api_version) = azure_openai_responses::resolve_azure_config(&model, &options).expect("resolves");
+    options.extra.insert(
+        "azureBaseUrl".into(),
+        json!("https://my-resource.openai.azure.com"),
+    );
+    options
+        .extra
+        .insert("azureApiVersion".into(), json!("2025-01-01"));
+    let (base_url, api_version) =
+        azure_openai_responses::resolve_azure_config(&model, &options).expect("resolves");
     assert_eq!(base_url, "https://my-resource.openai.azure.com/openai/v1");
     assert_eq!(api_version, "2025-01-01");
 }
@@ -1149,16 +1464,31 @@ fn azure_params_clamp_the_cache_key_and_disable_server_side_storage() {
 
     let mut options = azure_options(&[]);
     options.session_id = Some("x".repeat(67));
-    let params = azure_openai_responses::build_params(&model, &context, &options, "gpt-5-mini", &BTreeMap::new())
-        .expect("params");
-    assert_eq!(params["prompt_cache_key"].as_str(), Some("x".repeat(64).as_str()));
+    let params = azure_openai_responses::build_params(
+        &model,
+        &context,
+        &options,
+        "gpt-5-mini",
+        &BTreeMap::new(),
+    )
+    .expect("params");
+    assert_eq!(
+        params["prompt_cache_key"].as_str(),
+        Some("x".repeat(64).as_str())
+    );
     assert_eq!(params["store"], json!(false));
 
     let mut disabled = azure_options(&[]);
     disabled.cache_retention = Some(CacheRetention::None);
     disabled.session_id = Some("cache-disabled-session".into());
-    let params = azure_openai_responses::build_params(&model, &context, &disabled, "gpt-5-mini", &BTreeMap::new())
-        .expect("params");
+    let params = azure_openai_responses::build_params(
+        &model,
+        &context,
+        &disabled,
+        "gpt-5-mini",
+        &BTreeMap::new(),
+    )
+    .expect("params");
     assert!(params.get("prompt_cache_key").is_none());
 }
 
@@ -1166,7 +1496,10 @@ fn azure_params_clamp_the_cache_key_and_disable_server_side_storage() {
 fn azure_tools_honor_supports_strict_mode_false() {
     let mut model = azure_model();
     model.compat = Some(maho_ai::model::ModelCompat(
-        json!({ "supportsStrictMode": false }).as_object().cloned().unwrap_or_default(),
+        json!({ "supportsStrictMode": false })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
     ));
     let mut context = context_with(vec![user_message("hello")]);
     context.tools = Some(vec![Tool {
@@ -1205,20 +1538,37 @@ fn azure_default_headers_use_pi_user_agent_and_let_explicit_headers_win() {
     );
     assert_eq!(headers["api-key"].to_str().expect("ascii"), "test-api-key");
 
-    let overrides: ProviderHeaders = [("User-Agent".to_owned(), Some("custom-agent".to_owned()))].into_iter().collect();
-    let headers = azure_openai_responses::build_azure_headers(&model, "test-api-key", Some(&overrides));
-    assert_eq!(headers["user-agent"].to_str().expect("ascii"), "custom-agent");
+    let overrides: ProviderHeaders = [("User-Agent".to_owned(), Some("custom-agent".to_owned()))]
+        .into_iter()
+        .collect();
+    let headers =
+        azure_openai_responses::build_azure_headers(&model, "test-api-key", Some(&overrides));
+    assert_eq!(
+        headers["user-agent"].to_str().expect("ascii"),
+        "custom-agent"
+    );
 }
 
 #[test]
 fn azure_deployment_name_map_overrides_the_model_id() {
     let model = azure_model();
-    let options = azure_options(&[("AZURE_OPENAI_DEPLOYMENT_NAME_MAP", "gpt-5-mini=deployed-mini, other=ignored")]);
-    assert_eq!(azure_openai_responses::resolve_deployment_name(&model, &options), "deployed-mini");
+    let options = azure_options(&[(
+        "AZURE_OPENAI_DEPLOYMENT_NAME_MAP",
+        "gpt-5-mini=deployed-mini, other=ignored",
+    )]);
+    assert_eq!(
+        azure_openai_responses::resolve_deployment_name(&model, &options),
+        "deployed-mini"
+    );
 
     let mut explicit = azure_options(&[]);
-    explicit.extra.insert("azureDeploymentName".into(), json!("option-deployment"));
-    assert_eq!(azure_openai_responses::resolve_deployment_name(&model, &explicit), "option-deployment");
+    explicit
+        .extra
+        .insert("azureDeploymentName".into(), json!("option-deployment"));
+    assert_eq!(
+        azure_openai_responses::resolve_deployment_name(&model, &explicit),
+        "option-deployment"
+    );
     assert_eq!(
         azure_openai_responses::resolve_deployment_name(&model, &azure_options(&[])),
         "gpt-5-mini"
@@ -1252,7 +1602,10 @@ fn azure_reasoning_encrypted_content_replay_prefers_the_done_frame() {
     let replayed = replay_reasoning(&model, message);
     assert_eq!(replayed["type"].as_str(), Some("reasoning"));
     assert_eq!(replayed["id"].as_str(), Some("rs_done"));
-    assert_eq!(replayed["encrypted_content"].as_str(), Some("from-output-item-done"));
+    assert_eq!(
+        replayed["encrypted_content"].as_str(),
+        Some("from-output-item-done")
+    );
 }
 
 #[test]
@@ -1276,11 +1629,15 @@ fn azure_reasoning_encrypted_content_is_filled_from_the_terminal_response() {
 
     let replayed = replay_reasoning(&model, message);
     assert_eq!(replayed["id"].as_str(), Some("rs_missing"));
-    assert_eq!(replayed["encrypted_content"].as_str(), Some("from-response-completed"));
+    assert_eq!(
+        replayed["encrypted_content"].as_str(),
+        Some("from-response-completed")
+    );
 }
 
 fn replay_reasoning(model: &Model, message: AssistantMessage) -> Value {
     let context = Context {
+        active_tool_names: None,
         system_prompt: None,
         messages: vec![
             user_message("first"),
@@ -1295,7 +1652,10 @@ fn replay_reasoning(model: &Model, message: AssistantMessage) -> Value {
         &allowed(&["azure-openai-responses"]),
         &ConvertResponsesMessagesOptions::default(),
     );
-    items_of(&input, "reasoning").first().map(|item| (*item).clone()).expect("a replayed reasoning item")
+    items_of(&input, "reasoning")
+        .first()
+        .map(|item| (*item).clone())
+        .expect("a replayed reasoning item")
 }
 
 // =============================================================================
@@ -1312,7 +1672,9 @@ struct RecordingServer {
 
 impl RecordingServer {
     async fn start(body: Vec<u8>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind recording server");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind recording server");
         let addr = listener.local_addr().expect("recording server addr");
         let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
         let captured_headers: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -1322,7 +1684,9 @@ impl RecordingServer {
         let request_line_sink = captured_request_line.clone();
         let handle = tokio::spawn(async move {
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
                 let body = body.clone();
                 let sink = sink.clone();
                 let header_sink = header_sink.clone();
@@ -1331,7 +1695,9 @@ impl RecordingServer {
                     let mut buffer = Vec::new();
                     let mut chunk = [0u8; 4096];
                     let header_end = loop {
-                        let Ok(read) = socket.read(&mut chunk).await else { return };
+                        let Ok(read) = socket.read(&mut chunk).await else {
+                            return;
+                        };
                         if read == 0 {
                             return;
                         }
@@ -1351,7 +1717,9 @@ impl RecordingServer {
                         .and_then(|value| value.trim().parse::<usize>().ok())
                         .unwrap_or(0);
                     while buffer.len() - header_end < content_length {
-                        let Ok(read) = socket.read(&mut chunk).await else { return };
+                        let Ok(read) = socket.read(&mut chunk).await else {
+                            return;
+                        };
                         if read == 0 {
                             break;
                         }
@@ -1370,7 +1738,13 @@ impl RecordingServer {
                 });
             }
         });
-        Self { addr, captured, captured_headers, captured_request_line, handle }
+        Self {
+            addr,
+            captured,
+            captured_headers,
+            captured_request_line,
+            handle,
+        }
     }
 
     fn base_url(&self) -> String {
@@ -1378,11 +1752,19 @@ impl RecordingServer {
     }
 
     fn captured(&self) -> Value {
-        self.captured.lock().expect("capture lock").clone().expect("a captured payload")
+        self.captured
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("a captured payload")
     }
 
     fn captured_headers(&self) -> String {
-        self.captured_headers.lock().expect("headers lock").clone().expect("captured headers")
+        self.captured_headers
+            .lock()
+            .expect("headers lock")
+            .clone()
+            .expect("captured headers")
     }
 
     /// The request-target of the first request line (`POST /v1/responses HTTP/1.1`).
@@ -1393,7 +1775,10 @@ impl RecordingServer {
             .expect("request line lock")
             .clone()
             .expect("a captured request line");
-        line.split_whitespace().nth(1).unwrap_or_default().to_owned()
+        line.split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned()
     }
 }
 
@@ -1404,7 +1789,9 @@ impl Drop for RecordingServer {
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn completed_sse(id: &str) -> Vec<u8> {
@@ -1423,9 +1810,8 @@ fn completed_sse(id: &str) -> Vec<u8> {
 fn proxy_model(compat: Option<Value>) -> Model {
     let mut model = model("openai-responses", "openai", "gpt-5.5");
     model.base_url = "https://quotio.example/v1".into();
-    model.compat = compat.map(|compat| {
-        maho_ai::model::ModelCompat(compat.as_object().cloned().unwrap_or_default())
-    });
+    model.compat = compat
+        .map(|compat| maho_ai::model::ModelCompat(compat.as_object().cloned().unwrap_or_default()));
     model
 }
 
@@ -1446,17 +1832,33 @@ async fn custom_responses_endpoints_strip_native_web_search_by_default() {
     let model = proxy_model(None);
     let context = hello_context();
     let mut options = responses_options();
-    let on_payload: maho_ai::types::OnPayload = Arc::new(|payload: &Value, _model: &Model, _meta| {
-        let mut next = payload.as_object().cloned().unwrap_or_default();
-        next.insert("include".into(), json!(["reasoning.encrypted_content", "web_search_call.action.sources"]));
-        next.insert("tool_choice".into(), json!({ "type": "web_search_preview" }));
-        next.insert("tools".into(), json!([{ "type": "function", "name": "keeper" }, { "type": "web_search_preview" }]));
-        Some(Value::Object(next))
-    });
+    let on_payload: maho_ai::types::OnPayload =
+        Arc::new(|payload: &Value, _model: &Model, _meta| {
+            let mut next = payload.as_object().cloned().unwrap_or_default();
+            next.insert(
+                "include".into(),
+                json!([
+                    "reasoning.encrypted_content",
+                    "web_search_call.action.sources"
+                ]),
+            );
+            next.insert(
+                "tool_choice".into(),
+                json!({ "type": "web_search_preview" }),
+            );
+            next.insert(
+                "tools".into(),
+                json!([{ "type": "function", "name": "keeper" }, { "type": "web_search_preview" }]),
+            );
+            Some(Value::Object(next))
+        });
     options.request.on_payload = Some(on_payload);
 
     let payload = capture_payload(&model, &context, options).await;
-    assert_eq!(payload["tools"], json!([{ "type": "function", "name": "keeper" }]));
+    assert_eq!(
+        payload["tools"],
+        json!([{ "type": "function", "name": "keeper" }])
+    );
     assert_eq!(payload["include"], json!(["reasoning.encrypted_content"]));
     assert!(payload.get("tool_choice").is_none());
 }
@@ -1466,19 +1868,44 @@ async fn custom_responses_endpoints_keep_native_web_search_when_they_opt_in() {
     let model = proxy_model(Some(json!({ "supportsWebSearchPreview": true })));
     let context = hello_context();
     let mut options = responses_options();
-    let on_payload: maho_ai::types::OnPayload = Arc::new(|payload: &Value, _model: &Model, _meta| {
-        let mut next = payload.as_object().cloned().unwrap_or_default();
-        next.insert("include".into(), json!(["reasoning.encrypted_content", "web_search_call.action.sources"]));
-        next.insert("tool_choice".into(), json!({ "type": "web_search_preview" }));
-        next.insert("tools".into(), json!([{ "type": "function", "name": "keeper" }, { "type": "web_search_preview" }]));
-        Some(Value::Object(next))
-    });
+    let on_payload: maho_ai::types::OnPayload =
+        Arc::new(|payload: &Value, _model: &Model, _meta| {
+            let mut next = payload.as_object().cloned().unwrap_or_default();
+            next.insert(
+                "include".into(),
+                json!([
+                    "reasoning.encrypted_content",
+                    "web_search_call.action.sources"
+                ]),
+            );
+            next.insert(
+                "tool_choice".into(),
+                json!({ "type": "web_search_preview" }),
+            );
+            next.insert(
+                "tools".into(),
+                json!([{ "type": "function", "name": "keeper" }, { "type": "web_search_preview" }]),
+            );
+            Some(Value::Object(next))
+        });
     options.request.on_payload = Some(on_payload);
 
     let payload = capture_payload(&model, &context, options).await;
-    assert_eq!(payload["tools"], json!([{ "type": "function", "name": "keeper" }, { "type": "web_search_preview" }]));
-    assert_eq!(payload["include"], json!(["reasoning.encrypted_content", "web_search_call.action.sources"]));
-    assert_eq!(payload["tool_choice"], json!({ "type": "web_search_preview" }));
+    assert_eq!(
+        payload["tools"],
+        json!([{ "type": "function", "name": "keeper" }, { "type": "web_search_preview" }])
+    );
+    assert_eq!(
+        payload["include"],
+        json!([
+            "reasoning.encrypted_content",
+            "web_search_call.action.sources"
+        ])
+    );
+    assert_eq!(
+        payload["tool_choice"],
+        json!({ "type": "web_search_preview" })
+    );
 }
 
 #[tokio::test]
@@ -1498,8 +1925,16 @@ async fn azure_forwards_a_provider_specific_tool_choice_with_its_tools() {
     let mut options = azure_options(&[]);
     options.extra.insert("toolChoice".into(), json!("required"));
 
-    let events = collect(azure_openai_responses::stream(&model, &context, Some(options))).await;
-    assert!(matches!(events.last(), Some(AssistantMessageEvent::Done { .. })));
+    let events = collect(azure_openai_responses::stream(
+        &model,
+        &context,
+        Some(options),
+    ))
+    .await;
+    assert!(matches!(
+        events.last(),
+        Some(AssistantMessageEvent::Done { .. })
+    ));
 
     let payload = server.captured();
     assert_eq!(payload["tool_choice"], json!("required"));
@@ -1524,8 +1959,16 @@ async fn azure_forwards_a_provider_neutral_tool_choice_from_simple_options() {
     simple.stream.request.api_key = Some("test-key".into());
     simple.tool_choice = Some(ToolChoice::None);
 
-    let events = collect(azure_openai_responses::stream_simple(&model, &context, Some(simple))).await;
-    assert!(matches!(events.last(), Some(AssistantMessageEvent::Done { .. })));
+    let events = collect(azure_openai_responses::stream_simple(
+        &model,
+        &context,
+        Some(simple),
+    ))
+    .await;
+    assert!(matches!(
+        events.last(),
+        Some(AssistantMessageEvent::Done { .. })
+    ));
 
     let payload = server.captured();
     assert_eq!(payload["tool_choice"], json!("none"));
@@ -1586,7 +2029,10 @@ fn responses_tool_conversion_covers_function_freeform_and_grammar_tools() {
     assert_eq!(tools[1]["format"]["type"].as_str(), Some("grammar"));
     assert_eq!(tools[2]["type"].as_str(), Some("custom"));
     assert_eq!(tools[2]["format"]["syntax"].as_str(), Some("lark"));
-    assert_eq!(tools[2]["format"]["definition"].as_str(), Some("start: \"query\""));
+    assert_eq!(
+        tools[2]["format"]["definition"].as_str(),
+        Some("start: \"query\"")
+    );
 }
 
 #[test]
@@ -1628,7 +2074,8 @@ fn responses_params_default_to_short_cache_and_omit_none_retention() {
     options.session_id = Some("session-1".into());
     let compat = openai_responses::get_compat(&model, None);
     let params =
-        openai_responses::build_params(&model, &context, &options, &compat, &BTreeMap::new()).expect("params");
+        openai_responses::build_params(&model, &context, &options, &compat, &BTreeMap::new())
+            .expect("params");
     assert_eq!(params["store"], json!(false));
     assert_eq!(params["stream"], json!(true));
     assert_eq!(params["prompt_cache_key"].as_str(), Some("session-1"));
@@ -1636,13 +2083,16 @@ fn responses_params_default_to_short_cache_and_omit_none_retention() {
 
     let mut long = responses_options();
     long.cache_retention = Some(CacheRetention::Long);
-    let params = openai_responses::build_params(&model, &context, &long, &compat, &BTreeMap::new()).expect("params");
+    let params = openai_responses::build_params(&model, &context, &long, &compat, &BTreeMap::new())
+        .expect("params");
     assert_eq!(params["prompt_cache_retention"].as_str(), Some("24h"));
 
     let mut disabled = responses_options();
     disabled.cache_retention = Some(CacheRetention::None);
     disabled.session_id = Some("session-1".into());
-    let params = openai_responses::build_params(&model, &context, &disabled, &compat, &BTreeMap::new()).expect("params");
+    let params =
+        openai_responses::build_params(&model, &context, &disabled, &compat, &BTreeMap::new())
+            .expect("params");
     assert!(params.get("prompt_cache_key").is_none());
 }
 
@@ -1664,8 +2114,14 @@ fn responses_session_affinity_is_detected_and_applied_to_headers() {
         &compat,
     );
     assert_eq!(headers["session_id"].to_str().expect("ascii"), "session-1");
-    assert_eq!(headers["x-client-request-id"].to_str().expect("ascii"), "session-1");
-    assert_eq!(headers["authorization"].to_str().expect("ascii"), "Bearer sk-test");
+    assert_eq!(
+        headers["x-client-request-id"].to_str().expect("ascii"),
+        "session-1"
+    );
+    assert_eq!(
+        headers["authorization"].to_str().expect("ascii"),
+        "Bearer sk-test"
+    );
 
     let mut openrouter = model.clone();
     openrouter.provider = "openrouter".into();
@@ -1683,12 +2139,18 @@ fn responses_session_affinity_is_detected_and_applied_to_headers() {
         Some("session-1"),
         &compat,
     );
-    assert_eq!(headers["x-session-id"].to_str().expect("ascii"), "session-1");
+    assert_eq!(
+        headers["x-session-id"].to_str().expect("ascii"),
+        "session-1"
+    );
     assert!(headers.get("session_id").is_none());
 
     let mut no_session = model.clone();
     no_session.compat = Some(maho_ai::model::ModelCompat(
-        json!({ "sessionAffinityFormat": "openai-nosession" }).as_object().cloned().unwrap_or_default(),
+        json!({ "sessionAffinityFormat": "openai-nosession" })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
     ));
     let compat = openai_responses::get_compat(&no_session, None);
     let headers = openai_responses::build_responses_headers(
@@ -1700,14 +2162,23 @@ fn responses_session_affinity_is_detected_and_applied_to_headers() {
         &compat,
     );
     assert!(headers.get("session_id").is_none());
-    assert_eq!(headers["x-client-request-id"].to_str().expect("ascii"), "session-1");
+    assert_eq!(
+        headers["x-client-request-id"].to_str().expect("ascii"),
+        "session-1"
+    );
 }
 
 #[test]
 fn responses_service_tier_pricing_scales_the_cost_fields() {
     let model = model("openai-responses", "openai", "gpt-5.5");
     let mut usage = Usage {
-        cost: maho_ai::types::UsageCost { input: 2.0, output: 4.0, cache_read: 1.0, cache_write: 0.5, total: 0.0 },
+        cost: maho_ai::types::UsageCost {
+            input: 2.0,
+            output: 4.0,
+            cache_read: 1.0,
+            cache_write: 0.5,
+            total: 0.0,
+        },
         ..Usage::default()
     };
     openai_responses::apply_service_tier_pricing(&mut usage, Some("priority"), &model);
@@ -1718,12 +2189,21 @@ fn responses_service_tier_pricing_scales_the_cost_fields() {
     assert_eq!(usage.cost.total, 18.75);
 
     let mut untouched = Usage {
-        cost: maho_ai::types::UsageCost { input: 1.0, output: 1.0, cache_read: 1.0, cache_write: 1.0, total: 4.0 },
+        cost: maho_ai::types::UsageCost {
+            input: 1.0,
+            output: 1.0,
+            cache_read: 1.0,
+            cache_write: 1.0,
+            total: 4.0,
+        },
         ..Usage::default()
     };
     openai_responses::apply_service_tier_pricing(&mut untouched, None, &model);
     assert_eq!(untouched.cost.total, 4.0);
-    assert_eq!(openai_responses::get_service_tier_cost_multiplier(&model, Some("flex")), 0.5);
+    assert_eq!(
+        openai_responses::get_service_tier_cost_multiplier(&model, Some("flex")),
+        0.5
+    );
 }
 
 #[tokio::test]
@@ -1731,17 +2211,32 @@ async fn openai_responses_surfaces_a_missing_api_key_as_a_typed_error() {
     let model = model("openai-responses", "openai", "gpt-5.5");
     let events = collect(openai_responses::stream(&model, &hello_context(), None)).await;
     let last = events.last().expect("a terminal event");
-    let AssistantMessageEvent::Error { error, .. } = last else { panic!("expected an error event") };
-    assert_eq!(error.error_message.as_deref(), Some("No API key for provider: openai"));
+    let AssistantMessageEvent::Error { error, .. } = last else {
+        panic!("expected an error event")
+    };
+    assert_eq!(
+        error.error_message.as_deref(),
+        Some("No API key for provider: openai")
+    );
 }
 
 #[tokio::test]
 async fn azure_responses_surfaces_a_missing_api_key_as_a_typed_error() {
     let model = azure_model();
-    let events = collect(azure_openai_responses::stream(&model, &hello_context(), None)).await;
+    let events = collect(azure_openai_responses::stream(
+        &model,
+        &hello_context(),
+        None,
+    ))
+    .await;
     let last = events.last().expect("a terminal event");
-    let AssistantMessageEvent::Error { error, .. } = last else { panic!("expected an error event") };
-    assert_eq!(error.error_message.as_deref(), Some("No API key for provider: azure-openai-responses"));
+    let AssistantMessageEvent::Error { error, .. } = last else {
+        panic!("expected an error event")
+    };
+    assert_eq!(
+        error.error_message.as_deref(),
+        Some("No API key for provider: azure-openai-responses")
+    );
 }
 
 // =============================================================================
@@ -1768,10 +2263,22 @@ fn partial_stop_reasons(events: &[AssistantMessageEvent]) -> Vec<StopReason> {
         .collect()
 }
 
-fn process(model: &Model, events: Vec<Value>) -> (AssistantMessage, Result<(), maho_ai::api::openai_responses_shared::ResponsesStreamError>) {
+fn process(
+    model: &Model,
+    events: Vec<Value>,
+) -> (
+    AssistantMessage,
+    Result<(), maho_ai::api::openai_responses_shared::ResponsesStreamError>,
+) {
     let mut produced = output(model);
     let stream = maho_ai::types::AssistantMessageEventStream::assistant();
-    let result = process_responses_events(events, &mut produced, &stream, model, &ResponsesStreamOptions::default());
+    let result = process_responses_events(
+        events,
+        &mut produced,
+        &stream,
+        model,
+        &ResponsesStreamOptions::default(),
+    );
     (produced, result)
 }
 
@@ -1835,37 +2342,66 @@ fn terminal_events_reject_a_stream_that_ends_before_a_terminal_response_event() 
     let model = model("openai-responses", "openai", "gpt-5-mini");
     let (_, result) = process(&model, early_eof_events());
     let error = result.expect_err("an early EOF is rejected");
-    assert_eq!(error.message, "OpenAI Responses stream ended before a terminal response event");
+    assert_eq!(
+        error.message,
+        "OpenAI Responses stream ended before a terminal response event"
+    );
 }
 
 #[tokio::test]
 async fn terminal_events_emit_an_error_final_result_when_the_wrapper_stream_ends_early() {
-    let payloads: Vec<String> = early_eof_events().iter().map(|event| event.to_string()).collect();
-    let frames: Vec<(Option<&str>, &str)> = payloads.iter().map(|payload| (None, payload.as_str())).collect();
+    let payloads: Vec<String> = early_eof_events()
+        .iter()
+        .map(|event| event.to_string())
+        .collect();
+    let frames: Vec<(Option<&str>, &str)> = payloads
+        .iter()
+        .map(|payload| (None, payload.as_str()))
+        .collect();
     let server = MockFixtureServer::start(Fixture::sse(frames)).await;
     let mut model = model("openai-responses", "openai", "gpt-5-mini");
     model.base_url = server.base_url().to_owned();
 
-    let events = collect(openai_responses::stream(&model, &hello_context(), Some(responses_options()))).await;
+    let events = collect(openai_responses::stream(
+        &model,
+        &hello_context(),
+        Some(responses_options()),
+    ))
+    .await;
     let AssistantMessageEvent::Start { partial } = events.first().expect("a start event") else {
         panic!("expected a start event")
     };
     assert_eq!(partial.stop_reason, StopReason::Pending);
     let last = events.last().expect("a terminal event");
-    let AssistantMessageEvent::Error { error, .. } = last else { panic!("expected an error event: {last:?}") };
+    let AssistantMessageEvent::Error { error, .. } = last else {
+        panic!("expected an error event: {last:?}")
+    };
     assert_eq!(error.stop_reason, StopReason::Error);
-    assert_eq!(error.error_message.as_deref(), Some("OpenAI Responses stream ended before a terminal response event"));
+    assert_eq!(
+        error.error_message.as_deref(),
+        Some("OpenAI Responses stream ended before a terminal response event")
+    );
 }
 
 #[test]
 fn terminal_events_track_message_phases() {
     for (phases, expected) in [
-        (["commentary", "commentary"], vec![StopReason::Pending, StopReason::Pending]),
-        (["final_answer", "final_answer"], vec![StopReason::Stop, StopReason::Stop]),
-        (["commentary", "final_answer"], vec![StopReason::Pending, StopReason::Stop]),
+        (
+            ["commentary", "commentary"],
+            vec![StopReason::Pending, StopReason::Pending],
+        ),
+        (
+            ["final_answer", "final_answer"],
+            vec![StopReason::Stop, StopReason::Stop],
+        ),
+        (
+            ["commentary", "final_answer"],
+            vec![StopReason::Pending, StopReason::Stop],
+        ),
     ] {
         let model = model("openai-responses", "openai", "gpt-5-mini");
-        let (message, events) = run_events(&model, phased_message_events(phases[0], phases[1], None));
+        let (message, events) =
+            run_events(&model, phased_message_events(phases[0], phases[1], None));
         assert_eq!(partial_stop_reasons(&events), expected, "phases {phases:?}");
         assert_eq!(message.stop_reason, StopReason::Stop);
     }
@@ -1874,8 +2410,14 @@ fn terminal_events_track_message_phases() {
 #[test]
 fn terminal_events_replace_a_provisional_final_answer_stop_with_an_incomplete_reason() {
     let model = model("openai-responses", "openai", "gpt-5-mini");
-    let (message, events) = run_events(&model, phased_message_events("final_answer", "final_answer", Some("incomplete")));
-    assert_eq!(partial_stop_reasons(&events), vec![StopReason::Stop, StopReason::Stop]);
+    let (message, events) = run_events(
+        &model,
+        phased_message_events("final_answer", "final_answer", Some("incomplete")),
+    );
+    assert_eq!(
+        partial_stop_reasons(&events),
+        vec![StopReason::Stop, StopReason::Stop]
+    );
     assert_eq!(message.stop_reason, StopReason::Length);
 }
 
@@ -1933,7 +2475,10 @@ fn terminal_events_finalize_incomplete_as_length_stops() {
     let (message, _) = process(&model, incomplete_events("max_output_tokens"));
     assert_eq!(message.response_id.as_deref(), Some("resp_incomplete"));
     assert_eq!(message.stop_reason, StopReason::Length);
-    assert_eq!(message.raw_stop_reason.as_deref(), Some("incomplete.max_output_tokens"));
+    assert_eq!(
+        message.raw_stop_reason.as_deref(),
+        Some("incomplete.max_output_tokens")
+    );
     assert_eq!(message.usage.input, 25);
     assert_eq!(message.usage.output, 12);
     assert_eq!(message.usage.cache_read, 5);
@@ -1946,8 +2491,14 @@ fn terminal_events_finalize_content_filtered_incomplete_as_non_retryable_errors(
     let model = model("openai-responses", "openai", "gpt-5-mini");
     let (message, _) = process(&model, incomplete_events("content_filter"));
     assert_eq!(message.stop_reason, StopReason::Error);
-    assert_eq!(message.raw_stop_reason.as_deref(), Some("incomplete.content_filter"));
-    assert_eq!(message.error_message.as_deref(), Some("Response incomplete: content_filter"));
+    assert_eq!(
+        message.raw_stop_reason.as_deref(),
+        Some("incomplete.content_filter")
+    );
+    assert_eq!(
+        message.error_message.as_deref(),
+        Some("Response incomplete: content_filter")
+    );
 }
 
 #[test]
@@ -1955,8 +2506,14 @@ fn terminal_events_preserve_unknown_incomplete_reasons_as_non_retryable_errors()
     let model = model("openai-responses", "openai", "gpt-5-mini");
     let (message, _) = process(&model, incomplete_events("max_time_limit"));
     assert_eq!(message.stop_reason, StopReason::Error);
-    assert_eq!(message.raw_stop_reason.as_deref(), Some("incomplete.max_time_limit"));
-    assert_eq!(message.error_message.as_deref(), Some("Response incomplete: max_time_limit"));
+    assert_eq!(
+        message.raw_stop_reason.as_deref(),
+        Some("incomplete.max_time_limit")
+    );
+    assert_eq!(
+        message.error_message.as_deref(),
+        Some("Response incomplete: max_time_limit")
+    );
 }
 
 #[test]
@@ -1981,7 +2538,9 @@ fn terminal_events_reject_failed_terminal_events_with_the_provider_error() {
 
 #[tokio::test]
 async fn assistant_message_frames_round_trip_responses_content_supplied_only_by_end_events() {
-    use maho_ai::utils::assistant_message_frame::{reduce_assistant_message_frames, AssistantMessageFrameEncoder};
+    use maho_ai::utils::assistant_message_frame::{
+        AssistantMessageFrameEncoder, reduce_assistant_message_frames,
+    };
 
     let model = model("openai-responses", "openai", "test-model");
     let mut produced = output(&model);
@@ -2026,20 +2585,30 @@ async fn assistant_message_frames_round_trip_responses_content_supplied_only_by_
     let mut encoder = AssistantMessageFrameEncoder::new();
     let mut frames = vec![
         encoder
-            .encode(&AssistantMessageEvent::Start { partial: produced.clone() })
+            .encode(&AssistantMessageEvent::Start {
+                partial: produced.clone(),
+            })
             .expect("the start event encodes")
             .expect("a start frame"),
     ];
 
-    process_responses_events(events, &mut produced, &stream, &model, &ResponsesStreamOptions::default())
-        .expect("stream processed");
+    process_responses_events(
+        events,
+        &mut produced,
+        &stream,
+        &model,
+        &ResponsesStreamOptions::default(),
+    )
+    .expect("stream processed");
     for event in stream.queue() {
         if let Some(frame) = encoder.encode(&event).expect("every pushed event encodes") {
             frames.push(frame);
         }
     }
 
-    let reduced = reduce_assistant_message_frames(frames.iter()).expect("reduces").expect("a message");
+    let reduced = reduce_assistant_message_frames(frames.iter())
+        .expect("reduces")
+        .expect("a message");
     assert_eq!(reduced.content, produced.content);
 }
 
@@ -2057,7 +2626,12 @@ fn config_update_model(api: &str, provider: &str, id: &str) -> Model {
 fn convert_plain(model: &Model, messages: Vec<Message>) -> Vec<Value> {
     convert_responses_messages(
         model,
-        &Context { system_prompt: None, messages, tools: None },
+        &Context {
+            active_tool_names: None,
+            system_prompt: None,
+            messages,
+            tools: None,
+        },
         &allowed(&ALLOWED_TOOL_CALL_PROVIDERS),
         &ConvertResponsesMessagesOptions::default(),
     )
@@ -2073,14 +2647,19 @@ fn configuration_update(effort: &str, timestamp: i64) -> Message {
 
 #[test]
 fn configuration_updates_place_the_update_immediately_before_the_next_user_message() {
-    let model = config_update_model("openai-responses", "openai", "gpt-6-astra");
+    let model = maho_ai::models_generated::get_builtin_model("openai", "gpt-6-astra")
+        .expect("catalog configuration-update model")
+        .clone();
     let mut produced = output(&model);
     produced.content = vec![ContentBlock::text("answer")];
     produced.stop_reason = StopReason::Stop;
     let messages = vec![
         Message::Assistant(Box::new(produced)),
         configuration_update("high", 2),
-        Message::User(UserMessage { content: UserContent::Text("next".into()), timestamp: 3 }),
+        Message::User(UserMessage {
+            content: UserContent::Text("next".into()),
+            timestamp: 3,
+        }),
     ];
 
     let input = convert_plain(&model, messages);
@@ -2093,8 +2672,14 @@ fn configuration_updates_place_the_update_immediately_before_the_next_user_messa
 
 #[test]
 fn configuration_updates_replace_an_adjacent_update_rather_than_adding_another() {
-    let model = config_update_model("openai-codex-responses", "chatgpt-subscription", "gpt-6-astra");
-    let messages = vec![configuration_update("low", 1), configuration_update("high", 2), user_message("next")];
+    let model = maho_ai::models_generated::get_builtin_model("chatgpt-subscription", "gpt-6-astra")
+        .expect("catalog configuration-update model")
+        .clone();
+    let messages = vec![
+        configuration_update("low", 1),
+        configuration_update("high", 2),
+        user_message("next"),
+    ];
 
     let input = convert_plain(&model, messages);
     assert_eq!(input.len(), 2, "{input:?}");
@@ -2104,11 +2689,66 @@ fn configuration_updates_replace_an_adjacent_update_rather_than_adding_another()
 }
 
 #[test]
+fn configuration_updates_follow_new_catalog_opt_in_flags() {
+    for (provider, ids) in [
+        ("openai", &["gpt-6.1-sol", "gpt-6.1-sol-fast", "gpt-daybreak-blue-latest", "gpt-daybreak-red-latest"][..]),
+        ("chatgpt-subscription", &["gpt-6.1-sol", "gpt-6.1-sol-fast", "gpt-6.1-sol-ultrafast"][..]),
+    ] {
+        for id in ids {
+            let model = builtin(provider, id);
+            let input = convert_plain(&model, vec![configuration_update("high", 1), user_message("next")]);
+            assert_eq!(input.len(), 2, "{provider}/{id}: {input:?}");
+            assert_eq!(input[0]["type"], json!("configuration_update"));
+            assert_eq!(input[0]["reasoning"], json!({ "effort": "high" }));
+            assert_eq!(input[1]["role"], json!("user"));
+        }
+    }
+    let flagged: Vec<_> = maho_ai::models_generated::get_builtin_provider_models("chatgpt-subscription")
+        .expect("subscription catalog")
+        .into_iter()
+        .filter(|model| maho_ai::models::supports_configuration_update(model))
+        .map(|model| model.id.as_str())
+        .collect();
+    assert_eq!(flagged, ["gpt-6-astra", "gpt-6-astra-fast", "gpt-6.1-sol", "gpt-6.1-sol-fast", "gpt-6.1-sol-ultrafast"]);
+}
+
+#[test]
+fn sol_service_tiers_use_route_specific_rates_and_preserve_requested_tier() {
+    use maho_ai::api::openai_codex_responses::{
+        get_codex_service_tier_cost_multiplier, resolve_codex_service_tier,
+    };
+    for (id, tier, api_rate, subscription_rate) in [
+        ("gpt-6.1-sol-fast", "priority", 2.0, 2.5),
+        ("gpt-6.1-sol", "fast", 2.0, 2.5),
+        ("gpt-6.1-sol-ultrafast", "ultrafast", 6.0, 8.0),
+        ("gpt-6.1-sol", "flex", 0.5, 0.5),
+        ("gpt-6.1-sol", "default", 1.0, 1.0),
+        ("gpt-6-luna", "ultrafast", 1.0, 1.0),
+    ] {
+        let model = builtin("chatgpt-subscription", id);
+        assert_close(openai_responses::get_service_tier_cost_multiplier(&model, Some(tier)), api_rate);
+        assert_close(get_codex_service_tier_cost_multiplier(&model, Some(tier)), subscription_rate);
+        assert_eq!(resolve_codex_service_tier(Some("default"), Some(tier)), Some(tier.into()));
+        assert_eq!(resolve_codex_service_tier(None, Some(tier)), Some(tier.into()));
+    }
+    assert_eq!(resolve_codex_service_tier(Some("priority"), Some("ultrafast")), Some("priority".into()));
+}
+
+#[test]
 fn configuration_updates_do_not_update_unsupported_models_or_providers() {
     let messages = vec![configuration_update("high", 1)];
-    assert_eq!(convert_plain(&config_update_model("openai-responses", "openai", "gpt-5"), messages.clone()), Vec::<Value>::new());
     assert_eq!(
-        convert_plain(&config_update_model("openai-responses", "opencode", "gpt-6-astra"), messages),
+        convert_plain(
+            &config_update_model("openai-responses", "openai", "gpt-5"),
+            messages.clone()
+        ),
+        Vec::<Value>::new()
+    );
+    assert_eq!(
+        convert_plain(
+            &config_update_model("openai-responses", "opencode", "gpt-6-astra"),
+            messages
+        ),
         Vec::<Value>::new()
     );
 }
@@ -2125,7 +2765,10 @@ fn builtin(provider: &str, id: &str) -> Model {
 }
 
 fn compat_flag(model: &Model, key: &str) -> Option<Value> {
-    model.compat.as_ref().and_then(|compat| compat.0.get(key).cloned())
+    model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.0.get(key).cloned())
 }
 
 fn with_compat(model: &Model, key: &str, value: Value) -> Model {
@@ -2139,7 +2782,9 @@ fn with_compat(model: &Model, key: &str, value: Value) -> Model {
 fn header_value(headers: &str, name: &str) -> Option<String> {
     headers.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
-        key.trim().eq_ignore_ascii_case(name).then(|| value.trim().to_owned())
+        key.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_owned())
     })
 }
 
@@ -2191,6 +2836,7 @@ async fn compat_omits_standalone_same_model_reasoning_replay_when_no_reasoning_i
     ];
     previous.stop_reason = StopReason::Stop;
     let context = Context {
+        active_tool_names: None,
         system_prompt: None,
         messages: vec![
             user_message("first turn"),
@@ -2203,7 +2849,9 @@ async fn compat_omits_standalone_same_model_reasoning_replay_when_no_reasoning_i
     let payload = capture_payload(&model, &context, responses_options()).await;
     let items = payload["input"].as_array().expect("input");
     assert!(
-        !items.iter().any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")),
+        !items
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")),
         "no standalone reasoning replay: {payload}"
     );
 }
@@ -2247,9 +2895,11 @@ async fn compat_sets_strict_mode_explicitly_for_cloudflare_responses_tools() {
             parameters: json!({ "type": "object", "properties": { "value": { "type": "string" } }, "required": ["value"] }),
             output_schema: None,
             freeform: None,
-            constrained_sampling: Some(ConstrainedSampling::Config(ConstrainedSamplingConfig::JsonSchema {
-                strict: JsonSchemaStrictness::Prefer,
-            })),
+            constrained_sampling: Some(ConstrainedSampling::Config(
+                ConstrainedSamplingConfig::JsonSchema {
+                    strict: JsonSchemaStrictness::Prefer,
+                },
+            )),
         },
     ]);
 
@@ -2277,13 +2927,25 @@ async fn compat_sends_none_reasoning_effort_when_no_reasoning_is_requested() {
     ] {
         let model = builtin("openai", id);
         let payload = capture_payload(&model, &hello_context(), responses_options()).await;
-        assert_eq!(payload["reasoning"], json!({ "effort": "none" }), "{id}: {payload}");
+        assert_eq!(
+            payload["reasoning"],
+            json!({ "effort": "none" }),
+            "{id}: {payload}"
+        );
     }
 }
 
 #[tokio::test]
 async fn compat_omits_reasoning_effort_when_off_is_unsupported() {
-    for id in ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.5-pro"] {
+    for id in [
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-5-pro",
+        "gpt-5.2-pro",
+        "gpt-5.4-pro",
+        "gpt-5.5-pro",
+    ] {
         let model = builtin("openai", id);
         let payload = capture_payload(&model, &hello_context(), responses_options()).await;
         assert!(payload.get("reasoning").is_none(), "{id}: {payload}");
@@ -2297,8 +2959,14 @@ async fn compat_sets_cache_affinity_headers_for_official_responses_requests_with
     options.session_id = Some("session-123".into());
 
     let headers = capture_headers(&model, &hello_context(), options).await;
-    assert_eq!(header_value(&headers, "session_id").as_deref(), Some("session-123"));
-    assert_eq!(header_value(&headers, "x-client-request-id").as_deref(), Some("session-123"));
+    assert_eq!(
+        header_value(&headers, "session_id").as_deref(),
+        Some("session-123")
+    );
+    assert_eq!(
+        header_value(&headers, "x-client-request-id").as_deref(),
+        Some("session-123")
+    );
 }
 
 #[tokio::test]
@@ -2320,8 +2988,14 @@ async fn compat_sets_cache_affinity_headers_for_proxy_responses_requests_with_a_
     options.session_id = Some("session-123".into());
 
     let headers = capture_headers(&model, &hello_context(), options).await;
-    assert_eq!(header_value(&headers, "session_id").as_deref(), Some("session-123"));
-    assert_eq!(header_value(&headers, "x-client-request-id").as_deref(), Some("session-123"));
+    assert_eq!(
+        header_value(&headers, "session_id").as_deref(),
+        Some("session-123")
+    );
+    assert_eq!(
+        header_value(&headers, "x-client-request-id").as_deref(),
+        Some("session-123")
+    );
 }
 
 #[tokio::test]
@@ -2342,7 +3016,10 @@ async fn compat_uses_openrouter_session_affinity_header_when_configured() {
     let headers = capture_headers(&model, &hello_context(), options.clone()).await;
     assert!(header_value(&headers, "session_id").is_none());
     assert!(header_value(&headers, "x-client-request-id").is_none());
-    assert_eq!(header_value(&headers, "x-session-id").as_deref(), Some("session-proxy"));
+    assert_eq!(
+        header_value(&headers, "x-session-id").as_deref(),
+        Some("session-proxy")
+    );
 
     let payload = capture_payload(&model, &hello_context(), options).await;
     assert!(payload.get("session_id").is_none());
@@ -2360,7 +3037,10 @@ async fn compat_auto_detects_openrouter_session_affinity_header() {
     let headers = capture_headers(&model, &hello_context(), options.clone()).await;
     assert!(header_value(&headers, "session_id").is_none());
     assert!(header_value(&headers, "x-client-request-id").is_none());
-    assert_eq!(header_value(&headers, "x-session-id").as_deref(), Some("session-openrouter"));
+    assert_eq!(
+        header_value(&headers, "x-session-id").as_deref(),
+        Some("session-openrouter")
+    );
 
     let payload = capture_payload(&model, &hello_context(), options).await;
     assert!(payload.get("session_id").is_none());
@@ -2384,7 +3064,10 @@ async fn compat_uses_no_session_format_when_configured() {
 
     let headers = capture_headers(&model, &hello_context(), options.clone()).await;
     assert!(header_value(&headers, "session_id").is_none());
-    assert_eq!(header_value(&headers, "x-client-request-id").as_deref(), Some("session-proxy"));
+    assert_eq!(
+        header_value(&headers, "x-client-request-id").as_deref(),
+        Some("session-proxy")
+    );
     assert!(header_value(&headers, "x-session-id").is_none());
 
     let payload = capture_payload(&model, &hello_context(), options).await;
@@ -2395,13 +3078,19 @@ async fn compat_uses_no_session_format_when_configured() {
 #[tokio::test]
 async fn compat_uses_no_session_format_for_opencode_responses_models() {
     let model = builtin("opencode", "gpt-5.4");
-    assert_eq!(compat_flag(&model, "sessionAffinityFormat"), Some(json!("openai-nosession")));
+    assert_eq!(
+        compat_flag(&model, "sessionAffinityFormat"),
+        Some(json!("openai-nosession"))
+    );
     let mut options = responses_options();
     options.session_id = Some("session-opencode".into());
 
     let headers = capture_headers(&model, &hello_context(), options.clone()).await;
     assert!(header_value(&headers, "session_id").is_none());
-    assert_eq!(header_value(&headers, "x-client-request-id").as_deref(), Some("session-opencode"));
+    assert_eq!(
+        header_value(&headers, "x-client-request-id").as_deref(),
+        Some("session-opencode")
+    );
     assert!(header_value(&headers, "x-session-id").is_none());
 
     let payload = capture_payload(&model, &hello_context(), options).await;
@@ -2419,7 +3108,10 @@ async fn compat_can_omit_the_session_id_header_while_preserving_other_affinity_d
 
     let headers = capture_headers(&model, &hello_context(), options.clone()).await;
     assert!(header_value(&headers, "session_id").is_none());
-    assert_eq!(header_value(&headers, "x-client-request-id").as_deref(), Some("session-123"));
+    assert_eq!(
+        header_value(&headers, "x-client-request-id").as_deref(),
+        Some("session-123")
+    );
 
     let payload = capture_payload(&model, &hello_context(), options).await;
     assert_eq!(payload["prompt_cache_key"], json!("session-123"));
@@ -2432,12 +3124,21 @@ async fn compat_lets_explicit_headers_override_the_default_cache_affinity_header
     options.session_id = Some("session-123".into());
     options.request.headers = Some(ProviderHeaders::from([
         ("session_id".to_owned(), Some("override-session".to_owned())),
-        ("x-client-request-id".to_owned(), Some("override-request".to_owned())),
+        (
+            "x-client-request-id".to_owned(),
+            Some("override-request".to_owned()),
+        ),
     ]));
 
     let headers = capture_headers(&model, &hello_context(), options).await;
-    assert_eq!(header_value(&headers, "session_id").as_deref(), Some("override-session"));
-    assert_eq!(header_value(&headers, "x-client-request-id").as_deref(), Some("override-request"));
+    assert_eq!(
+        header_value(&headers, "session_id").as_deref(),
+        Some("override-session")
+    );
+    assert_eq!(
+        header_value(&headers, "x-client-request-id").as_deref(),
+        Some("override-request")
+    );
 }
 
 #[tokio::test]
@@ -2470,7 +3171,10 @@ fn service_tier_sse(service_tier: &str, tokens: u64) -> Vec<u8> {
 }
 
 fn assert_close(actual: f64, expected: f64) {
-    assert!((actual - expected).abs() <= expected.abs() * 1e-9 + 1e-12, "{actual} != {expected}");
+    assert!(
+        (actual - expected).abs() <= expected.abs() * 1e-9 + 1e-12,
+        "{actual} != {expected}"
+    );
 }
 
 #[tokio::test]
@@ -2487,16 +3191,33 @@ async fn compat_applies_service_tier_cost_multipliers() {
         let mut served = model.clone();
         served.base_url = server.base_url();
         let mut options = responses_options();
-        options.extra.insert("serviceTier".into(), json!(service_tier));
+        options
+            .extra
+            .insert("serviceTier".into(), json!(service_tier));
 
-        let events = collect(openai_responses::stream(&served, &hello_context(), Some(options))).await;
-        let AssistantMessageEvent::Done { message, .. } = events.last().expect("a done event") else {
+        let events = collect(openai_responses::stream(
+            &served,
+            &hello_context(),
+            Some(options),
+        ))
+        .await;
+        let AssistantMessageEvent::Done { message, .. } = events.last().expect("a done event")
+        else {
             panic!("{id} {service_tier}: expected a done event: {events:?}")
         };
         let token_scale = 100_000.0 / 1_000_000.0;
-        assert_close(message.usage.cost.input, model.cost.input * multiplier * token_scale);
-        assert_close(message.usage.cost.output, model.cost.output * multiplier * token_scale);
-        assert_close(message.usage.cost.total, (model.cost.input + model.cost.output) * multiplier * token_scale);
+        assert_close(
+            message.usage.cost.input,
+            model.cost.input * multiplier * token_scale,
+        );
+        assert_close(
+            message.usage.cost.output,
+            model.cost.output * multiplier * token_scale,
+        );
+        assert_close(
+            message.usage.cost.total,
+            (model.cost.input + model.cost.output) * multiplier * token_scale,
+        );
     }
 }
 
@@ -2512,7 +3233,11 @@ async fn compat_sends_max_output_tokens_by_default() {
 
 #[tokio::test]
 async fn compat_omits_max_output_tokens_when_supports_max_output_tokens_is_false() {
-    let model = with_compat(&builtin("openai", "gpt-5.4"), "supportsMaxOutputTokens", json!(false));
+    let model = with_compat(
+        &builtin("openai", "gpt-5.4"),
+        "supportsMaxOutputTokens",
+        json!(false),
+    );
     let mut options = responses_options();
     options.max_tokens = Some(1024);
 
@@ -2525,14 +3250,26 @@ async fn compat_omits_max_output_tokens_when_supports_max_output_tokens_is_false
 // =============================================================================
 
 fn simple_options() -> SimpleStreamOptions {
-    SimpleStreamOptions { stream: responses_options(), ..SimpleStreamOptions::default() }
+    SimpleStreamOptions {
+        stream: responses_options(),
+        ..SimpleStreamOptions::default()
+    }
 }
 
-async fn capture_simple_payload(model: &Model, context: &Context, simple: SimpleStreamOptions) -> Value {
+async fn capture_simple_payload(
+    model: &Model,
+    context: &Context,
+    simple: SimpleStreamOptions,
+) -> Value {
     let server = RecordingServer::start(completed_sse("resp_simple_capture")).await;
     let mut model = model.clone();
     model.base_url = server.base_url();
-    let events = collect(openai_responses::stream_simple(&model, context, Some(simple))).await;
+    let events = collect(openai_responses::stream_simple(
+        &model,
+        context,
+        Some(simple),
+    ))
+    .await;
     assert!(
         matches!(events.last(), Some(AssistantMessageEvent::Done { .. })),
         "the fixture completes the turn: {events:?}"
@@ -2540,11 +3277,20 @@ async fn capture_simple_payload(model: &Model, context: &Context, simple: Simple
     server.captured()
 }
 
-async fn capture_azure_simple_payload(model: &Model, context: &Context, simple: SimpleStreamOptions) -> Value {
+async fn capture_azure_simple_payload(
+    model: &Model,
+    context: &Context,
+    simple: SimpleStreamOptions,
+) -> Value {
     let server = RecordingServer::start(completed_sse("resp_azure_simple_capture")).await;
     let mut model = model.clone();
     model.base_url = server.base_url();
-    let events = collect(azure_openai_responses::stream_simple(&model, context, Some(simple))).await;
+    let events = collect(azure_openai_responses::stream_simple(
+        &model,
+        context,
+        Some(simple),
+    ))
+    .await;
     assert!(
         matches!(events.last(), Some(AssistantMessageEvent::Done { .. })),
         "the fixture completes the turn: {events:?}"
@@ -2553,20 +3299,34 @@ async fn capture_azure_simple_payload(model: &Model, context: &Context, simple: 
 }
 
 fn azure_simple_options() -> SimpleStreamOptions {
-    SimpleStreamOptions { stream: azure_options(&[]), ..SimpleStreamOptions::default() }
+    SimpleStreamOptions {
+        stream: azure_options(&[]),
+        ..SimpleStreamOptions::default()
+    }
 }
 
 fn thinking_context() -> Context {
-    Context { system_prompt: None, messages: vec![user_message("Hello")], tools: None }
+    Context {
+        active_tool_names: None,
+        system_prompt: None,
+        messages: vec![user_message("Hello")],
+        tools: None,
+    }
 }
 
 #[tokio::test]
 async fn thinking_matrix_preserves_explicit_gpt_5_6_max_effort_mapping() {
     let model = builtin("openai", "gpt-5.6-sol");
-    let simple = SimpleStreamOptions { reasoning: Some(ThinkingLevel::Max), ..simple_options() };
+    let simple = SimpleStreamOptions {
+        reasoning: Some(ThinkingLevel::Max),
+        ..simple_options()
+    };
 
     let payload = capture_simple_payload(&model, &thinking_context(), simple).await;
-    assert_eq!(payload["reasoning"], json!({ "effort": "max", "summary": "auto" }));
+    assert_eq!(
+        payload["reasoning"],
+        json!({ "effort": "max", "summary": "auto" })
+    );
 }
 
 #[tokio::test]
@@ -2574,10 +3334,16 @@ async fn thinking_matrix_preserves_max_effort_for_a_map_less_model() {
     let mut model = builtin("openai", "gpt-5.6-sol");
     model.provider = "codex-lb".into();
     model.thinking_level_map = None;
-    let simple = SimpleStreamOptions { reasoning: Some(ThinkingLevel::Max), ..simple_options() };
+    let simple = SimpleStreamOptions {
+        reasoning: Some(ThinkingLevel::Max),
+        ..simple_options()
+    };
 
     let payload = capture_simple_payload(&model, &thinking_context(), simple).await;
-    assert_eq!(payload["reasoning"], json!({ "effort": "max", "summary": "auto" }));
+    assert_eq!(
+        payload["reasoning"],
+        json!({ "effort": "max", "summary": "auto" })
+    );
 }
 
 #[tokio::test]
@@ -2585,7 +3351,10 @@ async fn thinking_matrix_preserves_max_effort_for_a_map_less_model_on_azure_resp
     let mut model = builtin("azure-openai-responses", "gpt-5.6-sol");
     model.base_url = "http://127.0.0.1:9".into();
     model.thinking_level_map = None;
-    let simple = SimpleStreamOptions { reasoning: Some(ThinkingLevel::Max), ..azure_simple_options() };
+    let simple = SimpleStreamOptions {
+        reasoning: Some(ThinkingLevel::Max),
+        ..azure_simple_options()
+    };
 
     let payload = capture_azure_simple_payload(&model, &thinking_context(), simple).await;
     // senpi's assertion is a `toMatchObject` subset match on `{ reasoning: { effort: "max" } }`.
@@ -2596,10 +3365,16 @@ async fn thinking_matrix_preserves_max_effort_for_a_map_less_model_on_azure_resp
 async fn thinking_matrix_preserves_azures_explicit_gpt_5_6_max_effort_mapping() {
     let mut model = builtin("azure-openai-responses", "gpt-5.6-sol");
     model.base_url = "http://127.0.0.1:9".into();
-    let simple = SimpleStreamOptions { reasoning: Some(ThinkingLevel::Max), ..azure_simple_options() };
+    let simple = SimpleStreamOptions {
+        reasoning: Some(ThinkingLevel::Max),
+        ..azure_simple_options()
+    };
 
     let payload = capture_azure_simple_payload(&model, &thinking_context(), simple).await;
-    assert_eq!(payload["reasoning"], json!({ "effort": "max", "summary": "auto" }));
+    assert_eq!(
+        payload["reasoning"],
+        json!({ "effort": "max", "summary": "auto" })
+    );
 }
 
 #[tokio::test]
@@ -2607,7 +3382,8 @@ async fn thinking_matrix_omits_azure_reasoning_when_thinking_cannot_be_disabled(
     let mut model = builtin("azure-openai-responses", "gpt-5.6-sol");
     model.base_url = "http://127.0.0.1:9".into();
 
-    let payload = capture_azure_simple_payload(&model, &thinking_context(), azure_simple_options()).await;
+    let payload =
+        capture_azure_simple_payload(&model, &thinking_context(), azure_simple_options()).await;
     assert!(payload.get("reasoning").is_none(), "{payload}");
 }
 
@@ -2623,7 +3399,9 @@ async fn thinking_matrix_omits_xai_reasoning_when_thinking_cannot_be_disabled() 
 async fn thinking_matrix_does_not_send_an_unavailable_explicit_effort() {
     let model = builtin("openai", "gpt-5.1");
     let mut options = responses_options();
-    options.extra.insert("reasoningEffort".into(), json!("minimal"));
+    options
+        .extra
+        .insert("reasoningEffort".into(), json!("minimal"));
 
     let payload = capture_payload(&model, &thinking_context(), options).await;
     assert!(payload.get("reasoning").is_none(), "{payload}");
@@ -2633,7 +3411,9 @@ async fn thinking_matrix_does_not_send_an_unavailable_explicit_effort() {
 async fn thinking_matrix_does_not_send_an_unavailable_summary_default_effort() {
     let model = builtin("openai", "gpt-5-pro");
     let mut options = responses_options();
-    options.extra.insert("reasoningSummary".into(), json!("auto"));
+    options
+        .extra
+        .insert("reasoningSummary".into(), json!("auto"));
 
     let payload = capture_payload(&model, &thinking_context(), options).await;
     assert!(payload.get("reasoning").is_none(), "{payload}");
@@ -2644,7 +3424,9 @@ async fn thinking_matrix_does_not_send_an_unavailable_explicit_azure_effort() {
     let mut model = builtin("azure-openai-responses", "gpt-5.5-pro");
     model.base_url = "http://127.0.0.1:9".into();
     let mut options = azure_options(&[]);
-    options.extra.insert("reasoningEffort".into(), json!("minimal"));
+    options
+        .extra
+        .insert("reasoningEffort".into(), json!("minimal"));
 
     let payload = capture_azure_payload(&model, &thinking_context(), options).await;
     assert!(payload.get("reasoning").is_none(), "{payload}");
@@ -2654,7 +3436,12 @@ async fn capture_azure_payload(model: &Model, context: &Context, options: Stream
     let server = RecordingServer::start(completed_sse("resp_azure_capture")).await;
     let mut model = model.clone();
     model.base_url = server.base_url();
-    let events = collect(azure_openai_responses::stream(&model, context, Some(options))).await;
+    let events = collect(azure_openai_responses::stream(
+        &model,
+        context,
+        Some(options),
+    ))
+    .await;
     assert!(
         matches!(events.last(), Some(AssistantMessageEvent::Done { .. })),
         "the fixture completes the turn: {events:?}"
@@ -2668,8 +3455,12 @@ async fn capture_azure_payload(model: &Model, context: &Context, options: Stream
 
 fn env_options(pairs: &[(&str, &str)]) -> StreamOptions {
     let mut options = responses_options();
-    options.request.env =
-        Some(pairs.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect::<ProviderEnv>());
+    options.request.env = Some(
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect::<ProviderEnv>(),
+    );
     options
 }
 
@@ -2678,13 +3469,22 @@ async fn cache_retention_sets_prompt_cache_retention_for_a_non_openai_base_url_b
     let mut model = builtin("openai", "gpt-4o-mini");
     model.base_url = "https://my-proxy.example.com/v1".into();
 
-    let payload = capture_payload(&model, &hello_context(), env_options(&[("PI_CACHE_RETENTION", "long")])).await;
+    let payload = capture_payload(
+        &model,
+        &hello_context(),
+        env_options(&[("PI_CACHE_RETENTION", "long")]),
+    )
+    .await;
     assert_eq!(payload["prompt_cache_retention"], json!("24h"));
 }
 
 #[tokio::test]
 async fn cache_retention_omits_prompt_cache_retention_when_long_retention_is_unsupported() {
-    let model = with_compat(&builtin("openai", "gpt-4o-mini"), "supportsLongCacheRetention", json!(false));
+    let model = with_compat(
+        &builtin("openai", "gpt-4o-mini"),
+        "supportsLongCacheRetention",
+        json!(false),
+    );
     let mut options = responses_options();
     options.cache_retention = Some(CacheRetention::Long);
     options.session_id = Some("session-compat-false".into());
@@ -2703,7 +3503,10 @@ async fn cache_retention_none_omits_prompt_cache_key_and_disables_implicit_write
     let payload = capture_payload(&model, &hello_context(), options).await;
     assert!(payload.get("prompt_cache_key").is_none(), "{payload}");
     assert!(payload.get("prompt_cache_retention").is_none(), "{payload}");
-    assert_eq!(payload["prompt_cache_options"], json!({ "mode": "explicit" }));
+    assert_eq!(
+        payload["prompt_cache_options"],
+        json!({ "mode": "explicit" })
+    );
 }
 
 #[tokio::test]
@@ -2733,11 +3536,17 @@ async fn cache_retention_uses_the_supported_long_cache_field_per_model() {
         assert_eq!(payload["prompt_cache_key"], json!("session-2"), "{id}");
         match retention {
             Some(value) => assert_eq!(payload["prompt_cache_retention"], value, "{id}"),
-            None => assert!(payload.get("prompt_cache_retention").is_none(), "{id}: {payload}"),
+            None => assert!(
+                payload.get("prompt_cache_retention").is_none(),
+                "{id}: {payload}"
+            ),
         }
         match cache_options {
             Some(value) => assert_eq!(payload["prompt_cache_options"], value, "{id}"),
-            None => assert!(payload.get("prompt_cache_options").is_none(), "{id}: {payload}"),
+            None => assert!(
+                payload.get("prompt_cache_options").is_none(),
+                "{id}: {payload}"
+            ),
         }
     }
 }
@@ -2758,7 +3567,11 @@ async fn cache_retention_uses_the_model_default_when_options_omit_it() {
 // test/xai-responses.test.ts (Responses cases)
 // =============================================================================
 
-async fn capture_xai_request(model: &Model, context: &Context, options: StreamOptions) -> RecordingServer {
+async fn capture_xai_request(
+    model: &Model,
+    context: &Context,
+    options: StreamOptions,
+) -> RecordingServer {
     let server = RecordingServer::start(completed_sse("resp_xai_test")).await;
     let mut served = model.clone();
     served.base_url = server.base_url();
@@ -2780,6 +3593,7 @@ fn xai_options() -> StreamOptions {
 async fn xai_uses_responses_with_bearer_auth_and_xai_compatible_request_fields() {
     let model = builtin("xai", "grok-4.5");
     let context = Context {
+        active_tool_names: None,
         system_prompt: Some("You are a careful coding assistant.".into()),
         messages: vec![user_message("hello")],
         tools: None,
@@ -2787,17 +3601,25 @@ async fn xai_uses_responses_with_bearer_auth_and_xai_compatible_request_fields()
     let mut options = xai_options();
     options.session_id = Some("pi-session-123".into());
     options.cache_retention = Some(CacheRetention::Long);
-    options.extra.insert("reasoningEffort".into(), json!("medium"));
+    options
+        .extra
+        .insert("reasoningEffort".into(), json!("medium"));
 
     let server = capture_xai_request(&model, &context, options).await;
     assert_eq!(server.captured_path(), "/v1/responses");
     let headers = server.captured_headers();
-    assert_eq!(header_value(&headers, "authorization").as_deref(), Some("Bearer xai-test-token"));
+    assert_eq!(
+        header_value(&headers, "authorization").as_deref(),
+        Some("Bearer xai-test-token")
+    );
     assert_eq!(
         header_value(&headers, "user-agent").as_deref(),
         Some(maho_ai::utils::pi_user_agent::get_pi_user_agent().as_str())
     );
-    assert_eq!(header_value(&headers, "session_id").as_deref(), Some("pi-session-123"));
+    assert_eq!(
+        header_value(&headers, "session_id").as_deref(),
+        Some("pi-session-123")
+    );
 
     let payload = server.captured();
     assert_eq!(payload["model"], json!("grok-4.5"));
@@ -2831,12 +3653,15 @@ async fn xai_requests_encrypted_reasoning_without_an_effort_override() {
 async fn xai_uses_responses_for_grok_4_6_with_xhigh_effort_and_encrypted_reasoning() {
     let model = builtin("xai", "grok-4.6");
     let context = Context {
+        active_tool_names: None,
         system_prompt: Some("You are a careful coding assistant.".into()),
         messages: vec![user_message("hello")],
         tools: None,
     };
     let mut options = xai_options();
-    options.extra.insert("reasoningEffort".into(), json!("xhigh"));
+    options
+        .extra
+        .insert("reasoningEffort".into(), json!("xhigh"));
 
     let server = capture_xai_request(&model, &context, options).await;
     assert_eq!(server.captured_path(), "/v1/responses");
@@ -2852,12 +3677,15 @@ async fn xai_uses_responses_for_grok_4_6_with_xhigh_effort_and_encrypted_reasoni
 async fn xai_uses_responses_for_grok_4_7_with_xhigh_effort_and_encrypted_reasoning() {
     let model = builtin("xai", "grok-4.7");
     let context = Context {
+        active_tool_names: None,
         system_prompt: Some("You are a careful coding assistant.".into()),
         messages: vec![user_message("hello")],
         tools: None,
     };
     let mut options = xai_options();
-    options.extra.insert("reasoningEffort".into(), json!("xhigh"));
+    options
+        .extra
+        .insert("reasoningEffort".into(), json!("xhigh"));
 
     let server = capture_xai_request(&model, &context, options).await;
     assert_eq!(server.captured_path(), "/v1/responses");
@@ -2909,7 +3737,10 @@ async fn xai_lets_explicit_headers_override_the_default_responses_user_agent() {
 
     let server = capture_xai_request(&model, &hello_context(), options).await;
     let headers = server.captured_headers();
-    assert_eq!(header_value(&headers, "user-agent").as_deref(), Some("custom-agent"));
+    assert_eq!(
+        header_value(&headers, "user-agent").as_deref(),
+        Some("custom-agent")
+    );
 }
 
 // =============================================================================
@@ -2921,19 +3752,36 @@ async fn pre_generation_error_surfaces_missing_auth_for_the_responses_adapters()
     // senpi throws synchronously from `streamSimple`; the port's `stream_simple` returns the same
     // error as an already-settled error stream instead (no panic, same message).
     let openai = model("openai-responses", "test-provider", "test-model");
-    let events = collect(openai_responses::stream_simple(&openai, &hello_context(), Some(SimpleStreamOptions::default()))).await;
-    let AssistantMessageEvent::Error { error, .. } = events.last().expect("a terminal event") else {
+    let events = collect(openai_responses::stream_simple(
+        &openai,
+        &hello_context(),
+        Some(SimpleStreamOptions::default()),
+    ))
+    .await;
+    let AssistantMessageEvent::Error { error, .. } = events.last().expect("a terminal event")
+    else {
         panic!("expected an error event: {events:?}")
     };
-    assert_eq!(error.error_message.as_deref(), Some("No API key for provider: test-provider"));
+    assert_eq!(
+        error.error_message.as_deref(),
+        Some("No API key for provider: test-provider")
+    );
 
     let azure = model("azure-openai-responses", "test-provider", "test-model");
-    let events =
-        collect(azure_openai_responses::stream_simple(&azure, &hello_context(), Some(SimpleStreamOptions::default()))).await;
-    let AssistantMessageEvent::Error { error, .. } = events.last().expect("a terminal event") else {
+    let events = collect(azure_openai_responses::stream_simple(
+        &azure,
+        &hello_context(),
+        Some(SimpleStreamOptions::default()),
+    ))
+    .await;
+    let AssistantMessageEvent::Error { error, .. } = events.last().expect("a terminal event")
+    else {
         panic!("expected an error event: {events:?}")
     };
-    assert_eq!(error.error_message.as_deref(), Some("No API key for provider: test-provider"));
+    assert_eq!(
+        error.error_message.as_deref(),
+        Some("No API key for provider: test-provider")
+    );
 }
 
 // =============================================================================
@@ -2967,7 +3815,10 @@ fn patch_history(source_api: &str) -> Vec<Message> {
     previous.content = vec![ContentBlock::ToolCall(ToolCall {
         id: "call_patch".into(),
         name: "apply_patch".into(),
-        arguments: json!({ "input": PATCH }).as_object().cloned().unwrap_or_default(),
+        arguments: json!({ "input": PATCH })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
         incomplete: None,
         error_message: None,
         thought_signature: None,
@@ -2983,6 +3834,7 @@ fn patch_history(source_api: &str) -> Vec<Message> {
             content: vec![ContentBlock::text("Done!")],
             details: None,
             usage: None,
+            nested_calls: None,
             added_tool_names: None,
             is_error: false,
             timestamp: 2,
@@ -2990,10 +3842,19 @@ fn patch_history(source_api: &str) -> Vec<Message> {
     ]
 }
 
-fn responses_convert(model: &Model, messages: Vec<Message>, tools: Option<Vec<Tool>>) -> Vec<Value> {
+fn responses_convert(
+    model: &Model,
+    messages: Vec<Message>,
+    tools: Option<Vec<Tool>>,
+) -> Vec<Value> {
     convert_responses_messages(
         model,
-        &Context { system_prompt: None, messages, tools },
+        &Context {
+            active_tool_names: None,
+            system_prompt: None,
+            messages,
+            tools,
+        },
         &allowed(&["openai"]),
         &ConvertResponsesMessagesOptions::default(),
     )
@@ -3005,7 +3866,11 @@ fn assert_custom_patch_replay(items: &[Value], model_id: &str) {
     assert_eq!(items[0]["call_id"], json!("call_patch"), "{model_id}");
     assert_eq!(items[0]["name"], json!("apply_patch"), "{model_id}");
     assert_eq!(items[0]["input"], json!(PATCH), "{model_id}");
-    assert_eq!(items[1]["type"], json!("custom_tool_call_output"), "{model_id}");
+    assert_eq!(
+        items[1]["type"],
+        json!("custom_tool_call_output"),
+        "{model_id}"
+    );
     assert_eq!(items[1]["call_id"], json!("call_patch"), "{model_id}");
     assert_eq!(items[1]["name"], json!("apply_patch"), "{model_id}");
     assert_eq!(items[1]["output"], json!("Done!"), "{model_id}");
@@ -3016,8 +3881,16 @@ fn assert_function_patch_replay(items: &[Value], model_id: &str) {
     assert_eq!(items[0]["type"], json!("function_call"), "{model_id}");
     assert_eq!(items[0]["call_id"], json!("call_patch"), "{model_id}");
     assert_eq!(items[0]["name"], json!("apply_patch"), "{model_id}");
-    assert_eq!(items[0]["arguments"], json!(json!({ "input": PATCH }).to_string()), "{model_id}");
-    assert_eq!(items[1]["type"], json!("function_call_output"), "{model_id}");
+    assert_eq!(
+        items[0]["arguments"],
+        json!(json!({ "input": PATCH }).to_string()),
+        "{model_id}"
+    );
+    assert_eq!(
+        items[1]["type"],
+        json!("function_call_output"),
+        "{model_id}"
+    );
     assert_eq!(items[1]["call_id"], json!("call_patch"), "{model_id}");
     assert_eq!(items[1]["output"], json!("Done!"), "{model_id}");
 }
@@ -3025,7 +3898,11 @@ fn assert_function_patch_replay(items: &[Value], model_id: &str) {
 #[test]
 fn model_switch_s5_serializes_apply_patch_according_to_the_current_tool_declaration() {
     let model = model("openai-responses", "openai", "gpt-target");
-    let custom = responses_convert(&model, patch_history("openai-responses"), Some(vec![apply_patch_tool()]));
+    let custom = responses_convert(
+        &model,
+        patch_history("openai-responses"),
+        Some(vec![apply_patch_tool()]),
+    );
     let function = responses_convert(&model, patch_history("openai-responses"), None);
 
     assert_custom_patch_replay(&custom, "custom");
@@ -3035,7 +3912,11 @@ fn model_switch_s5_serializes_apply_patch_according_to_the_current_tool_declarat
 #[test]
 fn model_switch_s5b_upgrades_a_function_era_recording_to_custom_tool_call() {
     let model = model("openai-responses", "openai", "gpt-target");
-    let replay = responses_convert(&model, patch_history("openai-completions"), Some(vec![apply_patch_tool()]));
+    let replay = responses_convert(
+        &model,
+        patch_history("openai-completions"),
+        Some(vec![apply_patch_tool()]),
+    );
 
     assert_custom_patch_replay(&replay, "upgrade");
 }
@@ -3044,11 +3925,16 @@ fn model_switch_s5b_upgrades_a_function_era_recording_to_custom_tool_call() {
 fn model_switch_s5b_stringifies_recorded_arguments_that_lack_an_input_string() {
     let model = model("openai-responses", "openai", "gpt-target");
     let history = patch_history("openai-completions");
-    let Message::Assistant(mut assistant) = history[0].clone() else { panic!("assistant fixture") };
+    let Message::Assistant(mut assistant) = history[0].clone() else {
+        panic!("assistant fixture")
+    };
     assistant.content = vec![ContentBlock::ToolCall(ToolCall {
         id: "call_patch".into(),
         name: "apply_patch".into(),
-        arguments: json!({ "patch": PATCH }).as_object().cloned().unwrap_or_default(),
+        arguments: json!({ "patch": PATCH })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
         incomplete: None,
         error_message: None,
         thought_signature: None,
@@ -3060,7 +3946,10 @@ fn model_switch_s5b_stringifies_recorded_arguments_that_lack_an_input_string() {
 
     assert_eq!(replay.len(), 2, "{replay:?}");
     assert_eq!(replay[0]["type"], json!("custom_tool_call"));
-    assert_eq!(replay[0]["input"], json!(json!({ "patch": PATCH }).to_string()));
+    assert_eq!(
+        replay[0]["input"],
+        json!(json!({ "patch": PATCH }).to_string())
+    );
     assert_eq!(replay[1]["type"], json!("custom_tool_call_output"));
     assert_eq!(replay[1]["output"], json!("Done!"));
 }
@@ -3069,15 +3958,18 @@ fn model_switch_s5b_stringifies_recorded_arguments_that_lack_an_input_string() {
 fn model_switch_s5c_replays_mixed_edit_and_apply_patch_history_in_both_truth_table_branches() {
     let model = model("openai-responses", "openai", "gpt-target");
     let history = patch_history("openai-responses");
-    let Message::Assistant(mut assistant) = history[0].clone() else { panic!("assistant fixture") };
+    let Message::Assistant(mut assistant) = history[0].clone() else {
+        panic!("assistant fixture")
+    };
     assistant.content = vec![
         ContentBlock::ToolCall(ToolCall {
             id: "call_edit".into(),
             name: "edit".into(),
-            arguments: json!({ "path": "src/a.ts", "edits": [{ "oldText": "old", "newText": "new" }] })
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
+            arguments:
+                json!({ "path": "src/a.ts", "edits": [{ "oldText": "old", "newText": "new" }] })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
             incomplete: None,
             error_message: None,
             thought_signature: None,
@@ -3086,7 +3978,10 @@ fn model_switch_s5c_replays_mixed_edit_and_apply_patch_history_in_both_truth_tab
         ContentBlock::ToolCall(ToolCall {
             id: "call_patch".into(),
             name: "apply_patch".into(),
-            arguments: json!({ "input": PATCH }).as_object().cloned().unwrap_or_default(),
+            arguments: json!({ "input": PATCH })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
             incomplete: None,
             error_message: None,
             thought_signature: None,
@@ -3101,6 +3996,7 @@ fn model_switch_s5c_replays_mixed_edit_and_apply_patch_history_in_both_truth_tab
             content: vec![ContentBlock::text("Edited")],
             details: None,
             usage: None,
+            nested_calls: None,
             added_tool_names: None,
             is_error: false,
             timestamp: 2,
@@ -3129,7 +4025,10 @@ fn model_switch_s5c_replays_mixed_edit_and_apply_patch_history_in_both_truth_tab
     assert_eq!(without_freeform[0]["call_id"], json!("call_edit"));
     assert_eq!(without_freeform[1]["type"], json!("function_call"));
     assert_eq!(without_freeform[1]["call_id"], json!("call_patch"));
-    assert_eq!(without_freeform[1]["arguments"], json!(json!({ "input": PATCH }).to_string()));
+    assert_eq!(
+        without_freeform[1]["arguments"],
+        json!(json!({ "input": PATCH }).to_string())
+    );
     assert_eq!(without_freeform[2]["type"], json!("function_call_output"));
     assert_eq!(without_freeform[3]["type"], json!("function_call_output"));
     assert_eq!(without_freeform[3]["call_id"], json!("call_patch"));
@@ -3139,7 +4038,11 @@ fn model_switch_s5c_replays_mixed_edit_and_apply_patch_history_in_both_truth_tab
 #[test]
 fn model_switch_policy_row_azure_responses_applies_the_shared_converter_truth_table() {
     let model = model("azure-openai-responses", "azure-openai", "gpt-target");
-    let custom = responses_convert(&model, patch_history("openai-responses"), Some(vec![apply_patch_tool()]));
+    let custom = responses_convert(
+        &model,
+        patch_history("openai-responses"),
+        Some(vec![apply_patch_tool()]),
+    );
     let function = responses_convert(&model, patch_history("openai-responses"), None);
 
     assert_custom_patch_replay(&custom, "azure custom");
@@ -3149,7 +4052,11 @@ fn model_switch_policy_row_azure_responses_applies_the_shared_converter_truth_ta
 #[test]
 fn model_switch_policy_row_codex_responses_applies_the_shared_converter_truth_table() {
     let model = model("openai-codex-responses", "openai", "gpt-target");
-    let custom = responses_convert(&model, patch_history("openai-responses"), Some(vec![apply_patch_tool()]));
+    let custom = responses_convert(
+        &model,
+        patch_history("openai-responses"),
+        Some(vec![apply_patch_tool()]),
+    );
     let function = responses_convert(&model, patch_history("openai-responses"), None);
 
     assert_custom_patch_replay(&custom, "codex custom");
@@ -3162,14 +4069,24 @@ fn model_switch_policy_row_codex_responses_applies_the_shared_converter_truth_ta
 
 #[tokio::test]
 async fn provider_error_body_keeps_the_prefix_and_surfaces_the_body_for_openai_responses() {
-    let fixture = Fixture::json(axum::http::StatusCode::FORBIDDEN, json!({ "error": "blocked by gateway WAF" }).to_string());
+    let fixture = Fixture::json(
+        axum::http::StatusCode::FORBIDDEN,
+        json!({ "error": "blocked by gateway WAF" }).to_string(),
+    );
     let server = MockFixtureServer::start(fixture).await;
     let mut model = model("openai-responses", "openai", "gpt-test");
     model.base_url = server.base_url().to_owned();
 
-    let events = collect(openai_responses::stream(&model, &hello_context(), Some(responses_options()))).await;
+    let events = collect(openai_responses::stream(
+        &model,
+        &hello_context(),
+        Some(responses_options()),
+    ))
+    .await;
     let last = events.last().expect("a terminal event");
-    let AssistantMessageEvent::Error { error, .. } = last else { panic!("expected an error event: {last:?}") };
+    let AssistantMessageEvent::Error { error, .. } = last else {
+        panic!("expected an error event: {last:?}")
+    };
     assert_eq!(error.stop_reason, StopReason::Error);
     let message = error.error_message.clone().expect("an error message");
     assert!(message.contains("OpenAI API error (403)"), "{message}");
@@ -3183,23 +4100,50 @@ async fn provider_error_body_keeps_the_prefix_and_surfaces_the_body_for_openai_r
 #[tokio::test]
 async fn fetch_option_passes_fetch_through_to_the_responses_adapters() {
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("x-custom-fetch", reqwest::header::HeaderValue::from_static("1"));
-    let client = reqwest::Client::builder().default_headers(headers).build().expect("custom client");
+    headers.insert(
+        "x-custom-fetch",
+        reqwest::header::HeaderValue::from_static("1"),
+    );
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .expect("custom client");
 
     for api in ["openai-responses", "azure-openai-responses"] {
         let server = RecordingServer::start(completed_sse("resp_fetch_option")).await;
-        let mut model = if api == "azure-openai-responses" { azure_model() } else { model(api, "openai", "gpt-5") };
+        let mut model = if api == "azure-openai-responses" {
+            azure_model()
+        } else {
+            model(api, "openai", "gpt-5")
+        };
         model.base_url = server.base_url();
         let mut options = responses_options();
         options.request.fetch = Some(client.clone());
         let events = if api == "azure-openai-responses" {
-            collect(azure_openai_responses::stream(&model, &hello_context(), Some(options))).await
+            collect(azure_openai_responses::stream(
+                &model,
+                &hello_context(),
+                Some(options),
+            ))
+            .await
         } else {
-            collect(openai_responses::stream(&model, &hello_context(), Some(options))).await
+            collect(openai_responses::stream(
+                &model,
+                &hello_context(),
+                Some(options),
+            ))
+            .await
         };
-        assert!(matches!(events.last(), Some(AssistantMessageEvent::Done { .. })), "{api}: {events:?}");
+        assert!(
+            matches!(events.last(), Some(AssistantMessageEvent::Done { .. })),
+            "{api}: {events:?}"
+        );
         let recorded = server.captured_headers();
-        assert_eq!(header_value(&recorded, "x-custom-fetch").as_deref(), Some("1"), "{api} used the injected client");
+        assert_eq!(
+            header_value(&recorded, "x-custom-fetch").as_deref(),
+            Some("1"),
+            "{api} used the injected client"
+        );
     }
 }
 
@@ -3214,7 +4158,10 @@ struct RecordingSocket {
 
 impl RecordingSocket {
     fn new(ready_state: Option<u8>) -> Arc<Self> {
-        Arc::new(Self { ready_state, closes: Mutex::new(Vec::new()) })
+        Arc::new(Self {
+            ready_state,
+            closes: Mutex::new(Vec::new()),
+        })
     }
 
     fn closes(&self) -> Vec<(u16, String)> {
@@ -3228,7 +4175,10 @@ impl openai_responses::CachedWebSocket for RecordingSocket {
     }
 
     fn close(&self, code: u16, reason: &str) {
-        self.closes.lock().expect("closes lock").push((code, reason.to_owned()));
+        self.closes
+            .lock()
+            .expect("closes lock")
+            .push((code, reason.to_owned()));
     }
 }
 
@@ -3244,17 +4194,29 @@ async fn settle() {
 #[tokio::test(start_paused = true)]
 async fn websocket_expiry_re_arms_while_busy_then_evicts_once_idle() {
     let socket = RecordingSocket::new(Some(1));
-    let entry = Arc::new(openai_responses::CachedWebSocketConnection::new(socket.clone()));
+    let entry = Arc::new(openai_responses::CachedWebSocketConnection::new(
+        socket.clone(),
+    ));
     openai_responses::cache_websocket_session("sess-busy-rearm", entry.clone());
     openai_responses::schedule_session_websocket_expiry("sess-busy-rearm", entry.clone());
     settle().await;
 
-    tokio::time::advance(Duration::from_millis(openai_responses::SESSION_WEBSOCKET_CACHE_TTL_MS + 1)).await;
+    tokio::time::advance(Duration::from_millis(
+        openai_responses::SESSION_WEBSOCKET_CACHE_TTL_MS + 1,
+    ))
+    .await;
     settle().await;
-    assert!(socket.closes().is_empty(), "a busy entry survives the first TTL: {:?}", socket.closes());
+    assert!(
+        socket.closes().is_empty(),
+        "a busy entry survives the first TTL: {:?}",
+        socket.closes()
+    );
 
     entry.set_busy(false);
-    tokio::time::advance(Duration::from_millis(openai_responses::SESSION_WEBSOCKET_CACHE_TTL_MS + 1)).await;
+    tokio::time::advance(Duration::from_millis(
+        openai_responses::SESSION_WEBSOCKET_CACHE_TTL_MS + 1,
+    ))
+    .await;
     settle().await;
     assert_eq!(socket.closes(), vec![(1000, String::from("idle_timeout"))]);
 }
@@ -3262,26 +4224,39 @@ async fn websocket_expiry_re_arms_while_busy_then_evicts_once_idle() {
 #[tokio::test(start_paused = true)]
 async fn websocket_expiry_evicts_a_busy_entry_whose_socket_died() {
     let socket = RecordingSocket::new(Some(3));
-    let entry = Arc::new(openai_responses::CachedWebSocketConnection::new(socket.clone()));
+    let entry = Arc::new(openai_responses::CachedWebSocketConnection::new(
+        socket.clone(),
+    ));
     openai_responses::cache_websocket_session("sess-busy-dead", entry.clone());
     openai_responses::schedule_session_websocket_expiry("sess-busy-dead", entry.clone());
     settle().await;
 
-    tokio::time::advance(Duration::from_millis(openai_responses::SESSION_WEBSOCKET_CACHE_TTL_MS + 1)).await;
+    tokio::time::advance(Duration::from_millis(
+        openai_responses::SESSION_WEBSOCKET_CACHE_TTL_MS + 1,
+    ))
+    .await;
     settle().await;
-    assert_eq!(socket.closes(), vec![(1000, String::from("idle_timeout_dead"))]);
+    assert_eq!(
+        socket.closes(),
+        vec![(1000, String::from("idle_timeout_dead"))]
+    );
 }
 
 #[tokio::test(start_paused = true)]
 async fn websocket_expiry_closes_and_drops_an_idle_entry_at_the_ttl() {
     let socket = RecordingSocket::new(Some(1));
-    let entry = Arc::new(openai_responses::CachedWebSocketConnection::new(socket.clone()));
+    let entry = Arc::new(openai_responses::CachedWebSocketConnection::new(
+        socket.clone(),
+    ));
     entry.set_busy(false);
     openai_responses::cache_websocket_session("sess-idle", entry.clone());
     openai_responses::schedule_session_websocket_expiry("sess-idle", entry.clone());
     settle().await;
 
-    tokio::time::advance(Duration::from_millis(openai_responses::SESSION_WEBSOCKET_CACHE_TTL_MS + 1)).await;
+    tokio::time::advance(Duration::from_millis(
+        openai_responses::SESSION_WEBSOCKET_CACHE_TTL_MS + 1,
+    ))
+    .await;
     settle().await;
     assert_eq!(socket.closes(), vec![(1000, String::from("idle_timeout"))]);
 }
