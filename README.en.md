@@ -43,6 +43,7 @@ mhc includes built-in native self-update that downloads the complete release pac
 
 ```bash
 mhc update           # Check and upgrade to the latest release
+mhc update --force   # Bypass version checks and force re-install latest release
 mhc update --all     # Update both installed resource packages and native mhc
 ```
 

@@ -43,6 +43,7 @@ mhc 支持原生自更新，自动下载完整自包含发布包并校验 SHA256
 
 ```bash
 mhc update           # 检查并升级至最新发布版本
+mhc update --force   # 忽略当前版本，强制重新下载并安装最新发布版本
 mhc update --all     # 顺序更新已安装的资源包及 mhc 原生程序
 ```
 
