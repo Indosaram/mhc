@@ -119,11 +119,14 @@ fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
     } else {
         Default::default()
     };
-    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+    let mut runtime = match maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(Path::new(agent_dir).join("models.json")),
         credentials: Some(std::sync::Arc::new(maho_core::auth_storage::AuthStorage::in_memory(credentials))),
         ..Default::default()
-    });
+    }) {
+        Ok(runtime) => runtime,
+        Err(error) => return vec![format!("FAIL task categories: could not construct model runtime: {error}")],
+    };
     let mut registration_failures = Vec::new();
     for provider in ["claude-sdk-oauth", "cursor-cli-oauth"] {
         if let Err(error) = runtime.register_provider(provider, maho_core::provider_composer::ProviderConfigInput::default()) {

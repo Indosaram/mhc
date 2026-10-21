@@ -13,6 +13,7 @@ path = "src/lib.rs"
 chrono = { workspace = true, features = ["clock", "std"] }
 indexmap = { workspace = true, features = ["serde"] }
 regex.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true

@@ -8,9 +8,21 @@ use crate::harness::context::Context;
 use crate::harness::events::{HarnessEvent, HarnessEventBus, HarnessEventPayload};
 use crate::harness::hooks::{HookErrorReporter, HookRegistry};
 use crate::harness::session::session::{SessionError, SessionErrorKind, session_invariant_error};
-use crate::harness::session::types::{Control, LaneConfiguration, LaneModelRef, Operation, OperationIntentKind, Session, Write};
+use crate::harness::session::types::{
+    Control, LaneConfiguration, LaneModelRef, OperationIntentKind, Session, Write,
+};
 use crate::harness::session::values::*;
 use crate::harness::types::AgentHarnessTool;
+
+pub(crate) fn drive_abort_reason(context: &Context) -> Option<maho_ai::utils::abort::AbortReason> {
+    let signal = context.abort_signal()?;
+    if !signal.aborted() {
+        return None;
+    }
+    Some(signal.reason().unwrap_or_else(|| {
+        maho_ai::utils::abort::AbortReason::new("AbortError", "The operation was aborted")
+    }))
+}
 
 /// Project one typed harness tool onto the context-free `Config<()>` snapshot.
 ///
@@ -19,7 +31,9 @@ use crate::harness::types::AgentHarnessTool;
 /// `config.tools.map((tool) => tool.tool)` — never `execute`. Since the real typed tools live on
 /// `Harness<TContext>`/`Lane.tool_runner`, the context-free snapshot carries an erased clone with
 /// the identical definition; its `execute` is never invoked (the typed runner is).
-fn erase_tool_context<TContext>(tool: &Arc<AgentHarnessTool<TContext>>) -> Arc<AgentHarnessTool<()>> {
+fn erase_tool_context<TContext>(
+    tool: &Arc<AgentHarnessTool<TContext>>,
+) -> Arc<AgentHarnessTool<()>> {
     Arc::new(AgentHarnessTool {
         label: tool.label.clone(),
         prepare_arguments: tool.prepare_arguments.clone(),
@@ -56,7 +70,12 @@ fn hook_error_reporter(events: HarnessEventBus) -> HookErrorReporter {
     Arc::new(move |error, hook, lane, context| {
         let events = events.clone();
         Box::pin(async move {
-            events.emit(HarnessEvent::hook_handler_error(error, hook.as_str(), Some(lane)), context).await;
+            events
+                .emit(
+                    HarnessEvent::hook_handler_error(error, hook.as_str(), Some(lane)),
+                    context,
+                )
+                .await;
         })
     })
 }
@@ -138,16 +157,24 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
             {
                 return Ok((lane, None));
             }
-            let tip = mutation.get_value(&branch_tip(name), context).await?;
-            let config = mutation.get_value(&lane_config(name), context).await?;
-            let durable = mutation.get_value(&lane_state(name), context).await?;
-            if config.is_some() != durable.is_some() || (config.is_some() && tip.is_none()) {
-                return Err(session_invariant_error(format!(
-                    "Lane {} has partial durable state",
-                    serde_json::json!(name)
-                )));
+            let storage =
+                super::restore::read_lane_storage(mutation.as_ref(), name, context).await?;
+            if matches!(&storage, super::restore::ClassifiedLaneStorage::Lane { .. }) {
+                let state =
+                    super::restore::restore_lane_state(mutation.as_ref(), name, storage, context)
+                        .await?;
+                let lane = self.build_lane(name, state);
+                self.lanes_by_name
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(name.into(), lane.clone());
+                return Ok((lane, None));
             }
-            let exists = config.is_some();
+            let tip = match storage {
+                super::restore::ClassifiedLaneStorage::Absent => None,
+                super::restore::ClassifiedLaneStorage::Branch { tip }
+                | super::restore::ClassifiedLaneStorage::Lane { tip, .. } => Some(tip),
+            };
             let tip_id = match &tip {
                 Some(stored) => serde_json::from_value(stored.value.clone())
                     .map_err(|e| session_invariant_error(e.to_string()))?,
@@ -165,57 +192,28 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
                     format!("Unknown target: {id}"),
                 ));
             }
-            let configuration = match config {
-                Some(stored) => serde_json::from_value(stored.value)
-                    .map_err(|e| session_invariant_error(e.to_string()))?,
-                None => self.seed.clone(),
+            let configuration = self.seed.clone();
+            let stored = crate::harness::session::types::LaneState {
+                current_operation_id: None,
+                last_operation_id: None,
+                inbox: vec![],
             };
-            let stored: crate::harness::session::types::LaneState = match durable {
-                Some(stored) => serde_json::from_value(stored.value)
-                    .map_err(|e| session_invariant_error(e.to_string()))?,
-                None => crate::harness::session::types::LaneState {
-                    current_operation_id: None,
-                    last_operation_id: None,
-                    inbox: vec![],
-                },
-            };
-            let operation = match &stored.current_operation_id {
-                Some(id) => {
-                    let meta = mutation
-                        .get_value(&operation_meta(id), context)
-                        .await?
-                        .ok_or_else(|| session_invariant_error("Missing operation metadata"))?;
-                    let state = mutation
-                        .get_value(&operation_state(id), context)
-                        .await?
-                        .ok_or_else(|| session_invariant_error("Missing operation state"))?;
-                    Some(Operation {
-                        meta: serde_json::from_value(meta.value)
-                            .map_err(|e| session_invariant_error(e.to_string()))?,
-                        state: serde_json::from_value(state.value)
-                            .map_err(|e| session_invariant_error(e.to_string()))?,
-                    })
-                }
-                None => None,
-            };
-            if !exists {
-                let mut writes = vec![];
-                if tip.is_none() {
-                    writes.push(Write::Value(set_value(
-                        &branch_tip(name),
-                        encoded(&tip_id)?,
-                    )));
-                }
+            let mut writes = vec![];
+            if tip.is_none() {
                 writes.push(Write::Value(set_value(
-                    &lane_config(name),
-                    encoded(&configuration)?,
+                    &branch_tip(name),
+                    encoded(&tip_id)?,
                 )));
-                writes.push(Write::Value(set_value(
-                    &lane_state(name),
-                    encoded(&stored)?,
-                )));
-                mutation.commit(writes, context).await?;
             }
+            writes.push(Write::Value(set_value(
+                &lane_config(name),
+                encoded(&configuration)?,
+            )));
+            writes.push(Write::Value(set_value(
+                &lane_state(name),
+                encoded(&stored)?,
+            )));
+            mutation.commit(writes, context).await?;
             let lane = self.build_lane(
                 name,
                 LaneState {
@@ -223,14 +221,14 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
                     configuration,
                     inbox: stored.inbox,
                     last_operation_id: stored.last_operation_id,
-                    operation,
+                    operation: None,
                 },
             );
             self.lanes_by_name
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(name.into(), lane.clone());
-            let delivery = (!exists).then(|| {
+            let delivery = Some({
                 self.events.begin_emit_batch(
                     vec![HarnessEvent::new(
                         HarnessEventPayload::LaneCreated { at: tip_id },
@@ -243,7 +241,8 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         }
         .await;
         mutation.end(context).await;
-        let (lane, delivery) = result.map_err(|error| self.fault_unless_expected(error, context))?;
+        let (lane, delivery) =
+            result.map_err(|error| self.fault_unless_expected(error, context))?;
         if let Some(delivery) = delivery {
             delivery.await;
         }
@@ -265,12 +264,20 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
     /// worker can re-drive recoveries after its services are reachable.
     pub fn open_operations(&self) -> Result<Vec<OpenOperation>, SessionError> {
         self.assert_open()?;
-        let lanes = self.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner());
+        let lanes = self
+            .lanes_by_name
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut open = Vec::new();
         for (name, lane) in lanes.iter() {
             let state = lane.state();
-            let Some(operation) = state.operation else { continue; };
-            let aborting = matches!(operation.state.operation_scope_of().control, Control::CancelRequested { .. });
+            let Some(operation) = state.operation else {
+                continue;
+            };
+            let aborting = matches!(
+                operation.state.operation_scope_of().control,
+                Control::CancelRequested { .. }
+            );
             open.push(OpenOperation {
                 lane: name.clone(),
                 operation_id: operation.meta.operation_id,
@@ -301,7 +308,11 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         context: &Context,
     ) -> Result<(), SessionError> {
         self.assert_open()?;
-        let mutation = self.session.begin_mutation(context).await.map_err(|error| self.fault(error, context))?;
+        let mutation = self
+            .session
+            .begin_mutation(context)
+            .await
+            .map_err(|error| self.fault(error, context))?;
         let result = async {
             self.assert_open()?;
             let write = match &name {
@@ -335,7 +346,11 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         context: &Context,
     ) -> Result<(), SessionError> {
         self.assert_open()?;
-        let mutation = self.session.begin_mutation(context).await.map_err(|error| self.fault(error, context))?;
+        let mutation = self
+            .session
+            .begin_mutation(context)
+            .await
+            .map_err(|error| self.fault(error, context))?;
         let result = async {
             self.assert_open()?;
             let write = match &label {
@@ -364,10 +379,17 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
 
     pub async fn close(&self, context: &Context) {
         let _guard = self.close_lock.lock().await;
-        if *self.session_closed.lock().unwrap_or_else(|error| error.into_inner()) {
+        if *self
+            .session_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+        {
             return;
         }
-        let error = SessionError::new(SessionErrorKind::Closed, crate::harness::result::HarnessClosed::MESSAGE);
+        let error = SessionError::new(
+            SessionErrorKind::Closed,
+            crate::harness::result::HarnessClosed::MESSAGE,
+        );
         // Pinned `assertOpen`: a fault recorded before close stays the reported error.
         {
             let mut closed = self.closed_error.lock().unwrap_or_else(|e| e.into_inner());
@@ -385,14 +407,32 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         }
         self.hooks.close(error.to_string());
         self.events.close(error.to_string());
-        let lanes: Vec<_> = self.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner()).values().cloned().collect();
-        for lane in lanes { lane.finish_idle_callback().await; }
+        let lanes: Vec<_> = self
+            .lanes_by_name
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for lane in lanes {
+            lane.finish_idle_callback().await;
+        }
         self.session.close(context).await;
-        *self.session_closed.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        *self
+            .session_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
     }
 
     pub fn fault(&self, cause: SessionError, context: &Context) -> SessionError {
-        fault_harness(&self.closed_error, &self.lanes_by_name, &self.events, &self.hooks, cause, context)
+        fault_harness(
+            &self.closed_error,
+            &self.lanes_by_name,
+            &self.events,
+            &self.hooks,
+            cause,
+            context,
+        )
     }
 
     /// Pinned `lane()`/`setName()`/`setLabel()` catch: a close error wins, otherwise fault.
@@ -403,29 +443,78 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         self.fault(error, context)
     }
 
-    pub fn get_tools(&self) -> Result<Vec<Arc<crate::harness::types::AgentHarnessTool<TContext>>>, SessionError> {
+    pub fn get_tools(
+        &self,
+    ) -> Result<Vec<Arc<crate::harness::types::AgentHarnessTool<TContext>>>, SessionError> {
         self.assert_open()?;
-        Ok(self.tools.lock().unwrap_or_else(|error| error.into_inner()).clone())
+        Ok(self
+            .tools
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone())
     }
 
     /// Pinned `setTools`: validate names, replace the tools every lane executes, emit `config_update`.
-    pub async fn set_tools(&self, tools: Vec<Arc<crate::harness::types::AgentHarnessTool<TContext>>>, context: &Context) -> Result<(), SessionError> {
-        crate::harness::config::validate_tool_names(&tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>())
-            .map_err(session_invariant_error)?;
-        let tool_names = |tools: &[Arc<AgentHarnessTool<()>>]| serde_json::json!(tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<String>>());
-        self.set_config(move |config| {
-            let previous = tool_names(config.tools.as_slice());
-            config.tools = tools.iter().map(erase_tool_context).collect();
-            let value = tool_names(config.tools.as_slice());
-            let runner: Arc<dyn super::tools::ToolBatchRunner> = Arc::new(super::tools::ToolRunner::new(tools.clone(), self.tool_context.clone()));
-            *self.tool_runner.lock().unwrap_or_else(|error| error.into_inner()) = runner;
-            *self.tools.lock().unwrap_or_else(|error| error.into_inner()) = tools;
-            Ok(HarnessEventPayload::ConfigUpdate { property: "tools".into(), previous, value })
-        }, context).await
+    pub async fn set_tools(
+        &self,
+        tools: Vec<Arc<crate::harness::types::AgentHarnessTool<TContext>>>,
+        context: &Context,
+    ) -> Result<(), SessionError> {
+        crate::harness::config::validate_tool_names(
+            &tools
+                .iter()
+                .map(|tool| tool.name().to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(session_invariant_error)?;
+        let tool_names = |tools: &[Arc<AgentHarnessTool<()>>]| {
+            serde_json::json!(
+                tools
+                    .iter()
+                    .map(|tool| tool.name().to_owned())
+                    .collect::<Vec<String>>()
+            )
+        };
+        self.set_config(
+            move |config| {
+                let previous = tool_names(config.tools.as_slice());
+                config.tools = tools.iter().map(erase_tool_context).collect();
+                let value = tool_names(config.tools.as_slice());
+                let runner: Arc<dyn super::tools::ToolBatchRunner> = Arc::new(
+                    super::tools::ToolRunner::new(tools.clone(), self.tool_context.clone()),
+                );
+                *self
+                    .tool_runner
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = runner;
+                *self.tools.lock().unwrap_or_else(|error| error.into_inner()) = tools;
+                Ok(HarnessEventPayload::ConfigUpdate {
+                    property: "tools".into(),
+                    previous,
+                    value,
+                })
+            },
+            context,
+        )
+        .await
     }
 
-    pub fn get_resources(&self) -> Result<crate::harness::types::AgentHarnessResources, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).resources.clone()) }
-    pub async fn set_resources(&self, resources: crate::harness::types::AgentHarnessResources, context: &Context) -> Result<(), SessionError> {
+    pub fn get_resources(
+        &self,
+    ) -> Result<crate::harness::types::AgentHarnessResources, SessionError> {
+        self.assert_open()?;
+        Ok(self
+            .config
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .resources
+            .clone())
+    }
+    pub async fn set_resources(
+        &self,
+        resources: crate::harness::types::AgentHarnessResources,
+        context: &Context,
+    ) -> Result<(), SessionError> {
         self.set_config(move |config| {
             let as_value = |value: &crate::harness::types::AgentHarnessResources| -> Result<serde_json::Value, SessionError> {
                 let mut object = serde_json::Map::new();
@@ -439,52 +528,194 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
             Ok(HarnessEventPayload::ConfigUpdate { property: "resources".into(), previous, value })
         }, context).await
     }
-    pub fn get_stream_options(&self) -> Result<crate::harness::types::AgentHarnessStreamOptions, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).stream_options.clone()) }
-    pub fn get_retry_policy(&self) -> Result<maho_ai::utils::retry::RetryPolicy, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).retry_policy.clone()) }
-    pub fn get_compaction_settings(&self) -> Result<crate::harness::compaction::compaction::CompactionSettings, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).compaction) }
-    pub fn get_steering_mode(&self) -> Result<crate::types::QueueMode, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).steering_mode) }
-    pub fn get_follow_up_mode(&self) -> Result<crate::types::QueueMode, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).follow_up_mode) }
+    pub fn get_stream_options(
+        &self,
+    ) -> Result<crate::harness::types::AgentHarnessStreamOptions, SessionError> {
+        self.assert_open()?;
+        Ok(self
+            .config
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stream_options
+            .clone())
+    }
+    pub fn get_retry_policy(&self) -> Result<maho_ai::utils::retry::RetryPolicy, SessionError> {
+        self.assert_open()?;
+        Ok(self
+            .config
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retry_policy
+            .clone())
+    }
+    pub fn get_compaction_settings(
+        &self,
+    ) -> Result<crate::harness::compaction::compaction::CompactionSettings, SessionError> {
+        self.assert_open()?;
+        Ok(self
+            .config
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .compaction)
+    }
+    pub fn get_steering_mode(&self) -> Result<crate::types::QueueMode, SessionError> {
+        self.assert_open()?;
+        Ok(self
+            .config
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .steering_mode)
+    }
+    pub fn get_follow_up_mode(&self) -> Result<crate::types::QueueMode, SessionError> {
+        self.assert_open()?;
+        Ok(self
+            .config
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .follow_up_mode)
+    }
 
     async fn set_config<F>(&self, update: F, context: &Context) -> Result<(), SessionError>
-    where F: FnOnce(&mut Config<()>) -> Result<HarnessEventPayload, SessionError> {
+    where
+        F: FnOnce(&mut Config<()>) -> Result<HarnessEventPayload, SessionError>,
+    {
         self.assert_open()?;
-        let event = { let mut config = self.config.lock().unwrap_or_else(|error| error.into_inner()); update(&mut config)? };
-        self.events.emit(HarnessEvent::new(event, None), context.clone()).await;
+        let event = {
+            let mut config = self
+                .config
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            update(&mut config)?
+        };
+        self.events
+            .emit(HarnessEvent::new(event, None), context.clone())
+            .await;
         Ok(())
     }
 
-    pub async fn set_stream_options(&self, value: crate::harness::types::AgentHarnessStreamOptions, context: &Context) -> Result<(), SessionError> {
-        self.set_config(move |config| { let previous = encoded(&config.stream_options)?; let event_value = encoded(&value)?; config.stream_options = value; Ok(HarnessEventPayload::ConfigUpdate { property: "streamOptions".into(), previous, value: event_value }) }, context).await
+    pub async fn set_stream_options(
+        &self,
+        value: crate::harness::types::AgentHarnessStreamOptions,
+        context: &Context,
+    ) -> Result<(), SessionError> {
+        self.set_config(
+            move |config| {
+                let previous = encoded(&config.stream_options)?;
+                let event_value = encoded(&value)?;
+                config.stream_options = value;
+                Ok(HarnessEventPayload::ConfigUpdate {
+                    property: "streamOptions".into(),
+                    previous,
+                    value: event_value,
+                })
+            },
+            context,
+        )
+        .await
     }
-    pub async fn set_retry_policy(&self, value: maho_ai::utils::retry::RetryPolicy, context: &Context) -> Result<(), SessionError> {
+    pub async fn set_retry_policy(
+        &self,
+        value: maho_ai::utils::retry::RetryPolicy,
+        context: &Context,
+    ) -> Result<(), SessionError> {
         crate::harness::config::validate_retry_policy(&value).map_err(session_invariant_error)?;
-        self.set_config(move |config| { let previous = retry_policy_value(&config.retry_policy); let event_value = retry_policy_value(&value); config.retry_policy = value; Ok(HarnessEventPayload::ConfigUpdate { property: "retryPolicy".into(), previous, value: event_value }) }, context).await
+        self.set_config(
+            move |config| {
+                let previous = retry_policy_value(&config.retry_policy);
+                let event_value = retry_policy_value(&value);
+                config.retry_policy = value;
+                Ok(HarnessEventPayload::ConfigUpdate {
+                    property: "retryPolicy".into(),
+                    previous,
+                    value: event_value,
+                })
+            },
+            context,
+        )
+        .await
     }
-    pub async fn set_compaction_settings(&self, value: crate::harness::compaction::compaction::CompactionSettings, context: &Context) -> Result<(), SessionError> {
-        crate::harness::config::validate_compaction_settings(&value).map_err(session_invariant_error)?;
-        self.set_config(move |config| { let previous = encoded(&config.compaction)?; let event_value = encoded(&value)?; config.compaction = value; Ok(HarnessEventPayload::ConfigUpdate { property: "compactionSettings".into(), previous, value: event_value }) }, context).await
+    pub async fn set_compaction_settings(
+        &self,
+        value: crate::harness::compaction::compaction::CompactionSettings,
+        context: &Context,
+    ) -> Result<(), SessionError> {
+        crate::harness::config::validate_compaction_settings(&value)
+            .map_err(session_invariant_error)?;
+        self.set_config(
+            move |config| {
+                let previous = encoded(&config.compaction)?;
+                let event_value = encoded(&value)?;
+                config.compaction = value;
+                Ok(HarnessEventPayload::ConfigUpdate {
+                    property: "compactionSettings".into(),
+                    previous,
+                    value: event_value,
+                })
+            },
+            context,
+        )
+        .await
     }
-    pub async fn set_steering_mode(&self, value: crate::types::QueueMode, context: &Context) -> Result<(), SessionError> {
-        self.set_config(move |config| { let previous = encoded(&config.steering_mode)?; config.steering_mode = value; Ok(HarnessEventPayload::ConfigUpdate { property: "steeringMode".into(), previous, value: encoded(&value)? }) }, context).await
+    pub async fn set_steering_mode(
+        &self,
+        value: crate::types::QueueMode,
+        context: &Context,
+    ) -> Result<(), SessionError> {
+        self.set_config(
+            move |config| {
+                let previous = encoded(&config.steering_mode)?;
+                config.steering_mode = value;
+                Ok(HarnessEventPayload::ConfigUpdate {
+                    property: "steeringMode".into(),
+                    previous,
+                    value: encoded(&value)?,
+                })
+            },
+            context,
+        )
+        .await
     }
-    pub async fn set_follow_up_mode(&self, value: crate::types::QueueMode, context: &Context) -> Result<(), SessionError> {
-        self.set_config(move |config| { let previous = encoded(&config.follow_up_mode)?; config.follow_up_mode = value; Ok(HarnessEventPayload::ConfigUpdate { property: "followUpMode".into(), previous, value: encoded(&value)? }) }, context).await
+    pub async fn set_follow_up_mode(
+        &self,
+        value: crate::types::QueueMode,
+        context: &Context,
+    ) -> Result<(), SessionError> {
+        self.set_config(
+            move |config| {
+                let previous = encoded(&config.follow_up_mode)?;
+                config.follow_up_mode = value;
+                Ok(HarnessEventPayload::ConfigUpdate {
+                    property: "followUpMode".into(),
+                    previous,
+                    value: encoded(&value)?,
+                })
+            },
+            context,
+        )
+        .await
     }
 
     /// Pinned `Harness.buildLane`: attach the session, models, hooks, typed tools and shared
     /// config to a lane.
     fn build_lane(&self, name: &str, state: LaneState) -> Arc<Lane> {
-        let mut lane = Lane::new(name.to_owned(), self.session.clone(), state, self.events.clone());
+        let mut lane = Lane::new(
+            name.to_owned(),
+            self.session.clone(),
+            state,
+            self.events.clone(),
+        );
         let closed_error = self.closed_error.clone();
         let lanes = Arc::downgrade(&self.lanes_by_name);
         let events = self.events.clone();
         let hooks = self.hooks.clone();
-        lane.on_fault = Some(Arc::new(move |cause: SessionError, context: &Context| {
-            match lanes.upgrade() {
-                Some(lanes) => fault_harness(&closed_error, &lanes, &events, &hooks, cause, context),
+        lane.on_fault = Some(Arc::new(
+            move |cause: SessionError, context: &Context| match lanes.upgrade() {
+                Some(lanes) => {
+                    fault_harness(&closed_error, &lanes, &events, &hooks, cause, context)
+                }
                 None => harness_fault_error(&cause),
-            }
-        }));
+            },
+        ));
         lane.drive_config = self.config.clone();
         lane.models = self.models.clone();
         lane.hooks = self.hooks.clone();
@@ -508,7 +739,11 @@ pub async fn create_agent_harness(
         hooks: Arc::new(HookRegistry::new(hook_error_reporter(events))),
         lanes_by_name: Arc::new(Mutex::new(BTreeMap::new())),
         tools: Mutex::new(Vec::new()),
-        tool_runner: Arc::new(Mutex::new(Arc::new(super::tools::ToolRunner::<()>::new(Vec::new(), Some(crate::harness::agent_harness::ToolContextSource::Value(())))) as Arc<dyn super::tools::ToolBatchRunner>)),
+        tool_runner: Arc::new(Mutex::new(Arc::new(super::tools::ToolRunner::<()>::new(
+            Vec::new(),
+            Some(crate::harness::agent_harness::ToolContextSource::Value(())),
+        ))
+            as Arc<dyn super::tools::ToolBatchRunner>)),
         tool_context: Some(crate::harness::agent_harness::ToolContextSource::Value(())),
         seed,
         closed_error: Arc::new(Mutex::new(None)),
@@ -550,16 +785,36 @@ fn fault_harness(
     context: &Context,
 ) -> SessionError {
     let error = {
-        let mut closed = closed_error.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(error) = &*closed { return error.clone(); }
+        let mut closed = closed_error
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(error) = &*closed {
+            return error.clone();
+        }
         let error = harness_fault_error(&cause);
         *closed = Some(error.clone());
         error
     };
-    let sealed: Vec<_> = lanes.lock().unwrap_or_else(|error| error.into_inner()).values().cloned().collect();
-    for lane in sealed { lane.seal_faulted(error.clone()); }
+    let sealed: Vec<_> = lanes
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .values()
+        .cloned()
+        .collect();
+    for lane in sealed {
+        lane.seal_faulted(error.clone());
+    }
     hooks.close(error.to_string());
-    let delivery = events.begin_emit_batch(vec![HarnessEvent::new(HarnessEventPayload::Fault { code: "harness_fault".into(), message: "AgentHarness storage or invariant fault".into() }, None)], context.clone());
+    let delivery = events.begin_emit_batch(
+        vec![HarnessEvent::new(
+            HarnessEventPayload::Fault {
+                code: "harness_fault".into(),
+                message: "AgentHarness storage or invariant fault".into(),
+            },
+            None,
+        )],
+        context.clone(),
+    );
     drop(delivery);
     events.close(error.to_string());
     error
@@ -567,7 +822,9 @@ fn fault_harness(
 
 fn retry_policy_value(policy: &maho_ai::utils::retry::RetryPolicy) -> serde_json::Value {
     let mut value = serde_json::json!({ "enabled": policy.enabled, "maxRetries": policy.max_retries, "baseDelayMs": policy.base_delay_ms });
-    if let Some(delay) = policy.max_agent_delay_ms { value["maxAgentDelayMs"] = serde_json::json!(delay); }
+    if let Some(delay) = policy.max_agent_delay_ms {
+        value["maxAgentDelayMs"] = serde_json::json!(delay);
+    }
     value
 }
 
@@ -599,19 +856,42 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
     options: AgentHarnessOptions<TContext>,
     context: &Context,
 ) -> Result<(Harness<TContext>, Vec<OpenOperation>), SessionError> {
-    crate::harness::config::validate_tool_names(&options.tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>())
-        .map_err(session_invariant_error)?;
-    crate::harness::config::validate_retry_policy(&options.retry.clone().unwrap_or_else(crate::harness::config::default_retry_policy))
-        .map_err(session_invariant_error)?;
-    crate::harness::config::validate_compaction_settings(&options.compaction.unwrap_or(crate::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS))
-        .map_err(session_invariant_error)?;
-    let seed = LaneConfiguration {
-        model: LaneModelRef { provider: options.model.provider.clone(), model_id: options.model.id.clone() },
-        thinking_level: options.thinking_level.unwrap_or(maho_ai::types::ModelThinkingLevel::Off),
-        active_tool_names: options
-            .active_tool_names
+    crate::harness::config::validate_tool_names(
+        &options
+            .tools
+            .iter()
+            .map(|tool| tool.name().to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(session_invariant_error)?;
+    crate::harness::config::validate_retry_policy(
+        &options
+            .retry
             .clone()
-            .unwrap_or_else(|| options.tools.iter().map(|tool| tool.name().to_owned()).collect()),
+            .unwrap_or_else(crate::harness::config::default_retry_policy),
+    )
+    .map_err(session_invariant_error)?;
+    crate::harness::config::validate_compaction_settings(
+        &options
+            .compaction
+            .unwrap_or(crate::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS),
+    )
+    .map_err(session_invariant_error)?;
+    let seed = LaneConfiguration {
+        model: LaneModelRef {
+            provider: options.model.provider.clone(),
+            model_id: options.model.id.clone(),
+        },
+        thinking_level: options
+            .thinking_level
+            .unwrap_or(maho_ai::types::ModelThinkingLevel::Off),
+        active_tool_names: options.active_tool_names.clone().unwrap_or_else(|| {
+            options
+                .tools
+                .iter()
+                .map(|tool| tool.name().to_owned())
+                .collect()
+        }),
     };
     // The typed tools and `toolContext` live on the `Harness<TContext>` and are handed to each
     // lane's `ToolRunner`. The context-free drive config carries only the provider-facing tool
@@ -620,14 +900,31 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
         tools: options.tools.iter().map(erase_tool_context).collect(),
         resources: options.resources.clone().unwrap_or_default(),
         stream_options: options.stream_options.clone().unwrap_or_default(),
-        retry_policy: options.retry.clone().unwrap_or_else(crate::harness::config::default_retry_policy),
-        compaction: options.compaction.unwrap_or(crate::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS),
-        steering_mode: options.steering_mode.unwrap_or(crate::types::QueueMode::All),
-        follow_up_mode: options.follow_up_mode.unwrap_or(crate::types::QueueMode::All),
-        tool_execution: options.tool_execution.unwrap_or(crate::harness::session::types::ToolExecutionMode::Parallel),
+        retry_policy: options
+            .retry
+            .clone()
+            .unwrap_or_else(crate::harness::config::default_retry_policy),
+        compaction: options
+            .compaction
+            .unwrap_or(crate::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS),
+        steering_mode: options
+            .steering_mode
+            .unwrap_or(crate::types::QueueMode::All),
+        follow_up_mode: options
+            .follow_up_mode
+            .unwrap_or(crate::types::QueueMode::All),
+        tool_execution: options
+            .tool_execution
+            .unwrap_or(crate::harness::session::types::ToolExecutionMode::Parallel),
         tool_context: None,
-        system_prompt: options.system_prompt.clone().map(|prompt| resolve_system_prompt(prompt, options.tool_context.clone())),
-        to_provider_messages: options.to_provider_messages.clone().unwrap_or_else(|| default_drive_config().to_provider_messages),
+        system_prompt: options
+            .system_prompt
+            .clone()
+            .map(|prompt| resolve_system_prompt(prompt, options.tool_context.clone())),
+        to_provider_messages: options
+            .to_provider_messages
+            .clone()
+            .unwrap_or_else(|| default_drive_config().to_provider_messages),
         entry_projectors: options.entry_projectors.clone().unwrap_or_default(),
     };
     let events = HarnessEventBus::new();
@@ -638,7 +935,11 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
         hooks: Arc::new(HookRegistry::new(hook_error_reporter(events))),
         lanes_by_name: Arc::new(Mutex::new(BTreeMap::new())),
         tools: Mutex::new(options.tools.clone()),
-        tool_runner: Arc::new(Mutex::new(Arc::new(super::tools::ToolRunner::new(options.tools.clone(), options.tool_context.clone())) as Arc<dyn super::tools::ToolBatchRunner>)),
+        tool_runner: Arc::new(Mutex::new(Arc::new(super::tools::ToolRunner::new(
+            options.tools.clone(),
+            options.tool_context.clone(),
+        ))
+            as Arc<dyn super::tools::ToolBatchRunner>)),
         tool_context: options.tool_context.clone(),
         seed,
         closed_error: Arc::new(Mutex::new(None)),
@@ -646,9 +947,10 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
         config: Arc::new(Mutex::new(config)),
         session_closed: Mutex::new(false),
     };
-    let restored = crate::harness::runtime::restore::restore_session(options.session.as_ref(), context)
-        .await
-        .map_err(|error| harness_fault_error(&error))?;
+    let restored =
+        crate::harness::runtime::restore::restore_session(options.session.as_ref(), context)
+            .await
+            .map_err(|error| harness_fault_error(&error))?;
     let open: Vec<OpenOperation> = restored
         .iter()
         .filter_map(|(lane, state)| {
@@ -657,12 +959,18 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
                 operation_id: operation.meta.operation_id.clone(),
                 kind: operation.meta.intent.kind(),
                 started_at: operation.meta.started_at,
-                aborting: matches!(operation.state.operation_scope_of().control, Control::CancelRequested { .. }),
+                aborting: matches!(
+                    operation.state.operation_scope_of().control,
+                    Control::CancelRequested { .. }
+                ),
             })
         })
         .collect();
     {
-        let mut lanes = harness.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner());
+        let mut lanes = harness
+            .lanes_by_name
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         for (name, state) in restored {
             let lane = harness.build_lane(&name, state);
             lanes.insert(name, lane);

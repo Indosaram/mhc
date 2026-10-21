@@ -834,7 +834,7 @@ pub struct LaneState {
 #[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum PendingEntry {
     Message {
-        payload: AgentMessage,
+        payload: Box<AgentMessage>,
     },
     Custom {
         custom_type: String,

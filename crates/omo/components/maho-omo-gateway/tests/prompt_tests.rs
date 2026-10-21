@@ -39,6 +39,8 @@ impl GatewayDeliveryEnqueueSeam for MockEnqueueSeam {
 fn make_before_agent_start_event(system_prompt: &str) -> ExtensionEvent {
     ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {
         prompt: "hello".into(),
+        trigger: "prompt".into(),
+        preview: false,
         images: None,
         system_prompt: system_prompt.into(),
         system_prompt_options: BuildSystemPromptOptions::default(),

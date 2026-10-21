@@ -1,19 +1,54 @@
 //! Port of senpi packages/ai/src/utils/abort.ts, plus the `AbortController`/`AbortSignal`
 //! primitives the TS code takes from the platform.
 
+use std::any::Any;
 use std::future::Future;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio_util::sync::CancellationToken;
+
+/// An error's native payload, shared by clones just like a JS error object.
+#[derive(Clone)]
+struct AbortPayload(Arc<dyn Any + Send + Sync>);
+
+impl std::fmt::Debug for AbortPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AbortPayload")
+    }
+}
+
+impl PartialEq for AbortPayload {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for AbortPayload {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbortReason {
     pub name: String,
     pub message: String,
+    payload: Option<AbortPayload>,
 }
 
 impl AbortReason {
     pub fn new(name: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { name: name.into(), message: message.into() }
+        Self {
+            name: name.into(),
+            message: message.into(),
+            payload: None,
+        }
+    }
+
+    /// Retain a typed error without introducing dependencies on its owning crate.
+    pub fn with_payload<T: Send + Sync + 'static>(mut self, payload: T) -> Self {
+        self.payload = Some(AbortPayload(Arc::new(payload)));
+        self
+    }
+
+    /// Recover the original native error carried by this reason (including after cloning).
+    pub fn payload<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.payload.as_ref()?.0.downcast_ref()
     }
 
     /// The DOM default reason for `controller.abort()` without an argument.
@@ -34,7 +69,8 @@ type Listener = Box<dyn FnOnce(&AbortReason) + Send>;
 
 #[derive(Default)]
 struct SignalState {
-    reason: Option<AbortReason>,
+    reason: Option<Arc<AbortReason>>,
+    cancellation_order: Option<u64>,
     listeners: Vec<(u64, Listener)>,
     next_id: u64,
 }
@@ -49,9 +85,21 @@ pub struct AbortSignal {
     inner: Arc<SignalInner>,
 }
 
+#[derive(Clone)]
+pub struct WeakAbortSignal {
+    inner: Weak<SignalInner>,
+}
+impl WeakAbortSignal {
+    pub fn upgrade(&self) -> Option<AbortSignal> {
+        self.inner.upgrade().map(|inner| AbortSignal { inner })
+    }
+}
+
 impl std::fmt::Debug for AbortSignal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AbortSignal").field("aborted", &self.aborted()).finish()
+        f.debug_struct("AbortSignal")
+            .field("aborted", &self.aborted())
+            .finish()
     }
 }
 
@@ -60,11 +108,19 @@ pub struct ListenerId(u64);
 
 impl AbortSignal {
     fn new() -> Self {
-        Self { inner: Arc::new(SignalInner { state: Mutex::new(SignalState::default()), token: CancellationToken::new() }) }
+        Self {
+            inner: Arc::new(SignalInner {
+                state: Mutex::new(SignalState::default()),
+                token: CancellationToken::new(),
+            }),
+        }
     }
 
     fn state(&self) -> MutexGuard<'_, SignalState> {
-        self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn aborted(&self) -> bool {
@@ -77,7 +133,19 @@ impl AbortSignal {
     }
 
     pub fn reason(&self) -> Option<AbortReason> {
+        self.state().reason.as_deref().cloned()
+    }
+
+    pub fn reason_arc(&self) -> Option<Arc<AbortReason>> {
         self.state().reason.clone()
+    }
+
+    pub fn cancellation_order(&self) -> Option<u64> {
+        self.state().cancellation_order
+    }
+
+    pub fn downgrade(&self) -> WeakAbortSignal {
+        WeakAbortSignal { inner: Arc::downgrade(&self.inner) }
     }
 
     /// `signal.throwIfAborted()`.
@@ -90,7 +158,10 @@ impl AbortSignal {
 
     /// `addEventListener("abort", listener, { once: true })`. Listeners added after abort never fire,
     /// matching the platform.
-    pub fn add_abort_listener(&self, listener: impl FnOnce(&AbortReason) + Send + 'static) -> ListenerId {
+    pub fn add_abort_listener(
+        &self,
+        listener: impl FnOnce(&AbortReason) + Send + 'static,
+    ) -> ListenerId {
         let mut state = self.state();
         let id = state.next_id;
         state.next_id += 1;
@@ -101,7 +172,9 @@ impl AbortSignal {
     }
 
     pub fn remove_abort_listener(&self, id: ListenerId) {
-        self.state().listeners.retain(|(listener_id, _)| *listener_id != id.0);
+        self.state()
+            .listeners
+            .retain(|(listener_id, _)| *listener_id != id.0);
     }
 
     /// Resolves once the signal aborts.
@@ -110,12 +183,24 @@ impl AbortSignal {
     }
 
     fn abort_with(&self, reason: AbortReason) {
+        self.abort_arc_with_order(Arc::new(reason), None);
+    }
+
+    fn abort_arc_with_order(&self, reason: Arc<AbortReason>, order: Option<u64>) {
         let listeners = {
             let mut state = self.state();
             if state.reason.is_some() {
                 return;
             }
+            let order = order.or_else(|| {
+                let (context, cancel) = maho_chord::context::with_cancel(
+                    &maho_chord::context::BACKGROUND_CONTEXT,
+                );
+                cancel.cancel_with_reason(reason.clone());
+                context.abort_signal().and_then(|signal| signal.cancellation_order())
+            });
             state.reason = Some(reason.clone());
+            state.cancellation_order = order;
             std::mem::take(&mut state.listeners)
         };
         self.inner.token.cancel();
@@ -138,7 +223,9 @@ impl Default for AbortController {
 
 impl AbortController {
     pub fn new() -> Self {
-        Self { signal: AbortSignal::new() }
+        Self {
+            signal: AbortSignal::new(),
+        }
     }
 
     pub fn signal(&self) -> AbortSignal {
@@ -146,12 +233,21 @@ impl AbortController {
     }
 
     pub fn abort(&self, reason: Option<AbortReason>) {
-        self.signal.abort_with(reason.unwrap_or_else(AbortReason::dom_default));
+        self.signal
+            .abort_with(reason.unwrap_or_else(AbortReason::dom_default));
+    }
+
+    pub fn abort_arc_with_order(&self, reason: Option<Arc<AbortReason>>, order: Option<u64>) {
+        self.signal.abort_arc_with_order(
+            reason.unwrap_or_else(|| Arc::new(AbortReason::dom_default())), order,
+        );
     }
 }
 
 fn abort_reason(signal: &AbortSignal) -> AbortReason {
-    signal.reason().unwrap_or_else(|| AbortReason::new("AbortError", "The operation was aborted"))
+    signal
+        .reason()
+        .unwrap_or_else(|| AbortReason::new("AbortError", "The operation was aborted"))
 }
 
 /// Create an operation-local signal for public APIs whose signal is optional.
@@ -162,7 +258,10 @@ pub fn operation_signal(signal: Option<AbortSignal>) -> AbortSignal {
 /// Stop waiting for an operation when its signal aborts. The abandoned operation future is
 /// dropped (Rust futures are inert when not polled), which subsumes the TS "keep observing the
 /// abandoned promise" handling.
-pub async fn race_with_abort_signal<T>(operation: impl Future<Output = T>, signal: &AbortSignal) -> Result<T, AbortReason> {
+pub async fn race_with_abort_signal<T>(
+    operation: impl Future<Output = T>,
+    signal: &AbortSignal,
+) -> Result<T, AbortReason> {
     if signal.aborted() {
         return Err(abort_reason(signal));
     }
@@ -181,14 +280,18 @@ mod tests {
     #[tokio::test]
     async fn race_resolves_with_operation_value() {
         let controller = AbortController::new();
-        assert_eq!(race_with_abort_signal(async { 7 }, &controller.signal()).await, Ok(7));
+        assert_eq!(
+            race_with_abort_signal(async { 7 }, &controller.signal()).await,
+            Ok(7)
+        );
     }
 
     #[tokio::test]
     async fn race_rejects_immediately_when_already_aborted() {
         let controller = AbortController::new();
         controller.abort(Some(AbortReason::new("Error", "stop")));
-        let result = race_with_abort_signal(std::future::pending::<()>(), &controller.signal()).await;
+        let result =
+            race_with_abort_signal(std::future::pending::<()>(), &controller.signal()).await;
         assert_eq!(result, Err(AbortReason::new("Error", "stop")));
     }
 

@@ -67,6 +67,74 @@ fn selectors(models: &[maho_ai::model::Model]) -> Vec<String> {
 const STARTUP: SessionReason = SessionReason::Startup;
 
 #[tokio::test]
+async fn default_walk_shares_failures_across_lanes_and_keeps_all_failures() {
+    let harness = start(
+        json!({}),
+        Arc::new(TestRegistry::new(fixture(&[OPUS, FABLE, SOL_61, ASTRA]))
+            .dead_provider("anthropic")
+            .dead_provider("chatgpt-subscription")),
+        "session-default", ExtensionMode::Rpc, STARTUP, Some("settings"),
+    ).await;
+    assert!(harness.session_models().is_empty());
+    assert_eq!(harness.registry.calls(), ["anthropic", "chatgpt-subscription"]);
+    assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
+    assert_eq!(harness.first_details()["authFailed"].as_array().map(Vec::len), Some(2));
+}
+
+#[tokio::test]
+async fn default_walk_keeps_request_failures_scoped_to_the_selector() {
+    let harness = start(
+        json!({}),
+        Arc::new(TestRegistry::new(fixture(&[OPUS, FABLE]))
+            .broken_model("anthropic", "claude-opus-5-5")),
+        "session-default", ExtensionMode::Rpc, STARTUP, Some("settings"),
+    ).await;
+    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-fable-5-1"]);
+    assert_eq!(harness.first_details()["profile"], json!("daily-heavy"));
+    assert_eq!(harness.registry.calls(), ["anthropic", "anthropic/claude-opus-5-5", "anthropic", "anthropic/claude-fable-5-1"]);
+}
+
+#[tokio::test]
+async fn unset_chatgpt_only_uses_geeky_normal() {
+    let harness = start(
+        json!({}), Arc::new(TestRegistry::new(fixture(&[SOL_61, UNRELATED]))),
+        "session-default", ExtensionMode::Rpc, STARTUP, Some("settings"),
+    ).await;
+    assert_eq!(selectors(&harness.session_models()), ["chatgpt-subscription/gpt-6.1-sol"]);
+    assert_eq!(harness.first_details()["profile"], json!("geeky-normal"));
+}
+
+#[tokio::test]
+async fn retired_profile_defaults_on_each_session_and_logs_once_per_registration() {
+    let mut harness = harness_for(
+        json!({"model_profile": "recommended"}),
+        Arc::new(TestRegistry::new(fixture(&[SOL_61, GLM]))),
+        "session-1", ExtensionMode::Rpc,
+    );
+    harness.start(STARTUP, Some("settings")).await;
+    harness.ctx = support::context_with(
+        harness.registry.clone(), "session-2", ExtensionMode::Rpc,
+        "/project", harness.agent_dir.clone(), harness.logger.clone(),
+    );
+    harness.start(STARTUP, Some("settings")).await;
+    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3", "zai/glm-5.3"]);
+    assert_eq!(harness.logger.lines().iter().filter(|line| line.contains("is retired")).count(), 1);
+    assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
+}
+
+#[tokio::test]
+async fn user_defined_recommended_is_not_retired() {
+    let harness = start(
+        json!({"model_profile": "recommended", "model_profiles": {"recommended": {"models": ["zai/glm-5.3"]}}}),
+        Arc::new(TestRegistry::new(fixture(&[OPUS, GLM]))),
+        "session-1", ExtensionMode::Rpc, STARTUP, Some("settings"),
+    ).await;
+    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(harness.first_details()["profile"], json!("recommended"));
+    assert!(!harness.logger.lines().iter().any(|line| line.contains("is retired")));
+}
+
+#[tokio::test]
 async fn a_tui_session_applies_nothing_for_unset_lane_and_pin_configs() {
     for config in [json!({}), json!({"model_profile": "daily-heavy"}), json!({"model_profile": "anthropic/claude-opus-5-5"})] {
         let harness = start(
@@ -85,7 +153,7 @@ async fn a_tui_session_applies_nothing_for_unset_lane_and_pin_configs() {
 }
 
 #[tokio::test]
-async fn an_unset_model_profile_applies_the_recommended_ladder() {
+async fn an_unset_model_profile_applies_daily_normal() {
     let harness = start(
         json!({}),
         Arc::new(TestRegistry::new(fixture(&[OPUS, KIMI]))),
@@ -98,13 +166,13 @@ async fn an_unset_model_profile_applies_the_recommended_ladder() {
     assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
     assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Medium]);
     assert_eq!(harness.first_custom_type(), MODEL_PROFILE_APPLIED_TYPE);
-    assert_eq!(harness.first_details()["profile"], json!("recommended"));
+    assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
     assert_eq!(harness.first_details()["model"], json!("anthropic/claude-opus-5-5"));
     assert_eq!(harness.first_details()["reasoning"], json!("medium"));
 }
 
 #[tokio::test]
-async fn a_blank_model_profile_applies_the_recommended_ladder() {
+async fn a_blank_model_profile_applies_daily_normal() {
     let harness = start(
         json!({"model_profile": "   "}),
         Arc::new(TestRegistry::new(fixture(&[OPUS]))),
@@ -115,7 +183,7 @@ async fn a_blank_model_profile_applies_the_recommended_ladder() {
     )
     .await;
     assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-opus-5-5"]);
-    assert_eq!(harness.first_details()["profile"], json!("recommended"));
+    assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
 }
 
 #[tokio::test]
@@ -149,7 +217,7 @@ async fn the_claude_subscription_lane_wins_over_the_api_lane() {
 }
 
 #[tokio::test]
-async fn gpt_61_sol_medium_is_applied_ahead_of_glm() {
+async fn daily_normal_glm_is_applied_ahead_of_gpt_61_sol() {
     let harness = start(
         json!({}),
         Arc::new(TestRegistry::new(fixture(&[SOL, SOL_61, GLM, UNRELATED]))),
@@ -159,12 +227,12 @@ async fn gpt_61_sol_medium_is_applied_ahead_of_glm() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["chatgpt-subscription/gpt-6.1-sol"]);
-    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Medium]);
+    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
+    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Max]);
 }
 
 #[tokio::test]
-async fn copilot_gpt_6_sol_medium_is_the_fallback_rung() {
+async fn daily_normal_glm_is_applied_ahead_of_copilot_sol() {
     let harness = start(
         json!({}),
         Arc::new(TestRegistry::new(fixture(&[SOL, GLM, UNRELATED]))),
@@ -174,7 +242,7 @@ async fn copilot_gpt_6_sol_medium_is_the_fallback_rung() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["github-copilot/gpt-6-sol"]);
+    assert_eq!(selectors(&harness.session_models()), ["zai/glm-5.3"]);
 }
 
 #[tokio::test]
@@ -563,7 +631,7 @@ async fn every_provider_failing_credentials_emits_one_unavailable_notice_listing
     assert!(harness.session_thinking_levels().is_empty());
     assert_eq!(harness.registry.calls(), ["anthropic", "moonshotai"]);
     assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNAVAILABLE_TYPE);
-    assert_eq!(harness.first_details()["profile"], json!("recommended"));
+    assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
     assert_eq!(harness.first_details()["authFailed"].as_array().map(Vec::len), Some(2));
     assert!(!harness.logger.lines().iter().any(|line| line.contains(PRIVATE_MARKER)));
 }
@@ -845,7 +913,7 @@ async fn a_registry_reporting_the_runtime_source_turns_rotation_off_so_the_hook_
                 .with_accounts("anthropic-subscription", vec![support::account("expired", false), support::account("healthy", false)])
                 .with_auth_status(
                     "anthropic-subscription",
-                    ProviderAuthStatus { configured: true, source: Some("runtime".into()), label: None },
+                    ProviderAuthStatus { ambient: false, configured: true, source: Some("runtime".into()), label: None },
                 ),
         ),
         "session-1",

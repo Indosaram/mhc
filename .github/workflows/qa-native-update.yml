@@ -1,0 +1,212 @@
+name: qa-native-update
+
+on:
+  push:
+    branches: ["qa-native-update/**"]
+  workflow_dispatch:
+    inputs:
+      old_version:
+        description: Candidate version A (old installed baseline), e.g. 2026.10.20.1
+        required: true
+      new_version:
+        description: Candidate version B (new available release), e.g. 2026.10.20.2
+        required: true
+
+concurrency:
+  group: qa-native-update-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  PROTOC_VERSION: "29.3"
+
+jobs:
+  qa-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            runner: ubuntu-24.04
+            protoc: linux-x86_64
+            ext: tar.gz
+          - target: macos-aarch64
+            runner: macos-15
+            protoc: osx-aarch_64
+            ext: tar.gz
+          - target: windows-x86_64
+            runner: windows-2025
+            protoc: win64
+            exe: .exe
+            ext: zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXE: ${{ matrix.exe }}
+      EXT: ${{ matrix.ext }}
+      VER_A: ${{ github.event.inputs.old_version || '2026.10.20.1' }}
+      VER_B: ${{ github.event.inputs.new_version || '2026.10.20.2' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: free disk
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - name: rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          save-if: false
+
+      - name: protoc
+        run: |
+          curl -sSLo "$RUNNER_TEMP/protoc.zip" "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${{ matrix.protoc }}.zip"
+          unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          echo "PROTOC=$RUNNER_TEMP/protoc/bin/protoc$EXE" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/protoc/bin/protoc$EXE" --version
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Windows'
+        with:
+          node-version: '22'
+      - name: install real Windows ConPTY adapter
+        if: runner.os == 'Windows'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/updater-pty" --no-audit --no-fund --ignore-scripts --include=optional @lydell/node-pty@1.2.0-beta.15
+          node -e 'const {createRequire}=require("node:module"); const r=createRequire(process.argv[1]); r("@lydell/node-pty"); r.resolve("@lydell/node-pty-win32-x64");' "$(cygpath -w "$RUNNER_TEMP/updater-pty/package.json")"
+          echo "MHC_QA_NODE_PTY_MODULE=$(cygpath -w "$RUNNER_TEMP/updater-pty/package.json")" >> "$GITHUB_ENV"
+
+      - name: prepare native installed-validation fault
+        run: |
+          bun scripts/qa-native-update-fixture.mjs --write-rollback-probe "$RUNNER_TEMP/rollback-probe.rs"
+          rustc --edition 2024 "$RUNNER_TEMP/rollback-probe.rs" -o "$RUNNER_TEMP/rollback-probe$EXE"
+
+      - name: build candidate binaries A and B
+        run: |
+          if [ -z "$VER_A" ] || [ -z "$VER_B" ] || [ "$VER_A" = "$VER_B" ]; then
+            echo "old_version and new_version must be distinct and non-empty" >&2
+            exit 1
+          fi
+          export MHC_BUILD_VERSION="$VER_A"
+          cargo build --release --locked -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
+          test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$VER_A"
+          test -f "target/release/mhc-launcher$EXE"
+          mkdir -p target/candidate-A target/candidate-B
+          cp target/release/mhc$EXE target/candidate-A/
+
+          export MHC_BUILD_VERSION="$VER_B"
+          touch crates/maho-cli/src/main.rs
+          cargo build --release --locked -p maho-cli --bin mhc
+          test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$VER_B"
+          cp target/release/mhc$EXE target/candidate-B/
+
+      - name: materialize browser skill runtime
+        run: |
+          commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)')
+          git init -q "$RUNNER_TEMP/omowright"
+          git -C "$RUNNER_TEMP/omowright" fetch -q --depth 1 https://github.com/code-yeongyu/omowright.git "$commit"
+          git -C "$RUNNER_TEMP/omowright" checkout -q FETCH_HEAD
+          (cd "$RUNNER_TEMP/omowright" && bun install --frozen-lockfile --ignore-scripts --production)
+          node assets/omo-latest/stage-omowright-runtime.mjs --source "$RUNNER_TEMP/omowright" --target "$RUNNER_TEMP/omowright-runtime"
+
+      - name: package candidate distributions A and B
+        run: |
+          assert_archive_has_both_executables() {
+            archive="$1"; top="$2"
+            if [ "${archive##*.}" = zip ]; then
+              listing=$(7z l -slt "$archive" | tr '\\' '/' | tr -d '\r')
+              for exe in "mhc$EXE" "mhc-launcher$EXE"; do printf '%s\n' "$listing" | grep -Fxq "Path = $top/$exe" || { echo "$archive lacks $top/$exe" >&2; exit 1; }; done
+            else
+              listing=$(tar -tzf "$archive")
+              for exe in "mhc$EXE" "mhc-launcher$EXE"; do printf '%s\n' "$listing" | grep -Fxq "$top/$exe" || { echo "$archive lacks $top/$exe" >&2; exit 1; }; done
+            fi
+          }
+          name="mhc-${{ matrix.target }}"
+          for letter in A B; do
+            if [ "$letter" = A ]; then ver="$VER_A"; else ver="$VER_B"; fi
+            mkdir -p "dist/candidate-$letter"
+            cp "target/candidate-$letter/mhc$EXE" "target/release/mhc$EXE"
+            bun tools/package-native.mjs --binary "target/release/mhc$EXE" --launcher-binary "target/release/mhc-launcher$EXE" --output "dist/candidate-$letter/$name" --skill-source latest \
+              --git-bash-binary "target/release/omo-git-bash$EXE" --desktop-engine-binary "target/release/senpi-desktop-engine$EXE" \
+              --omowright-runtime "$RUNNER_TEMP/omowright-runtime"
+            test -x "dist/candidate-$letter/$name/senpi-desktop-engine$EXE"
+            test -x "dist/candidate-$letter/$name/mhc-launcher$EXE"
+            bun tools/package-native.mjs --verify-only "dist/candidate-$letter/$name"
+            test "$("dist/candidate-$letter/$name/mhc$EXE" --version | tr -d '\r')" = "$ver"
+            test "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).versions.mhc' "dist/candidate-$letter/$name/manifest.json" | tr -d '\r')" = "$ver"
+            if [ "$RUNNER_OS" = Windows ]; then
+              (cd "dist/candidate-$letter" && 7z a -tzip -bso0 "${name}.zip" "$name" && sha256sum "${name}.zip" > "${name}.zip.sha256")
+              assert_archive_has_both_executables "dist/candidate-$letter/${name}.zip" "$name"
+            else
+              tar -C "dist/candidate-$letter" -czf "dist/candidate-$letter/${name}.tar.gz" "$name"
+              (cd "dist/candidate-$letter" && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+              assert_archive_has_both_executables "dist/candidate-$letter/${name}.tar.gz" "$name"
+            fi
+          done
+
+      - name: run native update QA harness
+        run: |
+          name="mhc-${{ matrix.target }}"
+          pkg_a="dist/candidate-A/${name}.${EXT}"
+          pkg_b="dist/candidate-B/${name}.${EXT}"
+          evidence_dir="evidence/qa-native-update/${{ matrix.target }}"
+          mkdir -p "$evidence_dir"
+          bun scripts/qa-native-update.mjs --old-package "$pkg_a" --new-package "$pkg_b" --old-version "$VER_A" --new-version "$VER_B" --evidence-dir "$evidence_dir/source-baseline" --target "${{ matrix.target }}" --rollback-probe "$RUNNER_TEMP/rollback-probe$EXE"
+
+      - name: migrate latest published flat release through the installer, then update to candidate B
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          tag=$(gh release view --repo Indosaram/mhc --json tagName --jq .tagName)
+          mkdir -p published
+          gh release download "$tag" --repo Indosaram/mhc --dir published --pattern "mhc-${TARGET}.${EXT}" --pattern "mhc-${TARGET}.${EXT}.sha256"
+          printf '%s\n' "$tag" > published/source-tag.txt
+          if [ "$RUNNER_OS" = Windows ]; then
+            (cd published && sha256sum -c "mhc-${TARGET}.${EXT}.sha256")
+          else
+            (cd published && shasum -a 256 -c "mhc-${TARGET}.${EXT}.sha256")
+          fi
+          bun scripts/qa-native-update.mjs --upgrade-only \
+            --old-package "published/mhc-${TARGET}.${EXT}" --old-version "${tag#v}" \
+            --intermediate-package "dist/candidate-A/mhc-${TARGET}.${EXT}" --intermediate-version "$VER_A" \
+            --new-package "dist/candidate-B/mhc-${TARGET}.${EXT}" --new-version "$VER_B" \
+            --target "$TARGET" --evidence-dir "evidence/qa-native-update/$TARGET/published-baseline"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-packages-A-${{ matrix.target }}
+          path: |
+            dist/candidate-A/*.tar.gz*
+            dist/candidate-A/*.zip*
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-packages-B-${{ matrix.target }}
+          path: |
+            dist/candidate-B/*.tar.gz*
+            dist/candidate-B/*.zip*
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: qa-evidence-${{ matrix.target }}
+          path: |
+            evidence/qa-native-update/${{ matrix.target }}/**
+          retention-days: 14

@@ -1,5 +1,5 @@
 use super::errors::ClientError;
-use serde_json::Value;
+use maho_chord::types::JsonValue as Value;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
