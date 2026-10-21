@@ -93,7 +93,8 @@ fn still_drops_unsigned_empty_blocks() {
 
     let turn = model_turn(&contents);
     assert_eq!(turn["parts"].as_array().expect("parts is an array").len(), 1);
-    assert!(turn["parts"][0].get("functionCall").is_some());
+    assert!(turn["parts"][0].get("functionCall").is_none());
+    assert_eq!(turn["parts"][0]["text"], json!("[Tool Call: bash (id: call_1)]\nArguments: {\n  \"command\": \"ls\"\n}"));
 }
 
 #[test]
@@ -111,6 +112,7 @@ fn still_drops_signed_empty_blocks_from_a_different_provider_or_model() {
 
     let turn = model_turn(&contents);
     assert_eq!(turn["parts"].as_array().expect("parts is an array").len(), 1);
-    assert!(turn["parts"][0].get("functionCall").is_some());
+    assert!(turn["parts"][0].get("functionCall").is_none());
+    assert_eq!(turn["parts"][0]["text"], json!("[Tool Call: bash (id: call_1)]\nArguments: {\n  \"command\": \"ls\"\n}"));
     assert!(!turn.to_string().contains(VALID_SIG));
 }

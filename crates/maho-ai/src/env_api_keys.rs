@@ -54,10 +54,10 @@ const ENV_MAP: &[(&str, &str)] = &[
     ("together", "TOGETHER_API_KEY"),
     ("baseten", "BASETEN_API_KEY"),
     ("bai", "BAI_API_KEY"),
-    ("meta", "META_API_KEY"),
     ("opencode", "OPENCODE_API_KEY"),
     ("opencode-go", "OPENCODE_API_KEY"),
     ("kimi-coding", "KIMI_API_KEY"),
+    ("meta", "META_API_KEY"),
     ("cloudflare-workers-ai", "CLOUDFLARE_API_KEY"),
     ("cloudflare-ai-gateway", "CLOUDFLARE_API_KEY"),
     ("xiaomi", "XIAOMI_API_KEY"),
@@ -66,6 +66,39 @@ const ENV_MAP: &[(&str, &str)] = &[
     ("xiaomi-token-plan-sgp", "XIAOMI_TOKEN_PLAN_SGP_API_KEY"),
 ];
 
+/// Every provider id with an API-key environment mapping, without reading any values.
+pub fn api_key_env_providers() -> Vec<&'static str> {
+    ["github-copilot", "anthropic"]
+        .into_iter()
+        .chain(ENV_MAP.iter().map(|(provider, _)| *provider))
+        .collect()
+}
+
+/// Every credential environment name read by `get_env_api_key`, in upstream insertion order.
+pub fn provider_credential_env_names() -> Vec<&'static str> {
+    let mut names = vec![
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "AWS_PROFILE",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+    ];
+    for provider in api_key_env_providers() {
+        for name in get_api_key_env_vars(provider).into_iter().flatten() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
 /// Env var names that can carry a provider's API key, in lookup order. Only `COPILOT_GITHUB_TOKEN`
 /// counts for GitHub Copilot: generic GitHub tokens are not Copilot credentials.
 pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
@@ -73,9 +106,16 @@ pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
         return Some(vec!["COPILOT_GITHUB_TOKEN"]);
     }
     if provider == "anthropic" {
-        return Some(vec![ANTHROPIC_AUTH_TOKEN_ENV, ANTHROPIC_OAUTH_TOKEN_ENV, ANTHROPIC_API_KEY_ENV]);
+        return Some(vec![
+            ANTHROPIC_AUTH_TOKEN_ENV,
+            ANTHROPIC_OAUTH_TOKEN_ENV,
+            ANTHROPIC_API_KEY_ENV,
+        ]);
     }
-    ENV_MAP.iter().find(|(id, _)| *id == provider).map(|(_, var)| vec![*var])
+    ENV_MAP
+        .iter()
+        .find(|(id, _)| *id == provider)
+        .map(|(_, var)| vec![*var])
 }
 
 fn process_lookup(env: Option<&ProviderEnv>) -> impl Fn(&str) -> Option<String> + '_ {
@@ -97,21 +137,33 @@ pub fn find_env_keys(provider: &str, env: Option<&ProviderEnv>) -> Option<Vec<St
 }
 
 fn has_vertex_adc_credentials(env: Option<&ProviderEnv>, lookup: EnvLookup<'_>) -> bool {
-    if let Some(explicit) = env.and_then(|env| env.get("GOOGLE_APPLICATION_CREDENTIALS")).filter(|p| !p.is_empty()) {
+    if let Some(explicit) = env
+        .and_then(|env| env.get("GOOGLE_APPLICATION_CREDENTIALS"))
+        .filter(|p| !p.is_empty())
+    {
         return Path::new(explicit).exists();
     }
     if let Some(path) = lookup("GOOGLE_APPLICATION_CREDENTIALS") {
         return Path::new(&path).exists();
     }
     dirs::home_dir()
-        .map(|home| home.join(".config").join("gcloud").join("application_default_credentials.json"))
+        .map(|home| {
+            home.join(".config")
+                .join("gcloud")
+                .join("application_default_credentials.json")
+        })
         .is_some_and(|path| path.exists())
 }
 
-pub fn get_env_api_key_with(provider: &str, env: Option<&ProviderEnv>, lookup: EnvLookup<'_>) -> Option<String> {
+pub fn get_env_api_key_with(
+    provider: &str,
+    env: Option<&ProviderEnv>,
+    lookup: EnvLookup<'_>,
+) -> Option<String> {
     if let Some(keys) = find_env_keys_with(provider, lookup) {
         let api_key_env = if provider == "anthropic" {
-            keys.iter().find(|key| key.as_str() != ANTHROPIC_AUTH_TOKEN_ENV)
+            keys.iter()
+                .find(|key| key.as_str() != ANTHROPIC_AUTH_TOKEN_ENV)
         } else {
             keys.first()
         };
@@ -121,7 +173,8 @@ pub fn get_env_api_key_with(provider: &str, env: Option<&ProviderEnv>, lookup: E
     }
 
     if provider == "google-vertex" {
-        let has_project = lookup("GOOGLE_CLOUD_PROJECT").is_some() || lookup("GCLOUD_PROJECT").is_some();
+        let has_project =
+            lookup("GOOGLE_CLOUD_PROJECT").is_some() || lookup("GCLOUD_PROJECT").is_some();
         let has_location = lookup("GOOGLE_CLOUD_LOCATION").is_some();
         if has_vertex_adc_credentials(env, lookup) && has_project && has_location {
             return Some("<authenticated>".into());
@@ -153,8 +206,37 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    #[test]
+    fn credential_names_include_ambient_and_deduplicate_shared_keys() {
+        // Given the names-only credential boundary, when enumerated:
+        let names = provider_credential_env_names();
+        // Then ambient credentials and every provider key are represented once.
+        assert!(names.contains(&"GOOGLE_APPLICATION_CREDENTIALS"));
+        assert!(names.contains(&"AWS_WEB_IDENTITY_TOKEN_FILE"));
+        assert!(names.contains(&"COPILOT_GITHUB_TOKEN"));
+        assert!(!names.contains(&"GH_TOKEN"));
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| **name == "QWEN_TOKEN_PLAN_API_KEY")
+                .count(),
+            1
+        );
+        for provider in api_key_env_providers() {
+            assert!(
+                get_api_key_env_vars(provider)
+                    .into_iter()
+                    .flatten()
+                    .all(|name| names.contains(&name))
+            );
+        }
+    }
+
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
     }
 
     fn lookup_in(map: &BTreeMap<String, String>) -> impl Fn(&str) -> Option<String> + '_ {
@@ -178,16 +260,32 @@ mod tests {
 
     #[test]
     fn resolves_github_copilot_credentials_from_copilot_github_token() {
-        let map = env(&[("COPILOT_GITHUB_TOKEN", "copilot-token"), ("GH_TOKEN", "gh-token"), ("GITHUB_TOKEN", "github-token")]);
-        assert_eq!(keys("github-copilot", &map), Some(vec!["COPILOT_GITHUB_TOKEN".into()]));
-        assert_eq!(api_key("github-copilot", &map).as_deref(), Some("copilot-token"));
+        let map = env(&[
+            ("COPILOT_GITHUB_TOKEN", "copilot-token"),
+            ("GH_TOKEN", "gh-token"),
+            ("GITHUB_TOKEN", "github-token"),
+        ]);
+        assert_eq!(
+            keys("github-copilot", &map),
+            Some(vec!["COPILOT_GITHUB_TOKEN".into()])
+        );
+        assert_eq!(
+            api_key("github-copilot", &map).as_deref(),
+            Some("copilot-token")
+        );
     }
 
     #[test]
     fn resolves_zai_china_coding_plan_credentials_from_zai_coding_cn_api_key() {
         let map = env(&[("ZAI_CODING_CN_API_KEY", "zai-coding-cn-key")]);
-        assert_eq!(keys("zai-coding-cn", &map), Some(vec!["ZAI_CODING_CN_API_KEY".into()]));
-        assert_eq!(api_key("zai-coding-cn", &map).as_deref(), Some("zai-coding-cn-key"));
+        assert_eq!(
+            keys("zai-coding-cn", &map),
+            Some(vec!["ZAI_CODING_CN_API_KEY".into()])
+        );
+        assert_eq!(
+            api_key("zai-coding-cn", &map).as_deref(),
+            Some("zai-coding-cn-key")
+        );
     }
 
     #[test]
@@ -218,22 +316,37 @@ mod tests {
 
     #[test]
     fn reports_anthropic_auth_token_but_preserves_oauth_token_api_key_lookup() {
-        let map = env(&[("ANTHROPIC_AUTH_TOKEN", "auth-token"), ("ANTHROPIC_OAUTH_TOKEN", "oauth-token")]);
-        assert_eq!(keys("anthropic", &map), Some(vec!["ANTHROPIC_AUTH_TOKEN".into(), "ANTHROPIC_OAUTH_TOKEN".into()]));
+        let map = env(&[
+            ("ANTHROPIC_AUTH_TOKEN", "auth-token"),
+            ("ANTHROPIC_OAUTH_TOKEN", "oauth-token"),
+        ]);
+        assert_eq!(
+            keys("anthropic", &map),
+            Some(vec![
+                "ANTHROPIC_AUTH_TOKEN".into(),
+                "ANTHROPIC_OAUTH_TOKEN".into()
+            ])
+        );
         assert_eq!(api_key("anthropic", &map).as_deref(), Some("oauth-token"));
     }
 
     #[test]
     fn does_not_return_anthropic_auth_token_as_an_api_key() {
         let map = env(&[("ANTHROPIC_AUTH_TOKEN", "auth-token")]);
-        assert_eq!(keys("anthropic", &map), Some(vec!["ANTHROPIC_AUTH_TOKEN".into()]));
+        assert_eq!(
+            keys("anthropic", &map),
+            Some(vec!["ANTHROPIC_AUTH_TOKEN".into()])
+        );
         assert_eq!(api_key("anthropic", &map), None);
     }
 
     #[test]
     fn preserves_anthropic_oauth_token_as_an_api_key() {
         let map = env(&[("ANTHROPIC_OAUTH_TOKEN", "oauth-token")]);
-        assert_eq!(keys("anthropic", &map), Some(vec!["ANTHROPIC_OAUTH_TOKEN".into()]));
+        assert_eq!(
+            keys("anthropic", &map),
+            Some(vec!["ANTHROPIC_OAUTH_TOKEN".into()])
+        );
         assert_eq!(api_key("anthropic", &map).as_deref(), Some("oauth-token"));
     }
 
@@ -245,17 +358,35 @@ mod tests {
 
     #[test]
     fn bedrock_and_vertex_ambient_credentials() {
-        assert_eq!(api_key("amazon-bedrock", &env(&[("AWS_PROFILE", "p")])).as_deref(), Some("<authenticated>"));
-        assert_eq!(api_key("amazon-bedrock", &env(&[("AWS_ACCESS_KEY_ID", "a")])), None);
+        assert_eq!(
+            api_key("amazon-bedrock", &env(&[("AWS_PROFILE", "p")])).as_deref(),
+            Some("<authenticated>")
+        );
+        assert_eq!(
+            api_key("amazon-bedrock", &env(&[("AWS_ACCESS_KEY_ID", "a")])),
+            None
+        );
         let dir = tempfile::tempdir().expect("tempdir");
         let creds = dir.path().join("adc.json");
         std::fs::write(&creds, "{}").expect("write");
         let path = creds.to_string_lossy().into_owned();
         let scoped = env(&[("GOOGLE_APPLICATION_CREDENTIALS", &path)]);
-        let map = env(&[("GOOGLE_CLOUD_PROJECT", "p"), ("GOOGLE_CLOUD_LOCATION", "l")]);
-        assert_eq!(get_env_api_key_with("google-vertex", Some(&scoped), &lookup_in(&map)).as_deref(), Some("<authenticated>"));
-        let missing = env(&[("GOOGLE_APPLICATION_CREDENTIALS", "/nonexistent/maho-adc.json")]);
-        assert_eq!(get_env_api_key_with("google-vertex", Some(&missing), &lookup_in(&map)), None);
+        let map = env(&[
+            ("GOOGLE_CLOUD_PROJECT", "p"),
+            ("GOOGLE_CLOUD_LOCATION", "l"),
+        ]);
+        assert_eq!(
+            get_env_api_key_with("google-vertex", Some(&scoped), &lookup_in(&map)).as_deref(),
+            Some("<authenticated>")
+        );
+        let missing = env(&[(
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "/nonexistent/maho-adc.json",
+        )]);
+        assert_eq!(
+            get_env_api_key_with("google-vertex", Some(&missing), &lookup_in(&map)),
+            None
+        );
         assert_eq!(get_api_key_env_vars("unknown-provider"), None);
     }
 
@@ -264,6 +395,9 @@ mod tests {
         let scoped = env(&[("MAHO_AI_UNUSED", "x")]);
         assert_eq!(find_env_keys("unknown-provider", Some(&scoped)), None);
         let scoped = env(&[("BAI_API_KEY", "scoped-bai")]);
-        assert_eq!(get_env_api_key("bai", Some(&scoped)).as_deref(), Some("scoped-bai"));
+        assert_eq!(
+            get_env_api_key("bai", Some(&scoped)).as_deref(),
+            Some("scoped-bai")
+        );
     }
 }

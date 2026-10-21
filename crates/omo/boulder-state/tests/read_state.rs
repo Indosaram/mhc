@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use boulder_state::{BoulderStateError, get_work_for_session, read_boulder_state};
+use boulder_state::{get_work_for_session, read_boulder_state};
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 
@@ -75,7 +75,35 @@ fn no_boulder_file_reads_as_none() {
 }
 
 #[test]
-fn malformed_state_json_is_an_invalid_json_error() {
+fn unreadable_state_returns_empty_queries() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(directory.path().join(".omo/boulder.json")).expect("mkdir");
+    assert_eq!(read_boulder_state(directory.path()).expect("fallback"), None);
+    assert!(boulder_state::get_active_works(directory.path()).expect("fallback").is_empty());
+    assert!(boulder_state::get_work_resume_options(directory.path()).expect("fallback").is_empty());
+    assert_eq!(get_work_for_session(directory.path(), "sess-a").expect("fallback"), None);
+}
+
+#[test]
+fn work_arrays_project_selected_or_newest_without_normalizing_entries() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let mut older = create_work("older", "2026-10-19T00:00:00Z", None);
+    older["session_ids"] = json!(["bare"]);
+    let newer = create_work("newer", "2026-10-20T00:00:00Z", None);
+    for (selected, expected) in [(json!("older"), "older"), (Value::Null, "newer")] {
+        write_state(directory.path(), &json!({"active_work_id": selected, "works": [older, newer]}).to_string());
+        let state = read_boulder_state(directory.path()).expect("read").expect("state");
+        assert_eq!(state.active_work_id(), Some(expected));
+        assert_eq!(boulder_state::get_boulder_works(&state).len(), 2);
+        assert!(state.to_json_value()["works"].is_array());
+        if expected == "older" {
+            assert_eq!(state.session_ids(), vec!["bare".to_string()]);
+        }
+    }
+}
+
+#[test]
+fn malformed_state_json_reads_as_none() {
     // given
     let directory = tempfile::tempdir().expect("tempdir");
     write_state(directory.path(), "{not-json");
@@ -84,11 +112,11 @@ fn malformed_state_json_is_an_invalid_json_error() {
     let result = read_boulder_state(directory.path());
 
     // then
-    assert!(matches!(result, Err(BoulderStateError::InvalidJson { .. })));
+    assert_eq!(result.expect("null fallback"), None);
 }
 
 #[test]
-fn non_object_state_json_is_an_invalid_shape_error() {
+fn non_object_state_json_reads_as_none() {
     // given
     let directory = tempfile::tempdir().expect("tempdir");
     write_state(directory.path(), "[]");
@@ -97,10 +125,7 @@ fn non_object_state_json_is_an_invalid_shape_error() {
     let result = read_boulder_state(directory.path());
 
     // then
-    assert!(matches!(
-        result,
-        Err(BoulderStateError::InvalidShape { .. })
-    ));
+    assert_eq!(result.expect("null fallback"), None);
 }
 
 #[test]

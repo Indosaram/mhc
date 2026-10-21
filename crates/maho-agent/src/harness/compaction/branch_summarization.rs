@@ -1,8 +1,9 @@
 //! Port of senpi packages/agent/src/harness/compaction/branch-summarization.ts.
 
-
 use maho_ai::models::Models;
-use maho_ai::types::{BoxFuture, ContentBlock, Message, SimpleStreamOptions, StopReason, Usage, UserContent};
+use maho_ai::types::{
+    BoxFuture, ContentBlock, Message, SimpleStreamOptions, StopReason, Usage, UserContent,
+};
 use maho_ai::utils::retry::{RetryCallbacks, RetryPolicy};
 
 use crate::harness::context::Context;
@@ -10,12 +11,12 @@ use crate::harness::messages::convert_to_llm;
 use crate::harness::session::types::{Branch, Entry, EntryKind, Session};
 
 use super::compaction::{
-    ModelSummaryRequest, SummaryRequest, create_summary_request_options, estimate_tokens,
-    SUMMARIZATION_SYSTEM_PROMPT,
+    ModelSummaryRequest, SUMMARIZATION_SYSTEM_PROMPT, SummaryRequest,
+    create_summary_request_options, estimate_tokens,
 };
 use super::utils::{
-    FileOperations, compute_file_lists, content_text_for_summary, create_file_ops, extract_file_ops_from_message,
-    format_file_operations, serialize_conversation,
+    FileOperations, compute_file_lists, content_text_for_summary, create_file_ops,
+    extract_file_ops_from_message, format_file_operations, serialize_conversation,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,12 +176,16 @@ fn get_message_from_entry(entry: &Entry) -> Option<crate::types::AgentMessage> {
             }
             Some(message.clone())
         }
-        EntryKind::BranchSummary { from_id, summary, .. } => Some(crate::types::AgentMessage::Custom(
-            crate::types::CustomAgentMessage::BranchSummary(crate::harness::messages::create_branch_summary_message(
-                summary.clone(),
-                from_id.clone(),
-                entry.timestamp,
-            )),
+        EntryKind::BranchSummary {
+            from_id, summary, ..
+        } => Some(crate::types::AgentMessage::Custom(
+            crate::types::CustomAgentMessage::BranchSummary(
+                crate::harness::messages::create_branch_summary_message(
+                    summary.clone(),
+                    from_id.clone(),
+                    entry.timestamp,
+                ),
+            ),
         )),
         EntryKind::Compaction {
             summary,
@@ -211,14 +216,20 @@ pub fn prepare_branch_entries(entries: &[Entry], token_budget: u64) -> BranchPre
         let Some(details) = entry.kind.details() else {
             continue;
         };
-        if let Some(read) = details.get("readFiles").and_then(serde_json::Value::as_array) {
+        if let Some(read) = details
+            .get("readFiles")
+            .and_then(serde_json::Value::as_array)
+        {
             for path in read {
                 if let Some(path) = path.as_str() {
                     file_ops.read.insert(path.to_owned());
                 }
             }
         }
-        if let Some(modified) = details.get("modifiedFiles").and_then(serde_json::Value::as_array) {
+        if let Some(modified) = details
+            .get("modifiedFiles")
+            .and_then(serde_json::Value::as_array)
+        {
             for path in modified {
                 if let Some(path) = path.as_str() {
                     file_ops.edited.insert(path.to_owned());
@@ -234,8 +245,10 @@ pub fn prepare_branch_entries(entries: &[Entry], token_budget: u64) -> BranchPre
 
         let tokens = estimate_tokens(&message);
         if token_budget > 0 && total_tokens + tokens > token_budget {
-            if matches!(entry.kind, EntryKind::Compaction { .. } | EntryKind::BranchSummary { .. })
-                && total_tokens < token_budget * 9 / 10
+            if matches!(
+                entry.kind,
+                EntryKind::Compaction { .. } | EntryKind::BranchSummary { .. }
+            ) && total_tokens < token_budget * 9 / 10
             {
                 messages.insert(0, message);
                 total_tokens += tokens;
@@ -254,12 +267,14 @@ pub fn prepare_branch_entries(entries: &[Entry], token_budget: u64) -> BranchPre
     }
 }
 
-const BRANCH_SUMMARY_PREAMBLE: &str = "The user explored a different conversation branch before returning here.
+const BRANCH_SUMMARY_PREAMBLE: &str =
+    "The user explored a different conversation branch before returning here.
 Summary of that exploration:
 
 ";
 
-const BRANCH_SUMMARY_PROMPT: &str = "Create a structured summary of this conversation branch for context when returning later.
+const BRANCH_SUMMARY_PROMPT: &str =
+    "Create a structured summary of this conversation branch for context when returning later.
 
 Use this EXACT format:
 
@@ -299,7 +314,10 @@ pub async fn generate_branch_summary(
     } else {
         128000
     };
-    let preparation = prepare_branch_entries(entries, context_window.saturating_sub(options.reserve_tokens));
+    let preparation = prepare_branch_entries(
+        entries,
+        context_window.saturating_sub(options.reserve_tokens),
+    );
     let request = ModelSummaryRequest {
         models: &options.models,
         model: &options.model,
@@ -351,7 +369,8 @@ pub async fn generate_branch_summary_with_request(
         }
         (None, _) => BRANCH_SUMMARY_PROMPT.to_owned(),
     };
-    let prompt_text = format!("<conversation>\n{conversation_text}\n</conversation>\n\n{instructions}");
+    let prompt_text =
+        format!("<conversation>\n{conversation_text}\n</conversation>\n\n{instructions}");
 
     let summarization_messages = vec![Message::User(maho_ai::types::UserMessage {
         content: UserContent::Blocks(vec![ContentBlock::text(prompt_text)]),
@@ -361,13 +380,14 @@ pub async fn generate_branch_summary_with_request(
     completion_options.stream.max_tokens = Some(2048);
     let response = request
         .request(
-        &maho_ai::types::Context {
-            system_prompt: Some(SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
-            messages: summarization_messages,
-            tools: None,
-        },
-        create_summary_request_options(completion_options, context),
-        context,
+            &maho_ai::types::Context {
+                active_tool_names: None,
+                system_prompt: Some(SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
+                messages: summarization_messages,
+                tools: None,
+            },
+            create_summary_request_options(completion_options, context),
+            context,
         )
         .await;
     if response.stop_reason == StopReason::Aborted {

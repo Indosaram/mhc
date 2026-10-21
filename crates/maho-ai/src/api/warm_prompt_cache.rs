@@ -5,9 +5,14 @@
 //! the TS control flow without duplicating the Anthropic converter; the default builder is wired
 //! once 11-anthropic lands.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::types::{Context, Model, ProviderHeaders, StreamOptions};
+use crate::types::{
+    Context, Model, ProviderHeaders, SimpleStreamOptions, StreamOptions, UsageCost,
+};
+
+#[path = "prompt_cache_warmers.rs"]
+pub mod prompt_cache_warmers;
 use crate::utils::headers::provider_headers_to_record;
 use crate::utils::prompt_cache_ttl::is_anthropic_api_base_url;
 
@@ -17,15 +22,19 @@ pub struct WarmPromptCacheUsage {
     pub output: u64,
     pub cache_read: u64,
     pub cache_write: u64,
+    pub cost: Option<UsageCost>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WarmPromptCacheResult {
     Unsupported,
-    Supported { usage: WarmPromptCacheUsage, usage_raw: Value },
+    Supported {
+        usage: WarmPromptCacheUsage,
+        usage_raw: Value,
+    },
 }
 
-pub type WarmPromptCacheOptions = StreamOptions;
+pub type WarmPromptCacheOptions = SimpleStreamOptions;
 pub type BuildWarmPromptCacheParams<'a> =
     &'a (dyn Fn(&Model, &Context, &StreamOptions) -> Result<Value, String> + Send + Sync);
 
@@ -35,30 +44,68 @@ pub async fn warm_prompt_cache(
     options: Option<StreamOptions>,
     build_params: BuildWarmPromptCacheParams<'_>,
 ) -> Result<WarmPromptCacheResult, String> {
+    warm_prompt_cache_simple(
+        model,
+        context,
+        SimpleStreamOptions {
+            stream: options.unwrap_or_default(),
+            ..SimpleStreamOptions::default()
+        },
+        build_params,
+    )
+    .await
+}
+
+pub async fn warm_prompt_cache_simple(
+    model: &Model,
+    context: &Context,
+    options: WarmPromptCacheOptions,
+    build_params: BuildWarmPromptCacheParams<'_>,
+) -> Result<WarmPromptCacheResult, String> {
+    if crate::api::openai_responses_prompt_cache::is_openai_responses_prompt_cache_model(model) {
+        if options.stream.cache_retention.or(model.cache_retention)
+            == Some(crate::types::CacheRetention::None)
+        {
+            return Ok(WarmPromptCacheResult::Unsupported);
+        }
+        let Some(warmer) = prompt_cache_warmers::get_prompt_cache_warmer(&model.api) else {
+            return Ok(WarmPromptCacheResult::Unsupported);
+        };
+        let (usage, usage_raw) = warmer(model.clone(), context.clone(), options).await?;
+        return Ok(WarmPromptCacheResult::Supported {
+            usage: WarmPromptCacheUsage {
+                input: usage.input,
+                output: usage.output,
+                cache_read: usage.cache_read,
+                cache_write: usage.cache_write,
+                cost: Some(usage.cost),
+            },
+            usage_raw,
+        });
+    }
     if model.api != "anthropic-messages" || !is_anthropic_api_base_url(&model.base_url) {
         return Ok(WarmPromptCacheResult::Unsupported);
     }
 
-    let options = options.unwrap_or_default();
+    let options = options.stream;
     let headers = provider_headers_to_record(options.request.headers.as_ref());
     let mut params = build_params(model, context, &options)?;
-    if let Some(transformed) = options.request.apply_payload_hook(
+    if let Some(transformed) = options
+        .request
+        .apply_payload_hook(
             &params,
             model,
             Some(&crate::types::ProviderRequestMetadata {
                 model: model.clone(),
                 headers: options.request.headers.clone().unwrap_or_default(),
             }),
-    ).await? {
+        )
+        .await?
+    {
         params = transformed;
     }
 
-    let mut sanitized = params.as_object().cloned().unwrap_or_else(Map::new);
-    sanitized.remove("stream");
-    sanitized.remove("thinking");
-    sanitized.remove("output_config");
-    sanitized.remove("tool_choice");
-    sanitized.insert("max_tokens".into(), Value::from(0));
+    let sanitized = sanitize_warm_prompt_cache_params(&params);
 
     let url = format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
     let client = options.request.fetch.clone().unwrap_or_default();
@@ -100,25 +147,59 @@ pub async fn warm_prompt_cache(
         }
     }
 
-    let response = client
-        .post(&url)
-        .headers(request_headers)
-        .json(&json!(sanitized))
-        .send()
+    request_headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    let operation = async {
+        let response = crate::utils::gzip_request_body::send_with_gzip_request_body(
+            &client,
+            &url,
+            request_headers,
+            json!(sanitized).to_string(),
+            crate::utils::prompt_cache_ttl::get_anthropic_compat(model).supports_gzip_request_body,
+        )
         .await
         .map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("{status}: {body}"));
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.map_err(|error| error.to_string())?;
+            return Err(format!("{status}: {body}"));
+        }
+        response
+            .json::<Value>()
+            .await
+            .map_err(|error| error.to_string())
+    };
+    let timeout_ms = options.request.timeout_ms.unwrap_or(600_000);
+    let timed = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), operation);
+    let body = if let Some(signal) = &options.request.signal {
+        crate::utils::abort::race_with_abort_signal(timed, signal)
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        timed.await
     }
-    let body: Value = response.json().await.map_err(|error| error.to_string())?;
+    .map_err(|_| format!("Request timed out after {timeout_ms}ms"))??;
     let usage_raw = body.get("usage").cloned().unwrap_or(Value::Null);
     let usage = WarmPromptCacheUsage {
-        input: usage_raw.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
-        output: usage_raw.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
-        cache_read: usage_raw.get("cache_read_input_tokens").and_then(Value::as_u64).unwrap_or(0),
-        cache_write: usage_raw.get("cache_creation_input_tokens").and_then(Value::as_u64).unwrap_or(0),
+        input: usage_raw
+            .get("input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        output: usage_raw
+            .get("output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        cache_read: usage_raw
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        cache_write: usage_raw
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        cost: None,
     };
     Ok(WarmPromptCacheResult::Supported { usage, usage_raw })
 }
@@ -154,7 +235,9 @@ mod tests {
     use super::*;
 
     fn model(api: &str, base_url: &str) -> Model {
-        let mut model = crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("models")[0]
+            .clone();
         model.api = api.into();
         model.base_url = base_url.into();
         model
@@ -168,9 +251,10 @@ mod tests {
             ("anthropic-messages", "https://example.com"),
             ("anthropic-messages", "https://openrouter.ai/api/v1"),
         ] {
-            let result = warm_prompt_cache(&model(api, base_url), &Context::default(), None, &builder)
-                .await
-                .expect("result");
+            let result =
+                warm_prompt_cache(&model(api, base_url), &Context::default(), None, &builder)
+                    .await
+                    .expect("result");
             assert_eq!(result, WarmPromptCacheResult::Unsupported);
         }
     }
@@ -197,12 +281,40 @@ mod tests {
     #[test]
     fn merged_headers_let_options_override_model_headers() {
         let mut model = model("anthropic-messages", "https://api.anthropic.com");
-        model.headers = Some([("anthropic-beta".to_owned(), "model".to_owned())].into_iter().collect());
+        model.headers = Some(
+            [("anthropic-beta".to_owned(), "model".to_owned())]
+                .into_iter()
+                .collect(),
+        );
         let mut options = StreamOptions::default();
         options.request.headers = Some(
-            [("anthropic-beta".to_owned(), Some("options".to_owned()))].into_iter().collect(),
+            [("anthropic-beta".to_owned(), Some("options".to_owned()))]
+                .into_iter()
+                .collect(),
         );
         let headers = headers_for_warm_prompt_cache(&model, &options);
-        assert_eq!(headers.get("anthropic-beta"), Some(&Some("options".to_owned())));
+        assert_eq!(
+            headers.get("anthropic-beta"),
+            Some(&Some("options".to_owned()))
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_warmer_options_respect_disabled_model_cache_without_building() {
+        // Given
+        let mut model = model("openai-responses", "https://api.openai.com/v1");
+        model.compat = Some(crate::model::ModelCompat(serde_json::from_value(json!({"supportsExplicitPromptCacheMode":true})).expect("compat")));
+        model.cache_retention = Some(crate::types::CacheRetention::None);
+        let options = WarmPromptCacheOptions {
+            reasoning: Some(crate::types::ThinkingLevel::High),
+            service_tier: Some(crate::types::ServiceTierPreference::Priority),
+            ..Default::default()
+        };
+
+        // When
+        let result = warm_prompt_cache_simple(&model, &Context::default(), options, &|_, _, _| panic!("disabled cache must not build a request")).await.expect("unsupported cache");
+
+        // Then
+        assert_eq!(result, WarmPromptCacheResult::Unsupported);
     }
 }

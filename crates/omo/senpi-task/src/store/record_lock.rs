@@ -34,17 +34,21 @@ fn acquire_lock(lock_path: &Path) -> Result<(), StoreError> {
     let started = Instant::now();
     let mut retry = LOCK_RETRY_MIN;
     loop {
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(lock_path)
-        {
+        match retry_windows_sharing(|| {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(lock_path)
+        }) {
             Ok(mut file) => {
                 let now_ms = crate::state::system_now_ms();
                 writeln!(file, "{}\n{now_ms}", std::process::id())?;
                 return Ok(());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    || is_occupied_windows_lock(&error, lock_path) =>
+            {
                 if is_stale_lock(lock_path) {
                     remove_if_present(lock_path)?;
                     continue;
@@ -60,6 +64,44 @@ fn acquire_lock(lock_path: &Path) -> Result<(), StoreError> {
     }
 }
 
+fn is_occupied_windows_lock(error: &std::io::Error, lock_path: &Path) -> bool {
+    if !cfg!(windows) || !is_windows_sharing_error(error) {
+        return false;
+    }
+    // A released lock can remain delete-pending while a metadata/scanner handle closes.
+    // CREATE_NEW then reports access denied rather than AlreadyExists. As in upstream
+    // publishLock/lockNameOccupied, retry only when the name is still occupied; an actual
+    // permission failure on an absent name must propagate.
+    match std::fs::metadata(lock_path) {
+        Ok(_) => true,
+        Err(error) => is_windows_sharing_error(&error),
+    }
+}
+
+fn is_windows_sharing_error(error: &std::io::Error) -> bool {
+    cfg!(windows)
+        && (error.kind() == std::io::ErrorKind::PermissionDenied
+            || matches!(error.raw_os_error(), Some(32 | 33)))
+}
+
+// Pinned record-write.ts retries Windows EPERM/EBUSY/EACCES eight times at 5 ms.
+// Retry the syscall, not its caller: a committed write must never be replayed, and a
+// persistent permission error must retain its original IO error rather than become success.
+pub(crate) fn retry_windows_sharing<T>(
+    mut operation: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut retries = 0;
+    loop {
+        match operation() {
+            Err(error) if retries < 8 && is_windows_sharing_error(&error) => {
+                retries += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn is_stale_lock(lock_path: &Path) -> bool {
     match std::fs::metadata(lock_path).and_then(|metadata| metadata.modified()) {
         Ok(modified) => SystemTime::now()
@@ -71,7 +113,7 @@ fn is_stale_lock(lock_path: &Path) -> bool {
 }
 
 pub(crate) fn remove_if_present(path: &Path) -> Result<(), StoreError> {
-    match std::fs::remove_file(path) {
+    match retry_windows_sharing(|| std::fs::remove_file(path)) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),

@@ -24,11 +24,17 @@ pub fn should_emit_raw_tool_call_text_on_error(options: Option<&ParserOptions>) 
 
 pub fn emit_text(events: &mut Vec<StreamParserEvent>, text: &str) {
     if !text.is_empty() {
-        events.push(StreamParserEvent::Text { text: text.to_string() });
+        events.push(StreamParserEvent::Text {
+            text: text.to_string(),
+        });
     }
 }
 
-fn find_function_calls_tag(closing: bool, text: &str, from_index: usize) -> Option<FunctionCallsTag> {
+fn find_function_calls_tag(
+    closing: bool,
+    text: &str,
+    from_index: usize,
+) -> Option<FunctionCallsTag> {
     let haystack = &text[from_index.min(text.len())..];
     for (start, c) in haystack.char_indices() {
         if c != '<' {
@@ -40,7 +46,9 @@ fn find_function_calls_tag(closing: bool, text: &str, from_index: usize) -> Opti
         cursor += after_ws.len();
         let rest = &haystack[cursor..];
         if closing {
-            let Some(rest2) = rest.strip_prefix('/') else { continue };
+            let Some(rest2) = rest.strip_prefix('/') else {
+                continue;
+            };
             cursor += 1;
             let after_ws2: String = rest2.chars().take_while(|ch| ch.is_whitespace()).collect();
             cursor += after_ws2.len();
@@ -48,15 +56,23 @@ fn find_function_calls_tag(closing: bool, text: &str, from_index: usize) -> Opti
         let rest = &haystack[cursor..];
         let rest_no_ns = rest.strip_prefix("antml:").unwrap_or(rest);
         let ns_len = rest.len() - rest_no_ns.len();
-        let Some(after_name) = rest_no_ns.strip_prefix("function_calls") else { continue };
+        let Some(after_name) = rest_no_ns.strip_prefix("function_calls") else {
+            continue;
+        };
         let name_end = cursor + ns_len + "function_calls".len();
-        let after_ws3: String = after_name.chars().take_while(|ch| ch.is_whitespace()).collect();
+        let after_ws3: String = after_name
+            .chars()
+            .take_while(|ch| ch.is_whitespace())
+            .collect();
         let close_pos = name_end + after_ws3.len();
         if !haystack[close_pos..].starts_with('>') {
             continue;
         }
         let end = close_pos + 1;
-        return Some(FunctionCallsTag { index: from_index + start, length: end - start });
+        return Some(FunctionCallsTag {
+            index: from_index + start,
+            length: end - start,
+        });
     }
     None
 }
@@ -69,8 +85,8 @@ pub fn find_function_calls_close_tag(text: &str, from_index: usize) -> Option<Fu
     find_function_calls_tag(true, text, from_index)
 }
 
-const FUNCTION_CALLS_OPEN_PREFIXES: [&str; 2] = ["<function_calls>", "<function_calls>"];
-const FUNCTION_CALLS_CLOSE_PREFIXES: [&str; 2] = ["</function_calls>", "</function_calls>"];
+const FUNCTION_CALLS_OPEN_PREFIXES: [&str; 2] = ["<function_calls>", "<antml:function_calls>"];
+const FUNCTION_CALLS_CLOSE_PREFIXES: [&str; 2] = ["</function_calls>", "</antml:function_calls>"];
 
 /// `FUNCTION_CALLS_COMPLETE_TAG.test(candidate)`: a complete (possibly closing) function_calls tag
 /// anchored at the start of `candidate`.
@@ -84,18 +100,25 @@ pub fn is_potential_function_calls_tag(candidate: &str) -> bool {
         return false;
     }
     let compact_candidate: String = candidate.chars().filter(|c| !c.is_whitespace()).collect();
-    FUNCTION_CALLS_OPEN_PREFIXES.iter().chain(FUNCTION_CALLS_CLOSE_PREFIXES.iter()).any(|prefix| prefix.starts_with(&compact_candidate))
+    FUNCTION_CALLS_OPEN_PREFIXES
+        .iter()
+        .chain(FUNCTION_CALLS_CLOSE_PREFIXES.iter())
+        .any(|prefix| prefix.starts_with(&compact_candidate))
 }
 
 pub fn is_whitespace_or_function_calls_close_prefix(text: &str) -> bool {
     let compact_text: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     compact_text.is_empty()
-        || FUNCTION_CALLS_CLOSE_PREFIXES.iter().any(|prefix| prefix.starts_with(&compact_text) && compact_text != *prefix)
+        || FUNCTION_CALLS_CLOSE_PREFIXES
+            .iter()
+            .any(|prefix| prefix.starts_with(&compact_text) && compact_text != *prefix)
 }
 
 pub fn get_safe_stream_text_length(text: &str) -> usize {
     let scanner_safe_length = get_safe_invoke_text_length(text);
-    let Some(last_tag_index) = text.rfind('<') else { return scanner_safe_length };
+    let Some(last_tag_index) = text.rfind('<') else {
+        return scanner_safe_length;
+    };
     if is_potential_function_calls_tag(&text[last_tag_index..]) {
         scanner_safe_length.min(last_tag_index)
     } else {
@@ -111,25 +134,46 @@ pub fn report_error(options: Option<&ParserOptions>, message: &str, tool_call: &
     }
 }
 
-pub fn overflow_pending_fragment(options: Option<&ParserOptions>, label: &str, retained_fragment: &str) -> Vec<StreamParserEvent> {
+pub fn overflow_pending_fragment(
+    options: Option<&ParserOptions>,
+    label: &str,
+    retained_fragment: &str,
+) -> Vec<StreamParserEvent> {
     report_error(
         options,
-        &format!("{label} streaming fragment exceeded the {ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH}-character retained-input limit."),
+        &format!(
+            "{label} streaming fragment exceeded the {ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH}-character retained-input limit."
+        ),
         retained_fragment,
     );
     if should_emit_raw_tool_call_text_on_error(options) {
-        vec![StreamParserEvent::Text { text: retained_fragment.to_string() }]
+        vec![StreamParserEvent::Text {
+            text: retained_fragment.to_string(),
+        }]
     } else {
         Vec::new()
     }
 }
 
-pub fn report_truncated_invoke(options: Option<&ParserOptions>, config: &InvokeProtocolConfig, retained_length: usize) {
+pub fn report_truncated_invoke(
+    options: Option<&ParserOptions>,
+    config: &InvokeProtocolConfig,
+    retained_length: usize,
+) {
     if let Some(options) = options {
         let mut metadata = HashMap::new();
-        metadata.insert("protocol".to_string(), Value::String(config.protocol.to_string()));
-        metadata.insert("retainedLength".to_string(), Value::Number(retained_length.into()));
-        options.report_error(&format!("{} tool call truncated at finish", config.label), Some(metadata));
+        metadata.insert(
+            "protocol".to_string(),
+            Value::String(config.protocol.to_string()),
+        );
+        metadata.insert(
+            "retainedLength".to_string(),
+            Value::Number(retained_length.into()),
+        );
+        options.report_error(
+            &format!("{} tool call truncated at finish", config.label),
+            Some(metadata),
+        );
     }
 }
 
@@ -173,10 +217,17 @@ mod tests {
     fn finds_function_calls_open_and_close_tags_with_namespace() {
         let open = find_function_calls_open_tag("prefix <function_calls> rest", 0).expect("open");
         assert_eq!(open.index, 7);
-        assert_eq!(&"prefix <function_calls> rest"[open.index..open.index + open.length], "<function_calls>");
+        assert_eq!(
+            &"prefix <function_calls> rest"[open.index..open.index + open.length],
+            "<function_calls>"
+        );
 
-        let close = find_function_calls_close_tag("<function_calls></function_calls>", 5).expect("close");
-        assert_eq!(&"<function_calls></function_calls>"[close.index..close.index + close.length], "</function_calls>");
+        let close =
+            find_function_calls_close_tag("<function_calls></function_calls>", 5).expect("close");
+        assert_eq!(
+            &"<function_calls></function_calls>"[close.index..close.index + close.length],
+            "</function_calls>"
+        );
     }
 
     #[test]
@@ -190,8 +241,12 @@ mod tests {
     #[test]
     fn is_whitespace_or_function_calls_close_prefix_detects_partial_close() {
         assert!(is_whitespace_or_function_calls_close_prefix("   "));
-        assert!(is_whitespace_or_function_calls_close_prefix("</function_calls"));
-        assert!(!is_whitespace_or_function_calls_close_prefix("</function_calls>"));
+        assert!(is_whitespace_or_function_calls_close_prefix(
+            "</function_calls"
+        ));
+        assert!(!is_whitespace_or_function_calls_close_prefix(
+            "</function_calls>"
+        ));
         assert!(!is_whitespace_or_function_calls_close_prefix("xyz"));
     }
 
@@ -204,24 +259,54 @@ mod tests {
     #[test]
     fn coerce_stream_parameters_falls_back_to_json_schema_when_configured() {
         use crate::tool_call_middleware::protocols::anthropic_xml::invoke_protocol::ANTHROPIC_XML_INVOKE_CONFIG;
-        let tool = Tool { name: "t".into(), description: String::new(), parameters: serde_json::json!({}), output_schema: None, freeform: None, constrained_sampling: None };
-        let params = vec![InvokeParameter { name: "a".into(), raw_value: "1".into() }];
+        let tool = Tool {
+            name: "t".into(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        };
+        let params = vec![InvokeParameter {
+            name: "a".into(),
+            raw_value: "1".into(),
+        }];
         // ANTHROPIC_XML_INVOKE_CONFIG.coerce requires the tool to declare "a" in its schema, so
         // this exercises the schema-based rejection returning None and then, with fallback
         // enabled, falling through to the raw JSON-or-string coercion.
-        assert_eq!(coerce_stream_parameters(&params, &tool, &ANTHROPIC_XML_INVOKE_CONFIG, false), None);
-        let fallback = coerce_stream_parameters(&params, &tool, &ANTHROPIC_XML_INVOKE_CONFIG, true).expect("fallback");
+        assert_eq!(
+            coerce_stream_parameters(&params, &tool, &ANTHROPIC_XML_INVOKE_CONFIG, false),
+            None
+        );
+        let fallback = coerce_stream_parameters(&params, &tool, &ANTHROPIC_XML_INVOKE_CONFIG, true)
+            .expect("fallback");
         assert_eq!(fallback.get("a"), Some(&Value::Number(1.into())));
     }
 
     #[test]
     fn coerce_stream_parameters_fallback_rejects_duplicate_names() {
         use crate::tool_call_middleware::protocols::anthropic_xml::invoke_protocol::ANTHROPIC_XML_INVOKE_CONFIG;
-        let tool = Tool { name: "t".into(), description: String::new(), parameters: serde_json::json!({}), output_schema: None, freeform: None, constrained_sampling: None };
+        let tool = Tool {
+            name: "t".into(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        };
         let params = vec![
-            InvokeParameter { name: "a".into(), raw_value: "1".into() },
-            InvokeParameter { name: "a".into(), raw_value: "2".into() },
+            InvokeParameter {
+                name: "a".into(),
+                raw_value: "1".into(),
+            },
+            InvokeParameter {
+                name: "a".into(),
+                raw_value: "2".into(),
+            },
         ];
-        assert_eq!(coerce_stream_parameters(&params, &tool, &ANTHROPIC_XML_INVOKE_CONFIG, true), None);
+        assert_eq!(
+            coerce_stream_parameters(&params, &tool, &ANTHROPIC_XML_INVOKE_CONFIG, true),
+            None
+        );
     }
 }

@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use maho_ai::types::BoxFuture;
 
 use super::output_capture::{apply_shell_output_update, sanitize_shell_output};
-use super::truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncationOptions, TruncationResult, truncate_tail};
+use super::truncate::{
+    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncationOptions, TruncationResult, truncate_tail,
+};
 use crate::harness::context::Context;
 use crate::harness::result::Result;
 use crate::harness::types::{
@@ -57,8 +59,12 @@ fn progress_from(output: &ShellOutputView) -> ShellCaptureProgress {
             content: output.text.clone(),
             truncated: output.truncation.truncated,
             truncated_by: output.truncation.truncated_by.map(|limit| match limit {
-                crate::harness::types::TruncationLimit::Lines => super::truncate::TruncatedBy::Lines,
-                crate::harness::types::TruncationLimit::Bytes => super::truncate::TruncatedBy::Bytes,
+                crate::harness::types::TruncationLimit::Lines => {
+                    super::truncate::TruncatedBy::Lines
+                }
+                crate::harness::types::TruncationLimit::Bytes => {
+                    super::truncate::TruncatedBy::Bytes
+                }
             }),
             total_lines: output.truncation.total_lines,
             total_bytes: output.truncation.total_bytes,
@@ -82,7 +88,9 @@ pub async fn execute_shell_with_capture(
     context: &Context,
 ) -> Result<ShellCaptureResult, ExecutionError> {
     let output: Arc<Mutex<Option<ShellOutputView>>> = Arc::new(Mutex::new(None));
-    let on_chunk = options.as_ref().and_then(|options| options.on_chunk.clone());
+    let on_chunk = options
+        .as_ref()
+        .and_then(|options| options.on_chunk.clone());
     let update_output = output.clone();
     let update_context = context.clone();
 
@@ -99,25 +107,34 @@ pub async fn execute_shell_with_capture(
             },
             spill: Some(true),
         }),
-        on_update: Some(Arc::new(move |update: ShellOutputUpdate, update_context: Context| {
-            let previous = update_output.lock().expect("capture output poisoned").clone();
-            let next = apply_shell_output_update(previous.as_ref(), &update);
-            *update_output.lock().expect("capture output poisoned") = Some(next.clone());
-            let chunk = match &update {
-                ShellOutputUpdate::Append { text, .. } | ShellOutputUpdate::Slide { text, .. } => Some(text.clone()),
-                ShellOutputUpdate::Replace { .. } if previous.is_none() => Some(next.text.clone()),
-                _ => None,
-            };
-            let on_chunk = on_chunk.clone();
-            let progress = progress_from(&next);
-            Box::pin(async move {
-                // A metadata-only update and a post-cap replacement contain no new incremental
-                // chunk; the observer's settlement is awaited by the environment.
-                if let (Some(chunk), Some(on_chunk)) = (chunk, on_chunk) {
-                    on_chunk(chunk, progress, update_context).await;
-                }
-            })
-        })),
+        on_update: Some(Arc::new(
+            move |update: ShellOutputUpdate, update_context: Context| {
+                let previous = update_output
+                    .lock()
+                    .expect("capture output poisoned")
+                    .clone();
+                let next = apply_shell_output_update(previous.as_ref(), &update);
+                *update_output.lock().expect("capture output poisoned") = Some(next.clone());
+                let chunk = match &update {
+                    ShellOutputUpdate::Append { text, .. }
+                    | ShellOutputUpdate::Slide { text, .. } => Some(text.clone()),
+                    ShellOutputUpdate::Replace { .. } if previous.is_none() => {
+                        Some(next.text.clone())
+                    }
+                    _ => None,
+                };
+                let on_chunk = on_chunk.clone();
+                let progress = progress_from(&next);
+                Box::pin(async move {
+                    // A metadata-only update and a post-cap replacement contain no new incremental
+                    // chunk; the observer's settlement is awaited by the environment.
+                    if let (Some(chunk), Some(on_chunk)) = (chunk, on_chunk) {
+                        on_chunk(chunk, progress, update_context).await;
+                    }
+                    Ok(())
+                })
+            },
+        )),
     };
 
     let result = env.exec(command, Some(exec_options), context).await;
@@ -131,8 +148,12 @@ pub async fn execute_shell_with_capture(
             truncation: crate::harness::types::ShellOutputTruncation {
                 truncated: fallback.truncated,
                 truncated_by: fallback.truncated_by.map(|limit| match limit {
-                    super::truncate::TruncatedBy::Lines => crate::harness::types::TruncationLimit::Lines,
-                    super::truncate::TruncatedBy::Bytes => crate::harness::types::TruncationLimit::Bytes,
+                    super::truncate::TruncatedBy::Lines => {
+                        crate::harness::types::TruncationLimit::Lines
+                    }
+                    super::truncate::TruncatedBy::Bytes => {
+                        crate::harness::types::TruncationLimit::Bytes
+                    }
                 }),
                 total_lines: fallback.total_lines,
                 total_bytes: fallback.total_bytes,
@@ -152,7 +173,9 @@ pub async fn execute_shell_with_capture(
 
     match result {
         Err(error) => {
-            if error.code == crate::harness::types::ExecutionErrorCode::Aborted || context.is_aborted() {
+            if error.code == crate::harness::types::ExecutionErrorCode::Aborted
+                || context.is_aborted()
+            {
                 return Ok(ShellCaptureResult {
                     output: progress.output,
                     truncation: progress.truncation.clone(),
@@ -164,7 +187,11 @@ pub async fn execute_shell_with_capture(
                     execution_error: None,
                 });
             }
-            if options.as_ref().and_then(|options| options.return_execution_errors) == Some(true) {
+            if options
+                .as_ref()
+                .and_then(|options| options.return_execution_errors)
+                == Some(true)
+            {
                 return Ok(ShellCaptureResult {
                     output: progress.output,
                     truncation: progress.truncation.clone(),

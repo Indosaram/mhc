@@ -38,7 +38,11 @@ impl ExtensionUi for TestUi {
     fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
     fn theme(&self) -> Theme { Theme::default() }
 }
-pub fn context() -> ExtensionContext { context_with_mode(true, ExtensionMode::Tui) }
+pub fn context() -> ExtensionContext {
+    let mut context = context_with_ui(true);
+    context.mode = ExtensionMode::Tui;
+    context
+}
 pub fn context_with_ui(has_ui: bool) -> ExtensionContext {
     context_with_mode(has_ui, ExtensionMode::Print)
 }
