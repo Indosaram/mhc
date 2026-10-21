@@ -1,5 +1,7 @@
 //! TTL expiry sweep (`lifecycle/ttl.ts`): two-phase tombstone then expunge.
 
+use std::collections::HashMap;
+
 use super::context::{LifecycleContext, is_terminal};
 use super::destroy::destroy_resident_task;
 use super::errors::LifecycleError;
@@ -18,15 +20,16 @@ pub fn cleanup_expired_records(
     }
 
     let cutoff = (context.now)() - context.config.ttl_ms;
+    let mut owner_liveness: HashMap<i64, bool> = HashMap::new();
     for record in context.store.list()?.records {
-        if should_retain(context, &record, cutoff) {
+        if should_retain(context, &record, cutoff, &mut owner_liveness) {
             result.retained.push(record.task_id);
             continue;
         }
         let outcome = context
             .store
             .tombstone_if_expired(&record.task_id, &mut |fresh| {
-                should_retain(context, fresh, cutoff)
+                should_retain(context, fresh, cutoff, &mut HashMap::new())
             })?;
         let TombstoneResult::Tombstoned(tombstoned) = outcome else {
             result.retained.push(record.task_id);
@@ -48,11 +51,17 @@ pub fn cleanup_expired_records(
     Ok(result)
 }
 
-fn should_retain(context: &LifecycleContext, record: &TaskRecord, cutoff: i64) -> bool {
-    if context.registry.get(&record.task_id).is_some() {
+fn should_retain(
+    context: &LifecycleContext,
+    record: &TaskRecord,
+    cutoff: i64,
+    owner_liveness: &mut HashMap<i64, bool>,
+) -> bool {
+    // Cheapest checks first: a live record is retained without a registry lookup or pid probe.
+    if !is_terminal(record.status) || context.registry.get(&record.task_id).is_some() {
         return true;
     }
-    if has_live_host_claim(context, record) || !is_terminal(record.status) {
+    if has_live_host_claim(context, record, owner_liveness) {
         return true;
     }
     // An unparsable timestamp compares like NaN in TS: never "newer than the cutoff".
@@ -68,11 +77,17 @@ fn should_retain(context: &LifecycleContext, record: &TaskRecord, cutoff: i64) -
     false
 }
 
-fn has_live_host_claim(context: &LifecycleContext, record: &TaskRecord) -> bool {
+fn has_live_host_claim(
+    context: &LifecycleContext,
+    record: &TaskRecord,
+    owner_liveness: &mut HashMap<i64, bool>,
+) -> bool {
     record.residency_state == ResidencyState::Resident
-        && record
-            .host_pid
-            .is_some_and(|pid| context.signaller.is_alive(pid))
+        && record.host_pid.is_some_and(|pid| {
+            *owner_liveness
+                .entry(pid)
+                .or_insert_with(|| context.signaller.is_alive(pid))
+        })
 }
 
 fn has_undelivered_terminal_notification(record: &TaskRecord) -> bool {

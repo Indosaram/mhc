@@ -22,6 +22,11 @@ pub trait DagJournalCheckpoint: Clone + Send + Sync + 'static {
     const SCHEMA_VERSION: SchemaVersion1 = SchemaVersion1;
     fn checkpoint_seq(&self) -> u64;
     fn with_checkpoint_seq(&self, checkpoint_seq: u64) -> Self;
+    /// By-value variant for the journal hot path: implementors override it to restamp in place
+    /// instead of deep-cloning a checkpoint the journal already owns.
+    fn with_checkpoint_seq_owned(self, checkpoint_seq: u64) -> Self {
+        self.with_checkpoint_seq(checkpoint_seq)
+    }
 }
 
 pub type DagJournalListener = Arc<dyn Fn(&DagRunEvent) + Send + Sync>;
@@ -184,7 +189,7 @@ struct CommitSubscriber {
     active: std::sync::atomic::AtomicBool,
 }
 
-type CommitQueueEntry = (Arc<CommitSubscriber>, DagRunEvent);
+type CommitQueueEntry = (Arc<CommitSubscriber>, Arc<DagRunEvent>);
 type CommitRegistryEntry = (usize, DagRunId, Vec<Arc<CommitSubscriber>>);
 type CommitRegistry = Mutex<Vec<CommitRegistryEntry>>;
 
@@ -261,9 +266,12 @@ fn publish_commit(store: &Arc<DagFileStore>, run_id: &DagRunId, event: &DagRunEv
             .unwrap_or_default()
     };
     let mut pushed = false;
+    // One shared copy of the event serves every active commit subscriber.
+    let mut shared: Option<Arc<DagRunEvent>> = None;
     for subscriber in subscribers {
         if subscriber.active.load(std::sync::atomic::Ordering::SeqCst) {
-            commit_delivery().queue.lock().unwrap_or_else(PoisonError::into_inner).push_back((subscriber, event.clone()));
+            let event = Arc::clone(shared.get_or_insert_with(|| Arc::new(event.clone())));
+            commit_delivery().queue.lock().unwrap_or_else(PoisonError::into_inner).push_back((subscriber, event));
             pushed = true;
         }
     }
@@ -282,7 +290,8 @@ fn publish_commit(store: &Arc<DagFileStore>, run_id: &DagRunId, event: &DagRunEv
                 continue;
             };
             if subscriber.active.load(std::sync::atomic::Ordering::SeqCst) {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (subscriber.listener)(&event)));
+                let event: &DagRunEvent = &event;
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (subscriber.listener)(event)));
             }
         });
     }
@@ -326,7 +335,7 @@ pub fn create_dag_journal<C: DagJournalCheckpoint + DeserializeOwned + Serialize
     let apply_event = options.apply_event;
     let initial_checkpoint = options.initial_checkpoint;
     let recovered = store.with_run_lock(&run_id, || {
-        recover_checkpoint(&store, &run_id, &initial_checkpoint, &apply_event, None)
+        recover_checkpoint(&store, &run_id, || initial_checkpoint, &apply_event, None)
     })??;
     Ok(Arc::new(DagJournal {
         store,
@@ -345,13 +354,13 @@ pub fn create_dag_journal<C: DagJournalCheckpoint + DeserializeOwned + Serialize
 fn recover_checkpoint<C: DagJournalCheckpoint + DeserializeOwned + Serialize>(
     store: &DagFileStore,
     run_id: &DagRunId,
-    initial_checkpoint: &C,
+    initial_checkpoint: impl FnOnce() -> C,
     apply_event: &DagJournalApplyEvent<C>,
     known_tail_seq: Option<u64>,
 ) -> Result<C, DagStoreError> {
     let mut checkpoint = store
         .read_checkpoint::<C>(run_id)?
-        .unwrap_or_else(|| initial_checkpoint.clone());
+        .unwrap_or_else(initial_checkpoint);
     if known_tail_seq == Some(checkpoint.checkpoint_seq()) {
         // The checkpoint already covers the log tail: nothing to replay.
         return Ok(checkpoint);
@@ -369,7 +378,7 @@ fn recover_checkpoint<C: DagJournalCheckpoint + DeserializeOwned + Serialize>(
         )?;
         for event in &page.events {
             let applied = apply_event(&checkpoint, event);
-            checkpoint = applied.with_checkpoint_seq(event.seq);
+            checkpoint = applied.with_checkpoint_seq_owned(event.seq);
             replayed = true;
         }
         if !page.has_more {
@@ -397,7 +406,7 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
 
     pub fn refresh(&self) -> Result<C, DagStoreError> {
         let checkpoint = self.store.with_run_lock(&self.run_id, || {
-            recover_checkpoint(&self.store, &self.run_id, &self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner).clone(), &self.apply_event, None)
+            recover_checkpoint(&self.store, &self.run_id, || self.snapshot(), &self.apply_event, None)
         })??;
         *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = checkpoint.clone();
         Ok(checkpoint)
@@ -441,7 +450,7 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
         let recovered = recover_checkpoint(
             &self.store,
             &self.run_id,
-            &self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner).clone(),
+            || self.snapshot(),
             &self.apply_event,
             self.unchanged_tail_seq(),
         )?;
@@ -469,7 +478,7 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
         let log_len = self.store.append_validated_event(&event)?;
         *self.appended_tail.lock().unwrap_or_else(PoisonError::into_inner) = Some((log_len, seq));
         let applied = prepared.unwrap_or_else(|| (self.apply_event)(&recovered, &event));
-        let next = applied.with_checkpoint_seq(seq);
+        let next = applied.with_checkpoint_seq_owned(seq);
         self.store.write_checkpoint(&self.run_id, &next)?;
         *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = next;
         Ok(Some(event))

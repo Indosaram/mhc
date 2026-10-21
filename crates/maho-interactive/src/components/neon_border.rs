@@ -37,28 +37,32 @@ pub fn apply_neon_border(lines: &mut [String], now_ms: f64, mode: ColorMode) -> 
     let Some(bottom) = lines.iter().skip(1).position(|line| strip_terminal_sequences(line).starts_with('─')).map(|index| index + 1) else {
         return false;
     };
-    let top_cells: Vec<String> = strip_terminal_sequences(&lines[0]).graphemes(true).map(str::to_owned).collect();
-    let bottom_cells: Vec<String> = strip_terminal_sequences(&lines[bottom]).graphemes(true).map(str::to_owned).collect();
+    let top_plain = strip_terminal_sequences(&lines[0]);
+    let bottom_plain = strip_terminal_sequences(&lines[bottom]);
+    let top_cells: Vec<&str> = top_plain.graphemes(true).collect();
+    let bottom_cells: Vec<&str> = bottom_plain.graphemes(true).collect();
     if top_cells.is_empty() || bottom_cells.is_empty() {
         return false;
     }
     let (top_len, bottom_len) = (top_cells.len(), bottom_cells.len());
     let perimeter = (top_len + bottom_len) as f64;
     let seconds = (now_ms.max(0.0) / 1000.0 * BREATH_STEPS_PER_SECOND).floor() / BREATH_STEPS_PER_SECOND;
-    lines[0] = paint(&top_cells, |column| column as f64 / perimeter, seconds, mode);
+    // Every cell shares one breath level: take its cosine once per frame instead of once per cell.
+    let breath = breath_level(seconds);
+    lines[0] = paint(&top_cells, |column| column as f64 / perimeter, breath, mode);
     // The static gradient runs clockwise: top border left->right, then bottom border right->left.
-    lines[bottom] = paint(&bottom_cells, |column| (top_len + (bottom_len - 1 - column)) as f64 / perimeter, seconds, mode);
+    lines[bottom] = paint(&bottom_cells, |column| (top_len + (bottom_len - 1 - column)) as f64 / perimeter, breath, mode);
     if bottom > 1 {
-        color_prompt_glyph(&mut lines[1], breathe_color(0.0, seconds), mode);
+        color_prompt_glyph(&mut lines[1], breathe_color_at(0.0, breath), mode);
     }
     true
 }
 
-fn paint(cells: &[String], position: impl Fn(usize) -> f64, seconds: f64, mode: ColorMode) -> String {
-    let mut out = String::new();
+fn paint(cells: &[&str], position: impl Fn(usize) -> f64, breath: f64, mode: ColorMode) -> String {
+    let mut out = String::with_capacity(cells.len() * 24);
     for (column, cell) in cells.iter().enumerate() {
-        out.push_str(&fg(breathe_color(position(column), seconds), mode));
-        out.push_str(if cell == "─" { "━" } else { cell });
+        out.push_str(&fg(breathe_color_at(position(column), breath), mode));
+        out.push_str(if *cell == "─" { "━" } else { cell });
     }
     out.push_str("\x1b[39m");
     out
@@ -85,7 +89,10 @@ fn fg([r, g, b]: [u8; 3], mode: ColorMode) -> String {
 /// travels: every cell shares one breath level, so the whole border brightens and dims together
 /// over the cyan-violet-magenta gradient, which stays in place.
 pub fn breathe_color(s: f64, seconds: f64) -> [u8; 3] {
-    let breath = breath_level(seconds);
+    breathe_color_at(s, breath_level(seconds))
+}
+
+fn breathe_color_at(s: f64, breath: f64) -> [u8; 3] {
     let level = BASE_LEVEL + (PEAK_LEVEL - BASE_LEVEL) * breath;
     let lift = PEAK_LIFT * breath * breath;
     palette(s).map(|c| ((c + (255.0 - c) * lift) * level).round().clamp(0.0, 255.0) as u8)

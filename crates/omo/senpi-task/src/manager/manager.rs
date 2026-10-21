@@ -874,13 +874,11 @@ impl TaskManager {
             return Err(WaitError::Aborted);
         }
         let id = parse_task_id(task_id)?.to_string();
+        // Register first, then read the record outside the state lock: a settle that lands after
+        // the read removes this waiter (it takes the lock after its terminal write), so no wake is
+        // lost, and the record file is no longer read under the manager-wide mutex.
         let (waiter_id, sender, receiver) = {
             let mut state = lock(&self.inner.state);
-            if let Some(current) = self.inner.try_load(&id)
-                && is_terminal_record(&current)
-            {
-                return Ok(current);
-            }
             let (sender, receiver) = channel();
             state.next_subscriber_id += 1;
             let waiter_id = state.next_subscriber_id;
@@ -891,6 +889,12 @@ impl TaskManager {
                 .push((waiter_id, sender.clone()));
             (waiter_id, sender, receiver)
         };
+        if let Some(current) = self.inner.try_load(&id)
+            && is_terminal_record(&current)
+        {
+            self.inner.remove_waiter(&id, waiter_id);
+            return Ok(current);
+        }
         let _abort_waker = signal.map(|signal| AbortWakerGuard(signal, signal.register(sender)));
         let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
         let woke = match deadline {
@@ -1161,8 +1165,11 @@ impl Inner {
         if let Some(record) = self.try_load(id_or_name) {
             return Some(record.task_id);
         }
-        self.store.list().ok()?.records.into_iter()
-            .find(|record| record.name.as_deref() == Some(id_or_name))
+        // First record in `list` order with this name; stops reading at the match instead of
+        // loading and cloning every record in the state dir.
+        self.store
+            .find_record(|record| record.name.as_deref() == Some(id_or_name))
+            .ok()?
             .map(|record| record.task_id)
     }
 

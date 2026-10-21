@@ -306,23 +306,24 @@ fn observe_completion(pool: &WorkpoolRecord, (task_id, epoch): (String, u32), st
         if state.completions.contains_key(&identity) { return; }
         state.completions.insert(identity.clone(), CompletionObserver { cancel });
     }
-    let pool = pool.clone(); let store = store.clone(); let state = Arc::clone(state);
+    // Only the id and generation outlive this call; cloning the whole record would copy every item.
+    let pool_id = pool.pool_id.clone(); let generation = pool.generation; let store = store.clone(); let state = Arc::clone(state);
     tokio::spawn(async move {
         let result = admission.wait_for(&task_id, &mut cancel_rx).await;
         state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).completions.remove(&identity);
         let record = match result { Ok(record) => record, Err(error) => {
-            if !*cancel_rx.borrow() { emit(WorkpoolEvent { pool_id: pool.pool_id.clone(), kind: WorkpoolEventKind::AdmissionFailed, item_id: None,
+            if !*cancel_rx.borrow() { emit(WorkpoolEvent { pool_id: pool_id.clone(), kind: WorkpoolEventKind::AdmissionFailed, item_id: None,
                 task_id: Some(task_id), run_epoch: Some(epoch), error: Some(WorkpoolEventError { code: WorkpoolErrorCode::StoreCorrupt, message: error.0 }) }); }
             return;
         }};
         if *cancel_rx.borrow() || record.notification.run_epoch != i64::from(epoch) { return; }
-        let turn = (pool.pool_id.clone(), pool.generation, task_id.clone(), epoch);
+        let turn = (pool_id.clone(), generation, task_id.clone(), epoch);
         if let Err(error) = reconcile_worker_turn(&store, admission.tasks(), &turn) {
-            emit(WorkpoolEvent { pool_id: pool.pool_id.clone(), kind: WorkpoolEventKind::AdmissionFailed, item_id: None, task_id: Some(task_id), run_epoch: Some(epoch),
+            emit(WorkpoolEvent { pool_id: pool_id.clone(), kind: WorkpoolEventKind::AdmissionFailed, item_id: None, task_id: Some(task_id), run_epoch: Some(epoch),
                 error: Some(WorkpoolEventError { code: error.code, message: error.message }) }); return;
         }
-        if let Err(error) = store.mutate_result(&pool.pool_id, |latest| {
-            if latest.generation != pool.generation { return Ok(latest.clone()); }
+        if let Err(error) = store.mutate_result(&pool_id, |latest| {
+            if latest.generation != generation { return Ok(latest.clone()); }
             let mut next=latest.clone();
             for worker in &mut next.workers { if worker.task_id==task_id&&worker.run_epoch==epoch&&worker.status==WorkpoolWorkerStatus::Busy {
                 worker.status=WorkpoolWorkerStatus::Idle;worker.completed_turns+=1;
@@ -330,12 +331,12 @@ fn observe_completion(pool: &WorkpoolRecord, (task_id, epoch): (String, u32), st
             }}
             Ok(next)
         }) {
-            emit(WorkpoolEvent { pool_id: pool.pool_id.clone(), kind: WorkpoolEventKind::AdmissionFailed, item_id: None, task_id: Some(task_id), run_epoch: Some(epoch),
+            emit(WorkpoolEvent { pool_id: pool_id.clone(), kind: WorkpoolEventKind::AdmissionFailed, item_id: None, task_id: Some(task_id), run_epoch: Some(epoch),
                 error: Some(WorkpoolEventError { code: error.code, message: error.message }) });
             return;
         }
-        emit(WorkpoolEvent { pool_id: pool.pool_id.clone(), kind: WorkpoolEventKind::WorkerIdle, item_id: None, task_id: Some(task_id), run_epoch: Some(epoch), error: None });
-        schedule(pool.pool_id.clone());
+        emit(WorkpoolEvent { pool_id: pool_id.clone(), kind: WorkpoolEventKind::WorkerIdle, item_id: None, task_id: Some(task_id), run_epoch: Some(epoch), error: None });
+        schedule(pool_id);
     });
 }
 

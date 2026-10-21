@@ -275,6 +275,15 @@ pub fn create_fs_skill_loader(options: FsSkillLoaderOptions) -> Arc<SkillLoader>
         .load_skills_from_dir
         .unwrap_or_else(|| Arc::new(load_skills_from_dir));
     Arc::new(move |names: &[String], cwd: &str| -> SkillResolution {
+        // No requested names: skip the per-spawn ancestor `.git` stat walk and dir-list construction.
+        if names.is_empty() {
+            return SkillResolution {
+                prepend: String::new(),
+                resolved: Vec::new(),
+                missing: Vec::new(),
+                skills: Some(Vec::new()),
+            };
+        }
         let dirs = search_dirs(Path::new(cwd), &home, &agent_dir, &extra_dirs);
         let mut cache = HashMap::new();
         let mut skills: Vec<LoadedSkill> = Vec::new();

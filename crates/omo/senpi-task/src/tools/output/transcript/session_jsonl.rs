@@ -10,6 +10,8 @@ use crate::tools::output::types::TranscriptEntry;
 /// version never crashes task_output.
 pub fn parse_session_transcript(text: &str) -> Vec<TranscriptEntry> {
     text.split('\n')
+        // Only assistant messages yield text; skip the JSON parse for every other (often large) line.
+        .filter(|line| line.contains("\"assistant\""))
         .filter_map(|line| assistant_text_of(parse_line(line).as_ref()))
         .map(|text| TranscriptEntry::Assistant { text })
         .collect()

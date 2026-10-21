@@ -62,8 +62,8 @@ fn has_secret_like_model_field(model: &serde_json::Map<String, Value>) -> bool {
         let normalized: String = key
             .chars()
             .filter(char::is_ascii_alphanumeric)
-            .collect::<String>()
-            .to_lowercase();
+            .map(|ch| ch.to_ascii_lowercase())
+            .collect();
         SECRET_LIKE_MODEL_FIELD_NAMES.contains(&normalized.as_str())
     })
 }
@@ -76,11 +76,12 @@ fn is_safe_display_name(name: &str) -> bool {
             .any(|ch| matches!(u32::from(ch), 0x00..=0x1f | 0x7f..=0x9f))
 }
 
-/// Parses one untrusted registry value; `expected` pins the identity a `find` result must carry.
-pub fn parse_registry_model(
-    model: &Value,
+/// Boundary checks shared by [`parse_registry_model`] and [`parse_available_models`]; borrows so
+/// the listing path never clones the host value.
+fn checked_registry_fields<'a>(
+    model: &'a Value,
     expected: Option<&ParsedModel>,
-) -> Option<ParsedRegistryModel> {
+) -> Option<(&'a serde_json::Map<String, Value>, &'a str, &'a str)> {
     let object = model.as_object()?;
     if has_secret_like_model_field(object) {
         return None;
@@ -95,6 +96,15 @@ pub fn parse_registry_model(
     {
         return None;
     }
+    Some((object, provider, model_id))
+}
+
+/// Parses one untrusted registry value; `expected` pins the identity a `find` result must carry.
+pub fn parse_registry_model(
+    model: &Value,
+    expected: Option<&ParsedModel>,
+) -> Option<ParsedRegistryModel> {
+    let (object, provider, model_id) = checked_registry_fields(model, expected)?;
     let display_name = object
         .get("name")
         .and_then(Value::as_str)
@@ -125,8 +135,10 @@ pub fn parse_available_models(models: &Value) -> Option<Vec<String>> {
     let entries = models.as_array()?;
     let mut parsed: Vec<String> = entries
         .iter()
-        .filter_map(|entry| parse_registry_model(entry, None))
-        .map(|model| format!("{}/{}", model.provider, model.model_id))
+        .filter_map(|entry| {
+            let (_, provider, model_id) = checked_registry_fields(entry, None)?;
+            Some(format!("{provider}/{model_id}"))
+        })
         .collect();
     parsed.sort();
     Some(parsed)

@@ -799,6 +799,10 @@ impl TaskComponent {
                 }
                 drop(waiters);
                 self.notify_owned_terminal(&entry.record);
+                // Already-notified terminals are a no-op in `notify_terminal` (AlreadyNotified) after a store load; skip that per-sync.
+                if entry.record.notification.notified_epoch >= entry.record.notification.run_epoch {
+                    continue;
+                }
                 let parent_state = self
                     .engine
                     .runtime

@@ -142,8 +142,9 @@ impl DiskRecord {
         Ok(Self { version:r.version, pool_id:r.pool_id.clone(), name:r.name.clone(), parent_session_id:r.parent_session_id.clone(), root_session_id:r.root_session_id.clone(), generation:r.generation, revision:r.revision, mode:r.mode, agent:r.agent.clone(), worker_spec:serde_json::json!({"start":r.worker_spec.start,"plan":r.worker_spec.plan}), status:r.status, kernel_tool_names:r.kernel_tool_names.clone(), items:r.items.clone(), workers:r.workers.clone(), aggregate:r.aggregate })
     }
     fn into_record(self) -> Result<WorkpoolRecord, WorkpoolError> {
-        let start = serde_json::from_value(self.worker_spec.get("start").cloned().ok_or_else(|| corrupt("Missing worker spec start."))?).map_err(|e| corrupt(e.to_string()))?;
-        let plan = serde_json::from_value(self.worker_spec.get("plan").cloned().ok_or_else(|| corrupt("Missing worker spec plan."))?).map_err(|e| corrupt(e.to_string()))?;
+        let mut spec = self.worker_spec;
+        let start = serde_json::from_value(spec.get_mut("start").map(Value::take).ok_or_else(|| corrupt("Missing worker spec start."))?).map_err(|e| corrupt(e.to_string()))?;
+        let plan = serde_json::from_value(spec.get_mut("plan").map(Value::take).ok_or_else(|| corrupt("Missing worker spec plan."))?).map_err(|e| corrupt(e.to_string()))?;
         Ok(WorkpoolRecord { version:self.version, pool_id:self.pool_id, name:self.name, parent_session_id:self.parent_session_id, root_session_id:self.root_session_id, generation:self.generation, revision:self.revision, mode:self.mode, agent:self.agent, worker_spec:WorkpoolSpec { start, plan }, status:self.status, kernel_tool_names:self.kernel_tool_names, items:self.items, workers:self.workers, aggregate:self.aggregate })
     }
 }
@@ -162,9 +163,14 @@ fn same_record(a: &WorkpoolRecord,b: &WorkpoolRecord) -> bool {
         && a.root_session_id==b.root_session_id && a.generation==b.generation && a.revision==b.revision
         && a.mode==b.mode && a.status==b.status && a.items==b.items && a.workers==b.workers
         && a.kernel_tool_names==b.kernel_tool_names && a.aggregate==b.aggregate
-        && canonical(&serde_json::to_value(&a.agent).unwrap_or(Value::Null))==canonical(&serde_json::to_value(&b.agent).unwrap_or(Value::Null))
-        && canonical(&serde_json::to_value(&a.worker_spec.start).unwrap_or(Value::Null))==canonical(&serde_json::to_value(&b.worker_spec.start).unwrap_or(Value::Null))
-        && canonical(&serde_json::to_value(&a.worker_spec.plan).unwrap_or(Value::Null))==canonical(&serde_json::to_value(&b.worker_spec.plan).unwrap_or(Value::Null))
+        && (a.agent==b.agent || same_json(&a.agent,&b.agent))
+        && same_json(&a.worker_spec.start,&b.worker_spec.start)
+        && (a.worker_spec.plan==b.worker_spec.plan || same_json(&a.worker_spec.plan,&b.worker_spec.plan))
+}
+/// Byte-identical serialization is the common no-op case; key-order differences still fall back to the canonical compare.
+fn same_json<T: Serialize + ?Sized>(a: &T, b: &T) -> bool {
+    if let (Ok(left), Ok(right)) = (serde_json::to_vec(a), serde_json::to_vec(b)) && left == right { return true; }
+    canonical(&serde_json::to_value(a).unwrap_or(Value::Null))==canonical(&serde_json::to_value(b).unwrap_or(Value::Null))
 }
 fn random_hex() -> Result<String, WorkpoolError> { Ok(uuid::Uuid::new_v4().simple().to_string()) }
 fn write_record(path: &Path, record: &DiskRecord) -> Result<(), WorkpoolError> {

@@ -1,7 +1,7 @@
 //! Resolved lifecycle dependencies (`lifecycle/context.ts` + `LifecycleDeps` in `port.ts`).
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use utils::process_sweep::{create_default_process_killer, default_is_process_alive};
@@ -194,9 +194,24 @@ impl LifecycleContext {
         crate::shared::iso_from_ms((self.now)())
     }
 
-    pub(crate) fn delay_orphan_kill(&self) {
-        if self.orphan_kill_delay_ms > 0 {
-            std::thread::sleep(Duration::from_millis(self.orphan_kill_delay_ms));
+    /// Waits up to the orphan-kill delay after SIGTERM, returning as soon as `pid` is gone so a
+    /// prompt exit does not pay the full grace period (the caller re-probes before escalating).
+    pub(crate) fn delay_orphan_kill(&self, pid: i64) {
+        if self.orphan_kill_delay_ms == 0 {
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_millis(self.orphan_kill_delay_ms);
+        let mut step = Duration::from_millis(10);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            std::thread::sleep(step.min(remaining));
+            if !self.signaller.is_alive(pid) {
+                return;
+            }
+            step = (step * 2).min(Duration::from_millis(250));
         }
     }
 }

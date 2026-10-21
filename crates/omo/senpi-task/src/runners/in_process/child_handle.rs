@@ -286,13 +286,16 @@ impl InProcessChildHandle {
     }
 
     fn begin_turn(&self, text: &str) {
+        // The host snapshots its transcript to answer this, so read it before taking the lock the
+        // session event observer also needs; no turn is active here, so no event can race it.
+        let baseline = self.session.get_last_assistant_text();
         let turn = {
             let mut state = self.tracked.lock();
             state.aborted = false;
             state.turn += 1;
             state.outcome = None;
             state.observation = TurnObservation {
-                baseline: self.session.get_last_assistant_text(),
+                baseline,
                 ..TurnObservation::default()
             };
             state.turn

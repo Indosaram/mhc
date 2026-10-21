@@ -165,7 +165,9 @@ impl Extension for UlwLoopComponent {
                 };
                 crate::footer_status::sync_shared(&footer, ctx, active);
                 let payload = if let ExtensionEvent::AgentEnd { messages, aborted, will_retry, .. } = event {
-                    serde_json::json!({"messages":messages,"aborted":aborted,"willRetry":will_retry})
+                    // `read_agent_end_outcome` only reads the last assistant message and what follows it.
+                    let tail = messages.iter().rposition(|message| message.role() == "assistant").map_or(&[][..], |index| &messages[index..]);
+                    serde_json::json!({"messages":tail,"aborted":aborted,"willRetry":will_retry})
                 } else { serde_json::Value::Null };
                 *pending_run.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PendingRun { payload, status: (raw, active) });
                 Ok(EventResult::None)

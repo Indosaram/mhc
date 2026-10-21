@@ -96,7 +96,7 @@ fn persist(
     input: &DagNodeResultPersistInput<'_>,
     output_path: &Path,
 ) -> Result<DagNodeResultArtifact, String> {
-    let output = input.record.final_response.clone().unwrap_or_default();
+    let output = input.record.final_response.as_deref().unwrap_or_default();
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }

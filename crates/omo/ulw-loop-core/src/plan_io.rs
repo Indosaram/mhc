@@ -202,7 +202,15 @@ pub fn find_accepted_steering_ledger_entry(
     key: &str,
     scope: Option<&UlwLoopScope>,
 ) -> Option<UlwLoopLedgerEntry> {
-    read_ledger(repo_root, scope).into_iter().find(|entry| {
+    find_accepted_steering_entry(&read_ledger(repo_root, scope), key).cloned()
+}
+
+/// [`find_accepted_steering_ledger_entry`] over an already-read ledger, so a batch reads it once.
+pub fn find_accepted_steering_entry<'a>(
+    entries: &'a [UlwLoopLedgerEntry],
+    key: &str,
+) -> Option<&'a UlwLoopLedgerEntry> {
+    entries.iter().find(|entry| {
         is_steering_kind(&entry.kind)
             && entry.steering.as_ref().is_some_and(|s| s.invariant.accepted)
             && (entry.idempotency_key.as_deref() == Some(key)

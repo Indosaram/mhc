@@ -26,6 +26,11 @@ fn read_into(file: &mut File, buffer: &mut [u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Valid UTF-8 (the common case) reuses the buffer instead of copying it through `from_utf8_lossy`.
+fn into_text(buffer: Vec<u8>) -> String {
+    String::from_utf8(buffer).unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
+
 /// Reads a file as UTF-8 text, keeping at most `maximum_bytes` bytes (head + `\n` + tail).
 /// Returns `Ok(None)` when the file does not exist.
 pub fn read_bounded_file_text(
@@ -44,7 +49,7 @@ pub fn read_bounded_file_text(
         let mut buffer = vec![0u8; usize::try_from(size).unwrap_or(maximum_bytes)];
         read_into(&mut file, &mut buffer)?;
         return Ok(Some(BoundedFileText {
-            text: String::from_utf8_lossy(&buffer).into_owned(),
+            text: into_text(buffer),
             truncated: false,
         }));
     }
@@ -58,7 +63,7 @@ pub fn read_bounded_file_text(
     file.seek(SeekFrom::Start(size - tail_bytes as u64))?;
     read_into(&mut file, &mut buffer[head_bytes + 1..])?;
     Ok(Some(BoundedFileText {
-        text: String::from_utf8_lossy(&buffer).into_owned(),
+        text: into_text(buffer),
         truncated: true,
     }))
 }
