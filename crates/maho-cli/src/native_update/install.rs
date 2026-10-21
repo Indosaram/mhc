@@ -194,8 +194,9 @@ mod tests {
         switch(root.path(), &old, "1.1.0", || async { Ok(()) }).await?;
         assert!(retention::run(root.path(), &["1.1.0", "1.0.0"]).is_empty());
         assert_eq!(pointer::read(root.path())?.current, "1.1.0");
+        assert!(root.path().join("versions/1.1.0").is_dir());
         assert!(root.path().join("versions/1.0.0").is_dir(), "running sessions keep their package");
-        assert!(root.path().join("versions/0.9.0").is_dir());
+        assert!(!root.path().join("versions/0.9.0").exists(), "unheld version is removed");
         drop((first, second));
         Ok(())
     }

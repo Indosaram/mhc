@@ -45,7 +45,6 @@ impl UpdateLease {
 }
 
 /// Non-blocking exclusive lock on a version's lock file; `None` while any session holds it.
-#[cfg(test)]
 pub(super) fn try_exclusive_version(root: &Path, version: &str) -> io::Result<Option<File>> {
     let file = open_lock(&version_lock_path(root, version))?;
     match file.try_lock() {
