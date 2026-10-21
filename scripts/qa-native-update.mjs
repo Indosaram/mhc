@@ -546,8 +546,9 @@ const sentinelFile = join(agentDir, "user_state_sentinel.txt");
 writeFileSync(sentinelFile, sentinelContent);
 const initialSentinelSha = computeSha256(sentinelFile);
 
+const initialSettings = { theme: "dark", editor: "vim", customUserSetting: true };
 const settingsFile = join(agentDir, "settings.json");
-writeFileSync(settingsFile, JSON.stringify({ theme: "dark", editor: "vim", customUserSetting: true }, null, 2));
+writeFileSync(settingsFile, JSON.stringify(initialSettings, null, 2));
 const initialSettingsSha = computeSha256(settingsFile);
 
 const fixtureServer = createUpdateFixtureServer({
@@ -676,7 +677,20 @@ function leftoverWorkspaces(root) {
 
 function samePath(a, b) {
 	const canonical = path => {
-		try { return realpathSync(path); } catch { return resolve(path); }
+		const missing = [];
+		let current = path;
+		while (!existsSync(current)) {
+			const parent = dirname(current);
+			if (parent === current) return resolve(path);
+			missing.push(basename(current));
+			current = parent;
+		}
+		try {
+			const resolved = realpathSync(current);
+			return missing.length === 0 ? resolved : join(resolved, ...missing.reverse());
+		} catch {
+			return resolve(path);
+		}
 	};
 	return canonical(a.replace(/^\\\\\?\\/, "")) === canonical(b);
 }
@@ -723,12 +737,37 @@ async function runInstaller(packageDir, root, bin) {
 	return executeCommand("sh", [installShPath], { env, cwd: qaRoot });
 }
 
+function jsonDeepEqual(left, right) {
+	if (left === right) return true;
+	if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
+	if (Array.isArray(left) || Array.isArray(right)) {
+		if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+		return left.every((item, index) => jsonDeepEqual(item, right[index]));
+	}
+	const leftKeys = Object.keys(left);
+	if (leftKeys.length !== Object.keys(right).length) return false;
+	return leftKeys.every(key => Object.hasOwn(right, key) && jsonDeepEqual(left[key], right[key]));
+}
+
+// Interactive startup records changelogSeen and tipsHistory (senpi setChangelogSeen / recordShownTip).
+// Those added keys are expected; each harness-written key must still deep-equal.
+function userSettingsPreserved() {
+	let current;
+	try {
+		current = JSON.parse(readFileSync(settingsFile, "utf8"));
+	} catch {
+		return false;
+	}
+	if (current === null || typeof current !== "object" || Array.isArray(current)) return false;
+	return Object.entries(initialSettings).every(([key, value]) => Object.hasOwn(current, key) && jsonDeepEqual(current[key], value));
+}
+
 function verifyStateUnmodified() {
 	const currentSentinelSha = computeSha256(sentinelFile);
 	const currentSettingsSha = computeSha256(settingsFile);
 	return {
 		sentinelOk: currentSentinelSha !== null && currentSentinelSha === initialSentinelSha,
-		settingsOk: currentSettingsSha !== null && currentSettingsSha === initialSettingsSha,
+		settingsOk: userSettingsPreserved(),
 		initialSentinelSha,
 		currentSentinelSha,
 		initialSettingsSha,
@@ -823,6 +862,23 @@ async function stopSession(session) {
 	return tracked.stopped;
 }
 
+function darwinVersionedTextImage(lsofStdout) {
+	let versionsReal;
+	try { versionsReal = realpathSync(join(installDir, "versions")); } catch { return null; }
+	const prefix = `${versionsReal}/`;
+	for (const line of lsofStdout.split("\n")) {
+		if (!line.startsWith("n")) continue;
+		const name = line.slice(1).replace(/\r$/, "");
+		if (!name.startsWith("/")) continue;
+		try {
+			if (!statSync(name).isFile()) continue;
+			if (!realpathSync(name).startsWith(prefix)) continue;
+			return name;
+		} catch { continue; }
+	}
+	return null;
+}
+
 async function sessionExecutable(session) {
 	let pidTimer;
 	const pid = await Promise.race([
@@ -835,6 +891,15 @@ async function sessionExecutable(session) {
 		try { return readlinkSync(`/proc/${pid}/exe`); } catch { return null; }
 	}
 	if (process.platform === "darwin") {
+		// The launcher Unix-execs the payload and keeps argv[0], so `ps comm` is the root launcher path.
+		// The first txt image under versions/ is the executing payload.
+		try {
+			const listed = await executeCommand("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { env: commonEnv, cwd: qaRoot });
+			if (!listed.killed) {
+				const image = darwinVersionedTextImage(listed.stdout);
+				if (image !== null) return image;
+			}
+		} catch {}
 		const ps = await executeCommand("ps", ["-p", String(pid), "-o", "comm="], { env: commonEnv, cwd: qaRoot });
 		return ps.exitCode === 0 ? ps.stdout.trim() || null : null;
 	}
@@ -898,7 +963,8 @@ try {
 				pointerIs(installDir, newVersion, intermediateVersion) &&
 				rootVersion.ok && rootVersion.version === newVersion &&
 				matchesReference(newCheck, referenceBCheck) && computeSha256(installedMhc) === launcherBefore &&
-				installedVersions(installDir).includes(oldVersion) && cleanupFinished && downloadedFixture() &&
+				// Retention removes versions that are neither current, previous nor leased.
+				!installedVersions(installDir).includes(oldVersion) && cleanupFinished && downloadedFixture() &&
 				verifyStateUnmodified().sentinelOk;
 			recordScenario(scenarioName, pass, {
 				exitCode: result.exitCode, rootVersion: rootVersion.version, pointer: readPointer(installDir),
@@ -1185,10 +1251,9 @@ try {
 			const stateCheck = verifyStateUnmodified();
 
 			pass = heldReady && first.result.exitCode === 0 && !first.result.killed &&
-				afterFirst.includes(staleHeld) && afterFirst.includes(staleUnused) &&
-				afterFirst.includes(oldVersion) && afterFirst.includes(newVersion) && heldAlive &&
+				JSON.stringify(afterFirst) === JSON.stringify([oldVersion, newVersion, staleHeld].sort()) && heldAlive &&
 				second.result.exitCode === 0 && !second.result.killed &&
-				JSON.stringify(afterSecond) === JSON.stringify([oldVersion, newVersion, staleHeld, staleUnused].sort()) &&
+				JSON.stringify(afterSecond) === JSON.stringify([oldVersion, newVersion].sort()) &&
 				pointerIs(installDir, newVersion, oldVersion) &&
 				first.cleanupFinished && second.cleanupFinished && stateCheck.sentinelOk && stateCheck.settingsOk;
 			details = { heldReady, heldAlive, afterFirst, afterSecond, pointer: readPointer(installDir), stateCheck };

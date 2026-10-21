@@ -1,8 +1,6 @@
 name: qa-native-update
 
 on:
-  push:
-    branches: ["qa-native-update/**"]
   workflow_dispatch:
     inputs:
       old_version:

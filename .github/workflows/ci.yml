@@ -94,6 +94,12 @@ jobs:
           cache-key: macos
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: native update integration tests
+        run: "cargo nextest run --locked -p maho-cli -E 'binary(/^native_update/)'"
 
   windows:
     runs-on: windows-2025
