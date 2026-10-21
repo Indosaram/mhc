@@ -70,9 +70,11 @@ runs:
         fi
         rg --version | head -1 && "$fd" --version && sg --version
 
-    - name: cache senpi checkout
+    # Restore-only off main: every verify/* branch is unique, so a cache saved there is never read
+    # again and only evicts main's Rust caches under the 10 GB repository cap.
+    - name: restore senpi checkout
       id: senpi-cache
-      uses: actions/cache@v6
+      uses: actions/cache/restore@v6
       with:
         path: ~/code/senpi
         key: senpi-${{ env.SENPI_PIN }}
@@ -86,6 +88,13 @@ runs:
         git -C ~/code/senpi fetch -q --depth 1 origin "$SENPI_PIN"
         git -C ~/code/senpi checkout -q FETCH_HEAD
         cd ~/code/senpi && bun install --frozen-lockfile --ignore-scripts
+
+    - name: save senpi checkout
+      if: steps.senpi-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@v6
+      with:
+        path: ~/code/senpi
+        key: senpi-${{ env.SENPI_PIN }}
 
     - name: git identity for tests
       shell: bash
