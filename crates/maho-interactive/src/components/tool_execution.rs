@@ -106,6 +106,7 @@ pub struct ToolExecutionComponent {
     /// Memoized `exploration_call` result; dropped with the render cache on every state change.
     pub(super) exploration_cache: RefCell<Option<Option<super::exploration_call::ExplorationCall>>>,
     result_byte_length: Option<usize>,
+    cache_memory: super::tool_execution_cache::ToolExecutionCacheMemory,
 }
 
 struct ToolExecutionRendererIdentity {
@@ -159,6 +160,7 @@ impl ToolExecutionComponent {
             renderer_invalidated: Rc::new(std::cell::Cell::new(false)),
             exploration_cache: RefCell::new(None),
             result_byte_length: None,
+            cache_memory: Default::default(),
         };
         let initial = component.create_render_state();
         if presentation == ToolExecutionPresentation::Grok {
@@ -250,6 +252,10 @@ impl ToolExecutionComponent {
     }
 
     pub fn update_result(&mut self, result: ToolExecutionResult, is_partial: bool) {
+        self.cache_memory.set_images(result.content.iter().filter(|part| matches!(part, ToolContent::Image { .. })).count());
+        if !is_partial {
+            self.cache_memory.finalize_result(super::tool_execution_cache::serialized_tool_result_bytes(&result));
+        }
         self.result_byte_length = Some(result.content.iter().map(|part| match part {
             ToolContent::Text { text, .. } => text.len(),
             ToolContent::Image { data, .. } => data.len(),
@@ -463,6 +469,7 @@ impl ToolExecutionComponent {
     }
 
     fn invalidate_render_cache(&mut self) {
+        self.cache_memory.drop_lines();
         self.cached_lines = None;
         self.cached_width = None;
         self.exploration_cache.replace(None);
@@ -512,6 +519,7 @@ impl Component for ToolExecutionComponent {
         }
 
         self.cached_width = Some(width);
+        self.cache_memory.store_lines(&lines);
         self.cached_lines = Some(lines.clone());
         lines
     }
@@ -530,6 +538,7 @@ impl Component for ToolExecutionComponent {
 
     fn dispose(&mut self) {
         self.stop_animation();
+        self.cache_memory.dispose();
         if let Some(renderer) = &mut self.renderer {
             renderer.dispose();
         }

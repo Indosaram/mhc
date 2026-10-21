@@ -19,7 +19,7 @@ enum Command {
     Close(oneshot::Sender<Result<(), String>>),
 }
 
-struct WorkerOptions { cwd: PathBuf, session_id: String, width: u64, environment: Option<SessionEnvironment>, connection: BridgeConnectionConfig, names: KernelToolNames, memory: crate::bridge::protocol::KernelMemoryThresholds }
+struct WorkerOptions { cwd: PathBuf, session_id: String, width: u64, environment: Option<SessionEnvironment>, connection: BridgeConnectionConfig, names: KernelToolNames, memory: crate::bridge::protocol::KernelMemoryThresholds, cached_memory: Arc<Mutex<Option<u64>>> }
 impl WorkerOptions {
     fn startup<'a>(&'a self,names:&'a (Vec<String>,Vec<String>)) -> WorkerStartupOptions<'a> {
         WorkerStartupOptions {cwd:&self.cwd, session_id:&self.session_id, parallel_pool_width:self.width, connection:&self.connection, generation:0, host_tool_names:&names.0, foreign_language_names:&names.1, session_env:self.environment.as_ref(), worker_entry:None, memory:Some(&self.memory)}
@@ -30,6 +30,7 @@ impl WorkerOptions {
 pub struct JavaScriptKernelStart { pub parallel_pool_width:u64, pub session_env:Option<SessionEnvironment>, pub connection:BridgeConnectionConfig, pub names:KernelToolNames, pub shutdown:maho_ai::utils::abort::AbortController, pub memory:crate::bridge::protocol::KernelMemoryThresholds }
 
 pub struct JavaScriptKernel {
+    cached_memory: Arc<Mutex<Option<u64>>>,
     commands: mpsc::UnboundedSender<Command>,
     tools: Arc<super::kernel_tools_host::KernelToolHostPump>,
     loader: LocalModuleLoader,
@@ -59,7 +60,7 @@ impl JavaScriptKernel {
         let startup_owner=owner_signal.clone();
         let shutdown=maho_ai::utils::abort::AbortController::new();
         let loader=LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:connection.local_roots.clone(),artifacts_dir:connection.artifacts_dir.as_ref().map(PathBuf::from)})?;
-        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,connection,names,memory};
+        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,connection,names,memory,cached_memory:Arc::new(Mutex::new(None))};
         let startup_options=options;let startup_shutdown=shutdown.clone();
         let (mut sender,receiver)=oneshot::channel();
         tokio::spawn(async move {
@@ -77,6 +78,7 @@ impl JavaScriptKernel {
         });
         let (options,slot)=receiver.await.map_err(|_|ProcessError::Closed)??;
         let pid=Arc::new(Mutex::new(slot.pid()));
+        let cached_memory=options.cached_memory.clone();
         let snapshot=Arc::new(Mutex::new((None,vec![])));
         let (commands,receiver)=mpsc::unbounded_channel();
         let posts=commands.downgrade();let worker_pid=pid.clone();
@@ -85,7 +87,7 @@ impl JavaScriptKernel {
         let child=shutdown.clone();
         let listener=owner_signal.add_abort_listener(move |reason|child.abort(Some(reason.clone())));
         if owner_signal.aborted() {shutdown.abort(owner_signal.reason());}
-        Ok(Self {commands,tools,loader,snapshot,pid,shutdown,actor:tokio::sync::Mutex::new(Some(actor)),owner_listener:Some((owner_signal,listener))})
+        Ok(Self {cached_memory,commands,tools,loader,snapshot,pid,shutdown,actor:tokio::sync::Mutex::new(Some(actor)),owner_listener:Some((owner_signal,listener))})
     }
 
     pub async fn run(&self, input: KernelRunInput, mut on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
@@ -106,6 +108,8 @@ impl JavaScriptKernel {
         receiver.await.map_err(|_|ProcessError::Closed)?.map_err(ProcessError::Startup)
     }
     pub fn queue_snapshot(&self)->Snapshot {self.snapshot.lock().expect("JS queue lock").clone()}
+    pub fn memory_measure(&self)->crate::extension::kernel_registry::KernelMeasure {crate::extension::kernel_registry::KernelMeasure::Heap}
+    pub fn last_live_bytes(&self)->Option<u64> {*self.cached_memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner)}
     pub async fn cancel_queued(&self,id:&str,reason:&str)->bool {
         let (sender,receiver)=oneshot::channel();
         if self.commands.send(Command::Cancel(id.into(),reason.into(),sender)).is_err() {return false;}
@@ -163,8 +167,9 @@ impl maho_ext_api::ExtensionKernelTools for JavaScriptKernel {
 }
 
 fn route(message:Value,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue)->bool {
+    runs.observe_memory(&message);
     if message["type"]=="status" && matches!(message["event"]["op"].as_str(),Some(crate::bridge::reserved::INTERRUPT_ACK_OP|crate::bridge::reserved::CHILD_LIFECYCLE_OP)) {return false;}
-    if message["type"]=="kernel-memory-collected" {return false;}
+    if message["type"]=="kernel-memory-collected" || (message["type"]=="status" && message["event"]["op"]=="kernel-memory-collected") {return false;}
     if let Some(run)=runs.active() && let Some(callback)=&run.on_message {callback(&message);}
     if message["type"]=="tool-call" {calls.push_tool_call(message);return false;}
     if message["type"]!="result" || runs.active().is_none_or(|run|message["cellId"]!=run.input.cell_id) {return false;}
@@ -199,6 +204,7 @@ async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mu
         if route(frame,runs,calls) {calls.clear_tool_calls();return Ok((true,None));}
     }
     let retirement=slot.retire().await?;
+    runs.clear_memory();
     if let Some(mut run)=runs.release_active() {
         let result=run.interrupt_result.take().expect("interrupt result");
         JavaScriptRunQueue::settle(&mut run,result);
@@ -208,12 +214,13 @@ async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mu
 }
 
 async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::UnboundedReceiver<Command>,snapshot:Arc<Mutex<Snapshot>>,pid:Arc<Mutex<Option<u32>>>,tools:Arc<super::kernel_tools_host::KernelToolHostPump>,shutdown:maho_ai::utils::abort::AbortSignal) {
-    let mut runs=JavaScriptRunQueue::default();
+    let mut runs=JavaScriptRunQueue::with_memory_cache(options.cached_memory.clone());
     let mut calls=SubprocessRunQueue::default();
     let mut pending_memory_queries=std::collections::HashMap::<String,(oneshot::Sender<Result<Value,String>>,tokio::time::Instant)>::new();
     let origin=tokio::time::Instant::now();
     let mut deadline=None;
     loop {
+        if !slot.present() {runs.clear_memory();}
         if runs.active().is_none() && runs.has_waiting() {
             let ready=async {let names=(options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(options.startup(&names),&shutdown).await}.await;
             if let Err(error)=ready {runs.reject_waiting(&error.to_string());}
@@ -255,6 +262,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                     let _=response.send(result);
                 }
                 Some(Command::Reset(response))=>{
+                    runs.clear_memory();
                     for (_, (pending, _)) in pending_memory_queries.drain() { let _ = pending.send(Err("JavaScript worker reset".into())); }
                     tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JavaScript worker reset",None));
                     runs.settle_all("JS kernel reset");calls.clear_tool_calls();deadline=None;
@@ -275,6 +283,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                 Ok(message)=>{
                     if tools.consume(message.clone()) {continue;}
                     if message["type"]=="memory-query-result" {
+                        runs.observe_memory(&message);
                         if let Some(request_id)=message["requestId"].as_str() && let Some((response,_))=pending_memory_queries.remove(request_id) {let _=response.send(Ok(message));}
                         continue;
                     }
@@ -295,6 +304,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
         }
     }
     *snapshot.lock().expect("JS queue lock")=(None,vec![]);
+    runs.clear_memory();
     *pid.lock().expect("JS pid lock")=None;
     tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JS kernel closed",None));
 }
@@ -302,6 +312,27 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn registered_worker_reports_real_readings_and_releases_session_ownership() {
+        tokio::time::timeout(Duration::from_secs(30), async {
+        let owner=uuid::Uuid::new_v4().to_string();
+        let kernel=Arc::new(JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),&owner,4,None).await.unwrap());
+        let mut registrations=crate::extension::kernel_registration::SessionKernelRegistrations::new(owner.clone());
+        registrations.register(crate::tool::types::EvalLanguage::Js,Some(crate::extension::kernel_registration::java_script_kernel_memory(kernel.clone())));
+        let result=kernel.run(KernelRunInput {cell_id:"memory".into(),code:"1 + 1".into(),timeout_ms:None}, |_|{}).await.unwrap();
+        assert_eq!(kernel.last_live_bytes(),Some(result["memory"]["liveBytes"].as_u64().expect("result heap reading")));
+        let reading=kernel.memory_query().await.unwrap();
+        let row=crate::extension::kernel_registry::KERNEL_REGISTRY.list().into_iter().find(|row|row.session_id==owner).expect("registered kernel");
+        assert_eq!(row.last_live_bytes,Some(reading["liveBytes"].as_u64().expect("heap reading")));
+        assert_eq!(row.measure,crate::extension::kernel_registry::KernelMeasure::Heap);
+        kernel.reset().await.unwrap();
+        assert_eq!(kernel.last_live_bytes(),None);
+        drop(registrations);
+        assert!(!crate::extension::kernel_registry::KERNEL_REGISTRY.list().iter().any(|row|row.session_id==owner));
+        kernel.close().await.unwrap();
+        }).await.expect("bounded worker lifecycle");
+    }
 
     #[test]
     fn internal_child_status_does_not_reach_cell_output() {

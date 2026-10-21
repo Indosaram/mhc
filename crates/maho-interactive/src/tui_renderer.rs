@@ -7,6 +7,12 @@ use maho_tui::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+static FRAME_LINE_BYTES: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
+
+pub fn previous_lines_bytes() -> Option<usize> {
+    *FRAME_LINE_BYTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TuiMode {
     Regular,
@@ -34,6 +40,10 @@ impl InteractiveTui {
             Self::Regular(tui) => { let _ = tui.take_mouse_external_write_pending(terminal); tui.base.do_render(terminal); tui.note_render(terminal); }
             Self::Fullscreen(tui) => tui.do_render(terminal),
         }
+        let bytes = crate::components::tool_execution_cache::line_array_bytes(
+            &self.base().state.borrow().previous_lines,
+        );
+        *FRAME_LINE_BYTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bytes);
     }
 
     /// Per-iteration poll of senpi's timer/promise callbacks: the main screen's in-flight CPR

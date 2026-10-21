@@ -355,6 +355,10 @@ pub fn kill_windows_process_tree(pid: u32, taskkill_paths: &[String]) {
             return;
         }
     }
+    #[cfg(windows)]
+    if let Err(error) = super::windows_process_tree::terminate_windows_process(pid) {
+        eprintln!("Failed to terminate Windows process {pid}: {error}");
+    }
     if !cfg!(windows) {
         kill_process_tree(pid);
     }

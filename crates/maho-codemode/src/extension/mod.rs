@@ -2,6 +2,8 @@ pub mod eval_notifier;
 pub mod eval_status;
 pub mod eval_status_ticker;
 pub mod kernel_preludes;
+pub mod kernel_registry;
+pub mod kernel_registration;
 pub mod runtime_factory;
 pub mod runtime_info;
 pub mod session_manager_proxy;

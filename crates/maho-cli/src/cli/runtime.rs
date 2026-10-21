@@ -292,6 +292,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         return Err("Error: PI_STARTUP_BENCHMARK only supports interactive mode".into());
     }
     let session = Arc::new(created.session);
+    super::memory_report_registry::register_session(&session);
     // senpi main.ts:1253: `setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides())`.
     maho_tui::terminal_image::set_capability_overrides(session.with_settings_manager(|settings| settings.get_terminal_capability_overrides(&maho_core::config::current_env())));
     let model_fallback_message = created.model_fallback_message;
