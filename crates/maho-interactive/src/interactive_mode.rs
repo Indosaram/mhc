@@ -1062,7 +1062,8 @@ impl InteractiveMode {
     /// senpi's header block: the chrome welcome card, the standard `ExpandableText` welcome content
     /// with its tip sibling, or the minimal quiet header.
     pub fn mount_startup_header_at(&mut self, now_ms: u64) {
-        let app = maho_core::config::app_name();
+        // The header names the command the user runs (`mhc`), not the engine brand.
+        let app = maho_core::config::app_command();
         let version = maho_core::config::display_version(maho_core::engine_build_identity::ENGINE_VERSION);
         if let Some(chrome) = &self.chrome {
             let component = chrome.create_welcome_content(&app, &version);

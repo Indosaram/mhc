@@ -499,11 +499,54 @@ impl TerminalIo for ProcessIo {
                 Err(e) => Err(std::io::Error::from(e).into()),
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            read_console_input(timeout_ms)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = timeout_ms;
             Ok(None)
         }
+    }
+}
+
+/// Windows has no pollable stdin: wait on the console input buffer and turn its key events back
+/// into the byte stream Node's raw-mode stdin delivers. With `ENABLE_VIRTUAL_TERMINAL_INPUT`
+/// (set in `start`) special keys arrive as VT sequences, one key event per UTF-16 unit.
+#[cfg(windows)]
+fn read_console_input(timeout_ms: u64) -> Result<Option<Vec<u8>>, TerminalError> {
+    use crossterm_winapi::{Console, Handle, HandleType, InputRecord};
+    use std::time::{Duration, Instant};
+
+    let console = Console::from(Handle::new(HandleType::InputHandle)?);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        if console.number_of_console_input_events()? > 0 {
+            let mut units = Vec::new();
+            for record in console.read_console_input()? {
+                if let InputRecord::KeyEvent(key) = record
+                    && key.key_down
+                    && key.u_char != 0
+                {
+                    for _ in 0..key.repeat_count.max(1) {
+                        units.push(key.u_char);
+                    }
+                }
+            }
+            if !units.is_empty() {
+                return Ok(Some(String::from_utf16_lossy(&units).into_bytes()));
+            }
+            // Only focus, mouse, menu or resize records: consumed, keep waiting.
+            continue;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+        // The console handle is only waitable through unsafe Win32 calls (workspace forbids
+        // unsafe), so check the queue at a short interval within the caller's budget.
+        std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
     }
 }
 
