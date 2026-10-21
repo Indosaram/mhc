@@ -1812,6 +1812,68 @@ async fn mounted_host_session_events_flow_into_the_mode() {
 }
 
 #[tokio::test]
+async fn manual_compact_runs_without_blocking_the_loop() {
+    use std::sync::{Arc, Mutex};
+    use maho_tui::tui::Component;
+    use maho_interactive::interactive_host_runtime::SessionEventListener;
+    use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
+
+    /// A host whose `compact` parks until `gate` is released, like a summarization request in flight.
+    struct HeldCompactHost { listener: Arc<Mutex<Option<SessionEventListener>>>, gate: tokio::sync::watch::Receiver<bool> }
+    impl InteractiveSession for HeldCompactHost {
+        fn session_id(&self) -> Option<String> { None }
+        fn session_file(&self) -> Option<String> { None }
+        fn cwd(&self) -> String { String::new() }
+        fn is_reconnecting(&self) -> bool { false }
+        fn is_fallback(&self) -> bool { false }
+        fn remote_state(&self) -> Option<maho_interactive::interactive_host_runtime::RemoteSessionState> { None }
+        fn subscribe_session_events(&self, listener: SessionEventListener) -> Option<maho_interactive::interactive_host_runtime::SessionSubscription> {
+            *self.listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(listener);
+            None
+        }
+        fn request_remote_history(&self, _generation: u64, _sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>) {}
+        fn compact(&self, _instructions: Option<String>) -> SessionFuture<'_, Result<(), String>> {
+            let mut gate = self.gate.clone();
+            Box::pin(async move { let _ = gate.wait_for(|released| *released).await; Ok(()) })
+        }
+        fn new_session(&self, _parent_session: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> { Box::pin(async { Ok(ReplacementOutcome::Cancelled) }) }
+        fn switch_session(&self, _session_path: String) -> SessionFuture<'_, Result<ReplacementOutcome, String>> { Box::pin(async { Ok(ReplacementOutcome::Cancelled) }) }
+        fn fork(&self, _entry_id: String, _include_entry: bool) -> SessionFuture<'_, Result<ForkOutcome, String>> { Box::pin(async { Ok(ForkOutcome { outcome: ReplacementOutcome::Cancelled, editor_text: None }) }) }
+        fn dispose(&self) -> SessionFuture<'_, ()> { Box::pin(async {}) }
+    }
+
+    let (mut mode, _directory) = native_mode_with_session(None, |cwd| {
+        let mut manager = maho_core::session_manager::SessionManager::in_memory(cwd, None, None);
+        manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"first"}],"timestamp":0}));
+        manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"second"}],"timestamp":0}));
+        manager
+    });
+    let listener = Arc::new(Mutex::new(None));
+    let (release, gate) = tokio::sync::watch::channel(false);
+    mode.set_session_host(Arc::new(HeldCompactHost { listener: listener.clone(), gate }));
+    let (wake_tx, mut wake) = tokio::sync::mpsc::unbounded_channel();
+    let waker = std::task::Waker::from(Arc::new(TurnWaker { wake: wake_tx }));
+    mode.enqueue_submission("/compact", None);
+    // The loop step returns while the compaction is held; before the fix it awaited it inline.
+    tokio::time::timeout(std::time::Duration::from_secs(10), mode.pump_turn_with(&waker)).await.expect("/compact must not block the loop step");
+    assert!(mode.has_pending_compaction(), "the compaction is in flight, driven by later loop steps");
+    let emit = listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().expect("the mode subscribed its event bridge");
+    emit(&maho_ext_api::AgentSessionEvent::CompactionStart { reason: maho_ext_api::CompactionReason::Manual, request_id: None });
+    mode.pump_turn_with(&waker).await;
+    assert!(mode.render(80).join("\n").contains("Compacting context..."), "the live frame shows compaction progress while it runs");
+    mode.handle_input("typed");
+    assert_eq!(mode.editor.editor.get_text(), "typed", "input is still consumed while compaction runs");
+    let _ = release.send(true);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            mode.pump_turn_with(&waker).await;
+            if !mode.has_pending_compaction() { return; }
+            let _ = wake.recv().await;
+        }
+    }).await.expect("the released compaction settles");
+}
+
+#[tokio::test]
 async fn mounted_host_publishes_authoritative_remote_history_without_local_fallback() {
     use std::sync::{Arc, Mutex};
     use maho_tui::tui::Component;
