@@ -658,7 +658,7 @@ impl Lexer {
                         .unwrap_or_default()
                         .as_str(),
                 );
-                let raw_len = l_length + start + last_char_length + r_length as usize;
+                let raw_len = l_length + utf16_len(&masked[..start]) + last_char_length + r_length as usize;
                 let raw = slice_utf16(src, 0, raw_len).to_string();
                 if (l_length.min(r_length as usize)) % 2 == 1 {
                     let text = slice_utf16(&raw, 1, utf16_len(&raw).saturating_sub(1)).to_string();
@@ -886,6 +886,6 @@ fn clip_to_inline_extension(src: &str) -> &str {
     let Some(captures) = R_INLINE_LATEX_START.exec(temp_src) else {
         return src;
     };
-    let start_index = captures.start();
+    let start_index = utf16_len(&temp_src[..captures.start()]);
     slice_utf16(src, 0, start_index + 1)
 }

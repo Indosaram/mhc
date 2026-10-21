@@ -24,6 +24,26 @@ fn lexes_emphasis_and_strong() {
 }
 
 #[test]
+fn strong_raw_slices_count_utf16_units_for_non_ascii_text() {
+    let mut lexer = Lexer::new();
+    let tokens = lexer.lex("- **장점:** 알림이 PirateTalk 이름으로 옵니다.\n");
+    let Token::List { items, .. } = &tokens[0] else { panic!("list expected: {tokens:?}") };
+    let Token::ListItem { tokens: item, .. } = &items[0] else { panic!("list item expected: {items:?}") };
+    let Token::Text { tokens: Some(inner), .. } = &item[0] else { panic!("text expected: {item:?}") };
+    let actual: Vec<(&str, &str)> = inner.tokens().iter().map(|t| (t.type_name(), t.raw())).collect();
+    assert_eq!(actual, vec![("strong", "**장점:**"), ("text", " 알림이 PirateTalk 이름으로 옵니다.")]);
+}
+
+#[test]
+fn inline_math_clip_counts_utf16_units_for_non_ascii_text() {
+    let mut lexer = Lexer::new();
+    let tokens = lexer.lex("그리고 $x$ 끝\n");
+    let inline = inline_of(&tokens[0]);
+    let actual: Vec<(&str, &str)> = inline.iter().map(|t| (t.type_name(), t.raw())).collect();
+    assert_eq!(actual, vec![("text", "그리고 "), ("latex_inline", "$x$"), ("text", " 끝")]);
+}
+
+#[test]
 fn preserves_inline_raw_slices_around_code() {
     let mut lexer = Lexer::new();
     let tokens = lexer.lex("A paragraph with *emphasis*, **strong**, `code`.");
