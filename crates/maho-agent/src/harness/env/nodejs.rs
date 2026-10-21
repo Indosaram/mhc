@@ -5,7 +5,7 @@
 //! `std::process` calls are used. The observable contract — results, error codes, messages,
 //! timeout/abort handling, bounded capture and spilling — matches the TS implementation.
 
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -17,14 +17,34 @@ use maho_ai::utils::abort::AbortSignal;
 use super::super::context::Context;
 use super::super::result::{Result, err, ok};
 use super::super::types::{
-    ExecutionError, ExecutionErrorCode, FileError, FileErrorCode, FileInfo, FileKind, FileSystem, Shell,
-    ShellExecOptions, ShellExecResult, TextLine, TextLineReader,
+    ExecutionError, ExecutionErrorCode, FileError, FileErrorCode, FileInfo, FileKind, FileSystem,
+    Shell, ShellExecOptions, ShellExecResult, TextLine, TextLineReader,
 };
 use super::super::utils::output_capture::{OutputCapture, OutputCaptureHandlers};
 
 const MAX_TIMEOUT_MS: u64 = 2_147_483_647;
 const MAX_TIMEOUT_SECONDS: f64 = MAX_TIMEOUT_MS as f64 / 1000.0;
 const EXIT_STDIO_GRACE_MS: u64 = 100;
+
+#[cfg(windows)]
+static OWNED_CHILDREN: std::sync::OnceLock<
+    Mutex<std::collections::HashMap<u32, Arc<Mutex<Child>>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(windows)]
+fn kill_owned_windows_child(pid: u32) {
+    let child = OWNED_CHILDREN
+        .get_or_init(Mutex::default)
+        .lock()
+        .expect("owned children poisoned")
+        .get(&pid)
+        .cloned();
+    if let Some(child) = child
+        && let Err(error) = child.lock().expect("owned child poisoned").kill()
+    {
+        eprintln!("Failed to terminate owned Windows child {pid}: {error}");
+    }
+}
 
 /// `resolveTimeoutMs(timeout)`.
 fn resolve_timeout_ms(timeout: Option<f64>) -> Result<Option<u64>, ExecutionError> {
@@ -77,15 +97,73 @@ fn resolve_path(cwd: &str, path: &str) -> String {
     if normalized == "~" {
         normalized = home_dir();
     } else if let Some(rest) = normalized.strip_prefix("~/") {
-        normalized = Path::new(&home_dir()).join(rest).to_string_lossy().into_owned();
-    } else if let Some(rest) = normalized.strip_prefix("file://") {
-        normalized = rest.to_string();
+        normalized = Path::new(&home_dir())
+            .join(rest)
+            .to_string_lossy()
+            .into_owned();
+    } else if cfg!(windows) && normalized.starts_with("~\\") {
+        normalized = Path::new(&home_dir())
+            .join(&normalized[2..])
+            .to_string_lossy()
+            .into_owned();
+    } else if normalized.starts_with("file://")
+        && let Some(path) = file_url_path(&normalized) {
+        normalized = path;
     }
     let candidate = Path::new(&normalized);
     if candidate.is_absolute() {
         normalize_path(candidate)
     } else {
         normalize_path(&Path::new(cwd).join(candidate))
+    }
+}
+
+fn file_url_path(input: &str) -> Option<String> {
+    let url = reqwest::Url::parse(input).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    let encoded = url.path();
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut source = encoded.bytes();
+    while let Some(byte) = source.next() {
+        if byte == b'%' {
+            let high = char::from(source.next()?).to_digit(16)?;
+            let low = char::from(source.next()?).to_digit(16)?;
+            let decoded = u8::try_from(high * 16 + low).ok()?;
+            if decoded == b'/' || (cfg!(windows) && decoded == b'\\') {
+                return None;
+            }
+            bytes.push(decoded);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    let decoded = String::from_utf8(bytes).ok()?;
+    #[cfg(windows)]
+    {
+        let path = decoded.replace('/', "\\");
+        if let Some(host) = url
+            .host_str()
+            .filter(|host| !host.is_empty() && *host != "localhost")
+        {
+            return Some(format!("\\\\{host}{path}"));
+        }
+        let path = path.strip_prefix('\\')?;
+        if path.as_bytes().get(1) != Some(&b':') {
+            return None;
+        }
+        Some(path.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        if url
+            .host_str()
+            .is_some_and(|host| !host.is_empty() && host != "localhost")
+        {
+            return None;
+        }
+        Some(decoded)
     }
 }
 
@@ -110,11 +188,7 @@ fn normalize_path(path: &Path) -> String {
     let mut result = prefix;
     let sep = std::path::MAIN_SEPARATOR.to_string();
     result.push_str(&parts.join(&sep));
-    if result.is_empty() {
-        sep
-    } else {
-        result
-    }
+    if result.is_empty() { sep } else { result }
 }
 
 fn file_kind_from_metadata(metadata: &std::fs::Metadata) -> Option<FileKind> {
@@ -130,9 +204,16 @@ fn file_kind_from_metadata(metadata: &std::fs::Metadata) -> Option<FileKind> {
     }
 }
 
-fn file_info_from_metadata(path: &str, metadata: &std::fs::Metadata) -> Result<FileInfo, FileError> {
+fn file_info_from_metadata(
+    path: &str,
+    metadata: &std::fs::Metadata,
+) -> Result<FileInfo, FileError> {
     let Some(kind) = file_kind_from_metadata(metadata) else {
-        return err(FileError::new(FileErrorCode::Invalid, "Unsupported file type", Some(path.to_string())));
+        return err(FileError::new(
+            FileErrorCode::Invalid,
+            "Unsupported file type",
+            Some(path.to_string()),
+        ));
     };
     let name = Path::new(path)
         .file_name()
@@ -144,7 +225,13 @@ fn file_info_from_metadata(path: &str, metadata: &std::fs::Metadata) -> Result<F
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis() as f64)
         .unwrap_or(0.0);
-    ok(FileInfo { name, path: path.to_string(), kind, size: metadata.len(), mtime_ms })
+    ok(FileInfo {
+        name,
+        path: path.to_string(),
+        kind,
+        size: metadata.len(),
+        mtime_ms,
+    })
 }
 
 fn to_file_error(error: &std::io::Error, fallback_path: Option<&str>) -> FileError {
@@ -155,7 +242,9 @@ fn to_file_error(error: &std::io::Error, fallback_path: Option<&str>) -> FileErr
         std::io::ErrorKind::PermissionDenied => FileErrorCode::PermissionDenied,
         std::io::ErrorKind::NotADirectory => FileErrorCode::NotDirectory,
         std::io::ErrorKind::IsADirectory => FileErrorCode::IsDirectory,
-        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => FileErrorCode::Invalid,
+        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
+            FileErrorCode::Invalid
+        }
         std::io::ErrorKind::Unsupported => FileErrorCode::NotSupported,
         _ => match error.raw_os_error() {
             Some(13) => FileErrorCode::PermissionDenied,
@@ -169,7 +258,10 @@ fn to_file_error(error: &std::io::Error, fallback_path: Option<&str>) -> FileErr
     FileError::new(code, message, path).with_cause(error.to_string())
 }
 
-fn abort_result<T>(signal: Option<&AbortSignal>, path: Option<&str>) -> Option<Result<T, FileError>> {
+fn abort_result<T>(
+    signal: Option<&AbortSignal>,
+    path: Option<&str>,
+) -> Option<Result<T, FileError>> {
     match signal {
         Some(signal) if signal.aborted() => Some(err(FileError::new(
             FileErrorCode::Aborted,
@@ -210,14 +302,24 @@ pub struct ShellConfig {
 /// `getBashShellConfig(shell)`.
 pub fn get_bash_shell_config(shell: &str) -> ShellConfig {
     if is_legacy_wsl_bash_path(shell) {
-        ShellConfig { shell: shell.to_string(), args: vec!["-s".to_string()], command_transport: Some("stdin") }
+        ShellConfig {
+            shell: shell.to_string(),
+            args: vec!["-s".to_string()],
+            command_transport: Some("stdin"),
+        }
     } else {
-        ShellConfig { shell: shell.to_string(), args: vec!["-c".to_string()], command_transport: None }
+        ShellConfig {
+            shell: shell.to_string(),
+            args: vec!["-c".to_string()],
+            command_transport: None,
+        }
     }
 }
 
 /// `windowsTaskkillCandidates(env)`.
-pub fn windows_taskkill_candidates(env: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+pub fn windows_taskkill_candidates(
+    env: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
     let system_drive = env.get("SystemDrive").map(|drive| format!("{drive}\\"));
     let roots: Vec<Option<String>> = vec![
         env.get("SystemRoot").cloned(),
@@ -238,8 +340,70 @@ pub fn windows_taskkill_candidates(env: &std::collections::BTreeMap<String, Stri
     candidates
 }
 
+pub(super) fn run_command_bounded(
+    command: &str,
+    args: &[&str],
+    timeout: Duration,
+    max_bytes: u64,
+) -> Option<std::process::Output> {
+    let mut process = Command::new(command);
+    process
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut process, 0x0800_0000);
+    let mut child = process.spawn().ok()?;
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout
+            .take(max_bytes + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
+        let _ = tx.send(result);
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => {}
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::park_timeout(remaining.min(Duration::from_millis(10)));
+    };
+    let stdout = rx
+        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        .ok()?
+        .ok()?;
+    if u64::try_from(stdout.len()).ok()? > max_bytes {
+        return None;
+    }
+    Some(std::process::Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
+}
+
 fn find_bash_on_path() -> Option<String> {
-    let result = Command::new("which").arg("bash").output().ok()?;
+    #[cfg(windows)]
+    let (command, args) = ("where", ["bash.exe"]);
+    #[cfg(not(windows))]
+    let (command, args) = ("which", ["bash"]);
+    let result = run_command_bounded(command, &args, Duration::from_secs(5), 16 * 1024 * 1024)?;
     if !result.status.success() {
         return None;
     }
@@ -253,7 +417,7 @@ fn find_bash_on_path() -> Option<String> {
 }
 
 /// `getShellConfig(customShellPath)`.
-fn get_shell_config(custom_shell_path: Option<&str>) -> Result<ShellConfig, ExecutionError> {
+pub(crate) fn get_shell_config(custom_shell_path: Option<&str>) -> Result<ShellConfig, ExecutionError> {
     if let Some(custom) = custom_shell_path {
         if path_exists(custom) {
             return ok(get_bash_shell_config(custom));
@@ -268,9 +432,14 @@ fn get_shell_config(custom_shell_path: Option<&str>) -> Result<ShellConfig, Exec
         let program_files_x86 = std::env::var("ProgramFiles(x86)").ok();
         let mut candidates: Vec<String> = Vec::new();
         if let Some(program_files) = program_files {
+            // Use the shell itself rather than Git's bin/bash.exe launcher. The
+            // launcher may exit before the shell, losing the live tree root
+            // needed to terminate descendants holding stdout/stderr open.
+            candidates.push(format!("{program_files}\\Git\\usr\\bin\\bash.exe"));
             candidates.push(format!("{program_files}\\Git\\bin\\bash.exe"));
         }
         if let Some(program_files_x86) = program_files_x86 {
+            candidates.push(format!("{program_files_x86}\\Git\\usr\\bin\\bash.exe"));
             candidates.push(format!("{program_files_x86}\\Git\\bin\\bash.exe"));
         }
         for candidate in &candidates {
@@ -300,7 +469,11 @@ fn get_shell_config(custom_shell_path: Option<&str>) -> Result<ShellConfig, Exec
     if let Some(bash_on_path) = find_bash_on_path() {
         return ok(get_bash_shell_config(&bash_on_path));
     }
-    ok(ShellConfig { shell: "sh".to_string(), args: vec!["-c".to_string()], command_transport: None })
+    ok(ShellConfig {
+        shell: "sh".to_string(),
+        args: vec!["-c".to_string()],
+        command_transport: None,
+    })
 }
 
 /// `getShellEnv(baseEnv, extraEnv, inheritEnv)`.
@@ -314,10 +487,10 @@ fn get_shell_env(
         for (key, value) in std::env::vars() {
             result.insert(key, value);
         }
-    }
-    if let Some(base_env) = base_env {
-        for (key, value) in base_env {
-            result.insert(key.clone(), value.clone());
+        if let Some(base_env) = base_env {
+            for (key, value) in base_env {
+                result.insert(key.clone(), value.clone());
+            }
         }
     }
     if let Some(extra_env) = extra_env {
@@ -332,32 +505,55 @@ fn get_shell_env(
 
 /// `killProcessTree(pid)`.
 fn kill_process_tree(pid: u32) {
-    if cfg!(windows) {
-        let env_map: std::collections::BTreeMap<String, String> = std::env::vars().collect();
-        kill_windows_process_tree(pid, &windows_taskkill_candidates(&env_map));
-        return;
+    #[cfg(windows)]
+    kill_windows_process_tree(
+        pid,
+        &windows_taskkill_candidates(&std::env::vars().collect()),
+    );
+    #[cfg(not(windows))]
+    {
+        let script = format!("kill -9 -{pid} 2>/dev/null || kill -9 {pid} 2>/dev/null || true");
+        let _ = Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
-    let script = format!("kill -9 -{pid} 2>/dev/null || kill -9 {pid} 2>/dev/null || true");
-    let _ = Command::new("sh").arg("-c").arg(script).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 /// `killWindowsProcessTree(pid, taskkillPaths)`.
 pub fn kill_windows_process_tree(pid: u32, taskkill_paths: &[String]) {
+    let rows = super::windows_process_tree::list_windows_process_rows_sync(5000);
+    let args = super::windows_process_tree::windows_tree_kill_args(
+        pid,
+        rows.as_deref(),
+        std::process::id(),
+    );
+    if args.is_empty() {
+        return;
+    }
+    let args: Vec<_> = args.iter().map(String::as_str).collect();
     for taskkill_path in taskkill_paths {
-        let handled = Command::new(taskkill_path)
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.code().is_some())
-            .unwrap_or(false);
+        let handled = run_command_bounded(
+            taskkill_path,
+            &args,
+            Duration::from_secs(5),
+            16 * 1024 * 1024,
+        )
+        .is_some();
         if handled {
             return;
         }
     }
-    if !cfg!(windows) {
-        kill_process_tree(pid);
+    #[cfg(windows)]
+    {
+        if super::windows_process_tree::terminate_windows_process(pid).is_err() {
+            kill_owned_windows_child(pid);
+        }
     }
+    #[cfg(not(windows))]
+    kill_process_tree(pid);
 }
 
 /// Strict LF reader; the final line's termination is reported.
@@ -374,6 +570,7 @@ struct ReaderState {
     pending: Vec<u8>,
     ended: bool,
     closed: bool,
+    byte_offset: u64,
 }
 
 impl NodeTextLineReader {
@@ -381,19 +578,35 @@ impl NodeTextLineReader {
         Self {
             file: Mutex::new(file),
             path,
-            state: Mutex::new(ReaderState { buffered: String::new(), start: 0, pending: Vec::new(), ended: false, closed: false }),
+            state: Mutex::new(ReaderState {
+                buffered: String::new(),
+                start: 0,
+                pending: Vec::new(),
+                ended: false,
+                closed: false,
+                byte_offset: 0,
+            }),
         }
     }
 }
 
 impl TextLineReader for NodeTextLineReader {
-    fn read_line<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, Result<Option<TextLine>, FileError>> {
+    fn read_line<'a>(
+        &'a self,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Option<TextLine>, FileError>> {
         Box::pin(async move {
-            if let Some(aborted) = abort_result::<Option<TextLine>>(context.abort_signal().as_ref(), Some(&self.path)) {
+            if let Some(aborted) =
+                abort_result::<Option<TextLine>>(context.abort_signal().as_ref(), Some(&self.path))
+            {
                 return aborted;
             }
             if self.state.lock().expect("line reader poisoned").closed {
-                return err(FileError::new(FileErrorCode::Invalid, "Text line reader is closed", Some(self.path.clone())));
+                return err(FileError::new(
+                    FileErrorCode::Invalid,
+                    "Text line reader is closed",
+                    Some(self.path.clone()),
+                ));
             }
 
             loop {
@@ -403,7 +616,10 @@ impl TextLineReader for NodeTextLineReader {
                     if let Some(newline) = state.buffered[start..].find('\n') {
                         let text = state.buffered[start..start + newline].to_string();
                         state.start = start + newline + 1;
-                        return ok(Some(TextLine { text, terminated: true }));
+                        return ok(Some(TextLine {
+                            text,
+                            terminated: true,
+                        }));
                     }
                     if state.ended {
                         if state.buffered.len() == start {
@@ -412,17 +628,24 @@ impl TextLineReader for NodeTextLineReader {
                         let mut text = std::mem::take(&mut state.buffered);
                         text.replace_range(..start, "");
                         state.start = 0;
-                        return ok(Some(TextLine { text, terminated: false }));
+                        return ok(Some(TextLine {
+                            text,
+                            terminated: false,
+                        }));
                     }
                 }
 
                 let mut chunk = [0u8; 64 * 1024];
+                let offset = self.state.lock().expect("line reader poisoned").byte_offset;
                 let read = {
                     let mut file = self.file.lock().expect("line reader poisoned");
-                    file.read(&mut chunk)
+                    file.seek(SeekFrom::Start(offset))
+                        .and_then(|_| file.read(&mut chunk))
                 };
-                if let Some(aborted) = abort_result::<Option<TextLine>>(context.abort_signal().as_ref(), Some(&self.path))
-                {
+                if let Some(aborted) = abort_result::<Option<TextLine>>(
+                    context.abort_signal().as_ref(),
+                    Some(&self.path),
+                ) {
                     return aborted;
                 }
                 let mut state = self.state.lock().expect("line reader poisoned");
@@ -435,6 +658,7 @@ impl TextLineReader for NodeTextLineReader {
                         state.buffered.push_str(&tail);
                     }
                     Ok(count) => {
+                        state.byte_offset += u64::try_from(count).unwrap_or(0);
                         let tail = decode_chunk_with(&mut state.pending, &chunk[..count], false);
                         state.buffered.push_str(&tail);
                     }
@@ -503,7 +727,9 @@ fn drain_utf8(pending: &mut Vec<u8>, flush: bool) -> String {
 
 fn random_uuid() -> String {
     let mut bytes = [0u8; 16];
-    let filled = std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes)).is_ok();
+    let filled = std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_ok();
     if !filled {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -516,7 +742,14 @@ fn random_uuid() -> String {
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 /// `NodeExecutionEnv implements ExecutionEnv`.
@@ -529,7 +762,12 @@ pub struct NodeExecutionEnv {
 
 impl NodeExecutionEnv {
     pub fn new(cwd: impl Into<String>) -> Self {
-        Self { cwd: cwd.into(), shell_path: None, shell_env: None, active_child_pids: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            cwd: cwd.into(),
+            shell_path: None,
+            shell_env: None,
+            active_child_pids: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     pub fn with_shell_path(mut self, shell_path: Option<String>) -> Self {
@@ -537,7 +775,10 @@ impl NodeExecutionEnv {
         self
     }
 
-    pub fn with_shell_env(mut self, shell_env: Option<std::collections::BTreeMap<String, String>>) -> Self {
+    pub fn with_shell_env(
+        mut self,
+        shell_env: Option<std::collections::BTreeMap<String, String>>,
+    ) -> Self {
         self.shell_env = shell_env;
         self
     }
@@ -552,19 +793,33 @@ impl FileSystem for NodeExecutionEnv {
         &self.cwd
     }
 
-    fn absolute_path<'a>(&'a self, path: &'a str, _context: &'a Context) -> BoxFuture<'a, Result<String, FileError>> {
+    fn absolute_path<'a>(
+        &'a self,
+        path: &'a str,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, FileError>> {
         let resolved = self.resolved(path);
         Box::pin(async move { ok(resolved) })
     }
 
-    fn join_path<'a>(&'a self, parts: Vec<String>, _context: &'a Context) -> BoxFuture<'a, Result<String, FileError>> {
+    fn join_path<'a>(
+        &'a self,
+        parts: Vec<String>,
+        _context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, FileError>> {
         Box::pin(async move {
-            let joined = parts.iter().fold(PathBuf::new(), |acc, part| acc.join(part));
+            let joined = parts
+                .iter()
+                .fold(PathBuf::new(), |acc, part| acc.join(part));
             ok(normalize_path(&joined))
         })
     }
 
-    fn read_text_file<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<String, FileError>> {
+    fn read_text_file<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, FileError>> {
         let resolved = self.resolved(path);
         let signal = context.abort_signal();
         Box::pin(async move {
@@ -586,15 +841,20 @@ impl FileSystem for NodeExecutionEnv {
         let resolved = self.resolved(path);
         let signal = context.abort_signal();
         Box::pin(async move {
-            if let Some(aborted) = abort_result::<Box<dyn TextLineReader>>(signal.as_ref(), Some(&resolved)) {
+            if let Some(aborted) =
+                abort_result::<Box<dyn TextLineReader>>(signal.as_ref(), Some(&resolved))
+            {
                 return aborted;
             }
             match std::fs::File::open(&resolved) {
                 Ok(file) => {
-                    if let Some(aborted) = abort_result::<Box<dyn TextLineReader>>(signal.as_ref(), Some(&resolved)) {
+                    if let Some(aborted) =
+                        abort_result::<Box<dyn TextLineReader>>(signal.as_ref(), Some(&resolved))
+                    {
                         return aborted;
                     }
-                    ok(Box::new(NodeTextLineReader::new(file, resolved)) as Box<dyn TextLineReader>)
+                    ok(Box::new(NodeTextLineReader::new(file, resolved))
+                        as Box<dyn TextLineReader>)
                 }
                 Err(error) => err(to_file_error(&error, Some(&resolved))),
             }
@@ -634,7 +894,11 @@ impl FileSystem for NodeExecutionEnv {
         })
     }
 
-    fn read_binary_file<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<Vec<u8>, FileError>> {
+    fn read_binary_file<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<u8>, FileError>> {
         let resolved = self.resolved(path);
         let signal = context.abort_signal();
         Box::pin(async move {
@@ -695,9 +959,11 @@ impl FileSystem for NodeExecutionEnv {
             if let Some(aborted) = abort_result::<()>(signal.as_ref(), Some(&resolved)) {
                 return aborted;
             }
-            let result = std::fs::OpenOptions::new().append(true).create(true).open(&resolved).and_then(|mut file| {
-                file.write_all(content)
-            });
+            let result = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&resolved)
+                .and_then(|mut file| file.write_all(content));
             match result {
                 Ok(()) => match abort_result::<()>(signal.as_ref(), Some(&resolved)) {
                     Some(aborted) => aborted,
@@ -728,7 +994,11 @@ impl FileSystem for NodeExecutionEnv {
         })
     }
 
-    fn file_info<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<FileInfo, FileError>> {
+    fn file_info<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<FileInfo, FileError>> {
         let resolved = self.resolved(path);
         let signal = context.abort_signal();
         Box::pin(async move {
@@ -742,7 +1012,11 @@ impl FileSystem for NodeExecutionEnv {
         })
     }
 
-    fn list_dir<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<Vec<FileInfo>, FileError>> {
+    fn list_dir<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<FileInfo>, FileError>> {
         let resolved = self.resolved(path);
         let signal = context.abort_signal();
         Box::pin(async move {
@@ -755,7 +1029,9 @@ impl FileSystem for NodeExecutionEnv {
             };
             let mut infos = Vec::new();
             for entry in entries {
-                if let Some(aborted) = abort_result::<Vec<FileInfo>>(signal.as_ref(), Some(&resolved)) {
+                if let Some(aborted) =
+                    abort_result::<Vec<FileInfo>>(signal.as_ref(), Some(&resolved))
+                {
                     return aborted;
                 }
                 let entry = match entry {
@@ -776,7 +1052,11 @@ impl FileSystem for NodeExecutionEnv {
         })
     }
 
-    fn canonical_path<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<String, FileError>> {
+    fn canonical_path<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, FileError>> {
         let resolved = self.resolved(path);
         let signal = context.abort_signal();
         Box::pin(async move {
@@ -790,7 +1070,11 @@ impl FileSystem for NodeExecutionEnv {
         })
     }
 
-    fn exists<'a>(&'a self, path: &'a str, context: &'a Context) -> BoxFuture<'a, Result<bool, FileError>> {
+    fn exists<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<bool, FileError>> {
         Box::pin(async move {
             match self.file_info(path, context).await {
                 Ok(_) => ok(true),
@@ -883,10 +1167,16 @@ impl FileSystem for NodeExecutionEnv {
                 match std::fs::create_dir(&candidate) {
                     Ok(()) => return ok(candidate.to_string_lossy().into_owned()),
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                    Err(error) => return err(to_file_error(&error, Some(&candidate.to_string_lossy()))),
+                    Err(error) => {
+                        return err(to_file_error(&error, Some(&candidate.to_string_lossy())));
+                    }
                 }
             }
-            err(FileError::new(FileErrorCode::Unknown, "Failed to create a unique temporary directory", None))
+            err(FileError::new(
+                FileErrorCode::Unknown,
+                "Failed to create a unique temporary directory",
+                None,
+            ))
         })
     }
 
@@ -897,12 +1187,20 @@ impl FileSystem for NodeExecutionEnv {
         context: &'a Context,
     ) -> BoxFuture<'a, Result<String, FileError>> {
         Box::pin(async move {
-            let dir = match self.create_temp_dir(Some("tmp-".to_string()), context).await {
+            let dir = match self
+                .create_temp_dir(Some("tmp-".to_string()), context)
+                .await
+            {
                 Ok(dir) => dir,
                 Err(error) => return err(error),
             };
             let file_path = Path::new(&dir)
-                .join(format!("{}{}{}", prefix.unwrap_or_default(), random_uuid(), suffix.unwrap_or_default()))
+                .join(format!(
+                    "{}{}{}",
+                    prefix.unwrap_or_default(),
+                    random_uuid(),
+                    suffix.unwrap_or_default()
+                ))
                 .to_string_lossy()
                 .into_owned();
             match std::fs::write(&file_path, "") {
@@ -944,6 +1242,8 @@ enum ExecOutcome {
     Exited(std::process::ExitStatus),
     TimedOut,
     Aborted,
+    SpillFailed(ExecutionError),
+    CallbackFailed,
 }
 
 impl NodeExecutionEnv {
@@ -957,10 +1257,11 @@ impl NodeExecutionEnv {
         if signal.as_ref().is_some_and(|signal| signal.aborted()) {
             return err(ExecutionError::new(ExecutionErrorCode::Aborted, "aborted"));
         }
-        let timeout_ms = match resolve_timeout_ms(options.as_ref().and_then(|options| options.timeout)) {
-            Ok(timeout_ms) => timeout_ms,
-            Err(error) => return err(error),
-        };
+        let timeout_ms =
+            match resolve_timeout_ms(options.as_ref().and_then(|options| options.timeout)) {
+                Ok(timeout_ms) => timeout_ms,
+                Err(error) => return err(error),
+            };
         let cwd = match options.as_ref().and_then(|options| options.cwd.clone()) {
             Some(cwd) => resolve_path(&self.cwd, &cwd),
             None => self.cwd.clone(),
@@ -977,18 +1278,31 @@ impl NodeExecutionEnv {
         }
 
         let capture_options = options.as_ref().and_then(|options| options.capture.clone());
+        let (callback_error_tx, mut callback_error_rx) = tokio::sync::mpsc::unbounded_channel();
         let capture = match OutputCapture::new(
             capture_options.as_ref(),
             context.clone(),
             OutputCaptureHandlers {
-                on_update: options.as_ref().and_then(|options| options.on_update.clone()),
-                on_error: Arc::new(|_message| {}),
+                on_update: options
+                    .as_ref()
+                    .and_then(|options| options.on_update.clone()),
+                on_error: Arc::new(move |message| {
+                    if let Err(error) = callback_error_tx.send(message) {
+                        eprintln!(
+                            "Output callback failed after execution settled: {}",
+                            error.0
+                        );
+                    }
+                }),
             },
         ) {
             Ok(capture) => Arc::new(capture),
             Err(message) => return err(ExecutionError::new(ExecutionErrorCode::Unknown, message)),
         };
-        let spill_enabled = capture_options.as_ref().and_then(|options| options.spill).unwrap_or(false);
+        let spill_enabled = capture_options
+            .as_ref()
+            .and_then(|options| options.spill)
+            .unwrap_or(false);
 
         let command_from_stdin = shell_config.command_transport == Some("stdin");
         let mut process = Command::new(&shell_config.shell);
@@ -1002,11 +1316,20 @@ impl NodeExecutionEnv {
         }
         process
             .current_dir(&cwd)
-            .envs(get_shell_env(self.shell_env.as_ref(), options.as_ref().and_then(|options| options.env.as_ref()), options
-                .as_ref()
-                .and_then(|options| options.inherit_env)
-                .unwrap_or(true)))
-            .stdin(if command_from_stdin { Stdio::piped() } else { Stdio::null() })
+            .env_clear()
+            .envs(get_shell_env(
+                self.shell_env.as_ref(),
+                options.as_ref().and_then(|options| options.env.as_ref()),
+                options
+                    .as_ref()
+                    .and_then(|options| options.inherit_env)
+                    .unwrap_or(true),
+            ))
+            .stdin(if command_from_stdin {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         // Make the shell a process-group leader so `kill_process_tree`'s `kill -9 -{pid}` reaches grandchildren.
@@ -1015,18 +1338,25 @@ impl NodeExecutionEnv {
 
         let mut child: Child = match process.spawn() {
             Ok(child) => child,
-            Err(error) => return err(ExecutionError::new(ExecutionErrorCode::SpawnError, error.to_string())),
+            Err(error) => {
+                return err(ExecutionError::new(
+                    ExecutionErrorCode::SpawnError,
+                    error.to_string(),
+                ));
+            }
         };
         let pid = child.id();
-        self.active_child_pids.lock().expect("active pids poisoned").push(pid);
+        self.active_child_pids
+            .lock()
+            .expect("active pids poisoned")
+            .push(pid);
 
-        if command_from_stdin
-            && let Some(mut stdin) = child.stdin.take()
-        {
+        if command_from_stdin && let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(command.as_bytes());
         }
 
-        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(EXEC_CHUNK_CHANNEL_CAPACITY);
+        let (chunk_tx, mut chunk_rx) =
+            tokio::sync::mpsc::channel::<Vec<u8>>(EXEC_CHUNK_CHANNEL_CAPACITY);
         let mut stdout_pipe = child.stdout.take();
         let mut stderr_pipe = child.stderr.take();
         let mut readers = Vec::new();
@@ -1041,13 +1371,41 @@ impl NodeExecutionEnv {
         drop(chunk_tx);
 
         let (status_tx, mut status_rx) = tokio::sync::oneshot::channel();
+        #[cfg(not(windows))]
         let waiter = std::thread::spawn(move || {
             let status = child.wait();
             let _ = status_tx.send(status);
         });
+        #[cfg(windows)]
+        let waiter = {
+            let child = Arc::new(Mutex::new(child));
+            OWNED_CHILDREN
+                .get_or_init(Mutex::default)
+                .lock()
+                .expect("owned children poisoned")
+                .insert(pid, child.clone());
+            std::thread::spawn(move || {
+                let status = loop {
+                    let status = child.lock().expect("owned child poisoned").try_wait();
+                    match status {
+                        Ok(Some(status)) => break Ok(status),
+                        Err(error) => break Err(error),
+                        Ok(None) => std::thread::park_timeout(Duration::from_millis(10)),
+                    }
+                };
+                OWNED_CHILDREN
+                    .get_or_init(Mutex::default)
+                    .lock()
+                    .expect("owned children poisoned")
+                    .remove(&pid);
+                let _ = status_tx.send(status);
+            })
+        };
 
         let mut spill = SpillState::new();
-        let mut outcome = None;
+        let mut outcome;
+        let mut callback_failure = None;
+        let mut pipes_open = true;
         let timeout_future = async {
             match timeout_ms {
                 Some(timeout_ms) => tokio::time::sleep(Duration::from_millis(timeout_ms)).await,
@@ -1065,19 +1423,25 @@ impl NodeExecutionEnv {
 
         loop {
             tokio::select! {
-                chunk = chunk_rx.recv() => {
+                Some(message) = callback_error_rx.recv() => {
+                    kill_process_tree(pid);
+                    outcome = Some(ExecOutcome::CallbackFailed);
+                    callback_failure = Some(message);
+                    break;
+                }
+                chunk = chunk_rx.recv(), if pipes_open => {
                     match chunk {
                         Some(chunk) => {
                             capture.push_bytes(chunk.as_slice());
-                            if spill_enabled {
-                                spill.push(chunk.as_slice(), capture.truncated());
+                            if spill_enabled
+                                && let Err(error) = spill.push(chunk.as_slice(), capture.truncated()) {
+                                kill_process_tree(pid);
+                                outcome = Some(ExecOutcome::SpillFailed(error));
+                                break;
                             }
                         }
                         None => {
-                            if outcome.is_none() {
-                                outcome = Some(ExecOutcome::Exited(wait_status(&mut status_rx).await));
-                            }
-                            break;
+                            pipes_open = false;
                         }
                     }
                 }
@@ -1104,8 +1468,21 @@ impl NodeExecutionEnv {
             tokio::time::timeout(Duration::from_millis(EXIT_STDIO_GRACE_MS), chunk_rx.recv()).await
         {
             capture.push_bytes(chunk.as_slice());
-            if spill_enabled {
-                spill.push(chunk.as_slice(), capture.truncated());
+            if spill_enabled
+                && let Err(error) = spill.push(chunk.as_slice(), capture.truncated()) {
+                    kill_process_tree(pid);
+                    if !matches!(
+                        outcome,
+                        Some(
+                            ExecOutcome::TimedOut
+                                | ExecOutcome::Aborted
+                                | ExecOutcome::SpillFailed(_)
+                                | ExecOutcome::CallbackFailed
+                        )
+                    ) {
+                        outcome = Some(ExecOutcome::SpillFailed(error));
+                    }
+                    break;
             }
         }
 
@@ -1123,27 +1500,50 @@ impl NodeExecutionEnv {
         spill.finish(&capture);
         capture.finish();
         capture.flush();
+        let callbacks = capture.settle_callbacks().await;
         capture.dispose();
+        if let Some(message) = callback_failure
+            .or_else(|| callback_error_rx.try_recv().ok())
+            .or_else(|| callbacks.err())
+        {
+            let mut error = ExecutionError::new(ExecutionErrorCode::CallbackError, &message);
+            error.cause = Some(message);
+            return err(error);
+        }
 
         let outcome = match outcome {
             Some(outcome) => outcome,
             None => ExecOutcome::Exited(wait_status(&mut status_rx).await),
         };
         match outcome {
+            ExecOutcome::SpillFailed(error) => err(error),
             ExecOutcome::TimedOut => {
                 let _ = tokio::time::timeout(Duration::from_millis(500), &mut status_rx).await;
-                err(ExecutionError::new(
+                let mut error = ExecutionError::new(
                     ExecutionErrorCode::Timeout,
-                    format!("timeout:{}", options.as_ref().and_then(|options| options.timeout).unwrap_or(0.0)),
-                ))
+                    format!(
+                        "timeout:{}",
+                        options
+                            .as_ref()
+                            .and_then(|options| options.timeout)
+                            .unwrap_or(0.0)
+                    ),
+                );
+                error.spill_path = capture.snapshot().spill_path;
+                err(error)
             }
             ExecOutcome::Aborted => {
                 let _ = tokio::time::timeout(Duration::from_millis(500), &mut status_rx).await;
-                err(ExecutionError::new(ExecutionErrorCode::Aborted, "aborted"))
+                let mut error = ExecutionError::new(ExecutionErrorCode::Aborted, "aborted");
+                error.spill_path = capture.snapshot().spill_path;
+                err(error)
+            }
+            ExecOutcome::CallbackFailed => {
+                unreachable!("callback failure is returned before outcome settlement")
             }
             ExecOutcome::Exited(status) => {
                 let output = capture.snapshot();
-                let exit_code = status.code().unwrap_or(1);
+                let exit_code = execution_exit_code(status);
                 ok(ShellExecResult {
                     exit_code,
                     truncation: output.truncation,
@@ -1156,6 +1556,18 @@ impl NodeExecutionEnv {
 }
 
 const EXEC_CHUNK_CHANNEL_CAPACITY: usize = 64;
+
+fn execution_exit_code(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status
+            .code()
+            .unwrap_or_else(|| status.signal().map_or(1, |signal| 128 + signal))
+    }
+    #[cfg(not(unix))]
+    status.code().unwrap_or(1)
+}
 
 fn read_stream(mut pipe: impl Read, tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
     let mut buffer = [0u8; 8192];
@@ -1171,7 +1583,9 @@ fn read_stream(mut pipe: impl Read, tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
     }
 }
 
-async fn wait_status(status_rx: &mut tokio::sync::oneshot::Receiver<std::io::Result<std::process::ExitStatus>>) -> std::process::ExitStatus {
+async fn wait_status(
+    status_rx: &mut tokio::sync::oneshot::Receiver<std::io::Result<std::process::ExitStatus>>,
+) -> std::process::ExitStatus {
     match std::future::poll_fn(|cx| std::pin::Pin::new(&mut *status_rx).poll(cx)).await {
         Ok(Ok(status)) => status,
         Ok(Err(_)) | Err(_) => exit_status_fallback(),
@@ -1200,43 +1614,47 @@ struct SpillState {
 
 impl SpillState {
     fn new() -> Self {
-        Self { prefix: Vec::new(), path: None, started: false }
+        Self {
+            prefix: Vec::new(),
+            path: None,
+            started: false,
+        }
     }
 
-    fn push(&mut self, chunk: &[u8], truncated: bool) {
+    fn push(&mut self, chunk: &[u8], truncated: bool) -> Result<(), ExecutionError> {
         if chunk.is_empty() {
-            return;
+            return Ok(());
         }
         if self.started {
-            self.append(chunk);
-            return;
+            return self.append(chunk).map_err(spill_error);
         }
         if truncated {
             let prefix = std::mem::take(&mut self.prefix);
             for buffered in prefix {
-                self.append(&buffered);
+                self.append(&buffered).map_err(spill_error)?;
             }
-            self.append(chunk);
+            self.append(chunk).map_err(spill_error)?;
         } else {
             self.prefix.push(chunk.to_vec());
         }
+        Ok(())
     }
 
-    fn append(&mut self, chunk: &[u8]) {
+    fn append(&mut self, chunk: &[u8]) -> std::io::Result<()> {
         if self.path.is_none() {
             let dir = Path::new(&temp_dir()).join(format!("tmp-{}", random_uuid()));
-            if std::fs::create_dir_all(&dir).is_err() {
-                return;
-            }
+            std::fs::create_dir_all(&dir)?;
             let path = dir.join(format!("pi-output-{}.log", random_uuid()));
             self.path = Some(path.to_string_lossy().into_owned());
             self.started = true;
         }
-        let Some(path) = self.path.clone() else {
-            return;
-        };
-        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(&path) {
-            let _ = file.write_all(chunk);
+        match &self.path {
+            Some(path) => std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(path)?
+                .write_all(chunk),
+            None => Err(std::io::Error::other("Spill path was not initialized")),
         }
     }
 
@@ -1244,5 +1662,220 @@ impl SpillState {
         if let Some(path) = self.path.clone() {
             capture.set_spill_path(&path);
         }
+    }
+}
+
+fn spill_error(error: std::io::Error) -> ExecutionError {
+    let mut failure = ExecutionError::new(
+        ExecutionErrorCode::Unknown,
+        format!("Failed to preserve complete shell output: {error}"),
+    );
+    failure.cause = Some(error.to_string());
+    failure
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    use crate::harness::context::background_context;
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn observer_rejection_terminates_running_command() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let env = NodeExecutionEnv::new(dir.path().to_string_lossy());
+        let context = background_context();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            env.exec(
+                "printf ready; mkfifo hold; read -r value < hold",
+                Some(ShellExecOptions {
+                    on_update: Some(Arc::new(|_, _| {
+                        Box::pin(async { Err("observer rejected".into()) })
+                    })),
+                    ..Default::default()
+                }),
+                &context,
+            ),
+        )
+        .await
+        .expect("rejection stops command")
+        .expect_err("observer failure");
+        assert_eq!(result.code, ExecutionErrorCode::CallbackError);
+        assert_eq!(result.message, "observer rejected");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn aborted_execution_preserves_spill_location() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let env = NodeExecutionEnv::new(dir.path().to_string_lossy());
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let context =
+            crate::harness::context::with_abort_signal(controller.signal(), &background_context());
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            env.exec(
+                "printf 'complete output'; mkfifo hold; read -r value < hold",
+                Some(ShellExecOptions {
+                    capture: Some(super::super::super::types::ShellOutputCaptureOptions {
+                        limits: super::super::super::types::ShellOutputLimits {
+                            max_bytes: 4,
+                            max_lines: 10,
+                            retain: None,
+                        },
+                        spill: Some(true),
+                    }),
+                    on_update: Some(Arc::new(move |_, _| {
+                        controller.abort(None);
+                        Box::pin(async { Ok(()) })
+                    })),
+                    ..Default::default()
+                }),
+                &context,
+            ),
+        )
+        .await
+        .expect("abort stops command")
+        .expect_err("aborted execution");
+        assert_eq!(result.code, ExecutionErrorCode::Aborted);
+        let path = result.spill_path.expect("spill location");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("spill output"),
+            "complete output"
+        );
+        std::fs::remove_dir_all(Path::new(&path).parent().expect("spill directory"))
+            .expect("cleanup spill");
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn failed_taskkill_terminates_owned_child_directly() {
+        let child = Command::new("cmd.exe")
+            .args(["/C", "pause"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("child");
+        let pid = child.id();
+        let child = Arc::new(Mutex::new(child));
+        OWNED_CHILDREN
+            .get_or_init(Mutex::default)
+            .lock()
+            .expect("children")
+            .insert(pid, child.clone());
+        kill_windows_process_tree(pid, &[]);
+        let status = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || child.lock().expect("child").wait()),
+        )
+        .await
+        .expect("termination deadline")
+        .expect("waiter")
+        .expect("terminated child");
+        assert!(!status.success());
+        OWNED_CHILDREN
+            .get_or_init(Mutex::default)
+            .lock()
+            .expect("children")
+            .remove(&pid);
+    }
+
+    #[test]
+    fn noninherited_environment_excludes_base_variables() {
+        // Given: configured base and explicit extra variables.
+        let base = std::collections::BTreeMap::from([("BASE".into(), "hidden".into())]);
+        let extra = serde_json::Map::from_iter([("EXTRA".into(), serde_json::json!("visible"))]);
+        // When: inheritance is disabled.
+        let env = get_shell_env(Some(&base), Some(&extra), false);
+        // Then: only the explicitly supplied environment remains.
+        assert_eq!(
+            env,
+            std::collections::BTreeMap::from([("EXTRA".into(), "visible".into())])
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_urls_decode_spaces_and_unicode() {
+        // Given: an encoded local file URL.
+        let url = "file:///tmp/a%20b/%F0%9F%98%80";
+        // When: the URL is resolved.
+        let path = resolve_path("/work", url);
+        // Then: percent encoding is decoded as UTF-8.
+        assert_eq!(path, "/tmp/a b/\u{1f600}");
+    }
+
+    #[test]
+    fn encoded_path_separators_leave_file_urls_unconverted() {
+        // Given: a file URL containing a forbidden encoded separator.
+        let url = "file:///tmp/a%2Fb";
+        // When: conversion is attempted.
+        let path = file_url_path(url);
+        // Then: the caller can retain the malformed URL as an ordinary path.
+        assert!(path.is_none());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_home_backslash_is_expanded() {
+        // Given: a Windows home-relative path.
+        let input = "~\\child";
+        // When: the path is resolved.
+        let path = resolve_path("C:\\work", input);
+        // Then: it is relative to the user's home.
+        assert_eq!(path, normalize_path(&Path::new(&home_dir()).join("child")));
+    }
+
+    #[tokio::test]
+    async fn line_reader_retries_from_uncommitted_byte_offset() {
+        // Given: an underlying cursor advanced by a discarded read.
+        let mut file = tempfile::tempfile().expect("temporary file");
+        file.write_all(b"first\nsecond\n").expect("write fixture");
+        file.seek(SeekFrom::Start(6))
+            .expect("discarded read cursor");
+        let reader = NodeTextLineReader::new(file, "fixture".into());
+        // When: a read is retried with no committed byte offset.
+        let line = reader
+            .read_line(&background_context())
+            .await
+            .expect("retry");
+        // Then: the first chunk has not been skipped.
+        assert_eq!(
+            line,
+            Some(TextLine {
+                text: "first".into(),
+                terminated: true
+            })
+        );
+    }
+
+    #[test]
+    fn spill_write_failure_is_an_execution_error() {
+        // Given: an existing directory where a spill file is expected.
+        let dir = tempfile::tempdir().expect("spill fixture");
+        let mut spill = SpillState {
+            prefix: Vec::new(),
+            path: Some(dir.path().to_string_lossy().into_owned()),
+            started: true,
+        };
+        // When: another output chunk is preserved.
+        let error = spill
+            .push(b"output", true)
+            .expect_err("directory cannot accept file output");
+        // Then: execution receives a failure rather than successful completion.
+        assert_eq!(error.code, ExecutionErrorCode::Unknown);
+        assert!(error.cause.is_some());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn signal_status_uses_conventional_exit_code() {
+        use std::os::unix::process::ExitStatusExt;
+        // Given: a SIGTERM exit status.
+        let status = std::process::ExitStatus::from_raw(15);
+        // When: the shell exit code is constructed.
+        let code = execution_exit_code(status);
+        // Then: it retains the signal identity.
+        assert_eq!(code, 143);
     }
 }

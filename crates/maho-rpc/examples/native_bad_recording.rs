@@ -9,12 +9,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = std::env::args().nth(1).ok_or("usage: native_bad_recording <output.jsonl>")?;
     let temp = tempfile::tempdir()?;
     let cwd = temp.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default())?;
     let model = provider.get_model(Some("faux-1")).ok_or("missing faux model")?;
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(temp.path().join("models.json")), auth_path: Some(temp.path().join("auth.json")),
         providers: Some(vec![provider.provider]), ..Default::default()
-    });
+    })?;
     let session = create_agent_session(CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model_runtime: Some(runtime), model: Some(model),
         session_manager: Some(SessionManager::in_memory(&cwd, None, None)),

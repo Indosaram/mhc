@@ -114,12 +114,20 @@ pub struct TestHarness {
 }
 
 pub fn setup_harness(skills_root: &str) -> TestHarness {
+    setup_harness_with_role(skills_root, None)
+}
+
+pub fn setup_harness_with_role(skills_root: &str, role: Option<&str>) -> TestHarness {
     let actions = Arc::new(TestActions::default());
     let runtime = ExtensionRuntime::default();
     runtime.bind(actions.clone());
+    let mut profile = ExtensionSessionProfile::default();
+    if let Some(role) = role {
+        profile.session_context.insert("role".into(), role.into());
+    }
     let mut api = ExtensionApi::new(
         LoadedExtension::new("skill-pointers", "/tmp".into(), SourceInfo::default()),
-        ExtensionSessionProfile::default(),
+        profile,
         EventBus::default(),
         runtime,
     );

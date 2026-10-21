@@ -1,6 +1,6 @@
 //! Port of senpi packages/ai/src/api/openai-images-params.ts.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::types::{ImagesContext, ImagesModel, ImagesOptions};
 
@@ -12,7 +12,11 @@ pub const OPENAI_IMAGE_OUTPUT_FORMATS: &[&str] = &["png", "jpeg", "webp"];
 pub const OPENAI_IMAGE_MODERATIONS: &[&str] = &["auto", "low"];
 
 pub fn option_str(options: Option<&ImagesOptions>, key: &str) -> Option<String> {
-    options?.extra.get(key).and_then(Value::as_str).map(str::to_owned)
+    options?
+        .extra
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 pub fn option_u64(options: Option<&ImagesOptions>, key: &str) -> Option<u64> {
@@ -35,11 +39,19 @@ pub struct ParsedImageSize {
 
 impl ParsedImageSize {
     fn ok(size: impl Into<String>) -> Self {
-        Self { ok: true, size: size.into(), error: None }
+        Self {
+            ok: true,
+            size: size.into(),
+            error: None,
+        }
     }
 
     fn err(error: impl Into<String>) -> Self {
-        Self { ok: false, size: String::new(), error: Some(error.into()) }
+        Self {
+            ok: false,
+            size: String::new(),
+            error: Some(error.into()),
+        }
     }
 }
 
@@ -48,7 +60,9 @@ pub fn parse_openai_image_size(size: &str) -> ParsedImageSize {
         return ParsedImageSize::ok(size);
     }
     let Some((width, height)) = parse_dimensions(size) else {
-        return ParsedImageSize::err("OpenAI image size must be auto or WIDTHxHEIGHT with integer dimensions");
+        return ParsedImageSize::err(
+            "OpenAI image size must be auto or WIDTHxHEIGHT with integer dimensions",
+        );
     };
     if width > 3840 || height > 3840 {
         return ParsedImageSize::err("OpenAI image size edges must be at most 3840 pixels");
@@ -57,7 +71,9 @@ pub fn parse_openai_image_size(size: &str) -> ParsedImageSize {
         return ParsedImageSize::err("OpenAI image size width and height must be divisible by 16");
     }
     if width > height * 3 || height > width * 3 {
-        return ParsedImageSize::err("OpenAI image size aspect ratio must be between 1:3 and 3:1 inclusive");
+        return ParsedImageSize::err(
+            "OpenAI image size aspect ratio must be between 1:3 and 3:1 inclusive",
+        );
     }
     let pixels = width * height;
     if !(655_360..=8_294_400).contains(&pixels) {
@@ -73,7 +89,9 @@ fn parse_dimensions(size: &str) -> Option<(u64, u64)> {
     if width.is_empty() || height.is_empty() {
         return None;
     }
-    if !width.bytes().all(|byte| byte.is_ascii_digit()) || !height.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !width.bytes().all(|byte| byte.is_ascii_digit())
+        || !height.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return None;
     }
     Some((width.parse().ok()?, height.parse().ok()?))
@@ -93,12 +111,31 @@ pub fn parse_openai_image_output_options(
     has_mask: bool,
     image_count: usize,
 ) -> ParsedImageOutputOptions {
+    let output_compression = output_compression.map(Value::from);
+    parse_openai_image_output_options_value(
+        background,
+        output_format,
+        output_compression.as_ref(),
+        has_mask,
+        image_count,
+    )
+}
+
+fn parse_openai_image_output_options_value(
+    background: Option<&str>,
+    output_format: Option<&str>,
+    output_compression: Option<&Value>,
+    has_mask: bool,
+    image_count: usize,
+) -> ParsedImageOutputOptions {
     let output_format = output_format.unwrap_or("png").to_owned();
     if background == Some("transparent") && output_format == "jpeg" {
         return ParsedImageOutputOptions {
             ok: false,
             output_format,
-            error: Some("OpenAI image background transparent requires output_format png or webp".into()),
+            error: Some(
+                "OpenAI image background transparent requires output_format png or webp".into(),
+            ),
         };
     }
     if let Some(compression) = output_compression {
@@ -106,14 +143,21 @@ pub fn parse_openai_image_output_options(
             return ParsedImageOutputOptions {
                 ok: false,
                 output_format,
-                error: Some("OpenAI image output_compression requires output_format jpeg or webp".into()),
+                error: Some(
+                    "OpenAI image output_compression requires output_format jpeg or webp".into(),
+                ),
             };
         }
-        if compression > 100 {
+        if !compression
+            .as_f64()
+            .is_some_and(|value| value.fract() == 0.0 && (0.0..=100.0).contains(&value))
+        {
             return ParsedImageOutputOptions {
                 ok: false,
                 output_format,
-                error: Some("OpenAI image output_compression must be an integer between 0 and 100".into()),
+                error: Some(
+                    "OpenAI image output_compression must be an integer between 0 and 100".into(),
+                ),
             };
         }
     }
@@ -124,7 +168,11 @@ pub fn parse_openai_image_output_options(
             error: Some("OpenAI image mask requires at least one input image".into()),
         };
     }
-    ParsedImageOutputOptions { ok: true, output_format, error: None }
+    ParsedImageOutputOptions {
+        ok: true,
+        output_format,
+        error: None,
+    }
 }
 
 pub fn build_params(
@@ -145,8 +193,10 @@ pub fn build_params(
     if prompt.trim().is_empty() {
         return Err("Image generation requires a non-empty text prompt".into());
     }
-    if prompt.len() > MAX_PROMPT_CHARS {
-        return Err(format!("Image generation prompt exceeds {MAX_PROMPT_CHARS} characters"));
+    if prompt.encode_utf16().count() > MAX_PROMPT_CHARS {
+        return Err(format!(
+            "Image generation prompt exceeds {MAX_PROMPT_CHARS} characters"
+        ));
     }
     let size = option_str(options, "size").unwrap_or_else(|| "auto".to_owned());
     let parsed_size = parse_openai_image_size(&size);
@@ -160,8 +210,8 @@ pub fn build_params(
         .count();
     let background = option_str(options, "background");
     let output_format = option_str(options, "outputFormat");
-    let output_compression = option_u64(options, "outputCompression");
-    let output = parse_openai_image_output_options(
+    let output_compression = options.and_then(|options| options.extra.get("outputCompression"));
+    let output = parse_openai_image_output_options_value(
         background.as_deref(),
         output_format.as_deref(),
         output_compression,
@@ -176,15 +226,21 @@ pub fn build_params(
     params.insert("model".into(), Value::from(model.id.clone()));
     params.insert("prompt".into(), Value::from(prompt));
     params.insert("size".into(), Value::from(size));
-    params.insert("quality".into(), Value::from(option_str(options, "quality").unwrap_or_else(|| "auto".to_owned())));
-    params.insert("n".into(), Value::from(option_u64(options, "n").unwrap_or(1)));
+    params.insert(
+        "quality".into(),
+        Value::from(option_str(options, "quality").unwrap_or_else(|| "auto".to_owned())),
+    );
+    params.insert(
+        "n".into(),
+        Value::from(option_u64(options, "n").unwrap_or(1)),
+    );
     params.insert("output_format".into(), Value::from(output.output_format));
     params.insert("stream".into(), Value::Bool(false));
     if let Some(background) = background {
         params.insert("background".into(), Value::from(background));
     }
     if let Some(compression) = output_compression {
-        params.insert("output_compression".into(), Value::from(compression));
+        params.insert("output_compression".into(), compression.clone());
     }
     if let Some(moderation) = option_str(options, "moderation") {
         params.insert("moderation".into(), Value::from(moderation));
@@ -197,7 +253,11 @@ pub fn is_image_params(value: &Value) -> bool {
 }
 
 pub fn images_options_json(options: Option<&ImagesOptions>) -> Value {
-    json!(options.map(|options| options.extra.clone()).unwrap_or_default())
+    json!(
+        options
+            .map(|options| options.extra.clone())
+            .unwrap_or_default()
+    )
 }
 
 #[cfg(test)]
@@ -207,13 +267,17 @@ mod tests {
 
     fn model() -> ImagesModel {
         ImagesModel {
+            input_limits: None,
             id: "gpt-image-2.5".into(),
             name: "gpt-image-2.5".into(),
             api: "openai-images".into(),
             provider: "openai".into(),
             base_url: "https://api.openai.com/v1".into(),
             thinking_level_map: None,
-            input: vec![crate::types::InputModality::Text, crate::types::InputModality::Image],
+            input: vec![
+                crate::types::InputModality::Text,
+                crate::types::InputModality::Image,
+            ],
             output: vec![crate::types::ImagesOutputModality::Image],
             cost: ImagesModelCost::default(),
             sampling_params: None,
@@ -229,7 +293,12 @@ mod tests {
         ImagesContext {
             input: texts
                 .iter()
-                .map(|text| ContentBlock::Text(TextContent { text: (*text).to_owned(), ..TextContent::default() }))
+                .map(|text| {
+                    ContentBlock::Text(TextContent {
+                        text: (*text).to_owned(),
+                        ..TextContent::default()
+                    })
+                })
                 .collect(),
         }
     }
@@ -237,7 +306,10 @@ mod tests {
     #[test]
     fn size_parsing_matches_every_ts_branch() {
         assert_eq!(parse_openai_image_size("auto"), ParsedImageSize::ok("auto"));
-        assert_eq!(parse_openai_image_size("1024x1024"), ParsedImageSize::ok("1024x1024"));
+        assert_eq!(
+            parse_openai_image_size("1024x1024"),
+            ParsedImageSize::ok("1024x1024")
+        );
         assert_eq!(
             parse_openai_image_size("1024x1").error.as_deref(),
             Some("OpenAI image size width and height must be divisible by 16")
@@ -258,36 +330,52 @@ mod tests {
             parse_openai_image_size("1024").error.as_deref(),
             Some("OpenAI image size must be auto or WIDTHxHEIGHT with integer dimensions")
         );
-        assert_eq!(parse_openai_image_size("1280x1024"), ParsedImageSize::ok("1280x1024"));
+        assert_eq!(
+            parse_openai_image_size("1280x1024"),
+            ParsedImageSize::ok("1280x1024")
+        );
     }
 
     #[test]
     fn output_options_validate_before_any_request() {
         assert_eq!(
-            parse_openai_image_output_options(Some("transparent"), Some("jpeg"), None, false, 1).error.as_deref(),
+            parse_openai_image_output_options(Some("transparent"), Some("jpeg"), None, false, 1)
+                .error
+                .as_deref(),
             Some("OpenAI image background transparent requires output_format png or webp")
         );
         assert_eq!(
-            parse_openai_image_output_options(None, Some("png"), Some(50), false, 1).error.as_deref(),
+            parse_openai_image_output_options(None, Some("png"), Some(50), false, 1)
+                .error
+                .as_deref(),
             Some("OpenAI image output_compression requires output_format jpeg or webp")
         );
         assert_eq!(
-            parse_openai_image_output_options(None, Some("webp"), Some(101), false, 1).error.as_deref(),
+            parse_openai_image_output_options(None, Some("webp"), Some(101), false, 1)
+                .error
+                .as_deref(),
             Some("OpenAI image output_compression must be an integer between 0 and 100")
         );
         assert_eq!(
-            parse_openai_image_output_options(None, None, None, true, 0).error.as_deref(),
+            parse_openai_image_output_options(None, None, None, true, 0)
+                .error
+                .as_deref(),
             Some("OpenAI image mask requires at least one input image")
         );
         assert_eq!(
             parse_openai_image_output_options(Some("opaque"), Some("webp"), Some(80), false, 0),
-            ParsedImageOutputOptions { ok: true, output_format: "webp".into(), error: None }
+            ParsedImageOutputOptions {
+                ok: true,
+                output_format: "webp".into(),
+                error: None
+            }
         );
     }
 
     #[test]
     fn default_body_carries_only_the_required_fields() {
-        let params = build_params(&model(), &context_with_texts(&["draw a cat"]), None).expect("params");
+        let params =
+            build_params(&model(), &context_with_texts(&["draw a cat"]), None).expect("params");
         assert_eq!(
             Value::Object(params),
             json!({
@@ -304,7 +392,8 @@ mod tests {
 
     #[test]
     fn text_blocks_are_sanitized_joined_and_required() {
-        let params = build_params(&model(), &context_with_texts(&["a", " ", "b"]), None).expect("params");
+        let params =
+            build_params(&model(), &context_with_texts(&["a", " ", "b"]), None).expect("params");
         assert_eq!(params.get("prompt"), Some(&Value::from("a\n\nb")));
         assert_eq!(
             build_params(&model(), &context_with_texts(&["  "]), None),
@@ -327,7 +416,8 @@ mod tests {
         options.extra.insert("outputFormat".into(), json!("webp"));
         options.extra.insert("outputCompression".into(), json!(80));
         options.extra.insert("moderation".into(), json!("low"));
-        let params = build_params(&model(), &context_with_texts(&["x"]), Some(&options)).expect("params");
+        let params =
+            build_params(&model(), &context_with_texts(&["x"]), Some(&options)).expect("params");
         assert_eq!(params.get("size"), Some(&Value::from("1024x1024")));
         assert_eq!(params.get("quality"), Some(&Value::from("high")));
         assert_eq!(params.get("n"), Some(&Value::from(2)));
@@ -335,6 +425,68 @@ mod tests {
         assert_eq!(params.get("output_format"), Some(&Value::from("webp")));
         assert_eq!(params.get("output_compression"), Some(&Value::from(80)));
         assert_eq!(params.get("moderation"), Some(&Value::from("low")));
+    }
+
+    #[test]
+    fn prompt_limit_counts_utf16_units_when_text_is_multibyte() {
+        for text in ["x", "\u{754c}", "\u{1f600}"] {
+            // Given a prompt exactly at JavaScript's string-length limit.
+            let prompt = text.repeat(MAX_PROMPT_CHARS / text.encode_utf16().count());
+            let context = context_with_texts(&[&prompt]);
+            // When building the request.
+            let params = build_params(&model(), &context, None).expect("boundary prompt");
+            // Then the entire prompt is accepted without truncation.
+            assert_eq!(params.get("prompt"), Some(&Value::from(prompt)));
+        }
+    }
+
+    #[test]
+    fn prompt_limit_rejects_one_extra_utf16_unit_when_text_is_multibyte() {
+        for text in ["\u{754c}", "\u{1f600}"] {
+            // Given a multibyte prompt one UTF-16 unit over the limit.
+            let prompt = format!(
+                "{}x",
+                text.repeat(MAX_PROMPT_CHARS / text.encode_utf16().count())
+            );
+            let context = context_with_texts(&[&prompt]);
+            // When building the request.
+            let result = build_params(&model(), &context, None);
+            // Then the prompt is rejected.
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn compression_is_rejected_when_negative_fractional_or_out_of_range() {
+        for compression in [json!(-1), json!(0.5), json!(99.5), json!(101)] {
+            // Given a non-PNG output with an invalid compression percentage.
+            let mut options = ImagesOptions::default();
+            options.extra.insert("outputFormat".into(), json!("webp"));
+            options
+                .extra
+                .insert("outputCompression".into(), compression);
+            // When building the request.
+            let result = build_params(&model(), &context_with_texts(&["x"]), Some(&options));
+            // Then invalid compression cannot silently disappear from the request.
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn compression_is_forwarded_when_an_integer_including_float_representation() {
+        for compression in [json!(0), json!(100), json!(80.0)] {
+            // Given a valid compression percentage for JPEG output.
+            let mut options = ImagesOptions::default();
+            options.extra.insert("outputFormat".into(), json!("jpeg"));
+            options
+                .extra
+                .insert("outputCompression".into(), compression.clone());
+            // When building the request.
+            let params = build_params(&model(), &context_with_texts(&["x"]), Some(&options))
+                .expect("compression");
+            // Then numeric representation does not cause the option to be dropped.
+            assert_eq!(params.get("output_compression"), Some(&compression));
+        }
     }
 
     #[test]

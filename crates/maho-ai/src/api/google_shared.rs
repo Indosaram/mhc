@@ -9,14 +9,19 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::api::constrained_sampling::{get_json_schema_tool_parameters, resolve_json_schema_strict_sampling};
-use crate::api::transform_messages::{transform_messages, NormalizeToolCallId, TransformMessagesOptions};
+use crate::api::constrained_sampling::{
+    get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
+};
+use crate::api::transform_messages::{
+    NormalizeToolCallId, TransformMessagesOptions, transform_messages,
+};
 use crate::types::{
     AssistantMessage, Context, ImageContent, InputModality, Message, Model, ModelThinkingLevel,
     ProviderNativeContent, StopReason, Tool, UserContent,
 };
 use crate::utils::provider_retry::{
-    retry_provider_request, ProviderErrorStatus, ProviderRequestError, ProviderRetryError, ProviderRetryOptions,
+    ProviderErrorStatus, ProviderRequestError, ProviderRetryError, ProviderRetryOptions,
+    retry_provider_request,
 };
 use crate::utils::sanitize_unicode::sanitize_surrogates;
 
@@ -82,9 +87,14 @@ pub fn resolve_google_thinking_level(
         return Ok(ResolvedGoogleThinkingLevel::High);
     }
 
-    let mapped = model.thinking_level_map.as_ref().and_then(|map| map.get(&level));
+    let mapped = model
+        .thinking_level_map
+        .as_ref()
+        .and_then(|map| map.get(&level));
     let mapped_string = mapped.and_then(|entry| entry.as_ref());
-    let resolved_level = mapped_string.map(|value| value.to_lowercase()).unwrap_or_else(|| level.as_str().to_owned());
+    let resolved_level = mapped_string
+        .map(|value| value.to_lowercase())
+        .unwrap_or_else(|| level.as_str().to_owned());
     match resolved_level.as_str() {
         "minimal" => Ok(ResolvedGoogleThinkingLevel::Minimal),
         "low" => Ok(ResolvedGoogleThinkingLevel::Low),
@@ -132,7 +142,10 @@ pub fn is_thinking_part(part: &GooglePart) -> bool {
 ///
 /// Note: this does NOT merge or move signatures across distinct response parts. It only prevents
 /// a signature from being overwritten with `undefined` within the same streamed block.
-pub fn retain_thought_signature(existing: Option<String>, incoming: Option<&str>) -> Option<String> {
+pub fn retain_thought_signature(
+    existing: Option<String>,
+    incoming: Option<&str>,
+) -> Option<String> {
     match incoming {
         Some(incoming) if !incoming.is_empty() => Some(incoming.to_owned()),
         _ => existing,
@@ -141,7 +154,9 @@ pub fn retain_thought_signature(existing: Option<String>, incoming: Option<&str>
 
 /// Thought signatures must be base64 for Google APIs (TYPE_BYTES).
 fn is_valid_thought_signature(signature: Option<&str>) -> bool {
-    let Some(signature) = signature.filter(|signature| !signature.is_empty()) else { return false };
+    let Some(signature) = signature.filter(|signature| !signature.is_empty()) else {
+        return false;
+    };
     if signature.len() % 4 != 0 {
         return false;
     }
@@ -158,12 +173,20 @@ fn is_valid_thought_signature(signature: Option<&str>) -> bool {
         return false;
     }
     // `/^[A-Za-z0-9+/]+={0,2}$/`: at least one non-padding character before the padding.
-    bytes.iter().position(|byte| *byte == b'=').is_none_or(|index| index > 0)
-        && bytes[..bytes.len() - padding].iter().all(|byte| *byte != b'=')
+    bytes
+        .iter()
+        .position(|byte| *byte == b'=')
+        .is_none_or(|index| index > 0)
+        && bytes[..bytes.len() - padding]
+            .iter()
+            .all(|byte| *byte != b'=')
 }
 
 /// Only keep signatures from the same provider/model and with valid base64.
-fn resolve_thought_signature(is_same_provider_and_model: bool, signature: Option<&str>) -> Option<String> {
+fn resolve_thought_signature(
+    is_same_provider_and_model: bool,
+    signature: Option<&str>,
+) -> Option<String> {
     if is_same_provider_and_model && is_valid_thought_signature(signature) {
         signature.map(str::to_owned)
     } else {
@@ -238,7 +261,13 @@ fn image_part(image: &ImageContent) -> GooglePart {
 }
 
 /// Convert internal messages to Gemini Content[] format.
-pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessagesOptions) -> Vec<GoogleContent> {
+pub fn convert_messages(
+    model: &Model,
+    context: &Context,
+    options: ConvertMessagesOptions,
+) -> Vec<GoogleContent> {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let mut contents: Vec<GoogleContent> = Vec::new();
     let requires_ids = requires_tool_call_id(&model.id);
     let normalize_id = move |id: &str, _model: &Model, _assistant: &AssistantMessage| -> String {
@@ -260,7 +289,17 @@ pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessag
         },
     );
 
-    for msg in transformed_messages {
+    let last_user_content_index = transformed_messages.iter().rposition(|message| {
+        matches!(message, Message::User(user) if match &user.content {
+            UserContent::Text(text) => !text.trim().is_empty(),
+            UserContent::Blocks(blocks) => blocks.iter().any(|block| match block {
+                crate::types::ContentBlock::Text(text) => !text.text.trim().is_empty(),
+                _ => true,
+            }),
+        })
+    });
+    let mut text_tool_call_ids = std::collections::HashSet::new();
+    for (msg_index, msg) in transformed_messages.into_iter().enumerate() {
         match msg {
             Message::User(user) => match user.content {
                 UserContent::Text(text) => contents.push(GoogleContent {
@@ -271,7 +310,9 @@ pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessag
                     let parts: Vec<GooglePart> = blocks
                         .iter()
                         .map(|item| match item {
-                            crate::types::ContentBlock::Text(text) => text_part(sanitize_surrogates(&text.text)),
+                            crate::types::ContentBlock::Text(text) => {
+                                text_part(sanitize_surrogates(&text.text))
+                            }
                             crate::types::ContentBlock::Image(image) => image_part(image),
                             // The TS union is `(TextContent | ImageContent)[]`; the else branch reads
                             // `item.mimeType`/`item.data`, which JSON drops when undefined.
@@ -281,19 +322,40 @@ pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessag
                     if parts.is_empty() {
                         continue;
                     }
-                    contents.push(GoogleContent { role: "user".into(), parts });
+                    contents.push(GoogleContent {
+                        role: "user".into(),
+                        parts,
+                    });
                 }
             },
             Message::Assistant(assistant) => {
                 let mut parts: Vec<GooglePart> = Vec::new();
                 // Check if message is from same provider and model - only then keep thinking blocks
-                let is_same_provider_and_model = assistant.provider == model.provider && assistant.model == model.id;
+                let is_same_provider_and_model =
+                    assistant.provider == model.provider && assistant.model == model.id;
+                let first_tool_call = assistant.content.iter().find_map(|block| match block {
+                    crate::types::ContentBlock::ToolCall(call) => Some(call),
+                    _ => None,
+                });
+                let valid_first_signature = first_tool_call.is_some_and(|call| {
+                    resolve_thought_signature(
+                        is_same_provider_and_model,
+                        call.thought_signature.as_deref(),
+                    )
+                    .is_some()
+                });
+                let replay_unsigned_as_text = get_gemini_major_version(&model.id)
+                    .is_some_and(|major| major >= 3)
+                    && last_user_content_index.is_none_or(|index| msg_index > index)
+                    && !valid_first_signature;
 
                 for block in &assistant.content {
                     match block {
                         crate::types::ContentBlock::Text(text) => {
-                            let thought_signature =
-                                resolve_thought_signature(is_same_provider_and_model, text.text_signature.as_deref());
+                            let thought_signature = resolve_thought_signature(
+                                is_same_provider_and_model,
+                                text.text_signature.as_deref(),
+                            );
                             // Skip empty text blocks — unless they carry a thought signature. Gemini can attach
                             // the signature to a part whose visible text is empty and requires it echoed back;
                             // dropping it breaks the reasoning chain and the model intermittently ends mid-task
@@ -316,10 +378,15 @@ pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessag
                                 );
                                 // Same rule as text blocks: an empty thinking block is dropped only when it
                                 // carries no signature (mirrors the anthropic converter's handling).
-                                if thinking.thinking.trim().is_empty() && thought_signature.is_none() {
+                                if thinking.thinking.trim().is_empty()
+                                    && thought_signature.is_none()
+                                {
                                     continue;
                                 }
-                                parts.push(thinking_part(sanitize_surrogates(&thinking.thinking), thought_signature));
+                                parts.push(thinking_part(
+                                    sanitize_surrogates(&thinking.thinking),
+                                    thought_signature,
+                                ));
                             } else {
                                 // Cross-provider/model: the signature is unusable, empty blocks stay dropped.
                                 if thinking.thinking.trim().is_empty() {
@@ -329,15 +396,29 @@ pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessag
                             }
                         }
                         crate::types::ContentBlock::ToolCall(tool_call) => {
+                            if replay_unsigned_as_text {
+                                text_tool_call_ids.insert(tool_call.id.clone());
+                                let arguments = crate::utils::js::json_stringify_pretty(
+                                    &Value::Object(tool_call.arguments.clone()),
+                                );
+                                parts.push(text_part(sanitize_surrogates(&format!(
+                                    "[Tool Call: {} (id: {})]\nArguments: {}",
+                                    tool_call.name, tool_call.id, arguments,
+                                ))));
+                                continue;
+                            }
                             let thought_signature = resolve_thought_signature(
                                 is_same_provider_and_model,
                                 tool_call.thought_signature.as_deref(),
                             );
                             let mut function_call = Map::new();
-                            function_call.insert("name".into(), Value::String(tool_call.name.clone()));
-                            function_call.insert("args".into(), Value::Object(tool_call.arguments.clone()));
+                            function_call
+                                .insert("name".into(), Value::String(tool_call.name.clone()));
+                            function_call
+                                .insert("args".into(), Value::Object(tool_call.arguments.clone()));
                             if requires_ids {
-                                function_call.insert("id".into(), Value::String(tool_call.id.clone()));
+                                function_call
+                                    .insert("id".into(), Value::String(tool_call.id.clone()));
                             }
                             let mut part = GooglePart::new();
                             part.insert("functionCall".into(), Value::Object(function_call));
@@ -354,7 +435,10 @@ pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessag
                 if parts.is_empty() {
                     continue;
                 }
-                contents.push(GoogleContent { role: "model".into(), parts });
+                contents.push(GoogleContent {
+                    role: "model".into(),
+                    parts,
+                });
             }
             Message::ToolResult(result) => {
                 // Extract text and image content
@@ -367,26 +451,56 @@ pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessag
                     })
                     .collect::<Vec<String>>()
                     .join("\n");
-                let image_content: Vec<&ImageContent> = if model.input.contains(&InputModality::Image) {
-                    result
-                        .content
-                        .iter()
-                        .filter_map(|content| match content {
-                            crate::types::ContentBlock::Image(image) => Some(image),
-                            _ => None,
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                let image_content: Vec<&ImageContent> =
+                    if model.input.contains(&InputModality::Image) {
+                        result
+                            .content
+                            .iter()
+                            .filter_map(|content| match content {
+                                crate::types::ContentBlock::Image(image) => Some(image),
+                                _ => None,
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
 
                 let has_text = !text_result.is_empty();
                 let has_images = !image_content.is_empty();
 
+                if text_tool_call_ids.contains(&result.tool_call_id) {
+                    let has_any_images = result
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, crate::types::ContentBlock::Image(_)));
+                    let body = if has_text {
+                        format!("\n{}", sanitize_surrogates(&text_result))
+                    } else if !has_any_images {
+                        "\n(no output)".to_owned()
+                    } else {
+                        String::new()
+                    };
+                    let error_marker = if result.is_error { " (error)" } else { "" };
+                    let mut parts = vec![text_part(format!(
+                        "[Tool Result: {} (id: {})]{}{}",
+                        sanitize_surrogates(&result.tool_name),
+                        result.tool_call_id,
+                        error_marker,
+                        body,
+                    ))];
+                    parts.extend(image_content.iter().map(|image| image_part(image)));
+                    contents.push(GoogleContent {
+                        role: "user".into(),
+                        parts,
+                    });
+                    continue;
+                }
+
                 // Gemini 3+ models support multimodal function responses with images nested inside
                 // functionResponse.parts. Claude and other non-Gemini models behind Cloud Code Assist /
                 // Gemini < 3 still needs a separate user image turn.
-                let model_supports_multimodal_function_response = supports_multimodal_function_response(&model.id);
+                let model_supports_multimodal_function_response =
+                    supports_multimodal_function_response(&model.id);
 
                 // Use "output" key for success, "error" key for errors as per SDK documentation
                 let response_value = if has_text {
@@ -397,7 +511,10 @@ pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessag
                     String::new()
                 };
 
-                let image_parts: Vec<GooglePart> = image_content.iter().map(|image| image_part(image)).collect();
+                let image_parts: Vec<GooglePart> = image_content
+                    .iter()
+                    .map(|image| image_part(image))
+                    .collect();
 
                 let mut response = Map::new();
                 if result.is_error {
@@ -416,35 +533,63 @@ pub fn convert_messages(model: &Model, context: &Context, options: ConvertMessag
                     );
                 }
                 if requires_ids {
-                    function_response.insert("id".into(), Value::String(result.tool_call_id.clone()));
+                    function_response
+                        .insert("id".into(), Value::String(result.tool_call_id.clone()));
                 }
 
                 let mut function_response_part = GooglePart::new();
-                function_response_part.insert("functionResponse".into(), Value::Object(function_response));
+                function_response_part
+                    .insert("functionResponse".into(), Value::Object(function_response));
 
                 // Cloud Code Assist API requires all function responses to be in a single user turn.
                 // Check if the last content is already a user turn with function responses and merge.
                 let merge_into_last = contents.last().is_some_and(|last| {
-                    last.role == "user" && last.parts.iter().any(|part| js_truthy(part.get("functionResponse")))
+                    last.role == "user"
+                        && last
+                            .parts
+                            .iter()
+                            .any(|part| js_truthy(part.get("functionResponse")))
                 });
                 if merge_into_last {
-                    contents.last_mut().expect("last content is present").parts.push(function_response_part);
+                    contents
+                        .last_mut()
+                        .expect("last content is present")
+                        .parts
+                        .push(function_response_part);
                 } else {
-                    contents.push(GoogleContent { role: "user".into(), parts: vec![function_response_part] });
+                    contents.push(GoogleContent {
+                        role: "user".into(),
+                        parts: vec![function_response_part],
+                    });
                 }
 
                 // For Gemini < 3, add images in a separate user message
                 if has_images && !model_supports_multimodal_function_response {
                     let mut parts = vec![text_part("Tool result image:".into())];
                     parts.extend(image_parts);
-                    contents.push(GoogleContent { role: "user".into(), parts });
+                    contents.push(GoogleContent {
+                        role: "user".into(),
+                        parts,
+                    });
                 }
             }
-            Message::ConfigurationUpdate(_) => {}
+            Message::System(_) | Message::ConfigurationUpdate(_) => {}
         }
     }
 
-    contents
+    // Gemini requires alternating roles, including text-replayed tool results and
+    // synthetic image parts. Preserve the order of every part within a turn.
+    let mut turns: Vec<GoogleContent> = Vec::new();
+    for content in contents {
+        if let Some(previous) = turns.last_mut()
+            && previous.role == content.role
+        {
+            previous.parts.extend(content.parts);
+        } else {
+            turns.push(content);
+        }
+    }
+    turns
 }
 
 fn thinking_signature_text_part(text: String, thought_signature: Option<String>) -> GooglePart {
@@ -489,7 +634,10 @@ pub fn to_provider_native_content(part: &GooglePart) -> ProviderNativeContent {
         };
     }
 
-    ProviderNativeContent { subtype: dominant_part_key(part), raw: Value::Object(part.clone()) }
+    ProviderNativeContent {
+        subtype: dominant_part_key(part),
+        raw: Value::Object(part.clone()),
+    }
 }
 
 static JSON_SCHEMA_META_DECLARATIONS: &[&str] = &[
@@ -529,7 +677,8 @@ static SCHEMA_VALUE_KEYWORDS: &[&str] = &["const", "default", "examples", "enum"
 /// Keywords whose values are maps of name → subschema (e.g. `properties`).
 /// The map keys are instance property / definition names and must be
 /// preserved even if one happens to be named `optional`.
-static SCHEMA_MAP_KEYS_STRIP: &[&str] = &["properties", "patternProperties", "$defs", "definitions"];
+static SCHEMA_MAP_KEYS_STRIP: &[&str] =
+    &["properties", "patternProperties", "$defs", "definitions"];
 
 /// Strip the non-standard 'optional' keyword from a JSON schema object.
 ///
@@ -597,15 +746,23 @@ pub fn convert_tools(
         let parameters = get_json_schema_tool_parameters(tool, strict).map_err(|error| error.0)?;
         let mut declaration = Map::new();
         declaration.insert("name".into(), Value::String(tool.name.clone()));
-        declaration.insert("description".into(), Value::String(tool.description.clone()));
+        declaration.insert(
+            "description".into(),
+            Value::String(tool.description.clone()),
+        );
         if use_parameters {
-            declaration.insert("parameters".into(), strip_optional(&sanitize_for_open_api(&parameters)));
+            declaration.insert(
+                "parameters".into(),
+                strip_optional(&sanitize_for_open_api(&parameters)),
+            );
         } else {
             declaration.insert("parametersJsonSchema".into(), strip_optional(&parameters));
         }
         declarations.push(Value::Object(declaration));
     }
-    Ok(Some(vec![serde_json::json!({ "functionDeclarations": declarations })]))
+    Ok(Some(vec![
+        serde_json::json!({ "functionDeclarations": declarations }),
+    ]))
 }
 
 /// Gemini 3+ enforces required function parameters in validated tool-calling modes.
@@ -668,11 +825,22 @@ pub fn map_stop_reason(reason: &str) -> Result<StopReason, String> {
     match reason {
         "STOP" => Ok(StopReason::Stop),
         "MAX_TOKENS" => Ok(StopReason::Length),
-        "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" | "SAFETY" | "IMAGE_SAFETY" | "IMAGE_PROHIBITED_CONTENT"
-        | "IMAGE_RECITATION" | "IMAGE_OTHER" | "RECITATION" | "FINISH_REASON_UNSPECIFIED" | "OTHER" | "LANGUAGE"
-        | "MALFORMED_FUNCTION_CALL" | "UNEXPECTED_TOOL_CALL" | "TOO_MANY_TOOL_CALLS" | "NO_IMAGE" => {
-            Ok(StopReason::Error)
-        }
+        "BLOCKLIST"
+        | "PROHIBITED_CONTENT"
+        | "SPII"
+        | "SAFETY"
+        | "IMAGE_SAFETY"
+        | "IMAGE_PROHIBITED_CONTENT"
+        | "IMAGE_RECITATION"
+        | "IMAGE_OTHER"
+        | "RECITATION"
+        | "FINISH_REASON_UNSPECIFIED"
+        | "OTHER"
+        | "LANGUAGE"
+        | "MALFORMED_FUNCTION_CALL"
+        | "UNEXPECTED_TOOL_CALL"
+        | "TOO_MANY_TOOL_CALLS"
+        | "NO_IMAGE" => Ok(StopReason::Error),
         other => Err(format!("Unhandled stop reason: {other}")),
     }
 }
@@ -691,7 +859,11 @@ pub fn map_stop_reason_string(reason: &str) -> StopReason {
 #[derive(Debug, Clone)]
 pub enum GoogleRequestError {
     /// The SDK's `ApiError`/`Error` shape: `message` plus an HTTP `status`.
-    Sdk { message: String, status: Option<u16>, headers: Option<reqwest::header::HeaderMap> },
+    Sdk {
+        message: String,
+        status: Option<u16>,
+        headers: Option<reqwest::header::HeaderMap>,
+    },
     /// A locally detected failure with no HTTP shape at all.
     Message(String),
 }
@@ -709,9 +881,12 @@ impl std::fmt::Display for GoogleRequestError {
 impl ProviderRequestError for GoogleRequestError {
     fn provider_status(&self) -> Option<ProviderErrorStatus<'_>> {
         match self {
-            GoogleRequestError::Sdk { status, headers, .. } => {
-                Some(ProviderErrorStatus { status: *status, headers: headers.as_ref() })
-            }
+            GoogleRequestError::Sdk {
+                status, headers, ..
+            } => Some(ProviderErrorStatus {
+                status: *status,
+                headers: headers.as_ref(),
+            }),
             GoogleRequestError::Message(_) => None,
         }
     }
@@ -804,14 +979,28 @@ impl GoogleClientConfig {
         let (default_base_url, default_api_version) = if self.vertexai {
             (self.vertex_default_base_url(), "v1beta1")
         } else {
-            ("https://generativelanguage.googleapis.com".to_owned(), "v1beta")
+            (
+                "https://generativelanguage.googleapis.com".to_owned(),
+                "v1beta",
+            )
         };
         let base_url = self.base_url.clone().unwrap_or(default_base_url);
         let base_url = base_url.trim_end_matches('/');
-        let api_version = self.api_version.clone().unwrap_or_else(|| default_api_version.to_owned());
-        let mut url = if api_version.is_empty() { base_url.to_owned() } else { format!("{base_url}/{api_version}") };
+        let api_version = self
+            .api_version
+            .clone()
+            .unwrap_or_else(|| default_api_version.to_owned());
+        let mut url = if api_version.is_empty() {
+            base_url.to_owned()
+        } else {
+            format!("{base_url}/{api_version}")
+        };
 
-        let path = if self.vertexai { self.vertex_model_path(model_id) } else { mldev_model_path(model_id) };
+        let path = if self.vertexai {
+            self.vertex_model_path(model_id)
+        } else {
+            mldev_model_path(model_id)
+        };
         if self.should_prepend_vertex_project_path(&path) {
             let project = self.project.as_deref().unwrap_or_default();
             let location = self.location.as_deref().unwrap_or_default();
@@ -888,7 +1077,9 @@ pub async fn post_stream_generate_content(
     http: &reqwest::Client,
     request: GoogleStreamRequest<'_>,
 ) -> Result<reqwest::Response, GoogleRequestError> {
-    let mut builder = http.post(&request.url).header("content-type", "application/json");
+    let mut builder = http
+        .post(&request.url)
+        .header("content-type", "application/json");
     if let Some(headers) = request.headers {
         for (name, value) in headers {
             let (Ok(name), Ok(value)) = (
@@ -905,8 +1096,13 @@ pub async fn post_stream_generate_content(
         Some(GoogleAuth::Bearer(token)) => builder = builder.bearer_auth(token),
         None => {}
     }
-    let body = serde_json::to_string(&request.body).map_err(|error| GoogleRequestError::Message(error.to_string()))?;
-    let response = builder.body(body).send().await.map_err(|error| GoogleRequestError::Message(error.to_string()))?;
+    let body = serde_json::to_string(&request.body)
+        .map_err(|error| GoogleRequestError::Message(error.to_string()))?;
+    let response = builder
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| GoogleRequestError::Message(error.to_string()))?;
     if !response.status().is_success() {
         return Err(http_error_from_response(response).await);
     }
@@ -948,10 +1144,10 @@ pub fn request_body(params: &Value, vertex: bool) -> Result<Value, GoogleRequest
                 "cachedContent" if vertex => {
                     body.insert("cachedContent".into(), value.clone());
                 }
-                "temperature" | "topP" | "topK" | "candidateCount" | "maxOutputTokens" | "stopSequences"
-                | "responseLogprobs" | "logprobs" | "presencePenalty" | "frequencyPenalty" | "seed"
-                | "responseMimeType" | "responseSchema" | "responseJsonSchema" | "cachedContent"
-                | "thinkingConfig" => {
+                "temperature" | "topP" | "topK" | "candidateCount" | "maxOutputTokens"
+                | "stopSequences" | "responseLogprobs" | "logprobs" | "presencePenalty"
+                | "frequencyPenalty" | "seed" | "responseMimeType" | "responseSchema"
+                | "responseJsonSchema" | "cachedContent" | "thinkingConfig" => {
                     generation_config.insert(key.clone(), value.clone());
                 }
                 _ => {}
@@ -974,7 +1170,11 @@ fn content_from_string(value: &Value) -> Value {
 
 async fn http_error_from_response(response: reqwest::Response) -> GoogleRequestError {
     let status = response.status().as_u16();
-    let status_text = response.status().canonical_reason().unwrap_or_default().to_owned();
+    let status_text = response
+        .status()
+        .canonical_reason()
+        .unwrap_or_default()
+        .to_owned();
     let is_json = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -982,13 +1182,19 @@ async fn http_error_from_response(response: reqwest::Response) -> GoogleRequestE
         .is_some_and(|value| value.contains("application/json"));
     let text = response.text().await.unwrap_or_default();
     let message = if is_json {
-        serde_json::from_str::<Value>(&text).map(|value| js_json_stringify(&value)).unwrap_or(text)
+        serde_json::from_str::<Value>(&text)
+            .map(|value| js_json_stringify(&value))
+            .unwrap_or(text)
     } else {
         js_json_stringify(&serde_json::json!({
             "error": { "message": text, "code": status, "status": status_text }
         }))
     };
-    GoogleRequestError::Sdk { message, status: Some(status), headers: None }
+    GoogleRequestError::Sdk {
+        message,
+        status: Some(status),
+        headers: None,
+    }
 }
 
 /// The SDK's `processStreamResponse` SSE reader: decodes network chunks into parsed
@@ -1003,12 +1209,17 @@ impl GoogleSseDecoder {
         let chunk_string = String::from_utf8_lossy(bytes).into_owned();
         if let Ok(chunk_json) = serde_json::from_str::<Value>(&chunk_string)
             && let Some(error) = chunk_json.get("error")
-            && let Some(code) = error.get("code").and_then(Value::as_u64).filter(|code| (400..600).contains(code))
+            && let Some(code) = error
+                .get("code")
+                .and_then(Value::as_u64)
+                .filter(|code| (400..600).contains(code))
         {
             return Err(GoogleRequestError::Sdk {
                 message: format!(
                     "got status: {}. {}",
-                    crate::utils::diagnostics::js_string(error.get("status").unwrap_or(&Value::Null)),
+                    crate::utils::diagnostics::js_string(
+                        error.get("status").unwrap_or(&Value::Null)
+                    ),
                     js_json_stringify(&chunk_json)
                 ),
                 status: Some(code as u16),
@@ -1021,7 +1232,9 @@ impl GoogleSseDecoder {
             let event = self.buffer[..index].to_owned();
             self.buffer = self.buffer[index + length..].to_owned();
             let trimmed = crate::utils::js::trim(&event);
-            let Some(payload) = trimmed.strip_prefix("data:") else { continue };
+            let Some(payload) = trimmed.strip_prefix("data:") else {
+                continue;
+            };
             let payload = crate::utils::js::trim(payload);
             let chunk = serde_json::from_str::<Value>(payload)
                 .map_err(|error| GoogleRequestError::Message(error.to_string()))?;
@@ -1035,7 +1248,9 @@ impl GoogleSseDecoder {
         if self.buffer.trim().is_empty() {
             return Ok(Vec::new());
         }
-        Err(GoogleRequestError::Message("Incomplete JSON segment at the end".into()))
+        Err(GoogleRequestError::Message(
+            "Incomplete JSON segment at the end".into(),
+        ))
     }
 }
 
@@ -1052,6 +1267,9 @@ fn find_sse_event_boundary(buffer: &str) -> Option<(usize, usize)> {
     }
     found
 }
+
+#[path = "google_vertex_adc.rs"]
+pub mod google_vertex_adc;
 
 /// Application Default Credentials, mirroring `google-auth-library`'s `getApplicationDefault`:
 /// the `GOOGLE_APPLICATION_CREDENTIALS` file, then the well-known gcloud file, then the GCE
@@ -1078,7 +1296,9 @@ pub async fn resolve_application_default_credentials(
     }
 }
 
-async fn metadata_server_access_token(http: &reqwest::Client) -> Result<String, GoogleRequestError> {
+async fn metadata_server_access_token(
+    http: &reqwest::Client,
+) -> Result<String, GoogleRequestError> {
     let response = http
         .get("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token")
         .header("Metadata-Flavor", "Google")
@@ -1089,16 +1309,27 @@ async fn metadata_server_access_token(http: &reqwest::Client) -> Result<String, 
     if !response.status().is_success() {
         return Err(http_error_from_response(response).await);
     }
-    let body = response.text().await.map_err(|error| GoogleRequestError::Message(error.to_string()))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|error| GoogleRequestError::Message(error.to_string()))?;
     serde_json::from_str::<Value>(&body)
         .ok()
-        .and_then(|value| value.get("access_token").and_then(Value::as_str).map(str::to_owned))
-        .ok_or_else(|| GoogleRequestError::Message("metadata server returned no access token".into()))
+        .and_then(|value| {
+            value
+                .get("access_token")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| {
+            GoogleRequestError::Message("metadata server returned no access token".into())
+        })
 }
 
 /// Cached ADC tokens, keyed by credentials path (the SDK's `GoogleAuth` caches per client).
-static ADC_TOKEN_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (String, i64)>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static ADC_TOKEN_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (String, i64)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 async fn access_token_from_credentials_file(
     http: &reqwest::Client,
@@ -1120,20 +1351,31 @@ async fn access_token_from_credentials_file(
             "Unable to read the credential file specified by the GOOGLE_APPLICATION_CREDENTIALS environment variable: {error}"
         ))
     })?;
-    let credentials: Value = serde_json::from_str(&text)
-        .map_err(|error| GoogleRequestError::Message(format!("Unable to parse the credential file {path}: {error}")))?;
-    let credential_type = credentials.get("type").and_then(Value::as_str).unwrap_or_default();
+    let credentials: Value = serde_json::from_str(&text).map_err(|error| {
+        GoogleRequestError::Message(format!(
+            "Unable to parse the credential file {path}: {error}"
+        ))
+    })?;
+    let credential_type = credentials
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let (token, expires_in) = match credential_type {
         "authorized_user" => refresh_authorized_user_token(http, &credentials).await?,
         "service_account" => service_account_access_token(http, &credentials).await?,
         other => {
-            return Err(GoogleRequestError::Message(format!("Unsupported credential type {other} in {path}")));
+            return Err(GoogleRequestError::Message(format!(
+                "Unsupported credential type {other} in {path}"
+            )));
         }
     };
     ADC_TOKEN_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(path.to_owned(), (token.clone(), now + expires_in.saturating_mul(1000) as i64));
+        .insert(
+            path.to_owned(),
+            (token.clone(), now + expires_in.saturating_mul(1000) as i64),
+        );
     Ok(token)
 }
 
@@ -1152,8 +1394,14 @@ async fn refresh_authorized_user_token(
 ) -> Result<(String, u64), GoogleRequestError> {
     let body = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("client_id", &credential_field(credentials, "client_id")?)
-        .append_pair("client_secret", &credential_field(credentials, "client_secret")?)
-        .append_pair("refresh_token", &credential_field(credentials, "refresh_token")?)
+        .append_pair(
+            "client_secret",
+            &credential_field(credentials, "client_secret")?,
+        )
+        .append_pair(
+            "refresh_token",
+            &credential_field(credentials, "refresh_token")?,
+        )
         .append_pair("grant_type", "refresh_token")
         .finish();
     let response = http
@@ -1191,23 +1439,37 @@ async fn service_account_access_token(
     read_token_response(response).await
 }
 
-async fn read_token_response(response: reqwest::Response) -> Result<(String, u64), GoogleRequestError> {
+async fn read_token_response(
+    response: reqwest::Response,
+) -> Result<(String, u64), GoogleRequestError> {
     if !response.status().is_success() {
         return Err(http_error_from_response(response).await);
     }
-    let body = response.text().await.map_err(|error| GoogleRequestError::Message(error.to_string()))?;
-    let value: Value = serde_json::from_str(&body)
-        .map_err(|error| GoogleRequestError::Message(format!("token endpoint returned invalid JSON: {error}")))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|error| GoogleRequestError::Message(error.to_string()))?;
+    let value: Value = serde_json::from_str(&body).map_err(|error| {
+        GoogleRequestError::Message(format!("token endpoint returned invalid JSON: {error}"))
+    })?;
     let token = value
         .get("access_token")
         .and_then(Value::as_str)
         .filter(|token| !token.is_empty())
-        .ok_or_else(|| GoogleRequestError::Message("token endpoint returned no access_token".into()))?;
-    let expires_in = value.get("expires_in").and_then(Value::as_u64).unwrap_or(3600);
+        .ok_or_else(|| {
+            GoogleRequestError::Message("token endpoint returned no access_token".into())
+        })?;
+    let expires_in = value
+        .get("expires_in")
+        .and_then(Value::as_u64)
+        .unwrap_or(3600);
     Ok((token.to_owned(), expires_in))
 }
 
-fn service_account_assertion(credentials: &Value, token_uri: &str) -> Result<String, GoogleRequestError> {
+fn service_account_assertion(
+    credentials: &Value,
+    token_uri: &str,
+) -> Result<String, GoogleRequestError> {
     let client_email = credential_field(credentials, "client_email")?;
     let private_key = credential_field(credentials, "private_key")?;
     let now = crate::utils::diagnostics::now_ms() / 1000;
@@ -1219,8 +1481,11 @@ fn service_account_assertion(credentials: &Value, token_uri: &str) -> Result<Str
         "iat": now,
         "exp": now + 3600,
     });
-    let signing_input =
-        format!("{}.{}", base64_url(&js_json_stringify(&header)), base64_url(&js_json_stringify(&claims)));
+    let signing_input = format!(
+        "{}.{}",
+        base64_url(&js_json_stringify(&header)),
+        base64_url(&js_json_stringify(&claims))
+    );
     let signature = sign_rs256(&private_key, signing_input.as_bytes())?;
     Ok(format!("{signing_input}.{}", base64_url_bytes(&signature)))
 }
@@ -1236,7 +1501,10 @@ fn base64_url_bytes(bytes: &[u8]) -> String {
 
 fn sign_rs256(private_key_pem: &str, message: &[u8]) -> Result<Vec<u8>, GoogleRequestError> {
     use base64::Engine;
-    let der = private_key_pem.lines().filter(|line| !line.starts_with("-----")).collect::<String>();
+    let der = private_key_pem
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect::<String>();
     let der = base64::engine::general_purpose::STANDARD
         .decode(der.trim())
         .map_err(|error| GoogleRequestError::Message(format!("invalid private key: {error}")))?;
@@ -1244,8 +1512,15 @@ fn sign_rs256(private_key_pem: &str, message: &[u8]) -> Result<Vec<u8>, GoogleRe
         .map_err(|error| GoogleRequestError::Message(format!("invalid private key: {error}")))?;
     let mut signature = vec![0u8; key_pair.public().modulus_len()];
     key_pair
-        .sign(&ring::signature::RSA_PKCS1_SHA256, &ring::rand::SystemRandom::new(), message, &mut signature)
-        .map_err(|error| GoogleRequestError::Message(format!("failed to sign the assertion: {error}")))?;
+        .sign(
+            &ring::signature::RSA_PKCS1_SHA256,
+            &ring::rand::SystemRandom::new(),
+            message,
+            &mut signature,
+        )
+        .map_err(|error| {
+            GoogleRequestError::Message(format!("failed to sign the assertion: {error}"))
+        })?;
     Ok(signature)
 }
 
@@ -1253,6 +1528,65 @@ fn sign_rs256(private_key_pem: &str, message: &[u8]) -> Result<Vec<u8>, GoogleRe
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unsigned_current_turn_calls_and_results_are_both_text() {
+        let mut model = crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("models")[0]
+            .clone();
+        model.id = "gemini-3-pro".into();
+        model.api = "google-vertex".into();
+        let mut assistant = crate::utils::lazy::setup_error_message(&model, "");
+        assistant.stop_reason = crate::types::StopReason::ToolUse;
+        assistant.content.push(crate::types::ContentBlock::ToolCall(
+            crate::types::ToolCall {
+                id: "call1".into(),
+                name: "lookup".into(),
+                ..Default::default()
+            },
+        ));
+        let result = Message::ToolResult(crate::types::ToolResultMessage {
+            nested_calls: None,
+            tool_call_id: "call1".into(),
+            tool_name: "lookup".into(),
+            content: vec![crate::types::ContentBlock::text("ok")],
+            details: None,
+            usage: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: 0,
+        });
+        let context = Context {
+            messages: vec![
+                Message::User(crate::types::UserMessage {
+                    content: UserContent::Text("go".into()),
+                    timestamp: 0,
+                }),
+                Message::Assistant(Box::new(assistant.clone())),
+                result.clone(),
+            ],
+            ..Default::default()
+        };
+        let text = convert_messages(&model, &context, ConvertMessagesOptions::default());
+        assert!(text[1].parts[0].contains_key("text"));
+        assert!(!text[1].parts[0].contains_key("functionCall"));
+        assert!(text[2].parts[0].contains_key("text"));
+        let crate::types::ContentBlock::ToolCall(call) = &mut assistant.content[0] else {
+            panic!("call")
+        };
+        call.thought_signature = Some("AAAA".into());
+        let signed_context = Context {
+            messages: vec![
+                context.messages[0].clone(),
+                Message::Assistant(Box::new(assistant)),
+                result,
+            ],
+            ..Default::default()
+        };
+        let signed = convert_messages(&model, &signed_context, ConvertMessagesOptions::default());
+        assert!(signed[1].parts[0].contains_key("functionCall"));
+        assert!(signed[2].parts[0].contains_key("functionResponse"));
+    }
 
     #[test]
     fn gemini_major_versions_parse_like_the_ts_regex() {
@@ -1289,17 +1623,22 @@ mod tests {
 
     #[test]
     fn provider_native_content_labels_the_known_google_part_kinds() {
-        let executable =
-            to_provider_native_content(&part(json!({ "executableCode": { "language": "python", "code": "print(1)" } })));
+        let executable = to_provider_native_content(&part(
+            json!({ "executableCode": { "language": "python", "code": "print(1)" } }),
+        ));
         assert_eq!(executable.subtype, "executableCode");
-        assert_eq!(executable.raw, json!({ "executableCode": { "language": "python", "code": "print(1)" } }));
+        assert_eq!(
+            executable.raw,
+            json!({ "executableCode": { "language": "python", "code": "print(1)" } })
+        );
 
         let result = to_provider_native_content(&part(
             json!({ "codeExecutionResult": { "outcome": "OUTCOME_OK", "output": "1\n" } }),
         ));
         assert_eq!(result.subtype, "codeExecutionResult");
 
-        let other = to_provider_native_content(&part(json!({ "fileData": { "fileUri": "gs://x" } })));
+        let other =
+            to_provider_native_content(&part(json!({ "fileData": { "fileUri": "gs://x" } })));
         assert_eq!(other.subtype, "fileData");
         assert_eq!(other.raw, json!({ "fileData": { "fileUri": "gs://x" } }));
     }
@@ -1342,12 +1681,23 @@ mod tests {
         let chunks = decoder
             .push_bytes(b"data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n")
             .expect("decodes a frame");
-        assert_eq!(chunks, vec![json!({ "candidates": [{ "finishReason": "STOP" }] })]);
+        assert_eq!(
+            chunks,
+            vec![json!({ "candidates": [{ "finishReason": "STOP" }] })]
+        );
         assert!(decoder.finish().expect("clean end").is_empty());
 
         let mut split = GoogleSseDecoder::default();
-        assert!(split.push_bytes(b"data: {\"cand").expect("partial frame").is_empty());
-        assert!(split.finish().is_err(), "an incomplete JSON segment must fail");
+        assert!(
+            split
+                .push_bytes(b"data: {\"cand")
+                .expect("partial frame")
+                .is_empty()
+        );
+        assert!(
+            split.finish().is_err(),
+            "an incomplete JSON segment must fail"
+        );
 
         let mut in_band = GoogleSseDecoder::default();
         let error = in_band

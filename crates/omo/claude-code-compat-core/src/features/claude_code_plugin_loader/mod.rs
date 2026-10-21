@@ -1,0 +1,27 @@
+pub mod agent_loader;
+pub mod command_loader;
+pub mod discovery;
+pub mod discovery_core;
+pub mod discovery_paths;
+pub mod hook_loader;
+pub mod install_path_resolver;
+pub mod installed_plugin_database;
+pub mod loaded_plugin;
+pub mod loader;
+pub mod mcp_server_loader;
+pub mod plugin_key;
+pub mod plugin_manifest;
+pub mod plugin_path_resolver;
+pub mod plugin_settings;
+pub mod scope_filter;
+pub mod skill_loader;
+pub mod types;
+
+pub use agent_loader::load_plugin_agents;
+pub use command_loader::load_plugin_commands;
+pub use discovery::*;
+pub use hook_loader::load_plugin_hooks_configs;
+pub use loader::*;
+pub use mcp_server_loader::*;
+pub use plugin_path_resolver::*;
+pub use types::*;
