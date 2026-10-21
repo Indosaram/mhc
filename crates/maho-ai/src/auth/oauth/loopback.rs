@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 #[derive(Debug, Clone)]
 pub struct LoopbackRequest {
     pub method: String,
+    pub headers: BTreeMap<String, String>,
     pub path: String,
     pub query: BTreeMap<String, String>,
     pub url: String,
@@ -35,11 +36,21 @@ pub struct LoopbackResponse {
 
 impl LoopbackResponse {
     pub fn html(status: u16, body: String) -> Self {
-        Self { status, content_type: "text/html; charset=utf-8".into(), cache_control: None, body }
+        Self {
+            status,
+            content_type: "text/html; charset=utf-8".into(),
+            cache_control: None,
+            body,
+        }
     }
 
     pub fn plain(status: u16, body: String) -> Self {
-        Self { status, content_type: "text/plain; charset=utf-8".into(), cache_control: None, body }
+        Self {
+            status,
+            content_type: "text/plain; charset=utf-8".into(),
+            cache_control: None,
+            body,
+        }
     }
 
     pub fn no_store(mut self) -> Self {
@@ -48,7 +59,8 @@ impl LoopbackResponse {
     }
 }
 
-pub type LoopbackFuture = std::pin::Pin<Box<dyn std::future::Future<Output = LoopbackResponse> + Send>>;
+pub type LoopbackFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = LoopbackResponse> + Send>>;
 pub type LoopbackHandler = Arc<dyn Fn(LoopbackRequest) -> LoopbackFuture + Send + Sync>;
 
 pub fn html_handler(
@@ -69,6 +81,15 @@ impl LoopbackListener {
 
     pub fn close(&self) {
         self.task.abort();
+    }
+
+    pub async fn close_and_wait(&mut self) {
+        self.task.abort();
+        if let Err(error) = (&mut self.task).await
+            && !error.is_cancelled()
+        {
+            eprintln!("OAuth listener failed: {error}");
+        }
     }
 }
 
@@ -109,7 +130,11 @@ pub fn set_forced_bind_failure(errno: Option<i32>) -> Option<i32> {
     FORCED_BIND_FAILURE.with(|cell| cell.replace(errno))
 }
 
-pub async fn bind_loopback(port: u16, host: &str, handler: LoopbackHandler) -> std::io::Result<LoopbackListener> {
+pub async fn bind_loopback(
+    port: u16,
+    host: &str,
+    handler: LoopbackHandler,
+) -> std::io::Result<LoopbackListener> {
     #[cfg(test)]
     if let Some(errno) = FORCED_BIND_FAILURE.with(std::cell::Cell::get) {
         return Err(std::io::Error::from_raw_os_error(errno));
@@ -130,7 +155,9 @@ pub async fn bind_loopback(port: u16, host: &str, handler: LoopbackHandler) -> s
                         Ok(0) => break,
                         Ok(read) => {
                             buffer.extend_from_slice(&chunk[..read]);
-                            if buffer.windows(4).any(|window| window == b"\r\n\r\n") || buffer.len() > 16 * 1024 {
+                            if buffer.windows(4).any(|window| window == b"\r\n\r\n")
+                                || buffer.len() > 16 * 1024
+                            {
                                 break;
                             }
                         }
@@ -148,7 +175,22 @@ pub async fn bind_loopback(port: u16, host: &str, handler: LoopbackHandler) -> s
                     Some((path, query)) => (path.to_string(), parse_query(query)),
                     None => (target.clone(), BTreeMap::new()),
                 };
-                let response = handler(LoopbackRequest { method, path, query, url: target }).await;
+                let headers = head
+                    .lines()
+                    .skip(1)
+                    .filter_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        Some((name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+                    })
+                    .collect();
+                let response = handler(LoopbackRequest {
+                    method,
+                    headers,
+                    path,
+                    query,
+                    url: target,
+                })
+                .await;
                 let mut head = format!(
                     "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n",
                     response.status,
@@ -167,11 +209,16 @@ pub async fn bind_loopback(port: u16, host: &str, handler: LoopbackHandler) -> s
             });
         }
     });
-    Ok(LoopbackListener { port: bound_port, task })
+    Ok(LoopbackListener {
+        port: bound_port,
+        task,
+    })
 }
 
 fn parse_query(query: &str) -> BTreeMap<String, String> {
-    url::form_urlencoded::parse(query.as_bytes()).map(|(k, v)| (k.into_owned(), v.into_owned())).collect()
+    url::form_urlencoded::parse(query.as_bytes())
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect()
 }
 
 fn status_text(status: u16) -> &'static str {
@@ -217,10 +264,16 @@ mod tests {
 
     #[tokio::test]
     async fn reports_the_os_bind_failure_code() {
-        let listener = bind_loopback(0, "127.0.0.1", html_handler(|_| LoopbackResponse::plain(200, String::new())))
+        let listener = bind_loopback(
+            0,
+            "127.0.0.1",
+            html_handler(|_| LoopbackResponse::plain(200, String::new())),
+        )
+        .await
+        .expect("bind");
+        let error = TcpListener::bind(("127.0.0.1", listener.port))
             .await
-            .expect("bind");
-        let error = TcpListener::bind(("127.0.0.1", listener.port)).await.expect_err("port already bound");
+            .expect_err("port already bound");
         assert_eq!(bind_failure_code(&error), Some("EADDRINUSE"));
     }
 }

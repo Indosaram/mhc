@@ -20,7 +20,9 @@ mod tests {
     use maho_ai::types::{Usage, UsageCost};
 
     fn message(stop_reason: StopReason, error_message: Option<&str>, output: u64) -> AssistantMessage {
-        AssistantMessage {
+        AssistantMessage { thinking_level: None, provider_diagnostic: None,
+            prompt_cache_diagnostics: None,
+            error_cause: None,
             content: Vec::new(),
             api: "anthropic-messages".to_string(),
             provider: "anthropic".to_string(),

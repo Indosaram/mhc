@@ -23,9 +23,9 @@ impl maho_ai::auth::types::OAuthAuth for PromptOAuth {
 async fn make_session(root: &std::path::Path) -> maho_core::agent_session::AgentSession {
     let cwd = root.to_string_lossy().into_owned();
     let manager = SessionManager::create(&cwd, Some(root.join("sessions").to_str().expect("directory")), None);
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("model");
-    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(vec![provider.provider]), ..Default::default() });
+    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(vec![provider.provider]), ..Default::default() }).expect("valid model runtime");
     create_agent_session(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(cwd), model_runtime: Some(runtime), model: Some(model), session_manager: Some(manager), settings_manager: Some(SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()), false)), no_tools: Some(NoToolsMode::All), auto_title_sessions: Some(false), ..Default::default() }).await.expect("session").session
 }
 

@@ -75,7 +75,9 @@ fn positive_finite(value: Option<f64>) -> Option<f64> {
 
 /// senpi summarizationTotalBudgetMs.
 pub fn summarization_total_budget_ms(attempt_override_ms: Option<f64>) -> f64 {
-    let override_ms = positive_finite(attempt_override_ms).map(|value| value.min(SUMMARIZATION_MAX_DURATION_CAP_MS)).unwrap_or(0.0);
+    let override_ms = positive_finite(attempt_override_ms)
+        .map(|value| value.min(SUMMARIZATION_MAX_DURATION_CAP_MS))
+        .unwrap_or(0.0);
     SUMMARIZATION_TOTAL_BUDGET_MS.max(override_ms)
 }
 
@@ -114,10 +116,15 @@ impl SummarizationDeadline {
     }
 
     /// senpi attemptBudgetMs: clamped to what the compaction has left.
-    pub fn attempt_budget_ms(&self, requested_ms: f64) -> Result<f64, SummarizationTotalBudgetError> {
+    pub fn attempt_budget_ms(
+        &self,
+        requested_ms: f64,
+    ) -> Result<f64, SummarizationTotalBudgetError> {
         let remaining = self.remaining_ms();
         if remaining <= 0.0 {
-            return Err(SummarizationTotalBudgetError { total_budget_ms: self.total_budget_ms });
+            return Err(SummarizationTotalBudgetError {
+                total_budget_ms: self.total_budget_ms,
+            });
         }
         Ok(requested_ms.min(remaining))
     }
@@ -135,7 +142,11 @@ impl std::fmt::Debug for SummarizationDeadline {
 /// senpi createSummarizationDeadline.
 pub fn create_summarization_deadline(total_budget_ms: f64, now: Clock) -> SummarizationDeadline {
     let started_ms = now();
-    SummarizationDeadline { total_budget_ms, started_ms, now }
+    SummarizationDeadline {
+        total_budget_ms,
+        started_ms,
+        now,
+    }
 }
 
 /// The default clock, senpi's Date.now.
@@ -152,7 +163,9 @@ pub fn summarization_max_duration_ms(estimated_input_tokens: f64, override_ms: O
         return override_ms.min(SUMMARIZATION_MAX_DURATION_CAP_MS);
     }
     let scaled = estimated_input_tokens * SUMMARIZATION_MAX_DURATION_PER_TOKEN_MS;
-    scaled.max(DEFAULT_SUMMARIZATION_MAX_DURATION_MS as f64).min(SUMMARIZATION_MAX_DURATION_CAP_MS)
+    scaled
+        .max(DEFAULT_SUMMARIZATION_MAX_DURATION_MS as f64)
+        .min(SUMMARIZATION_MAX_DURATION_CAP_MS)
 }
 
 /// The signal type the watchdog observes.
@@ -168,13 +181,20 @@ pub async fn consume_stream_with_idle_timeout(
 ) -> Result<maho_ai::types::AssistantMessage, maho_ai::utils::event_stream::StreamError> {
     use maho_ai::utils::event_stream::StreamError;
     use std::time::Duration;
-    let deadline = max_duration_ms.map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
+    let deadline =
+        max_duration_ms.map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
     let mut settling = signal.is_some_and(AbortSignal::aborted);
+    if settling {
+        stream.cancel().await?;
+    }
     loop {
         let is_settling = settling;
         let read = async {
-            if is_settling { stream.result().await.map(|message| (Some(message), true)) }
-            else { stream.next().await.map(|event| (None, event.is_none())) }
+            if is_settling {
+                stream.result().await.map(|message| (Some(message), true))
+            } else {
+                stream.next().await.map(|event| (None, event.is_none()))
+            }
         };
         tokio::pin!(read);
         let idle = tokio::time::sleep(Duration::from_millis(idle_timeout_ms));
@@ -192,23 +212,36 @@ pub async fn consume_stream_with_idle_timeout(
                     Some(signal) => signal.cancelled().await,
                     None => std::future::pending::<()>().await,
                 }
-            } else { std::future::pending::<()>().await; }
+            } else {
+                std::future::pending::<()>().await;
+            }
         };
         tokio::pin!(cancelled);
         tokio::select! {
             biased;
             result = &mut read => {
-                let (message, ended) = result?;
-                if let Some(message) = message { return Ok(message); }
+                let (message, ended) = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        stream.cancel().await?;
+                        return Err(error);
+                    }
+                };
+                if let Some(message) = message {
+                    stream.cancel().await?;
+                    return Ok(message);
+                }
                 settling = ended;
             }
-            () = &mut cancelled => { settling = true; }
+            () = &mut cancelled => { stream.cancel().await?; settling = true; }
             () = &mut duration => {
                 abort();
+                stream.cancel().await?;
                 return Err(StreamError::new(StreamDurationBudgetError::new(max_duration_ms.unwrap_or_default() as i64).to_string()));
             }
             () = &mut idle => {
                 abort();
+                stream.cancel().await?;
                 return Err(StreamError::new(StreamIdleTimeoutError::new(idle_timeout_ms as i64).to_string()));
             }
         }
@@ -221,13 +254,33 @@ mod tests {
     use std::sync::atomic::{AtomicI64, Ordering};
 
     #[tokio::test]
+    async fn terminal_result_waits_for_resource_cleanup() {
+        let stream = maho_ai::types::AssistantMessageEventStream::assistant();
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
+            closed_tx.send(()).expect("cleanup subscriber");
+            Ok(())
+        })));
+        let message = maho_ai::providers::faux::faux_assistant_message("done", Default::default());
+        stream.end(Some(message.clone()));
+        let result = consume_stream_with_idle_timeout(&stream, 1000, None, None, || panic!("no watchdog abort"))
+            .await.expect("terminal result");
+        tokio::time::timeout(std::time::Duration::from_secs(5), closed_rx).await.expect("bounded cleanup").expect("cleanup completed before return");
+        assert_eq!(result, message);
+    }
+
+    #[tokio::test]
     async fn stalled_and_unsettled_streams_abort_under_watchdogs() {
         for (ended, idle, duration) in [(false, 0, None), (true, 0, None), (false, 1000, Some(0))] {
             let stream = maho_ai::types::AssistantMessageEventStream::assistant();
-            if ended { stream.end(None); }
+            if ended {
+                stream.end(None);
+            }
             let aborted = std::sync::atomic::AtomicBool::new(false);
-            let result = consume_stream_with_idle_timeout(&stream, idle, duration, None,
-                || aborted.store(true, Ordering::SeqCst)).await;
+            let result = consume_stream_with_idle_timeout(&stream, idle, duration, None, || {
+                aborted.store(true, Ordering::SeqCst)
+            })
+            .await;
             assert!(result.is_err());
             assert!(aborted.load(Ordering::SeqCst));
         }
@@ -238,10 +291,18 @@ mod tests {
         let controller = maho_ai::utils::abort::AbortController::new();
         controller.abort(None);
         let stream = maho_ai::types::AssistantMessageEventStream::assistant();
-        let message = maho_ai::providers::faux::faux_assistant_message("settled", Default::default());
+        let message =
+            maho_ai::providers::faux::faux_assistant_message("settled", Default::default());
         stream.end(Some(message.clone()));
-        let result = consume_stream_with_idle_timeout(&stream, 0, Some(0), Some(&controller.signal()),
-            || panic!("ready settlement must win")).await.expect("settled result");
+        let result = consume_stream_with_idle_timeout(
+            &stream,
+            0,
+            Some(0),
+            Some(&controller.signal()),
+            || panic!("ready settlement must win"),
+        )
+        .await
+        .expect("settled result");
         assert_eq!(result, message);
     }
 
@@ -256,7 +317,10 @@ mod tests {
             "Summarization stream exceeded its 120000ms wall-clock budget; treating the request as too slow to keep the session waiting"
         );
         assert_eq!(
-            SummarizationTotalBudgetError { total_budget_ms: 900_000.0 }.to_string(),
+            SummarizationTotalBudgetError {
+                total_budget_ms: 900_000.0
+            }
+            .to_string(),
             "Compaction exceeded its 900000ms total wall-clock budget across every summarization attempt and retry"
         );
     }
@@ -268,8 +332,14 @@ mod tests {
         assert_eq!(summarization_total_budget_ms(Some(-5.0)), 900_000.0);
         assert_eq!(summarization_total_budget_ms(Some(f64::NAN)), 900_000.0);
         assert_eq!(summarization_total_budget_ms(Some(60_000.0)), 900_000.0);
-        assert_eq!(summarization_total_budget_ms(Some(1_200_000.0)), 1_200_000.0);
-        assert_eq!(summarization_total_budget_ms(Some(5_000_000.0)), 1_800_000.0);
+        assert_eq!(
+            summarization_total_budget_ms(Some(1_200_000.0)),
+            1_200_000.0
+        );
+        assert_eq!(
+            summarization_total_budget_ms(Some(5_000_000.0)),
+            1_800_000.0
+        );
     }
 
     #[test]
@@ -278,32 +348,55 @@ mod tests {
         assert_eq!(summarization_max_duration_ms(50_000.0, None), 120_000.0);
         assert_eq!(summarization_max_duration_ms(60_000.0, None), 120_000.0);
         assert_eq!(summarization_max_duration_ms(100_000.0, None), 200_000.0);
-        assert_eq!(summarization_max_duration_ms(2_000_000.0, None), 1_800_000.0);
+        assert_eq!(
+            summarization_max_duration_ms(2_000_000.0, None),
+            1_800_000.0
+        );
     }
 
     #[test]
     fn an_explicit_override_replaces_the_computed_attempt_budget() {
-        assert_eq!(summarization_max_duration_ms(0.0, Some(300_000.0)), 300_000.0);
-        assert_eq!(summarization_max_duration_ms(500_000.0, Some(1_000.0)), 1_000.0);
-        assert_eq!(summarization_max_duration_ms(0.0, Some(9_000_000.0)), 1_800_000.0);
+        assert_eq!(
+            summarization_max_duration_ms(0.0, Some(300_000.0)),
+            300_000.0
+        );
+        assert_eq!(
+            summarization_max_duration_ms(500_000.0, Some(1_000.0)),
+            1_000.0
+        );
+        assert_eq!(
+            summarization_max_duration_ms(0.0, Some(9_000_000.0)),
+            1_800_000.0
+        );
         assert_eq!(summarization_max_duration_ms(0.0, Some(0.0)), 120_000.0);
-        assert_eq!(summarization_max_duration_ms(0.0, Some(f64::INFINITY)), 120_000.0);
+        assert_eq!(
+            summarization_max_duration_ms(0.0, Some(f64::INFINITY)),
+            120_000.0
+        );
     }
 
     #[test]
     fn the_deadline_counts_down_and_clamps_each_attempt() {
         let clock = Arc::new(AtomicI64::new(0));
         let reader = clock.clone();
-        let deadline = create_summarization_deadline(1_000.0, Arc::new(move || reader.load(Ordering::SeqCst) as f64));
+        let deadline = create_summarization_deadline(
+            1_000.0,
+            Arc::new(move || reader.load(Ordering::SeqCst) as f64),
+        );
         assert_eq!(deadline.remaining_ms(), 1_000.0);
-        assert_eq!(deadline.attempt_budget_ms(5_000.0).expect("budget"), 1_000.0);
+        assert_eq!(
+            deadline.attempt_budget_ms(5_000.0).expect("budget"),
+            1_000.0
+        );
         clock.store(400, Ordering::SeqCst);
         assert_eq!(deadline.remaining_ms(), 600.0);
         assert_eq!(deadline.attempt_budget_ms(5_000.0).expect("budget"), 600.0);
         assert_eq!(deadline.attempt_budget_ms(100.0).expect("budget"), 100.0);
         clock.store(1_500, Ordering::SeqCst);
         assert_eq!(deadline.remaining_ms(), 0.0);
-        let error = deadline.attempt_budget_ms(100.0).expect_err("budget exhausted");
+        let error = deadline
+            .attempt_budget_ms(100.0)
+            .expect_err("budget exhausted");
         assert_eq!(error.total_budget_ms, 1_000.0);
     }
 }

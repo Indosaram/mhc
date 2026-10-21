@@ -29,6 +29,11 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                 ModelRequirement {
                     fallback_chain: vec![
                         entry(
+                            &["google", "google-vertex", "opencode"],
+                            "gemini-4-argon",
+                            Some("low"),
+                        ),
+                        entry(
                             &[
                                 "anthropic",
                                 "anthropic-api",
@@ -197,6 +202,11 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                             Some("low"),
                         ),
                         entry(
+                            &["anthropic", "anthropic-api", "github-copilot"],
+                            "claude-haiku-5-5",
+                            Some("medium"),
+                        ),
+                        entry(
                             &["deepseek"],
                             "deepseek-flash",
                             Some("off"),
@@ -224,15 +234,6 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                             &["xai"],
                             "grok-4.20-0309-non-reasoning",
                             None,
-                        ),
-                        entry(
-                            &[
-                                "anthropic",
-                                "anthropic-api",
-                                "github-copilot",
-                            ],
-                            "claude-haiku-4-5",
-                            Some("off"),
                         ),
                         entry(
                             &["zai-coding-plan"],
@@ -273,14 +274,24 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                             Some("xhigh"),
                         ),
                         entry(
+                            &["zai-coding-plan", "opencode-go"],
+                            "glm-5.3",
+                            Some("high"),
+                        ),
+                        entry(
+                            &["openai", "chatgpt-subscription"],
+                            "gpt-6.1-sol",
+                            Some("medium"),
+                        ),
+                        entry(
                             &[
                                 "openai",
                                 "chatgpt-subscription",
                                 "github-copilot",
                                 "opencode",
                             ],
-                            "gpt-5.6-terra",
-                            Some("high"),
+                            "gpt-5.6-sol",
+                            Some("medium"),
                         ),
                         entry(
                             &[
@@ -354,6 +365,11 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
                 ModelRequirement {
                     fallback_chain: vec![
                         entry(
+                            &["google", "google-vertex", "opencode"],
+                            "gemini-4-argon",
+                            Some("low"),
+                        ),
+                        entry(
                             &[
                                 "anthropic",
                                 "anthropic-api",
@@ -380,3 +396,36 @@ pub static CATEGORY_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelReq
             ),
         ])
     });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visual_and_writing_lead_with_argon_low() {
+        for category in ["visual-engineering", "writing"] {
+            assert_eq!(CATEGORY_MODEL_REQUIREMENTS[category].fallback_chain[0],
+                entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("low")));
+        }
+        assert_eq!(CATEGORY_MODEL_REQUIREMENTS["writing"].requires_any_model, Some(true));
+    }
+
+    #[test]
+    fn quick_places_haiku_medium_after_luna() {
+        let chain = &CATEGORY_MODEL_REQUIREMENTS["quick"].fallback_chain;
+        assert_eq!(chain.len(), 9);
+        assert_eq!(chain[1], entry(&["anthropic", "anthropic-api", "github-copilot"], "claude-haiku-5-5", Some("medium")));
+        assert_eq!(chain[2], entry(&["deepseek"], "deepseek-flash", Some("off")));
+        assert!(!chain.iter().any(|rung| rung.model == "claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn unspecified_low_places_glm_before_both_sol_fallbacks() {
+        let chain = &CATEGORY_MODEL_REQUIREMENTS["unspecified-low"].fallback_chain;
+        assert_eq!(chain.len(), 10);
+        assert_eq!(chain[3], entry(&["zai-coding-plan", "opencode-go"], "glm-5.3", Some("high")));
+        assert_eq!(chain[4], entry(&["openai", "chatgpt-subscription"], "gpt-6.1-sol", Some("medium")));
+        assert_eq!(chain[5], entry(&["openai", "chatgpt-subscription", "github-copilot", "opencode"], "gpt-5.6-sol", Some("medium")));
+        assert!(!chain.iter().any(|rung| rung.model == "gpt-5.6-terra"));
+    }
+}

@@ -44,7 +44,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_key_print_returns_stored_key() {
-        let runtime = ModelRuntime::create_sync(Default::default());
+        let runtime = ModelRuntime::create_sync(Default::default()).expect("model runtime");
         runtime.credentials.set("openai", Some(serde_json::json!({"type":"api_key","key":"fixture-key"}))).expect("seed");
         let args = Args { provider: Some("openai".into()), ..Default::default() };
         assert_eq!(resolve_credential_for_print(&args, &runtime, AuthCommandKind::ApiKey, None).await.expect("key"), "fixture-key");
@@ -72,7 +72,7 @@ mod tests {
     async fn api_key_print_rejects_oauth_with_provider_specific_error() {
         let storage = std::sync::Arc::new(maho_core::auth_storage::AuthStorage::in_memory(Default::default()));
         storage.set("chatgpt-subscription", Some(serde_json::json!({"type":"oauth", "access":"fixture", "refresh":"fixture", "expires":0}))).expect("stored");
-        let runtime = ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { credentials: Some(storage), ..Default::default() });
+        let runtime = ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { credentials: Some(storage), ..Default::default() }).expect("model runtime");
         let args = Args { provider: Some("chatgpt-subscription".into()), ..Default::default() };
         let error = resolve_credential_for_print(&args, &runtime, AuthCommandKind::ApiKey, None).await.expect_err("wrong type");
         assert_eq!(error, "Provider \"chatgpt-subscription\" is configured with OAuth, not an API key");
@@ -82,7 +82,7 @@ mod tests {
     async fn bearer_print_rejects_api_key_with_provider_specific_error() {
         let storage = std::sync::Arc::new(maho_core::auth_storage::AuthStorage::in_memory(Default::default()));
         storage.set("xai", Some(serde_json::json!({"type":"api_key", "key":"fixture"}))).expect("stored");
-        let runtime = ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { credentials: Some(storage), ..Default::default() });
+        let runtime = ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { credentials: Some(storage), ..Default::default() }).expect("model runtime");
         let args = Args { provider: Some("xai".into()), ..Default::default() };
         let error = resolve_credential_for_print(&args, &runtime, AuthCommandKind::BearerToken, None).await.expect_err("wrong type");
         assert_eq!(error, "Provider \"xai\" is not configured with an OAuth bearer token");

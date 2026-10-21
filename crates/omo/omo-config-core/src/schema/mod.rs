@@ -14,6 +14,9 @@ pub mod model_catalog;
 pub mod model_profile;
 pub mod model_ref;
 pub mod reasoning_vocabulary;
+pub mod side_panel;
+#[cfg(test)]
+mod parity_5138_tests;
 pub mod task;
 pub mod team;
 pub mod telemetry;
@@ -34,6 +37,7 @@ pub use model_catalog::*;
 pub use model_profile::*;
 pub use model_ref::*;
 pub use reasoning_vocabulary::*;
+pub use side_panel::*;
 pub use task::*;
 pub use team::*;
 pub use telemetry::*;

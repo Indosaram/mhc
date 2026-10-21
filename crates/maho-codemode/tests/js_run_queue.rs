@@ -12,7 +12,7 @@ async fn removed_cell_settles_while_neighbors_preserve_order() {
     queue.start_next(10.0);
     assert!(queue.remove("B", "cancel B"));
     b.changed().await.unwrap();
-    assert_eq!(b.borrow().as_ref().unwrap().as_ref().unwrap(), &stopped_result("B", "cancel B"));
+    assert_eq!(b.borrow().as_ref().unwrap().as_ref().unwrap(), &unstarted_result("B", "cancel B"));
     assert_eq!(queue.snapshot(), (Some("A".into()), vec!["C".into()]));
     queue.settle_all("cleanup");
 }

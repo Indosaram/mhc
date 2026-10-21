@@ -1,7 +1,9 @@
 //! Port of senpi packages/ai/src/auth/oauth/devin-callback.ts.
 
 use crate::auth::oauth::devin_token::exchange_devin_authorization_code;
-use crate::auth::oauth::loopback::{LoopbackListener, LoopbackRequest, LoopbackResponse, bind_loopback, callback_host};
+use crate::auth::oauth::loopback::{
+    LoopbackListener, LoopbackRequest, LoopbackResponse, bind_loopback, callback_host,
+};
 use crate::auth::oauth::oauth_page::{oauth_error_html, oauth_success_html};
 use crate::auth::oauth::transport::{OAuthTransport, default_transport};
 use crate::auth::types::OAuthCredential;
@@ -65,7 +67,12 @@ impl DevinCallbackServer {
     pub fn close(&self) {
         self.timeout_task.abort();
         self.signal.remove_abort_listener(self.listener_id);
-        if let Some(listener) = self.listener.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(listener) = self
+            .listener
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             listener.close();
         }
     }
@@ -89,7 +96,9 @@ impl DevinCallbackServer {
     }
 }
 
-pub async fn start_devin_callback_server(input: DevinCallbackInput) -> anyhow::Result<DevinCallbackServer> {
+pub async fn start_devin_callback_server(
+    input: DevinCallbackInput,
+) -> anyhow::Result<DevinCallbackServer> {
     start_devin_callback_server_on_port(input, DEVIN_CALLBACK_PORT, default_transport()).await
 }
 
@@ -113,7 +122,7 @@ pub async fn start_devin_callback_server_on_port(
         outcome: outcome_tx,
     });
 
-    let handler = {
+    let handler: crate::auth::oauth::loopback::LoopbackHandler = {
         let shared = shared.clone();
         Arc::new(
             move |request: LoopbackRequest| -> crate::auth::oauth::loopback::LoopbackFuture {
@@ -127,7 +136,9 @@ pub async fn start_devin_callback_server_on_port(
     let callback_url = format!("http://{host}:{}{DEVIN_CALLBACK_PATH}", listener.port);
 
     let abort_shared = shared.clone();
-    let listener_id = input.signal.add_abort_listener(move |_| abort_shared.finish(Outcome::Error("Login cancelled".into())));
+    let listener_id = input
+        .signal
+        .add_abort_listener(move |_| abort_shared.finish(Outcome::Error("Login cancelled".into())));
     if input.signal.aborted() {
         listener.close();
         anyhow::bail!("Login cancelled");
@@ -152,16 +163,27 @@ pub async fn start_devin_callback_server_on_port(
 
 async fn handle_callback(shared: &Shared, request: LoopbackRequest) -> LoopbackResponse {
     if request.method != "GET" || request.path != DEVIN_CALLBACK_PATH {
-        return LoopbackResponse::html(404, oauth_error_html("OAuth callback route not found.", None)).no_store();
+        return LoopbackResponse::html(
+            404,
+            oauth_error_html("OAuth callback route not found.", None),
+        )
+        .no_store();
     }
     if shared.claimed.load(Ordering::SeqCst) || shared.settled.load(Ordering::SeqCst) {
-        return LoopbackResponse::html(409, oauth_error_html("This OAuth callback has already been used.", None))
-            .no_store();
+        return LoopbackResponse::html(
+            409,
+            oauth_error_html("This OAuth callback has already been used.", None),
+        )
+        .no_store();
     }
 
     if let Some(oauth_error) = request.query_param("error") {
-        let description = request.query_param("error_description").unwrap_or_else(|| oauth_error.clone());
-        shared.finish(Outcome::Error(format!("Devin authorization failed: {description}")));
+        let description = request
+            .query_param("error_description")
+            .unwrap_or_else(|| oauth_error.clone());
+        shared.finish(Outcome::Error(format!(
+            "Devin authorization failed: {description}"
+        )));
         return LoopbackResponse::html(
             400,
             oauth_error_html("Devin authorization was denied.", Some(&description)),
@@ -172,23 +194,46 @@ async fn handle_callback(shared: &Shared, request: LoopbackRequest) -> LoopbackR
     let state = request.query_param("state").unwrap_or_default();
     if state != shared.state {
         shared.finish(Outcome::Error("Devin OAuth callback state mismatch".into()));
-        return LoopbackResponse::html(400, oauth_error_html("Devin authorization state mismatch.", None)).no_store();
+        return LoopbackResponse::html(
+            400,
+            oauth_error_html("Devin authorization state mismatch.", None),
+        )
+        .no_store();
     }
 
     let Some(code) = request.query_param("code") else {
-        return LoopbackResponse::html(400, oauth_error_html("Devin returned no authorization code.", None)).no_store();
+        return LoopbackResponse::html(
+            400,
+            oauth_error_html("Devin returned no authorization code.", None),
+        )
+        .no_store();
     };
     shared.claimed.store(true, Ordering::SeqCst);
 
-    match exchange_devin_authorization_code(&code, &shared.verifier, &shared.signal, shared.transport.as_ref()).await {
+    match exchange_devin_authorization_code(
+        &code,
+        &shared.verifier,
+        &shared.signal,
+        shared.transport.as_ref(),
+    )
+    .await
+    {
         Ok(credential) => {
             shared.finish(Outcome::Credential(Some(credential)));
-            LoopbackResponse::html(200, oauth_success_html("Signed in to Devin. You may now close this page.")).no_store()
+            LoopbackResponse::html(
+                200,
+                oauth_success_html("Signed in to Devin. You may now close this page."),
+            )
+            .no_store()
         }
         Err(error) => {
             let message = error.to_string();
             shared.finish(Outcome::Error(message.clone()));
-            LoopbackResponse::html(502, oauth_error_html("Devin token exchange failed.", Some(&message))).no_store()
+            LoopbackResponse::html(
+                502,
+                oauth_error_html("Devin token exchange failed.", Some(&message)),
+            )
+            .no_store()
         }
     }
 }
@@ -211,13 +256,19 @@ mod tests {
 
     async fn get(url: &str) -> (u16, String) {
         let response = reqwest::get(url).await.expect("request");
-        (response.status().as_u16(), response.text().await.expect("body"))
+        (
+            response.status().as_u16(),
+            response.text().await.expect("body"),
+        )
     }
 
     fn transport() -> Arc<ScriptedTransport> {
         Arc::new(ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Json { status: 200, body: serde_json::json!({ "token": "devin-token" }) },
+            ScriptedResponse::Json {
+                status: 200,
+                body: serde_json::json!({ "token": "devin-token" }),
+            },
         )]))
     }
 
@@ -225,14 +276,21 @@ mod tests {
     async fn exchanges_the_code_and_returns_the_credential() {
         let controller = AbortController::new();
         let transport = transport();
-        let server =
-            start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport.clone())
-                .await
-                .expect("server");
+        let server = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport.clone(),
+        )
+        .await
+        .expect("server");
         let (status, body) = get(&format!("{}?code=abc&state=state-1", server.callback_url)).await;
         assert_eq!(status, 200);
         assert!(body.contains("Signed in to Devin"));
-        let credential = server.wait_for_credential().await.unwrap().expect("credential");
+        let credential = server
+            .wait_for_credential()
+            .await
+            .unwrap()
+            .expect("credential");
         assert_eq!(credential.access, "devin-token");
         assert_eq!(transport.requests().len(), 1);
     }
@@ -241,10 +299,13 @@ mod tests {
     async fn rejects_a_foreign_state_before_spending_the_code() {
         let controller = AbortController::new();
         let transport = transport();
-        let server =
-            start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport.clone())
-                .await
-                .expect("server");
+        let server = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport.clone(),
+        )
+        .await
+        .expect("server");
         let (status, body) = get(&format!("{}?code=abc&state=other", server.callback_url)).await;
         assert_eq!(status, 400);
         assert!(body.contains("Devin authorization state mismatch"));
@@ -256,23 +317,38 @@ mod tests {
     #[tokio::test]
     async fn reports_a_denied_authorization() {
         let controller = AbortController::new();
-        let server = start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport())
-            .await
-            .expect("server");
-        let (status, body) = get(&format!("{}?error=access_denied&state=state-1", server.callback_url)).await;
+        let server = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport(),
+        )
+        .await
+        .expect("server");
+        let (status, body) = get(&format!(
+            "{}?error=access_denied&state=state-1",
+            server.callback_url
+        ))
+        .await;
         assert_eq!(status, 400);
         assert!(body.contains("Devin authorization was denied."));
         assert!(body.contains("access_denied"));
         let error = server.wait_for_credential().await.unwrap_err();
-        assert_eq!(error.to_string(), "Devin authorization failed: access_denied");
+        assert_eq!(
+            error.to_string(),
+            "Devin authorization failed: access_denied"
+        );
     }
 
     #[tokio::test]
     async fn reports_a_missing_code() {
         let controller = AbortController::new();
-        let server = start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport())
-            .await
-            .expect("server");
+        let server = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport(),
+        )
+        .await
+        .expect("server");
         let (status, body) = get(&format!("{}?state=state-1", server.callback_url)).await;
         assert_eq!(status, 400);
         assert!(body.contains("Devin returned no authorization code."));
@@ -281,9 +357,13 @@ mod tests {
     #[tokio::test]
     async fn reports_a_missing_route() {
         let controller = AbortController::new();
-        let server = start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport())
-            .await
-            .expect("server");
+        let server = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport(),
+        )
+        .await
+        .expect("server");
         let base = server.callback_url.replace("/callback", "/other");
         let (status, body) = get(&base).await;
         assert_eq!(status, 404);
@@ -293,9 +373,13 @@ mod tests {
     #[tokio::test]
     async fn a_second_callback_is_conflict() {
         let controller = AbortController::new();
-        let server = start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport())
-            .await
-            .expect("server");
+        let server = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport(),
+        )
+        .await
+        .expect("server");
         let url = format!("{}?code=abc&state=state-1", server.callback_url);
         let (first, _) = get(&url).await;
         assert_eq!(first, 200);
@@ -307,9 +391,13 @@ mod tests {
     #[tokio::test]
     async fn cancel_wait_hands_the_login_to_manual_entry() {
         let controller = AbortController::new();
-        let server = start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport())
-            .await
-            .expect("server");
+        let server = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport(),
+        )
+        .await
+        .expect("server");
         server.cancel_wait();
         assert!(server.wait_for_credential().await.unwrap().is_none());
     }
@@ -317,9 +405,13 @@ mod tests {
     #[tokio::test]
     async fn aborting_the_signal_fails_the_login() {
         let controller = AbortController::new();
-        let server = start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport())
-            .await
-            .expect("server");
+        let server = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport(),
+        )
+        .await
+        .expect("server");
         controller.abort(None);
         let error = server.wait_for_credential().await.unwrap_err();
         assert_eq!(error.to_string(), "Login cancelled");
@@ -329,10 +421,14 @@ mod tests {
     async fn refuses_to_start_with_an_aborted_signal() {
         let controller = AbortController::new();
         controller.abort(None);
-        let error = start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport())
-            .await
-            .err()
-            .expect("must fail");
+        let error = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport(),
+        )
+        .await
+        .err()
+        .expect("must fail");
         assert_eq!(error.to_string(), "Login cancelled");
     }
 
@@ -341,7 +437,9 @@ mod tests {
         let controller = AbortController::new();
         let mut server_input = input(controller.signal(), "state-1");
         server_input.login_timeout_ms = 1000;
-        let server = start_devin_callback_server_on_port(server_input, 0, transport()).await.expect("server");
+        let server = start_devin_callback_server_on_port(server_input, 0, transport())
+            .await
+            .expect("server");
         tokio::time::advance(Duration::from_millis(1000)).await;
         let error = server.wait_for_credential().await.unwrap_err();
         assert_eq!(error.to_string(), "Devin OAuth login timed out");
@@ -352,11 +450,18 @@ mod tests {
         let controller = AbortController::new();
         let transport = Arc::new(ScriptedTransport::new(vec![(
             None,
-            ScriptedResponse::Json { status: 400, body: serde_json::json!({ "error": "invalid_code" }) },
+            ScriptedResponse::Json {
+                status: 400,
+                body: serde_json::json!({ "error": "invalid_code" }),
+            },
         )]));
-        let server = start_devin_callback_server_on_port(input(controller.signal(), "state-1"), 0, transport)
-            .await
-            .expect("server");
+        let server = start_devin_callback_server_on_port(
+            input(controller.signal(), "state-1"),
+            0,
+            transport,
+        )
+        .await
+        .expect("server");
         let (status, body) = get(&format!("{}?code=abc&state=state-1", server.callback_url)).await;
         assert_eq!(status, 502);
         assert!(body.contains("Devin token exchange failed."));

@@ -1,24 +1,88 @@
 //! Port of senpi packages/ai/src/api/anthropic-tool-references.ts.
 
 use std::borrow::Cow;
-use std::sync::LazyLock;
 
 use indexmap::{IndexMap, IndexSet};
-use regex::Regex;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
+use crate::utils::tool_name_match::resolve_tool_name_match;
 use crate::utils::unavailable_tool_text::{demoted_tool_call_text, demoted_tool_result_text};
-
-static GATEWAY_TOOL_NAMESPACE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^mcp__[^_]+__(.+)$").unwrap_or_else(|error| panic!("{error}")));
 
 struct AvailableToolNames {
     defined: IndexSet<String>,
-    folded: IndexMap<String, String>,
 }
 
-fn fold_tool_name_key(name: &str) -> String {
-    name.to_lowercase().replace(['-', '_'], "")
+/// Demote replayed references even when their declarations are available: some endpoints
+/// cannot resolve references returned by an earlier request.
+pub fn demote_tool_reference_replay(params: &Map<String, Value>) -> Map<String, Value> {
+    let mut out = params.clone();
+    let Some(messages) = out.get_mut("messages").and_then(Value::as_array_mut) else {
+        return out;
+    };
+    let search_ids: IndexSet<String> = messages
+        .iter()
+        .filter(|message| message["role"] == "assistant")
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .filter(|block| block["type"] == "tool_search_tool_result")
+        .filter_map(|block| block["tool_use_id"].as_str().map(str::to_owned))
+        .collect();
+    let mut names = IndexSet::new();
+    let mut changed = false;
+    messages.retain_mut(|message| {
+        let assistant = message["role"] == "assistant";
+        let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        let mut message_changed = false;
+        content.retain_mut(|block| {
+            if assistant && block["type"] == "server_tool_use"
+                && block["id"].as_str().is_some_and(|id| search_ids.contains(id))
+            {
+                message_changed = true;
+                return false;
+            }
+            if assistant && block["type"] == "tool_search_tool_result" {
+                let found = reference_names(&block["content"]);
+                names.extend(found.iter().cloned());
+                *block = json!({"type":"text", "text": if found.is_empty() {
+                    "Tool search found no tools.".to_owned()
+                } else { format!("Tool search found: {}", dedupe_preserving_order(&found).join(", ")) }});
+                message_changed = true;
+            } else if block["type"] == "tool_result"
+                && let Some(items) = block.get_mut("content").and_then(Value::as_array_mut)
+            {
+                let found: IndexSet<String> = items.iter()
+                    .filter(|item| item["type"] == "tool_reference")
+                    .filter_map(|item| item["tool_name"].as_str().map(str::to_owned))
+                    .collect();
+                if !found.is_empty() {
+                    items.retain(|item| item["type"] != "tool_reference");
+                    items.push(json!({"type":"text", "text":format!("Tools loaded: {}", found.iter().cloned().collect::<Vec<_>>().join(", "))}));
+                    names.extend(found);
+                    message_changed = true;
+                }
+            }
+            true
+        });
+        changed |= message_changed;
+        !message_changed || !content.is_empty()
+    });
+    if changed
+        && let Some(tools) = out.get_mut("tools").and_then(Value::as_array_mut)
+    {
+        for tool in tools {
+            if tool["defer_loading"] == true
+                && tool["name"]
+                    .as_str()
+                    .is_some_and(|name| names.contains(name))
+                && let Some(tool) = tool.as_object_mut()
+            {
+                tool.remove("defer_loading");
+            }
+        }
+    }
+    out
 }
 
 fn collect_available_tool_names(tools: Option<&Value>) -> AvailableToolNames {
@@ -30,39 +94,11 @@ fn collect_available_tool_names(tools: Option<&Value>) -> AvailableToolNames {
             }
         }
     }
-    let mut folded: IndexMap<String, String> = IndexMap::new();
-    let mut ambiguous: IndexSet<String> = IndexSet::new();
-    for name in &defined {
-        let key = fold_tool_name_key(name);
-        if folded.contains_key(&key) {
-            ambiguous.insert(key);
-        } else {
-            folded.insert(key, name.clone());
-        }
-    }
-    for key in &ambiguous {
-        folded.shift_remove(key);
-    }
-    AvailableToolNames { defined, folded }
+    AvailableToolNames { defined }
 }
 
 fn resolve_available_tool_name(name: &str, available: &AvailableToolNames) -> Option<String> {
-    let suffix = GATEWAY_TOOL_NAMESPACE.captures(name).map(|captures| captures[1].to_owned());
-    let candidates: Vec<&str> = match &suffix {
-        Some(suffix) => vec![name, suffix.as_str()],
-        None => vec![name],
-    };
-    for candidate in &candidates {
-        if available.defined.contains(*candidate) {
-            return Some((*candidate).to_owned());
-        }
-    }
-    for candidate in &candidates {
-        if let Some(folded) = available.folded.get(&fold_tool_name_key(candidate)) {
-            return Some(folded.clone());
-        }
-    }
-    None
+    resolve_tool_name_match(name, available.defined.iter().cloned())
 }
 
 fn is_native_tool_search_result_block(block: &Value) -> bool {
@@ -84,7 +120,12 @@ fn reference_names(content: &Value) -> Vec<String> {
             references
                 .iter()
                 .filter(|item| item.get("type").and_then(Value::as_str) == Some("tool_reference"))
-                .map(|item| item.get("tool_name").and_then(Value::as_str).unwrap_or_default().to_owned())
+                .map(|item| {
+                    item.get("tool_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -111,7 +152,9 @@ fn tool_result_text(content: &Value) -> String {
                 {
                     return Some(text.to_owned());
                 }
-                item.get("type").and_then(Value::as_str).map(|kind| format!("[{kind}]"))
+                item.get("type")
+                    .and_then(Value::as_str)
+                    .map(|kind| format!("[{kind}]"))
             })
             .collect();
         if !parts.is_empty() {
@@ -130,7 +173,10 @@ struct Rewrite {
     omitted: Vec<String>,
 }
 
-fn rewrite_tool_reference_items(items: &[Value], available: &AvailableToolNames) -> Option<Rewrite> {
+fn rewrite_tool_reference_items(
+    items: &[Value],
+    available: &AvailableToolNames,
+) -> Option<Rewrite> {
     let mut kept: Vec<Value> = Vec::new();
     let mut omitted: Vec<String> = Vec::new();
     let mut rewritten = false;
@@ -157,7 +203,11 @@ fn rewrite_tool_reference_items(items: &[Value], available: &AvailableToolNames)
             Some(_) => kept.push(item.clone()),
         }
     }
-    if rewritten { Some(Rewrite { kept, omitted }) } else { None }
+    if rewritten {
+        Some(Rewrite { kept, omitted })
+    } else {
+        None
+    }
 }
 
 pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<String, Value> {
@@ -166,7 +216,9 @@ pub fn demote_unavailable_tool_references(params: &Map<String, Value>) -> Map<St
 
 /// Same rewrite as [`demote_unavailable_tool_references`], but `None` when nothing changes so
 /// callers can skip copying the payload.
-pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>) -> Option<Map<String, Value>> {
+pub fn demote_unavailable_tool_references_if_changed(
+    params: &Map<String, Value>,
+) -> Option<Map<String, Value>> {
     let messages = params.get("messages").and_then(Value::as_array)?;
     if messages.is_empty() {
         return None;
@@ -193,10 +245,16 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
             };
             match resolve(name) {
                 None => {
-                    demoted_call_names.insert(key_of(&block.get("id").cloned().unwrap_or(Value::Null)), name.to_owned());
+                    demoted_call_names.insert(
+                        key_of(&block.get("id").cloned().unwrap_or(Value::Null)),
+                        name.to_owned(),
+                    );
                 }
                 Some(resolved) if resolved != name => {
-                    renamed_call_names.insert(key_of(&block.get("id").cloned().unwrap_or(Value::Null)), resolved);
+                    renamed_call_names.insert(
+                        key_of(&block.get("id").cloned().unwrap_or(Value::Null)),
+                        resolved,
+                    );
                 }
                 Some(_) => {}
             }
@@ -286,7 +344,8 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
                         .and_then(Value::as_object)
                         .cloned()
                         .unwrap_or_else(Map::new);
-                    next_content_map.insert("tool_references".to_owned(), Value::Array(rewritten.kept));
+                    next_content_map
+                        .insert("tool_references".to_owned(), Value::Array(rewritten.kept));
                     next_block.insert("content".to_owned(), Value::Object(next_content_map));
                     next_content.push(Cow::Owned(Value::Object(next_block)));
                     continue;
@@ -296,7 +355,10 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
                 let key = key_of(block.get("tool_use_id").unwrap_or(&Value::Null));
                 if let Some(name) = demoted_call_names.get(&key) {
                     message_changed = true;
-                    let text = demoted_tool_result_text(name, &tool_result_text(block.get("content").unwrap_or(&Value::Null)));
+                    let text = demoted_tool_result_text(
+                        name,
+                        &tool_result_text(block.get("content").unwrap_or(&Value::Null)),
+                    );
                     next_content.push(Cow::Owned(json!({ "type": "text", "text": text })));
                     continue;
                 }
@@ -334,7 +396,9 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
                 "content".to_owned(),
                 Value::Array(next_content.into_iter().map(Cow::into_owned).collect()),
             );
-            rewritten_messages.get_or_insert_with(|| messages[..index].to_vec()).push(Value::Object(next_message));
+            rewritten_messages
+                .get_or_insert_with(|| messages[..index].to_vec())
+                .push(Value::Object(next_message));
             continue;
         }
         if let Some(out) = rewritten_messages.as_mut() {
@@ -346,8 +410,81 @@ pub fn demote_unavailable_tool_references_if_changed(params: &Map<String, Value>
     // Skip deep-copying the replaced `messages`; the insert keeps its key position.
     let mut out: Map<String, Value> = params
         .iter()
-        .map(|(key, value)| (key.clone(), if key == "messages" { Value::Null } else { value.clone() }))
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                if key == "messages" {
+                    Value::Null
+                } else {
+                    value.clone()
+                },
+            )
+        })
         .collect();
     out.insert("messages".to_owned(), Value::Array(rewritten_messages));
     Some(out)
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    #[test]
+    fn reference_names_follow_shared_match_specificity_and_ambiguity() {
+        for (requested, names, expected) in [
+            ("MCP__my_server__Memory", vec!["memory"], Some("memory")),
+            (
+                "mcp__srv__x__Tool",
+                vec!["x__tool", "Tool"],
+                Some("x__tool"),
+            ),
+            (
+                "create_issue",
+                vec!["mcp_github_create_issue"],
+                Some("mcp_github_create_issue"),
+            ),
+            (
+                "create_issue",
+                vec!["mcp_a_create_issue", "mcp_b_create_issue"],
+                None,
+            ),
+            ("mcp__sandbox__run_bash", vec!["bash"], None),
+            (
+                "mcp__a__READ",
+                vec!["mcp__a__read", "READ"],
+                Some("mcp__a__read"),
+            ),
+            ("Read", vec!["Read", "read"], Some("Read")),
+        ] {
+            let tools = json!(
+                names
+                    .into_iter()
+                    .map(|name| json!({"name":name}))
+                    .collect::<Vec<_>>()
+            );
+            let available = collect_available_tool_names(Some(&tools));
+            assert_eq!(
+                resolve_available_tool_name(requested, &available).as_deref(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn referenced_tool_becomes_resident_when_replay_is_demoted() {
+        let params = json!({"tools":[{"name":"read","defer_loading":true},{"name":"write","defer_loading":true}],
+            "messages":[{"role":"assistant","content":[
+                {"type":"server_tool_use","id":"search","name":"tool_search_tool_bm25"},
+                {"type":"tool_search_tool_result","tool_use_id":"search","content":{"tool_references":[{"type":"tool_reference","tool_name":"read"}]}}
+            ]}]}).as_object().cloned().unwrap_or_default();
+        let demoted = demote_tool_reference_replay(&params);
+        assert_eq!(
+            demoted["messages"][0]["content"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(demoted["messages"][0]["content"][0]["type"], "text");
+        assert!(demoted["tools"][0].get("defer_loading").is_none());
+        assert_eq!(demoted["tools"][1]["defer_loading"], true);
+        assert_eq!(params["tools"][0]["defer_loading"], true);
+    }
 }

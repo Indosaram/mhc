@@ -23,7 +23,7 @@ fn command_result_rejects_failure_without_error() {
 fn model_ref_wire_fields_match_upstream() {
     let model = ModelRef { provider: "provider".to_owned(), model_id: "model".to_owned() };
     assert_eq!(serde_json::to_value(model).unwrap(), serde_json::json!({"provider":"provider", "modelId":"model"}));
-    assert_eq!(LANE.name, "lane"); assert_eq!(SESSIONS.name, "sessions");
+    assert_eq!(LANE.id, "lane"); assert_eq!(SESSIONS.id, "sessions");
 }
 #[test]
 fn absent_account_fields_are_not_serialized() {

@@ -10,6 +10,10 @@ use super::harness::*;
 
 fn thinking_as_text_compat() -> ResolvedOpenAICompletionsCompat {
     ResolvedOpenAICompletionsCompat {
+        supports_web_search: None,
+        supports_mid_convo_system_messages: false,
+        supports_mid_convo_tool_additions: false,
+        supports_forced_tool_choice: None,
         supports_store: true,
         supports_developer_role: true,
         supports_reasoning_effort: true,

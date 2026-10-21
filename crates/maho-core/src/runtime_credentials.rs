@@ -58,7 +58,7 @@ impl CredentialStore for RuntimeCredentials {
     async fn read(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<Option<Credential>> {
         throw_if_aborted(&options)?;
         if let Some(key) = self.override_for(provider_id) {
-            return Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some(key), env: None })));
+            return Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some(key), env: None, ..Default::default() })));
         }
         self.store.read(provider_id, options).await
     }
@@ -88,6 +88,15 @@ impl CredentialStore for RuntimeCredentials {
         self.store.modify(provider_id, f, options).await
     }
 
+    async fn modify_or_delete(
+        &self,
+        provider_id: &str,
+        f: ModifyFn,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>> {
+        self.store.modify_or_delete(provider_id, f, options).await
+    }
+
     async fn delete(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<()> {
         throw_if_aborted(&options)?;
         self.store.delete(provider_id, options).await?;
@@ -103,6 +112,7 @@ mod tests {
     #[derive(Default)]
     struct MemoryStore {
         entries: Mutex<BTreeMap<String, Credential>>,
+        mutations: tokio::sync::Mutex<()>,
     }
 
     #[async_trait::async_trait]
@@ -127,8 +137,9 @@ mod tests {
             f: ModifyFn,
             _options: Option<AuthOperationOptions>,
         ) -> anyhow::Result<Option<Credential>> {
+            let _mutation = self.mutations.lock().await;
             let current = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider_id).cloned();
-            let next = f(current).await?;
+            let next = f(current.clone()).await?.or(current);
             let mut entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             match &next {
                 Some(credential) => {
@@ -141,7 +152,26 @@ mod tests {
             Ok(next)
         }
 
+        async fn modify_or_delete(
+            &self,
+            provider_id: &str,
+            f: ModifyFn,
+            options: Option<AuthOperationOptions>,
+        ) -> anyhow::Result<Option<Credential>> {
+            throw_if_aborted(&options)?;
+            let _mutation = self.mutations.lock().await;
+            let current = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider_id).cloned();
+            let next = f(current).await?;
+            let mut entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &next {
+                Some(credential) => { entries.insert(provider_id.to_owned(), credential.clone()); }
+                None => { entries.remove(provider_id); }
+            }
+            Ok(next)
+        }
+
         async fn delete(&self, provider_id: &str, _options: Option<AuthOperationOptions>) -> anyhow::Result<()> {
+            let _mutation = self.mutations.lock().await;
             self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(provider_id);
             Ok(())
         }
@@ -149,6 +179,40 @@ mod tests {
 
     fn store() -> Arc<dyn CredentialStore> {
         Arc::new(MemoryStore::default())
+    }
+
+    #[tokio::test]
+    async fn conditional_delete_mutates_persistent_state_without_removing_runtime_override() {
+        // Given different persistent and runtime credentials.
+        let underlying = store();
+        underlying.modify("p", Box::new(|_| Box::pin(async {
+            Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("stored".into()), ..Default::default() })))
+        })), None).await.expect("seed");
+        let credentials = RuntimeCredentials::new(Arc::clone(&underlying));
+        credentials.set_runtime_api_key("p", "runtime");
+        // When conditional deletion is forwarded to persistent storage.
+        let deleted = credentials.modify_or_delete("p", Box::new(|current| Box::pin(async move {
+            assert_eq!(current.expect("persistent credential").as_api_key().and_then(|key| key.key.as_deref()), Some("stored"));
+            Ok(None)
+        })), None).await.expect("conditional delete");
+        // Then persistent state is removed while the runtime override remains usable.
+        assert_eq!(deleted, None);
+        assert_eq!(underlying.read("p", None).await.expect("persistent read"), None);
+        assert_eq!(credentials.read("p", None).await.expect("overlay read").expect("runtime credential").as_api_key().and_then(|key| key.key.as_deref()), Some("runtime"));
+    }
+
+    #[tokio::test]
+    async fn memory_fixture_modify_none_preserves_existing_credential() {
+        // Given the fixture's pre-existing no-op contract mismatch, corrected separately from production.
+        let store = store();
+        let initial = Credential::ApiKey(ApiKeyCredential { key: Some("stored".into()), ..Default::default() });
+        let seed = initial.clone();
+        store.modify("p", Box::new(move |_| Box::pin(async move { Ok(Some(seed)) })), None).await.expect("seed");
+        // When modify returns None rather than requesting explicit deletion.
+        let unchanged = store.modify("p", Box::new(|_| Box::pin(async { Ok(None) })), None).await.expect("no-op");
+        // Then the fixture follows the production no-op contract.
+        assert_eq!(unchanged, Some(initial.clone()));
+        assert_eq!(store.read("p", None).await.expect("read"), Some(initial));
     }
 
     #[tokio::test]

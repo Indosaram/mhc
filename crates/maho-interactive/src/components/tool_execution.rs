@@ -12,7 +12,9 @@ use maho_tui::tui::Component;
 use serde_json::Value;
 
 use super::render_signature::create_bounded_render_signature;
-use super::todo_strike::{TODO_STRIKE_FRAME_INTERVAL_MS, TODO_STRIKE_TOTAL_FRAMES, has_completed_todo_tasks};
+use super::todo_strike::{
+    TODO_STRIKE_FRAME_INTERVAL_MS, TODO_STRIKE_TOTAL_FRAMES, has_completed_todo_tasks,
+};
 use super::tool_execution_images::{ToolExecutionImageOptions, ToolExecutionImages};
 use super::tool_execution_renderer::ToolExecutionRenderer;
 use super::tool_execution_types::{ToolExecutionRenderState, ToolExecutionResult};
@@ -58,7 +60,8 @@ fn collapse_fallback_result(
     if expanded {
         return Some(result.clone());
     }
-    let output = crate::tools::render_utils::get_text_output(Some(&result.as_tool_result()), show_images);
+    let output =
+        crate::tools::render_utils::get_text_output(Some(&result.as_tool_result()), show_images);
     if output.is_empty() {
         return Some(result.clone());
     }
@@ -67,15 +70,23 @@ fn collapse_fallback_result(
         return Some(result.clone());
     }
     let remaining = lines.len() - FALLBACK_PREVIEW_LINES;
-    let hint = crate::components::keybinding_hints::key_hint("app.tools.expand", "to expand", theme);
+    let hint =
+        crate::components::keybinding_hints::key_hint("app.tools.expand", "to expand", theme);
     let text = format!(
         "{}{} {}{}",
         lines[..FALLBACK_PREVIEW_LINES].join("\n"),
-        theme.fg(ThemeColor::Muted, &format!("\n... ({remaining} more lines,")),
+        theme.fg(
+            ThemeColor::Muted,
+            &format!("\n... ({remaining} more lines,")
+        ),
         hint,
         theme.fg(ThemeColor::Muted, ")")
     );
-    Some(ToolExecutionResult { content: vec![ToolContent::text(text)], details: result.details.clone(), is_error: result.is_error })
+    Some(ToolExecutionResult {
+        content: vec![ToolContent::text(text)],
+        details: result.details.clone(),
+        is_error: result.is_error,
+    })
 }
 
 pub struct ToolExecutionComponent {
@@ -106,6 +117,7 @@ pub struct ToolExecutionComponent {
     /// Memoized `exploration_call` result; dropped with the render cache on every state change.
     pub(super) exploration_cache: RefCell<Option<Option<super::exploration_call::ExplorationCall>>>,
     result_byte_length: Option<usize>,
+    cache_memory: super::tool_execution_cache::ToolExecutionCacheMemory,
 }
 
 struct ToolExecutionRendererIdentity {
@@ -159,6 +171,7 @@ impl ToolExecutionComponent {
             renderer_invalidated: Rc::new(std::cell::Cell::new(false)),
             exploration_cache: RefCell::new(None),
             result_byte_length: None,
+            cache_memory: Default::default(),
         };
         let initial = component.create_render_state();
         if presentation == ToolExecutionPresentation::Grok {
@@ -198,7 +211,9 @@ impl ToolExecutionComponent {
     /// senpi keeps a card out of an exploration group when its definition replaced the built-in
     /// renderers. A definition that passes the built-in pair unchanged is still built-in.
     pub fn uses_built_in_renderers(&self) -> bool {
-        self.custom.as_ref().is_none_or(|custom| custom.borrow().is_built_in())
+        self.custom
+            .as_ref()
+            .is_none_or(|custom| custom.borrow().is_built_in())
     }
 
     fn request_render(&self) {
@@ -214,8 +229,14 @@ impl ToolExecutionComponent {
         self.update_display();
     }
 
-    pub fn presentation_snapshot(&self) -> (ToolExecutionRenderState, String, ToolExecutionPresentation) {
-        (self.create_render_state(), self.identity.tool_name.clone(), self.presentation)
+    pub fn presentation_snapshot(
+        &self,
+    ) -> (ToolExecutionRenderState, String, ToolExecutionPresentation) {
+        (
+            self.create_render_state(),
+            self.identity.tool_name.clone(),
+            self.presentation,
+        )
     }
 
     /// Borrowed view of what exploration grouping reads: tool name, presentation, args,
@@ -232,7 +253,11 @@ impl ToolExecutionComponent {
     }
 
     pub fn identity(&self) -> (String, String, String) {
-        (self.identity.tool_name.clone(), self.identity.tool_call_id.clone(), self.identity.cwd.clone())
+        (
+            self.identity.tool_name.clone(),
+            self.identity.tool_call_id.clone(),
+            self.identity.cwd.clone(),
+        )
     }
 
     pub fn mark_execution_started(&mut self) {
@@ -250,10 +275,28 @@ impl ToolExecutionComponent {
     }
 
     pub fn update_result(&mut self, result: ToolExecutionResult, is_partial: bool) {
-        self.result_byte_length = Some(result.content.iter().map(|part| match part {
-            ToolContent::Text { text, .. } => text.len(),
-            ToolContent::Image { data, .. } => data.len(),
-        }).sum());
+        self.cache_memory.set_images(
+            result
+                .content
+                .iter()
+                .filter(|part| matches!(part, ToolContent::Image { .. }))
+                .count(),
+        );
+        if !is_partial {
+            self.cache_memory.finalize_result(
+                super::tool_execution_cache::serialized_tool_result_bytes(&result),
+            );
+        }
+        self.result_byte_length = Some(
+            result
+                .content
+                .iter()
+                .map(|part| match part {
+                    ToolContent::Text { text, .. } => text.len(),
+                    ToolContent::Image { data, .. } => data.len(),
+                })
+                .sum(),
+        );
         self.result = Some(result.clone());
         self.is_partial = is_partial;
         if !is_partial {
@@ -302,7 +345,9 @@ impl ToolExecutionComponent {
             changed = true;
         }
         if self.spinner_frame.is_some() {
-            let due = self.spinner_tick_ms.is_none_or(|last| now_ms.saturating_sub(last) >= 80);
+            let due = self
+                .spinner_tick_ms
+                .is_none_or(|last| now_ms.saturating_sub(last) >= 80);
             if due {
                 self.spinner_frame = Some((self.spinner_frame.unwrap_or(-1) + 1) % 10);
                 self.spinner_tick_ms = Some(now_ms);
@@ -361,8 +406,16 @@ impl ToolExecutionComponent {
         };
         let has_result_renderer = renderer.has_result_renderer();
         let render_state = if renderer.has_renderer_definition() && !has_result_renderer {
-            let collapsed = collapse_fallback_result(state.result.as_ref(), state.show_images, state.expanded, &self.theme);
-            ToolExecutionRenderState { result: collapsed, ..state }
+            let collapsed = collapse_fallback_result(
+                state.result.as_ref(),
+                state.show_images,
+                state.expanded,
+                &self.theme,
+            );
+            ToolExecutionRenderState {
+                result: collapsed,
+                ..state
+            }
         } else {
             state
         };
@@ -426,8 +479,12 @@ impl ToolExecutionComponent {
 
     fn update_spinner_animation(&mut self) {
         let is_streaming_args = !self.args_complete
-            && matches!(self.identity.tool_name.as_str(), "edit" | "write" | "apply_patch");
-        let is_partial_task = self.is_partial && self.identity.tool_name == "task" && self.result.is_some();
+            && matches!(
+                self.identity.tool_name.as_str(),
+                "edit" | "write" | "apply_patch"
+            );
+        let is_partial_task =
+            self.is_partial && self.identity.tool_name == "task" && self.result.is_some();
         let is_partial_progress = self.is_partial
             && self
                 .result
@@ -463,6 +520,7 @@ impl ToolExecutionComponent {
     }
 
     fn invalidate_render_cache(&mut self) {
+        self.cache_memory.drop_lines();
         self.cached_lines = None;
         self.cached_width = None;
         self.exploration_cache.replace(None);
@@ -492,7 +550,9 @@ impl Component for ToolExecutionComponent {
         let (Some(renderer), Some(images)) = (&mut self.renderer, &mut self.images) else {
             return lines;
         };
-        if renderer.has_renderer_definition() && renderer.render_shell() == maho_tools::definition::RenderShell::Own {
+        if renderer.has_renderer_definition()
+            && renderer.render_shell() == maho_tools::definition::RenderShell::Own
+        {
             let content_lines = renderer.render(width);
             let image_lines = images.render(width);
             if content_lines.is_empty() && image_lines.is_empty() {
@@ -512,6 +572,7 @@ impl Component for ToolExecutionComponent {
         }
 
         self.cached_width = Some(width);
+        self.cache_memory.store_lines(&lines);
         self.cached_lines = Some(lines.clone());
         lines
     }
@@ -530,6 +591,7 @@ impl Component for ToolExecutionComponent {
 
     fn dispose(&mut self) {
         self.stop_animation();
+        self.cache_memory.dispose();
         if let Some(renderer) = &mut self.renderer {
             renderer.dispose();
         }

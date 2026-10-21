@@ -194,7 +194,8 @@ pub async fn complete_authorization(provider:&mut McpOAuthProvider,redirect:&str
 pub async fn finish_authorization(provider:&McpOAuthProvider,code:&str,client:&reqwest::Client)->Result<(),OAuthRequestError> {
     let info=discover(provider,client).await?;
     let client_info=provider.client_information()?.ok_or_else(||OAuthRequestError::Invalid("OAuth client is not registered".into()))?;
-    let mut form=vec![("grant_type".into(),"authorization_code".into()),("code".into(),code.into()),("code_verifier".into(),provider.code_verifier()?), ("resource".into(),provider.resource_indicator())];
+    let mut form=vec![("grant_type".into(),"authorization_code".into()),("code".into(),code.into()),("code_verifier".into(),provider.code_verifier()?)];
+    super::resource_indicator::add_resource_to_params(&mut form, &provider.resource_indicator());
     if let Some(redirect)=&provider.redirect_url {form.push(("redirect_uri".into(),redirect.clone()));}
     match request_tokens(client,&info,&client_info,form).await {
         Ok(tokens)=>{provider.save_tokens(&tokens,chrono::Utc::now().timestamp_millis() as f64)?;Ok(())}

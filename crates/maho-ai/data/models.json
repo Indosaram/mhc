@@ -5843,6 +5843,108 @@
 				"supportsOpenAIGrammarTools": true
 			}
 		},
+		"gpt-6.1-sol": {
+			"id": "gpt-6.1-sol",
+			"name": "GPT-6.1 Sol",
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"baseUrl": "",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 2,
+				"output": 10,
+				"cacheRead": 0.1,
+				"cacheWrite": 2.5
+			},
+			"contextWindow": 400000,
+			"maxTokens": 128000,
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			},
+			"compat": {
+				"supportsOpenAIGrammarTools": true
+			},
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			}
+		},
+		"gpt-daybreak-blue-latest": {
+			"id": "gpt-daybreak-blue-latest",
+			"name": "Daybreak Blue",
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"baseUrl": "",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 4,
+				"output": 20,
+				"cacheRead": 0.4,
+				"cacheWrite": 5
+			},
+			"contextWindow": 1050000,
+			"maxTokens": 128000,
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			}
+		},
+		"gpt-daybreak-red-latest": {
+			"id": "gpt-daybreak-red-latest",
+			"name": "Daybreak Red",
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"baseUrl": "",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 12.5,
+				"output": 75,
+				"cacheRead": 1.25,
+				"cacheWrite": 15.625
+			},
+			"contextWindow": 400000,
+			"maxTokens": 128000,
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			}
+		},
 		"gpt-realtime-2.1": {
 			"id": "gpt-realtime-2.1",
 			"name": "GPT-Realtime-2.1",
@@ -8815,7 +8917,8 @@
 			"compat": {
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
-				"supportsToolSearch": true
+				"supportsToolSearch": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-6-astra-fast": {
@@ -8858,7 +8961,8 @@
 			"compat": {
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
-				"supportsToolSearch": true
+				"supportsToolSearch": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-6-astra",
 			"serviceTier": "priority"
@@ -9034,6 +9138,176 @@
 			},
 			"upstreamModelId": "gpt-6-sol",
 			"serviceTier": "priority"
+		},
+		"gpt-6.1-sol": {
+			"id": "gpt-6.1-sol",
+			"name": "GPT-6.1 Sol",
+			"api": "openai-codex-responses",
+			"provider": "chatgpt-subscription",
+			"baseUrl": "https://chatgpt.com/backend-api",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 2,
+				"output": 10,
+				"cacheRead": 0.1,
+				"cacheWrite": 2.5,
+				"tiers": [
+					{
+						"inputTokensAbove": 272000,
+						"input": 4,
+						"output": 15,
+						"cacheRead": 0.2,
+						"cacheWrite": 5
+					}
+				]
+			},
+			"contextWindow": 500000,
+			"maxTokens": 128000,
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			},
+			"compat": {
+				"supportsOpenAIGrammarTools": true,
+				"supportsAdditionalTools": true,
+				"supportsToolSearch": true,
+				"supportsMidConvoSystemMessages": true,
+				"supportsConfigurationUpdate": true
+			},
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			}
+		},
+		"gpt-6.1-sol-fast": {
+			"id": "gpt-6.1-sol-fast",
+			"name": "GPT-6.1 Sol Fast",
+			"api": "openai-codex-responses",
+			"provider": "chatgpt-subscription",
+			"baseUrl": "https://chatgpt.com/backend-api",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 2,
+				"output": 10,
+				"cacheRead": 0.1,
+				"cacheWrite": 2.5,
+				"tiers": [
+					{
+						"inputTokensAbove": 272000,
+						"input": 4,
+						"output": 15,
+						"cacheRead": 0.2,
+						"cacheWrite": 5
+					}
+				]
+			},
+			"contextWindow": 500000,
+			"maxTokens": 128000,
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			},
+			"compat": {
+				"supportsOpenAIGrammarTools": true,
+				"supportsAdditionalTools": true,
+				"supportsToolSearch": true,
+				"supportsMidConvoSystemMessages": true,
+				"supportsConfigurationUpdate": true
+			},
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			},
+			"upstreamModelId": "gpt-6.1-sol",
+			"serviceTier": "priority"
+		},
+		"gpt-6.1-sol-ultrafast": {
+			"id": "gpt-6.1-sol-ultrafast",
+			"name": "GPT-6.1 Sol Ultrafast",
+			"api": "openai-codex-responses",
+			"provider": "chatgpt-subscription",
+			"baseUrl": "https://chatgpt.com/backend-api",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 2,
+				"output": 10,
+				"cacheRead": 0.1,
+				"cacheWrite": 2.5,
+				"tiers": [
+					{
+						"inputTokensAbove": 272000,
+						"input": 4,
+						"output": 15,
+						"cacheRead": 0.2,
+						"cacheWrite": 5
+					}
+				]
+			},
+			"contextWindow": 500000,
+			"maxTokens": 128000,
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			},
+			"compat": {
+				"supportsOpenAIGrammarTools": true,
+				"supportsAdditionalTools": true,
+				"supportsToolSearch": true,
+				"supportsMidConvoSystemMessages": true,
+				"supportsConfigurationUpdate": true
+			},
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			},
+			"upstreamModelId": "gpt-6.1-sol",
+			"serviceTier": "ultrafast",
+			"defaultThinkingLevel": "xhigh"
 		}
 	},
 	"cloudflare-ai-gateway": {
@@ -19374,7 +19648,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-5.6-luna-fast": {
@@ -19419,7 +19694,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-5.6-luna",
 			"serviceTier": "priority"
@@ -19466,7 +19742,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-5.6-sol-fast": {
@@ -19511,7 +19788,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-5.6-sol",
 			"serviceTier": "priority"
@@ -19558,7 +19836,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-5.6-terra-fast": {
@@ -19603,7 +19882,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-5.6-terra",
 			"serviceTier": "priority"
@@ -19650,7 +19930,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-6-astra-fast": {
@@ -19695,7 +19976,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-6-astra",
 			"serviceTier": "priority"
@@ -19742,7 +20024,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-6-luna-fast": {
@@ -19787,7 +20070,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-6-luna",
 			"serviceTier": "priority"
@@ -19834,7 +20118,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			}
 		},
 		"gpt-6-sol-fast": {
@@ -19879,10 +20164,227 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsExplicitPromptCacheMode": true
+				"supportsExplicitPromptCacheMode": true,
+				"supportsConfigurationUpdate": true
 			},
 			"upstreamModelId": "gpt-6-sol",
 			"serviceTier": "priority"
+		},
+		"gpt-6.1-sol": {
+			"id": "gpt-6.1-sol",
+			"name": "GPT-6.1 Sol",
+			"api": "openai-responses",
+			"provider": "openai",
+			"baseUrl": "https://api.openai.com/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 2,
+				"output": 10,
+				"cacheRead": 0.1,
+				"cacheWrite": 2.5,
+				"tiers": [
+					{
+						"inputTokensAbove": 272000,
+						"input": 4,
+						"output": 15,
+						"cacheRead": 0.2,
+						"cacheWrite": 5
+					}
+				]
+			},
+			"contextWindow": 400000,
+			"maxTokens": 128000,
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			},
+			"compat": {
+				"supportsStrictMode": true,
+				"supportsOpenAIGrammarTools": true,
+				"supportsAdditionalTools": true,
+				"supportsToolSearch": true,
+				"supportsMidConvoSystemMessages": true,
+				"supportsExplicitPromptCacheMode": true,
+				"supportsAllowedTools": true,
+				"supportsConfigurationUpdate": true
+			},
+			"inputLimits": {
+				"maxRequestBytes": 536870912,
+				"images": {
+					"maxPerRequest": 1500,
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			}
+		},
+		"gpt-6.1-sol-fast": {
+			"id": "gpt-6.1-sol-fast",
+			"name": "GPT-6.1 Sol Fast",
+			"api": "openai-responses",
+			"provider": "openai",
+			"baseUrl": "https://api.openai.com/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 2,
+				"output": 10,
+				"cacheRead": 0.1,
+				"cacheWrite": 2.5,
+				"tiers": [
+					{
+						"inputTokensAbove": 272000,
+						"input": 4,
+						"output": 15,
+						"cacheRead": 0.2,
+						"cacheWrite": 5
+					}
+				]
+			},
+			"contextWindow": 400000,
+			"maxTokens": 128000,
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			},
+			"compat": {
+				"supportsStrictMode": true,
+				"supportsOpenAIGrammarTools": true,
+				"supportsAdditionalTools": true,
+				"supportsToolSearch": true,
+				"supportsMidConvoSystemMessages": true,
+				"supportsExplicitPromptCacheMode": true,
+				"supportsAllowedTools": true,
+				"supportsConfigurationUpdate": true
+			},
+			"inputLimits": {
+				"maxRequestBytes": 536870912,
+				"images": {
+					"maxPerRequest": 1500,
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			},
+			"upstreamModelId": "gpt-6.1-sol",
+			"serviceTier": "priority"
+		},
+		"gpt-daybreak-blue-latest": {
+			"id": "gpt-daybreak-blue-latest",
+			"name": "Daybreak Blue",
+			"api": "openai-responses",
+			"provider": "openai",
+			"baseUrl": "https://api.openai.com/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 4,
+				"output": 20,
+				"cacheRead": 0.4,
+				"cacheWrite": 5
+			},
+			"contextWindow": 1050000,
+			"maxTokens": 128000,
+			"thinkingLevelMap": {
+				"off": "none",
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			},
+			"compat": {
+				"supportsStrictMode": true,
+				"supportsExplicitPromptCacheMode": true,
+				"supportsAllowedTools": true,
+				"supportsConfigurationUpdate": true
+			},
+			"inputLimits": {
+				"maxRequestBytes": 536870912,
+				"images": {
+					"maxPerRequest": 1500,
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			}
+		},
+		"gpt-daybreak-red-latest": {
+			"id": "gpt-daybreak-red-latest",
+			"name": "Daybreak Red",
+			"api": "openai-responses",
+			"provider": "openai",
+			"baseUrl": "https://api.openai.com/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 12.5,
+				"output": 75,
+				"cacheRead": 1.25,
+				"cacheWrite": 15.625
+			},
+			"contextWindow": 400000,
+			"maxTokens": 128000,
+			"thinkingLevelMap": {
+				"off": "none",
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			},
+			"compat": {
+				"supportsStrictMode": true,
+				"supportsExplicitPromptCacheMode": true,
+				"supportsAllowedTools": true,
+				"supportsConfigurationUpdate": true
+			},
+			"inputLimits": {
+				"maxRequestBytes": 536870912,
+				"images": {
+					"maxPerRequest": 1500,
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			}
 		},
 		"gpt-realtime-2.1": {
 			"id": "gpt-realtime-2.1",

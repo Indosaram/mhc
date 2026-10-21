@@ -142,7 +142,7 @@ pub struct CliRecallWiringPorts {
 }
 
 /// Build the ONE resident recall wiring for a mount.
-pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Arc<MemoryRecallWiring> {
+pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Result<Arc<MemoryRecallWiring>, maho_ai::models::ModelsError> {
     let CliRecallWiringPorts {
         executor,
         cwd,
@@ -182,7 +182,7 @@ pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Arc<MemoryRec
     // reactor, and a dropped waiting future never cancels the worker (`CliBlockingExecutor`).
     let blocking_executor: Arc<dyn KibitzerBlockingExecutor> = CliBlockingExecutor::new(executor.clone());
     let spawner: Arc<dyn KibitzerChildSpawner> =
-        CliKibitzerChildSpawner::from_agent_dir(executor, cwd, agent_dir, config, category, registry_for, resources);
+        CliKibitzerChildSpawner::from_agent_dir(executor, cwd, agent_dir, config, category, registry_for, resources)?;
 
     let append_entry: RecallEntryAppender = {
         let actions = Arc::clone(&actions);
@@ -212,7 +212,7 @@ pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Arc<MemoryRec
         Arc::new(move || resolve_settings().unwrap_or(Value::Null))
     };
 
-    MemoryRecallWiring::new(MemoryRecallWiringOptions {
+    Ok(MemoryRecallWiring::new(MemoryRecallWiringOptions {
         resolve_context,
         resolve_settings,
         env,
@@ -237,7 +237,7 @@ pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Arc<MemoryRec
         drain_pending_for,
         drain_queued,
         session_resources_for,
-    })
+    }))
 }
 
 #[cfg(test)]

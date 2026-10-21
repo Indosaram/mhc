@@ -711,12 +711,8 @@ impl AuthStorage {
                     },
                 });
             })?;
-            // An api-key `ApiKeyCredential` has no room for `accounts`/`pinned`; persist the pooled
-            // object itself, as senpi does.
-            let stored = match next.credential_type {
-                maho_ai::auth::pool::slots::PooledCredentialType::ApiKey => serde_json::to_value(&next),
-                maho_ai::auth::pool::slots::PooledCredentialType::OAuth => serde_json::to_value(next.to_stored_credential()),
-            }.map_err(|error| error.to_string())?;
+            let stored = serde_json::to_value(next.to_stored_credential())
+                .map_err(|error| error.to_string())?;
             data.insert(provider_id.to_owned(), stored);
             Ok((data.clone(), Some(serialize_auth_data(&data))))
         };
@@ -746,6 +742,28 @@ impl AuthStorage {
         F: FnOnce(Option<Value>) -> Fut,
         Fut: std::future::Future<Output = Result<Option<Value>, String>>,
     {
+        self.mutate_credential(provider_id, f, false).await
+    }
+
+    /// Mutates the latest stored credential, deleting on `None`, under the account and file locks.
+    /// Unlike `modify_credential`, this method acquires `account_mutation` itself.
+    ///
+    /// # Errors
+    /// Returns storage, serialization, or callback errors without committing a callback failure.
+    pub async fn modify_or_delete_credential<F, Fut>(&self, provider_id: &str, f: F) -> Result<Option<Value>, String>
+    where
+        F: FnOnce(Option<Value>) -> Fut,
+        Fut: std::future::Future<Output = Result<Option<Value>, String>>,
+    {
+        let _mutation = self.account_mutation.lock().await;
+        self.mutate_credential(provider_id, f, true).await
+    }
+
+    async fn mutate_credential<F, Fut>(&self, provider_id: &str, f: F, delete_on_none: bool) -> Result<Option<Value>, String>
+    where
+        F: FnOnce(Option<Value>) -> Fut,
+        Fut: std::future::Future<Output = Result<Option<Value>, String>>,
+    {
         let outcome: Result<(AuthStorageData, Option<Value>), String> = match &self.storage {
             AuthStorageBackend::File(backend) => {
                 backend
@@ -753,6 +771,11 @@ impl AuthStorage {
                         let (mut data, _, _) = Self::parse_storage_content(current)?;
                         let existing = read_by_provider_id(&data, provider_id);
                         let Some(next) = f(existing.clone()).await? else {
+                            if delete_on_none {
+                                data.remove(provider_id);
+                                let serialized = serialize_auth_data(&data);
+                                return Ok(((data, None), Some(serialized)));
+                            }
                             return Ok(((data, existing), None));
                         };
                         data.insert(provider_id.to_owned(), next.clone());
@@ -769,6 +792,11 @@ impl AuthStorage {
                         let existing = read_by_provider_id(&data, provider_id);
                         match f(existing.clone()).await {
                             Err(error) => Err(error),
+                            Ok(None) if delete_on_none => {
+                                data.remove(provider_id);
+                                let serialized = serialize_auth_data(&data);
+                                backend.with_lock(|_| Ok(((), Some(serialized)))).map(|()| (data, None))
+                            }
                             Ok(None) => Ok((data, existing)),
                             Ok(Some(next)) => {
                                 data.insert(provider_id.to_owned(), next.clone());
@@ -832,7 +860,7 @@ impl AuthStorage {
             .remove(provider_id);
     }
 
-    pub fn get_oauth_providers(&self) -> Vec<OAuthProviderInfo> {
+    pub fn get_oauth_providers(&self) -> Result<Vec<OAuthProviderInfo>, maho_ai::models::ModelsError> {
         let dynamic = self.extension_oauth_providers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -845,7 +873,7 @@ impl AuthStorage {
             .collect();
         // senpi `getOAuthProviders`: builtins are every builtin provider that declares OAuth, named
         // by that OAuth method (so Radius is included and names match the login flow).
-        for provider in maho_ai::providers::all::builtin_providers() {
+        for provider in maho_ai::providers::all::builtin_providers()? {
             let Some(oauth) = provider.auth().and_then(|auth| auth.oauth.as_ref()) else { continue };
             if !dynamic.contains_key(provider.id()) {
                 results.push(OAuthProviderInfo {
@@ -854,7 +882,7 @@ impl AuthStorage {
                 });
             }
         }
-        results
+        Ok(results)
     }
 
     pub async fn login(&self, provider_id: &str, callbacks: Arc<dyn OAuthLoginCallbacks>) -> Result<(), String> {
@@ -943,6 +971,66 @@ mod tests {
 
     fn api_key(key: &str) -> Value {
         json!({ "type": "api_key", "key": key })
+    }
+
+    #[tokio::test]
+    async fn conditional_delete_holds_file_lock_through_callback_and_commit() {
+        // Given independent storage instances sharing one auth.json file.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json").to_string_lossy().into_owned();
+        let deleting = AuthStorage::create(&path);
+        deleting.set("p", Some(api_key("old"))).expect("seed");
+        let writing = AuthStorage::create(&path);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let deletion = deleting.modify_or_delete_credential("p", move |current| async move {
+            assert_eq!(current, Some(api_key("old")));
+            entered_tx.send(()).expect("entry subscriber");
+            release_rx.await.expect("release");
+            Ok(None)
+        });
+        tokio::pin!(deletion);
+        assert!(futures::poll!(deletion.as_mut()).is_pending());
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await.expect("entry deadline").expect("entered");
+        let login = writing.modify_credential("p", |current| async move {
+            assert_eq!(current, None);
+            Ok(Some(api_key("new")))
+        });
+        tokio::pin!(login);
+        assert!(futures::poll!(login.as_mut()).is_pending());
+        // When the suspended deletion commits and releases the cross-instance file lock.
+        release_tx.send(()).expect("release subscriber");
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), deletion).await.expect("delete deadline").expect("delete").is_none());
+        tokio::time::timeout(std::time::Duration::from_secs(5), login).await.expect("login deadline").expect("login");
+        // Then the later login observes the deletion and survives on disk.
+        assert_eq!(read_stored_credential("p", &path), Some(api_key("new")));
+    }
+
+    #[tokio::test]
+    async fn conditional_mutation_distinguishes_noop_delete_and_failure() {
+        // Given file and memory stores with a credential and an unrelated provider.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        for storage in [AuthStorage::create(&path.to_string_lossy()), AuthStorage::in_memory(AuthStorageData::new())] {
+            storage.set("p", Some(api_key("old"))).expect("seed");
+            storage.set("other", Some(api_key("keep"))).expect("seed sibling");
+            // When a no-op and a failed conditional mutation precede an explicit deletion.
+            let unchanged = storage.modify_credential("p", |_| async { Ok(None) }).await.expect("no-op");
+            assert_eq!(unchanged, Some(api_key("old")));
+            let failure = storage.modify_or_delete_credential("p", |_| async { Err("callback failed".to_owned()) }).await;
+            assert!(failure.is_err());
+            assert_eq!(storage.get("p"), Some(api_key("old")));
+            let deleted = storage.modify_or_delete_credential("p", |_| async { Ok(None) }).await.expect("delete");
+            // Then deletion removes only its provider, in the cache and persistent backend.
+            assert_eq!(deleted, None);
+            assert_eq!(storage.get("p"), None);
+            assert_eq!(storage.get("other"), Some(api_key("keep")));
+            let persisted = storage.modify_credential("p", |current| async move {
+                assert_eq!(current, None);
+                Ok(None)
+            }).await.expect("latest backend read");
+            assert_eq!(persisted, None);
+        }
     }
 
     #[test]
@@ -1137,6 +1225,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_key_login_preserves_pool_metadata_without_environment_relocation() {
+        let initial = json!({"type":"api_key","key":"first","accounts":[{"name":"default","key":"first"}],"pinned":"default","providerMetadata":{"tenant":"t"}});
+        let storage = AuthStorage::in_memory(AuthStorageData::from_iter([("p".into(), initial.clone())]));
+        let credential = maho_ai::auth::types::ApiKeyCredential { key: Some("second".into()), ..Default::default() };
+        let receipt = storage.append_login_account("p", Credential::ApiKey(credential), None).await.expect("append").expect("receipt");
+        let stored = storage.get("p").expect("stored pool");
+        assert_eq!(receipt.name, "login-2");
+        assert_eq!(stored["accounts"][1]["key"], "second");
+        assert_eq!(stored["pinned"], "default");
+        assert_eq!(stored["providerMetadata"], initial["providerMetadata"]);
+        assert!(stored.get("env").is_none());
+    }
+
+    #[tokio::test]
     async fn append_oauth_account_rejects_cancellation_without_changing_disk_or_cache() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
@@ -1296,7 +1398,7 @@ mod tests {
             credential: OAuthCredential::new("a", "r", 123.0),
         });
         storage.register_oauth_provider("anthropic-subscription", oauth);
-        let providers = storage.get_oauth_providers();
+        let providers = storage.get_oauth_providers().expect("builtin providers");
         assert!(providers.iter().any(|p| p.id == "anthropic-subscription" && p.name == "Anthropic Subscription (Claude Pro/Max)"));
     }
 
@@ -1344,14 +1446,16 @@ mod tests {
             Arc::new(FauxOAuth { name: "x".into(), credential: OAuthCredential::new("", "", 0.0) }),
         );
         storage.unregister_oauth_provider("anthropic-subscription");
-        let ids: Vec<String> = storage.get_oauth_providers().into_iter().map(|p| p.id).collect();
+        let ids: Vec<String> = storage.get_oauth_providers().expect("builtin providers").into_iter().map(|p| p.id).collect();
         assert!(!ids.contains(&"anthropic-subscription".to_string()));
     }
 
     #[test]
     fn builtin_oauth_providers_come_from_provider_auth_declarations() {
-        let providers = AuthStorage::in_memory(AuthStorageData::new()).get_oauth_providers();
-        assert!(providers.iter().any(|p| p.id == "anthropic" && p.name == "Anthropic (Claude Pro/Max)"));
+        let providers = AuthStorage::in_memory(AuthStorageData::new()).get_oauth_providers().expect("builtin providers");
+        // The pinned Anthropic Messages provider declares API-key auth only; subscription OAuth
+        // belongs to the separately registered anthropic-subscription extension.
+        assert!(!providers.iter().any(|p| p.id == "anthropic"));
         assert!(providers.iter().any(|p| p.id == "radius"));
         assert!(providers.iter().any(|p| p.id == "devin" && p.name == "Devin"));
     }
@@ -1363,8 +1467,9 @@ mod tests {
             "anthropic-subscription",
             Arc::new(FauxOAuth { name: "x".into(), credential: OAuthCredential::new("", "", 0.0) }),
         );
-        let ids: Vec<String> = storage.get_oauth_providers().into_iter().map(|p| p.id).collect();
-        assert!(ids.contains(&"anthropic".to_string()));
+        let ids: Vec<String> = storage.get_oauth_providers().expect("builtin providers").into_iter().map(|p| p.id).collect();
+        assert!(ids.contains(&"radius".to_string()));
+        assert!(ids.contains(&"devin".to_string()));
         assert!(ids.contains(&"anthropic-subscription".to_string()));
     }
 

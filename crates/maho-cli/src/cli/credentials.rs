@@ -130,22 +130,35 @@ impl CredentialStore for AuthStorageCredentialStore {
         let storage = Arc::clone(&self.storage);
         let provider_id_owned = provider_id.to_owned();
         let task = async move {
-            let current = {
-                let guard = storage.lock().await;
-                match guard.get(&provider_id_owned) {
-                    None => None,
-                    Some(value) => Some(Self::decode(value)?),
-                }
-            };
-            let next = f(current.clone()).await?;
-            if let Some(next) = &next {
-                let encoded = Self::encode(next)?;
-                let guard = storage.lock().await;
-                guard.set(&provider_id_owned, Some(encoded)).map_err(|error| anyhow::anyhow!("{error}"))?;
-            }
-            Ok(next.or(current))
+            let guard = storage.lock().await;
+            guard.modify_credential(&provider_id_owned, move |current| async move {
+                let current = current.map(Self::decode).transpose().map_err(|error| error.to_string())?;
+                let next = f(current).await.map_err(|error| error.to_string())?;
+                next.as_ref().map(Self::encode).transpose().map_err(|error| error.to_string())
+            }).await.map_err(|error| anyhow::anyhow!(error))?
+                .map(Self::decode).transpose()
         };
         self.enqueue(provider_id, task, signal_options).await?
+    }
+
+    async fn modify_or_delete(
+        &self,
+        provider_id: &str,
+        f: Box<dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>> + Send>,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>> {
+        let storage = Arc::clone(&self.storage);
+        let provider_id_owned = provider_id.to_owned();
+        let task = async move {
+            let guard = storage.lock().await;
+            let stored = guard.modify_or_delete_credential(&provider_id_owned, move |current| async move {
+                let current = current.map(Self::decode).transpose().map_err(|error| error.to_string())?;
+                let next = f(current).await.map_err(|error| error.to_string())?;
+                next.as_ref().map(Self::encode).transpose().map_err(|error| error.to_string())
+            }).await.map_err(|error| anyhow::anyhow!(error))?;
+            stored.map(Self::decode).transpose()
+        };
+        self.enqueue(provider_id, task, options).await?
     }
 
     async fn delete(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<()> {
@@ -157,5 +170,38 @@ impl CredentialStore for AuthStorageCredentialStore {
             Ok::<(), anyhow::Error>(())
         };
         self.enqueue(provider_id, task, options).await?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn conditional_mutation_preserves_full_pool_then_deletes_explicitly() {
+        // Given a real file store and an update from a separate storage instance.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json").to_string_lossy().into_owned();
+        let store = AuthStorageCredentialStore::create(&path);
+        let external = AuthStorage::create(&path);
+        let raw = serde_json::json!({"type":"api_key","key":"flat","env":{"REGION":"r"},"accounts":[{"name":"a","key":"slot","blockedUntil":123,"blockReason":"quota","providerSlot":{"id":1}}],"pinned":"a","providerMetadata":{"tenant":"t"}});
+        external.set("p", Some(raw.clone())).expect("external seed");
+        // When conditional mutation reads and round-trips the latest pooled credential.
+        let updated = store.modify_or_delete("p", Box::new(|current| Box::pin(async move { Ok(current) })), None).await.expect("round trip").expect("pool");
+        // Then every pooled and provider field survives without request projection.
+        assert_eq!(serde_json::to_value(updated).expect("encode"), raw);
+        assert_eq!(maho_core::auth_storage::read_stored_credential("p", &path), Some(raw.clone()));
+
+        // Given that same stored pool, a no-op must not request deletion.
+        let unchanged = store.modify("p", Box::new(|_| Box::pin(async { Ok(None) })), None).await.expect("no-op").expect("pool");
+        assert_eq!(serde_json::to_value(unchanged).expect("encode"), raw);
+        // When the conditional callback fails, no deletion is committed.
+        assert!(store.modify_or_delete("p", Box::new(|_| Box::pin(async { anyhow::bail!("callback failed") })), None).await.is_err());
+        assert_eq!(maho_core::auth_storage::read_stored_credential("p", &path), Some(raw));
+        // When the callback explicitly returns None, the file entry is removed.
+        assert!(store.modify_or_delete("p", Box::new(|_| Box::pin(async { Ok(None) })), None).await.expect("delete").is_none());
+        // Then neither the adapter snapshot nor the file retains the credential.
+        assert!(store.read("p", None).await.expect("read").is_none());
+        assert!(maho_core::auth_storage::read_stored_credential("p", &path).is_none());
     }
 }

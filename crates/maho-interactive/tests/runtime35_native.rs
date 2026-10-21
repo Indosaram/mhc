@@ -41,7 +41,7 @@ fn native_mode_with_session_and_provider_retaining_session(cwd_override:Option<&
     use maho_core::agent_session::{AgentSession, AgentSessionConfig};
     let directory = tempfile::tempdir().expect("directory");
     let cwd = cwd_override.map_or_else(||directory.path().to_string_lossy().into_owned(),str::to_owned);
-    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), provider: Some(provider_id.into()), models: Some(vec![FauxModelDefinition { id: model_id.into(), ..Default::default() }]), tokens_per_second: Some(0.0), ..Default::default() });
+    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), provider: Some(provider_id.into()), models: Some(vec![FauxModelDefinition { id: model_id.into(), ..Default::default() }]), tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
     let model = if unknown_initial_model {
         maho_ai::types::Model { provider: "unknown".into(), id: "unknown".into(), ..provider.get_model(Some(model_id)).expect("model") }
     } else { provider.get_model(Some(model_id)).expect("model") };
@@ -55,7 +55,7 @@ fn native_mode_with_session_and_provider_retaining_session(cwd_override:Option<&
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(directory.path().join("models.json")), auth_path: Some(directory.path().join("auth.json")),
         providers: Some(vec![provider.provider.clone()]), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let session = AgentSession::new(AgentSessionConfig {
         agent: maho_agent::Agent::new(maho_agent::AgentOptions {
             initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
@@ -102,10 +102,10 @@ fn tool_lifecycle_updates_one_card_and_replaces_partial_result() {
     use maho_agent::types::AgentEvent;
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
-    mode.handle_event(&AgentEvent::ToolExecutionStart { tool_call_id: "call-1".into(), tool_name: "custom".into(), args: serde_json::json!({}) });
-    mode.handle_event(&AgentEvent::ToolExecutionUpdate { tool_call_id: "call-1".into(), tool_name: "custom".into(), args: serde_json::json!({}), partial_result: serde_json::json!({"content":[{"type":"text","text":"partial-value"}]}) });
+    mode.handle_event(&AgentEvent::ToolExecutionStart { parent_tool_call_id: None, tool_call_id: "call-1".into(), tool_name: "custom".into(), args: serde_json::json!({}) });
+    mode.handle_event(&AgentEvent::ToolExecutionUpdate { parent_tool_call_id: None, tool_call_id: "call-1".into(), tool_name: "custom".into(), args: serde_json::json!({}), partial_result: serde_json::json!({"content":[{"type":"text","text":"partial-value"}]}) });
     assert!(mode.render(80).join("\n").contains("partial-value"));
-    mode.handle_event(&AgentEvent::ToolExecutionEnd { tool_call_id: "call-1".into(), tool_name: "custom".into(), result: serde_json::json!({"content":[{"type":"text","text":"final-value"}]}), is_error: false });
+    mode.handle_event(&AgentEvent::ToolExecutionEnd { parent_tool_call_id: None, tool_call_id: "call-1".into(), tool_name: "custom".into(), result: serde_json::json!({"content":[{"type":"text","text":"final-value"}]}), is_error: false });
     let rendered = mode.render(80).join("\n");
     assert!(!rendered.contains("partial-value"));
     assert_eq!(rendered.matches("final-value").count(), 1);
@@ -120,9 +120,9 @@ fn terminal_title_follows_the_running_tool_then_returns_to_the_normal_title() {
     let normal = format!("{app_title} - {cwd_basename}");
     assert_eq!(mode.terminal_window_title(), normal);
     assert!(!mode.terminal_progress_active(), "showTerminalProgress defaults to off");
-    mode.handle_event(&AgentEvent::ToolExecutionStart { tool_call_id: "call-1".into(), tool_name: "bash".into(), args: serde_json::json!({"command":"ls"}) });
+    mode.handle_event(&AgentEvent::ToolExecutionStart { parent_tool_call_id: None, tool_call_id: "call-1".into(), tool_name: "bash".into(), args: serde_json::json!({"command":"ls"}) });
     assert_eq!(mode.terminal_window_title(), format!("{app_title} - Running bash: ls"));
-    mode.handle_event(&AgentEvent::ToolExecutionEnd { tool_call_id: "call-1".into(), tool_name: "bash".into(), result: serde_json::json!({"content":[]}), is_error: false });
+    mode.handle_event(&AgentEvent::ToolExecutionEnd { parent_tool_call_id: None, tool_call_id: "call-1".into(), tool_name: "bash".into(), result: serde_json::json!({"content":[]}), is_error: false });
     assert_eq!(mode.terminal_window_title(), normal);
 }
 
@@ -130,7 +130,7 @@ fn terminal_title_follows_the_running_tool_then_returns_to_the_normal_title() {
 fn tool_end_without_start_still_renders_final_result() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
-    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionEnd { tool_call_id: "orphan".into(), tool_name: "custom".into(), result: serde_json::json!({"content":[{"type":"text","text":"failed-result"}]}), is_error: true });
+    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionEnd { parent_tool_call_id: None, tool_call_id: "orphan".into(), tool_name: "custom".into(), result: serde_json::json!({"content":[{"type":"text","text":"failed-result"}]}), is_error: true });
     assert!(mode.render(80).join("\n").contains("failed-result"));
 }
 
@@ -415,7 +415,7 @@ fn assistant_text_segments_remain_on_either_side_of_tool_card() {
     let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"assistant", "content":[{"type":"text","text":"before-tool"},{"type":"toolCall","id":"ordered","name":"custom","arguments":{}},{"type":"text","text":"after-tool"}], "api":"faux", "provider":"faux", "model":"faux-1", "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"toolUse","timestamp":0})).expect("message");
     mode.handle_event(&AgentEvent::MessageStart { message: message.clone() });
     mode.handle_event(&AgentEvent::MessageEnd { message });
-    mode.handle_event(&AgentEvent::ToolExecutionEnd { tool_call_id:"ordered".into(), tool_name:"custom".into(), result:serde_json::json!({"content":[{"type":"text","text":"tool-output"}]}), is_error:false });
+    mode.handle_event(&AgentEvent::ToolExecutionEnd { parent_tool_call_id: None, tool_call_id:"ordered".into(), tool_name:"custom".into(), result:serde_json::json!({"content":[{"type":"text","text":"tool-output"}]}), is_error:false });
     let lines = mode.render(80).join("\n");
     assert!(lines.find("before-tool").expect("head") < lines.find("tool-output").expect("tool"));
     assert!(lines.find("tool-output").expect("tool") < lines.find("after-tool").expect("tail"));
@@ -557,7 +557,7 @@ fn expansion_updates_completed_tool_cards_not_just_pending_cards() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
     let text = (0..100).map(|n| format!("line-{n}")).collect::<Vec<_>>().join("\n");
-    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionEnd { tool_call_id:"expanded".into(), tool_name:"ls".into(), result:serde_json::json!({"content":[{"type":"text","text":text}]}), is_error:false });
+    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionEnd { parent_tool_call_id: None, tool_call_id:"expanded".into(), tool_name:"ls".into(), result:serde_json::json!({"content":[{"type":"text","text":text}]}), is_error:false });
     assert!(!mode.render(80).join("\n").contains("line-99"));
     mode.set_tools_expanded(true);
     assert!(mode.render(80).join("\n").contains("line-99"));
@@ -1183,7 +1183,7 @@ async fn reattached_question_replaces_stale_draft_without_changing_number() {
 async fn ask_user_tool_card_uses_the_question_renderer_not_a_raw_argument_dump() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
-    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionStart {
+    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionStart { parent_tool_call_id: None,
         tool_call_id: "call-ask".into(), tool_name: "ask_user_question".into(),
         args: serde_json::json!({"questions": [{"header": "Pick one"}], "waitForAnswer": true}),
     });
@@ -1197,8 +1197,8 @@ async fn ask_user_tool_card_uses_the_question_renderer_not_a_raw_argument_dump()
 async fn ask_user_tool_result_summarises_the_answer_details() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
-    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionStart { tool_call_id: "call-ask".into(), tool_name: "ask_user_question".into(), args: serde_json::json!({"questions": [{"header": "Pick one"}]}) });
-    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionEnd {
+    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionStart { parent_tool_call_id: None, tool_call_id: "call-ask".into(), tool_name: "ask_user_question".into(), args: serde_json::json!({"questions": [{"header": "Pick one"}]}) });
+    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionEnd { parent_tool_call_id: None,
         tool_call_id: "call-ask".into(), tool_name: "ask_user_question".into(),
         result: serde_json::json!({"content": [{"type": "text", "text": "The user responded"}], "details": {"status": "answered", "answers": {"a": "x"}, "unanswered": ["b"]}}),
         is_error: false,
@@ -2105,7 +2105,7 @@ fn gated_native_mode() -> GatedMode {
             Box::pin(async move { entered.store(true, std::sync::atomic::Ordering::SeqCst); let _ = rx.wait_for(|released| *released).await; })
         })),
         ..Default::default()
-    });
+    }).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("model");
     provider.set_responses(vec![
         faux_assistant_message("hello", FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into(),
@@ -2120,7 +2120,7 @@ fn gated_native_mode() -> GatedMode {
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(directory.path().join("models.json")), auth_path: Some(directory.path().join("auth.json")),
         providers: Some(vec![provider.provider.clone()]), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let session = Arc::new(AgentSession::new(AgentSessionConfig {
         agent: maho_agent::Agent::new(maho_agent::AgentOptions {
             initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),

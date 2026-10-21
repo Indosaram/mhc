@@ -10,10 +10,31 @@
 mod engine;
 mod formats;
 
+/// Returns existing engine error paths and messages without coercion or null normalization.
+pub fn strict_errors(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Vec<(String, String)> {
+    engine::errors(schema, value)
+        .into_iter()
+        .map(|issue| (issue.instance_path, issue.message))
+        .collect()
+}
+
+/// Check recovered arguments without applying the normal tool-argument coercions.
+pub(crate) fn check_recovered_arguments(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> bool {
+    engine::check(schema, value)
+}
+
 use serde_json::{Map, Value};
 
 use crate::types::{Tool, ToolCall};
-use crate::utils::js::{json_number, json_stringify_pretty, number_to_string, string_to_number, trim};
+use crate::utils::js::{
+    json_number, json_stringify_pretty, number_to_string, string_to_number, trim,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
@@ -48,7 +69,9 @@ fn matches_json_type(value: &Value, type_name: &str) -> bool {
 fn coerce_primitive_by_type(value: &Value, type_name: &str) -> Option<Value> {
     match (type_name, value) {
         ("number" | "integer", Value::Null) => Some(json_number(0.0)),
-        ("number" | "integer", Value::Bool(flag)) => Some(json_number(if *flag { 1.0 } else { 0.0 })),
+        ("number" | "integer", Value::Bool(flag)) => {
+            Some(json_number(if *flag { 1.0 } else { 0.0 }))
+        }
         ("number", Value::String(text)) if !trim(text).is_empty() => {
             let parsed = string_to_number(text);
             parsed.is_finite().then(|| json_number(parsed))
@@ -58,7 +81,9 @@ fn coerce_primitive_by_type(value: &Value, type_name: &str) -> Option<Value> {
             (parsed.is_finite() && parsed.fract() == 0.0).then(|| json_number(parsed))
         }
         ("boolean", Value::Null) => Some(Value::Bool(false)),
-        ("boolean", Value::String(text)) if text == "true" || text == "false" => Some(Value::Bool(text == "true")),
+        ("boolean", Value::String(text)) if text == "true" || text == "false" => {
+            Some(Value::Bool(text == "true"))
+        }
         ("boolean", Value::Number(n)) => match n.as_f64() {
             Some(1.0) => Some(Value::Bool(true)),
             Some(0.0) => Some(Value::Bool(false)),
@@ -83,7 +108,10 @@ fn apply_schema_object_coercion(object: &mut Map<String, Value>, schema: &Map<St
             }
         }
     }
-    if let Some(additional) = schema.get("additionalProperties").filter(|v| v.is_object() || v.is_array()) {
+    if let Some(additional) = schema
+        .get("additionalProperties")
+        .filter(|v| v.is_object() || v.is_array())
+    {
         for (key, slot) in object.iter_mut() {
             if !properties.is_some_and(|p| p.contains_key(key)) {
                 *slot = coerce_with_json_schema(slot.take(), additional);
@@ -122,7 +150,9 @@ fn coerce_with_union_schema(value: Value, schemas: &[Value]) -> Value {
 }
 
 fn coerce_with_json_schema(value: Value, schema: &Value) -> Value {
-    let Some(schema) = schema.as_object() else { return value };
+    let Some(schema) = schema.as_object() else {
+        return value;
+    };
     let mut next = value;
     if let Some(Value::Array(all)) = schema.get("allOf") {
         for nested in all {
@@ -139,7 +169,9 @@ fn coerce_with_json_schema(value: Value, schema: &Value) -> Value {
     let matches_union_member = types.len() > 1 && types.iter().any(|t| matches_json_type(&next, t));
     if !types.is_empty()
         && !matches_union_member
-        && let Some(candidate) = types.iter().find_map(|t| coerce_primitive_by_type(&next, t))
+        && let Some(candidate) = types
+            .iter()
+            .find_map(|t| coerce_primitive_by_type(&next, t))
     {
         next = candidate;
     }
@@ -157,21 +189,42 @@ fn coerce_with_json_schema(value: Value, schema: &Value) -> Value {
 }
 
 fn normalize_optional_nulls(value: &mut Value, schema: &Value) {
-    let Some(schema) = schema.as_object() else { return };
+    let Some(schema) = schema.as_object() else {
+        return;
+    };
     if let Value::Array(items) = value {
         match schema.get("items") {
-            Some(Value::Array(tuple)) => items.iter_mut().zip(tuple).for_each(|(item, s)| normalize_optional_nulls(item, s)),
-            Some(item_schema) if item_schema.is_object() => items.iter_mut().for_each(|item| normalize_optional_nulls(item, item_schema)),
+            Some(Value::Array(tuple)) => items
+                .iter_mut()
+                .zip(tuple)
+                .for_each(|(item, s)| normalize_optional_nulls(item, s)),
+            Some(item_schema) if item_schema.is_object() => items
+                .iter_mut()
+                .for_each(|item| normalize_optional_nulls(item, item_schema)),
             _ => {}
         }
         return;
     }
-    let (Value::Object(object), Some(Value::Object(properties))) = (value, schema.get("properties")) else { return };
-    let required: Vec<&str> = schema.get("required").and_then(Value::as_array).map(|r| r.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let (Value::Object(object), Some(Value::Object(properties))) =
+        (value, schema.get("properties"))
+    else {
+        return;
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
     for (key, property_schema) in properties {
-        let Some(slot) = object.get_mut(key) else { continue };
+        let Some(slot) = object.get_mut(key) else {
+            continue;
+        };
         let is_ref = property_schema.get("$ref").is_some_and(Value::is_string);
-        if slot.is_null() && !required.contains(&key.as_str()) && !is_ref && !engine::check(property_schema, &Value::Null) {
+        if slot.is_null()
+            && !required.contains(&key.as_str())
+            && !is_ref
+            && !engine::check(property_schema, &Value::Null)
+        {
             object.shift_remove(key);
         } else {
             normalize_optional_nulls(slot, property_schema);
@@ -180,38 +233,76 @@ fn normalize_optional_nulls(value: &mut Value, schema: &Value) {
 }
 
 fn format_validation_path(issue: &engine::Issue) -> String {
-    let base = issue.instance_path.strip_prefix('/').unwrap_or(&issue.instance_path).replace('/', ".");
+    let base = issue
+        .instance_path
+        .strip_prefix('/')
+        .unwrap_or(&issue.instance_path)
+        .replace('/', ".");
     if issue.keyword == "required"
         && let Some(property) = issue.required_properties.first().filter(|p| !p.is_empty())
     {
-        return if base.is_empty() { property.clone() } else { format!("{base}.{property}") };
+        return if base.is_empty() {
+            property.clone()
+        } else {
+            format!("{base}.{property}")
+        };
     }
     if base.is_empty() { "root".into() } else { base }
 }
 
 pub fn validate_tool_call(tools: &[Tool], tool_call: &ToolCall) -> Result<Value, ValidationError> {
-    let tool = tools.iter().find(|t| t.name == tool_call.name).ok_or_else(|| ValidationError::ToolNotFound(tool_call.name.clone()))?;
+    let tool = tools
+        .iter()
+        .find(|t| t.name == tool_call.name)
+        .ok_or_else(|| ValidationError::ToolNotFound(tool_call.name.clone()))?;
     validate_tool_arguments(tool, tool_call)
 }
 
-pub fn validate_tool_arguments(tool: &Tool, tool_call: &ToolCall) -> Result<Value, ValidationError> {
-    validate_value(&tool.parameters, &tool_call.name, &Value::Object(tool_call.arguments.clone()))
+pub fn validate_tool_arguments(
+    tool: &Tool,
+    tool_call: &ToolCall,
+) -> Result<Value, ValidationError> {
+    validate_value(
+        &tool.parameters,
+        &tool_call.name,
+        &Value::Object(tool_call.arguments.clone()),
+    )
 }
 
-fn validate_value(parameters: &Value, tool_name: &str, received: &Value) -> Result<Value, ValidationError> {
+/// Validate prepared arguments without requiring the received value to be an object.
+pub fn validate_tool_arguments_value(
+    tool: &Tool,
+    tool_name: &str,
+    received: &Value,
+) -> Result<Value, ValidationError> {
+    validate_value(&tool.parameters, tool_name, received)
+}
+
+fn validate_value(
+    parameters: &Value,
+    tool_name: &str,
+    received: &Value,
+) -> Result<Value, ValidationError> {
     let mut args = received.clone();
     normalize_optional_nulls(&mut args, parameters);
     let coerced = coerce_with_json_schema(args.clone(), parameters);
     if args.is_object() && coerced.is_object() {
         args = coerced;
     } else if coerced != args {
-        return Ok(if engine::check(parameters, &coerced) { coerced } else { args });
+        return Ok(if engine::check(parameters, &coerced) {
+            coerced
+        } else {
+            args
+        });
     }
     let issues = engine::errors(parameters, &args);
     if issues.is_empty() {
         return Ok(args);
     }
-    let lines: Vec<String> = issues.iter().map(|issue| format!("  - {}: {}", format_validation_path(issue), issue.message)).collect();
+    let lines: Vec<String> = issues
+        .iter()
+        .map(|issue| format!("  - {}: {}", format_validation_path(issue), issue.message))
+        .collect();
     Err(ValidationError::Invalid(format!(
         "Validation failed for tool \"{tool_name}\":\n{}\n\nReceived arguments:\n{}",
         lines.join("\n"),
@@ -226,22 +317,84 @@ mod tests {
     use super::*;
 
     fn tool(parameters: Value) -> Tool {
-        serde_json::from_value(json!({ "name": "echo", "description": "Echo tool", "parameters": parameters })).expect("tool")
+        serde_json::from_value(
+            json!({ "name": "echo", "description": "Echo tool", "parameters": parameters }),
+        )
+        .expect("tool")
     }
 
     fn call(arguments: Value) -> ToolCall {
-        serde_json::from_value(json!({ "id": "tool-1", "name": "echo", "arguments": arguments })).expect("tool call")
+        serde_json::from_value(json!({ "id": "tool-1", "name": "echo", "arguments": arguments }))
+            .expect("tool call")
     }
 
     fn plain(schema: Value, input: Value) -> (Tool, ToolCall) {
-        (tool(json!({ "type": "object", "properties": { "value": schema }, "required": ["value"] })), call(json!({ "value": input })))
+        (
+            tool(
+                json!({ "type": "object", "properties": { "value": schema }, "required": ["value"] }),
+            ),
+            call(json!({ "value": input })),
+        )
+    }
+
+    #[test]
+    fn strict_errors_preserves_engine_errors_without_coercion_or_null_normalization() {
+        // Given: optional non-nullable fields that ordinary validation can normalize or coerce.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "number" },
+                "label": { "type": "string" }
+            }
+        });
+        let value = json!({ "count": "42", "label": null });
+        let original = value.clone();
+        let expected: Vec<_> = engine::errors(&schema, &value)
+            .into_iter()
+            .map(|issue| (issue.instance_path, issue.message))
+            .collect();
+
+        // When: the public strict wrapper evaluates the received value.
+        let errors = strict_errors(&schema, &value);
+
+        // Then: exact engine errors survive, and the input remains untouched.
+        assert_eq!(errors, expected);
+        assert_eq!(errors.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(), ["/count", "/label"]);
+        assert_eq!(value, original);
+    }
+
+    #[test]
+    fn strict_errors_is_empty_when_received_value_satisfies_schema() {
+        // Given: a valid value, including an explicitly nullable field.
+        let schema = json!({ "type": "array", "items": { "type": ["number", "null"] } });
+        let value = json!([42, null]);
+
+        // When: the public strict wrapper evaluates it.
+        let errors = strict_errors(&schema, &value);
+
+        // Then: no errors are returned.
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn validates_non_object_values_against_the_tool_schema() {
+        let tool = tool(json!({ "type": "array", "items": { "type": "number" } }));
+
+        let validated = validate_tool_arguments_value(&tool, "echo", &json!([1, 2]));
+
+        assert_eq!(validated, Ok(json!([1, 2])));
     }
 
     #[test]
     fn still_validates_when_function_constructor_is_unavailable() {
         // TS disables `Function` to force TypeBox's interpreter; the Rust engine is always interpreted.
-        let tool = tool(json!({ "type": "object", "required": ["count"], "properties": { "count": { "type": "number" } } }));
-        assert_eq!(validate_tool_arguments(&tool, &call(json!({ "count": "42" }))), Ok(json!({ "count": 42 })));
+        let tool = tool(
+            json!({ "type": "object", "required": ["count"], "properties": { "count": { "type": "number" } } }),
+        );
+        assert_eq!(
+            validate_tool_arguments(&tool, &call(json!({ "count": "42" }))),
+            Ok(json!({ "count": 42 }))
+        );
     }
 
     #[test]
@@ -260,12 +413,24 @@ mod tests {
             (json!({ "type": "null" }), json!(""), json!(null)),
             (json!({ "type": "null" }), json!(0), json!(null)),
             (json!({ "type": "null" }), json!(false), json!(null)),
-            (json!({ "type": ["number", "string"] }), json!("1"), json!("1")),
-            (json!({ "type": ["boolean", "number"] }), json!("1"), json!(1)),
+            (
+                json!({ "type": ["number", "string"] }),
+                json!("1"),
+                json!("1"),
+            ),
+            (
+                json!({ "type": ["boolean", "number"] }),
+                json!("1"),
+                json!(1),
+            ),
         ];
         for (schema, input, expected) in cases {
             let (tool, call) = plain(schema.clone(), input.clone());
-            assert_eq!(validate_tool_arguments(&tool, &call), Ok(json!({ "value": expected })), "{schema} {input}");
+            assert_eq!(
+                validate_tool_arguments(&tool, &call),
+                Ok(json!({ "value": expected })),
+                "{schema} {input}"
+            );
         }
     }
 
@@ -281,8 +446,13 @@ mod tests {
                 "metadata": { "type": "object", "required": [], "properties": { "enabled": { "type": "boolean" } } }
             }
         }));
-        let call = call(json!({ "path": "file.txt", "offset": null, "nullable": null, "metadata": { "enabled": null } }));
-        assert_eq!(validate_tool_arguments(&tool, &call), Ok(json!({ "path": "file.txt", "nullable": null, "metadata": {} })));
+        let call = call(
+            json!({ "path": "file.txt", "offset": null, "nullable": null, "metadata": { "enabled": null } }),
+        );
+        assert_eq!(
+            validate_tool_arguments(&tool, &call),
+            Ok(json!({ "path": "file.txt", "nullable": null, "metadata": {} }))
+        );
     }
 
     #[test]
@@ -292,32 +462,61 @@ mod tests {
             "properties": { "value": { "$ref": "#/$defs/value" } },
             "$defs": { "value": { "anyOf": [{ "type": "number" }, { "type": "null" }] } }
         }));
-        assert_eq!(validate_tool_arguments(&tool, &call(json!({ "value": null }))), Ok(json!({ "value": null })));
+        assert_eq!(
+            validate_tool_arguments(&tool, &call(json!({ "value": null }))),
+            Ok(json!({ "value": null }))
+        );
     }
 
     #[test]
     fn preserves_a_value_that_already_matches_a_nullable_union_arm() {
-        let tool = tool(json!({ "type": "object", "required": ["value"], "properties": { "value": { "anyOf": [{ "type": "number" }, { "type": "null" }] } } }));
-        assert_eq!(validate_tool_arguments(&tool, &call(json!({ "value": null }))), Ok(json!({ "value": null })));
+        let tool = tool(
+            json!({ "type": "object", "required": ["value"], "properties": { "value": { "anyOf": [{ "type": "number" }, { "type": "null" }] } } }),
+        );
+        assert_eq!(
+            validate_tool_arguments(&tool, &call(json!({ "value": null }))),
+            Ok(json!({ "value": null }))
+        );
     }
 
     #[test]
     fn preserves_a_value_that_already_matches_a_one_of_nullable_union_arm() {
-        let (tool, call) = plain(json!({ "oneOf": [{ "type": "number" }, { "type": "null" }] }), json!(null));
-        assert_eq!(validate_tool_arguments(&tool, &call), Ok(json!({ "value": null })));
+        let (tool, call) = plain(
+            json!({ "oneOf": [{ "type": "number" }, { "type": "null" }] }),
+            json!(null),
+        );
+        assert_eq!(
+            validate_tool_arguments(&tool, &call),
+            Ok(json!({ "value": null }))
+        );
     }
 
     #[test]
     fn still_coerces_nullable_unions_when_the_original_value_does_not_match_any_arm() {
-        let (tool, call) = plain(json!({ "anyOf": [{ "type": "number" }, { "type": "null" }] }), json!("42"));
-        assert_eq!(validate_tool_arguments(&tool, &call), Ok(json!({ "value": 42 })));
+        let (tool, call) = plain(
+            json!({ "anyOf": [{ "type": "number" }, { "type": "null" }] }),
+            json!("42"),
+        );
+        assert_eq!(
+            validate_tool_arguments(&tool, &call),
+            Ok(json!({ "value": 42 }))
+        );
     }
 
     #[test]
     fn accepts_null_for_nullable_array_schemas_with_items() {
-        let (tool, call) = plain(json!({ "type": ["array", "null"], "items": { "type": "string" } }), json!(null));
-        assert!(engine::check(&tool.parameters, &Value::Object(call.arguments.clone())));
-        assert_eq!(validate_tool_arguments(&tool, &call), Ok(json!({ "value": null })));
+        let (tool, call) = plain(
+            json!({ "type": ["array", "null"], "items": { "type": "string" } }),
+            json!(null),
+        );
+        assert!(engine::check(
+            &tool.parameters,
+            &Value::Object(call.arguments.clone())
+        ));
+        assert_eq!(
+            validate_tool_arguments(&tool, &call),
+            Ok(json!({ "value": null }))
+        );
     }
 
     #[test]
@@ -330,7 +529,10 @@ mod tests {
         ];
         for (schema, input) in cases {
             let (tool, call) = plain(schema, input);
-            let Err(ValidationError::Invalid(message)) = validate_tool_arguments(&tool, &call) else { panic!("expected failure") };
+            let Err(ValidationError::Invalid(message)) = validate_tool_arguments(&tool, &call)
+            else {
+                panic!("expected failure")
+            };
             assert!(message.contains("Validation failed"));
         }
     }
@@ -343,8 +545,12 @@ mod tests {
 
     fn fixture() -> Value {
         // Generated by `bun tools/golden/run.mjs --case ai-validation` from pinned senpi.
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/ai-validation.json");
-        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("fixture json")
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/golden/ai-validation.json"
+        );
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture"))
+            .expect("fixture json")
     }
 
     #[test]
@@ -354,9 +560,20 @@ mod tests {
         assert!(!checks.is_empty());
         for case in checks {
             let (schema, value) = (&case["schema"], &case["value"]);
-            assert_eq!(engine::check(schema, value), case["ok"].as_bool().expect("ok"), "check {schema} {value}");
-            let errors: Vec<Value> = engine::errors(schema, value).into_iter().map(|i| json!([i.keyword, i.instance_path, i.message])).collect();
-            assert_eq!(Value::Array(errors), case["errors"], "errors {schema} {value}");
+            assert_eq!(
+                engine::check(schema, value),
+                case["ok"].as_bool().expect("ok"),
+                "check {schema} {value}"
+            );
+            let errors: Vec<Value> = engine::errors(schema, value)
+                .into_iter()
+                .map(|i| json!([i.keyword, i.instance_path, i.message]))
+                .collect();
+            assert_eq!(
+                Value::Array(errors),
+                case["errors"],
+                "errors {schema} {value}"
+            );
         }
     }
 
@@ -370,7 +587,13 @@ mod tests {
             if case["ok"] == json!(true) {
                 assert_eq!(got, Ok(case["value"].clone()), "{case}");
             } else {
-                assert_eq!(got, Err(ValidationError::Invalid(case["error"].as_str().expect("error").to_owned())), "{case}");
+                assert_eq!(
+                    got,
+                    Err(ValidationError::Invalid(
+                        case["error"].as_str().expect("error").to_owned()
+                    )),
+                    "{case}"
+                );
             }
         }
     }

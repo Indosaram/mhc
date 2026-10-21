@@ -83,6 +83,30 @@ impl OperationKind {
     }
 }
 
+macro_rules! error_property_name {
+    (operation_id) => {
+        "operationId"
+    };
+    (operation_kind) => {
+        "operationKind"
+    };
+    (expected_operation_id) => {
+        "expectedOperationId"
+    };
+    (current_operation_id) => {
+        "currentOperationId"
+    };
+    (last_operation_id) => {
+        "lastOperationId"
+    };
+    (target_id) => {
+        "targetId"
+    };
+    ($field:ident) => {
+        stringify!($field)
+    };
+}
+
 macro_rules! tagged_error {
     ($(#[$meta:meta])* $name:ident, $tag:literal, { $($field:ident : $ty:ty),* $(,)? }) => {
         $(#[$meta])*
@@ -106,7 +130,7 @@ macro_rules! tagged_error {
                 let mut map = Map::new();
                 map.insert("_tag".to_string(), json!($tag));
                 map.insert("message".to_string(), json!(self.message));
-                $(map.insert(stringify!($field).to_string(), json!(self.$field));)*
+                $(map.insert(error_property_name!($field).to_string(), json!(self.$field));)*
                 Value::Object(map)
             }
         }
@@ -258,8 +282,14 @@ pub struct HarnessFault {
 }
 
 impl HarnessFault {
-    pub fn new(message: impl Into<String>, cause: Option<Box<dyn Error + Send + Sync + 'static>>) -> Self {
-        Self { message: message.into(), cause }
+    pub fn new(
+        message: impl Into<String>,
+        cause: Option<Box<dyn Error + Send + Sync + 'static>>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            cause,
+        }
     }
 }
 
@@ -271,7 +301,9 @@ impl fmt::Display for HarnessFault {
 
 impl Error for HarnessFault {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.cause.as_deref().map(|cause| cause as &(dyn Error + 'static))
+        self.cause
+            .as_deref()
+            .map(|cause| cause as &(dyn Error + 'static))
     }
 }
 
@@ -319,4 +351,46 @@ where
         .iter()
         .find(|(tag, _)| *tag == error.tag())
         .map(|(_, matcher)| matcher(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tagged_errors_use_public_property_names() {
+        // Given errors carrying operation and target identifiers.
+        let busy = LaneBusy {
+            lane: "main".into(),
+            operation_id: "op".into(),
+            operation_kind: OperationKind::Run,
+            message: String::new(),
+        };
+        let mismatch = OperationMismatch {
+            lane: "main".into(),
+            expected_operation_id: "expected".into(),
+            current_operation_id: Some("current".into()),
+            last_operation_id: Some("last".into()),
+            message: String::new(),
+        };
+        let target = UnknownTarget {
+            target_id: "target".into(),
+            message: String::new(),
+        };
+        // When projecting tagged errors onto the wire.
+        let values = [busy.to_json(), mismatch.to_json(), target.to_json()];
+        // Then identifiers use the upstream camelCase contract.
+        assert_eq!(
+            values[0],
+            json!({"_tag":"LaneBusy", "message":"", "lane":"main", "operationId":"op", "operationKind":"run"})
+        );
+        assert_eq!(
+            values[1],
+            json!({"_tag":"OperationMismatch", "message":"", "lane":"main", "expectedOperationId":"expected", "currentOperationId":"current", "lastOperationId":"last"})
+        );
+        assert_eq!(
+            values[2],
+            json!({"_tag":"UnknownTarget", "message":"", "targetId":"target"})
+        );
+    }
 }

@@ -96,6 +96,7 @@ fn assert_fast_agent_chain(agent: &str) {
                 "gpt-6-luna-fast",
                 Some("low")
             ),
+            entry(&["anthropic", "github-copilot"], "claude-haiku-5-5", Some("medium")),
             entry(&["deepseek"], "deepseek-flash", Some("max")),
             entry(
                 &["opencode-go", "bailian-coding-plan"],
@@ -103,11 +104,6 @@ fn assert_fast_agent_chain(agent: &str) {
                 None
             ),
             entry(&["opencode-go"], "minimax-m2.7", None),
-            entry(
-                &["anthropic", "github-copilot"],
-                "claude-haiku-4-5",
-                None
-            ),
         ],
         "{agent}"
     );
@@ -259,14 +255,15 @@ fn momus_leads_with_native_gpt_6_astra_xhigh_before_copilot_and_opencode_astra_r
         )
     );
     assert_eq!(
-        chain[4],
+        chain[5],
         entry(
             &["google", "github-copilot", "opencode"],
             "gemini-3.1-pro",
             Some("high")
         )
     );
-    assert_eq!(chain[5], entry(&["opencode-go"], "glm-5.2", None));
+    assert_eq!(chain[4], entry(&["google", "google-vertex", "opencode"], "gemini-4-argon", Some("high")));
+    assert_eq!(chain[6], entry(&["opencode-go"], "glm-5.2", None));
     assert!(!chain.iter().any(|entry| entry.model.starts_with("gpt-5.6-")));
 }
 

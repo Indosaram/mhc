@@ -128,6 +128,8 @@ fn to_ollama_model(host: &str, name: &str, show: &OllamaShowResponse) -> Option<
         return None;
     }
     Some(Model {
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         id: name.to_owned(),
         name: name.to_owned(),
         api: "openai-completions".to_owned(),
@@ -262,7 +264,7 @@ async fn fetch_ollama_models(
     Ok(models)
 }
 
-pub fn ollama_provider(options: Option<OllamaProviderOptions>) -> Arc<dyn Provider> {
+pub fn ollama_provider(options: Option<OllamaProviderOptions>) -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     let options = options.unwrap_or_default();
     let host = normalize_ollama_host(options.base_url.as_deref().unwrap_or(DEFAULT_OLLAMA_CLOUD_URL));
     let fetch = options.fetch.clone().unwrap_or_default();
@@ -289,6 +291,7 @@ pub fn ollama_provider(options: Option<OllamaProviderOptions>) -> Arc<dyn Provid
         fetch_models: Some(fetch_models),
         restore_models: None,
         filter_models: None,
+        images: indexmap::IndexMap::new(),
         api: ProviderApi::Single(builtin_api_streams("openai-completions")),
     })
 }

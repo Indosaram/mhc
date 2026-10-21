@@ -242,7 +242,7 @@ fn memory_for_parent(parent: super::default_extensions::TaskParent, cwd: &Path, 
         coordinator: Some(super::kibitzer_coordinator::create_kibitzer_coordinator(omo_cell.clone())),
         drain_pending_for: recall_ports.drain_pending_for,
         drain_queued: recall_ports.drain_queued,
-    });
+    }).map_err(|error| error.to_string())?;
 
     Ok(OmoSenpiComponent::from_context_register("memory", move |api, omo_runtime| {
         *omo_cell.lock().unwrap_or_else(PoisonError::into_inner) = Some(omo_runtime.clone());
@@ -260,62 +260,18 @@ fn memory_executable_path(executable: std::path::PathBuf) -> std::path::PathBuf 
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::ffi::OsStrExt;
-        if !executable.is_file() {
-            if let Some(original) = executable.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
-                let replacement = Path::new(std::ffi::OsStr::from_bytes(original));
-                if replacement.is_file() {
-                    return replacement.to_path_buf();
-                }
+        if !executable.is_file()
+            && let Some(original) = executable.as_os_str().as_bytes().strip_suffix(b" (deleted)")
+        {
+            let replacement = Path::new(std::ffi::OsStr::from_bytes(original));
+            if replacement.is_file() {
+                return replacement.to_path_buf();
             }
         }
     }
     executable
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod memory_executable_tests {
-    use super::memory_executable_path;
-
-    #[test]
-    fn launches_replacement_when_current_executable_was_deleted() {
-        // Given an installed replacement and the path reported for the old inode.
-        let root = tempfile::tempdir().unwrap();
-        let installed = root.path().join("mhc");
-        std::fs::copy("/bin/sh", &installed).unwrap();
-        let deleted = root.path().join("mhc (deleted)");
-
-        // When a memory child is launched using the resolved executable.
-        let output = std::process::Command::new(memory_executable_path(deleted))
-            .args(["-c", "printf replacement-started"])
-            .output().unwrap();
-
-        // Then it actually starts instead of failing with ENOENT.
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"replacement-started");
-    }
-
-    #[test]
-    fn preserves_existing_executable_with_literal_deleted_suffix() {
-        // Given two real files, including a literal suffix in the executable name.
-        let root = tempfile::tempdir().unwrap();
-        let executable = root.path().join("mhc (deleted)");
-        std::fs::write(&executable, []).unwrap();
-        std::fs::write(root.path().join("mhc"), []).unwrap();
-
-        // When resolving the existing executable, then its name is preserved.
-        assert_eq!(memory_executable_path(executable.clone()), executable);
-    }
-
-    #[test]
-    fn preserves_missing_path_when_no_replacement_exists() {
-        // Given a deleted executable without an installed replacement.
-        let root = tempfile::tempdir().unwrap();
-        let executable = root.path().join("mhc (deleted)");
-
-        // When resolving it, then no nonexistent replacement is substituted.
-        assert_eq!(memory_executable_path(executable.clone()), executable);
-    }
-}
 
 struct MemoryTheme(maho_ext_api::Theme);
 impl maho_omo_memory::worker::entry_renderers::EntryRenderTheme for MemoryTheme {
@@ -433,4 +389,49 @@ pub async fn mount_native_extensions_with_omo(
     let runner = ExtensionRunner::new(loaded.extensions.clone(), loaded.runtime.clone(), loaded.events.clone(), context);
     session.set_extension_runner(runner).await;
     Ok(loaded)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod memory_executable_tests {
+    use super::memory_executable_path;
+
+    #[test]
+    fn launches_replacement_when_current_executable_was_deleted() {
+        // Given an installed replacement and the path reported for the old inode.
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join("mhc");
+        std::fs::copy("/bin/sh", &installed).unwrap();
+        let deleted = root.path().join("mhc (deleted)");
+
+        // When a memory child is launched using the resolved executable.
+        let output = std::process::Command::new(memory_executable_path(deleted))
+            .args(["-c", "printf replacement-started"])
+            .output().unwrap();
+
+        // Then it actually starts instead of failing with ENOENT.
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"replacement-started");
+    }
+
+    #[test]
+    fn preserves_existing_executable_with_literal_deleted_suffix() {
+        // Given two real files, including a literal suffix in the executable name.
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("mhc (deleted)");
+        std::fs::write(&executable, []).unwrap();
+        std::fs::write(root.path().join("mhc"), []).unwrap();
+
+        // When resolving the existing executable, then its name is preserved.
+        assert_eq!(memory_executable_path(executable.clone()), executable);
+    }
+
+    #[test]
+    fn preserves_missing_path_when_no_replacement_exists() {
+        // Given a deleted executable without an installed replacement.
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("mhc (deleted)");
+
+        // When resolving it, then no nonexistent replacement is substituted.
+        assert_eq!(memory_executable_path(executable.clone()), executable);
+    }
 }

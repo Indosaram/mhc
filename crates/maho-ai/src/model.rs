@@ -26,6 +26,11 @@ pub struct Model {
     /// levels use provider defaults. `None` (null) marks any level as unsupported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level_map: Option<ThinkingLevelMap>,
+    /// Prompt-cache lifetime in seconds; absent when provider behavior is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<ModelPromptCache>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_assistant_prefill: Option<bool>,
     pub input: Vec<InputModality>,
     pub cost: ModelCost,
     pub context_window: u64,
@@ -52,6 +57,8 @@ pub struct Model {
 #[serde(rename_all = "camelCase")]
 pub struct ModelInputLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_request_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<ModelImageInputLimits>,
 }
 
@@ -60,15 +67,38 @@ pub struct ModelInputLimits {
 pub struct ModelImageInputLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resize: Option<ModelImageResizeOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_per_message: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_per_request: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelImageResizeOptions {
-    pub max_width: u32,
-    pub max_height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_height: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jpeg_quality: Option<u8>,
+}
+
+/// Prompt-cache TTL seconds by retention tier; `none` has no lifetime.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelPromptCache {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long: Option<u64>,
+}
+
+/// Whether this request can continue a trailing assistant message.
+pub fn model_supports_assistant_prefill(model: &Model, thinking_enabled: bool) -> bool {
+    model.supports_assistant_prefill == Some(true)
+        && !(model.api == "anthropic-messages" && thinking_enabled)
 }
 
 /// The TS `compat` field is typed by `api`; it is kept as its JSON object so unknown keys round-trip,

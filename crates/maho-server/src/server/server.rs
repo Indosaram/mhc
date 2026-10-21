@@ -12,7 +12,9 @@ use crate::{
         messages::{PROTOCOL_VERSION, is_server_id},
     },
 };
-use serde_json::{Value, json};
+use maho_chord::context::{BACKGROUND_CONTEXT, TODO_CONTEXT, with_cancel};
+use maho_chord::types::JsonValue as Value;
+use crate::transport_json as json;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -64,7 +66,15 @@ impl Server {
         max_frame_length: Option<u32>,
         handshake_timeout: Option<Duration>,
     ) -> Result<Arc<Self>, ServerError> {
-        Self::with_options(host, server_id, max_frame_length, handshake_timeout, Vec::new(), None, None)
+        Self::with_options(
+            host,
+            server_id,
+            max_frame_length,
+            handshake_timeout,
+            Vec::new(),
+            None,
+            None,
+        )
     }
     /// Pinned `ServerOptions` construction: the server owns its listener set and error observer
     /// (`listeners`/`onError`), exactly like the pinned `new Server(host, options)`.
@@ -131,8 +141,13 @@ impl Server {
     fn notify_connection_count_changed(&self, count: usize) {
         if let Some(observer) = &self.on_connection_count_changed {
             let observer = Arc::clone(observer);
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(count))).is_err() {
-                self.report_error(&ServerError::new("internal_error", "Connection count observer failed"));
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(count)))
+                .is_err()
+            {
+                self.report_error(&ServerError::new(
+                    "internal_error",
+                    "Connection count observer failed",
+                ));
             }
         }
     }
@@ -146,7 +161,10 @@ impl Server {
         if let Err(encode) = &final_frame {
             self.report_error(&ServerError::new("internal_error", &encode.to_string()));
         }
-        if let Err(close) = connection.close(final_frame.as_ref().ok().map(Vec::as_slice)).await {
+        if let Err(close) = connection
+            .close(final_frame.as_ref().ok().map(Vec::as_slice))
+            .await
+        {
             self.report_error(&close);
         }
     }
@@ -163,14 +181,23 @@ impl Server {
     /// listener and the server state when any listener fails to start.
     pub async fn start(self: &Arc<Self>) -> Result<(), ServerError> {
         if self.closing.load(Ordering::SeqCst) {
-            return Err(ServerError::new("internal_error", "Server is already closed"));
+            return Err(ServerError::new(
+                "internal_error",
+                "Server is already closed",
+            ));
         }
         if self.started.swap(true, Ordering::SeqCst) {
-            return Err(ServerError::new("internal_error", "Server is already started"));
+            return Err(ServerError::new(
+                "internal_error",
+                "Server is already started",
+            ));
         }
         let (shutdown, signal) = watch::channel(false);
         *self.listener_shutdown.lock().await = Some(shutdown);
-        match ServerListeners::new(self.listeners.clone()).start(self.clone(), signal).await {
+        match ServerListeners::new(self.listeners.clone())
+            .start(self.clone(), signal)
+            .await
+        {
             Ok(()) => Ok(()),
             Err(failure) => {
                 // Pinned `startInternal` catch: mark closing, then close the server state; the
@@ -178,7 +205,7 @@ impl Server {
                 self.closing.store(true, Ordering::SeqCst);
                 *self.listener_shutdown.lock().await = None;
                 let mut cleanup_errors = failure.cleanup_errors;
-                if let Err(error) = self.router.close().await {
+                if let Err(error) = self.router.close(BACKGROUND_CONTEXT.clone()).await {
                     cleanup_errors.push(error);
                 }
                 let start_error = failure.error;
@@ -206,7 +233,7 @@ impl Server {
         if let Some(shutdown) = self.listener_shutdown.lock().await.take() {
             shutdown.send_replace(true);
         }
-        let router = self.router.close().await;
+        let router = self.router.close(BACKGROUND_CONTEXT.clone()).await;
         // Close the owned listeners, attempting every one and aggregating failures (pinned
         // `closeInternal`); an empty listener set is a no-op for the `Server::new` callers.
         let listeners = ServerListeners::new(self.listeners.clone()).close().await;
@@ -228,7 +255,10 @@ impl Server {
                 return result;
             }
             if closed.changed().await.is_err() {
-                return Err(ServerError::new("internal_error", "Server closed signal was dropped"));
+                return Err(ServerError::new(
+                    "internal_error",
+                    "Server closed signal was dropped",
+                ));
             }
         }
     }
@@ -314,7 +344,7 @@ impl Server {
                 return Ok(());
             }
         };
-        let hello_error = if hello["type"] != "hello" {
+        let hello_error = if hello["type"].as_str() != Some("hello") {
             Some(ServerError::new(
                 "invalid_request",
                 "The first client message must be hello",
@@ -324,7 +354,7 @@ impl Server {
                 "version",
                 &format!(
                     "Unsupported protocol version {}; expected {PROTOCOL_VERSION}",
-                    hello["version"]
+                    hello["version"].as_u64().map_or_else(|| "invalid".into(), |version| version.to_string())
                 ),
             ))
         } else {
@@ -352,42 +382,60 @@ impl Server {
         let mut attaching = tokio::spawn({
             let host = self.host.clone();
             let presentation: Arc<dyn RoutedServerPresentation> = presentation.clone();
-            async move { host.server_services().attach_client(presentation).await }
+            async move {
+                host.server_services()
+                    .attach_client(presentation, TODO_CONTEXT.clone())
+                    .await
+            }
         });
-        let services = match tokio::time::timeout_at(handshake_deadline, &mut attaching)
-        .await {
-                Err(_elapsed)=>{
-                    // Pinned `finishHandshake`: services resolved after the handshake failed are
-                    // released, never leaked.
-                    self.fail_protocol(&connection,ServerError::new("invalid_request","Handshake timeout")).await;
-                    let server=self.clone();
-                    tokio::spawn(async move {
-                        if let Ok(Ok(services))=attaching.await && let Err(error)=services.release().await {server.report_error(&error);}
-                    });
-                    if let Err(release)=presentation.release_silently().await {self.report_error(&release);}
-                    return Ok(());
-                },
-                Ok(Err(join))=>{
-                    let error=ServerError::new("internal_error",&join.to_string());
-                    self.fail_protocol(&connection,self.to_protocol_error(error.clone())).await;
-                    return Err(error);
-                },
-                Ok(Ok(Ok(services)))=>services,
-                Ok(Ok(Err(error)))=>{
-                    if let Err(release)=presentation.detach_session().await {self.report_error(&ServerError::new("internal_error",&release.message));}
-                    self.fail_protocol(&connection,self.to_protocol_error(error.clone())).await;
-                    return Err(error);
-                },
-            };
-        let active = Arc::new(Mutex::new(
-            BTreeMap::<String, (Value, watch::Sender<bool>)>::new(),
-        ));
-        let encoders = Arc::new(Mutex::new(BTreeMap::<
+        let services = match tokio::time::timeout_at(handshake_deadline, &mut attaching).await {
+            Err(_elapsed) => {
+                // Pinned `finishHandshake`: services resolved after the handshake failed are
+                // released, never leaked.
+                self.fail_protocol(
+                    &connection,
+                    ServerError::new("invalid_request", "Handshake timeout"),
+                )
+                .await;
+                let server = self.clone();
+                tokio::spawn(async move {
+                    if let Ok(Ok(services)) = attaching.await
+                        && let Err(error) = services.release(TODO_CONTEXT.clone()).await
+                    {
+                        server.report_error(&error);
+                    }
+                });
+                if let Err(release) = presentation.release_silently().await {
+                    self.report_error(&release);
+                }
+                return Ok(());
+            }
+            Ok(Err(join)) => {
+                let error = ServerError::new("internal_error", &join.to_string());
+                self.fail_protocol(&connection, self.to_protocol_error(error.clone()))
+                    .await;
+                return Err(error);
+            }
+            Ok(Ok(Ok(services))) => services,
+            Ok(Ok(Err(error))) => {
+                if let Err(release) = presentation.detach_session(TODO_CONTEXT.clone()).await {
+                    self.report_error(&ServerError::new("internal_error", &release.message));
+                }
+                self.fail_protocol(&connection, self.to_protocol_error(error.clone()))
+                    .await;
+                return Err(error);
+            }
+        };
+        let active = Arc::new(Mutex::new(BTreeMap::<
             String,
-            super::state_codec::ServiceStateEncoder,
+            (Value, maho_chord::context::CancelHandle),
+        >::new()));
+        let encoders = Arc::new(Mutex::new(BTreeMap::<
+            maho_chord::types::JsString,
+            crate::client::service_wire::ServiceStateEncoder,
         >::new()));
         let mut requests = JoinSet::new();
-        let subscriptions = Arc::new(Mutex::new(std::collections::BTreeSet::<String>::new()));
+        let subscriptions = Arc::new(Mutex::new(std::collections::BTreeSet::<maho_chord::types::JsString>::new()));
         let mut pending = remaining;
         let result=async {
             match tokio::time::timeout_at(handshake_deadline,send(
@@ -404,25 +452,26 @@ impl Server {
                     match message["type"].as_str() {
                         Some("hello")=>return Ok(Some(ServerError::new("invalid_request","hello may only be sent as the first message"))),
                         Some("cancel")=>{
-                            if message["target"]["serverId"]==self.server_id {
+                            if message["target"]["serverId"].as_str()==Some(self.server_id.as_str()) {
                                 let active=active.lock().await;
-                                if let Some((target,cancel))=active.get(message["id"].as_str().unwrap_or_default()) && target==&message["target"] { cancel.send_replace(true); }
+                                if let Some((target,cancel))=active.get(message["id"].as_str().unwrap_or_default()) && target==&message["target"] { cancel.cancel(); }
                             }
                         },
                         Some("request")=>{
-                            let id=message["id"].as_str().unwrap_or_default().to_owned(); let (cancel,signal)=watch::channel(false);
+                            let id=message["id"].as_str().unwrap_or_default().to_owned(); let (context,cancel)=with_cancel(&TODO_CONTEXT);
                             { let mut active=active.lock().await;
                                 if active.contains_key(&id) { send(&connection,&json!({"type":"response","id":id,"ok":false,"error":{"code":"invalid_request","message":"Request ID is already active"}}),self.max_frame_length).await?; continue; }
                                 active.insert(id.clone(),(message["target"].clone(),cancel));
                             }
-                            let subscribing=(message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="subscribe").then(||message["call"]["args"][0].as_str().unwrap_or_default().to_owned());
+                            let subscribing=match crate::client::service_wire::decode_service_control_call(&message["call"]) { Some(crate::client::service_wire::ServiceControlCall::Subscribe {subscription_id,..})=>Some(subscription_id), _=>None };
                             // Pinned handleRequest order: parse the call and check the target server
                             // before rejecting a duplicate subscription id.
                             let reserved=match &subscribing {
-                                Some(subscription_id) if parse_service_call(&message["call"]).is_ok() && message["target"]["serverId"]==self.server_id => {
+                                Some(subscription_id) if parse_service_call(&message["call"]).is_ok() && message["target"]["serverId"].as_str()==Some(self.server_id.as_str()) => {
                                     if !subscriptions.lock().await.insert(subscription_id.clone()) {
                                         active.lock().await.remove(&id);
-                                        send(&connection,&json!({"type":"response","id":id,"ok":false,"error":{"code":"invalid_request","message":format!("Duplicate service subscription {subscription_id}")}}),self.max_frame_length).await?;
+                                        let label=match subscription_id.as_str() { Some(id)=>id.to_owned(), None=>serde_json::to_string(subscription_id).map_err(|e| ServerError::new("invalid_request",&e.to_string()))? };
+                                        send(&connection,&json!({"type":"response","id":id,"ok":false,"error":{"code":"invalid_request","message":format!("Duplicate service subscription {label}")}}),self.max_frame_length).await?;
                                         continue;
                                     }
                                     Some(subscription_id.clone())
@@ -432,12 +481,12 @@ impl Server {
                             let server=self.clone(); let connection=connection.clone(); let services=services.clone(); let presentation=presentation.clone(); let active=active.clone(); let encoders=encoders.clone();
                             let subscriptions=subscriptions.clone();let disconnect=disconnect.clone();
                             requests.spawn(async move {
-                                let context=Context { cancelled:signal.clone() }; let cancelled=signal;
+                                let cancelled=context.clone();
                                 let publisher_connection=connection.clone(); let max=server.max_frame_length;
-                                let queued=Arc::new(Mutex::new(Some(Vec::<(String,Value)>::new())));
+                                let queued=Arc::new(Mutex::new(Some(Vec::<(maho_chord::types::JsString,Value)>::new())));
                                 let pending=queued.clone();let publishing_encoders=encoders.clone();let subscribing_id=subscribing.clone();
                                 let publisher_errors=server.on_error.clone();let publisher_disconnect=disconnect.clone();
-                                let publish:Publisher=Arc::new(move |subscription_id,update| {
+                                let publish:Publisher=Arc::new(move |subscription_id,update,_context| {
                                     let connection=publisher_connection.clone();let pending=pending.clone();let encoders=publishing_encoders.clone();let subscribing_id=subscribing_id.clone();
                                     let on_error=publisher_errors.clone();let disconnect=publisher_disconnect.clone();
                                     Box::pin(async move {
@@ -453,7 +502,7 @@ impl Server {
                                 });
                                 let invoke=async {
                                     parse_service_call(&message["call"]).map_err(|_| ServerError::new("invalid_request","Invalid service call"))?;
-                                    if message["target"]["serverId"]!=server.server_id { return Err(ServerError::wrong_server()); }
+                                    if message["target"]["serverId"].as_str()!=Some(server.server_id.as_str()) { return Err(ServerError::wrong_server()); }
                                     if message["target"].get("sessionId").is_some() {
                                         let attachment=presentation.attachment.lock().await.clone().filter(|a| a.target==message["target"]).ok_or_else(ServerError::not_attached)?;
                                         attachment.invoke(message["call"].clone(),publish,context).await
@@ -462,31 +511,30 @@ impl Server {
                                 // Pinned `handleCancel` only aborts the context signal: the call
                                 // runs to completion and the host decides how to honor it.
                                 let result=invoke.await;
-                                let result=match result {
-                                    Ok(result) if subscribing.is_some()=>{
-                                        let subscription_id=subscribing.as_ref().expect("subscription branch");
+                                let result=match (result,subscribing.as_ref()) {
+                                    (Ok(result),Some(subscription_id))=>{
                                         let mut codecs=encoders.lock().await;
-                                        if codecs.contains_key(subscription_id) { Err(ServerError::new("invalid_request",&format!("Duplicate service subscription {subscription_id}"))) }
+                                        if codecs.contains_key(subscription_id) { Err(ServerError::new("invalid_request","Duplicate service subscription")) }
                                         else if let Some(snapshot)=result {
-                                            let mut encoder=super::state_codec::ServiceStateEncoder::default();
+                                            let mut encoder=crate::client::service_wire::ServiceStateEncoder::default();
                                             match encoder.snapshot(&snapshot) { Ok(snapshot)=>{ codecs.insert(subscription_id.clone(),encoder);Ok(Some(snapshot)) },Err(error)=>Err(error) }
                                         } else { Err(ServerError::new("invalid_request","Service subscription did not return a snapshot")) }
                                     },
-                                    result=>result,
+                                    (result,_)=>result,
                                 };
                                 let response=match result {
                                     Ok(Some(result))=>json!({"type":"response","id":id,"ok":true,"result":result}),
                                     Ok(None)=>json!({"type":"response","id":id,"ok":true}),
                                     Err(error)=>{
-                                        let error=if *cancelled.borrow() {ServerError::new("cancelled","RPC request cancelled")} else {server.to_protocol_error(error)};
+                                        let error=if cancelled.abort_signal().is_some_and(|signal|signal.aborted()) {ServerError::new("cancelled","RPC request cancelled")} else {server.to_protocol_error(error)};
                                         json!({"type":"response","id":id,"ok":false,"error":{"code":error.code,"message":error.message}})
                                     },
                                 };
-                                if response["ok"]!=true && let Some(subscription_id)=&reserved {subscriptions.lock().await.remove(subscription_id);}
+                                if response["ok"]!=Value::Bool(true) && let Some(subscription_id)=&reserved {subscriptions.lock().await.remove(subscription_id);}
                                 let sent:Result<(),ServerError>=async {
                                     if !send_message(server.on_error.as_ref(),&connection,&response,max,&disconnect).await { return Ok(()); }
-                                    if response["ok"]==true {
-                                        if message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="unsubscribe" { let subscription_id=message["call"]["args"][0].as_str().unwrap_or_default(); encoders.lock().await.remove(subscription_id); subscriptions.lock().await.remove(subscription_id); }
+                                    if response["ok"]==Value::Bool(true) {
+                                        if let Some(crate::client::service_wire::ServiceControlCall::Unsubscribe { subscription_id })=crate::client::service_wire::decode_service_control_call(&message["call"]) { encoders.lock().await.remove(&subscription_id); subscriptions.lock().await.remove(&subscription_id); }
                                         let mut pending=queued.lock().await;
                                         if let Some(updates)=pending.take() { for (subscription_id,update) in updates {
                                             let mut codecs=encoders.lock().await;let Some(codec)=codecs.get_mut(&subscription_id) else { continue; };
@@ -530,19 +578,25 @@ impl Server {
         // response or publish from an in-flight call to a departed peer is dropped silently.
         disconnect.send_replace(true);
         for (_, (_, cancel)) in active.lock().await.iter() {
-            cancel.send_replace(true);
+            cancel.cancel();
         }
         while let Some(request) = requests.join_next().await {
             match request {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => self.report_error(&error),
-                Err(error) => self.report_error(&ServerError::new("internal_error", &error.to_string())),
+                Err(error) => {
+                    self.report_error(&ServerError::new("internal_error", &error.to_string()))
+                }
             }
         }
         // Pinned `disconnect` releases with publish=false: never write to a departing peer.
         let release = presentation.release_silently().await;
-        let release_services = services.release().await;
-        let close = if closed { Ok(()) } else { connection.close(None).await };
+        let release_services = services.release(TODO_CONTEXT.clone()).await;
+        let close = if closed {
+            Ok(())
+        } else {
+            connection.close(None).await
+        };
         result.and(release).and(release_services).and(close)
     }
 }
@@ -616,36 +670,49 @@ impl Presentation {
     async fn release_silently(&self) -> Result<(), ServerError> {
         let previous = self.attachment.lock().await.take();
         match previous {
-            Some(previous) => previous.release().await,
+            Some(previous) => previous.release(TODO_CONTEXT.clone()).await,
             None => Ok(()),
         }
     }
     /// Pinned `clearAttachment` with publish=true for router-initiated releases: forget the
     /// attachment if it is still current, then tell the client unless it already disconnected.
-    async fn publish_detached(&self, detached: &std::sync::Weak<Attachment>) -> Result<(), ServerError> {
+    async fn publish_detached(
+        &self,
+        detached: &std::sync::Weak<Attachment>,
+    ) -> Result<(), ServerError> {
         let mut current = self.attachment.lock().await;
-        if current.as_ref().is_none_or(|attachment| Arc::as_ptr(attachment) != detached.as_ptr()) {
+        if current
+            .as_ref()
+            .is_none_or(|attachment| Arc::as_ptr(attachment) != detached.as_ptr())
+        {
             return Ok(());
         }
         current.take();
-        send_message(self.on_error.as_ref(), &self.connection, &json!({"type":"attachment","attachment":null}), self.max, &self.disconnect).await;
+        send_message(
+            self.on_error.as_ref(),
+            &self.connection,
+            &json!({"type":"attachment","attachment":null}),
+            self.max,
+            &self.disconnect,
+        )
+        .await;
         Ok(())
     }
 }
 impl RoutedServerPresentation for Presentation {
-    fn attach_session<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()> {
+    fn attach_session<'a>(&'a self, session_id: &'a str, context: Context) -> ServerFuture<'a, ()> {
         Box::pin(async move {
             let mut current = self.attachment.lock().await;
             if current
                 .as_ref()
-                .is_some_and(|a| a.target["sessionId"] == session_id)
+                .is_some_and(|a| a.target["sessionId"].as_str() == Some(session_id))
             {
                 return Ok(());
             }
-            let attachment = self.router.attach(session_id).await?;
+            let attachment = self.router.attach(session_id, context.clone()).await?;
             let presentation = self.this.clone();
             let detached = Arc::downgrade(&attachment);
-            attachment.set_detach_notifier(Arc::new(move || {
+            attachment.set_detach_notifier(Arc::new(move |_context| {
                 let presentation = presentation.clone();
                 let detached = detached.clone();
                 Box::pin(async move {
@@ -659,7 +726,7 @@ impl RoutedServerPresentation for Presentation {
             // failed release or publish leaves the lease owned and released at disconnect.
             let target = attachment.target.clone();
             if let Some(previous) = current.replace(attachment) {
-                previous.release().await?;
+                previous.release(context).await?;
             }
             send_message(
                 self.on_error.as_ref(),
@@ -672,7 +739,7 @@ impl RoutedServerPresentation for Presentation {
             Ok(())
         })
     }
-    fn detach_session(&self) -> ServerFuture<'_, ()> {
+    fn detach_session(&self, context: Context) -> ServerFuture<'_, ()> {
         Box::pin(async move {
             let mut current = self.attachment.lock().await;
             // Pinned `releaseAttachment`: `attachment:null` is published in `finally`, even
@@ -680,7 +747,7 @@ impl RoutedServerPresentation for Presentation {
             let Some(previous) = current.take() else {
                 return Ok(());
             };
-            let released = previous.release().await;
+            let released = previous.release(context).await;
             send_message(
                 self.on_error.as_ref(),
                 &self.connection,
@@ -692,11 +759,15 @@ impl RoutedServerPresentation for Presentation {
             released
         })
     }
-    fn prepare_session_removal<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()> {
+    fn prepare_session_removal<'a>(
+        &'a self,
+        session_id: &'a str,
+        context: Context,
+    ) -> ServerFuture<'a, ()> {
         Box::pin(async move {
             // Pinned `removeSession` releases only that session's attachments; the router
             // publishes `attachment:null` to each owning client it detaches.
-            self.router.remove(session_id).await
+            self.router.remove(session_id, context).await
         })
     }
 }
@@ -707,15 +778,37 @@ mod tests {
 
     #[test]
     fn observers_receive_reports_and_a_panicking_observer_cannot_escape() {
-        let errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let errors: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = Arc::clone(&errors);
         let host: Arc<dyn ServerHost> = Arc::new(crate::server::testing::TestServerHost::default());
-        let server = Server::with_options(Arc::clone(&host), "00000000-0000-4000-8000-000000000001".into(), None, None, Vec::new(),
-            Some(Arc::new(move |error: ServerError| captured.lock().expect("errors").push(error.message))), None).expect("server");
+        let server = Server::with_options(
+            Arc::clone(&host),
+            "00000000-0000-4000-8000-000000000001".into(),
+            None,
+            None,
+            Vec::new(),
+            Some(Arc::new(move |error: ServerError| {
+                captured.lock().expect("errors").push(error.message)
+            })),
+            None,
+        )
+        .expect("server");
         server.report_error(&ServerError::new("internal_error", "boom"));
-        assert_eq!(errors.lock().expect("errors").as_slice(), ["boom".to_string()]);
-        let panicking = Server::with_options(host, "00000000-0000-4000-8000-000000000002".into(), None, None, Vec::new(),
-            Some(Arc::new(|_: ServerError| panic!("observer failure"))), None).expect("server");
+        assert_eq!(
+            errors.lock().expect("errors").as_slice(),
+            ["boom".to_string()]
+        );
+        let panicking = Server::with_options(
+            host,
+            "00000000-0000-4000-8000-000000000002".into(),
+            None,
+            None,
+            Vec::new(),
+            Some(Arc::new(|_: ServerError| panic!("observer failure"))),
+            None,
+        )
+        .expect("server");
         panicking.report_error(&ServerError::new("internal_error", "ignored"));
     }
 }

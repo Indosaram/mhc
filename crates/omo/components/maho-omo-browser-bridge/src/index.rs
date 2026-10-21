@@ -38,6 +38,7 @@ fn reply_agent_result(details: JsonValue) -> AgentToolResult {
         details,
         structured_content: None,
         usage: None,
+        nested_calls: None,
         added_tool_names: None,
         terminate: None,
         is_error: None,

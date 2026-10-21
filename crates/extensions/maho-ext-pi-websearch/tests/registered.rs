@@ -20,7 +20,7 @@ impl ModelRegistry for ScopedRegistry {
     fn get_api_key_and_headers<'a>(&'a self,model:&'a Model)->ExtensionFuture<'a,ResolvedRequestAuth>{Box::pin(async move{
         self.calls.lock().expect("calls").push(model.clone());
         if self.fail{return Err(ExtensionFailure::new("fixture model failure"));}
-        Ok(ResolvedRequestAuth{auth:maho_ai::models::ProviderAuthResult{api_key:Some("fixture scoped key".into()),headers:Some([("keep".into(),Some("fixture".into())),("delete".into(),None)].into()),base_url:None},extra_body:None,upstream_model_id:None,service_tier:None,env:None})
+        Ok(ResolvedRequestAuth{ambient:false,auth:maho_ai::models::ProviderAuthResult{api_key:Some("fixture scoped key".into()),headers:Some([("keep".into(),Some("fixture".into())),("delete".into(),None)].into()),base_url:None},extra_body:None,upstream_model_id:None,service_tier:None,env:None})
     })}
 }
 #[tokio::test]

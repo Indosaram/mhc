@@ -2,35 +2,44 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::api::constrained_sampling::create_grammar_tool_input_properties;
 use crate::api::openai_prompt_cache::clamp_openai_prompt_cache_key;
 use crate::api::openai_responses_shared::{
-    convert_responses_messages, convert_responses_tools, get_done_reason, process_responses_stream,
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ResponsesStreamOptions,
+    convert_responses_messages, convert_responses_tools, get_done_reason, process_responses_stream,
 };
 use crate::api::simple_options::build_base_options;
 use crate::models::{clamp_thinking_level, supports_max};
 use crate::types::{
-    AssistantMessage, AssistantMessageEvent, CacheRetention, Context, ErrorReason, Model, ModelThinkingLevel,
-    ProviderHeaders, ProviderResponse, SimpleStreamOptions, StopReason, StreamOptions, ThinkingLevel, Usage,
+    AssistantMessage, AssistantMessageEvent, CacheRetention, Context, ErrorReason, Model,
+    ModelThinkingLevel, ProviderHeaders, ProviderResponse, SimpleStreamOptions, StopReason,
+    StreamOptions, ThinkingLevel, Usage,
 };
-use crate::utils::error_body::{format_provider_error, normalize_provider_error, SdkErrorShape, ThrownProviderError};
-use crate::utils::event_stream::{create_assistant_message_event_stream, AssistantMessageEventStream};
+use crate::utils::error_body::{
+    SdkErrorShape, ThrownProviderError, format_provider_error, normalize_provider_error,
+};
+use crate::utils::event_stream::{
+    AssistantMessageEventStream, create_assistant_message_event_stream,
+};
 use crate::utils::headers::headers_to_record;
 use crate::utils::lazy::error_stream;
 use crate::utils::pi_user_agent::get_pi_user_agent;
 use crate::utils::provider_env::get_provider_env_value;
 use crate::utils::provider_retry::{
-    retry_provider_request, ProviderRetryError, ProviderRetryOptions,
+    ProviderRetryError, ProviderRetryOptions, retry_provider_request,
 };
 
 use super::openai_responses::ResponsesApiError;
 
 pub const DEFAULT_AZURE_API_VERSION: &str = "v1";
-pub const AZURE_TOOL_CALL_PROVIDERS: [&str; 4] =
-    ["openai", "chatgpt-subscription", "opencode", "azure-openai-responses"];
+pub const AZURE_TOOL_CALL_PROVIDERS: [&str; 4] = [
+    "openai",
+    "chatgpt-subscription",
+    "opencode",
+    "azure-openai-responses",
+];
 pub const AZURE_OPENAI_RESPONSES_MIN_OUTPUT_TOKENS: u64 = 16;
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 
@@ -49,7 +58,10 @@ pub fn parse_deployment_name_map(value: Option<&str>) -> BTreeMap<String, String
         if model_id.trim().is_empty() || deployment_name.trim().is_empty() {
             continue;
         }
-        map.insert(model_id.trim().to_owned(), deployment_name.trim().to_owned());
+        map.insert(
+            model_id.trim().to_owned(),
+            deployment_name.trim().to_owned(),
+        );
     }
     map
 }
@@ -60,7 +72,11 @@ pub fn resolve_deployment_name(model: &Model, options: &StreamOptions) -> String
         return deployment_name;
     }
     let mapped = parse_deployment_name_map(
-        get_provider_env_value("AZURE_OPENAI_DEPLOYMENT_NAME_MAP", options.request.env.as_ref()).as_deref(),
+        get_provider_env_value(
+            "AZURE_OPENAI_DEPLOYMENT_NAME_MAP",
+            options.request.env.as_ref(),
+        )
+        .as_deref(),
     )
     .get(&model.id)
     .cloned();
@@ -88,17 +104,27 @@ fn reasoning_summary(options: &StreamOptions) -> Option<Option<String>> {
 /// `formatAzureOpenAIError`.
 pub fn format_azure_openai_error(error: &ResponsesApiError) -> String {
     let thrown = match error {
-        ResponsesApiError::Http { status_code, body } => ThrownProviderError::Error(Box::new(SdkErrorShape {
+        ResponsesApiError::Http { status_code, body }
+        | ResponsesApiError::HttpWithHeaders {
+            status_code, body, ..
+        } => ThrownProviderError::Error(Box::new(SdkErrorShape {
             message: error.to_string(),
             status_code: Some(json!(status_code)),
             body: (!body.trim().is_empty()).then(|| json!(body)),
             ..SdkErrorShape::default()
         })),
-        ResponsesApiError::Message(message) => {
-            ThrownProviderError::Error(Box::new(SdkErrorShape { message: message.clone(), ..SdkErrorShape::default() }))
+        ResponsesApiError::Message(_) | ResponsesApiError::WebSocketClose(_)
+        | ResponsesApiError::Provider { .. } => {
+            ThrownProviderError::Error(Box::new(SdkErrorShape {
+                message: error.to_string(),
+                ..SdkErrorShape::default()
+            }))
         }
     };
-    format_provider_error(&normalize_provider_error(&thrown), Some("Azure OpenAI API error"))
+    format_provider_error(
+        &normalize_provider_error(&thrown),
+        Some("Azure OpenAI API error"),
+    )
 }
 
 /// `normalizeAzureBaseUrl`.
@@ -112,7 +138,10 @@ pub fn normalize_azure_base_url(base_url: &str) -> Result<String, String> {
         || host.ends_with(".ai.azure.com");
     let normalized_path = url.path().trim_end_matches('/').to_owned();
     if is_azure_host
-        && matches!(normalized_path.as_str(), "" | "/" | "/openai" | "/openai/v1/responses")
+        && matches!(
+            normalized_path.as_str(),
+            "" | "/" | "/openai" | "/openai/v1/responses"
+        )
     {
         url.set_path("/openai/v1");
         url.set_query(None);
@@ -185,13 +214,18 @@ pub fn build_azure_headers(
             }
         }
     }
-    if !headers.keys().any(|name| name.eq_ignore_ascii_case("api-key")) {
+    if !headers
+        .keys()
+        .any(|name| name.eq_ignore_ascii_case("api-key"))
+    {
         headers.insert("api-key".into(), Some(api_key.to_owned()));
     }
 
     let mut header_map = reqwest::header::HeaderMap::new();
     for (name, value) in headers {
-        let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) else { continue };
+        let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) else {
+            continue;
+        };
         match value {
             Some(value) => {
                 if let Ok(value) = reqwest::header::HeaderValue::from_str(&value) {
@@ -203,7 +237,10 @@ pub fn build_azure_headers(
             }
         }
     }
-    header_map.insert(reqwest::header::CONTENT_TYPE, reqwest::header::HeaderValue::from_static("application/json"));
+    header_map.insert(
+        reqwest::header::CONTENT_TYPE,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
     header_map
 }
 
@@ -215,6 +252,8 @@ pub fn build_params(
     deployment_name: &str,
     grammar_tool_input_properties: &BTreeMap<String, String>,
 ) -> Result<Map<String, Value>, String> {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let reasoning_summary = reasoning_summary(options);
     let summary_is_truthy = matches!(&reasoning_summary, Some(Some(value)) if !value.is_empty());
     let requested_reasoning_effort = option_str(options, "reasoningEffort")
@@ -223,7 +262,11 @@ pub fn build_params(
     let mapped_reasoning_effort: Option<Option<String>> = requested_reasoning_effort
         .as_deref()
         .and_then(ModelThinkingLevel::parse)
-        .and_then(|level| thinking_level_map.as_ref().and_then(|map| map.get(&level).cloned()));
+        .and_then(|level| {
+            thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get(&level).cloned())
+        });
     let reasoning_effort = match mapped_reasoning_effort.clone() {
         Some(value) => value,
         None => requested_reasoning_effort.clone(),
@@ -234,7 +277,10 @@ pub fn build_params(
     let messages = convert_responses_messages(
         model,
         context,
-        &AZURE_TOOL_CALL_PROVIDERS.iter().map(|provider| (*provider).to_owned()).collect::<BTreeSet<String>>(),
+        &AZURE_TOOL_CALL_PROVIDERS
+            .iter()
+            .map(|provider| (*provider).to_owned())
+            .collect::<BTreeSet<String>>(),
         &ConvertResponsesMessagesOptions {
             grammar_tool_input_properties: grammar_tool_input_properties.clone(),
             ..ConvertResponsesMessagesOptions::default()
@@ -253,18 +299,31 @@ pub fn build_params(
     params.insert("store".into(), json!(false));
 
     if let Some(max_tokens) = options.max_tokens {
-        params.insert("max_output_tokens".into(), json!(max_tokens.max(AZURE_OPENAI_RESPONSES_MIN_OUTPUT_TOKENS)));
+        params.insert(
+            "max_output_tokens".into(),
+            json!(max_tokens.max(AZURE_OPENAI_RESPONSES_MIN_OUTPUT_TOKENS)),
+        );
     }
     if let Some(temperature) = options.temperature {
         params.insert("temperature".into(), json!(temperature));
     }
-    if context.tools.as_ref().is_some_and(|tools| !tools.is_empty()) {
-        let compat = model.compat.as_ref().map(|compat| compat.openai_responses()).unwrap_or_default();
+    if context
+        .tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+    {
+        let compat = model
+            .compat
+            .as_ref()
+            .map(|compat| compat.openai_responses())
+            .unwrap_or_default();
         let tools = convert_responses_tools(
             context.tools.as_deref().unwrap_or_default(),
             &ConvertResponsesToolsOptions {
                 supports_strict_mode: Some(compat.supports_strict_mode.unwrap_or(true)),
-                supports_openai_grammar_tools: Some(compat.supports_openai_grammar_tools.unwrap_or(false)),
+                supports_openai_grammar_tools: Some(
+                    compat.supports_openai_grammar_tools.unwrap_or(false),
+                ),
                 ..ConvertResponsesToolsOptions::default()
             },
         )?;
@@ -277,7 +336,10 @@ pub fn build_params(
     if model.reasoning {
         if reasoning_requested {
             let mut reasoning = Map::new();
-            reasoning.insert("effort".into(), json!(reasoning_effort.clone().unwrap_or_default()));
+            reasoning.insert(
+                "effort".into(),
+                json!(reasoning_effort.clone().unwrap_or_default()),
+            );
             if !matches!(reasoning_summary, Some(None)) {
                 let summary = reasoning_summary
                     .clone()
@@ -289,7 +351,12 @@ pub fn build_params(
             params.insert("reasoning".into(), Value::Object(reasoning));
             params.insert("include".into(), json!(["reasoning.encrypted_content"]));
         } else if !reasoning_unavailable
-            && !matches!(thinking_level_map.as_ref().and_then(|map| map.get(&ModelThinkingLevel::Off)), Some(None))
+            && !matches!(
+                thinking_level_map
+                    .as_ref()
+                    .and_then(|map| map.get(&ModelThinkingLevel::Off)),
+                Some(None)
+            )
         {
             let off = thinking_level_map
                 .as_ref()
@@ -310,6 +377,9 @@ pub fn build_params(
 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        prompt_cache_diagnostics: None,
+        thinking_level: None,
+        provider_diagnostic: None,
         content: Vec::new(),
         api: String::from("azure-openai-responses"),
         provider: model.provider.clone(),
@@ -323,6 +393,7 @@ fn create_output(model: &Model) -> AssistantMessage {
         stop_details: None,
         deferred: None,
         error_message: None,
+        error_cause: None,
         abort_source: None,
         raw_stop_reason: None,
         end_turn: None,
@@ -331,7 +402,13 @@ fn create_output(model: &Model) -> AssistantMessage {
 }
 
 /// `stream`.
-pub fn stream(model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+pub fn stream(
+    model: &Model,
+    context: &Context,
+    options: Option<StreamOptions>,
+) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let stream = create_assistant_message_event_stream();
     let model = model.clone();
     let context = context.clone();
@@ -343,17 +420,34 @@ pub fn stream(model: &Model, context: &Context, options: Option<StreamOptions>) 
     stream
 }
 
-async fn run_stream(model: Model, context: Context, options: StreamOptions, sink: AssistantMessageEventStream) {
+async fn run_stream(
+    model: Model,
+    context: Context,
+    options: StreamOptions,
+    sink: AssistantMessageEventStream,
+) {
     let mut output = create_output(&model);
     if let Err(error) = drive(&model, &context, &options, &mut output, &sink).await {
-        output.stop_reason = if options.request.signal.as_ref().is_some_and(|signal| signal.aborted()) {
+        output.stop_reason = if options
+            .request
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.aborted())
+        {
             StopReason::Aborted
         } else {
             StopReason::Error
         };
         output.error_message = Some(format_azure_openai_error(&error));
+        if output.stop_reason != StopReason::Aborted {
+            super::openai_responses::apply_responses_failure(&mut output, &error);
+        }
         sink.push(AssistantMessageEvent::Error {
-            reason: if output.stop_reason == StopReason::Aborted { ErrorReason::Aborted } else { ErrorReason::Error },
+            reason: if output.stop_reason == StopReason::Aborted {
+                ErrorReason::Aborted
+            } else {
+                ErrorReason::Error
+            },
             error: output.clone(),
         });
         sink.end(None);
@@ -367,27 +461,54 @@ async fn drive(
     output: &mut AssistantMessage,
     sink: &AssistantMessageEventStream,
 ) -> Result<(), ResponsesApiError> {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let deployment_name = resolve_deployment_name(model, options);
-    let Some(api_key) = options.request.api_key.clone().filter(|key| !key.is_empty()) else {
-        return Err(ResponsesApiError::Message(format!("No API key for provider: {}", model.provider)));
+    let Some(api_key) = options
+        .request
+        .api_key
+        .clone()
+        .filter(|key| !key.is_empty())
+    else {
+        return Err(ResponsesApiError::Message(format!(
+            "No API key for provider: {}",
+            model.provider
+        )));
     };
-    let compat = model.compat.as_ref().map(|compat| compat.openai_responses()).unwrap_or_default();
+    let compat = model
+        .compat
+        .as_ref()
+        .map(|compat| compat.openai_responses())
+        .unwrap_or_default();
     let grammar_tool_input_properties = create_grammar_tool_input_properties(
         context.tools.as_deref(),
         compat.supports_openai_grammar_tools.unwrap_or(false),
     )
     .map_err(ResponsesApiError::Message)?;
 
-    let mut params = build_params(model, context, options, &deployment_name, &grammar_tool_input_properties)
-        .map_err(ResponsesApiError::Message)?;
-    if let Some(next) = options.request.apply_payload_hook(&Value::Object(params.clone()), model, None)
-        .await.map_err(ResponsesApiError::Message)?
+    let mut params = build_params(
+        model,
+        context,
+        options,
+        &deployment_name,
+        &grammar_tool_input_properties,
+    )
+    .map_err(ResponsesApiError::Message)?;
+    if let Some(next) = options
+        .request
+        .apply_payload_hook(&Value::Object(params.clone()), model, None)
+        .await
+        .map_err(ResponsesApiError::Message)?
     {
         params = next.as_object().cloned().unwrap_or_default();
     }
 
-    let (base_url, api_version) = resolve_azure_config(model, options).map_err(ResponsesApiError::Message)?;
-    let url = format!("{}/responses?api-version={api_version}", base_url.trim_end_matches('/'));
+    let (base_url, api_version) =
+        resolve_azure_config(model, options).map_err(ResponsesApiError::Message)?;
+    let url = format!(
+        "{}/responses?api-version={api_version}",
+        base_url.trim_end_matches('/')
+    );
     let headers = build_azure_headers(model, &api_key, options.request.headers.as_ref());
     let client = options.request.fetch.clone().unwrap_or_default();
     let body = Value::Object(params).to_string();
@@ -410,7 +531,7 @@ async fn drive(
             )
             .await
             .map_err(|_| ResponsesApiError::Message(String::from("Request was aborted")))?
-            .map_err(|error| ResponsesApiError::Message(error.to_string()))?;
+            .map_err(super::openai_responses::responses_transport_error)?;
             if !response.status().is_success() {
                 let status_code = response.status().as_u16();
                 let body = response.text().await.unwrap_or_default();
@@ -428,32 +549,54 @@ async fn drive(
     let response = match retry_provider_request(attempt, &retry_options).await {
         Ok(response) => response,
         Err(ProviderRetryError::Request(error)) => return Err(error),
-        Err(ProviderRetryError::RetryDelay { message, .. }) => return Err(ResponsesApiError::Message(message)),
-        Err(ProviderRetryError::Aborted) => return Err(ResponsesApiError::Message(String::from("Request was aborted"))),
+        Err(ProviderRetryError::RetryDelay { message, .. }) => {
+            return Err(ResponsesApiError::Message(message));
+        }
+        Err(ProviderRetryError::Aborted) => {
+            return Err(ResponsesApiError::Message(String::from(
+                "Request was aborted",
+            )));
+        }
     };
 
-    options.request.apply_response_hook(
-            &ProviderResponse { status: response.status().as_u16(), headers: headers_to_record(response.headers()) },
+    options
+        .request
+        .apply_response_hook(
+            &ProviderResponse {
+                status: response.status().as_u16(),
+                headers: headers_to_record(response.headers()),
+            },
             model,
-        ).await.map_err(ResponsesApiError::Message)?;
-    sink.push(AssistantMessageEvent::Start { partial: output.clone() });
+        )
+        .await
+        .map_err(ResponsesApiError::Message)?;
+    sink.push(AssistantMessageEvent::Start {
+        partial: output.clone(),
+    });
 
+    let provenance: super::openai_responses::ResponsesFailureSlot = std::sync::Arc::default();
+    let observer = super::openai_responses::observe_responses_events(options, provenance.clone());
     process_responses_stream(
-        Box::pin(response.bytes_stream()),
+        super::openai_responses::observe_responses_transport(Box::pin(response.bytes_stream()), provenance.clone()),
         output,
         sink,
         model,
         &ResponsesStreamOptions {
+            on_provider_stream_event: Some(&observer),
+            async_on_provider_stream_event: options.async_on_provider_stream_event.as_ref(),
             service_tier: None,
             grammar_tool_input_properties: &grammar_tool_input_properties,
             apply_service_tier_pricing: None,
+            ..ResponsesStreamOptions::default()
         },
     )
     .await
-    .map_err(|error| ResponsesApiError::Message(error.message))?;
+    .map_err(|error| super::openai_responses::responses_stream_error(error.message, &provenance))?;
 
     if signal.as_ref().is_some_and(|signal| signal.aborted()) {
-        return Err(ResponsesApiError::Message(String::from("Request was aborted")));
+        return Err(ResponsesApiError::Message(String::from(
+            "Request was aborted",
+        )));
     }
     if output.stop_reason == StopReason::Pending {
         return Err(ResponsesApiError::Message(String::from(
@@ -462,10 +605,16 @@ async fn drive(
     }
     if output.stop_reason == StopReason::Aborted || output.stop_reason == StopReason::Error {
         return Err(ResponsesApiError::Message(
-            output.error_message.clone().unwrap_or_else(|| String::from("An unknown error occurred")),
+            output
+                .error_message
+                .clone()
+                .unwrap_or_else(|| String::from("An unknown error occurred")),
         ));
     }
-    sink.push(AssistantMessageEvent::Done { reason: get_done_reason(output.stop_reason), message: output.clone() });
+    sink.push(AssistantMessageEvent::Done {
+        reason: get_done_reason(output.stop_reason),
+        message: output.clone(),
+    });
     sink.end(None);
     Ok(())
 }
@@ -476,18 +625,35 @@ pub fn stream_simple(
     context: &Context,
     options: Option<SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let simple = options.unwrap_or_default();
-    let Some(api_key) = simple.stream.request.api_key.clone().filter(|key| !key.is_empty()) else {
-        return error_stream(model, &format!("No API key for provider: {}", model.provider));
+    let Some(api_key) = simple
+        .stream
+        .request
+        .api_key
+        .clone()
+        .filter(|key| !key.is_empty())
+    else {
+        return error_stream(
+            model,
+            &format!("No API key for provider: {}", model.provider),
+        );
     };
-    let mut stream_options = match build_base_options(model, context, Some(&simple), Some(&api_key)) {
+    let mut stream_options = match build_base_options(model, context, Some(&simple), Some(&api_key))
+    {
         Ok(stream_options) => stream_options,
         Err(error) => return error_stream(model, &error.to_string()),
     };
     if let Some(tool_choice) = simple.tool_choice {
-        stream_options.extra.insert("toolChoice".into(), serde_json::to_value(tool_choice).unwrap_or(Value::Null));
+        stream_options.extra.insert(
+            "toolChoice".into(),
+            serde_json::to_value(tool_choice).unwrap_or(Value::Null),
+        );
     }
-    let clamped_reasoning = simple.reasoning.map(|reasoning| clamp_thinking_level(model, reasoning.into()));
+    let clamped_reasoning = simple
+        .reasoning
+        .map(|reasoning| clamp_thinking_level(model, reasoning.into()));
     let reasoning_effort = match clamped_reasoning {
         None | Some(ModelThinkingLevel::Off) => None,
         Some(ModelThinkingLevel::Max) if supports_max(model) => Some(String::from("max")),
@@ -506,7 +672,30 @@ pub fn stream_simple(
         }
     };
     if let Some(reasoning_effort) = reasoning_effort {
-        stream_options.extra.insert("reasoningEffort".into(), json!(reasoning_effort));
+        stream_options
+            .extra
+            .insert("reasoningEffort".into(), json!(reasoning_effort));
     }
     stream(model, context, Some(stream_options))
+}
+
+#[cfg(test)]
+mod source_contract_tests {
+    use super::*;
+
+    #[test]
+    fn azure_error_projection_keeps_structured_code() {
+        // Given an HTTP error whose status alone does not imply quota.
+        let model = crate::models_generated::get_builtin_provider_models("openai").expect("models")[0].clone();
+        let mut output = create_output(&model);
+        let error = ResponsesApiError::Http {
+            status_code: 429,
+            body: r#"{"error":{"code":"insufficient_quota"}}"#.to_owned(),
+        };
+        // When applying the same projection used by the Azure terminal path.
+        super::super::openai_responses::apply_responses_failure(&mut output, &error);
+        // Then the code is preserved instead of being downgraded to status-only evidence.
+        assert_eq!(output.provider_diagnostic.expect("diagnostic").code.as_deref(), Some("insufficient_quota"));
+        assert!(output.error_cause.is_none());
+    }
 }

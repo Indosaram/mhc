@@ -8,34 +8,45 @@
 mod anthropic_common;
 mod support;
 
-use anthropic_common::{harness_haiku, CaptureServer};
+use anthropic_common::{CaptureServer, harness_haiku};
 use maho_ai::api::anthropic_messages;
 use maho_ai::types::{
-    AssistantMessageEvent, Context, InputModality, Message, Model, ModelCost, StreamOptions, UserContent, UserMessage,
+    AssistantMessageEvent, Context, InputModality, Message, Model, ModelCost, StreamOptions,
+    UserContent, UserMessage,
 };
-use maho_ai::utils::retry_profile::failure::{normalize_anthropic_retry_failure, RetryErrorShape};
+use maho_ai::utils::retry_profile::failure::{RetryErrorShape, normalize_anthropic_retry_failure};
 use maho_ai::utils::retry_profile::types::RetryFailureKind;
 use serde_json::Value;
 use std::path::PathBuf;
 use support::mock_server::{Fixture, MockFixtureServer};
 
 fn case_path(case: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/golden/cases").join(format!("{case}.json"))
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tools/golden/cases")
+        .join(format!("{case}.json"))
 }
 
 fn load_case(case: &str) -> Value {
     let path = case_path(case);
-    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}")))
-        .expect("replay case JSON")
+    serde_json::from_str(
+        &std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}")),
+    )
+    .expect("replay case JSON")
 }
 
 fn sse_fixture_bytes(spec: &Value) -> Vec<u8> {
     let mut body = String::new();
-    for event in spec["fixture"]["events"].as_array().expect("fixture.events") {
+    for event in spec["fixture"]["events"]
+        .as_array()
+        .expect("fixture.events")
+    {
         if let Some(name) = event["event"].as_str() {
             body.push_str(&format!("event: {name}\n"));
         }
-        body.push_str(&format!("data: {}\n\n", event["data"].as_str().expect("fixture event data")));
+        body.push_str(&format!(
+            "data: {}\n\n",
+            event["data"].as_str().expect("fixture event data")
+        ));
     }
     body.into_bytes()
 }
@@ -48,11 +59,16 @@ fn case_model(spec: &Value, base_url: &str) -> Model {
         id: model["id"].as_str().unwrap_or_default().to_owned(),
         name: model["name"].as_str().unwrap_or_default().to_owned(),
         api: spec["api"].as_str().expect("case api").to_owned(),
-        provider: model["provider"].as_str().expect("case model provider").to_owned(),
+        provider: model["provider"]
+            .as_str()
+            .expect("case model provider")
+            .to_owned(),
         base_url: base_url.to_owned(),
         reasoning: model["reasoning"].as_bool().unwrap_or(false),
         default_thinking_level: None,
         thinking_level_map: None,
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         input: model["input"]
             .as_array()
             .map(|modalities| {
@@ -67,6 +83,7 @@ fn case_model(spec: &Value, base_url: &str) -> Model {
             })
             .unwrap_or_default(),
         cost: ModelCost {
+            effective_rates: None,
             input: model["cost"]["input"].as_f64().unwrap_or_default(),
             output: model["cost"]["output"].as_f64().unwrap_or_default(),
             cache_read: model["cost"]["cacheRead"].as_f64().unwrap_or_default(),
@@ -95,16 +112,26 @@ fn case_context(spec: &Value) -> Context {
         .iter()
         .map(|message| {
             let content = message["content"].as_str().expect("a string user message");
-            Message::User(UserMessage { content: UserContent::Text(content.to_owned()), timestamp: 0 })
+            Message::User(UserMessage {
+                content: UserContent::Text(content.to_owned()),
+                timestamp: 0,
+            })
         })
         .collect();
-    Context { system_prompt: None, messages, tools: None }
+    Context {
+        active_tool_names: None,
+        system_prompt: None,
+        messages,
+        tools: None,
+    }
 }
 
 fn case_options(spec: &Value) -> StreamOptions {
     let mut options = StreamOptions::default();
     options.request.api_key = spec["options"]["apiKey"].as_str().map(str::to_owned);
-    options.request.max_retries = spec["options"]["maxRetries"].as_u64().map(|value| value as u32);
+    options.request.max_retries = spec["options"]["maxRetries"]
+        .as_u64()
+        .map(|value| value as u32);
     options
 }
 
@@ -139,8 +166,13 @@ async fn replay(case: &str) -> Vec<AssistantMessageEvent> {
 /// (the content blocks and `usage`) shows its final state in every earlier event, while a scalar it
 /// assigns keeps the value it had at yield time. Serializing the live message back into each
 /// message-bearing event restores that, exactly as `tools/golden/ai-replay.mjs` recorded it.
-fn reapply_shared_message_containers(events: Vec<AssistantMessageEvent>) -> Vec<AssistantMessageEvent> {
-    let raw: Vec<Value> = events.iter().map(|event| serde_json::to_value(event).expect("event JSON")).collect();
+fn reapply_shared_message_containers(
+    events: Vec<AssistantMessageEvent>,
+) -> Vec<AssistantMessageEvent> {
+    let raw: Vec<Value> = events
+        .iter()
+        .map(|event| serde_json::to_value(event).expect("event JSON"))
+        .collect();
     let terminal = raw
         .iter()
         .rev()
@@ -154,9 +186,13 @@ fn reapply_shared_message_containers(events: Vec<AssistantMessageEvent>) -> Vec<
         .expect("a terminal message");
     let mut normalized = raw;
     for event in &mut normalized {
-        let Some(object) = event.as_object_mut() else { continue };
+        let Some(object) = event.as_object_mut() else {
+            continue;
+        };
         for key in ["partial", "message", "error"] {
-            let Some(message) = object.get_mut(key).and_then(Value::as_object_mut) else { continue };
+            let Some(message) = object.get_mut(key).and_then(Value::as_object_mut) else {
+                continue;
+            };
             if !message.contains_key("role") {
                 continue;
             }
@@ -168,14 +204,18 @@ fn reapply_shared_message_containers(events: Vec<AssistantMessageEvent>) -> Vec<
             message.insert("timestamp".to_owned(), Value::from(0));
         }
     }
-    serde_json::from_value(Value::Array(normalized)).expect("normalized events match the Rust event types")
+    serde_json::from_value(Value::Array(normalized))
+        .expect("normalized events match the Rust event types")
 }
 
 #[tokio::test]
 async fn replays_the_recorded_thinking_and_tool_use_stream() {
     let events = replay("ai-replay-anthropic-thinking-tool").await;
     if std::env::var_os("MAHO_AI_EVIDENCE_DUMP").is_some() {
-        println!("{}", serde_json::to_string_pretty(&events).expect("event JSON"));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&events).expect("event JSON")
+        );
     }
     support::replay::assert_matches_golden("ai-replay-anthropic-thinking-tool", &events);
 }
@@ -186,14 +226,16 @@ async fn replays_the_recorded_basic_stream() {
     support::replay::assert_matches_golden("ai-replay-anthropic-basic", &events);
 }
 
-const OVERLOADED_BODY: &str =
-    r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"request_id":"req_replay_529"}"#;
+const OVERLOADED_BODY: &str = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"request_id":"req_replay_529"}"#;
 
 #[tokio::test]
 async fn a_529_overloaded_response_is_retried_as_a_transient_http_failure() {
     let server = CaptureServer::start_response(
         axum::http::StatusCode::from_u16(529).expect("529"),
-        vec![(axum::http::HeaderName::from_static("content-type"), axum::http::HeaderValue::from_static("application/json"))],
+        vec![(
+            axum::http::HeaderName::from_static("content-type"),
+            axum::http::HeaderValue::from_static("application/json"),
+        )],
         OVERLOADED_BODY.as_bytes().to_vec(),
     )
     .await;
@@ -201,6 +243,7 @@ async fn a_529_overloaded_response_is_retried_as_a_transient_http_failure() {
     let mut model = harness_haiku().clone();
     model.base_url = server.base_url();
     let context = Context {
+        active_tool_names: None,
         system_prompt: None,
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("Hello".into()),
@@ -222,9 +265,15 @@ async fn a_529_overloaded_response_is_retried_as_a_transient_http_failure() {
     let attempts = server.request_count();
     server.shutdown();
 
-    assert_eq!(attempts, 2, "a 529 is retried once with maxRetries=1, exactly as senpi classifies it");
+    assert_eq!(
+        attempts, 2,
+        "a 529 is retried once with maxRetries=1, exactly as senpi classifies it"
+    );
     let last = events.last().expect("terminal event");
-    assert!(matches!(last, AssistantMessageEvent::Error { .. }), "the exhausted retry ends in an error event");
+    assert!(
+        matches!(last, AssistantMessageEvent::Error { .. }),
+        "the exhausted retry ends in an error event"
+    );
 }
 
 #[test]
@@ -242,5 +291,8 @@ fn the_529_failure_normalizes_to_senpis_retry_profile_class() {
     assert_eq!(failure.origin, "anthropic-messages");
     assert_eq!(failure.kind, RetryFailureKind::HttpStatus);
     assert_eq!(failure.status_code, Some(529));
-    assert_eq!(failure.provider_codes.as_deref(), Some(["overloaded_error".to_owned()].as_slice()));
+    assert_eq!(
+        failure.provider_codes.as_deref(),
+        Some(["overloaded_error".to_owned()].as_slice())
+    );
 }

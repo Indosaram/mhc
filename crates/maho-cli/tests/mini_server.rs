@@ -60,7 +60,7 @@ async fn failed_worker_description_cleans_the_spawned_child() {
         let host = Arc::new(create_peer(lr, lw, PeerOptions { dead_ms: 0, ..Default::default() }));
         let worker = Arc::new(create_peer(rr, rw, PeerOptions { dead_ms: 0, ..Default::default() }));
         let describe: Handler = Arc::new(|_, _| Box::pin(async { Err("describe failed".to_owned()) }));
-        worker.provide(WORKER, HashMap::from([("describe".to_owned(), describe)]));
+        worker.provide(&WORKER, HashMap::from([("describe".to_owned(), describe)]));
         kept_workers.lock().expect("test workers").push(worker.clone());
         let stopped = stopped.clone();
         Box::pin(async move { Ok(SpawnedWorker { peer: host, stop: Box::new(move || { worker.close(); let _ = stopped.send(()); }) }) })
@@ -111,8 +111,8 @@ async fn routing_deduplicates_attaches_forwards_calls_and_addresses_worker_event
         let worker = Arc::new(create_peer(rr, rw, PeerOptions { dead_ms: 0, ..Default::default() }));
         let describe: Handler = Arc::new(move |_, _| { let id = id.clone(); Box::pin(async move { Ok(json!({"sessionId":id.unwrap_or_else(|| "new".to_owned())})) }) });
         let echo: Handler = Arc::new(|args, _| Box::pin(async move { Ok(args[0].clone()) }));
-        worker.provide(WORKER, HashMap::from([("describe".to_owned(), describe)]));
-        worker.provide(LANE, HashMap::from([("echo".to_owned(), echo)]));
+        worker.provide(&WORKER, HashMap::from([("describe".to_owned(), describe)]));
+        worker.provide(&LANE, HashMap::from([("echo".to_owned(), echo)]));
         kept_workers.lock().expect("test workers").push(worker.clone());
         let stopped = stopped.clone();
         Box::pin(async move { Ok(SpawnedWorker { peer: host, stop: Box::new(move || { worker.close(); let _ = stopped.send(()); }) }) })
@@ -137,7 +137,7 @@ async fn routing_deduplicates_attaches_forwards_calls_and_addresses_worker_event
         first.on_event(move |_, payload, _| { let _ = first_event.send(payload.clone()); });
         second.on_event(move |_, payload, _| { let _ = second_event.send(payload.clone()); });
         let worker = workers.lock().unwrap()[0].clone();
-        worker.emit_to(LANE, json!({"target":1}), "one"); worker.emit(LANE, json!({"shared":2}));
+        worker.emit_to(&LANE, json!({"target":1}), "one"); worker.emit(&LANE, json!({"shared":2}));
         assert_eq!(first_events.recv().await.unwrap(), json!({"target":1}));
         assert_eq!(first_events.recv().await.unwrap(), json!({"shared":2}));
         assert_eq!(second_events.recv().await.unwrap(), json!({"shared":2}));

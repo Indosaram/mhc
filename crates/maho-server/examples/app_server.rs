@@ -54,12 +54,12 @@ fn qa_factory() -> maho_server::app_server::thread_registry::SessionFactory {
         use maho_core::agent_session::{AgentSession,AgentSessionConfig};
         let cwd = options.cwd.unwrap_or_default();
         let agent_dir = options.agent_dir.unwrap_or_else(||cwd.clone());
-        let provider = faux_provider(RegisterFauxProviderOptions {api:Some("faux".into()),models:Some(vec![FauxModelDefinition {id:"faux-1".into(),reasoning:Some(true),..Default::default()}]),tokens_per_second:Some(0.0),..Default::default()});
+        let provider = faux_provider(RegisterFauxProviderOptions {api:Some("faux".into()),models:Some(vec![FauxModelDefinition {id:"faux-1".into(),reasoning:Some(true),..Default::default()}]),tokens_per_second:Some(0.0),..Default::default()}).map_err(|error| error.to_string())?;
         let model = provider.get_model(Some("faux-1")).ok_or("missing faux model")?;
         provider.set_responses(vec![faux_assistant_message("retained managed transcript",FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()}).into()]);
         let streams = faux_streams(provider.core.clone());
         let stream_fn: maho_agent::types::StreamFn = std::sync::Arc::new(move |model,context,options|streams.stream_simple(model,context,options.map(|options|options.simple)));
-        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&agent_dir).join("models.json")),auth_path:Some(std::path::Path::new(&agent_dir).join("auth.json")),providers:Some(vec![provider.provider.clone()]),..Default::default()});
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&agent_dir).join("models.json")),auth_path:Some(std::path::Path::new(&agent_dir).join("auth.json")),providers:Some(vec![provider.provider.clone()]),..Default::default()}).map_err(|error| error.to_string())?;
         AgentSession::new(AgentSessionConfig {
             agent:maho_agent::Agent::new(maho_agent::AgentOptions {initial_state:Some(maho_agent::agent::PartialAgentState {model:Some(model),..Default::default()}),stream_fn:Some(stream_fn),..Default::default()}),
             session_manager:options.session_manager.ok_or("Missing session manager")?,settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),

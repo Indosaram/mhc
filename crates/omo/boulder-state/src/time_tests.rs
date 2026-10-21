@@ -78,7 +78,43 @@ fn non_dates_and_impossible_components_are_rejected() {
     assert_eq!(parse_iso_to_millis("not-a-date"), None);
     assert_eq!(parse_iso_to_millis("still-not-a-date"), None);
     assert_eq!(parse_iso_to_millis(""), None);
-    assert_eq!(parse_iso_to_millis("2026-02-30T00:00:00Z"), None);
+    assert_eq!(parse_iso_to_millis("2026-02-30T00:00:00Z"), parse_iso_to_millis("2026-03-02T00:00:00Z"));
     assert_eq!(parse_iso_to_millis("2026-13-01T00:00:00Z"), None);
     assert_eq!(parse_iso_to_millis("2026-06-05T25:00:00Z"), None);
+}
+
+#[test]
+fn midnight_rollover_and_rfc_dates_match_date_parse() {
+    let expected = parse_iso_to_millis("2026-10-21T00:00:00Z");
+    assert_eq!(parse_iso_to_millis("2026-10-20T24:00:00Z"), expected);
+    assert_eq!(parse_iso_to_millis("Wed, 21 Oct 2026 00:00:00 GMT"), expected);
+    assert_eq!(parse_iso_to_millis("Wed, 21 Oct 2026 02:00:00 +0200"), expected);
+    assert_eq!(parse_iso_to_millis("2026-10-20T24:00:00.001Z"), None);
+}
+
+#[test]
+fn space_separated_date_time_matches_the_t_form() {
+    assert_eq!(
+        parse_iso_to_millis("2026-10-20 12:00:00Z"),
+        parse_iso_to_millis("2026-10-20T12:00:00Z")
+    );
+    assert_eq!(
+        parse_iso_to_millis("2026-10-20 12:00:00"),
+        parse_iso_to_millis("2026-10-20T12:00:00")
+    );
+    assert_eq!(parse_iso_to_millis("2026-10-20 garbage"), None);
+}
+
+#[test]
+fn unzoned_wall_time_uses_compatible_local_disambiguation() {
+    let zone = jiff::tz::TimeZone::get("America/New_York").expect("zone");
+    for (wall, instant) in [
+        ("2026-01-01T12:00:00Z", "2026-01-01T17:00:00Z"),
+        ("2026-03-08T02:30:00Z", "2026-03-08T07:30:00Z"),
+        ("2026-11-01T01:30:00Z", "2026-11-01T05:30:00Z"),
+    ] {
+        assert_eq!(super::local_wall_time_millis(parse_iso_to_millis(wall).expect("wall"), zone.clone()), parse_iso_to_millis(instant));
+    }
+    let wall = parse_iso_to_millis("2026-10-20T12:00:00Z").expect("wall");
+    assert_eq!(parse_iso_to_millis("2026-10-20T12:00:00"), super::local_wall_time_millis(wall, jiff::tz::TimeZone::system()));
 }

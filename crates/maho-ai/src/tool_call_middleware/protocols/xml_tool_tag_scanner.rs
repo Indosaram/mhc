@@ -1,5 +1,14 @@
 //! Port of senpi packages/ai/src/tool-call-middleware/protocols/xml-tool-tag-scanner.ts.
 
+pub(super) fn skip_xml_whitespace(text: &str, cursor: &mut usize) {
+    while let Some(character) = text[*cursor..].chars().next() {
+        if !crate::utils::js::is_js_whitespace(character) {
+            break;
+        }
+        *cursor += character.len_utf8();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XmlToolTagMatch {
     pub index: usize,
@@ -20,24 +29,18 @@ fn match_tool_tag(text: &str, tool_name: &str, from_index: usize) -> Option<(usi
             continue;
         }
         let mut cursor = i + 1;
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
+        skip_xml_whitespace(text, &mut cursor);
         if !text.as_bytes()[cursor..].starts_with(name_bytes) {
             i += 1;
             continue;
         }
         cursor += name_bytes.len();
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
+        skip_xml_whitespace(text, &mut cursor);
         let mut self_closing = false;
         if cursor < bytes.len() && bytes[cursor] == b'/' {
             self_closing = true;
             cursor += 1;
-            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
-            }
+            skip_xml_whitespace(text, &mut cursor);
         }
         if cursor < bytes.len() && bytes[cursor] == b'>' {
             cursor += 1;
@@ -48,7 +51,11 @@ fn match_tool_tag(text: &str, tool_name: &str, from_index: usize) -> Option<(usi
     None
 }
 
-pub fn find_self_closing_tool_tag(text: &str, tool_name: &str, from_index: usize) -> Option<(usize, usize, String)> {
+pub fn find_self_closing_tool_tag(
+    text: &str,
+    tool_name: &str,
+    from_index: usize,
+) -> Option<(usize, usize, String)> {
     let mut cursor = from_index;
     while let Some((start, end, self_closing)) = match_tool_tag(text, tool_name, cursor) {
         if self_closing {
@@ -63,16 +70,25 @@ pub fn find_self_closing_tool_tag(text: &str, tool_name: &str, from_index: usize
 pub fn find_earliest_xml_tool_tag(text: &str, tool_names: &[String]) -> Option<XmlToolTagMatch> {
     let mut earliest: Option<XmlToolTagMatch> = None;
     for tool_name in tool_names {
-        let Some((start, end, self_closing)) = match_tool_tag(text, tool_name, 0) else { continue };
+        let Some((start, end, self_closing)) = match_tool_tag(text, tool_name, 0) else {
+            continue;
+        };
         if earliest.as_ref().is_none_or(|e| start < e.index) {
-            earliest = Some(XmlToolTagMatch { index: start, name: tool_name.clone(), tag: text[start..end].to_string(), self_closing });
+            earliest = Some(XmlToolTagMatch {
+                index: start,
+                name: tool_name.clone(),
+                tag: text[start..end].to_string(),
+                self_closing,
+            });
         }
     }
     earliest
 }
 
 pub fn get_safe_xml_text_length(text: &str, tool_names: &[String]) -> usize {
-    let Some(last_tag_index) = text.rfind('<') else { return text.len() };
+    let Some(last_tag_index) = text.rfind('<') else {
+        return text.len();
+    };
 
     let trailing_candidate = &text[last_tag_index..];
     let has_potential_tool_start = tool_names.iter().any(|tool_name| {
@@ -84,7 +100,9 @@ pub fn get_safe_xml_text_length(text: &str, tool_names: &[String]) -> usize {
             format!("<{tool_name} />"),
             format!("< {tool_name} />"),
         ];
-        candidates.iter().any(|candidate| candidate.starts_with(trailing_candidate))
+        candidates
+            .iter()
+            .any(|candidate| candidate.starts_with(trailing_candidate))
     });
     if !has_potential_tool_start {
         return text.len();
@@ -99,7 +117,8 @@ mod tests {
 
     #[test]
     fn find_self_closing_tool_tag_matches_with_optional_whitespace() {
-        let (index, length, tag) = find_self_closing_tool_tag("before <foo/> after", "foo", 0).expect("match");
+        let (index, length, tag) =
+            find_self_closing_tool_tag("before <foo/> after", "foo", 0).expect("match");
         assert_eq!(index, 7);
         assert_eq!(tag, "<foo/>");
         assert_eq!(&"before <foo/> after"[index..index + length], "<foo/>");

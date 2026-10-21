@@ -146,7 +146,7 @@ pub fn create_bash_tool<T: HasExecutionToolContext>(
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 if !state.accepting {
-                                    return Box::pin(async {});
+                                    return Box::pin(async { Ok(()) });
                                 }
                                 let view = apply_shell_output_update(state.view.as_ref(), &update);
                                 let mut snapshot = AgentToolResult::text(&view.text);
@@ -175,7 +175,7 @@ pub fn create_bash_tool<T: HasExecutionToolContext>(
                                         checkpoint: Some(true),
                                     }),
                                 );
-                                Box::pin(async {})
+                                Box::pin(async { Ok(()) })
                             })),
                         }),
                         &context,
@@ -189,13 +189,23 @@ pub fn create_bash_tool<T: HasExecutionToolContext>(
                     state.view.take()
                 };
                 let mut output = view.as_ref().map(|v| v.text.clone()).unwrap_or_default();
+                let interrupted_spill_path = result
+                    .as_ref()
+                    .err()
+                    .and_then(|error| error.spill_path.clone());
                 let capture = match &result {
                     Ok(value) => Some((
                         value.truncation.clone(),
                         value.spill_path.clone(),
                         value.last_line_bytes,
                     )),
-                    Err(_) => view.map(|v| (v.truncation, v.spill_path, v.last_line_bytes)),
+                    Err(_) => view.map(|v| {
+                        (
+                            v.truncation,
+                            v.spill_path.or_else(|| interrupted_spill_path.clone()),
+                            v.last_line_bytes,
+                        )
+                    }),
                 };
                 let mut details = Value::Null;
                 if let Some((truncation, spill_path, last_line_bytes)) =
@@ -223,6 +233,11 @@ pub fn create_bash_tool<T: HasExecutionToolContext>(
                     } else {
                         output.push_str(&format!("\n\n[Showing lines {start}-{end} of {} ({} limit). Full output: {path}]", truncation.total_lines, format_size(DEFAULT_MAX_BYTES)));
                     }
+                } else if let Some(path) = interrupted_spill_path {
+                    if !output.is_empty() {
+                        output.push_str("\n\n");
+                    }
+                    output.push_str(&format!("[Full output: {path}]"));
                 }
                 match result {
                     Err(error) => {

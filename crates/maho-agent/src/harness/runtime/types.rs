@@ -7,12 +7,13 @@ use maho_ai::utils::abort::{AbortController, AbortSignal};
 use maho_ai::utils::retry::RetryPolicy;
 
 use crate::harness::agent_harness::{DriveOptions, DriveOutcome, Resources};
-use crate::harness::events::HarnessEvent;
 use crate::harness::compaction::compaction::CompactionSettings;
 use crate::harness::context::{Context, without_abort_signal};
+use crate::harness::events::HarnessEvent;
 use crate::harness::execution::effect_gate::{Cancellation, Gate, GateControl, create_gate};
 use crate::harness::session::types::{
-    CommitResult, InboxItem, LaneConfiguration, Operation, OperationResultRecord, OperationState, Write,
+    CommitResult, InboxItem, LaneConfiguration, Operation, OperationResultRecord, OperationState,
+    Write,
 };
 use crate::harness::types::{AgentHarnessStreamOptions, AgentHarnessTool};
 use crate::types::QueueMode;
@@ -25,13 +26,18 @@ pub struct SliceNotImplemented {
 
 impl SliceNotImplemented {
     pub fn new(operation: impl Into<String>) -> Self {
-        Self { operation: operation.into() }
+        Self {
+            operation: operation.into(),
+        }
     }
 }
 
 pub type SystemPromptFn = Arc<dyn Fn(&Context) -> BoxFuture<'static, String> + Send + Sync>;
 pub type ToProviderMessagesFn = Arc<
-    dyn Fn(Vec<crate::types::AgentMessage>, &Context) -> BoxFuture<'static, Vec<maho_ai::types::Message>>
+    dyn Fn(
+            Vec<crate::types::AgentMessage>,
+            &Context,
+        ) -> BoxFuture<'static, Vec<maho_ai::types::Message>>
         + Send
         + Sync,
 >;
@@ -39,6 +45,9 @@ pub type MaterializeFn<TResult> = Arc<dyn Fn(&CommitResult) -> TResult + Send + 
 pub type CommitEventsFn = Arc<dyn Fn(&CommitResult) -> Vec<HarnessEvent> + Send + Sync>;
 
 pub trait RuntimeLane: Send + Sync {
+    fn command_lane(&self) -> Option<&super::lane::Lane> {
+        None
+    }
     fn name(&self) -> &str;
     fn session(&self) -> &dyn crate::harness::session::types::Session;
     fn state(&self) -> LaneState;
@@ -48,6 +57,65 @@ pub trait RuntimeLane: Send + Sync {
     fn faulted(&self) -> bool {
         false
     }
+}
+
+pub async fn read_lane<T: Send, F>(
+    lane: &dyn RuntimeLane,
+    read: F,
+    context: &Context,
+) -> Result<T, crate::harness::session::session::SessionError>
+where
+    F: for<'a> FnOnce(
+        LaneState,
+        &'a dyn crate::harness::session::types::SessionReader,
+    )
+        -> BoxFuture<'a, Result<T, crate::harness::session::session::SessionError>>,
+{
+    if let Some(owner) = lane.command_lane() {
+        return owner.read_lane(read, context).await;
+    }
+    let mutation = lane.session().begin_mutation(context).await?;
+    let result = read(lane.state(), mutation.as_ref()).await;
+    mutation.end(context).await;
+    result
+}
+
+pub async fn progress_command(
+    lane: &dyn RuntimeLane,
+    write: Write,
+    owns: Arc<dyn Fn(&LaneState) -> bool + Send + Sync>,
+    context: &Context,
+) -> Result<(), crate::harness::session::session::SessionError> {
+    if let Some(owner) = lane.command_lane() {
+        return owner
+            .command(
+                move |state, _| {
+                    Box::pin(async move {
+                        if !owns(&state) {
+                            return Ok(LaneCommand::Return { result: () });
+                        }
+                        Ok(LaneCommand::Commit {
+                            decision: CommitDecision {
+                                writes: vec![write],
+                                materialize: Arc::new(|_| ()),
+                                events: None,
+                            },
+                            next: Box::new(state),
+                        })
+                    })
+                },
+                context,
+            )
+            .await;
+    }
+    let mutation = lane.session().begin_mutation(context).await?;
+    let result = if owns(&lane.state()) {
+        mutation.commit(vec![write], context).await.map(|_| ())
+    } else {
+        Ok(())
+    };
+    mutation.end(context).await;
+    result
 }
 
 pub struct StructuralPreparation {
@@ -60,54 +128,153 @@ pub trait RuntimeDriveLane: RuntimeLane {
     fn config(&self) -> Arc<Config<()>>;
     fn hooks(&self) -> Arc<crate::harness::hooks::HookRegistry>;
     fn models(&self) -> &maho_ai::models::Models;
-    fn cancel_deferred<'a>(&'a self, model: &'a maho_ai::model::Model, handle: &'a maho_ai::types::DeferredHandle, options: maho_ai::types::ProviderRequestOptions) -> BoxFuture<'a, Result<(), String>>;
-    fn prepare_compaction_threshold<'a>(&'a self, drive: &'a Drive, state: &'a OperationState) -> BoxFuture<'a, Result<ContinueOperationResult<Option<StructuralPreparation>>, crate::harness::session::session::SessionError>>;
-    fn prepare_overflow_compaction<'a>(&'a self, drive: &'a Drive, state: &'a OperationState) -> BoxFuture<'a, Result<Option<StructuralPreparation>, crate::harness::session::session::SessionError>>;
-    fn run_tools<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, crate::harness::session::session::SessionError>>;
-    fn run_structural<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, crate::harness::session::session::SessionError>>;
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a maho_ai::model::Model,
+        handle: &'a maho_ai::types::DeferredHandle,
+        options: maho_ai::types::ProviderRequestOptions,
+    ) -> BoxFuture<'a, Result<(), String>>;
+    fn prepare_compaction_threshold<'a>(
+        &'a self,
+        drive: &'a Drive,
+        state: &'a OperationState,
+    ) -> BoxFuture<
+        'a,
+        Result<
+            ContinueOperationResult<Option<StructuralPreparation>>,
+            crate::harness::session::session::SessionError,
+        >,
+    >;
+    fn prepare_overflow_compaction<'a>(
+        &'a self,
+        drive: &'a Drive,
+        state: &'a OperationState,
+    ) -> BoxFuture<
+        'a,
+        Result<Option<StructuralPreparation>, crate::harness::session::session::SessionError>,
+    >;
+    fn run_tools<'a>(
+        &'a self,
+        drive: &'a Drive,
+        state: OperationState,
+    ) -> BoxFuture<'a, Result<ProcedureResult, crate::harness::session::session::SessionError>>;
+    fn run_structural<'a>(
+        &'a self,
+        drive: &'a Drive,
+        state: OperationState,
+    ) -> BoxFuture<'a, Result<ProcedureResult, crate::harness::session::session::SessionError>>;
 }
 
-pub async fn settle_operation<T, F, Fut>(lane: &dyn RuntimeLane, capability: &OperationState, context: &Context, continuing: bool, plan: F) -> Result<ContinueOperationResult<T>, crate::harness::session::session::SessionError>
-where F: FnOnce(LaneState, Operation, Arc<dyn crate::harness::session::types::SessionMutation>) -> Fut,
-      Fut: std::future::Future<Output = Result<OperationCommand<T>, crate::harness::session::session::SessionError>> {
+pub async fn settle_operation<T, F, Fut>(
+    lane: &dyn RuntimeLane,
+    capability: &OperationState,
+    context: &Context,
+    continuing: bool,
+    plan: F,
+) -> Result<ContinueOperationResult<T>, crate::harness::session::session::SessionError>
+where
+    F: FnOnce(
+        LaneState,
+        Operation,
+        Arc<dyn crate::harness::session::types::SessionMutation>,
+    ) -> Fut,
+    Fut: std::future::Future<
+            Output = Result<OperationCommand<T>, crate::harness::session::session::SessionError>,
+        >,
+{
     use crate::harness::session::{session::session_invariant_error, values};
-    let mutation: Arc<dyn crate::harness::session::types::SessionMutation> = Arc::from(lane.session().begin_mutation(context).await?);
+    let mutation: Arc<dyn crate::harness::session::types::SessionMutation> =
+        Arc::from(lane.session().begin_mutation(context).await?);
     let result = async {
         let mut state = lane.state();
-        let operation = state.operation.clone().ok_or_else(|| session_invariant_error("Lane has no active operation"))?;
+        let operation = state
+            .operation
+            .clone()
+            .ok_or_else(|| session_invariant_error("Lane has no active operation"))?;
         let _ = capability;
-        if continuing && matches!(operation.state.operation_scope_of().control, crate::harness::session::types::Control::CancelRequested { .. }) { return Ok((ContinueOperationResult::CancelRequested, Vec::new())); }
+        if continuing
+            && matches!(
+                operation.state.operation_scope_of().control,
+                crate::harness::session::types::Control::CancelRequested { .. }
+            )
+        {
+            return Ok((ContinueOperationResult::CancelRequested, Vec::new()));
+        }
         let command = plan(state.clone(), operation.clone(), mutation.clone()).await?;
         let (mut writes, materialize, events, patch) = match command {
-            OperationCommand::Return { result } => return Ok((ContinueOperationResult::Result { value: result }, Vec::new())),
-            OperationCommand::Commit { decision, operation_state, lane } => {
-                let encoded = serde_json::to_value(&operation_state).map_err(|e| session_invariant_error(e.to_string()))?;
-                state.operation = Some(Operation { meta: operation.meta.clone(), state: *operation_state });
+            OperationCommand::Return { result } => {
+                return Ok((
+                    ContinueOperationResult::Result { value: result },
+                    Vec::new(),
+                ));
+            }
+            OperationCommand::Commit {
+                decision,
+                operation_state,
+                lane,
+            } => {
+                let encoded = serde_json::to_value(&operation_state)
+                    .map_err(|e| session_invariant_error(e.to_string()))?;
+                state.operation = Some(Operation {
+                    meta: operation.meta.clone(),
+                    state: *operation_state,
+                });
                 let mut writes = decision.writes;
-                writes.push(Write::Value(values::set_value(&values::operation_state(&operation.meta.operation_id), encoded)));
+                writes.push(Write::Value(values::set_value(
+                    &values::operation_state(&operation.meta.operation_id),
+                    encoded,
+                )));
                 (writes, decision.materialize, decision.events, lane)
             }
             OperationCommand::Finish { decision } => {
                 state.operation = None;
                 state.last_operation_id = Some(operation.meta.operation_id.clone());
                 let mut writes = decision.writes;
-                writes.push(Write::Value(values::set_value(&values::operation_result(&operation.meta.operation_id), serde_json::to_value(&decision.record).map_err(|e| session_invariant_error(e.to_string()))?)));
+                writes.push(Write::Value(values::set_value(
+                    &values::operation_result(&operation.meta.operation_id),
+                    serde_json::to_value(&decision.record)
+                        .map_err(|e| session_invariant_error(e.to_string()))?,
+                )));
                 (writes, decision.materialize, decision.events, decision.lane)
             }
         };
-        let writes_lane_state = state.operation.is_none() || patch.as_ref().is_some_and(|patch| patch.inbox.is_some());
+        let writes_lane_state =
+            state.operation.is_none() || patch.as_ref().is_some_and(|patch| patch.inbox.is_some());
         if let Some(patch) = patch {
-            if let Some(tip) = patch.tip_id { state.tip_id = tip; }
-            if let Some(configuration) = patch.configuration { state.configuration = configuration; }
-            if let Some(inbox) = patch.inbox { state.inbox = inbox; }
+            if let Some(tip) = patch.tip_id {
+                state.tip_id = tip;
+            }
+            if let Some(configuration) = patch.configuration {
+                state.configuration = configuration;
+            }
+            if let Some(inbox) = patch.inbox {
+                state.inbox = inbox;
+            }
         }
-        let durable = crate::harness::session::types::LaneState { current_operation_id: state.operation.as_ref().map(|op| op.meta.operation_id.clone()), last_operation_id: state.last_operation_id.clone(), inbox: state.inbox.clone() };
-        if writes_lane_state { writes.push(Write::Value(values::set_value(&values::lane_state(lane.name()), serde_json::to_value(durable).map_err(|e| session_invariant_error(e.to_string()))?))); }
+        let durable = crate::harness::session::types::LaneState {
+            current_operation_id: state
+                .operation
+                .as_ref()
+                .map(|op| op.meta.operation_id.clone()),
+            last_operation_id: state.last_operation_id.clone(),
+            inbox: state.inbox.clone(),
+        };
+        if writes_lane_state {
+            writes.push(Write::Value(values::set_value(
+                &values::lane_state(lane.name()),
+                serde_json::to_value(durable)
+                    .map_err(|e| session_invariant_error(e.to_string()))?,
+            )));
+        }
         let commit = mutation.commit(writes, context).await?;
         lane.publish_state(state);
         let value = materialize(&commit);
-        Ok((ContinueOperationResult::Result { value }, events.map(|emit| emit(&commit)).unwrap_or_default()))
-    }.await;
+        Ok((
+            ContinueOperationResult::Result { value },
+            events.map(|emit| emit(&commit)).unwrap_or_default(),
+        ))
+    }
+    .await;
     mutation.end(context).await;
     let (value, events) = result?;
     lane.emit(events, context).await;
@@ -126,7 +293,8 @@ pub struct Config<TContext> {
     pub tool_context: Option<TContext>,
     pub system_prompt: Option<SystemPromptFn>,
     pub to_provider_messages: ToProviderMessagesFn,
-    pub entry_projectors: std::collections::BTreeMap<String, crate::harness::session::types::EntryProjector>,
+    pub entry_projectors:
+        std::collections::BTreeMap<String, crate::harness::session::types::EntryProjector>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,9 +313,16 @@ pub struct CommitDecision<TResult> {
 }
 
 pub enum LaneCommand<TResult> {
-    Commit { decision: CommitDecision<TResult>, next: Box<LaneState> },
-    Return { result: TResult },
-    Reject { error: String },
+    Commit {
+        decision: CommitDecision<TResult>,
+        next: Box<LaneState>,
+    },
+    Return {
+        result: TResult,
+    },
+    Reject {
+        error: String,
+    },
 }
 
 impl<TResult> LaneCommand<TResult> {
@@ -181,9 +356,17 @@ pub struct FinishDecision<TResult> {
 }
 
 pub enum OperationCommand<TResult> {
-    Commit { decision: CommitDecision<TResult>, operation_state: Box<OperationState>, lane: Option<LanePatch> },
-    Finish { decision: Box<FinishDecision<TResult>> },
-    Return { result: TResult },
+    Commit {
+        decision: CommitDecision<TResult>,
+        operation_state: Box<OperationState>,
+        lane: Option<LanePatch>,
+    },
+    Finish {
+        decision: Box<FinishDecision<TResult>>,
+    },
+    Return {
+        result: TResult,
+    },
 }
 
 impl<TResult> OperationCommand<TResult> {
@@ -207,12 +390,18 @@ pub struct Completion {
 
 impl Completion {
     fn new() -> Self {
-        Self { state: Mutex::new(CompletionState { outcome: None }), notify: tokio::sync::Notify::new() }
+        Self {
+            state: Mutex::new(CompletionState { outcome: None }),
+            notify: tokio::sync::Notify::new(),
+        }
     }
 
     fn settle(&self, outcome: Result<DriveOutcome, String>) {
         {
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.outcome.is_none() {
                 state.outcome = Some(outcome);
             }
@@ -226,7 +415,10 @@ impl Completion {
             tokio::pin!(notified);
             notified.as_mut().enable();
             {
-                let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if let Some(outcome) = &state.outcome {
                     return outcome.clone();
                 }
@@ -259,7 +451,11 @@ impl Drive {
             gate,
             context: without_abort_signal(context),
             wait_for_retry: options.wait_for_retry.unwrap_or(false),
-            deferred_permits: Mutex::new(if options.poll_deferred == Some(true) { 1 } else { 0 }),
+            deferred_permits: Mutex::new(if options.poll_deferred == Some(true) {
+                1
+            } else {
+                0
+            }),
             control,
             close_controller,
             close_signal,
@@ -286,7 +482,10 @@ impl Drive {
         self.control.close(error.clone());
         if !self.close_signal.aborted() {
             self.close_controller
-                .abort(Some(maho_ai::utils::abort::AbortReason::new("Error", error.clone())));
+                .abort(Some(maho_ai::utils::abort::AbortReason::new(
+                    "Error",
+                    error.clone(),
+                )));
         }
         self.completion.settle(Err(error));
     }

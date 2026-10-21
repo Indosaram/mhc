@@ -5,7 +5,7 @@ async fn native_sdk_registry_resolves_distinct_models_and_reports_failed_auth() 
     let dir = tempfile::tempdir().expect("isolated SDK");
     let cwd = dir.path().to_string_lossy().into_owned();
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
-        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
+        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime");
     let definitions = ["first", "second"].map(|id| maho_core::model_config_schema::ModelsJsonModel {
         id: id.into(), upstream_model_id: Some(format!("wire-{id}")),
         headers: Some(std::collections::BTreeMap::from([("x-model".into(), id.into())])),
@@ -86,7 +86,7 @@ async fn native_sdk_registry_projects_model_headers_without_unresolved_auth_rout
     let dir = tempfile::tempdir().expect("isolated SDK");
     let cwd = dir.path().to_string_lossy().into_owned();
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
-        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
+        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime");
     runtime.register_provider("header-only-fixture", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider {
             api: Some("openai-completions".into()), base_url: Some("http://127.0.0.1:1".into()),

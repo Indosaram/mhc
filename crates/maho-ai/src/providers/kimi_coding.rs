@@ -7,7 +7,7 @@ use crate::providers::builtin_api_streams;
 use crate::utils::retry_profile::profiles::KIMI_CODE_RETRY_PROFILE;
 use std::sync::Arc;
 
-pub fn kimi_coding_provider() -> Arc<dyn Provider> {
+pub fn kimi_coding_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     create_provider_with_retry_policy(
         CreateProviderOptions {
             id: "kimi-coding".into(),
@@ -19,6 +19,7 @@ pub fn kimi_coding_provider() -> Arc<dyn Provider> {
             fetch_models: None,
             restore_models: None,
             filter_models: None,
+            images: indexmap::IndexMap::new(),
             api: ProviderApi::Single(builtin_api_streams("anthropic-messages")),
         },
         // Same upstream service (api.kimi.com/coding, protocol anthropic) as the

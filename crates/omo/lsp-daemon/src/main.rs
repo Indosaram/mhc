@@ -31,5 +31,35 @@ fn run_daemon() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     runtime
         .block_on(lsp_daemon::daemon_server::run_daemon(&paths))
-        .map_err(|error| error.to_string())
+        .map_err(startup_error_message)
+}
+
+fn startup_error_message(error: lsp_daemon::ownership::StartupError) -> String {
+    match error {
+        lsp_daemon::ownership::StartupError::Deferred(reason) => {
+            format!("[lsp-daemon] startup deferred: {reason}")
+        }
+        lsp_daemon::ownership::StartupError::AlreadyRunning => error.to_string(),
+        lsp_daemon::ownership::StartupError::Io(error) => error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lsp_daemon::ownership::StartupError;
+
+    #[test]
+    fn deferred_startup_is_one_line() {
+        let error = StartupError::Deferred("startup_lock_busy");
+        let message = startup_error_message(error);
+        assert_eq!(message, "[lsp-daemon] startup deferred: startup_lock_busy");
+        assert_eq!(message.lines().count(), 1);
+    }
+
+    #[test]
+    fn unexpected_error_keeps_its_message() {
+        let error = std::io::Error::other("unexpected startup failure");
+        assert_eq!(startup_error_message(StartupError::Io(error)), "unexpected startup failure");
+    }
 }

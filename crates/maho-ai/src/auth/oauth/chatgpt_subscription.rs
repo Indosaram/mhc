@@ -4,32 +4,29 @@ use crate::auth::oauth::authorization_input::parse_authorization_input;
 use crate::auth::oauth::device_code::{
     OAuthDeviceCodePollOptions, OAuthDeviceCodePollResult, poll_oauth_device_code_flow,
 };
-use crate::auth::oauth::loopback::{
-    LoopbackFuture, LoopbackListener, LoopbackRequest, LoopbackResponse, bind_loopback, callback_host,
-};
-use crate::auth::oauth::oauth_page::{oauth_error_html, oauth_success_html};
+use crate::auth::oauth::loopback::callback_host;
 use crate::auth::oauth::pkce::generate_pkce;
 use crate::auth::oauth::transport::{HttpRequest, HttpResponse, OAuthTransport, default_transport};
 use crate::auth::types::{
     AuthEvent, AuthPrompt, AuthPromptKind, AuthPromptOption, ModelAuth, OAuthAuth, OAuthCredential,
     ProviderAuthInteraction,
 };
-use crate::utils::abort::{AbortController, AbortSignal};
+#[cfg(test)]
+use crate::utils::abort::AbortController;
+use crate::utils::abort::AbortSignal;
 use crate::utils::chatgpt_subscription_auth::extract_chatgpt_subscription_account_id;
 use crate::wire_identity::get_wire_identity;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
-use tokio::sync::watch;
+#[cfg(test)]
+use std::sync::Mutex;
+use std::sync::{Arc, LazyLock};
 use url::Url;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
-const CALLBACK_PORT: u16 = 1455;
-const CALLBACK_PATH: &str = "/auth/callback";
 const DEVICE_USER_CODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
 const DEVICE_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
 const DEVICE_VERIFICATION_URI: &str = "https://auth.openai.com/codex/device";
@@ -125,16 +122,33 @@ async fn read_token_response(
     now_ms: f64,
 ) -> anyhow::Result<OAuthToken> {
     if !response.ok() {
-        let text = if response.body.is_empty() { status_text(response.status).to_string() } else { response.body.clone() };
-        anyhow::bail!("ChatGPT Subscription token {} failed ({}): {text}", operation.as_str(), response.status);
+        let text = if response.body.is_empty() {
+            status_text(response.status).to_string()
+        } else {
+            response.body.clone()
+        };
+        anyhow::bail!(
+            "ChatGPT Subscription token {} failed ({}): {text}",
+            operation.as_str(),
+            response.status
+        );
     }
 
     let json: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
-    let access = json.get("access_token").and_then(Value::as_str).filter(|value| !value.is_empty());
-    let refresh = json.get("refresh_token").and_then(Value::as_str).filter(|value| !value.is_empty());
+    let access = json
+        .get("access_token")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let refresh = json
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
     let expires_in = json.get("expires_in").and_then(Value::as_f64);
     let (Some(access), Some(refresh), Some(expires_in)) = (access, refresh, expires_in) else {
-        anyhow::bail!("ChatGPT Subscription token {} response missing fields: {json}", operation.as_str());
+        anyhow::bail!(
+            "ChatGPT Subscription token {} response missing fields: {json}",
+            operation.as_str()
+        );
     };
 
     Ok(OAuthToken {
@@ -156,7 +170,10 @@ async fn exchange_authorization_code(
         HttpRequest {
             method: "POST".into(),
             url: TOKEN_URL.into(),
-            headers: vec![("Content-Type".into(), "application/x-www-form-urlencoded".into())],
+            headers: vec![(
+                "Content-Type".into(),
+                "application/x-www-form-urlencoded".into(),
+            )],
             body: Some(form_body(&[
                 ("grant_type", "authorization_code"),
                 ("client_id", CLIENT_ID),
@@ -183,7 +200,10 @@ async fn refresh_access_token(
             HttpRequest {
                 method: "POST".into(),
                 url: TOKEN_URL.into(),
-                headers: vec![("Content-Type".into(), "application/x-www-form-urlencoded".into())],
+                headers: vec![(
+                    "Content-Type".into(),
+                    "application/x-www-form-urlencoded".into(),
+                )],
                 body: Some(form_body(&[
                     ("grant_type", "refresh_token"),
                     ("refresh_token", refresh_token),
@@ -225,8 +245,15 @@ async fn start_chatgpt_subscription_device_auth(
                 "ChatGPT Subscription device code login is not enabled for this server. Use browser login or verify the server URL."
             );
         }
-        let suffix = if response.body.is_empty() { String::new() } else { format!(": {}", response.body) };
-        anyhow::bail!("ChatGPT Subscription device code request failed with status {}{suffix}", response.status);
+        let suffix = if response.body.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", response.body)
+        };
+        anyhow::bail!(
+            "ChatGPT Subscription device code request failed with status {}{suffix}",
+            response.status
+        );
     }
 
     let json: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
@@ -235,8 +262,14 @@ async fn start_chatgpt_subscription_device_auth(
         Some(Value::Number(value)) => value.as_f64().unwrap_or(f64::NAN),
         _ => f64::NAN,
     };
-    let device_auth_id = json.get("device_auth_id").and_then(Value::as_str).filter(|value| !value.is_empty());
-    let user_code = json.get("user_code").and_then(Value::as_str).filter(|value| !value.is_empty());
+    let device_auth_id = json
+        .get("device_auth_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let user_code = json
+        .get("user_code")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
     let (Some(device_auth_id), Some(user_code)) = (device_auth_id, user_code) else {
         anyhow::bail!("Invalid ChatGPT Subscription device code response: {json}");
     };
@@ -288,13 +321,21 @@ async fn poll_chatgpt_subscription_device_auth(
 
                 if response.ok() {
                     let json: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
-                    let authorization_code =
-                        json.get("authorization_code").and_then(Value::as_str).filter(|value| !value.is_empty());
-                    let code_verifier =
-                        json.get("code_verifier").and_then(Value::as_str).filter(|value| !value.is_empty());
-                    let (Some(authorization_code), Some(code_verifier)) = (authorization_code, code_verifier) else {
+                    let authorization_code = json
+                        .get("authorization_code")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty());
+                    let code_verifier = json
+                        .get("code_verifier")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty());
+                    let (Some(authorization_code), Some(code_verifier)) =
+                        (authorization_code, code_verifier)
+                    else {
                         return Ok(OAuthDeviceCodePollResult::Failed {
-                            message: format!("Invalid ChatGPT Subscription device auth token response: {json}"),
+                            message: format!(
+                                "Invalid ChatGPT Subscription device auth token response: {json}"
+                            ),
                         });
                     };
                     return Ok(OAuthDeviceCodePollResult::Complete(DeviceTokenSuccess {
@@ -308,20 +349,33 @@ async fn poll_chatgpt_subscription_device_auth(
                 }
 
                 let response_body = response.body;
-                let error_code = serde_json::from_str::<Value>(&response_body).ok().and_then(|json| match json.get("error") {
-                    Some(Value::Object(_)) => json.get("error").and_then(|error| error.get("code")).and_then(Value::as_str).map(str::to_string),
-                    Some(Value::String(value)) => Some(value.clone()),
-                    _ => None,
-                });
+                let error_code =
+                    serde_json::from_str::<Value>(&response_body)
+                        .ok()
+                        .and_then(|json| match json.get("error") {
+                            Some(Value::Object(_)) => json
+                                .get("error")
+                                .and_then(|error| error.get("code"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                            Some(Value::String(value)) => Some(value.clone()),
+                            _ => None,
+                        });
 
                 if error_code.as_deref() == Some("deviceauth_authorization_pending") {
                     return Ok(OAuthDeviceCodePollResult::Pending);
                 }
                 if error_code.as_deref() == Some("slow_down") {
-                    return Ok(OAuthDeviceCodePollResult::SlowDown { interval_seconds: None });
+                    return Ok(OAuthDeviceCodePollResult::SlowDown {
+                        interval_seconds: None,
+                    });
                 }
 
-                let suffix = if response_body.is_empty() { String::new() } else { format!(": {response_body}") };
+                let suffix = if response_body.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {response_body}")
+                };
                 Ok(OAuthDeviceCodePollResult::Failed {
                     message: format!(
                         "ChatGPT Subscription device auth failed with status {}{suffix}",
@@ -358,102 +412,15 @@ fn create_authorization_flow(originator: &str) -> anyhow::Result<(String, String
     Ok((pkce.verifier, state, url.to_string()))
 }
 
-struct CallbackShared {
-    expected_state: String,
-    settled: AtomicBool,
-    code: watch::Sender<Option<Option<String>>>,
-}
-
-impl CallbackShared {
-    fn settle(&self, code: Option<String>) {
-        if self.settled.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let _ = self.code.send(Some(code));
-    }
-}
-
-pub struct LocalOAuthServer {
-    shared: Arc<CallbackShared>,
-    code: watch::Receiver<Option<Option<String>>>,
-    listener: Mutex<Option<LoopbackListener>>,
-}
-
-impl LocalOAuthServer {
-    /// Resolves with the callback code, or None once the wait was cancelled (abort, manual
-    /// input, or a failed listen).
-    pub async fn wait_for_code(&self) -> Option<String> {
-        let mut code = self.code.clone();
-        loop {
-            let current = { code.borrow().clone() };
-            if let Some(current) = current {
-                return current;
-            }
-            if code.changed().await.is_err() {
-                return None;
-            }
-        }
-    }
-
-    pub fn cancel_wait(&self) {
-        self.shared.settle(None);
-    }
-
-    pub fn close(&self) {
-        self.shared.settle(None);
-        if let Some(listener) = self.listener.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            listener.close();
-        }
-    }
-}
-
-fn handle_callback(shared: &CallbackShared, request: &LoopbackRequest) -> LoopbackResponse {
-    if request.path != CALLBACK_PATH {
-        return LoopbackResponse::html(404, oauth_error_html("Callback route not found.", None));
-    }
-    if request.query_param("state").as_deref() != Some(shared.expected_state.as_str()) {
-        return LoopbackResponse::html(400, oauth_error_html("State mismatch.", None));
-    }
-    let Some(code) = request.query_param("code") else {
-        return LoopbackResponse::html(400, oauth_error_html("Missing authorization code.", None));
-    };
-
-    shared.settle(Some(code));
-    LoopbackResponse::html(200, oauth_success_html("OpenAI authentication completed. You can close this window."))
-}
-
-/// The node:http server on the fixed callback port; a failed listen resolves the wait with None
-/// instead of throwing, matching the TS error handler.
-async fn start_local_oauth_server(state: &str) -> LocalOAuthServer {
-    let (code_tx, code_rx) = watch::channel(None);
-    let shared = Arc::new(CallbackShared {
-        expected_state: state.to_string(),
-        settled: AtomicBool::new(false),
-        code: code_tx,
-    });
-
-    let handler = {
-        let shared = shared.clone();
-        Arc::new(move |request: LoopbackRequest| -> LoopbackFuture {
-            Box::pin(std::future::ready(handle_callback(&shared, &request)))
-        })
-    };
-
-    let listener = bind_loopback(CALLBACK_PORT, &callback_host(), handler).await.ok();
-    if listener.is_none() {
-        shared.settle(None);
-    }
-
-    LocalOAuthServer { shared, code: code_rx, listener: Mutex::new(listener) }
-}
-
 fn credentials_from_token(token: OAuthToken) -> anyhow::Result<OAuthCredential> {
     let Some(account_id) = extract_chatgpt_subscription_account_id(&token.access) else {
         anyhow::bail!("Failed to extract accountId from token");
     };
 
-    Ok(OAuthCredential::new(token.access, token.refresh, token.expires)
-        .with_extra("accountId", Value::String(account_id)))
+    Ok(
+        OAuthCredential::new(token.access, token.refresh, token.expires)
+            .with_extra("accountId", Value::String(account_id)),
+    )
 }
 
 #[derive(Clone)]
@@ -478,7 +445,14 @@ impl ChatGptSubscriptionOAuth {
         signal: &AbortSignal,
     ) -> anyhow::Result<OAuthCredential> {
         credentials_from_token(
-            exchange_authorization_code(self.transport.as_ref(), code, verifier, redirect_uri, signal).await?,
+            exchange_authorization_code(
+                self.transport.as_ref(),
+                code,
+                verifier,
+                redirect_uri,
+                signal,
+            )
+            .await?,
         )
     }
 
@@ -486,14 +460,21 @@ impl ChatGptSubscriptionOAuth {
         &self,
         interaction: &ProviderAuthInteraction,
     ) -> anyhow::Result<OAuthCredential> {
-        let device = start_chatgpt_subscription_device_auth(self.transport.as_ref(), &interaction.signal).await?;
+        let device =
+            start_chatgpt_subscription_device_auth(self.transport.as_ref(), &interaction.signal)
+                .await?;
         interaction.notify(AuthEvent::DeviceCode {
             user_code: device.user_code.clone(),
             verification_uri: DEVICE_VERIFICATION_URI.into(),
             interval_seconds: Some(device.interval_seconds),
             expires_in_seconds: Some(DEVICE_CODE_TIMEOUT_SECONDS),
         });
-        let code = poll_chatgpt_subscription_device_auth(self.transport.clone(), device, &interaction.signal).await?;
+        let code = poll_chatgpt_subscription_device_auth(
+            self.transport.clone(),
+            device,
+            &interaction.signal,
+        )
+        .await?;
         self.exchange_authorization_code_for_credentials(
             &code.authorization_code,
             &code.code_verifier,
@@ -508,95 +489,56 @@ impl ChatGptSubscriptionOAuth {
         interaction: &ProviderAuthInteraction,
     ) -> anyhow::Result<OAuthCredential> {
         let (verifier, state, url) = create_authorization_flow(&get_wire_identity())?;
-        let server = start_local_oauth_server(&state).await;
-        let manual_abort = AbortController::new();
-        let abort_shared = server.shared.clone();
-        let listener_id = interaction.signal.add_abort_listener(move |_| abort_shared.settle(None));
-        if interaction.signal.aborted() {
-            server.cancel_wait();
-        }
-
-        interaction.notify(AuthEvent::AuthUrl {
-            url,
-            instructions: Some("A browser window should open. Complete login to finish.".into()),
-        });
-
-        let outcome = async {
-            let prompt = AuthPrompt {
-                kind: AuthPromptKind::ManualCode {
-                    message: "Complete login in your browser, or paste the authorization code / redirect URL here:"
-                        .into(),
-                    placeholder: Some(REDIRECT_URI.into()),
-                },
-                signal: Some(manual_abort.signal()),
-            };
-
-            let manual = async {
-                let result = interaction.prompt(prompt).await;
-                server.cancel_wait();
-                match result {
-                    Ok(input) => ManualOutcome::Input(input),
-                    Err(error) => ManualOutcome::Error(error.to_string()),
-                }
-            };
-            tokio::pin!(manual);
-
-            let mut manual_settled: Option<ManualOutcome> = None;
-            let mut callback_code: Option<Option<String>> = None;
-            tokio::select! {
-                biased;
-                code = server.wait_for_code() => callback_code = Some(code),
-                settled = &mut manual => manual_settled = Some(settled),
-            }
-
-            if let Some(ManualOutcome::Error(message)) = &manual_settled {
-                anyhow::bail!("{message}");
-            }
-
-            let mut code = None;
-            if let Some(Some(callback)) = callback_code {
-                code = Some(callback);
-            } else if let Some(ManualOutcome::Input(input)) = &manual_settled {
-                code = apply_manual_input(input, &state)?;
-            }
-
-            if code.is_none() {
-                let settled = match manual_settled {
-                    Some(settled) => settled,
-                    None => manual.await,
+        let server = super::chatgpt_subscription_callback::start_chat_gpt_callback(
+            &callback_host(),
+            &state,
+            &interaction.signal,
+            None,
+        )
+        .await?;
+        let redirect_uri = server
+            .as_ref()
+            .map_or(REDIRECT_URI, |server| server.redirect_uri.as_str());
+        let mut auth_url = Url::parse(&url)?;
+        let query = auth_url
+            .query_pairs()
+            .map(|(key, value)| {
+                let value = if key == "redirect_uri" {
+                    redirect_uri.to_owned()
+                } else {
+                    value.into_owned()
                 };
-                match settled {
-                    ManualOutcome::Error(message) => anyhow::bail!("{message}"),
-                    ManualOutcome::Input(input) => code = apply_manual_input(&input, &state)?,
-                }
-            }
-
-            let Some(code) = code else {
-                anyhow::bail!("Missing authorization code");
-            };
-            self.exchange_authorization_code_for_credentials(&code, &verifier, REDIRECT_URI, &interaction.signal)
-                .await
+                (key.into_owned(), value)
+            })
+            .collect::<Vec<_>>();
+        auth_url.query_pairs_mut().clear().extend_pairs(query);
+        interaction.notify(AuthEvent::AuthUrl {
+            url: auth_url.to_string(),
+            instructions: Some(if server.is_some() { "A browser window should open. Complete login to finish." } else { "Another sign-in on this computer is holding the login ports, so the browser cannot hand the result back here. After you sign in, copy the address from the browser and paste it below." }.into()),
+        });
+        let outcome = async {
+            let result = super::callback_server::wait_for_callback_or_manual_input(interaction, server.as_ref(),
+                "Complete login in your browser, or paste the authorization code / redirect URL here:", redirect_uri).await?;
+            let code = match result {
+                super::callback_server::CallbackOrManual::Callback(code) => Some(code),
+                super::callback_server::CallbackOrManual::Manual(input) => apply_manual_input(&input, &state)?,
+            }.ok_or_else(|| anyhow::anyhow!("Missing authorization code"))?;
+            self.exchange_authorization_code_for_credentials(&code, &verifier, redirect_uri, &interaction.signal).await
+        }.await;
+        if let Some(server) = &server {
+            server.close();
         }
-        .await;
-
-        interaction.signal.remove_abort_listener(listener_id);
-        manual_abort.abort(None);
-        server.close();
         outcome
     }
-}
-
-enum ManualOutcome {
-    Input(String),
-    Error(String),
 }
 
 fn apply_manual_input(input: &str, state: &str) -> anyhow::Result<Option<String>> {
     let parsed = parse_authorization_input(input);
     if let Some(parsed_state) = &parsed.state
-        && parsed_state != state {
-            anyhow::bail!("State mismatch");
-        }
+        && parsed_state != state
+    {
+        anyhow::bail!("State mismatch");
+    }
     Ok(parsed.code)
 }
 
@@ -616,7 +558,10 @@ impl OAuthAuth for ChatGptSubscriptionOAuth {
         true
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<OAuthCredential> {
         let method = interaction
             .prompt(AuthPrompt {
                 kind: AuthPromptKind::Select {
@@ -639,7 +584,9 @@ impl OAuthAuth for ChatGptSubscriptionOAuth {
             .await?;
 
         if method == DEVICE_CODE_LOGIN_METHOD {
-            return self.login_chatgpt_subscription_device_code(interaction).await;
+            return self
+                .login_chatgpt_subscription_device_code(interaction)
+                .await;
         }
         if method != BROWSER_LOGIN_METHOD {
             anyhow::bail!("Unknown ChatGPT Subscription login method: {method}");
@@ -648,12 +595,21 @@ impl OAuthAuth for ChatGptSubscriptionOAuth {
         self.login_chatgpt_subscription(interaction).await
     }
 
-    async fn refresh(&self, credential: &OAuthCredential, signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
-        credentials_from_token(refresh_access_token(self.transport.as_ref(), &credential.refresh, signal).await?)
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        signal: &AbortSignal,
+    ) -> anyhow::Result<OAuthCredential> {
+        credentials_from_token(
+            refresh_access_token(self.transport.as_ref(), &credential.refresh, signal).await?,
+        )
     }
 
     async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-        Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        Ok(ModelAuth {
+            api_key: Some(credential.access.clone()),
+            ..Default::default()
+        })
     }
 }
 
@@ -673,8 +629,8 @@ mod tests {
 
     /// The TS createAccessToken: a JWT whose payload carries the account claim.
     fn access_token(account_id: &str) -> String {
-        let header =
-            base64::engine::general_purpose::STANDARD.encode(serde_json::json!({ "alg": "none" }).to_string());
+        let header = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::json!({ "alg": "none" }).to_string());
         let payload = base64::engine::general_purpose::STANDARD.encode(
             serde_json::json!({ "https://api.openai.com/auth": { "chatgpt_account_id": account_id } }).to_string(),
         );
@@ -744,7 +700,10 @@ mod tests {
         fn on_account_committed(&self, _receipt: AccountLoginReceipt) {}
 
         async fn prompt(&self, prompt: AuthPrompt) -> anyhow::Result<String> {
-            self.selects.lock().unwrap_or_else(|p| p.into_inner()).push(prompt);
+            self.selects
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(prompt);
             if let Some(error) = &self.prompt_error {
                 anyhow::bail!("{error}");
             }
@@ -753,7 +712,10 @@ mod tests {
 
         fn notify(&self, event: AuthEvent) {
             if let AuthEvent::DeviceCode { .. } = &event {
-                self.device_codes.lock().unwrap_or_else(|p| p.into_inner()).push(event);
+                self.device_codes
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(event);
             }
         }
     }
@@ -772,11 +734,18 @@ mod tests {
             device_codes: device_codes.clone(),
             selects: selects.clone(),
         });
-        (ProviderAuthInteraction::new(signal, inner), device_codes, selects)
+        (
+            ProviderAuthInteraction::new(signal, inner),
+            device_codes,
+            selects,
+        )
     }
 
-    fn device_interaction(signal: AbortSignal) -> (ProviderAuthInteraction, Arc<Mutex<Vec<AuthEvent>>>) {
-        let (interaction, device_codes, _) = interaction_with(signal, DEVICE_CODE_LOGIN_METHOD, None);
+    fn device_interaction(
+        signal: AbortSignal,
+    ) -> (ProviderAuthInteraction, Arc<Mutex<Vec<AuthEvent>>>) {
+        let (interaction, device_codes, _) =
+            interaction_with(signal, DEVICE_CODE_LOGIN_METHOD, None);
         (interaction, device_codes)
     }
 
@@ -789,7 +758,11 @@ mod tests {
     }
 
     fn poll_count(transport: &ScriptedTransport) -> usize {
-        transport.requests().iter().filter(|request| request.url == DEVICE_TOKEN_URL).count()
+        transport
+            .requests()
+            .iter()
+            .filter(|request| request.url == DEVICE_TOKEN_URL)
+            .count()
     }
 
     #[tokio::test(start_paused = true)]
@@ -832,16 +805,24 @@ mod tests {
         assert_eq!(credential.get_extra_str("accountId"), Some("account-123"));
         assert_eq!(poll_count(&transport), 2);
 
-        let exchange = transport.requests().into_iter().find(|request| request.url == TOKEN_URL).expect("exchange");
-        let form: Vec<(String, String)> = url::form_urlencoded::parse(exchange.body.as_deref().unwrap_or_default().as_bytes())
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect();
+        let exchange = transport
+            .requests()
+            .into_iter()
+            .find(|request| request.url == TOKEN_URL)
+            .expect("exchange");
+        let form: Vec<(String, String)> =
+            url::form_urlencoded::parse(exchange.body.as_deref().unwrap_or_default().as_bytes())
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
         let value = |key: &str| form.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
         assert_eq!(value("grant_type").as_deref(), Some("authorization_code"));
         assert_eq!(value("client_id").as_deref(), Some(CLIENT_ID));
         assert_eq!(value("code").as_deref(), Some("oauth-code"));
         assert_eq!(value("redirect_uri").as_deref(), Some(DEVICE_REDIRECT_URI));
-        assert_eq!(value("code_verifier").as_deref(), Some("device-code-verifier"));
+        assert_eq!(
+            value("code_verifier").as_deref(),
+            Some("device-code-verifier")
+        );
     }
 
     #[tokio::test]
@@ -853,8 +834,11 @@ mod tests {
         ]));
         transport.set_now_ms(START_MS);
         let oauth = ChatGptSubscriptionOAuth::new(transport.clone());
-        let (interaction, device_codes, selects) =
-            interaction_with(AbortController::new().signal(), DEVICE_CODE_LOGIN_METHOD, None);
+        let (interaction, device_codes, selects) = interaction_with(
+            AbortController::new().signal(),
+            DEVICE_CODE_LOGIN_METHOD,
+            None,
+        );
 
         let credential = oauth.login(&interaction).await.unwrap();
 
@@ -892,7 +876,10 @@ mod tests {
             }]
         );
         assert!(
-            transport.requests().iter().all(|request| request.url != AUTHORIZE_URL),
+            transport
+                .requests()
+                .iter()
+                .all(|request| request.url != AUTHORIZE_URL),
             "browser login should not start"
         );
     }
@@ -901,8 +888,11 @@ mod tests {
     async fn cancels_when_login_method_selection_is_cancelled() {
         let transport = Arc::new(ScriptedTransport::default());
         let oauth = ChatGptSubscriptionOAuth::new(transport);
-        let (interaction, _, _) =
-            interaction_with(AbortController::new().signal(), DEVICE_CODE_LOGIN_METHOD, Some("Login cancelled"));
+        let (interaction, _, _) = interaction_with(
+            AbortController::new().signal(),
+            DEVICE_CODE_LOGIN_METHOD,
+            Some("Login cancelled"),
+        );
 
         let error = oauth.login(&interaction).await.unwrap_err();
         assert_eq!(error.to_string(), "Login cancelled");
@@ -961,11 +951,23 @@ mod tests {
             (Some("deviceauth/usercode"), usercode_response("1")),
             (
                 Some("deviceauth/token"),
-                json(403, serde_json::json!({"error": "access_denied", "error_description": "denied"})),
+                json(
+                    403,
+                    serde_json::json!({"error": "access_denied", "error_description": "denied"}),
+                ),
             ),
-            (Some("deviceauth/token"), ScriptedResponse::Text { status: 404, body: "not ready".into() }),
+            (
+                Some("deviceauth/token"),
+                ScriptedResponse::Text {
+                    status: 404,
+                    body: "not ready".into(),
+                },
+            ),
             (Some("deviceauth/token"), device_code_success()),
-            (Some("oauth/token"), token_exchange_response("account-403-404")),
+            (
+                Some("oauth/token"),
+                token_exchange_response("account-403-404"),
+            ),
         ]));
         transport.set_now_ms(START_MS);
         let oauth = ChatGptSubscriptionOAuth::new(transport.clone());
@@ -983,7 +985,10 @@ mod tests {
         let credential = login.await.unwrap().unwrap();
         assert_eq!(credential.access, access_token("account-403-404"));
         assert_eq!(credential.refresh, "refresh-token");
-        assert_eq!(credential.get_extra_str("accountId"), Some("account-403-404"));
+        assert_eq!(
+            credential.get_extra_str("accountId"),
+            Some("account-403-404")
+        );
         assert_eq!(poll_count(&transport), 3);
     }
 
@@ -993,7 +998,10 @@ mod tests {
             (Some("deviceauth/usercode"), usercode_response("5")),
             (
                 Some("deviceauth/token"),
-                json(500, serde_json::json!({"error": "server_error", "error_description": "try again later"})),
+                json(
+                    500,
+                    serde_json::json!({"error": "server_error", "error_description": "try again later"}),
+                ),
             ),
         ]));
         transport.set_now_ms(START_MS);
@@ -1025,11 +1033,20 @@ mod tests {
         let signal = AbortController::new().signal();
 
         let error = oauth
-            .refresh(&OAuthCredential::new("invalid-access-token", "invalid-refresh-token", 0.0), &signal)
+            .refresh(
+                &OAuthCredential::new("invalid-access-token", "invalid-refresh-token", 0.0),
+                &signal,
+            )
             .await
             .unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("ChatGPT Subscription token refresh failed (401)"), "{message}");
-        assert!(message.contains("Could not validate your token"), "{message}");
+        assert!(
+            message.contains("ChatGPT Subscription token refresh failed (401)"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Could not validate your token"),
+            "{message}"
+        );
     }
 }

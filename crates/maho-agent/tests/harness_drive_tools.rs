@@ -15,6 +15,30 @@ fn call() -> ToolCall {
 }
 
 #[test]
+fn nested_records_survive_result_materialization_and_persistence() {
+    use maho_agent::harness::execution::tools::{FinalizedToolCall, create_tool_result_message};
+    use maho_ai::types::{NestedToolCallRecord, NestedToolCalls, NestedToolCallStatus, ToolResultMessage};
+    let nested_calls = Some(NestedToolCalls {
+        calls: vec![NestedToolCallRecord {
+            id: "call/1".into(), name: "read".into(), arguments: Some(serde_json::Map::new()),
+            arguments_bytes: None, status: NestedToolCallStatus::Ok, duration_ms: Some(1), error: None,
+        }],
+        complete: true,
+    });
+    let mut result = AgentToolResult::text("done");
+    result.nested_calls = nested_calls.clone();
+    let finalized = FinalizedToolCall { tool_call: call(), result, is_error: false, terminate: false };
+    let message = create_tool_result_message(&finalized);
+    assert_eq!(message.nested_calls, nested_calls);
+    let persisted = serde_json::to_value(&message).expect("serialize message");
+    let restored: ToolResultMessage = serde_json::from_value(persisted).expect("restore message");
+    assert_eq!(restored.nested_calls, nested_calls);
+    let checkpoint = maho_agent::harness::execution::tools::tool_result_from_message(&restored, false);
+    assert_eq!(checkpoint.nested_calls, nested_calls);
+    assert_eq!(interrupted_outcome(call(), Some(&checkpoint), 10).message.nested_calls, nested_calls);
+}
+
+#[test]
 fn interrupted_effect_preserves_durable_checkpoint_and_marks_unknown_outcome() {
     let mut checkpoint = AgentToolResult::text("latest durable output");
     checkpoint.details = serde_json::json!({"checkpoint": 1});
@@ -173,7 +197,7 @@ async fn replay_clears_old_checkpoint_and_returns_persisted_arguments() {
     let lane = lane(Control::Running);
     let pending = DurableCall::EffectPending { source_index: 0, result_entry_id: "result".into(), replay: ToolCallReplay::Safe };
     publish_tool_intent(&lane, pending.clone(), &call(), serde_json::json!({"path":"saved"}), ToolCallReplay::Safe, false, &BACKGROUND_CONTEXT).await.unwrap();
-    let checkpoint = maho_agent::types::AgentToolResult { content: vec![maho_ai::types::ContentBlock::text("durable")], details: serde_json::json!({"offset":2}), structured_content: None, usage: None, added_tool_names: None, terminate: None, is_error: None };
+    let checkpoint = maho_agent::types::AgentToolResult { content: vec![maho_ai::types::ContentBlock::text("durable")], details: serde_json::json!({"offset":2}), structured_content: None, usage: None, nested_calls: None, added_tool_names: None, terminate: None, is_error: None };
     let mutation = lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.unwrap();
     mutation.commit(vec![Write::Value(set_value(&pending_tool_output("op", "result"), serde_json::to_value(&checkpoint).unwrap()))], &BACKGROUND_CONTEXT).await.unwrap();
     mutation.end(&BACKGROUND_CONTEXT).await;

@@ -46,13 +46,13 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
     let Scenario { cancel, fail_append, abort, timeout, reload, late_rebind, recovering, fail_ui, empty_submission } = opts;
     let root = tempfile::tempdir()?;
     let project = root.path();
-    let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+    let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() })?;
     let model = provider.get_model(Some("faux-1")).ok_or("Missing faux model")?;
     let streams = faux_streams(provider.core.clone());
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(project.join("models.json")), auth_path: Some(project.join("auth.json")),
         providers: Some(vec![provider.provider.clone()]), ..Default::default()
-    });
+    })?;
     let cwd = project.to_string_lossy().into_owned();
     let mut session_manager = maho_core::session_manager::SessionManager::in_memory(&cwd, None, None);
     if recovering {

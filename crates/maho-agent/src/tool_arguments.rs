@@ -10,21 +10,28 @@ use crate::types::{AgentTool, AgentToolCall, ToolArgumentShim};
 /// normalization rewrites the answer the provider actually produced: the Claude SDK continuity
 /// fingerprint then reports `assistant_rewritten` and the next turn re-sends the whole
 /// conversation (senpi#1472). `validateToolArguments` already detaches for the same reason.
-pub fn prepare_tool_arguments(shim: Option<&ToolArgumentShim>, args: Value) -> Value {
+pub fn prepare_tool_arguments(
+    shim: Option<&ToolArgumentShim>,
+    args: Value,
+) -> Result<Value, String> {
     match shim {
-        None => args,
+        None => Ok(args),
         Some(shim) => shim(args),
     }
 }
 
-pub fn prepare_agent_tool_call_arguments(tool: &AgentTool, tool_call: &AgentToolCall) -> AgentToolCall {
+pub fn prepare_agent_tool_call_arguments(
+    tool: &AgentTool,
+    tool_call: &AgentToolCall,
+) -> Result<AgentToolCall, String> {
     match tool.prepare_arguments.as_ref() {
-        None => tool_call.clone(),
+        None => Ok(tool_call.clone()),
         Some(shim) => {
-            let prepared = prepare_tool_arguments(Some(shim), Value::Object(tool_call.arguments.clone()));
+            let prepared =
+                prepare_tool_arguments(Some(shim), Value::Object(tool_call.arguments.clone()))?;
             let mut tool_call = tool_call.clone();
             tool_call.arguments = prepared.as_object().cloned().unwrap_or_default();
-            tool_call
+            Ok(tool_call)
         }
     }
 }
@@ -38,7 +45,10 @@ mod tests {
 
     #[test]
     fn preserves_prepared_non_object_values_until_call_shape_conversion() {
-        let shim: ToolArgumentShim = Arc::new(|_| json!("normalized"));
-        assert_eq!(prepare_tool_arguments(Some(&shim), json!({"input": true})), Value::String("normalized".into()));
+        let shim: ToolArgumentShim = Arc::new(|_| Ok(json!("normalized")));
+        assert_eq!(
+            prepare_tool_arguments(Some(&shim), json!({"input": true})),
+            Ok(Value::String("normalized".into()))
+        );
     }
 }

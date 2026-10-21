@@ -1,6 +1,6 @@
 //! Port of senpi packages/ai/src/tool-call-middleware/protocols/anthropic-xml/stream-boundary.ts.
 
-// Incomplete protocol fragments are rejected before retained input can exceed this many bytes.
+// Incomplete protocol fragments are limited in UTF-16 code units, as in JS string.length.
 pub const ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH: usize = 64 * 1024;
 
 pub trait StreamBoundaryMatcher: Send {
@@ -35,11 +35,17 @@ fn is_parameter_close_tag(tag: &str) -> bool {
 }
 
 fn tag_matches(tag: &str, name: &str, closing: bool) -> bool {
-    let Some(inner) = tag.strip_prefix('<') else { return false };
-    let Some(inner) = inner.strip_suffix('>') else { return false };
+    let Some(inner) = tag.strip_prefix('<') else {
+        return false;
+    };
+    let Some(inner) = inner.strip_suffix('>') else {
+        return false;
+    };
     let inner = inner.trim_start();
     let inner = if closing {
-        let Some(rest) = inner.strip_prefix('/') else { return false };
+        let Some(rest) = inner.strip_prefix('/') else {
+            return false;
+        };
         rest.trim_start()
     } else {
         inner
@@ -48,7 +54,7 @@ fn tag_matches(tag: &str, name: &str, closing: bool) -> bool {
     if closing {
         inner.trim_end() == name
     } else if let Some(rest) = inner.strip_prefix(name) {
-        rest.is_empty() || rest.starts_with(char::is_whitespace)
+        !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
     } else {
         false
     }
@@ -62,7 +68,11 @@ struct InvokeBoundaryMatcher {
 
 impl InvokeBoundaryMatcher {
     fn new() -> Self {
-        Self { invoke_depth: 0, parameter_invoke_depths: Vec::new(), tag_chars: None }
+        Self {
+            invoke_depth: 0,
+            parameter_invoke_depths: Vec::new(),
+            tag_chars: None,
+        }
     }
 }
 
@@ -88,7 +98,10 @@ impl StreamBoundaryMatcher for InvokeBoundaryMatcher {
                 }
             }
 
-            let tag = self.tag_chars.take().expect("tag_chars is Some when a tag just closed");
+            let tag = self
+                .tag_chars
+                .take()
+                .expect("tag_chars is Some when a tag just closed");
             if is_invoke_open_tag(&tag) {
                 self.invoke_depth += 1;
                 continue;
@@ -147,7 +160,10 @@ impl StreamBoundaryMatcher for ClosingTagMatcher {
                     }
                     buf.push(character);
                     if character == '>' {
-                        let tag = self.tag_chars.take().expect("tag_chars is Some inside the Some arm");
+                        let tag = self
+                            .tag_chars
+                            .take()
+                            .expect("tag_chars is Some inside the Some arm");
                         matched = matched || tag_matches(&tag, self.tag_name, true);
                     }
                 }
@@ -158,7 +174,10 @@ impl StreamBoundaryMatcher for ClosingTagMatcher {
 }
 
 pub fn create_closing_tag_matcher(tag_name: &'static str) -> Box<dyn StreamBoundaryMatcher> {
-    Box::new(ClosingTagMatcher { tag_name, tag_chars: None })
+    Box::new(ClosingTagMatcher {
+        tag_name,
+        tag_chars: None,
+    })
 }
 
 struct TagEndMatcher;
@@ -184,22 +203,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opening_tags_accept_punctuation_but_not_word_suffixes() {
+        assert!(is_invoke_open_tag("<invoke/>"));
+        assert!(is_parameter_open_tag("<parameter/>"));
+        assert!(!is_invoke_open_tag("<invoke_foo>"));
+    }
+
+    #[test]
     fn invoke_boundary_matcher_signals_true_only_at_matching_close() {
-        let mut fragment = create_pending_fragment(PendingFragmentKind::Invoke, "<invoke name=\"t\">");
+        let mut fragment =
+            create_pending_fragment(PendingFragmentKind::Invoke, "<invoke name=\"t\">");
         assert!(!fragment.matcher.feed("<parameter name=\"a\">1</parameter>"));
         assert!(fragment.matcher.feed("</invoke>"));
     }
 
     #[test]
     fn invoke_boundary_matcher_handles_nested_invoke_inside_parameter() {
-        let mut fragment = create_pending_fragment(PendingFragmentKind::Invoke, "<invoke name=\"t\">");
-        assert!(!fragment.matcher.feed("<parameter name=\"a\"><invoke name=\"nested\">x</invoke></parameter>"));
+        let mut fragment =
+            create_pending_fragment(PendingFragmentKind::Invoke, "<invoke name=\"t\">");
+        assert!(
+            !fragment
+                .matcher
+                .feed("<parameter name=\"a\"><invoke name=\"nested\">x</invoke></parameter>")
+        );
         assert!(fragment.matcher.feed("</invoke>"));
     }
 
     #[test]
     fn closing_tag_matcher_matches_function_calls_close() {
-        let mut fragment = create_pending_fragment(PendingFragmentKind::FunctionCalls, "<function_calls>");
+        let mut fragment =
+            create_pending_fragment(PendingFragmentKind::FunctionCalls, "<function_calls>");
         assert!(fragment.matcher.feed("</function_calls>"));
     }
 

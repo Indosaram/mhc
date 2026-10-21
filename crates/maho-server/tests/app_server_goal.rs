@@ -137,7 +137,7 @@ async fn only_active_goals_publish_the_store_changed_event() {
         favorite_models: Vec::new(),
         flag_values: Default::default(),
         custom_tools: Vec::new(),
-        model_runtime: Some(ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() })),
+        model_runtime: Some(ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime")),
         model_registry: None,
         uses_default_stream_function: Some(false),
         initial_active_tool_names: None,

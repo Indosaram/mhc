@@ -6,9 +6,14 @@ use serde_json::Value;
 
 use super::invoke_protocol::InvokeProtocolConfig;
 use super::invoke_stream_helpers::find_function_calls_open_tag;
-use super::invoke_tag_scanner::{find_invoke_open_tag, is_potential_protocol_start, scan_invoke_block};
+use super::invoke_tag_scanner::{
+    find_invoke_open_tag, is_potential_protocol_start, scan_invoke_block,
+};
 use super::recovery_wrapper_state::{RecoveryWrapperAction, RecoveryWrapperState};
-use super::stream_boundary::{create_pending_fragment, PendingFragmentKind, StreamBoundaryMatcher, ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH};
+use super::stream_boundary::{
+    ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH, PendingFragmentKind, StreamBoundaryMatcher,
+    create_pending_fragment,
+};
 use super::tool_resolver::ToolResolver;
 use crate::tool_call_middleware::types::{ParserOptions, StreamParser, StreamParserEvent};
 use crate::types::Tool;
@@ -22,8 +27,12 @@ pub trait RecoveryStreamParser: StreamParser {
 type WrapperResolver = Box<dyn Fn(&str) -> Option<Tool> + Send>;
 
 enum RecoveryState {
-    Idle { tag: String },
-    Wrapper { scanner: RecoveryWrapperState<WrapperResolver> },
+    Idle {
+        tag: String,
+    },
+    Wrapper {
+        scanner: RecoveryWrapperState<WrapperResolver>,
+    },
     Active {
         tool: Box<Tool>,
         index: usize,
@@ -55,9 +64,18 @@ impl InvokeRecoveryStreamParser {
     fn report_overflow(&self, retained_length: usize) {
         if let Some(options) = &self.options {
             let mut metadata = HashMap::new();
-            metadata.insert("protocol".to_string(), Value::String(self.config.protocol.to_string()));
-            metadata.insert("retainedLength".to_string(), Value::Number(retained_length.into()));
-            options.report_error("ANTML recovery fragment exceeded the retained-input limit.", Some(metadata));
+            metadata.insert(
+                "protocol".to_string(),
+                Value::String(self.config.protocol.to_string()),
+            );
+            metadata.insert(
+                "retainedLength".to_string(),
+                Value::Number(retained_length.into()),
+            );
+            options.report_error(
+                "ANTML recovery fragment exceeded the retained-input limit.",
+                Some(metadata),
+            );
         }
     }
 
@@ -76,9 +94,20 @@ impl InvokeRecoveryStreamParser {
         let index = self.next_tool_call_index;
         self.next_tool_call_index += 1;
         let id = format!("recovered-antml-{index}");
-        events.push(StreamParserEvent::ToolcallStart { index, name: tool.name.clone(), id: id.clone() });
+        events.push(StreamParserEvent::ToolcallStart {
+            index,
+            name: tool.name.clone(),
+            id: id.clone(),
+        });
         let close_matcher = create_pending_fragment(PendingFragmentKind::Invoke, opening).matcher;
-        self.state = RecoveryState::Active { tool: Box::new(tool), index, id, close_matcher, wrapper, source: opening.to_string() };
+        self.state = RecoveryState::Active {
+            tool: Box::new(tool),
+            index,
+            id,
+            close_matcher,
+            wrapper,
+            source: opening.to_string(),
+        };
     }
 
     fn restore_after_active(&mut self, wrapper: Option<RecoveryWrapperState<WrapperResolver>>) {
@@ -89,19 +118,32 @@ impl InvokeRecoveryStreamParser {
     }
 
     fn finish_active(&mut self, events: &mut Vec<StreamParserEvent>) {
-        let RecoveryState::Active { tool, index, id, wrapper, source, .. } = std::mem::replace(&mut self.state, RecoveryState::Finished)
+        let RecoveryState::Active {
+            tool,
+            index,
+            id,
+            wrapper,
+            source,
+            ..
+        } = std::mem::replace(&mut self.state, RecoveryState::Finished)
         else {
             unreachable!()
         };
-        let opening = find_invoke_open_tag(&source, 0).expect("active state always starts from a matched invoke open tag");
+        let opening = find_invoke_open_tag(&source, 0)
+            .expect("active state always starts from a matched invoke open tag");
         let block = scan_invoke_block(&source, &opening);
         let arguments_record = if block.as_ref().is_some_and(|b| b.end == source.len()) {
-            block.and_then(|b| b.parameters).and_then(|p| (self.config.coerce)(&p, &tool))
+            block
+                .and_then(|b| b.parameters)
+                .and_then(|p| (self.config.coerce)(&p, &tool))
         } else {
             None
         };
         let arguments_value = arguments_record.clone().unwrap_or_default();
-        events.push(StreamParserEvent::ToolcallDelta { index, arguments_delta: Value::Object(arguments_value.clone()).to_string() });
+        events.push(StreamParserEvent::ToolcallDelta {
+            index,
+            arguments_delta: Value::Object(arguments_value.clone()).to_string(),
+        });
         if arguments_record.is_some() {
             events.push(StreamParserEvent::ToolcallEnd {
                 index,
@@ -114,9 +156,15 @@ impl InvokeRecoveryStreamParser {
         } else {
             if let Some(options) = &self.options {
                 let mut metadata = HashMap::new();
-                metadata.insert("protocol".to_string(), Value::String(self.config.protocol.to_string()));
+                metadata.insert(
+                    "protocol".to_string(),
+                    Value::String(self.config.protocol.to_string()),
+                );
                 metadata.insert("toolName".to_string(), Value::String(tool.name.clone()));
-                options.report_error("Recovered ANTML tool call arguments failed validation.", Some(metadata));
+                options.report_error(
+                    "Recovered ANTML tool call arguments failed validation.",
+                    Some(metadata),
+                );
             }
             events.push(StreamParserEvent::ToolcallEnd {
                 index,
@@ -131,12 +179,22 @@ impl InvokeRecoveryStreamParser {
     }
 
     fn overflow_active(&mut self, events: &mut Vec<StreamParserEvent>) {
-        let RecoveryState::Active { tool, index, id, wrapper, source, .. } = std::mem::replace(&mut self.state, RecoveryState::Finished)
+        let RecoveryState::Active {
+            tool,
+            index,
+            id,
+            wrapper,
+            source,
+            ..
+        } = std::mem::replace(&mut self.state, RecoveryState::Finished)
         else {
             unreachable!()
         };
-        self.report_overflow(source.len());
-        events.push(StreamParserEvent::ToolcallDelta { index, arguments_delta: "{}".to_string() });
+        self.report_overflow(crate::utils::js::utf16_len(&source));
+        events.push(StreamParserEvent::ToolcallDelta {
+            index,
+            arguments_delta: "{}".to_string(),
+        });
         events.push(StreamParserEvent::ToolcallEnd {
             index,
             name: tool.name.clone(),
@@ -168,7 +226,9 @@ impl InvokeRecoveryStreamParser {
             && wrapper.length == tag.len()
         {
             let resolver_fn = self.make_resolver_fn();
-            self.state = RecoveryState::Wrapper { scanner: RecoveryWrapperState::new(tag, resolver_fn) };
+            self.state = RecoveryState::Wrapper {
+                scanner: RecoveryWrapperState::new(tag, resolver_fn),
+            };
             return;
         }
         super::invoke_stream_helpers::emit_text(events, &tag);
@@ -176,7 +236,9 @@ impl InvokeRecoveryStreamParser {
     }
 
     fn feed_idle_character(&mut self, events: &mut Vec<StreamParserEvent>, character: char) {
-        let RecoveryState::Idle { tag } = &self.state else { unreachable!() };
+        let RecoveryState::Idle { tag } = &self.state else {
+            unreachable!()
+        };
         let mut tag = tag.clone();
         if tag.is_empty() && character != '<' {
             super::invoke_stream_helpers::emit_text(events, character.encode_utf8(&mut [0u8; 4]));
@@ -184,11 +246,13 @@ impl InvokeRecoveryStreamParser {
         }
         if character == '<' && !tag.is_empty() {
             super::invoke_stream_helpers::emit_text(events, &tag);
-            self.state = RecoveryState::Idle { tag: "<".to_string() };
+            self.state = RecoveryState::Idle {
+                tag: "<".to_string(),
+            };
             return;
         }
-        if exceeds_retained_limit(tag.len(), character.len_utf8()) {
-            let tag_len = tag.len();
+        if exceeds_retained_limit(crate::utils::js::utf16_len(&tag), character.len_utf16()) {
+            let tag_len = crate::utils::js::utf16_len(&tag);
             self.report_overflow(tag_len);
             super::invoke_stream_helpers::emit_text(events, &tag);
             self.state = RecoveryState::Idle { tag: String::new() };
@@ -198,12 +262,14 @@ impl InvokeRecoveryStreamParser {
         tag.push(character);
         if character == '>' {
             self.handle_idle_tag(events, tag);
-        } else if tag.len() == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH {
-            let tag_len = tag.len();
+        } else if crate::utils::js::utf16_len(&tag) == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH {
+            let tag_len = crate::utils::js::utf16_len(&tag);
             self.report_overflow(tag_len);
             super::invoke_stream_helpers::emit_text(events, &tag);
             self.state = RecoveryState::Idle { tag: String::new() };
-        } else if tag.len() <= MAX_PARTIAL_TAG_VALIDATION_LENGTH && !is_potential_protocol_start(&tag) {
+        } else if crate::utils::js::utf16_len(&tag) <= MAX_PARTIAL_TAG_VALIDATION_LENGTH
+            && !is_potential_protocol_start(&tag)
+        {
             super::invoke_stream_helpers::emit_text(events, &tag);
             self.state = RecoveryState::Idle { tag: String::new() };
         } else {
@@ -212,7 +278,9 @@ impl InvokeRecoveryStreamParser {
     }
 
     fn feed_wrapper_character(&mut self, events: &mut Vec<StreamParserEvent>, character: char) {
-        let RecoveryState::Wrapper { scanner } = &mut self.state else { unreachable!() };
+        let RecoveryState::Wrapper { scanner } = &mut self.state else {
+            unreachable!()
+        };
         let actions = scanner.feed(character);
         for action in actions {
             match action {
@@ -223,16 +291,27 @@ impl InvokeRecoveryStreamParser {
                     super::invoke_stream_helpers::emit_text(events, &text);
                     self.state = RecoveryState::Idle { tag: String::new() };
                 }
-                RecoveryWrapperAction::Known { text_before, opening, tool } => {
+                RecoveryWrapperAction::Known {
+                    text_before,
+                    opening,
+                    tool,
+                } => {
                     super::invoke_stream_helpers::emit_text(events, &text_before);
                     let tool = (*tool).clone();
-                    let RecoveryState::Wrapper { scanner } = std::mem::replace(&mut self.state, RecoveryState::Finished) else {
+                    let RecoveryState::Wrapper { scanner } =
+                        std::mem::replace(&mut self.state, RecoveryState::Finished)
+                    else {
                         unreachable!()
                     };
                     self.start_known_invoke(events, &opening, tool, Some(scanner));
                     return;
                 }
-                RecoveryWrapperAction::Overflow { text, retained_length, retains_wrapper, next_character } => {
+                RecoveryWrapperAction::Overflow {
+                    text,
+                    retained_length,
+                    retains_wrapper,
+                    next_character,
+                } => {
                     self.report_overflow(retained_length);
                     super::invoke_stream_helpers::emit_text(events, &text);
                     if retains_wrapper {
@@ -252,8 +331,10 @@ impl InvokeRecoveryStreamParser {
     }
 
     fn feed_active_character(&mut self, events: &mut Vec<StreamParserEvent>, character: char) {
-        let RecoveryState::Active { source, .. } = &self.state else { unreachable!() };
-        if exceeds_retained_limit(source.len(), character.len_utf8()) {
+        let RecoveryState::Active { source, .. } = &self.state else {
+            unreachable!()
+        };
+        if exceeds_retained_limit(crate::utils::js::utf16_len(source), character.len_utf16()) {
             self.overflow_active(events);
             match &mut self.state {
                 RecoveryState::Wrapper { .. } => self.feed_wrapper_character(events, character),
@@ -262,12 +343,20 @@ impl InvokeRecoveryStreamParser {
             }
             return;
         }
-        let RecoveryState::Active { close_matcher, source, .. } = &mut self.state else { unreachable!() };
+        let RecoveryState::Active {
+            close_matcher,
+            source,
+            ..
+        } = &mut self.state
+        else {
+            unreachable!()
+        };
         source.push(character);
         let matched = close_matcher.feed(character.encode_utf8(&mut [0u8; 4]));
         if matched {
             self.finish_active(events);
-        } else if source.len() == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH {
+        } else if crate::utils::js::utf16_len(source) == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH
+        {
             self.overflow_active(events);
         }
     }
@@ -282,7 +371,9 @@ impl StreamParser for InvokeRecoveryStreamParser {
             }
             match &self.state {
                 RecoveryState::Idle { .. } => self.feed_idle_character(&mut events, character),
-                RecoveryState::Wrapper { .. } => self.feed_wrapper_character(&mut events, character),
+                RecoveryState::Wrapper { .. } => {
+                    self.feed_wrapper_character(&mut events, character)
+                }
                 RecoveryState::Active { .. } => self.feed_active_character(&mut events, character),
                 RecoveryState::Finished => {}
             }
@@ -293,8 +384,12 @@ impl StreamParser for InvokeRecoveryStreamParser {
     fn finish(&mut self) -> Vec<StreamParserEvent> {
         let mut events = Vec::new();
         match std::mem::replace(&mut self.state, RecoveryState::Finished) {
-            RecoveryState::Idle { tag } => super::invoke_stream_helpers::emit_text(&mut events, &tag),
-            RecoveryState::Wrapper { scanner } => super::invoke_stream_helpers::emit_text(&mut events, &scanner.finish()),
+            RecoveryState::Idle { tag } => {
+                super::invoke_stream_helpers::emit_text(&mut events, &tag)
+            }
+            RecoveryState::Wrapper { scanner } => {
+                super::invoke_stream_helpers::emit_text(&mut events, &scanner.finish())
+            }
             _ => {}
         }
         events
@@ -324,7 +419,13 @@ pub fn create_invoke_recovery_stream_parser(
     config: &'static InvokeProtocolConfig,
     options: Option<ParserOptions>,
 ) -> Box<dyn RecoveryStreamParser + Send> {
-    Box::new(InvokeRecoveryStreamParser { tools, config, options, state: RecoveryState::Idle { tag: String::new() }, next_tool_call_index: 0 })
+    Box::new(InvokeRecoveryStreamParser {
+        tools,
+        config,
+        options,
+        state: RecoveryState::Idle { tag: String::new() },
+        next_tool_call_index: 0,
+    })
 }
 
 #[cfg(test)]
@@ -335,7 +436,16 @@ mod tests {
 
     /// senpi emits one text event per idle character, so tests assert on the concatenation.
     fn text_of(events: &[StreamParserEvent]) -> String {
-        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+        events
+            .iter()
+            .filter_map(|event| {
+                if let StreamParserEvent::Text { text } = event {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn tool(name: &str) -> Tool {
@@ -352,53 +462,91 @@ mod tests {
     #[test]
     fn recovers_a_bare_invoke_leaked_outside_any_wrapper() {
         let tools = vec![tool("get_weather")];
-        let mut parser = create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
-        let mut events = parser.feed(r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#);
+        let mut parser =
+            create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
+        let mut events = parser.feed(
+            r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#,
+        );
         events.extend(parser.finish());
         assert!(matches!(events[0], StreamParserEvent::ToolcallStart { .. }));
-        assert!(matches!(&events[2], StreamParserEvent::ToolcallEnd { incomplete: false, .. }));
+        assert!(matches!(
+            &events[2],
+            StreamParserEvent::ToolcallEnd {
+                incomplete: false,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn recovers_an_invoke_wrapped_in_function_calls() {
         let tools = vec![tool("get_weather")];
-        let mut parser = create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
+        let mut parser =
+            create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
         let mut events =
             parser.feed(r#"<function_calls><invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke></function_calls>"#);
         events.extend(parser.finish());
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallStart { .. })));
-        assert!(events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallEnd { incomplete: false, .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamParserEvent::ToolcallStart { .. }))
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamParserEvent::ToolcallEnd {
+                incomplete: false,
+                ..
+            }
+        )));
     }
 
     #[test]
     fn plain_text_passes_through_untouched() {
         let tools = vec![tool("get_weather")];
-        let mut parser = create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
+        let mut parser =
+            create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
         let mut events = parser.feed("hello world");
         events.extend(parser.finish());
         // senpi's idle path emits one text event per character; the concatenation is what callers see.
         assert_eq!(text_of(&events), "hello world");
-        assert!(events.iter().all(|event| matches!(event, StreamParserEvent::Text { .. })));
+        assert!(
+            events
+                .iter()
+                .all(|event| matches!(event, StreamParserEvent::Text { .. }))
+        );
     }
 
     #[test]
     fn interrupt_flushes_idle_tag_as_text() {
         let tools = vec![tool("get_weather")];
-        let mut parser = create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
+        let mut parser =
+            create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
         parser.feed("<inv");
         let events = parser.interrupt();
-        assert_eq!(events, vec![StreamParserEvent::Text { text: "<inv".into() }]);
+        assert_eq!(
+            events,
+            vec![StreamParserEvent::Text {
+                text: "<inv".into()
+            }]
+        );
     }
 
     #[test]
     fn unknown_tool_invoke_is_emitted_as_text() {
         let tools: Vec<Tool> = Vec::new();
-        let mut parser = create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
+        let mut parser =
+            create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
         let mut events = parser.feed(r#"<invoke name="unknown"></invoke>"#);
         events.extend(parser.finish());
         let text: String = events
             .iter()
-            .filter_map(|e| if let StreamParserEvent::Text { text } = e { Some(text.as_str()) } else { None })
+            .filter_map(|e| {
+                if let StreamParserEvent::Text { text } = e {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(text, r#"<invoke name="unknown"></invoke>"#);
     }

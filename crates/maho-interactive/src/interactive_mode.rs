@@ -489,6 +489,9 @@ pub struct InteractiveMode {
     custom_ui_result: Rc<RefCell<Option<serde_json::Value>>>,
     custom_ui_reply: Option<tokio::sync::oneshot::Sender<Result<serde_json::Value, maho_ext_api::ExtensionFailure>>>,
     mounted_renderer: Option<std::rc::Weak<RefCell<crate::tui_renderer::InteractiveTui>>>,
+    side_column: Option<maho_ext_api::ExtensionSideColumn>,
+    side_column_widget_bounds: Option<(usize,usize)>,
+    mounted_side_column: Option<crate::side_column::MountedSideColumn>,
     terminal_dimensions: Rc<std::cell::Cell<(u16,u16)>>,
     custom_overlay: Option<maho_tui::tui::OverlayHandle>,
     debug_log_path: Option<String>,
@@ -631,7 +634,13 @@ impl InteractiveMode {
         for (name, renderers) in snapshot { self.install_native_tool_renderers(name, renderers); }
     }
     pub(crate) fn set_terminal_dimensions(&self, columns:usize, rows:usize) { self.terminal_dimensions.set((u16::try_from(columns).unwrap_or(u16::MAX),u16::try_from(rows).unwrap_or(u16::MAX))); }
-    pub(crate) fn set_mounted_renderer(&mut self, renderer: Rc<RefCell<crate::tui_renderer::InteractiveTui>>) { self.mounted_renderer = Some(Rc::downgrade(&renderer)); self.apply_smooth_streaming_render_fps(); }
+    pub(crate) fn set_mounted_renderer(&mut self, renderer: Rc<RefCell<crate::tui_renderer::InteractiveTui>>) {
+        if let Some(previous) = self.mounted_renderer.as_ref().and_then(std::rc::Weak::upgrade)
+            && let Some(mounted) = self.mounted_side_column.take() { mounted.dispose(&mut previous.borrow_mut()); }
+        self.mounted_renderer = Some(Rc::downgrade(&renderer));
+        self.apply_smooth_streaming_render_fps();
+        if let Some(column) = self.side_column.clone() { self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SideColumn(Some(column))); }
+    }
     /// senpi `applySmoothStreamingRenderFps`: the render cap follows the smooth-streaming FPS while
     /// smooth streaming is on, and the default 60fps otherwise.
     pub fn smooth_streaming_render_fps(&self) -> f64 {
@@ -652,7 +661,7 @@ impl InteractiveMode {
     /// question is pending or shown, plus an "always" lease in regular mode when
     /// `terminalMouse` is `always`. Idempotent, so the host calls it once per frame.
     pub fn sync_question_mouse_capture(&mut self, ui: &mut crate::tui_renderer::InteractiveTui, terminal: &mut dyn maho_tui::terminal::Terminal) {
-        let wants_mouse_lease = !self.questions.is_empty() || self.question.is_some();
+        let wants_mouse_lease = !self.questions.is_empty() || self.question.is_some() || (self.side_column.is_some() && ui.is_regular());
         let mode = self.terminal_mouse_mode();
         let enabled = !self.question_mouse_paused && mode != "off";
         if enabled && wants_mouse_lease {
@@ -1289,7 +1298,7 @@ impl InteractiveMode {
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
         let invalidate_ui = Arc::downgrade(&extension_ui);
         session.set_before_session_invalidate(Some(Arc::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } })));
-        Self { ulw_turn_glow:false, provider_count_key:None, footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, pending_selection_copy:false, selection_copy_available:false, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None, extension_editor_dialog: None, pending_dialog_external_edit: Default::default(), footer_poll_ms: None, footer_event_generation: 0, footer_stats_cache: RefCell::new(None), footer_subscription_cache: RefCell::new(None), keybindings_cache: RefCell::new(None), assistant_segment_seen: BTreeMap::new() }
+        Self { side_column_widget_bounds:None, side_column:None, mounted_side_column:None, ulw_turn_glow:false, provider_count_key:None, footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, pending_selection_copy:false, selection_copy_available:false, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None, extension_editor_dialog: None, pending_dialog_external_edit: Default::default(), footer_poll_ms: None, footer_event_generation: 0, footer_stats_cache: RefCell::new(None), footer_subscription_cache: RefCell::new(None), keybindings_cache: RefCell::new(None), assistant_segment_seen: BTreeMap::new() }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1590,7 +1599,13 @@ impl InteractiveMode {
             timeout.abort();
             let mut selection_error = immediate_selection_error;
             if previous_model.provider == "unknown" && previous_model.id == "unknown" && session.model() == previous_model && session.session_id() == session_id {
-                let models = runtime.get_available(Some(&provider_id)).await;
+                let models = match runtime.get_available(Some(&provider_id)).await {
+                    Ok(models) => models,
+                    Err(error) => {
+                        let _ = sender.send(AuthUiEvent::LoginCatalogFinished { provider_name, action, result: Err(error.to_string()), selection_error, selected_model: None });
+                        return;
+                    }
+                };
                 let provider_models = models.iter().filter(|model| model.provider == provider_id).collect::<Vec<_>>();
                 if provider_id == "llama.cpp" {
                     selection_error = Some(if provider_models.is_empty() { format!("{action}. No llama.cpp models are loaded. Use /llama to load a model, then /model to select it.") } else { format!("{action}. Use /model to select a loaded llama.cpp model, or /llama to manage models.") });
@@ -4037,7 +4052,7 @@ impl InteractiveMode {
             let id = provider.id().to_owned();
             let Some(auth) = runtime.get_provider_auth(&id) else { continue };
             let status = runtime.get_provider_auth_status(&id);
-            let status = status.configured.then(|| maho_ai::auth::types::AuthCheck {
+            let status = status.configured.then(|| maho_ai::auth::types::AuthCheck { ambient: status.ambient,
                 auth_type: if runtime.is_using_oauth(&id) { maho_ai::auth::types::AuthType::OAuth } else { maho_ai::auth::types::AuthType::ApiKey },
                 source: status.label.or(status.source),
             });
@@ -4067,7 +4082,7 @@ impl InteractiveMode {
             let auth_type = match credential.credential_type { maho_ai::auth::types::CredentialType::OAuth => AuthSelectorAuthType::OAuth, maho_ai::auth::types::CredentialType::ApiKey => AuthSelectorAuthType::ApiKey };
             AuthSelectorProvider {
                 name: registry.get_provider_display_name(&credential.provider_id), id: credential.provider_id, auth_type, method_name: None, login_label: None, method_has_login: true,
-                status: Some(maho_ai::auth::types::AuthCheck { auth_type: maho_ai::auth::types::AuthType::from(auth_type), source: Some("stored credential".to_owned()) }),
+                status: Some(maho_ai::auth::types::AuthCheck { ambient: false, auth_type: maho_ai::auth::types::AuthType::from(auth_type), source: Some("stored credential".to_owned()) }),
             }
         }).collect::<Vec<_>>();
         options.sort_by(|left, right| locale_compare(&left.name, &right.name));
@@ -4188,7 +4203,14 @@ impl InteractiveMode {
             let mut selection_error = None;
             if result.is_ok() && previous_model.provider == "unknown" && previous_model.id == "unknown"
                 && session.model() == previous_model && session.session_id() == session_id {
-                let models = runtime.get_available(Some(&provider_id)).await;
+                let models = match runtime.get_available(Some(&provider_id)).await {
+                    Ok(models) => models,
+                    Err(error) => {
+                        selection_error = Some(format!("Saved credentials for {provider_name}, but selecting its default model failed: {error}. Use /model to select a model."));
+                        let _ = sender.send(AuthUiEvent::LoginFinished { provider_id: event_provider_id, provider_name, method, result, selection_error });
+                        return;
+                    }
+                };
                 let default_id = maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER.iter().find(|(id, _)| *id == provider_id).map(|(_, model)| *model);
                 if let Some(model) = models.iter().find(|model| Some(model.id.as_str()) == default_id)
                     .or_else(|| if provider_id == "radius" { models.first() } else { None }) {
@@ -4805,6 +4827,7 @@ impl InteractiveMode {
     /// indicator state. Statuses and terminal-input listeners were cleared by the hook itself.
     fn reset_extension_ui(&mut self) {
         use crate::interactive_extension_ui::UiRequest;
+        self.handle_ui_request(UiRequest::SideColumn(None));
         self.footer = None;
         self.set_extension_header(None);
         for (_, mut widget, _) in std::mem::take(&mut self.widgets) { widget.dispose(); }
@@ -4824,6 +4847,22 @@ impl InteractiveMode {
     pub fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
         use crate::interactive_extension_ui::UiRequest;
         match request {
+            UiRequest::SideColumn(column) => {
+                if let Some(renderer) = self.mounted_renderer.as_ref().and_then(std::rc::Weak::upgrade) {
+                    let mut renderer = renderer.borrow_mut();
+                    if let Some(mounted) = self.mounted_side_column.take() { mounted.dispose(&mut renderer); }
+                    if let Some(column) = &column {
+                        self.mounted_side_column = crate::side_column::MountedSideColumn::mount(&mut renderer, column, &maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref()), self.terminal_dimensions.clone());
+                    }
+                }
+                let key = "omo-side-panel-native-fallback";
+                if let Some(index) = self.widgets.iter().position(|(name,_,_)|name == key) { let (_,mut previous,_) = self.widgets.remove(index); previous.dispose(); }
+                if self.mounted_side_column.is_none() && let Some(column) = &column {
+                    self.widgets.push((key.into(), (column.factory)(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref())), maho_ext_api::WidgetPlacement::AboveEditor));
+                }
+                self.side_column = column;
+                self.editor_host.request_render();
+            }
             UiRequest::WidgetFrame => self.editor_host.request_render(),
             UiRequest::ResetExtensionUi => self.reset_extension_ui(),
             UiRequest::WidgetFactory(key, factory, options) => {
@@ -5371,7 +5410,7 @@ impl InteractiveMode {
                     }
                 }
             }
-            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args, .. } => {
                 self.active_tool_executions.retain(|(id, _)| id != tool_call_id);
                 self.active_tool_executions.push((tool_call_id.clone(), crate::working_status::format_active_tool_working_label(tool_name, args)));
                 self.active_tool_execution_terminal_title = self.active_tool_executions.last().map(|(_, label)| format!("{} - {label}", maho_core::config::app_title()));
@@ -5388,7 +5427,7 @@ impl InteractiveMode {
                     else if !handled { component.borrow_mut().update_result(Self::tool_result(partial_result, false), true); }
                 }
             }
-            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error, .. } => {
                 let before = self.active_tool_executions.len();
                 self.active_tool_executions.retain(|(id, _)| id != tool_call_id);
                 if self.active_tool_executions.len() != before { self.refresh_active_tool_execution_terminal_title(); }
@@ -5422,11 +5461,8 @@ impl InteractiveMode {
         };
         if let Some(component) = component {
             let mut segment = maho_ai::types::AssistantMessage {
-                content: message.content[start..end].to_vec(), api: message.api.clone(), provider: message.provider.clone(), model: message.model.clone(),
-                response_model: message.response_model.clone(), response_id: message.response_id.clone(), provider_thinking_level: message.provider_thinking_level.clone(),
-                diagnostics: message.diagnostics.clone(), usage: message.usage, stop_reason: message.stop_reason, stop_details: message.stop_details.clone(),
-                deferred: message.deferred.clone(), error_message: message.error_message.clone(), abort_source: message.abort_source,
-                raw_stop_reason: message.raw_stop_reason.clone(), end_turn: message.end_turn, timestamp: message.timestamp,
+                content: message.content[start..end].to_vec(),
+                ..message.clone()
             };
             if end < message.content.len() { segment.error_message = None; segment.stop_reason = maho_ai::types::StopReason::ToolUse; }
             let value = serde_json::to_value(segment).expect("assistant segment");
@@ -5773,8 +5809,17 @@ impl Component for ProviderFailureNoticeSlot {
 impl Component for InteractiveMode {
     fn render(&mut self, width: usize) -> Vec<String> {
         let (mut document, dock) = self.render_split(width);
+        if let Some((top,_)) = &mut self.side_column_widget_bounds { *top += document.len(); }
         document.extend(dock);
         document
+    }
+    fn handle_mouse(&mut self,event:&maho_tui::tui::TuiMouseEvent)->Option<maho_tui::tui::TuiMouseEventResult> {
+        let (top,height)=self.side_column_widget_bounds?;
+        let y=usize::try_from(event.y).ok()?;
+        if y<top || y>=top.saturating_add(height) {return None;}
+        let (_,widget,_)=self.widgets.iter_mut().find(|(key,_,_)|key=="omo-side-panel-native-fallback")?;
+        let mut local=*event;local.y-=i64::try_from(top).ok()?;local.height=height;
+        widget.handle_mouse(&local)
     }
     fn handle_input(&mut self, data: &str) {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_millis();
@@ -5785,6 +5830,7 @@ impl Component for InteractiveMode {
     fn focusable_set(&mut self, focused: bool) { maho_tui::tui::Focusable::set_focused(&mut self.editor, focused); }
     fn invalidate(&mut self) { self.chat.invalidate(); self.editor.invalidate(); }
     fn dispose(&mut self) {
+        self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SideColumn(None));
         for (_, widget, _) in &mut self.widgets { widget.dispose(); }
         self.widgets.clear();
         self.chat.dispose();
@@ -5832,7 +5878,12 @@ impl InteractiveMode {
         lines.extend(self.render_pending_messages(width));
         if let Some(compaction) = compaction { lines.extend(compaction.borrow_mut().render(width)); }
         else if let Some(idle) = &mut self.idle_status { lines.extend(idle.render(width)); }
-        for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
+        self.side_column_widget_bounds=None;
+        for (key, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor {
+            let rendered=widget.render(width);
+            if key=="omo-side-panel-native-fallback" {self.side_column_widget_bounds=Some((lines.len(),rendered.len()));}
+            lines.extend(rendered);
+        } }
         if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
         if let Some(widget) = &mut self.async_question_widget { lines.extend(widget.render(width)); }
         lines.extend(if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.render(width) } else if let Some(reload_box) = &mut self.reload_box { reload_box.render(width) } else if let Some(share) = &mut self.share { share.loader.render(width) } else if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(dialog) = &mut self.login_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else if let Some(editor) = &mut self.custom_editor { editor.render(width) } else { self.render_prompt_editor(width) });

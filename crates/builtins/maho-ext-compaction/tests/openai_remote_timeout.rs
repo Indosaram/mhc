@@ -1,17 +1,43 @@
-use std::{future::pending, sync::atomic::{AtomicBool, Ordering}, time::Duration};
+use std::{sync::atomic::{AtomicBool, Ordering}, time::Duration};
 use maho_ai::utils::abort::AbortController;
 use maho_ext_compaction::openai_remote_timeout::run_with_remote_timeout;
 
 #[tokio::test(start_paused = true)]
 async fn timeout_aborts_operation_and_notifies_once() {
     let source = AbortController::new();
+    let signal = source.signal();
     let captured = std::sync::Mutex::new(None);
     let notified = AtomicBool::new(false);
-    let result = run_with_remote_timeout(&source.signal(), Duration::from_secs(1), |signal| {
-        *captured.lock().unwrap() = Some(signal);
-        pending::<Result<(), &'static str>>()
-    }, || assert!(!notified.swap(true, Ordering::SeqCst)), || "aborted").await;
+    let acknowledged = AtomicBool::new(false);
+    let acknowledgement = &acknowledged;
+    let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let operation = run_with_remote_timeout(&signal, Duration::from_secs(1), |signal| {
+        *captured.lock().unwrap() = Some(signal.clone());
+        async move {
+            signal.cancelled().await;
+            cleanup_tx.send(()).expect("cleanup subscriber");
+            release_rx.await.expect("cleanup release");
+            acknowledgement.store(true, Ordering::SeqCst);
+            Ok::<(), &'static str>(())
+        }
+    }, || {
+        assert!(acknowledged.load(Ordering::SeqCst));
+        assert!(!notified.swap(true, Ordering::SeqCst));
+    }, || "aborted");
+    tokio::pin!(operation);
+    tokio::select! {
+        result = &mut operation => panic!("timeout returned before cleanup release: {result:?}"),
+        cleanup = tokio::time::timeout(Duration::from_secs(5), cleanup_rx) => {
+            cleanup.expect("cleanup deadline").expect("cleanup started");
+        }
+    }
+    assert!(!acknowledged.load(Ordering::SeqCst));
+    assert!(!notified.load(Ordering::SeqCst));
+    release_tx.send(()).expect("cleanup release subscriber");
+    let result = tokio::time::timeout(Duration::from_secs(5), operation).await.expect("timeout settlement deadline");
     assert_eq!(result, Ok(None));
+    assert!(acknowledged.load(Ordering::SeqCst));
     assert!(notified.load(Ordering::SeqCst));
     assert!(captured.lock().unwrap().as_ref().unwrap().aborted());
 }

@@ -47,8 +47,9 @@ impl<'a> MigrationLock<'a> {
         let owned = self.owned_content.borrow().clone();
         let replaced =
             self.file_system
-                .replace_if_contents_match(&self.path, &owned, &renewed_content)?;
+                .replace_if_contents_match(&self.path, &owned, &renewed_content);
         release_mutation_guard(&self.env, self.file_system, &guard_content);
+        let replaced = replaced?;
 
         if !replaced {
             return Err(MigrationError::lock("Migration lock ownership was lost"));

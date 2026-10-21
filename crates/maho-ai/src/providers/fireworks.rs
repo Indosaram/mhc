@@ -7,7 +7,7 @@ use crate::providers::builtin_api_streams;
 use indexmap::IndexMap;
 use std::sync::Arc;
 
-pub fn fireworks_provider() -> Arc<dyn Provider> {
+pub fn fireworks_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     let mut api = IndexMap::new();
     api.insert("anthropic-messages".to_owned(), builtin_api_streams("anthropic-messages"));
     api.insert("openai-completions".to_owned(), builtin_api_streams("openai-completions"));
@@ -21,6 +21,7 @@ pub fn fireworks_provider() -> Arc<dyn Provider> {
         fetch_models: None,
         restore_models: None,
         filter_models: None,
+        images: indexmap::IndexMap::new(),
         api: ProviderApi::ByApi(api),
     })
 }

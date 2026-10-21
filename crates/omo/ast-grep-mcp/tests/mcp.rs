@@ -18,11 +18,11 @@ use ast_grep_mcp::handle_ast_grep_mcp_request;
 use ast_grep_mcp::mcp::SgResolveError;
 use ast_grep_mcp::mcp::ToolExecutor;
 use ast_grep_mcp::run_mcp_stdio_server;
+use ast_grep_mcp::tools::scan::parse_scan_input;
 use mcp_stdio_core::McpLogFields;
 use mcp_stdio_core::ParentWatchdogConfig;
 use mcp_stdio_core::ServerOutcome;
 use pretty_assertions::assert_eq;
-use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
@@ -81,39 +81,6 @@ fn schema_of(name: &str) -> Value {
 
 fn property_of(name: &str, property: &str) -> Value {
     schema_of(name)["properties"][property].clone()
-}
-
-fn satisfies(schema: &Value, value: &Map<String, Value>) -> bool {
-    if let Some(required) = schema.get("required").and_then(Value::as_array) {
-        let present = required
-            .iter()
-            .all(|key| key.as_str().is_some_and(|key| value.contains_key(key)));
-        if !present {
-            return false;
-        }
-    }
-    if let Some(negated) = schema.get("not")
-        && satisfies(negated, value)
-    {
-        return false;
-    }
-    if let Some(one_of) = schema.get("oneOf").and_then(Value::as_array) {
-        let matched = one_of
-            .iter()
-            .filter(|branch| satisfies(branch, value))
-            .count();
-        if matched != 1 {
-            return false;
-        }
-    }
-    true
-}
-
-fn object(value: Value) -> Map<String, Value> {
-    match value {
-        Value::Object(map) => map,
-        other => panic!("not an object: {other}"),
-    }
 }
 
 struct ChannelReader {
@@ -272,43 +239,33 @@ fn malformed_stdio_line_writes_parse_error_envelope() {
 }
 
 #[test]
-fn scan_schema_publishes_rule_source_one_of() {
+fn scan_schema_requires_paths_without_composition() {
     let schema = schema_of("scan");
-    assert_eq!(
-        schema["oneOf"],
-        json!([
-            { "type": "object", "required": ["ruleFile"], "not": { "required": ["inlineRules"] } },
-            { "type": "object", "required": ["inlineRules"], "not": { "required": ["ruleFile"] } },
-        ])
-    );
+    assert_eq!(schema.get("oneOf"), None);
     assert_eq!(schema["required"], json!(["paths"]));
 }
 
 #[test]
-fn scan_args_without_rule_source_are_schema_invalid() {
-    assert!(!satisfies(
-        &schema_of("scan"),
-        &object(json!({ "paths": ["src"] }))
-    ));
+fn scan_args_without_rule_source_are_parser_invalid() {
+    assert_eq!(
+        parse_scan_input(&json!({ "paths": ["src"] })).expect_err("missing rule source"),
+        "Exactly one of ruleFile or inlineRules must be provided"
+    );
 }
 
 #[test]
-fn scan_args_with_both_rule_sources_are_schema_invalid() {
-    let args = object(json!({ "paths": ["src"], "ruleFile": "r.yml", "inlineRules": "id: x" }));
-    assert!(!satisfies(&schema_of("scan"), &args));
+fn scan_args_with_both_rule_sources_are_parser_invalid() {
+    let args = json!({ "paths": ["src"], "ruleFile": "r.yml", "inlineRules": "id: x" });
+    assert_eq!(
+        parse_scan_input(&args).expect_err("conflicting rule sources"),
+        "Exactly one of ruleFile or inlineRules must be provided"
+    );
 }
 
 #[test]
-fn scan_args_with_one_rule_source_are_schema_valid() {
-    let schema = schema_of("scan");
-    assert!(satisfies(
-        &schema,
-        &object(json!({ "paths": ["src"], "ruleFile": "r.yml" }))
-    ));
-    assert!(satisfies(
-        &schema,
-        &object(json!({ "paths": ["src"], "inlineRules": "id: x" }))
-    ));
+fn scan_args_with_one_rule_source_are_parser_valid() {
+    assert!(parse_scan_input(&json!({ "paths": ["src"], "ruleFile": "r.yml" })).is_ok());
+    assert!(parse_scan_input(&json!({ "paths": ["src"], "inlineRules": "id: x" })).is_ok());
 }
 
 fn assert_byte_budget(property: &Value, budget: &str) {
@@ -342,11 +299,12 @@ fn code_point_properties_keep_numeric_max_length() {
 }
 
 #[test]
-fn stdio_initialize_answers_with_server_info_and_no_idle_timeout() {
+fn stdio_initialize_answers_with_server_info_and_explicit_idle_timeout() {
     type LifecycleEvents = Arc<Mutex<Vec<(String, Option<McpLogFields>)>>>;
     let lifecycle: LifecycleEvents = Arc::default();
     let sink = Arc::clone(&lifecycle);
     let options = AstGrepMcpOptions {
+        idle_timeout_ms: Some(4321.0),
         lifecycle_log: Some(Arc::new(
             move |event: &str, fields: Option<&McpLogFields>| {
                 sink.lock()
@@ -370,7 +328,7 @@ fn stdio_initialize_answers_with_server_info_and_no_idle_timeout() {
         .find(|(event, _)| event == "stdio_started")
         .and_then(|(_, fields)| fields.clone())
         .expect("stdio_started event");
-    assert_eq!(started.get("idle_timeout_ms"), Some(&json!(0)));
+    assert_eq!(started.get("idle_timeout_ms"), Some(&json!(4321)));
 }
 
 #[test]
@@ -425,6 +383,7 @@ fn parent_exit_aborts_the_active_hung_call() {
             parent_pid: Some(4242),
             poll_interval_ms: Some(10),
             probe_alive: Some(Arc::new(move |_| probe_flag.load(Ordering::SeqCst))),
+            on_poll: None,
         }),
         ..with_executors(AstGrepToolExecutors {
             search: Some(search),

@@ -23,7 +23,11 @@ pub fn app_command() -> String {
 /// Product title; senpi's `APP_TITLE` is the brand name (with `π` for an unbranded install).
 pub fn app_title() -> String {
     let profile = brand_profile();
-    if profile.name == "maho" { "maho code".to_owned() } else { profile.name }
+    if profile.name == "maho" {
+        "maho code".to_owned()
+    } else {
+        profile.name
+    }
 }
 
 pub fn config_dir_name() -> String {
@@ -56,8 +60,14 @@ pub fn agent_dir_label() -> String {
 
 /// `resolveAgentDir(cwd, homeDir, envDir)`.
 pub fn resolve_agent_dir(cwd: &str, home_dir: &str, env_dir: Option<&str>) -> String {
-    if let Some(env_dir) = env_dir {
-        return normalize_path(env_dir, &crate::paths::PathInputOptions { home_dir: Some(home_dir.to_owned()), ..Default::default() });
+    if let Some(env_dir) = env_dir.filter(|value| !value.is_empty()) {
+        return normalize_path(
+            env_dir,
+            &crate::paths::PathInputOptions {
+                home_dir: Some(home_dir.to_owned()),
+                ..Default::default()
+            },
+        );
     }
     let config_dir = config_dir_name();
     if config_flat_layout() {
@@ -70,7 +80,13 @@ pub fn resolve_agent_dir(cwd: &str, home_dir: &str, env_dir: Option<&str>) -> St
         );
         return flat.unwrap_or_else(|| join(home_dir, &config_dir));
     }
-    match crate::nearest_parent_config::find_nearest_parent_config_dir(cwd, home_dir, &config_dir, Some("agent"), None) {
+    match crate::nearest_parent_config::find_nearest_parent_config_dir(
+        cwd,
+        home_dir,
+        &config_dir,
+        Some("agent"),
+        None,
+    ) {
         Some(project) => join(&project, "agent"),
         None => join(&join(home_dir, &config_dir), "agent"),
     }
@@ -82,14 +98,21 @@ fn join(base: &str, child: &str) -> String {
 
 /// `getAgentDir()`: resolves against the process cwd, `$HOME` and the env override.
 pub fn get_agent_dir() -> String {
-    let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| ".".to_owned());
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_owned());
     let home = home_dir();
     let env = env_value("CODING_AGENT_DIR", &current_env());
     resolve_agent_dir(&cwd, &home, env.as_deref())
 }
 
 /// `getBinDir()`: managed helper binaries live under the agent dir.
-pub fn get_bin_dir() -> String { Path::new(&get_agent_dir()).join("bin").to_string_lossy().into_owned() }
+pub fn get_bin_dir() -> String {
+    Path::new(&get_agent_dir())
+        .join("bin")
+        .to_string_lossy()
+        .into_owned()
+}
 
 pub fn get_agent_dir_with(cwd: &str, home_dir: &str, env: &HashMap<String, String>) -> String {
     let env_dir = env_value("CODING_AGENT_DIR", env);
@@ -122,12 +145,17 @@ pub fn get_debug_log_path() -> String {
 
 /// `getPackageDir`: the `PACKAGE_DIR` override, else the running executable's directory.
 pub fn get_package_dir() -> String {
-    if let Some(env_dir) = env_value("PACKAGE_DIR", &current_env()).filter(|value| !value.is_empty()) {
+    if let Some(env_dir) =
+        env_value("PACKAGE_DIR", &current_env()).filter(|value| !value.is_empty())
+    {
         return normalize_path(&env_dir, &crate::paths::PathInputOptions::default());
     }
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.to_string_lossy().into_owned()))
+        .and_then(|exe| {
+            exe.parent()
+                .map(|parent| parent.to_string_lossy().into_owned())
+        })
         .unwrap_or_default()
 }
 
@@ -169,13 +197,17 @@ pub fn current_env() -> HashMap<String, String> {
 
 /// senpi `getShareViewerUrl`: the share viewer URL for a gist id.
 pub fn get_share_viewer_url(gist_id: &str) -> String {
-    let base = env_value("SHARE_VIEWER_URL", &current_env()).filter(|value| !value.is_empty()).unwrap_or_else(|| "https://pi.dev/session/".to_owned());
+    let base = env_value("SHARE_VIEWER_URL", &current_env())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://pi.dev/session/".to_owned());
     format!("{base}#{gist_id}")
 }
 
 /// A brand profile's display version, else the engine version.
 pub fn display_version(engine_version: &str) -> String {
-    brand_profile().display_version.unwrap_or_else(|| engine_version.to_owned())
+    brand_profile()
+        .display_version
+        .unwrap_or_else(|| engine_version.to_owned())
 }
 
 pub fn brand() -> BrandProfile {
@@ -187,16 +219,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_override_discovers_project_config() {
+        // Given
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        let agent = project.join(config_dir_name()).join("agent");
+        std::fs::create_dir_all(&agent).expect("agent");
+        // When
+        let resolved = resolve_agent_dir(
+            &project.to_string_lossy(),
+            &home.to_string_lossy(),
+            Some(""),
+        );
+        // Then
+        assert_eq!(resolved, agent.to_string_lossy());
+    }
+
+    #[test]
     fn resolves_the_default_agent_dir_under_the_config_dir() {
-        let expected = Path::new("/home/u").join(config_dir_name()).join("agent").to_string_lossy().into_owned();
-        assert_eq!(resolve_agent_dir("/work/project", "/home/u", None), expected);
+        let expected = Path::new("/home/u")
+            .join(config_dir_name())
+            .join("agent")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            resolve_agent_dir("/work/project", "/home/u", None),
+            expected
+        );
     }
 
     #[test]
     fn an_env_override_wins_and_expands_tilde() {
-        let expected = Path::new("/home/u").join("custom").to_string_lossy().into_owned();
-        assert_eq!(resolve_agent_dir("/work", "/home/u", Some("~/custom")), expected);
-        assert_eq!(resolve_agent_dir("/work", "/home/u", Some("/abs/dir")), "/abs/dir");
+        let expected = Path::new("/home/u")
+            .join("custom")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            resolve_agent_dir("/work", "/home/u", Some("~/custom")),
+            expected
+        );
+        assert_eq!(
+            resolve_agent_dir("/work", "/home/u", Some("/abs/dir")),
+            "/abs/dir"
+        );
     }
 
     #[test]
@@ -212,7 +278,13 @@ mod tests {
             &home.to_string_lossy(),
             None,
         );
-        assert_eq!(resolved, project.join(config_dir_name()).join("agent").to_string_lossy());
+        assert_eq!(
+            resolved,
+            project
+                .join(config_dir_name())
+                .join("agent")
+                .to_string_lossy()
+        );
     }
 
     #[test]

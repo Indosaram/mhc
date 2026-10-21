@@ -67,7 +67,7 @@ fn function_response_parts(contents: &Value) -> Vec<Value> {
 
 fn assert_tool_call_ids_are_preserved(api: &str, id: &str) {
     let model = text_model(api, if api == "google-vertex" { "google-vertex" } else { "google" }, id);
-    let contents = convert(&model, &make_context(&model, None), None);
+    let contents = convert(&model, &make_context(&model, Some(VALID_SIG)), None);
 
     let calls = function_call_parts(&contents);
     let responses = function_response_parts(&contents);
@@ -101,9 +101,17 @@ fn does_not_add_skip_thought_signature_validator_for_unsigned_google_gen_ai_tool
     let contents = convert(&model, &make_context(&other, None), None);
 
     let calls = function_call_parts(&contents);
-    assert_eq!(calls.len(), 2);
-    assert!(calls[0].get("thoughtSignature").is_none());
-    assert!(calls[1].get("thoughtSignature").is_none());
+    assert!(calls.is_empty());
+    assert!(function_response_parts(&contents).is_empty());
+    assert_eq!(contents.as_array().expect("contents").len(), 3);
+    assert_eq!(contents[2]["parts"].as_array().expect("results").len(), 2);
+    let turn = model_turn(&contents);
+    assert_eq!(turn["parts"].as_array().expect("parts").len(), 2);
+    assert_eq!(turn["parts"][0]["text"], json!("[Tool Call: bash (id: call_1)]\nArguments: {\n  \"command\": \"echo hi\"\n}"));
+    assert!(turn["parts"][1]["text"].as_str().expect("text call").contains("call_2"));
+    assert!(turn["parts"][1]["text"].as_str().expect("text call").contains("\"command\": \"ls -la\""));
+    assert_eq!(contents[2]["parts"][0]["text"], json!("[Tool Result: bash (id: call_1)]\nhi"));
+    assert_eq!(contents[2]["parts"][1]["text"], json!("[Tool Result: bash (id: call_2)]\nfiles"));
     assert!(!contents.to_string().contains("skip_thought_signature_validator"));
 
     let historical: Vec<Value> = model_turn(&contents)["parts"]
@@ -122,9 +130,17 @@ fn does_not_add_skip_thought_signature_validator_for_unsigned_vertex_tool_calls(
     let contents = convert(&model, &make_context(&model, None), None);
 
     let calls = function_call_parts(&contents);
-    assert_eq!(calls.len(), 2);
-    assert!(calls[0].get("thoughtSignature").is_none());
-    assert!(calls[1].get("thoughtSignature").is_none());
+    assert!(calls.is_empty());
+    assert!(function_response_parts(&contents).is_empty());
+    assert_eq!(contents.as_array().expect("contents").len(), 3);
+    assert_eq!(contents[2]["parts"].as_array().expect("results").len(), 2);
+    let turn = model_turn(&contents);
+    assert_eq!(turn["parts"].as_array().expect("parts").len(), 2);
+    assert_eq!(turn["parts"][0]["text"], json!("[Tool Call: bash (id: call_1)]\nArguments: {\n  \"command\": \"echo hi\"\n}"));
+    assert!(turn["parts"][1]["text"].as_str().expect("text call").contains("call_2"));
+    assert!(turn["parts"][1]["text"].as_str().expect("text call").contains("\"command\": \"ls -la\""));
+    assert_eq!(contents[2]["parts"][0]["text"], json!("[Tool Result: bash (id: call_1)]\nhi"));
+    assert_eq!(contents[2]["parts"][1]["text"], json!("[Tool Result: bash (id: call_2)]\nfiles"));
     assert!(!contents.to_string().contains("skip_thought_signature_validator"));
 }
 

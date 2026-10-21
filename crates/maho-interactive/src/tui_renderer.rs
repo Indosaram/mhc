@@ -7,6 +7,14 @@ use maho_tui::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+static FRAME_LINE_BYTES: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
+
+pub fn previous_lines_bytes() -> Option<usize> {
+    *FRAME_LINE_BYTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TuiMode {
     Regular,
@@ -22,7 +30,12 @@ pub enum InteractiveTui {
     Fullscreen(Box<TuiAltScreen>),
 }
 impl InteractiveTui {
-    pub fn handle_mouse_input(&mut self, data: &str, now_ms: i64, terminal: &mut dyn maho_tui::terminal::Terminal) -> bool {
+    pub fn handle_mouse_input(
+        &mut self,
+        data: &str,
+        now_ms: i64,
+        terminal: &mut dyn maho_tui::terminal::Terminal,
+    ) -> bool {
         match self {
             Self::Regular(tui) => tui.handle_mouse_input(data, now_ms, terminal),
             Self::Fullscreen(tui) => tui.handle_mouse_input(data, now_ms, terminal),
@@ -31,9 +44,19 @@ impl InteractiveTui {
 
     pub fn do_render(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal) {
         match self {
-            Self::Regular(tui) => { let _ = tui.take_mouse_external_write_pending(terminal); tui.base.do_render(terminal); tui.note_render(terminal); }
+            Self::Regular(tui) => {
+                let _ = tui.take_mouse_external_write_pending(terminal);
+                tui.base.do_render(terminal);
+                tui.note_render(terminal);
+            }
             Self::Fullscreen(tui) => tui.do_render(terminal),
         }
+        let bytes = crate::components::tool_execution_cache::line_array_bytes(
+            &self.base().state.borrow().previous_lines,
+        );
+        *FRAME_LINE_BYTES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bytes);
     }
 
     /// Per-iteration poll of senpi's timer/promise callbacks: the main screen's in-flight CPR
@@ -49,23 +72,43 @@ impl InteractiveTui {
     pub fn flash(&mut self, message: &str, now_ms: u64) -> bool {
         match self {
             Self::Regular(_) => false,
-            Self::Fullscreen(tui) => { tui.flash(message, None, now_ms); true }
+            Self::Fullscreen(tui) => {
+                tui.flash(message, None, now_ms);
+                true
+            }
         }
     }
 
-    pub fn before_terminal_start(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal, mouse_enabled: bool, multiplexer: bool) {
-        if let Self::Fullscreen(tui) = self { tui.before_terminal_start(terminal, mouse_enabled, multiplexer); }
+    pub fn before_terminal_start(
+        &mut self,
+        terminal: &mut dyn maho_tui::terminal::Terminal,
+        mouse_enabled: bool,
+        multiplexer: bool,
+    ) {
+        if let Self::Fullscreen(tui) = self {
+            tui.before_terminal_start(terminal, mouse_enabled, multiplexer);
+        }
     }
 
-    pub fn before_terminal_stop(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal, mouse_enabled: bool) {
+    pub fn before_terminal_stop(
+        &mut self,
+        terminal: &mut dyn maho_tui::terminal::Terminal,
+        mouse_enabled: bool,
+    ) {
         match self {
             Self::Regular(tui) => tui.before_terminal_stop(terminal),
             Self::Fullscreen(tui) => tui.before_terminal_stop(terminal, mouse_enabled),
         }
     }
 
-    pub fn after_terminal_stop(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal, preserve_screen: bool) {
-        if let Self::Fullscreen(tui) = self { tui.after_terminal_stop(terminal, preserve_screen); }
+    pub fn after_terminal_stop(
+        &mut self,
+        terminal: &mut dyn maho_tui::terminal::Terminal,
+        preserve_screen: bool,
+    ) {
+        if let Self::Fullscreen(tui) = self {
+            tui.after_terminal_stop(terminal, preserve_screen);
+        }
     }
 
     /// senpi's `TuiBase.acquireMouseCapture(reason)`: takes a lease and, for the first lease,
@@ -73,7 +116,11 @@ impl InteractiveTui {
     /// overrides `applyMouseTracking`; the alternate screen keeps the base no-op because its
     /// tracking is owned by `beforeTerminalStart`. Returns the token for
     /// [`InteractiveTui::release_mouse_capture`].
-    pub fn acquire_mouse_capture(&mut self, reason: &str, terminal: &mut dyn maho_tui::terminal::Terminal) -> u64 {
+    pub fn acquire_mouse_capture(
+        &mut self,
+        reason: &str,
+        terminal: &mut dyn maho_tui::terminal::Terminal,
+    ) -> u64 {
         match self {
             Self::Regular(tui) => {
                 let (token, should_apply) = tui.base.acquire_mouse_capture(reason);
@@ -89,7 +136,11 @@ impl InteractiveTui {
     }
 
     /// The release closure returned by senpi's `acquireMouseCapture`.
-    pub fn release_mouse_capture(&mut self, token: u64, terminal: &mut dyn maho_tui::terminal::Terminal) {
+    pub fn release_mouse_capture(
+        &mut self,
+        token: u64,
+        terminal: &mut dyn maho_tui::terminal::Terminal,
+    ) {
         match self {
             Self::Regular(tui) => {
                 if tui.base.release_mouse_capture(token) {
@@ -108,27 +159,43 @@ impl InteractiveTui {
 
     /// Drives the fullscreen renderer's timer work (copy results, flashes, selection auto-scroll).
     pub fn tick(&mut self, now_ms: u64) {
-        if let Self::Fullscreen(tui) = self { tui.tick(now_ms); }
+        if let Self::Fullscreen(tui) = self {
+            tui.tick(now_ms);
+        }
     }
 
     /// senpi `TuiAltScreen.getCopyOnSelect`; the regular renderer has no app-owned selection.
     pub fn get_copy_on_select(&self) -> bool {
-        match self { Self::Regular(_) => false, Self::Fullscreen(tui) => tui.get_copy_on_select() }
+        match self {
+            Self::Regular(_) => false,
+            Self::Fullscreen(tui) => tui.get_copy_on_select(),
+        }
     }
 
     /// senpi `TuiAltScreen.hasActiveSelection`.
     pub fn has_active_selection(&self) -> bool {
-        match self { Self::Regular(_) => false, Self::Fullscreen(tui) => tui.has_active_selection() }
+        match self {
+            Self::Regular(_) => false,
+            Self::Fullscreen(tui) => tui.has_active_selection(),
+        }
     }
 
     /// senpi `TuiAltScreen.copyActiveSelectionToClipboard`.
-    pub fn copy_active_selection_to_clipboard(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal) -> bool {
-        match self { Self::Regular(_) => false, Self::Fullscreen(tui) => tui.copy_active_selection_to_clipboard(terminal) }
+    pub fn copy_active_selection_to_clipboard(
+        &mut self,
+        terminal: &mut dyn maho_tui::terminal::Terminal,
+    ) -> bool {
+        match self {
+            Self::Regular(_) => false,
+            Self::Fullscreen(tui) => tui.copy_active_selection_to_clipboard(terminal),
+        }
     }
 
     /// senpi `TuiAltScreen.setCopyOnSelect`; the regular renderer has no app-owned selection.
     pub fn set_copy_on_select(&mut self, enabled: bool) {
-        if let Self::Fullscreen(tui) = self { tui.set_copy_on_select(enabled); }
+        if let Self::Fullscreen(tui) = self {
+            tui.set_copy_on_select(enabled);
+        }
     }
 
     pub fn base(&self) -> &TuiBase {
@@ -162,7 +229,8 @@ fn main_screen_mouse_support() -> maho_tui::tui_main_screen::MouseTrackingSuppor
     maho_tui::tui_main_screen::MouseTrackingSupport {
         is_tty: std::io::stdout().is_terminal(),
         is_termux: std::env::var_os("TERMUX_VERSION").is_some_and(|value| !value.is_empty()),
-        is_windows_without_wt: cfg!(windows) && std::env::var_os("WT_SESSION").is_none_or(|value| value.is_empty()),
+        is_windows_without_wt: cfg!(windows)
+            && std::env::var_os("WT_SESSION").is_none_or(|value| value.is_empty()),
     }
 }
 
@@ -176,10 +244,12 @@ pub fn create_process_terminal() -> maho_tui::terminal::ProcessTerminal {
             maho_core::hidden_stdout_log::append_hidden_tui_stdout(text);
             Ok(())
         })),
-        observe_external_stderr_writes: Some(Arc::new(|listener: maho_tui::terminal::ExternalWriteListener| {
-            let observation = maho_core::output_guard::observe_visible_stderr_writes(listener);
-            Box::new(move || drop(observation)) as Box<dyn FnOnce() + Send>
-        })),
+        observe_external_stderr_writes: Some(Arc::new(
+            |listener: maho_tui::terminal::ExternalWriteListener| {
+                let observation = maho_core::output_guard::observe_visible_stderr_writes(listener);
+                Box::new(move || drop(observation)) as Box<dyn FnOnce() + Send>
+            },
+        )),
         ..Default::default()
     })
 }
@@ -195,7 +265,10 @@ pub fn create_interactive_tui(options: InteractiveTuiOptions, theme: Theme) -> I
             let button_theme = theme.clone();
             t.set_search_styles(
                 Some(Rc::new(move |text: &str| {
-                    match_theme.underline(&match_theme.bg(ThemeBg::SearchMatchBg, &match_theme.fg(ThemeColor::SearchMatchText, text)))
+                    match_theme.underline(&match_theme.bg(
+                        ThemeBg::SearchMatchBg,
+                        &match_theme.fg(ThemeColor::SearchMatchText, text),
+                    ))
                 })),
                 Some(Rc::new(move |text: &str| {
                     current_theme.bold(&current_theme.inverse(&current_theme.bg(
@@ -204,7 +277,11 @@ pub fn create_interactive_tui(options: InteractiveTuiOptions, theme: Theme) -> I
                     )))
                 })),
                 Some(Rc::new(move |text: &str, hovered: bool| {
-                    if hovered { button_theme.underline(text) } else { text.to_string() }
+                    if hovered {
+                        button_theme.underline(text)
+                    } else {
+                        text.to_string()
+                    }
                 })),
             );
             t.set_scroll_to_end_indicator(Some(Rc::new(move || {

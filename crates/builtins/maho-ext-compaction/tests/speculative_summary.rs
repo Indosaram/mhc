@@ -13,13 +13,34 @@ fn summary_joins_only_text_blocks() {
 fn failure_metadata_preserves_refusal_and_truncation_boundaries() {
     use maho_ext_compaction::deterministic_fallback::SummaryFailure;
     let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"faux","api":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":1000})).unwrap();
-    let mut response = maho_ai::utils::lazy::setup_error_message(&model, "upstream_stream_truncated");
-    assert!(matches!(maho_ext_compaction::speculative::summary_request_failure(&response), SummaryFailure::Request { transient: true, truncated: true, refused: false }));
+    let mut response =
+        maho_ai::utils::lazy::setup_error_message(&model, "upstream_stream_truncated");
+    assert!(matches!(
+        maho_ext_compaction::speculative::summary_request_failure(&response),
+        SummaryFailure::Request {
+            transient: true,
+            truncated: true,
+            refused: false
+        }
+    ));
     response.error_message = Some("not_upstream_stream_truncated_suffix".into());
-    assert!(matches!(maho_ext_compaction::speculative::summary_request_failure(&response), SummaryFailure::Request { truncated: false, .. }));
+    assert!(matches!(
+        maho_ext_compaction::speculative::summary_request_failure(&response),
+        SummaryFailure::Request {
+            truncated: false,
+            ..
+        }
+    ));
     response.error_message = Some("upstream_stream_truncated 503".into());
     response.stop_details = Some(maho_ai::types::AssistantStopDetails::Sensitive);
-    assert!(matches!(maho_ext_compaction::speculative::summary_request_failure(&response), SummaryFailure::Request { transient: false, truncated: false, refused: true }));
+    assert!(matches!(
+        maho_ext_compaction::speculative::summary_request_failure(&response),
+        SummaryFailure::Request {
+            transient: false,
+            truncated: false,
+            refused: true
+        }
+    ));
 }
 
 #[test]
@@ -32,7 +53,10 @@ fn summary_reserve_and_disabled_reasoning_are_bounded() {
 #[test]
 fn reasoning_chooses_first_non_null_supported_effort() {
     let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"custom","api":"openai-responses","baseUrl":"https://example.com","reasoning":true,"thinkingLevelMap":{"low":null,"medium":"mid"},"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":8000})).unwrap();
-    assert_eq!(summarization_reasoning_options(&model), json!({"reasoningEffort":"medium","reasoningSummary":null}));
+    assert_eq!(
+        summarization_reasoning_options(&model),
+        json!({"reasoningEffort":"medium","reasoningSummary":null})
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -40,7 +64,15 @@ async fn stream_ending_without_terminal_result_still_has_watchdog() {
     let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
     stream.end(None);
     let controller = maho_ai::utils::abort::AbortController::new();
-    let result = consume_summary_stream(&stream, &controller, None, std::time::Duration::from_secs(1), std::time::Duration::from_secs(5), &|_| {}).await;
+    let result = consume_summary_stream(
+        &stream,
+        &controller,
+        None,
+        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(5),
+        &|_| {},
+    )
+    .await;
     assert!(matches!(result, Err(SummaryStreamError::IdleTimeout)));
     assert!(controller.signal().aborted());
 }
@@ -51,7 +83,15 @@ async fn caller_abort_stands_down_without_timeout_failure() {
     let controller = maho_ai::utils::abort::AbortController::new();
     let caller = maho_ai::utils::abort::AbortController::new();
     caller.abort(None);
-    let result = consume_summary_stream(&stream, &controller, Some(&caller.signal()), std::time::Duration::from_secs(1), std::time::Duration::from_secs(5), &|_| {}).await;
+    let result = consume_summary_stream(
+        &stream,
+        &controller,
+        Some(&caller.signal()),
+        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(5),
+        &|_| {},
+    )
+    .await;
     assert!(result.unwrap().is_none());
     assert!(controller.signal().aborted());
 }
@@ -60,18 +100,44 @@ async fn caller_abort_stands_down_without_timeout_failure() {
 async fn wall_clock_budget_can_expire_before_idle_budget() {
     let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
     let controller = maho_ai::utils::abort::AbortController::new();
-    let result = consume_summary_stream(&stream, &controller, None, std::time::Duration::from_secs(5), std::time::Duration::from_secs(1), &|_| {}).await;
+    let result = consume_summary_stream(
+        &stream,
+        &controller,
+        None,
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(1),
+        &|_| {},
+    )
+    .await;
     assert!(matches!(result, Err(SummaryStreamError::DurationBudget)));
 }
 
 #[tokio::test]
 async fn summary_dispatch_uses_native_messages_and_supplied_runtime_runner() {
-    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
     let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"extension-provider","api":"extension-api","baseUrl":"https://example.com","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":8000})).unwrap();
-    let entries = [json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}), json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue task","timestamp":0}})];
-    let mut settings = default_compaction_settings(); settings.keep_recent_tokens = 1;
+    let entries = [
+        json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}),
+        json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue task","timestamp":0}}),
+    ];
+    let mut settings = default_compaction_settings();
+    settings.keep_recent_tokens = 1;
     let preparation = prepare_compaction(&entries, &settings, true, false).unwrap();
-    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot { generation: 1, expected_revision: 1, model, context_window: 10000, preparation, branch_entries: entries.to_vec(), prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default, custom_instructions: None, system_prompt: Some("agent prompt".into()), tools: Vec::new(), origin: None };
+    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {
+        generation: 1,
+        expected_revision: 1,
+        model,
+        context_window: 10000,
+        preparation,
+        branch_entries: entries.to_vec(),
+        prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default,
+        custom_instructions: None,
+        system_prompt: Some("agent prompt".into()),
+        tools: Vec::new(),
+        origin: None,
+    };
     let runner: SummaryStreamRunner = std::sync::Arc::new(|model, context, options| {
         assert_eq!(model.provider, "extension-provider");
         assert_eq!(context.system_prompt.as_deref(), Some("agent prompt"));
@@ -82,33 +148,122 @@ async fn summary_dispatch_uses_native_messages_and_supplied_runtime_runner() {
         let mut response = maho_ai::utils::lazy::setup_error_message(model, "");
         response.stop_reason = maho_ai::types::StopReason::Stop;
         response.error_message = None;
-        response.content = vec![maho_ai::types::ContentBlock::Text(maho_ai::types::TextContent { text: "summary".into(), text_signature: None, audience: None })];
-        stream.push(maho_ai::types::AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message: response });
+        response.content = vec![maho_ai::types::ContentBlock::Text(
+            maho_ai::types::TextContent {
+                text: "summary".into(),
+                text_signature: None,
+                audience: None,
+            },
+        )];
+        stream.push(maho_ai::types::AssistantMessageEvent::Done {
+            reason: maho_ai::types::DoneReason::Stop,
+            message: response,
+        });
         stream
     });
     let messages = [json!({"role":"user","content":"task","timestamp":0})];
-    let prompt = maho_ext_compaction::prompts::CompactionPrompt { system: "summary prompt", user: "summarize".into() };
-    let result = generate_summary_message(SummaryRequestOptions { snapshot: &snapshot, messages: &messages, prompt: &prompt, api_key: Some("faux".into()), headers: None, extra_body: None, signal: None, max_duration: std::time::Duration::from_secs(5), omit_reasoning_options: false, forbid_tool_calls: true, stream_runner: Some(&runner) }, &|_| {}).await.unwrap().unwrap();
+    let prompt = maho_ext_compaction::prompts::CompactionPrompt {
+        system: "summary prompt",
+        user: "summarize".into(),
+    };
+    let result = generate_summary_message(
+        SummaryRequestOptions {
+            snapshot: &snapshot,
+            messages: &messages,
+            prompt: &prompt,
+            api_key: Some("faux".into()),
+            headers: None,
+            extra_body: None,
+            signal: None,
+            max_duration: std::time::Duration::from_secs(5),
+            omit_reasoning_options: false,
+            forbid_tool_calls: true,
+            stream_runner: Some(&runner),
+        },
+        &|_| {},
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(result.stop_reason, maho_ai::types::StopReason::Stop);
 }
 
 #[tokio::test]
 async fn generated_compaction_extracts_task_intent_and_structural_metadata() {
-    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
     let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"faux","api":"faux","baseUrl":"https://example.com","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":8000})).unwrap();
-    let entries = [json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}), json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue task","timestamp":0}})];
-    let mut settings = default_compaction_settings(); settings.keep_recent_tokens = 1;
+    let entries = [
+        json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}),
+        json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue task","timestamp":0}}),
+    ];
+    let mut settings = default_compaction_settings();
+    settings.keep_recent_tokens = 1;
     let preparation = prepare_compaction(&entries, &settings, true, false).unwrap();
-    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot { generation: 1, expected_revision: 1, model, context_window: 10000, preparation, branch_entries: entries.to_vec(), prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default, custom_instructions: None, system_prompt: None, tools: Vec::new(), origin: None };
+    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {
+        generation: 1,
+        expected_revision: 1,
+        model,
+        context_window: 10000,
+        preparation,
+        branch_entries: entries.to_vec(),
+        prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default,
+        custom_instructions: None,
+        system_prompt: None,
+        tools: Vec::new(),
+        origin: None,
+    };
     let runner: SummaryStreamRunner = std::sync::Arc::new(|model, _, _| {
         let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
         let mut response = maho_ai::utils::lazy::setup_error_message(model, "");
         response.stop_reason = maho_ai::types::StopReason::Stop;
         response.content = serde_json::from_value(json!([{"type":"text","text":"<task-intent>original task</task-intent><summary>continued work</summary>"}])).unwrap();
-        stream.push(maho_ai::types::AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message: response });
+        stream.push(maho_ai::types::AssistantMessageEvent::Done {
+            reason: maho_ai::types::DoneReason::Stop,
+            message: response,
+        });
         stream
     });
-    let result = maho_ext_compaction::speculative::run_extension_compaction(&snapshot, Some("faux".into()), None, None, Some(&runner), &|_| {}).await.unwrap().unwrap();
+    let missing = maho_ext_compaction::speculative::run_extension_compaction(
+        &snapshot,
+        None,
+        false,
+        None,
+        None,
+        Some(&runner),
+        &|_| {},
+    )
+    .await;
+    assert!(matches!(
+        missing,
+        Err(maho_ext_compaction::speculative::SummaryGenerationError::Auth(_))
+    ));
+    let ambient = maho_ext_compaction::speculative::run_extension_compaction(
+        &snapshot,
+        None,
+        true,
+        None,
+        None,
+        Some(&runner),
+        &|_| {},
+    )
+    .await
+    .expect("ambient request")
+    .expect("ambient summary");
+    assert_eq!(ambient.summary, "continued work");
+    let result = maho_ext_compaction::speculative::run_extension_compaction(
+        &snapshot,
+        Some("faux".into()),
+        false,
+        None,
+        None,
+        Some(&runner),
+        &|_| {},
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(result.summary, "continued work");
     let details = result.details.unwrap();
     assert_eq!(details["taskIntent"], "original task");
@@ -118,79 +273,233 @@ async fn generated_compaction_extracts_task_intent_and_structural_metadata() {
 
 #[tokio::test(start_paused = true)]
 async fn blocking_generation_retries_transient_failure_but_warm_generation_does_not() {
-    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"faux","api":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":1000})).unwrap();
-    let entries = [json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}), json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"next","timestamp":0}})];
-    let mut settings = default_compaction_settings(); settings.keep_recent_tokens = 1;
+    let entries = [
+        json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}),
+        json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"next","timestamp":0}}),
+    ];
+    let mut settings = default_compaction_settings();
+    settings.keep_recent_tokens = 1;
     let preparation = prepare_compaction(&entries, &settings, true, false).unwrap();
-    let mut snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot { generation: 1, expected_revision: 1, model, context_window: 10000, preparation, branch_entries: entries.to_vec(), prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default, custom_instructions: None, system_prompt: None, tools: Vec::new(), origin: Some("blocking".into()) };
+    let mut snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {
+        generation: 1,
+        expected_revision: 1,
+        model,
+        context_window: 10000,
+        preparation,
+        branch_entries: entries.to_vec(),
+        prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default,
+        custom_instructions: None,
+        system_prompt: None,
+        tools: Vec::new(),
+        origin: Some("blocking".into()),
+    };
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&calls);
     let runner: SummaryStreamRunner = Arc::new(move |model, _, _| {
         let attempt = observed.fetch_add(1, Ordering::SeqCst);
         let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
-        let mut response = maho_ai::utils::lazy::setup_error_message(model, "503 service unavailable");
+        let mut response =
+            maho_ai::utils::lazy::setup_error_message(model, "503 service unavailable");
         if attempt == 0 {
-            stream.push(maho_ai::types::AssistantMessageEvent::Error { reason: maho_ai::types::ErrorReason::Error, error: response });
+            stream.push(maho_ai::types::AssistantMessageEvent::Error {
+                reason: maho_ai::types::ErrorReason::Error,
+                error: response,
+            });
         } else {
             response.stop_reason = maho_ai::types::StopReason::Stop;
             response.error_message = None;
             response.content = vec![maho_ai::types::ContentBlock::text("summary")];
-            stream.push(maho_ai::types::AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message: response });
+            stream.push(maho_ai::types::AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop,
+                message: response,
+            });
         }
         stream
     });
-    let result = maho_ext_compaction::speculative::run_extension_compaction(&snapshot, Some("faux".into()), None, None, Some(&runner), &|_| {}).await.unwrap().unwrap();
+    let result = maho_ext_compaction::speculative::run_extension_compaction(
+        &snapshot,
+        Some("faux".into()),
+        false,
+        None,
+        None,
+        Some(&runner),
+        &|_| {},
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(result.details.unwrap()["origin"], "blocking");
     calls.store(0, Ordering::SeqCst);
     snapshot.origin = Some("speculative".into());
-    assert!(maho_ext_compaction::speculative::run_extension_compaction(&snapshot, Some("faux".into()), None, None, Some(&runner), &|_| {}).await.is_err());
+    assert!(
+        maho_ext_compaction::speculative::run_extension_compaction(
+            &snapshot,
+            Some("faux".into()),
+            false,
+            None,
+            None,
+            Some(&runner),
+            &|_| {}
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(start_paused = true)]
 async fn overflow_budget_stops_paid_requests_before_total_duration_expires() {
-    use maho_core::compaction::{compaction::prepare_compaction,settings::default_compaction_settings};
-    use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     let model:Model=serde_json::from_value(json!({"id":"m","name":"m","provider":"faux","api":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("model");
-    let entries=[json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(30000),"timestamp":0}}),json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"next","timestamp":0}})];
-    let mut settings=default_compaction_settings();settings.keep_recent_tokens=1;settings.summarization_max_duration_ms=Some(500000.);
-    let snapshot=maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {generation:1,expected_revision:1,model,context_window:100000,preparation:prepare_compaction(&entries,&settings,true,false).expect("preparation"),branch_entries:entries.to_vec(),prompt_variant:maho_ext_compaction::prompts::PromptVariant::Default,custom_instructions:None,system_prompt:None,tools:Vec::new(),origin:Some("core-route".into())};
-    let calls=Arc::new(AtomicUsize::new(0));let observed=Arc::clone(&calls);
-    let runner:SummaryStreamRunner=Arc::new(move |model,_,_| {
-        observed.fetch_add(1,Ordering::SeqCst);
-        let stream=maho_ai::utils::event_stream::create_assistant_message_event_stream();let output=stream.clone();let model=model.clone();
+    let entries = [
+        json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(30000),"timestamp":0}}),
+        json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"next","timestamp":0}}),
+    ];
+    let mut settings = default_compaction_settings();
+    settings.keep_recent_tokens = 1;
+    settings.summarization_max_duration_ms = Some(500000.);
+    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {
+        generation: 1,
+        expected_revision: 1,
+        model,
+        context_window: 100000,
+        preparation: prepare_compaction(&entries, &settings, true, false).expect("preparation"),
+        branch_entries: entries.to_vec(),
+        prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default,
+        custom_instructions: None,
+        system_prompt: None,
+        tools: Vec::new(),
+        origin: Some("core-route".into()),
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let runner: SummaryStreamRunner = Arc::new(move |model, _, _| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+        let output = stream.clone();
+        let model = model.clone();
         tokio::spawn(async move {
             tokio::time::advance(std::time::Duration::from_millis(240001)).await;
-            output.push(maho_ai::types::AssistantMessageEvent::Error {reason:maho_ai::types::ErrorReason::Error,error:maho_ai::utils::lazy::setup_error_message(&model,"maximum context length exceeded")});
+            output.push(maho_ai::types::AssistantMessageEvent::Error {
+                reason: maho_ai::types::ErrorReason::Error,
+                error: maho_ai::utils::lazy::setup_error_message(
+                    &model,
+                    "maximum context length exceeded",
+                ),
+            });
         });
         stream
     });
-    let result=maho_ext_compaction::speculative::run_extension_compaction(&snapshot,Some("faux".into()),None,None,Some(&runner),&|_|{}).await;
-    assert!(matches!(result,Err(maho_ext_compaction::speculative::SummaryGenerationError::Overflow(_))));
-    assert_eq!(calls.load(Ordering::SeqCst),1,"expired overflow budget must not pay another request");
+    let result = maho_ext_compaction::speculative::run_extension_compaction(
+        &snapshot,
+        Some("faux".into()),
+        false,
+        None,
+        None,
+        Some(&runner),
+        &|_| {},
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(maho_ext_compaction::speculative::SummaryGenerationError::Overflow(_))
+    ));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "expired overflow budget must not pay another request"
+    );
 }
 
-#[tokio::test(start_paused=true)]
+#[tokio::test(start_paused = true)]
 async fn overflow_attempt_cap_stops_paid_requests_with_time_remaining() {
-    use maho_core::compaction::{compaction::prepare_compaction,settings::default_compaction_settings};
-    use std::sync::{Arc,Mutex};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
+    use std::sync::{Arc, Mutex};
     let model:Model=serde_json::from_value(json!({"id":"m","name":"m","provider":"faux","api":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("model");
-    let mut entries=Vec::new();
-    for index in 0..10 {entries.push(json!({"type":"message","id":format!("entry-{index}"),"parentId":if index==0 {None} else {Some(format!("entry-{}",index-1))},"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(2000),"timestamp":0}}));}
-    let mut settings=default_compaction_settings();settings.keep_recent_tokens=1;
-    let snapshot=maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {generation:1,expected_revision:1,model,context_window:100000,preparation:prepare_compaction(&entries,&settings,true,false).expect("preparation"),branch_entries:entries,prompt_variant:maho_ext_compaction::prompts::PromptVariant::Default,custom_instructions:None,system_prompt:None,tools:Vec::new(),origin:Some("core-route".into())};
-    let inputs=Arc::new(Mutex::new(Vec::new()));let observed=Arc::clone(&inputs);
-    let runner:SummaryStreamRunner=Arc::new(move |model,context,_| {
-        observed.lock().expect("captured requests").push(context.messages.iter().map(|message|maho_core::compaction::compaction::estimate_tokens(&serde_json::to_value(message).expect("wire message"))).sum::<u64>());
-        let stream=maho_ai::utils::event_stream::create_assistant_message_event_stream();
-        stream.push(maho_ai::types::AssistantMessageEvent::Error {reason:maho_ai::types::ErrorReason::Error,error:maho_ai::utils::lazy::setup_error_message(model,"maximum context length exceeded")});stream
+    let mut entries = Vec::new();
+    for index in 0..10 {
+        entries.push(json!({"type":"message","id":format!("entry-{index}"),"parentId":if index==0 {None} else {Some(format!("entry-{}",index-1))},"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(2000),"timestamp":0}}));
+    }
+    let mut settings = default_compaction_settings();
+    settings.keep_recent_tokens = 1;
+    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {
+        generation: 1,
+        expected_revision: 1,
+        model,
+        context_window: 100000,
+        preparation: prepare_compaction(&entries, &settings, true, false).expect("preparation"),
+        branch_entries: entries,
+        prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default,
+        custom_instructions: None,
+        system_prompt: None,
+        tools: Vec::new(),
+        origin: Some("core-route".into()),
+    };
+    let inputs = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&inputs);
+    let runner: SummaryStreamRunner = Arc::new(move |model, context, _| {
+        observed.lock().expect("captured requests").push(
+            context
+                .messages
+                .iter()
+                .map(|message| {
+                    maho_core::compaction::compaction::estimate_tokens(
+                        &serde_json::to_value(message).expect("wire message"),
+                    )
+                })
+                .sum::<u64>(),
+        );
+        let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+        stream.push(maho_ai::types::AssistantMessageEvent::Error {
+            reason: maho_ai::types::ErrorReason::Error,
+            error: maho_ai::utils::lazy::setup_error_message(
+                model,
+                "maximum context length exceeded",
+            ),
+        });
+        stream
     });
-    let result=maho_ext_compaction::speculative::run_extension_compaction(&snapshot,Some("faux".into()),None,None,Some(&runner),&|_|{}).await;
-    let Err(maho_ext_compaction::speculative::SummaryGenerationError::Overflow(error))=result else {panic!("expected overflow exhaustion")};
-    assert_eq!(error.attempts,3);assert!(error.elapsed_ms<240000.);
-    let inputs=inputs.lock().expect("captured requests");assert_eq!(inputs.len(),3,"pinned attempts < 3 permits two retries, no fourth paid request");
-    assert!(inputs.windows(2).all(|pair|pair[1]<pair[0]),"each actual summary retry shrinks input: {inputs:?}");
+    let result = maho_ext_compaction::speculative::run_extension_compaction(
+        &snapshot,
+        Some("faux".into()),
+        false,
+        None,
+        None,
+        Some(&runner),
+        &|_| {},
+    )
+    .await;
+    let Err(maho_ext_compaction::speculative::SummaryGenerationError::Overflow(error)) = result
+    else {
+        panic!("expected overflow exhaustion")
+    };
+    assert_eq!(error.attempts, 3);
+    assert!(error.elapsed_ms < 240000.);
+    let inputs = inputs.lock().expect("captured requests");
+    assert_eq!(
+        inputs.len(),
+        3,
+        "pinned attempts < 3 permits two retries, no fourth paid request"
+    );
+    assert!(
+        inputs.windows(2).all(|pair| pair[1] < pair[0]),
+        "each actual summary retry shrinks input: {inputs:?}"
+    );
 }

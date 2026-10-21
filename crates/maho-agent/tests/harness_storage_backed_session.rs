@@ -10,10 +10,13 @@ use maho_agent::harness::session::commit::{insert_entry, insert_usage};
 use maho_agent::harness::session::session::{SessionErrorKind, session_invariant_error};
 use maho_agent::harness::session::testing::{GatingStorage, InstrumentedStorage};
 use maho_agent::harness::session::types::{
-    EntryKind, EntryScan, NewEntry, NewUsageRow, Session, SessionMetadata, SessionReader, Storage, Write,
+    EntryKind, EntryScan, NewEntry, NewUsageRow, Session, SessionMetadata, SessionReader, Storage,
+    Write,
 };
 use maho_agent::harness::session::values::{append_list, list, session_name, set_value, value};
-use maho_agent::harness::session::{MemoryStorage, MemoryStorageOptions, StorageBackedSession, StorageBackedSessionOptions};
+use maho_agent::harness::session::{
+    MemoryStorage, MemoryStorageOptions, StorageBackedSession, StorageBackedSessionOptions,
+};
 use maho_agent::types::{AgentMessage, CustomAgentMessage};
 use maho_ai::types::{Api, AssistantMessage, Message, ProviderId, StopReason, Usage, UsageCost};
 
@@ -66,7 +69,13 @@ fn session_with(storage: Arc<dyn Storage>) -> Arc<StorageBackedSession> {
     session
 }
 
-async fn commit_session(session: &StorageBackedSession, transaction: Vec<Write>) -> Result<maho_agent::harness::session::types::CommitResult, maho_agent::harness::session::SessionError> {
+async fn commit_session(
+    session: &StorageBackedSession,
+    transaction: Vec<Write>,
+) -> Result<
+    maho_agent::harness::session::types::CommitResult,
+    maho_agent::harness::session::SessionError,
+> {
     session
         .mutate(
             Arc::new(move |mutator, context| {
@@ -107,7 +116,9 @@ async fn delegates_typed_values_directly_without_validation_or_cloning() {
                         mutator
                             .commit(
                                 vec![
-                                    insert_entry(NewEntry::custom_with_data(ENTRY_ID, None, "note", data)),
+                                    insert_entry(NewEntry::custom_with_data(
+                                        ENTRY_ID, None, "note", data,
+                                    )),
                                     Write::Value(set_value(&scalar, stored)),
                                 ],
                                 context,
@@ -131,7 +142,10 @@ async fn delegates_typed_values_directly_without_validation_or_cloning() {
     assert_eq!(entry.timestamp, NOW);
     match &entry.kind {
         EntryKind::Custom { data, .. } => {
-            assert_eq!(data.clone(), Some(serde_json::json!({ "nested": ["original"] })));
+            assert_eq!(
+                data.clone(),
+                Some(serde_json::json!({ "nested": ["original"] }))
+            );
         }
         other => panic!("expected custom entry, got {other:?}"),
     }
@@ -198,7 +212,10 @@ async fn composes_bound_values_and_lists_atomically_with_entries_and_usage() {
         .expect("value")
         .expect("stored");
     assert_eq!(stored.seq, 2);
-    let elements = session.read_list(&events, None, &BACKGROUND_CONTEXT).await.expect("list");
+    let elements = session
+        .read_list(&events, None, &BACKGROUND_CONTEXT)
+        .await
+        .expect("list");
     assert_eq!(elements.len(), 1);
     assert_eq!(elements[0].value, serde_json::json!("event"));
     assert_eq!(elements[0].seq, 3);
@@ -211,7 +228,8 @@ async fn serializes_read_modify_write_callbacks_on_the_single_session_line() {
     let session = session_with(memory());
     let counter = value("test.counter", "").expect("address");
 
-    let increment = |session: Arc<StorageBackedSession>, counter: maho_agent::harness::session::values::Value| async move {
+    let increment = |session: Arc<StorageBackedSession>,
+                     counter: maho_agent::harness::session::values::Value| async move {
         session
             .mutate(
                 Arc::new(move |mutator, context| {
@@ -223,7 +241,13 @@ async fn serializes_read_modify_write_callbacks_on_the_single_session_line() {
                             .and_then(|stored| stored.value.as_i64())
                             .unwrap_or(0);
                         mutator
-                            .commit(vec![Write::Value(set_value(&counter, serde_json::json!(current + 1)))], context)
+                            .commit(
+                                vec![Write::Value(set_value(
+                                    &counter,
+                                    serde_json::json!(current + 1),
+                                ))],
+                                context,
+                            )
                             .await?;
                         Ok(serde_json::json!(current + 1))
                     })
@@ -264,7 +288,11 @@ async fn keeps_separate_direct_reads_and_writes_deliberately_non_atomic() {
             .unwrap_or(0);
         barrier.wait().await;
         session
-            .set_value(&counter, serde_json::json!(current + 1), &BACKGROUND_CONTEXT)
+            .set_value(
+                &counter,
+                serde_json::json!(current + 1),
+                &BACKGROUND_CONTEXT,
+            )
             .await
             .expect("write");
     };
@@ -304,7 +332,10 @@ async fn queues_a_nested_public_writer_until_its_owning_callback_returns() {
                         let finished_for_task = finished.clone();
                         let handle = tokio::spawn(async move {
                             started.store(true, Ordering::SeqCst);
-                            session.set_name(Some("nested".to_owned()), &BACKGROUND_CONTEXT).await.expect("nested");
+                            session
+                                .set_name(Some("nested".to_owned()), &BACKGROUND_CONTEXT)
+                                .await
+                                .expect("nested");
                             finished_for_task.store(true, Ordering::SeqCst);
                         });
                         *nested.lock().expect("nested") = Some(handle);
@@ -319,10 +350,17 @@ async fn queues_a_nested_public_writer_until_its_owning_callback_returns() {
         .await
         .expect("mutate");
 
-    let handle = nested.lock().expect("nested").take().expect("nested writer");
+    let handle = nested
+        .lock()
+        .expect("nested")
+        .take()
+        .expect("nested writer");
     handle.await.expect("nested task");
     assert!(started.load(Ordering::SeqCst));
-    assert_eq!(session.get_name(&BACKGROUND_CONTEXT).await.expect("name"), Some("nested".to_owned()));
+    assert_eq!(
+        session.get_name(&BACKGROUND_CONTEXT).await.expect("name"),
+        Some("nested".to_owned())
+    );
     session.close(&BACKGROUND_CONTEXT).await;
 }
 
@@ -376,21 +414,41 @@ async fn exposes_either_side_of_an_atomic_multi_write_commit_to_direct_reads() {
     storage.wait_pending(1).await.expect("pending");
 
     assert_eq!(
-        session.get_value(&first, &BACKGROUND_CONTEXT).await.expect("read").expect("value").value,
+        session
+            .get_value(&first, &BACKGROUND_CONTEXT)
+            .await
+            .expect("read")
+            .expect("value")
+            .value,
         serde_json::json!("old")
     );
     assert_eq!(
-        session.get_value(&second, &BACKGROUND_CONTEXT).await.expect("read").expect("value").value,
+        session
+            .get_value(&second, &BACKGROUND_CONTEXT)
+            .await
+            .expect("read")
+            .expect("value")
+            .value,
         serde_json::json!("old")
     );
     storage.next(1).await.expect("release");
     committing.await.expect("committing");
     assert_eq!(
-        session.get_value(&first, &BACKGROUND_CONTEXT).await.expect("read").expect("value").value,
+        session
+            .get_value(&first, &BACKGROUND_CONTEXT)
+            .await
+            .expect("read")
+            .expect("value")
+            .value,
         serde_json::json!("new")
     );
     assert_eq!(
-        session.get_value(&second, &BACKGROUND_CONTEXT).await.expect("read").expect("value").value,
+        session
+            .get_value(&second, &BACKGROUND_CONTEXT)
+            .await
+            .expect("read")
+            .expect("value")
+            .value,
         serde_json::json!("new")
     );
     session.close(&BACKGROUND_CONTEXT).await;
@@ -400,7 +458,10 @@ async fn exposes_either_side_of_an_atomic_multi_write_commit_to_direct_reads() {
 async fn holds_the_explicit_session_barrier_through_commit_until_end() {
     let storage = Arc::new(InstrumentedStorage::new(memory()));
     let session = session_with(storage.clone());
-    let mutation = session.begin_mutation(&BACKGROUND_CONTEXT).await.expect("mutation");
+    let mutation = session
+        .begin_mutation(&BACKGROUND_CONTEXT)
+        .await
+        .expect("mutation");
     let queued_started = Arc::new(AtomicBool::new(false));
     let queued = session.mutate(
         Arc::new({
@@ -415,21 +476,44 @@ async fn holds_the_explicit_session_barrier_through_commit_until_end() {
 
     tokio::task::yield_now().await;
     assert!(!queued_started.load(Ordering::SeqCst));
-    assert!(mutation.get_value(&session_name(), &BACKGROUND_CONTEXT).await.expect("read").is_none());
-    let result = mutation.commit(Vec::new(), &BACKGROUND_CONTEXT).await.expect("commit");
+    assert!(
+        mutation
+            .get_value(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .expect("read")
+            .is_none()
+    );
+    let result = mutation
+        .commit(Vec::new(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("commit");
     assert!(result.seqs.is_empty());
     assert!(!queued_started.load(Ordering::SeqCst));
-    assert!(mutation.get_value(&session_name(), &BACKGROUND_CONTEXT).await.expect("read").is_none());
+    assert!(
+        mutation
+            .get_value(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .expect("read")
+            .is_none()
+    );
     mutation.end(&BACKGROUND_CONTEXT).await;
     queued.await.expect("queued");
     assert!(queued_started.load(Ordering::SeqCst));
     assert_eq!(storage.get_commit_attempts(), vec![Vec::<Write>::new()]);
     assert_eq!(
-        mutation.get_entries(Vec::new(), &BACKGROUND_CONTEXT).await.expect_err("invalidated").kind,
+        mutation
+            .get_entries(Vec::new(), &BACKGROUND_CONTEXT)
+            .await
+            .expect_err("invalidated")
+            .kind,
         SessionErrorKind::MutatorInactive
     );
     assert_eq!(
-        mutation.commit(Vec::new(), &BACKGROUND_CONTEXT).await.expect_err("invalidated").kind,
+        mutation
+            .commit(Vec::new(), &BACKGROUND_CONTEXT)
+            .await
+            .expect_err("invalidated")
+            .kind,
         SessionErrorKind::MutatorInactive
     );
     mutation.end(&BACKGROUND_CONTEXT).await;
@@ -439,11 +523,23 @@ async fn holds_the_explicit_session_barrier_through_commit_until_end() {
 #[tokio::test]
 async fn allows_direct_reads_to_observe_a_committed_value_before_the_mutation_scope_ends() {
     let session = session_with(memory());
-    let mutation = session.begin_mutation(&BACKGROUND_CONTEXT).await.expect("mutation");
-    assert!(session.get_value(&session_name(), &BACKGROUND_CONTEXT).await.expect("read").is_none());
+    let mutation = session
+        .begin_mutation(&BACKGROUND_CONTEXT)
+        .await
+        .expect("mutation");
+    assert!(
+        session
+            .get_value(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .expect("read")
+            .is_none()
+    );
     mutation
         .commit(
-            vec![Write::Value(set_value(&session_name(), serde_json::json!("visible")))],
+            vec![Write::Value(set_value(
+                &session_name(),
+                serde_json::json!("visible"),
+            ))],
             &BACKGROUND_CONTEXT,
         )
         .await
@@ -461,7 +557,12 @@ async fn allows_direct_reads_to_observe_a_committed_value_before_the_mutation_sc
     );
 
     assert_eq!(
-        session.get_value(&session_name(), &BACKGROUND_CONTEXT).await.expect("read").expect("value").value,
+        session
+            .get_value(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .expect("read")
+            .expect("value")
+            .value,
         serde_json::json!("visible")
     );
     assert!(!queued_started.load(Ordering::SeqCst));
@@ -475,11 +576,17 @@ async fn allows_direct_reads_to_observe_a_committed_value_before_the_mutation_sc
 async fn ends_an_explicit_mutation_without_committing_and_lets_close_finish() {
     let storage = Arc::new(InstrumentedStorage::new(memory()));
     let session = session_with(storage.clone());
-    let mutation = session.begin_mutation(&BACKGROUND_CONTEXT).await.expect("mutation");
+    let mutation = session
+        .begin_mutation(&BACKGROUND_CONTEXT)
+        .await
+        .expect("mutation");
     let closed = Arc::new(AtomicBool::new(false));
 
     let mut closing = Box::pin(session.close(&BACKGROUND_CONTEXT));
-    assert!(futures::poll!(closing.as_mut()).is_pending(), "close must wait for the explicit scope");
+    assert!(
+        futures::poll!(closing.as_mut()).is_pending(),
+        "close must wait for the explicit scope"
+    );
     assert!(!closed.load(Ordering::SeqCst));
     mutation.end(&BACKGROUND_CONTEXT).await;
     closing.await;
@@ -496,7 +603,11 @@ async fn exposes_explicit_branch_scans_through_the_session_and_callback_scoped_m
         &session,
         vec![
             insert_entry(NewEntry::custom(ENTRY_ID, None, "root")),
-            insert_entry(NewEntry::custom(child_id, Some(ENTRY_ID.to_owned()), "child")),
+            insert_entry(NewEntry::custom(
+                child_id,
+                Some(ENTRY_ID.to_owned()),
+                "child",
+            )),
         ],
     )
     .await
@@ -513,12 +624,16 @@ async fn exposes_explicit_branch_scans_through_the_session_and_callback_scoped_m
         .await
         .expect("branch");
     assert_eq!(
-        entries.iter().map(|entry| entry.id.as_str()).collect::<Vec<&str>>(),
+        entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<&str>>(),
         vec![ENTRY_ID, child_id]
     );
 
-    let captured: Arc<Mutex<Option<Arc<dyn maho_agent::harness::session::types::SessionMutation>>>> =
-        Arc::new(Mutex::new(None));
+    let captured: Arc<
+        Mutex<Option<Arc<dyn maho_agent::harness::session::types::SessionMutation>>>,
+    > = Arc::new(Mutex::new(None));
     session
         .mutate(
             Arc::new({
@@ -529,7 +644,9 @@ async fn exposes_explicit_branch_scans_through_the_session_and_callback_scoped_m
                             .scan_branch(
                                 maho_agent::harness::session::types::StorageBranchScan {
                                     limit: Some(1),
-                                    ..maho_agent::harness::session::types::StorageBranchScan::new(child_id)
+                                    ..maho_agent::harness::session::types::StorageBranchScan::new(
+                                        child_id,
+                                    )
                                 },
                                 &BACKGROUND_CONTEXT,
                             )
@@ -554,6 +671,9 @@ async fn rejects_pending_assistant_entries_at_the_durable_session_write_boundary
     let storage = Arc::new(InstrumentedStorage::new(memory()));
     let session = session_with(storage.clone());
     let pending = AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage {
+        prompt_cache_diagnostics: None,
+        thinking_level: None,
+        provider_diagnostic: None,
         content: Vec::new(),
         api: Api::from("anthropic-messages"),
         provider: ProviderId::from("anthropic"),
@@ -567,6 +687,7 @@ async fn rejects_pending_assistant_entries_at_the_durable_session_write_boundary
         stop_details: None,
         deferred: None,
         error_message: None,
+        error_cause: None,
         abort_source: None,
         raw_stop_reason: None,
         end_turn: None,
@@ -579,7 +700,10 @@ async fn rejects_pending_assistant_entries_at_the_durable_session_write_boundary
                 let pending = pending.clone();
                 Box::pin(async move {
                     mutator
-                        .commit(vec![insert_entry(NewEntry::message(ENTRY_ID, None, pending))], context)
+                        .commit(
+                            vec![insert_entry(NewEntry::message(ENTRY_ID, None, pending))],
+                            context,
+                        )
                         .await?;
                     Ok(serde_json::Value::Null)
                 })
@@ -590,11 +714,13 @@ async fn rejects_pending_assistant_entries_at_the_durable_session_write_boundary
         .expect_err("pending assistant message");
     assert_eq!(error.kind, SessionErrorKind::PendingAssistantMessage);
     assert!(storage.get_commit_attempts().is_empty());
-    assert!(session
-        .get_entries(vec![ENTRY_ID.to_owned()], &BACKGROUND_CONTEXT)
-        .await
-        .expect("entries")
-        .is_empty());
+    assert!(
+        session
+            .get_entries(vec![ENTRY_ID.to_owned()], &BACKGROUND_CONTEXT)
+            .await
+            .expect("entries")
+            .is_empty()
+    );
     session.close(&BACKGROUND_CONTEXT).await;
 }
 
@@ -612,7 +738,9 @@ async fn trusts_typed_custom_messages_without_repository_schema_registration() {
     ));
     let entry = NewEntry::message(ENTRY_ID, None, message.clone());
 
-    commit_session(&session, vec![insert_entry(entry.clone())]).await.expect("commit");
+    commit_session(&session, vec![insert_entry(entry.clone())])
+        .await
+        .expect("commit");
 
     let entries = session
         .get_entries(vec![ENTRY_ID.to_owned()], &BACKGROUND_CONTEXT)
@@ -638,11 +766,17 @@ async fn serializes_mutations_permits_one_commit_attempt_and_invalidates_the_mut
                     assert!(mutator.get_value(&session_name(), context).await?.is_none());
                     mutator
                         .commit(
-                            vec![Write::Value(set_value(&session_name(), serde_json::json!("committed")))],
+                            vec![Write::Value(set_value(
+                                &session_name(),
+                                serde_json::json!("committed"),
+                            ))],
                             context,
                         )
                         .await?;
-                    let second = mutator.commit(Vec::new(), context).await.expect_err("second commit");
+                    let second = mutator
+                        .commit(Vec::new(), context)
+                        .await
+                        .expect_err("second commit");
                     assert_eq!(second.kind, SessionErrorKind::MutatorCommitAttempted);
                     Ok(serde_json::Value::Null)
                 })
@@ -653,7 +787,10 @@ async fn serializes_mutations_permits_one_commit_attempt_and_invalidates_the_mut
         .expect("mutate");
 
     assert_eq!(storage.get_commit_attempts().len(), 1);
-    assert_eq!(session.get_name(&BACKGROUND_CONTEXT).await.expect("name"), Some("committed".to_owned()));
+    assert_eq!(
+        session.get_name(&BACKGROUND_CONTEXT).await.expect("name"),
+        Some("committed".to_owned())
+    );
     session.close(&BACKGROUND_CONTEXT).await;
 }
 
@@ -668,13 +805,20 @@ async fn consumes_the_commit_guard_when_the_first_commit_fails() {
                 Box::pin(async move {
                     let failed = mutator
                         .commit(
-                            vec![insert_entry(NewEntry::custom(ENTRY_ID, Some("missing".to_owned()), "note"))],
+                            vec![insert_entry(NewEntry::custom(
+                                ENTRY_ID,
+                                Some("missing".to_owned()),
+                                "note",
+                            ))],
                             context,
                         )
                         .await
                         .expect_err("missing parent");
                     assert_eq!(failed.kind, SessionErrorKind::MissingParent);
-                    let second = mutator.commit(Vec::new(), context).await.expect_err("second commit");
+                    let second = mutator
+                        .commit(Vec::new(), context)
+                        .await
+                        .expect_err("second commit");
                     assert_eq!(second.kind, SessionErrorKind::MutatorCommitAttempted);
                     Ok(serde_json::Value::Null)
                 })
@@ -693,7 +837,10 @@ async fn mints_distinct_follower_ids_with_the_leader_timestamp() {
     let leader_timestamp = 0x0123_4567_89ab;
     let generator = session.id_generator().clone();
     let leader = generator(Some(leader_timestamp));
-    let followers = [generator(Some(leader_timestamp)), generator(Some(leader_timestamp))];
+    let followers = [
+        generator(Some(leader_timestamp)),
+        generator(Some(leader_timestamp)),
+    ];
     let decode_timestamp = |id: &str| {
         let compact: String = id.chars().filter(|character| *character != '-').collect();
         i64::from_str_radix(&compact[..12], 16).expect("timestamp")
@@ -705,7 +852,10 @@ async fn mints_distinct_follower_ids_with_the_leader_timestamp() {
             .collect::<Vec<i64>>(),
         vec![leader_timestamp, leader_timestamp, leader_timestamp]
     );
-    let unique: std::collections::HashSet<String> = [leader, followers[0].clone(), followers[1].clone()].into_iter().collect();
+    let unique: std::collections::HashSet<String> =
+        [leader, followers[0].clone(), followers[1].clone()]
+            .into_iter()
+            .collect();
     assert_eq!(unique.len(), 3);
     session.close(&BACKGROUND_CONTEXT).await;
 }
@@ -730,7 +880,10 @@ async fn accepts_an_injected_id_generator_for_deterministic_execution_tests() {
     session.close(&BACKGROUND_CONTEXT).await;
 }
 
-fn session_with_with_generator(storage: Arc<dyn Storage>, generator: maho_agent::harness::session::types::IdGenerator) -> Arc<StorageBackedSession> {
+fn session_with_with_generator(
+    storage: Arc<dyn Storage>,
+    generator: maho_agent::harness::session::types::IdGenerator,
+) -> Arc<StorageBackedSession> {
     let session = Arc::new(StorageBackedSession::new(
         metadata(),
         storage,
@@ -758,7 +911,10 @@ async fn exposes_metadata_directly_and_the_shared_uuidv7_id_generator() {
 async fn closes_idempotently_and_rejects_operations_not_admitted_before_close() {
     let session = session_with(memory());
 
-    tokio::join!(session.close(&BACKGROUND_CONTEXT), session.close(&BACKGROUND_CONTEXT));
+    tokio::join!(
+        session.close(&BACKGROUND_CONTEXT),
+        session.close(&BACKGROUND_CONTEXT)
+    );
     assert_eq!(
         session
             .mutate(
@@ -770,16 +926,33 @@ async fn closes_idempotently_and_rejects_operations_not_admitted_before_close() 
             .kind,
         SessionErrorKind::Closed
     );
-    assert!(session.get_entries(Vec::new(), &BACKGROUND_CONTEXT).await.is_err());
-    assert!(session.get_value(&session_name(), &BACKGROUND_CONTEXT).await.is_err());
-    assert!(session.scan_values(&session_name(), &BACKGROUND_CONTEXT).await.is_err());
-    assert!(session
-        .scan_branch(
-            maho_agent::harness::session::types::StorageBranchScan::new(ENTRY_ID),
-            &BACKGROUND_CONTEXT
-        )
-        .await
-        .is_err());
+    assert!(
+        session
+            .get_entries(Vec::new(), &BACKGROUND_CONTEXT)
+            .await
+            .is_err()
+    );
+    assert!(
+        session
+            .get_value(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .is_err()
+    );
+    assert!(
+        session
+            .scan_values(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .is_err()
+    );
+    assert!(
+        session
+            .scan_branch(
+                maho_agent::harness::session::types::StorageBranchScan::new(ENTRY_ID),
+                &BACKGROUND_CONTEXT
+            )
+            .await
+            .is_err()
+    );
     let _ = session_invariant_error("unused");
     let _ = EntryScan::default();
 }

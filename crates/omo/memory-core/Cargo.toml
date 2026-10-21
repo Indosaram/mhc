@@ -11,6 +11,16 @@ path = "src/lib.rs"
 
 [dependencies]
 
+loro = "=1.16.2"
+saphyr-parser = "=0.2.2"
+url.workspace = true
+aws-lc-rs = "=1.18.1"
+base64.workspace = true
+flate2.workspace = true
+pkcs8 = "=0.10.2"
+ryu-js = "=1.0.3"
+tokio = { workspace = true, features = ["rt", "time"] }
+zeroize = "=1.8.2"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 unicode-general-category.workspace = true
@@ -22,6 +32,7 @@ icu_collator = "=2.3.1"
 filetime.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "sync", "test-util"] }
 
 # Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
 # The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).

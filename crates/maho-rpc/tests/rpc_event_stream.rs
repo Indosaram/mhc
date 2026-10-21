@@ -37,7 +37,7 @@ async fn gated_session(cwd: &std::path::Path, responses: Vec<String>) -> Gated {
             Box::pin(async move { while !*rx.borrow_and_update() { if rx.changed().await.is_err() { break; } } })
         })),
         ..Default::default()
-    });
+    }).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("the faux provider registers faux-1");
     provider.set_responses(responses.iter().map(|content| faux_assistant_message(content.as_str(), FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()).collect());
     let credentials = AuthStorage::in_memory(Default::default());
@@ -48,7 +48,7 @@ async fn gated_session(cwd: &std::path::Path, responses: Vec<String>) -> Gated {
         credentials: Some(Arc::new(credentials)),
         providers: Some(vec![provider.provider.clone()]),
             ..Default::default()
-        });
+        }).expect("valid model runtime");
     // senpi test/suite/harness.ts:159: the faux auth resolves `{ auth: {} }`, so the configured key is registered.
     runtime.register_provider(&model.provider, maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".into()), ..Default::default() }, ..Default::default()

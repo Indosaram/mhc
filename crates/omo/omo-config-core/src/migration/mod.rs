@@ -1,6 +1,7 @@
 mod backup_move;
 mod batch;
 mod commit;
+mod diff_edits;
 mod engine;
 mod journal;
 mod lock;
@@ -9,6 +10,9 @@ pub mod migration_test_support;
 mod predicate;
 mod recovery;
 mod types;
+
+#[cfg(test)]
+mod regression_tests;
 
 pub use backup_move::*;
 pub use batch::*;

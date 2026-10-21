@@ -19,7 +19,9 @@ pub fn sha256_slot_hasher(input: &str) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     let digest = hasher.finalize();
-    u64::from_be_bytes([digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7]])
+    u64::from_be_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +86,10 @@ fn overlay_state(slot: RotationSlot, state: Option<&CredentialSlotState>) -> Rot
         overlay.slot.failure_count = Some(failure_count.min(u64::from(u32::MAX)) as u32);
     }
     if let Some(lease) = &state.lease {
-        overlay.slot.lease = Some(SlotLeaseRef { id: lease.id.clone(), expires_at: lease.expires_at });
+        overlay.slot.lease = Some(SlotLeaseRef {
+            id: lease.id.clone(),
+            expires_at: lease.expires_at,
+        });
     }
     overlay
 }
@@ -100,13 +105,18 @@ fn block_reason_str(reason: BlockReason) -> &'static str {
 async fn policy_slots(sources: &RotationSources<'_>) -> Vec<EnvCredentialSlot> {
     let mut slots = Vec::new();
     for (name, reference) in &sources.policy.slots {
-        let env_var_name = reference.env.clone().unwrap_or_else(|| format!("models.json:{name}"));
+        let env_var_name = reference
+            .env
+            .clone()
+            .unwrap_or_else(|| format!("models.json:{name}"));
         let key = match (&reference.env, &reference.value) {
             (Some(env_var), _) => (sources.env)(env_var),
             (None, Some(value)) => resolve_config_value(value, None).await,
             (None, None) => None,
         };
-        let Some(key) = key.filter(|key| !key.is_empty()) else { continue };
+        let Some(key) = key.filter(|key| !key.is_empty()) else {
+            continue;
+        };
         slots.push(EnvCredentialSlot {
             name: name.clone(),
             env_var_name,
@@ -119,7 +129,10 @@ async fn policy_slots(sources: &RotationSources<'_>) -> Vec<EnvCredentialSlot> {
 
 /// Lists the provider's rotation slots with sidecar health overlaid. Stored credentials own the
 /// lane when present; env slots participate only when nothing is stored.
-pub async fn list_rotation_slots(sources: &RotationSources<'_>, acquire_leases: bool) -> Result<Vec<RotationSlot>, String> {
+pub async fn list_rotation_slots(
+    sources: &RotationSources<'_>,
+    acquire_leases: bool,
+) -> Result<Vec<RotationSlot>, String> {
     let provider_id = sources.provider_id.clone();
     let repository = sources.repository;
     let named = policy_slots(sources).await;
@@ -140,7 +153,9 @@ pub async fn list_rotation_slots(sources: &RotationSources<'_>, acquire_leases: 
                 .await?;
             let persisted = state.get(&slot.name);
             // A block belongs to the material that earned it; a re-login starts clean.
-            let applicable = persisted.filter(|state| state.credential_revision.as_deref() == Some(stored_revision.as_str()));
+            let applicable = persisted.filter(|state| {
+                state.credential_revision.as_deref() == Some(stored_revision.as_str())
+            });
             let base = RotationSlot {
                 slot: RunSlot {
                     name: slot.name.clone(),
@@ -152,14 +167,27 @@ pub async fn list_rotation_slots(sources: &RotationSources<'_>, acquire_leases: 
                 env_var_name: None,
                 stored_revision: Some(stored_revision.clone()),
             };
-            let expired = applicable.and_then(|state| state.blocked_until).map(|until| until <= sources.now).unwrap_or(false);
+            let expired = applicable
+                .and_then(|state| state.blocked_until)
+                .map(|until| until <= sources.now)
+                .unwrap_or(false);
             if acquire_leases && expired {
-                let lease = acquire_half_open_lease(repository, &provider_id, "stored", &slot.name, sources.now, 30_000).await?;
+                let lease = acquire_half_open_lease(
+                    repository,
+                    &provider_id,
+                    "stored",
+                    &slot.name,
+                    sources.now,
+                    30_000,
+                )
+                .await?;
                 if lease.is_none() {
                     continue;
                 }
                 let leased = repository.list_slots(&provider_id, "stored").await?;
-                let leased_state = leased.get(&slot.name).filter(|state| state.credential_revision.as_deref() == Some(stored_revision.as_str()));
+                let leased_state = leased.get(&slot.name).filter(|state| {
+                    state.credential_revision.as_deref() == Some(stored_revision.as_str())
+                });
                 slots.push(overlay_state(base, leased_state));
                 continue;
             }
@@ -191,18 +219,41 @@ async fn list_env_rotation_slots(
     let mut slots = Vec::new();
     for slot in env_slots {
         let persisted = state.get(&slot.name);
-        let revision = repository.env_credential_revision(&slot.env_var_name, &slot.key).await?;
-        let mut applicable = persisted.filter(|state| state.credential_revision.as_deref() == Some(revision.as_str())).cloned();
-        let expired = applicable.as_ref().and_then(|state| state.blocked_until).map(|until| until <= sources.now).unwrap_or(false);
+        let revision = repository
+            .env_credential_revision(&slot.env_var_name, &slot.key)
+            .await?;
+        let mut applicable = persisted
+            .filter(|state| state.credential_revision.as_deref() == Some(revision.as_str()))
+            .cloned();
+        let expired = applicable
+            .as_ref()
+            .and_then(|state| state.blocked_until)
+            .map(|until| until <= sources.now)
+            .unwrap_or(false);
         if acquire_leases && expired {
-            let lease = acquire_half_open_lease(repository, &provider_id, "env", &slot.name, sources.now, 30_000).await?;
+            let lease = acquire_half_open_lease(
+                repository,
+                &provider_id,
+                "env",
+                &slot.name,
+                sources.now,
+                30_000,
+            )
+            .await?;
             if lease.is_none() {
                 continue;
             }
-            applicable = repository.list_slots(&provider_id, "env").await?.get(&slot.name).cloned();
+            applicable = repository
+                .list_slots(&provider_id, "env")
+                .await?
+                .get(&slot.name)
+                .cloned();
         }
         let base = RotationSlot {
-            slot: RunSlot { name: slot.name.clone(), ..RunSlot::default() },
+            slot: RunSlot {
+                name: slot.name.clone(),
+                ..RunSlot::default()
+            },
             lane: RotationLane::Env,
             env_key: Some(slot.key.clone()),
             env_var_name: Some(slot.env_var_name.clone()),
@@ -234,7 +285,12 @@ pub fn block_patch(
     };
     match block {
         CredentialBlock::RateLimit { cooldown_ms, .. } => {
-            patch.blocked_until = Some(now + policy.cooldown_cap_ms.unwrap_or(*cooldown_ms).min(*cooldown_ms));
+            patch.blocked_until = Some(
+                now + policy
+                    .cooldown_cap_ms
+                    .unwrap_or(*cooldown_ms)
+                    .min(*cooldown_ms),
+            );
             patch.block_reason = Some(BlockReason::RateLimit);
         }
         CredentialBlock::AuthError => patch.block_reason = Some(BlockReason::AuthError),
@@ -244,17 +300,27 @@ pub fn block_patch(
 }
 
 /// Selection follows the HRW order for the affinity key; a pinned slot always wins.
-pub fn select_rotation_slot(candidates: &[RotationSlot], affinity_key: &str, use_affinity: bool) -> Option<RotationSlot> {
+pub fn select_rotation_slot(
+    candidates: &[RotationSlot],
+    affinity_key: &str,
+    use_affinity: bool,
+) -> Option<RotationSlot> {
     if let Some(pinned) = candidates.iter().find(|candidate| candidate.slot.pinned) {
         return Some(pinned.clone());
     }
     if !use_affinity {
         return candidates.first().cloned();
     }
-    let names: Vec<String> = candidates.iter().map(|candidate| candidate.slot.name.clone()).collect();
+    let names: Vec<String> = candidates
+        .iter()
+        .map(|candidate| candidate.slot.name.clone())
+        .collect();
     let ordered = rendezvous_order(&names, affinity_key, sha256_slot_hasher);
     let winner = ordered.first()?;
-    candidates.iter().find(|candidate| candidate.slot.name == *winner).cloned()
+    candidates
+        .iter()
+        .find(|candidate| candidate.slot.name == *winner)
+        .cloned()
 }
 
 pub fn policy_affinity(policy: &RotationPolicy) -> bool {
@@ -265,12 +331,19 @@ pub fn rotation_error_from_event(event: &Value) -> Option<Value> {
     crate::credential_pool::rotation_events::rotation_error_from_event(event)
 }
 
-pub use crate::credential_pool::rotation_events::{is_committed_rotation_output, is_rotation_stream_start};
+pub use crate::credential_pool::rotation_events::{
+    is_committed_rotation_output, is_rotation_stream_start,
+};
 
-pub type RotationAttemptFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<maho_ai::types::AssistantMessageEventStream, Value>> + Send>>;
+pub type RotationAttemptFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<maho_ai::types::AssistantMessageEventStream, Value>>
+            + Send,
+    >,
+>;
 /// One provider attempt for a rotation slot; resolved lazily so a slot's auth runs only when chosen.
-pub type RunRotationAttempt = std::sync::Arc<dyn Fn(RotationSlot) -> RotationAttemptFuture + Send + Sync>;
+pub type RunRotationAttempt =
+    std::sync::Arc<dyn Fn(RotationSlot) -> RotationAttemptFuture + Send + Sync>;
 
 /// Shared env lookup (`options.env[name] ?? process.env[name]`).
 pub type EnvLookup = std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -285,7 +358,10 @@ pub struct OwnedRotationSources {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_millis() as u64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl OwnedRotationSources {
@@ -313,6 +389,7 @@ struct RotationHost {
     run_attempt: RunRotationAttempt,
     slots: Vec<RotationSlot>,
     target: maho_ai::types::AssistantMessageEventStream,
+    signal: maho_ai::utils::abort::AbortSignal,
 }
 
 impl crate::credential_pool::failover::FailoverHost for RotationHost {
@@ -321,28 +398,72 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
 
     async fn list_slots(&mut self) -> Vec<RunSlot> {
         // A sidecar read failure leaves no candidates, which reports "No credential slots available".
-        self.slots = self.sources.list(true).await.unwrap_or_default();
+        self.slots = tokio::select! {
+            biased;
+            _ = self.signal.cancelled() => Vec::new(),
+            slots = self.sources.list(true) => slots.unwrap_or_default(),
+        };
         self.slots.iter().map(|slot| slot.slot.clone()).collect()
     }
 
     fn select(&self, candidates: &[RunSlot]) -> Option<RunSlot> {
-        let rotation: Vec<RotationSlot> = self.slots.iter().filter(|slot| candidates.iter().any(|candidate| candidate.name == slot.slot.name)).cloned().collect();
-        select_rotation_slot(&rotation, &self.affinity_key, policy_affinity(&self.sources.policy)).map(|slot| slot.slot)
+        let rotation: Vec<RotationSlot> = self
+            .slots
+            .iter()
+            .filter(|slot| {
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.name == slot.slot.name)
+            })
+            .cloned()
+            .collect();
+        select_rotation_slot(
+            &rotation,
+            &self.affinity_key,
+            policy_affinity(&self.sources.policy),
+        )
+        .map(|slot| slot.slot)
     }
 
     async fn run_attempt(&mut self, slot: &RunSlot) -> Result<Self::Attempt, Value> {
-        let Some(rotation) = self.slots.iter().find(|candidate| candidate.slot.name == slot.name).cloned() else {
+        let Some(rotation) = self
+            .slots
+            .iter()
+            .find(|candidate| candidate.slot.name == slot.name)
+            .cloned()
+        else {
             return Err(Value::from("credential rotation selected an unknown slot"));
         };
-        (self.run_attempt)(rotation).await
+        let attempt = tokio::select! {
+            biased;
+            _ = self.signal.cancelled() => return Err(Value::from("credential rotation cancelled")),
+            attempt = (self.run_attempt)(rotation) => attempt?,
+        };
+        Ok(attempt)
     }
 
-    async fn next_event(&mut self, attempt: &mut Self::Attempt) -> Option<Result<Self::Event, Value>> {
-        match attempt.next().await {
+    async fn next_event(
+        &mut self,
+        attempt: &mut Self::Attempt,
+    ) -> Option<Result<Self::Event, Value>> {
+        let next = tokio::select! {
+            biased;
+            _ = self.signal.cancelled() => return None,
+            next = attempt.next() => next,
+        };
+        match next {
             Ok(Some(event)) => Some(Ok(event)),
             Ok(None) => None,
             Err(error) => Some(Err(serde_json::json!({ "message": error.message }))),
         }
+    }
+
+    async fn settle_attempt(&mut self, attempt: &mut Self::Attempt) -> Result<(), String> {
+        attempt.cancel().await.map_err(|error| error.message)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.signal.aborted()
     }
 
     fn is_committed_output(&self, event: &Self::Event) -> bool {
@@ -370,43 +491,90 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
         }
     }
 
-    fn classify(&self, error: &Value, failure_count: u32) -> crate::credential_pool::classify::CredentialAction {
-        crate::credential_pool::classify::classify_credential_failure(error, &crate::credential_pool::classify::ClassifyContext {
-            failure_count: Some(failure_count),
-            cooldown_base_ms: self.sources.policy.cooldown_base_ms,
-            cooldown_cap_ms: self.sources.policy.cooldown_cap_ms,
-        })
+    fn classify(
+        &self,
+        error: &Value,
+        failure_count: u32,
+    ) -> crate::credential_pool::classify::CredentialAction {
+        crate::credential_pool::classify::classify_credential_failure(
+            error,
+            &crate::credential_pool::classify::ClassifyContext {
+                failure_count: Some(failure_count),
+                cooldown_base_ms: self.sources.policy.cooldown_base_ms,
+                cooldown_cap_ms: self.sources.policy.cooldown_cap_ms,
+            },
+        )
     }
 
-    async fn persist_block(&mut self, slot: &RunSlot, block: &CredentialBlock) -> Result<(), String> {
-        let Some(rotation) = self.slots.iter().find(|candidate| candidate.slot.name == slot.name).cloned() else { return Ok(()) };
+    async fn persist_block(
+        &mut self,
+        slot: &RunSlot,
+        block: &CredentialBlock,
+    ) -> Result<(), String> {
+        let Some(rotation) = self
+            .slots
+            .iter()
+            .find(|candidate| candidate.slot.name == slot.name)
+            .cloned()
+        else {
+            return Ok(());
+        };
         let revision = match (rotation.lane, &rotation.env_var_name, &rotation.env_key) {
-            (RotationLane::Env, Some(name), Some(key)) => Some(self.sources.repository.env_credential_revision(name, key).await?),
+            (RotationLane::Env, Some(name), Some(key)) => Some(
+                self.sources
+                    .repository
+                    .env_credential_revision(name, key)
+                    .await?,
+            ),
             _ => rotation.stored_revision.clone(),
         };
         let policy = self.sources.policy.clone();
         let now = now_ms();
-        self.sources.repository
-            .mutate_slot_state(&self.sources.provider_id, rotation.lane.as_str(), &slot.name, |current| {
-                Some(block_patch(block, current, now, revision.as_deref(), &policy))
-            })
+        self.sources
+            .repository
+            .mutate_slot_state(
+                &self.sources.provider_id,
+                rotation.lane.as_str(),
+                &slot.name,
+                |current| {
+                    Some(block_patch(
+                        block,
+                        current,
+                        now,
+                        revision.as_deref(),
+                        &policy,
+                    ))
+                },
+            )
             .await
             .map(|_| ())
     }
 
     async fn on_success(&mut self, slot: &RunSlot) -> Result<(), String> {
-        let Some(rotation) = self.slots.iter().find(|candidate| candidate.slot.name == slot.name) else { return Ok(()) };
+        let Some(rotation) = self
+            .slots
+            .iter()
+            .find(|candidate| candidate.slot.name == slot.name)
+        else {
+            return Ok(());
+        };
         let now = now_ms();
-        self.sources.repository
-            .mutate_slot_state(&self.sources.provider_id, rotation.lane.as_str(), &slot.name, |current| {
-                current.map(|current| CredentialSlotState {
-                    last_success_at: Some(now),
-                    lease: None,
-                    blocked_until: None,
-                    block_reason: None,
-                    ..current.clone()
-                })
-            })
+        self.sources
+            .repository
+            .mutate_slot_state(
+                &self.sources.provider_id,
+                rotation.lane.as_str(),
+                &slot.name,
+                |current| {
+                    current.map(|current| CredentialSlotState {
+                        last_success_at: Some(now),
+                        lease: None,
+                        blocked_until: None,
+                        block_reason: None,
+                        ..current.clone()
+                    })
+                },
+            )
             .await
             .map(|_| ())
     }
@@ -431,23 +599,47 @@ pub fn stream_with_credential_rotation(
     run_attempt: RunRotationAttempt,
 ) -> maho_ai::types::AssistantMessageEventStream {
     let target = maho_ai::types::AssistantMessageEventStream::assistant();
-    let affinity_key = affinity_key.unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(None).unwrap_or_else(|_| now_ms().to_string()));
-    let mut host = RotationHost { sources, affinity_key, run_attempt, slots: Vec::new(), target: target.clone() };
+    let controller = maho_ai::utils::abort::AbortController::new();
+    let signal = controller.signal();
+    target.set_cancellation_handler(Box::new(move || Box::pin(async move {
+        controller.abort(None);
+        Ok(())
+    })));
+    let affinity_key = affinity_key.unwrap_or_else(|| {
+        maho_ai::utils::uuid::uuidv7(None).unwrap_or_else(|_| now_ms().to_string())
+    });
+    let mut host = RotationHost {
+        sources,
+        affinity_key,
+        run_attempt,
+        slots: Vec::new(),
+        target: target.clone(),
+        signal,
+    };
     let model = model.clone();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         match crate::credential_pool::failover::run_credential_failover(&mut host).await {
             Ok(()) => host.target.end(None),
             Err(error) => {
                 // The failure detail is the provider error value; surface its own message.
-                let message = serde_json::from_str::<Value>(&error.detail).ok()
-                    .and_then(|value| value.get("message").and_then(Value::as_str).map(str::to_owned))
+                let message = serde_json::from_str::<Value>(&error.detail)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
                     .unwrap_or(error.detail);
                 let failed = maho_ai::utils::lazy::error_stream(&model, &message);
-                while let Ok(Some(event)) = failed.next().await { host.target.push(event); }
+                while let Ok(Some(event)) = failed.next().await {
+                    host.target.push(event);
+                }
                 host.target.end(None);
             }
         }
     });
+    target.set_cancellation_task(task);
     target
 }
 
@@ -457,8 +649,45 @@ mod tests {
     use crate::credential_pool::slots::CredentialSlot;
     use serde_json::json;
 
+    #[tokio::test]
+    async fn cancelling_rotation_drops_pending_auth_setup_without_starting_another_slot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let model = maho_ai::providers::faux::faux_provider(Default::default()).expect("faux provider").get_model(None).expect("model");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel::<()>();
+        let setup = std::sync::Arc::new(std::sync::Mutex::new(Some((started_tx, dropped_tx))));
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        let run: RunRotationAttempt = std::sync::Arc::new(move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (started, dropped) = setup.lock().expect("setup").take().expect("only one setup");
+            Box::pin(async move {
+                let _drop_signal = dropped;
+                started.send(()).expect("setup subscriber");
+                std::future::pending().await
+            })
+        });
+        let sources = OwnedRotationSources {
+            provider_id: "p".into(),
+            credential: Some(credential(&[("a", "first"), ("b", "second")], None)),
+            env: std::sync::Arc::new(|_| None),
+            repository: std::sync::Arc::new(repository(&tmp)),
+            policy: RotationPolicy::default(),
+        };
+        let stream = stream_with_credential_rotation(&model, sources, Some("affinity".into()), run);
+        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx).await.expect("bounded setup").expect("setup started");
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel())
+            .await.expect("bounded cancellation").expect("cancel rotation");
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), dropped_rx).await.expect("bounded destruction").is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     fn repository(tmp: &tempfile::TempDir) -> CredentialSlotRepository {
-        CredentialSlotRepository::new(&tmp.path().join("credential-pool-state.json").to_string_lossy())
+        CredentialSlotRepository::new(
+            &tmp.path()
+                .join("credential-pool-state.json")
+                .to_string_lossy(),
+        )
     }
 
     fn credential(slots: &[(&str, &str)], pinned: Option<&str>) -> PooledCredential {
@@ -471,10 +700,15 @@ mod tests {
             accounts: Some(
                 slots
                     .iter()
-                    .map(|(name, key)| CredentialSlot { name: (*name).to_owned(), key: Some((*key).to_owned()), ..CredentialSlot::default() })
+                    .map(|(name, key)| CredentialSlot {
+                        name: (*name).to_owned(),
+                        key: Some((*key).to_owned()),
+                        ..CredentialSlot::default()
+                    })
                     .collect(),
             ),
             pinned: pinned.map(str::to_owned),
+            extra: Default::default(),
         }
     }
 
@@ -484,7 +718,14 @@ mod tests {
         env: &'a (dyn Fn(&str) -> Option<String> + Send + Sync),
         now: u64,
     ) -> RotationSources<'a> {
-        RotationSources { provider_id: "anthropic".to_owned(), credential, env, repository, policy: RotationPolicy::default(), now }
+        RotationSources {
+            provider_id: "anthropic".to_owned(),
+            credential,
+            env,
+            repository,
+            policy: RotationPolicy::default(),
+            now,
+        }
     }
 
     #[tokio::test]
@@ -492,7 +733,15 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let repository = repository(&tmp);
         let env = |_: &str| None;
-        let sources = sources(&repository, Some(credential(&[("login-1", "k1"), ("login-2", "k2")], Some("login-2"))), &env, 1_000);
+        let sources = sources(
+            &repository,
+            Some(credential(
+                &[("login-1", "k1"), ("login-2", "k2")],
+                Some("login-2"),
+            )),
+            &env,
+            1_000,
+        );
         let slots = list_rotation_slots(&sources, true).await.expect("slots");
         assert_eq!(slots.len(), 2);
         assert!(slots.iter().all(|slot| slot.lane == RotationLane::Stored));
@@ -507,14 +756,21 @@ mod tests {
         let repository = repository(&tmp);
         let env = |name: &str| (name == "ANTHROPIC_API_KEY").then(|| "base".to_owned());
         let env_sources = sources(&repository, None, &env, 1_000);
-        let slots = list_rotation_slots(&env_sources, true).await.expect("slots");
+        let slots = list_rotation_slots(&env_sources, true)
+            .await
+            .expect("slots");
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].slot.name, "env");
         assert_eq!(slots[0].lane, RotationLane::Env);
         assert_eq!(slots[0].env_key.as_deref(), Some("base"));
         assert_eq!(slots[0].env_var_name.as_deref(), Some("ANTHROPIC_API_KEY"));
 
-        let stored = sources(&repository, Some(credential(&[("login-1", "k")], None)), &env, 1_000);
+        let stored = sources(
+            &repository,
+            Some(credential(&[("login-1", "k")], None)),
+            &env,
+            1_000,
+        );
         let slots = list_rotation_slots(&stored, true).await.expect("slots");
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].lane, RotationLane::Stored);
@@ -540,12 +796,17 @@ mod tests {
             .await
             .expect("mutate");
         let env_sources = sources(&repository, None, &env, 1_000);
-        let slots = list_rotation_slots(&env_sources, true).await.expect("slots");
+        let slots = list_rotation_slots(&env_sources, true)
+            .await
+            .expect("slots");
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].slot.block_reason, None);
         assert_eq!(slots[0].slot.blocked_until, None);
 
-        let revision = repository.env_credential_revision("ANTHROPIC_API_KEY", "rotated").await.expect("revision");
+        let revision = repository
+            .env_credential_revision("ANTHROPIC_API_KEY", "rotated")
+            .await
+            .expect("revision");
         repository
             .mutate_slot_state("anthropic", "env", "env", |_| {
                 Some(CredentialSlotState {
@@ -560,7 +821,9 @@ mod tests {
             })
             .await
             .expect("mutate");
-        let slots = list_rotation_slots(&env_sources, true).await.expect("slots");
+        let slots = list_rotation_slots(&env_sources, true)
+            .await
+            .expect("slots");
         assert_eq!(slots[0].slot.block_reason.as_deref(), Some("auth_error"));
     }
 
@@ -569,7 +832,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let repository = repository(&tmp);
         let env = |name: &str| (name == "ANTHROPIC_API_KEY").then(|| "base".to_owned());
-        let revision = repository.env_credential_revision("ANTHROPIC_API_KEY", "base").await.expect("revision");
+        let revision = repository
+            .env_credential_revision("ANTHROPIC_API_KEY", "base")
+            .await
+            .expect("revision");
         repository
             .mutate_slot_state("anthropic", "env", "env", |_| {
                 Some(CredentialSlotState {
@@ -585,12 +851,18 @@ mod tests {
             .await
             .expect("mutate");
         let env_sources = sources(&repository, None, &env, 1_000);
-        let first = list_rotation_slots(&env_sources, true).await.expect("slots");
+        let first = list_rotation_slots(&env_sources, true)
+            .await
+            .expect("slots");
         assert_eq!(first.len(), 1);
         assert!(first[0].slot.lease.is_some());
-        let second = list_rotation_slots(&env_sources, true).await.expect("slots");
+        let second = list_rotation_slots(&env_sources, true)
+            .await
+            .expect("slots");
         assert!(second.is_empty());
-        let without_leases = list_rotation_slots(&env_sources, false).await.expect("slots");
+        let without_leases = list_rotation_slots(&env_sources, false)
+            .await
+            .expect("slots");
         assert_eq!(without_leases.len(), 1);
     }
 
@@ -600,10 +872,32 @@ mod tests {
         let repository = repository(&tmp);
         let env = |name: &str| (name == "CUSTOM_KEY").then(|| "custom".to_owned());
         let mut sources = sources(&repository, None, &env, 1_000);
-        sources.policy.slots.insert("named".to_owned(), PolicySlotRef { env: Some("CUSTOM_KEY".to_owned()), value: None });
-        sources.policy.slots.insert("missing".to_owned(), PolicySlotRef { env: Some("NOT_SET".to_owned()), value: None });
-        let home_var = if cfg!(windows) { "$USERPROFILE" } else { "$HOME" };
-        sources.policy.slots.insert("literal".to_owned(), PolicySlotRef { env: None, value: Some(home_var.to_owned()) });
+        sources.policy.slots.insert(
+            "named".to_owned(),
+            PolicySlotRef {
+                env: Some("CUSTOM_KEY".to_owned()),
+                value: None,
+            },
+        );
+        sources.policy.slots.insert(
+            "missing".to_owned(),
+            PolicySlotRef {
+                env: Some("NOT_SET".to_owned()),
+                value: None,
+            },
+        );
+        let home_var = if cfg!(windows) {
+            "$USERPROFILE"
+        } else {
+            "$HOME"
+        };
+        sources.policy.slots.insert(
+            "literal".to_owned(),
+            PolicySlotRef {
+                env: None,
+                value: Some(home_var.to_owned()),
+            },
+        );
         let slots = list_rotation_slots(&sources, true).await.expect("slots");
         let names: Vec<&str> = slots.iter().map(|slot| slot.slot.name.as_str()).collect();
         assert!(names.contains(&"named"));
@@ -613,9 +907,15 @@ mod tests {
 
     #[test]
     fn block_patch_grows_the_failure_count_and_only_rate_limits_get_a_deadline() {
-        let policy = RotationPolicy { cooldown_cap_ms: Some(100), ..RotationPolicy::default() };
+        let policy = RotationPolicy {
+            cooldown_cap_ms: Some(100),
+            ..RotationPolicy::default()
+        };
         let patch = block_patch(
-            &CredentialBlock::RateLimit { cooldown_ms: 80, retry_after_was_capped: false },
+            &CredentialBlock::RateLimit {
+                cooldown_ms: 80,
+                retry_after_was_capped: false,
+            },
             None,
             1_000,
             Some("rev"),
@@ -627,7 +927,10 @@ mod tests {
         assert_eq!(patch.credential_revision.as_deref(), Some("rev"));
 
         let capped = block_patch(
-            &CredentialBlock::RateLimit { cooldown_ms: 500, retry_after_was_capped: true },
+            &CredentialBlock::RateLimit {
+                cooldown_ms: 500,
+                retry_after_was_capped: true,
+            },
             Some(&patch),
             1_000,
             None,
@@ -639,7 +942,13 @@ mod tests {
         let auth = block_patch(&CredentialBlock::AuthError, None, 1_000, None, &policy);
         assert_eq!(auth.blocked_until, None);
         assert_eq!(auth.block_reason, Some(BlockReason::AuthError));
-        let disabled = block_patch(&CredentialBlock::AccountDisabled, None, 1_000, None, &policy);
+        let disabled = block_patch(
+            &CredentialBlock::AccountDisabled,
+            None,
+            1_000,
+            None,
+            &policy,
+        );
         assert_eq!(disabled.block_reason, Some(BlockReason::AccountDisabled));
     }
 
@@ -648,7 +957,10 @@ mod tests {
         let slots: Vec<RotationSlot> = ["a", "b", "c"]
             .iter()
             .map(|name| RotationSlot {
-                slot: RunSlot { name: (*name).to_owned(), ..RunSlot::default() },
+                slot: RunSlot {
+                    name: (*name).to_owned(),
+                    ..RunSlot::default()
+                },
                 lane: RotationLane::Stored,
                 env_key: None,
                 env_var_name: None,
@@ -656,13 +968,36 @@ mod tests {
             })
             .collect();
         let picked = select_rotation_slot(&slots, "session", true).expect("slot");
-        assert_eq!(select_rotation_slot(&slots, "session", true).expect("slot"), picked);
-        assert_eq!(select_rotation_slot(&slots, "other-session", true).map(|slot| slot.slot.name), Some(picked.slot.name.clone()).filter(|_| true).map(|_| select_rotation_slot(&slots, "other-session", true).expect("slot").slot.name));
-        assert_eq!(select_rotation_slot(&slots, "session", false).expect("slot").slot.name, "a");
+        assert_eq!(
+            select_rotation_slot(&slots, "session", true).expect("slot"),
+            picked
+        );
+        assert_eq!(
+            select_rotation_slot(&slots, "other-session", true).map(|slot| slot.slot.name),
+            Some(picked.slot.name.clone())
+                .filter(|_| true)
+                .map(|_| select_rotation_slot(&slots, "other-session", true)
+                    .expect("slot")
+                    .slot
+                    .name)
+        );
+        assert_eq!(
+            select_rotation_slot(&slots, "session", false)
+                .expect("slot")
+                .slot
+                .name,
+            "a"
+        );
 
         let mut pinned = slots.clone();
         pinned[2].slot.pinned = true;
-        assert_eq!(select_rotation_slot(&pinned, "session", true).expect("slot").slot.name, "c");
+        assert_eq!(
+            select_rotation_slot(&pinned, "session", true)
+                .expect("slot")
+                .slot
+                .name,
+            "c"
+        );
         assert!(select_rotation_slot(&[], "session", true).is_none());
     }
 
@@ -677,9 +1012,19 @@ mod tests {
     #[test]
     fn rotation_events_reuse_the_shared_predicates() {
         assert!(is_rotation_stream_start(&json!({ "type": "start" })));
-        assert!(is_committed_rotation_output(&json!({ "type": "text_delta" })));
-        assert!(rotation_error_from_event(&json!({ "type": "error", "error": { "errorMessage": "x" } })).is_some());
-        assert!(!policy_affinity(&RotationPolicy { affinity: Some(false), ..RotationPolicy::default() }));
+        assert!(is_committed_rotation_output(
+            &json!({ "type": "text_delta" })
+        ));
+        assert!(
+            rotation_error_from_event(
+                &json!({ "type": "error", "error": { "errorMessage": "x" } })
+            )
+            .is_some()
+        );
+        assert!(!policy_affinity(&RotationPolicy {
+            affinity: Some(false),
+            ..RotationPolicy::default()
+        }));
         assert!(policy_affinity(&RotationPolicy::default()));
     }
 }

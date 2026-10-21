@@ -224,6 +224,7 @@ where
         request_timeout_ms: options.request_timeout_ms,
         signal: Some(lifecycle.signal()),
         ensure: options.ensure.clone(),
+        ..CallToolOptions::default()
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

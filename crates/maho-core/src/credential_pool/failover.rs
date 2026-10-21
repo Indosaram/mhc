@@ -65,7 +65,7 @@ pub fn soonest_retry_at(slots: &[RunSlot], now: u64) -> Option<u64> {
 
 pub trait FailoverHost {
     type Event: Clone;
-    /// One running attempt; dropping it settles (releases) the attempt's transport.
+    /// One running attempt, settled explicitly before a replacement starts.
     type Attempt;
 
     /// Re-read before every distinct-credential attempt so a newly added slot participates.
@@ -75,6 +75,10 @@ pub trait FailoverHost {
     async fn run_attempt(&mut self, slot: &RunSlot) -> Result<Self::Attempt, Value>;
     /// The attempt's next event: `None` once it ended, `Err` once it failed by throwing.
     async fn next_event(&mut self, attempt: &mut Self::Attempt) -> Option<Result<Self::Event, Value>>;
+    async fn settle_attempt(&mut self, attempt: &mut Self::Attempt) -> Result<(), String>;
+    fn is_cancelled(&self) -> bool {
+        false
+    }
     /// REQUIRED and default-DENY by contract: false only for pre-commit bookkeeping.
     fn is_committed_output(&self, event: &Self::Event) -> bool;
     /// Identifies the stream-start announcement.
@@ -113,7 +117,9 @@ pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<()
     let mut start_announced = false;
 
     loop {
+        if host.is_cancelled() { return Ok(()); }
         let slots = host.list_slots().await;
+        if host.is_cancelled() { return Ok(()); }
         let now = host.now();
         let candidates: Vec<RunSlot> = slots
             .iter()
@@ -143,11 +149,10 @@ pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<()
 
         let mut committed_output = false;
         let mut terminal_event: Option<H::Event> = None;
-        // Events reach the caller as they arrive; the attempt is dropped (settled) before any
-        // replacement starts so two live streams never interleave.
         let failure = match host.run_attempt(&slot).await {
             Err(failure) => Some(failure),
-            Ok(mut attempt) => loop {
+            Ok(mut attempt) => {
+                let failure = loop {
                 match host.next_event(&mut attempt).await {
                     None => break None,
                     Some(Err(failure)) => break Some(failure),
@@ -166,11 +171,20 @@ pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<()
                         host.emit(event);
                     }
                 }
+                };
+                host.settle_attempt(&mut attempt).await.map_err(|detail| CredentialFailoverError {
+                    action: CredentialAction::FailRequest,
+                    detail,
+                    retry_at: None,
+                })?;
+                failure
             },
         };
         let Some(failure) = failure else {
+            if host.is_cancelled() { return Ok(()); }
             return host.on_success(&slot).await.map_err(|detail| CredentialFailoverError { action: CredentialAction::FailRequest, detail, retry_at: None });
         };
+        if host.is_cancelled() { return Ok(()); }
         last_original = Some(failure.clone());
         last_terminal_event = terminal_event.clone();
 
@@ -199,6 +213,7 @@ pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<()
 
         host.persist_block(&slot, &block).await
             .map_err(|detail| CredentialFailoverError { action: CredentialAction::FailRequest, detail, retry_at: None })?;
+        if host.is_cancelled() { return Ok(()); }
         attempted.push(slot.name.clone());
         let error = CredentialFailoverError { action, detail: failure.to_string(), retry_at: None };
         last_error = Some(error.clone());
@@ -234,6 +249,8 @@ mod tests {
         blocked: Vec<(String, CredentialBlock)>,
         rotations: usize,
         successes: Vec<String>,
+        settlements: usize,
+        attempt_settlement_counts: Vec<usize>,
         now: u64,
     }
 
@@ -250,6 +267,7 @@ mod tests {
         }
 
         async fn run_attempt(&mut self, _slot: &RunSlot) -> Result<Self::Attempt, Value> {
+            self.attempt_settlement_counts.push(self.settlements);
             let scripted = self.attempts.get(self.attempt_index).cloned().unwrap_or_default();
             self.attempt_index += 1;
             let mut attempt = std::collections::VecDeque::new();
@@ -267,6 +285,11 @@ mod tests {
 
         async fn next_event(&mut self, attempt: &mut Self::Attempt) -> Option<Result<Self::Event, Value>> {
             attempt.pop_front()
+        }
+
+        async fn settle_attempt(&mut self, _attempt: &mut Self::Attempt) -> Result<(), String> {
+            self.settlements += 1;
+            Ok(())
         }
 
         fn is_committed_output(&self, event: &Self::Event) -> bool {
@@ -306,6 +329,18 @@ mod tests {
 
     fn failed(error: Value) -> Result<Vec<&'static str>, Value> {
         Err(error)
+    }
+
+    #[tokio::test]
+    async fn replacement_starts_after_attempt_settlement() {
+        let mut host = FakeHost {
+            slots: vec![slot("a"), slot("b")],
+            attempts: vec![vec![failed(json!({"status":401,"message":"invalid api key"}))], vec![ok(vec!["delta"])]],
+            ..Default::default()
+        };
+        run_credential_failover(&mut host).await.expect("failover");
+        assert_eq!(host.attempt_settlement_counts, vec![0, 1]);
+        assert_eq!(host.settlements, 2);
     }
 
     #[tokio::test]

@@ -18,8 +18,8 @@ async fn native_recommended_startup_awaits_model_switch_and_preserves_handler_or
             id: model.id.clone(), context_window: Some(128000), max_tokens: Some(4096),
             ..Default::default()
         }).collect()), tokens_per_second: Some(0.0), ..Default::default()
-    });
-    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions::default());
+    }).expect("valid faux provider");
+    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions::default()).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".into()), ..Default::default() },

@@ -253,7 +253,9 @@ mod pre_bound_tests {
         let large = format!("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ {}", "b".repeat(PRE_BOUND_BYTES * 2));
         let (large_body, large_truncated) = stream.bounded(&large, cap);
         assert!(large_truncated);
-        assert!(large_body.starts_with("[REDACTED]"), "{large_body}");
+        // memory-core masks vendor tokens before senpi's redactor sees them.
+        assert!(large_body.starts_with("*** "), "{large_body}");
+        assert!(!large_body.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
         assert!(utf16_len(&large_body) <= cap, "{}", utf16_len(&large_body));
         let dropped: usize = large_body.rsplit("[+").next().and_then(|rest| rest.trim_end_matches(" chars]").parse().ok()).unwrap_or_default();
         let total = utf16_len(&redact_kibitzer_event_text(&large));

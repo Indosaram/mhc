@@ -12,8 +12,20 @@ fn serve_sse(body: String) -> String {
     let address = listener.local_addr().expect("addr");
     std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().expect("accept");
-        let mut buffer = [0_u8; 4096];
-        let _ = socket.read(&mut buffer);
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).expect("request headers");
+            request.push(byte[0]);
+        }
+        let request = String::from_utf8(request).expect("request headers UTF-8");
+        let length = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().expect("content length"))
+        }).expect("request body length");
+        let mut request_body = vec![0; length];
+        socket.read_exact(&mut request_body).expect("complete request body");
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
@@ -39,11 +51,25 @@ fn usage_json() -> serde_json::Value {
     })
 }
 
+#[tokio::test]
+async fn structured_usage_limit_is_retained_by_proxy() {
+    let message = stream_events(vec![serde_json::json!({
+        "type": "error", "reason": "error", "errorMessage": "ordinary failure",
+        "errorCause": { "type": "usage_limit", "scope": "account" }, "usage": usage_json()
+    })]).await;
+    assert_eq!(message.error_cause, Some(maho_ai::types::AssistantErrorCause::UsageLimit { scope: maho_ai::types::UsageLimitScope::Account }));
+}
+
 async fn stream_events(events: Vec<serde_json::Value>) -> AssistantMessage {
     let base_url = serve_sse(sse(&events));
     let stream = stream_proxy(
         &test_model(),
-        &Context { system_prompt: None, messages: Vec::new(), tools: None },
+        &Context {
+            active_tool_names: None,
+            system_prompt: None,
+            messages: Vec::new(),
+            tools: None,
+        },
         ProxyStreamOptions {
             serializable: ProxySerializableStreamOptions::default(),
             signal: None,
@@ -85,7 +111,10 @@ async fn preserves_a_flagged_final_tool_call_payload() {
             assert_eq!(call.name, "get_weather");
             assert!(call.arguments.is_empty());
             assert_eq!(call.incomplete, Some(true));
-            assert_eq!(call.error_message.as_deref(), Some("Tool call was truncated mid-arguments"));
+            assert_eq!(
+                call.error_message.as_deref(),
+                Some("Tool call was truncated mid-arguments")
+            );
         }
         other => panic!("expected tool call, got {}", other.type_name()),
     }
@@ -107,7 +136,10 @@ async fn legacy_payloads_reconstruct_arguments_from_deltas() {
         ContentBlock::ToolCall(call) => {
             assert_eq!(call.id, "legacy-id");
             assert_eq!(call.name, "get_weather");
-            assert_eq!(call.arguments.get("city"), Some(&serde_json::Value::String("Seoul".to_owned())));
+            assert_eq!(
+                call.arguments.get("city"),
+                Some(&serde_json::Value::String("Seoul".to_owned()))
+            );
         }
         other => panic!("expected tool call, got {}", other.type_name()),
     }

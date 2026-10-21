@@ -33,7 +33,7 @@ async fn native_session_switch_exposes_overridden_cwd_to_recreated_factory() {
     })).expect("model");
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let shared = runtime.credentials.clone();
     let host = maho_core::sdk::HostRuntimeFactory { model_registry: maho_core::model_registry::ModelRegistry::new(runtime.clone()),
         model_runtime: runtime, extension_factories: vec![factory] };

@@ -10,7 +10,10 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::types::{AssistantMessage, AssistantMessageEvent, ContentBlock, StopReason, TextContent, ThinkingContent, ToolCall};
+use crate::types::{
+    AssistantMessage, AssistantMessageEvent, ContentBlock, StopReason, TextContent,
+    ThinkingContent, ToolCall,
+};
 use crate::utils::json_parse::parse_streaming_json;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,9 +23,15 @@ pub enum AssistantMessageFrame {
         partial: Box<AssistantMessage>,
     },
     #[serde(rename_all = "camelCase")]
-    TextStart { content_index: usize, content: TextContent },
+    TextStart {
+        content_index: usize,
+        content: TextContent,
+    },
     #[serde(rename_all = "camelCase")]
-    TextDelta { content_index: usize, delta: String },
+    TextDelta {
+        content_index: usize,
+        delta: String,
+    },
     #[serde(rename_all = "camelCase")]
     TextEnd {
         content_index: usize,
@@ -31,9 +40,15 @@ pub enum AssistantMessageFrame {
         text_signature: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
-    ThinkingStart { content_index: usize, content: ThinkingContent },
+    ThinkingStart {
+        content_index: usize,
+        content: ThinkingContent,
+    },
     #[serde(rename_all = "camelCase")]
-    ThinkingDelta { content_index: usize, delta: String },
+    ThinkingDelta {
+        content_index: usize,
+        delta: String,
+    },
     #[serde(rename_all = "camelCase")]
     ThinkingEnd {
         content_index: usize,
@@ -44,11 +59,20 @@ pub enum AssistantMessageFrame {
         redacted: Option<bool>,
     },
     #[serde(rename = "toolcall_start", rename_all = "camelCase")]
-    ToolcallStart { content_index: usize, tool_call: ToolCall },
+    ToolcallStart {
+        content_index: usize,
+        tool_call: ToolCall,
+    },
     #[serde(rename = "toolcall_checkpoint", rename_all = "camelCase")]
-    ToolcallCheckpoint { content_index: usize, json: String },
+    ToolcallCheckpoint {
+        content_index: usize,
+        json: String,
+    },
     #[serde(rename = "toolcall_delta", rename_all = "camelCase")]
-    ToolcallDelta { content_index: usize, delta: String },
+    ToolcallDelta {
+        content_index: usize,
+        delta: String,
+    },
     #[serde(rename = "toolcall_end", rename_all = "camelCase")]
     ToolcallEnd {
         content_index: usize,
@@ -117,9 +141,19 @@ fn block_type(block: &ContentBlock) -> &'static str {
 }
 
 enum EncoderBlockState {
-    Text { covered_chars: usize, delta_chars: usize },
-    Thinking { covered_chars: usize, delta_chars: usize },
-    ToolCall { caught_up: bool, catchup_json: String, snapshot_arguments: String },
+    Text {
+        covered_chars: usize,
+        delta_chars: usize,
+    },
+    Thinking {
+        covered_chars: usize,
+        delta_chars: usize,
+    },
+    ToolCall {
+        caught_up: bool,
+        catchup_json: String,
+        snapshot_arguments: String,
+    },
 }
 
 impl EncoderBlockState {
@@ -133,7 +167,11 @@ impl EncoderBlockState {
 }
 
 fn clone_text_content(content: &TextContent) -> TextContent {
-    TextContent { text: content.text.clone(), text_signature: content.text_signature.clone(), ..TextContent::default() }
+    TextContent {
+        text: content.text.clone(),
+        text_signature: content.text_signature.clone(),
+        ..TextContent::default()
+    }
 }
 
 fn clone_thinking_content(content: &ThinkingContent) -> ThinkingContent {
@@ -159,6 +197,10 @@ fn clone_tool_call(tool_call: &ToolCall) -> ToolCall {
 
 fn clone_start_message(message: &AssistantMessage) -> AssistantMessage {
     AssistantMessage {
+        error_cause: message.error_cause,
+        prompt_cache_diagnostics: message.prompt_cache_diagnostics.clone(),
+        thinking_level: message.thinking_level,
+        provider_diagnostic: message.provider_diagnostic.clone(),
         content: Vec::new(),
         api: message.api.clone(),
         provider: message.provider.clone(),
@@ -179,15 +221,28 @@ fn clone_start_message(message: &AssistantMessage) -> AssistantMessage {
     }
 }
 
-fn event_block<'a>(event_type: &str, partial: &'a AssistantMessage, content_index: usize) -> Result<&'a ContentBlock, FrameError> {
+fn event_block<'a>(
+    event_type: &str,
+    partial: &'a AssistantMessage,
+    content_index: usize,
+) -> Result<&'a ContentBlock, FrameError> {
     match partial.content.get(content_index) {
         Some(block) => Ok(block),
-        None => fail(format!("{event_type} event has no content block at index {content_index}")),
+        None => fail(format!(
+            "{event_type} event has no content block at index {content_index}"
+        )),
     }
 }
 
-fn wrong_block<T>(event_type: &str, block: &ContentBlock, content_index: usize) -> Result<T, FrameError> {
-    fail(format!("{event_type} event points to {} block at index {content_index}", block_type(block)))
+fn wrong_block<T>(
+    event_type: &str,
+    block: &ContentBlock,
+    content_index: usize,
+) -> Result<T, FrameError> {
+    fail(format!(
+        "{event_type} event points to {} block at index {content_index}",
+        block_type(block)
+    ))
 }
 
 fn serialized_arguments(arguments: &Value) -> String {
@@ -199,13 +254,17 @@ const EMPTY_PARSED_TOOL_ARGUMENTS: &str = "{}";
 
 fn is_json_prefix(snapshot: &Value, current: &Value) -> bool {
     match snapshot {
-        Value::String(prefix) => current.as_str().is_some_and(|text| text.starts_with(prefix.as_str())),
-        Value::Array(items) => current
-            .as_array()
-            .is_some_and(|now| items.len() <= now.len() && items.iter().zip(now).all(|(a, b)| is_json_prefix(a, b))),
-        Value::Object(entries) => current
-            .as_object()
-            .is_some_and(|now| entries.iter().all(|(key, value)| now.get(key).is_some_and(|b| is_json_prefix(value, b)))),
+        Value::String(prefix) => current
+            .as_str()
+            .is_some_and(|text| text.starts_with(prefix.as_str())),
+        Value::Array(items) => current.as_array().is_some_and(|now| {
+            items.len() <= now.len() && items.iter().zip(now).all(|(a, b)| is_json_prefix(a, b))
+        }),
+        Value::Object(entries) => current.as_object().is_some_and(|now| {
+            entries
+                .iter()
+                .all(|(key, value)| now.get(key).is_some_and(|b| is_json_prefix(value, b)))
+        }),
         Value::Number(n) => current.as_f64() == n.as_f64() && current.is_number(),
         _ => snapshot == current,
     }
@@ -232,19 +291,28 @@ impl AssistantMessageFrameEncoder {
         Self::default()
     }
 
-    pub fn encode(&mut self, event: &AssistantMessageEvent) -> Result<Option<AssistantMessageFrame>, FrameError> {
+    pub fn encode(
+        &mut self,
+        event: &AssistantMessageEvent,
+    ) -> Result<Option<AssistantMessageFrame>, FrameError> {
         use AssistantMessageEvent as E;
         let event_type = event_type(event);
         if self.terminal {
-            return fail(format!("Assistant message event {event_type} follows a terminal event"));
+            return fail(format!(
+                "Assistant message event {event_type} follows a terminal event"
+            ));
         }
         match event {
             E::Start { partial } => {
                 if self.started {
-                    return fail("Assistant message stream contains more than one start event".into());
+                    return fail(
+                        "Assistant message stream contains more than one start event".into(),
+                    );
                 }
                 self.started = true;
-                return Ok(Some(AssistantMessageFrame::Start { partial: Box::new(clone_start_message(partial)) }));
+                return Ok(Some(AssistantMessageFrame::Start {
+                    partial: Box::new(clone_start_message(partial)),
+                }));
             }
             E::Done { .. } => {
                 if !self.started {
@@ -260,37 +328,93 @@ impl AssistantMessageFrameEncoder {
             _ => {}
         }
         if !self.started {
-            return fail(format!("Assistant message {event_type} event appears before start"));
+            return fail(format!(
+                "Assistant message {event_type} event appears before start"
+            ));
         }
         match event {
-            E::TextStart { content_index, partial } => {
+            E::TextStart {
+                content_index,
+                partial,
+            } => {
                 let index = *content_index;
                 let ContentBlock::Text(content) = event_block(event_type, partial, index)? else {
-                    return wrong_block(event_type, event_block(event_type, partial, index)?, index);
+                    return wrong_block(
+                        event_type,
+                        event_block(event_type, partial, index)?,
+                        index,
+                    );
                 };
-                self.start_block(index, EncoderBlockState::Text { covered_chars: utf16_len(&content.text), delta_chars: 0 })?;
-                Ok(Some(AssistantMessageFrame::TextStart { content_index: index, content: clone_text_content(content) }))
+                self.start_block(
+                    index,
+                    EncoderBlockState::Text {
+                        covered_chars: utf16_len(&content.text),
+                        delta_chars: 0,
+                    },
+                )?;
+                Ok(Some(AssistantMessageFrame::TextStart {
+                    content_index: index,
+                    content: clone_text_content(content),
+                }))
             }
-            E::TextDelta { content_index, delta, .. } => self.encode_text_delta(*content_index, delta, BlockKind::Text),
-            E::TextEnd { content_index, content, partial } => {
+            E::TextDelta {
+                content_index,
+                delta,
+                ..
+            } => self.encode_text_delta(*content_index, delta, BlockKind::Text),
+            E::TextEnd {
+                content_index,
+                content,
+                partial,
+            } => {
                 let index = *content_index;
                 let block = event_block(event_type, partial, index)?;
-                let ContentBlock::Text(text) = block else { return wrong_block(event_type, block, index) };
+                let ContentBlock::Text(text) = block else {
+                    return wrong_block(event_type, block, index);
+                };
                 self.end_block(index, BlockKind::Text)?;
-                Ok(Some(AssistantMessageFrame::TextEnd { content_index: index, content: content.clone(), text_signature: text.text_signature.clone() }))
+                Ok(Some(AssistantMessageFrame::TextEnd {
+                    content_index: index,
+                    content: content.clone(),
+                    text_signature: text.text_signature.clone(),
+                }))
             }
-            E::ThinkingStart { content_index, partial } => {
+            E::ThinkingStart {
+                content_index,
+                partial,
+            } => {
                 let index = *content_index;
                 let block = event_block(event_type, partial, index)?;
-                let ContentBlock::Thinking(content) = block else { return wrong_block(event_type, block, index) };
-                self.start_block(index, EncoderBlockState::Thinking { covered_chars: utf16_len(&content.thinking), delta_chars: 0 })?;
-                Ok(Some(AssistantMessageFrame::ThinkingStart { content_index: index, content: clone_thinking_content(content) }))
+                let ContentBlock::Thinking(content) = block else {
+                    return wrong_block(event_type, block, index);
+                };
+                self.start_block(
+                    index,
+                    EncoderBlockState::Thinking {
+                        covered_chars: utf16_len(&content.thinking),
+                        delta_chars: 0,
+                    },
+                )?;
+                Ok(Some(AssistantMessageFrame::ThinkingStart {
+                    content_index: index,
+                    content: clone_thinking_content(content),
+                }))
             }
-            E::ThinkingDelta { content_index, delta, .. } => self.encode_text_delta(*content_index, delta, BlockKind::Thinking),
-            E::ThinkingEnd { content_index, content, partial } => {
+            E::ThinkingDelta {
+                content_index,
+                delta,
+                ..
+            } => self.encode_text_delta(*content_index, delta, BlockKind::Thinking),
+            E::ThinkingEnd {
+                content_index,
+                content,
+                partial,
+            } => {
                 let index = *content_index;
                 let block = event_block(event_type, partial, index)?;
-                let ContentBlock::Thinking(thinking) = block else { return wrong_block(event_type, block, index) };
+                let ContentBlock::Thinking(thinking) = block else {
+                    return wrong_block(event_type, block, index);
+                };
                 self.end_block(index, BlockKind::Thinking)?;
                 Ok(Some(AssistantMessageFrame::ThinkingEnd {
                     content_index: index,
@@ -299,10 +423,15 @@ impl AssistantMessageFrameEncoder {
                     redacted: thinking.redacted,
                 }))
             }
-            E::ToolcallStart { content_index, partial } => {
+            E::ToolcallStart {
+                content_index,
+                partial,
+            } => {
                 let index = *content_index;
                 let block = event_block(event_type, partial, index)?;
-                let ContentBlock::ToolCall(tool_call) = block else { return wrong_block(event_type, block, index) };
+                let ContentBlock::ToolCall(tool_call) = block else {
+                    return wrong_block(event_type, block, index);
+                };
                 let snapshot = serialized_arguments(&Value::Object(tool_call.arguments.clone()));
                 let caught_up = snapshot == EMPTY_PARSED_TOOL_ARGUMENTS;
                 self.start_block(
@@ -313,15 +442,32 @@ impl AssistantMessageFrameEncoder {
                         snapshot_arguments: if caught_up { String::new() } else { snapshot },
                     },
                 )?;
-                Ok(Some(AssistantMessageFrame::ToolcallStart { content_index: index, tool_call: clone_tool_call(tool_call) }))
+                Ok(Some(AssistantMessageFrame::ToolcallStart {
+                    content_index: index,
+                    tool_call: clone_tool_call(tool_call),
+                }))
             }
-            E::ToolcallDelta { content_index, delta, .. } => {
+            E::ToolcallDelta {
+                content_index,
+                delta,
+                ..
+            } => {
                 let index = *content_index;
-                let EncoderBlockState::ToolCall { caught_up, catchup_json, snapshot_arguments } = self.block(index, BlockKind::ToolCall)? else {
+                let EncoderBlockState::ToolCall {
+                    caught_up,
+                    catchup_json,
+                    snapshot_arguments,
+                } = self.block(index, BlockKind::ToolCall)?
+                else {
                     return fail("Unreachable tool-call encoder state".into());
                 };
                 if *caught_up {
-                    return Ok((!delta.is_empty()).then(|| AssistantMessageFrame::ToolcallDelta { content_index: index, delta: delta.clone() }));
+                    return Ok(
+                        (!delta.is_empty()).then(|| AssistantMessageFrame::ToolcallDelta {
+                            content_index: index,
+                            delta: delta.clone(),
+                        }),
+                    );
                 }
                 catchup_json.push_str(delta);
                 let arguments = parse_streaming_json(Some(catchup_json));
@@ -334,9 +480,18 @@ impl AssistantMessageFrameEncoder {
                 *caught_up = true;
                 snapshot_arguments.clear();
                 let json = std::mem::take(catchup_json);
-                Ok((!json.is_empty()).then_some(AssistantMessageFrame::ToolcallCheckpoint { content_index: index, json }))
+                Ok(
+                    (!json.is_empty()).then_some(AssistantMessageFrame::ToolcallCheckpoint {
+                        content_index: index,
+                        json,
+                    }),
+                )
             }
-            E::ToolcallEnd { content_index, tool_call, partial } => {
+            E::ToolcallEnd {
+                content_index,
+                tool_call,
+                partial,
+            } => {
                 let index = *content_index;
                 let block = event_block(event_type, partial, index)?;
                 if !matches!(block, ContentBlock::ToolCall(_)) {
@@ -356,20 +511,37 @@ impl AssistantMessageFrameEncoder {
         }
     }
 
-    fn start_block(&mut self, content_index: usize, state: EncoderBlockState) -> Result<(), FrameError> {
+    fn start_block(
+        &mut self,
+        content_index: usize,
+        state: EncoderBlockState,
+    ) -> Result<(), FrameError> {
         if self.blocks.contains_key(&content_index) {
-            return fail(format!("Assistant message block {content_index} starts more than once"));
+            return fail(format!(
+                "Assistant message block {content_index} starts more than once"
+            ));
         }
         self.blocks.insert(content_index, state);
         Ok(())
     }
 
-    fn block(&mut self, content_index: usize, kind: BlockKind) -> Result<&mut EncoderBlockState, FrameError> {
+    fn block(
+        &mut self,
+        content_index: usize,
+        kind: BlockKind,
+    ) -> Result<&mut EncoderBlockState, FrameError> {
         let Some(state) = self.blocks.get_mut(&content_index) else {
-            return fail(format!("Assistant message {} block {content_index} has not started", kind.as_str()));
+            return fail(format!(
+                "Assistant message {} block {content_index} has not started",
+                kind.as_str()
+            ));
         };
         if state.kind() != kind {
-            return fail(format!("Assistant message block {content_index} is {}, not {}", state.kind().as_str(), kind.as_str()));
+            return fail(format!(
+                "Assistant message block {content_index} is {}, not {}",
+                state.kind().as_str(),
+                kind.as_str()
+            ));
         }
         Ok(state)
     }
@@ -380,9 +552,20 @@ impl AssistantMessageFrameEncoder {
         Ok(())
     }
 
-    fn encode_text_delta(&mut self, content_index: usize, delta: &str, kind: BlockKind) -> Result<Option<AssistantMessageFrame>, FrameError> {
-        let (EncoderBlockState::Text { covered_chars, delta_chars } | EncoderBlockState::Thinking { covered_chars, delta_chars }) =
-            self.block(content_index, kind)?
+    fn encode_text_delta(
+        &mut self,
+        content_index: usize,
+        delta: &str,
+        kind: BlockKind,
+    ) -> Result<Option<AssistantMessageFrame>, FrameError> {
+        let (EncoderBlockState::Text {
+            covered_chars,
+            delta_chars,
+        }
+        | EncoderBlockState::Thinking {
+            covered_chars,
+            delta_chars,
+        }) = self.block(content_index, kind)?
         else {
             return fail("Unreachable text encoder state".into());
         };
@@ -393,10 +576,20 @@ impl AssistantMessageFrameEncoder {
         if covered >= length {
             return Ok(None);
         }
-        let uncovered = if covered == 0 { delta.to_owned() } else { utf16_tail(delta, covered) };
+        let uncovered = if covered == 0 {
+            delta.to_owned()
+        } else {
+            utf16_tail(delta, covered)
+        };
         Ok(Some(match kind {
-            BlockKind::Text => AssistantMessageFrame::TextDelta { content_index, delta: uncovered },
-            _ => AssistantMessageFrame::ThinkingDelta { content_index, delta: uncovered },
+            BlockKind::Text => AssistantMessageFrame::TextDelta {
+                content_index,
+                delta: uncovered,
+            },
+            _ => AssistantMessageFrame::ThinkingDelta {
+                content_index,
+                delta: uncovered,
+            },
         }))
     }
 }
@@ -433,11 +626,24 @@ fn append_block(
     kind: BlockKind,
 ) -> Result<(), FrameError> {
     if content_index != message.content.len() {
-        let reason = if content_index < message.content.len() { "already exists" } else { "would leave a gap" };
-        return fail(format!("Cannot start assistant message block at index {content_index}: {reason}"));
+        let reason = if content_index < message.content.len() {
+            "already exists"
+        } else {
+            "would leave a gap"
+        };
+        return fail(format!(
+            "Cannot start assistant message block at index {content_index}: {reason}"
+        ));
     }
     message.content.push(block);
-    states.insert(content_index, ReducerBlockState { kind, ended: false, json: String::new() });
+    states.insert(
+        content_index,
+        ReducerBlockState {
+            kind,
+            ended: false,
+            json: String::new(),
+        },
+    );
     Ok(())
 }
 
@@ -448,8 +654,13 @@ fn active_block<'a>(
     expected: BlockKind,
     frame_type: &str,
 ) -> Result<(&'a mut ContentBlock, &'a mut ReducerBlockState), FrameError> {
-    let (Some(state), Some(block)) = (states.get_mut(&content_index), message.content.get_mut(content_index)) else {
-        return fail(format!("{frame_type} frame has no started block at index {content_index}"));
+    let (Some(state), Some(block)) = (
+        states.get_mut(&content_index),
+        message.content.get_mut(content_index),
+    ) else {
+        return fail(format!(
+            "{frame_type} frame has no started block at index {content_index}"
+        ));
     };
     if state.kind != expected || block_type(block) != expected.as_str() {
         return fail(format!(
@@ -459,7 +670,9 @@ fn active_block<'a>(
         ));
     }
     if state.ended {
-        return fail(format!("{frame_type} frame follows the end of block at index {content_index}"));
+        return fail(format!(
+            "{frame_type} frame follows the end of block at index {content_index}"
+        ));
     }
     Ok((block, state))
 }
@@ -474,7 +687,9 @@ pub fn reduce_assistant_message_frames<'a>(
     for frame in frames {
         if let F::Start { partial } = frame {
             if message.is_some() {
-                return fail("Assistant message frame sequence contains more than one start frame".into());
+                return fail(
+                    "Assistant message frame sequence contains more than one start frame".into(),
+                );
             }
             if let Some(before) = frame_before_start {
                 return fail(format!("{before} frame appears before the start frame"));
@@ -489,52 +704,149 @@ pub fn reduce_assistant_message_frames<'a>(
         let frame_type = frame.type_name();
         match frame {
             F::Start { .. } => {}
-            F::TextStart { content_index, content } => {
-                append_block(message, &mut states, *content_index, ContentBlock::Text(content.clone()), BlockKind::Text)?;
+            F::TextStart {
+                content_index,
+                content,
+            } => {
+                append_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    ContentBlock::Text(content.clone()),
+                    BlockKind::Text,
+                )?;
             }
-            F::TextDelta { content_index, delta } => {
-                if let (ContentBlock::Text(block), _) = active_block(message, &mut states, *content_index, BlockKind::Text, frame_type)? {
+            F::TextDelta {
+                content_index,
+                delta,
+            } => {
+                if let (ContentBlock::Text(block), _) = active_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    BlockKind::Text,
+                    frame_type,
+                )? {
                     block.text.push_str(delta);
                 }
             }
-            F::TextEnd { content_index, content, text_signature } => {
-                if let (ContentBlock::Text(block), state) = active_block(message, &mut states, *content_index, BlockKind::Text, frame_type)? {
+            F::TextEnd {
+                content_index,
+                content,
+                text_signature,
+            } => {
+                if let (ContentBlock::Text(block), state) = active_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    BlockKind::Text,
+                    frame_type,
+                )? {
                     block.text = content.clone();
                     block.text_signature = text_signature.clone();
                     state.ended = true;
                 }
             }
-            F::ThinkingStart { content_index, content } => {
-                append_block(message, &mut states, *content_index, ContentBlock::Thinking(content.clone()), BlockKind::Thinking)?;
+            F::ThinkingStart {
+                content_index,
+                content,
+            } => {
+                append_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    ContentBlock::Thinking(content.clone()),
+                    BlockKind::Thinking,
+                )?;
             }
-            F::ThinkingDelta { content_index, delta } => {
-                if let (ContentBlock::Thinking(block), _) = active_block(message, &mut states, *content_index, BlockKind::Thinking, frame_type)? {
+            F::ThinkingDelta {
+                content_index,
+                delta,
+            } => {
+                if let (ContentBlock::Thinking(block), _) = active_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    BlockKind::Thinking,
+                    frame_type,
+                )? {
                     block.thinking.push_str(delta);
                 }
             }
-            F::ThinkingEnd { content_index, content, thinking_signature, redacted } => {
-                if let (ContentBlock::Thinking(block), state) = active_block(message, &mut states, *content_index, BlockKind::Thinking, frame_type)? {
+            F::ThinkingEnd {
+                content_index,
+                content,
+                thinking_signature,
+                redacted,
+            } => {
+                if let (ContentBlock::Thinking(block), state) = active_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    BlockKind::Thinking,
+                    frame_type,
+                )? {
                     block.thinking = content.clone();
                     block.thinking_signature = thinking_signature.clone();
                     block.redacted = *redacted;
                     state.ended = true;
                 }
             }
-            F::ToolcallStart { content_index, tool_call } => {
-                append_block(message, &mut states, *content_index, ContentBlock::ToolCall(tool_call.clone()), BlockKind::ToolCall)?;
+            F::ToolcallStart {
+                content_index,
+                tool_call,
+            } => {
+                append_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    ContentBlock::ToolCall(tool_call.clone()),
+                    BlockKind::ToolCall,
+                )?;
             }
-            F::ToolcallCheckpoint { content_index, json } => {
-                if let (ContentBlock::ToolCall(block), state) = active_block(message, &mut states, *content_index, BlockKind::ToolCall, frame_type)? {
+            F::ToolcallCheckpoint {
+                content_index,
+                json,
+            } => {
+                if let (ContentBlock::ToolCall(block), state) = active_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    BlockKind::ToolCall,
+                    frame_type,
+                )? {
                     state.json = json.clone();
                     block.arguments = object_or_empty(parse_streaming_json(Some(json)));
                 }
             }
-            F::ToolcallDelta { content_index, delta } => {
-                let (_, state) = active_block(message, &mut states, *content_index, BlockKind::ToolCall, frame_type)?;
+            F::ToolcallDelta {
+                content_index,
+                delta,
+            } => {
+                let (_, state) = active_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    BlockKind::ToolCall,
+                    frame_type,
+                )?;
                 state.json.push_str(delta);
             }
-            F::ToolcallEnd { content_index, id, name, arguments, thought_signature, namespace } => {
-                if let (ContentBlock::ToolCall(block), state) = active_block(message, &mut states, *content_index, BlockKind::ToolCall, frame_type)? {
+            F::ToolcallEnd {
+                content_index,
+                id,
+                name,
+                arguments,
+                thought_signature,
+                namespace,
+            } => {
+                if let (ContentBlock::ToolCall(block), state) = active_block(
+                    message,
+                    &mut states,
+                    *content_index,
+                    BlockKind::ToolCall,
+                    frame_type,
+                )? {
                     block.id = id.clone();
                     block.name = name.clone();
                     block.arguments = arguments.clone();
@@ -545,7 +857,9 @@ pub fn reduce_assistant_message_frames<'a>(
             }
         }
     }
-    let Some(mut message) = message else { return Ok(None) };
+    let Some(mut message) = message else {
+        return Ok(None);
+    };
     for (content_index, state) in &states {
         if state.kind != BlockKind::ToolCall || state.ended || state.json.is_empty() {
             continue;
@@ -574,6 +888,10 @@ mod tests {
 
     fn seed() -> AssistantMessage {
         AssistantMessage {
+            error_cause: None,
+            prompt_cache_diagnostics: None,
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "test-api".into(),
             provider: "test-provider".into(),
@@ -594,16 +912,28 @@ mod tests {
         }
     }
 
-    fn frame(encoder: &mut AssistantMessageFrameEncoder, event: AssistantMessageEvent) -> AssistantMessageFrame {
-        encoder.encode(&event).expect("event should not error").expect("event should produce a frame")
+    fn frame(
+        encoder: &mut AssistantMessageFrameEncoder,
+        event: AssistantMessageEvent,
+    ) -> AssistantMessageFrame {
+        encoder
+            .encode(&event)
+            .expect("event should not error")
+            .expect("event should produce a frame")
     }
 
     fn text_content(text: &str) -> TextContent {
-        TextContent { text: text.into(), ..TextContent::default() }
+        TextContent {
+            text: text.into(),
+            ..TextContent::default()
+        }
     }
 
     fn thinking_content(thinking: &str) -> ThinkingContent {
-        ThinkingContent { thinking: thinking.into(), ..ThinkingContent::default() }
+        ThinkingContent {
+            thinking: thinking.into(),
+            ..ThinkingContent::default()
+        }
     }
 
     fn tool_call(id: &str, name: &str, arguments: Value) -> ToolCall {
@@ -616,28 +946,70 @@ mod tests {
     }
 
     fn obj(pairs: &[(&str, Value)]) -> Map<String, Value> {
-        pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect()
     }
 
     #[test]
     fn uses_authoritative_text_end_content_and_signature() {
         let mut partial = seed();
         let mut encoder = AssistantMessageFrameEncoder::new();
-        let mut frames = vec![frame(&mut encoder, AssistantMessageEvent::Start { partial: partial.clone() })];
-        partial.content.push(ContentBlock::Text(text_content("Hello ")));
-        frames.push(frame(&mut encoder, AssistantMessageEvent::TextStart { content_index: 0, partial: partial.clone() }));
-        partial.content[0] = ContentBlock::Text(TextContent { text: "Hello world".into(), text_signature: Some("sig-text".into()), ..TextContent::default() });
-        frames.push(frame(&mut encoder, AssistantMessageEvent::TextDelta { content_index: 0, delta: "incorrect".into(), partial: partial.clone() }));
-        frames.push(frame(&mut encoder, AssistantMessageEvent::TextEnd { content_index: 0, content: "Hello world".into(), partial: partial.clone() }));
+        let mut frames = vec![frame(
+            &mut encoder,
+            AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            },
+        )];
+        partial
+            .content
+            .push(ContentBlock::Text(text_content("Hello ")));
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::TextStart {
+                content_index: 0,
+                partial: partial.clone(),
+            },
+        ));
+        partial.content[0] = ContentBlock::Text(TextContent {
+            text: "Hello world".into(),
+            text_signature: Some("sig-text".into()),
+            ..TextContent::default()
+        });
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "incorrect".into(),
+                partial: partial.clone(),
+            },
+        ));
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::TextEnd {
+                content_index: 0,
+                content: "Hello world".into(),
+                partial: partial.clone(),
+            },
+        ));
 
         assert_eq!(
             frames.last(),
-            Some(&AssistantMessageFrame::TextEnd { content_index: 0, content: "Hello world".into(), text_signature: Some("sig-text".into()) })
+            Some(&AssistantMessageFrame::TextEnd {
+                content_index: 0,
+                content: "Hello world".into(),
+                text_signature: Some("sig-text".into())
+            })
         );
         let reduced = reduce_assistant_message_frames(&frames).unwrap().unwrap();
         assert_eq!(
             reduced.content,
-            vec![ContentBlock::Text(TextContent { text: "Hello world".into(), text_signature: Some("sig-text".into()), ..TextContent::default() })]
+            vec![ContentBlock::Text(TextContent {
+                text: "Hello world".into(),
+                text_signature: Some("sig-text".into()),
+                ..TextContent::default()
+            })]
         );
     }
 
@@ -646,9 +1018,16 @@ mod tests {
         let mut partial = seed();
         partial.provider_thinking_level = Some("high".into());
         let mut encoder = AssistantMessageFrameEncoder::new();
-        let start = frame(&mut encoder, AssistantMessageEvent::Start { partial: partial.clone() });
+        let start = frame(
+            &mut encoder,
+            AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            },
+        );
 
-        let AssistantMessageFrame::Start { partial: started } = &start else { panic!("expected start frame") };
+        let AssistantMessageFrame::Start { partial: started } = &start else {
+            panic!("expected start frame")
+        };
         assert_eq!(started.provider_thinking_level.as_deref(), Some("high"));
         let reduced = reduce_assistant_message_frames(&[start]).unwrap().unwrap();
         assert_eq!(reduced.provider_thinking_level.as_deref(), Some("high"));
@@ -658,21 +1037,41 @@ mod tests {
     fn preserves_initial_and_final_thinking_metadata_including_redaction() {
         let mut partial = seed();
         let mut encoder = AssistantMessageFrameEncoder::new();
-        let mut frames = vec![frame(&mut encoder, AssistantMessageEvent::Start { partial: partial.clone() })];
-        partial.content.push(ContentBlock::Thinking(ThinkingContent {
-            thinking: "[redacted]".into(),
-            thinking_signature: Some("encrypted-start".into()),
-            redacted: Some(true),
-            ..ThinkingContent::default()
-        }));
-        frames.push(frame(&mut encoder, AssistantMessageEvent::ThinkingStart { content_index: 0, partial: partial.clone() }));
+        let mut frames = vec![frame(
+            &mut encoder,
+            AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            },
+        )];
+        partial
+            .content
+            .push(ContentBlock::Thinking(ThinkingContent {
+                thinking: "[redacted]".into(),
+                thinking_signature: Some("encrypted-start".into()),
+                redacted: Some(true),
+                ..ThinkingContent::default()
+            }));
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::ThinkingStart {
+                content_index: 0,
+                partial: partial.clone(),
+            },
+        ));
         partial.content[0] = ContentBlock::Thinking(ThinkingContent {
             thinking: "[redacted]".into(),
             thinking_signature: Some("encrypted-final".into()),
             redacted: Some(true),
             ..ThinkingContent::default()
         });
-        frames.push(frame(&mut encoder, AssistantMessageEvent::ThinkingEnd { content_index: 0, content: "[redacted]".into(), partial: partial.clone() }));
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::ThinkingEnd {
+                content_index: 0,
+                content: "[redacted]".into(),
+                partial: partial.clone(),
+            },
+        ));
 
         assert_eq!(
             frames.last(),
@@ -698,17 +1097,32 @@ mod tests {
     #[test]
     fn parses_unfinished_tool_json_once_and_uses_authoritative_completed_arguments() {
         let initial_frames = vec![
-            AssistantMessageFrame::Start { partial: Box::new(seed()) },
-            AssistantMessageFrame::ToolcallStart { content_index: 0, tool_call: tool_call("initial-id", "write", json!({})) },
-            AssistantMessageFrame::ToolcallDelta { content_index: 0, delta: r#"{"path":"READ"#.into() },
+            AssistantMessageFrame::Start {
+                partial: Box::new(seed()),
+            },
+            AssistantMessageFrame::ToolcallStart {
+                content_index: 0,
+                tool_call: tool_call("initial-id", "write", json!({})),
+            },
+            AssistantMessageFrame::ToolcallDelta {
+                content_index: 0,
+                delta: r#"{"path":"READ"#.into(),
+            },
         ];
 
-        let reduced = reduce_assistant_message_frames(&initial_frames).unwrap().unwrap();
-        let ContentBlock::ToolCall(first) = &reduced.content[0] else { panic!("expected tool call") };
+        let reduced = reduce_assistant_message_frames(&initial_frames)
+            .unwrap()
+            .unwrap();
+        let ContentBlock::ToolCall(first) = &reduced.content[0] else {
+            panic!("expected tool call")
+        };
         assert_eq!(first.arguments, obj(&[("path", json!("READ"))]));
 
         let mut complete_frames = initial_frames;
-        complete_frames.push(AssistantMessageFrame::ToolcallDelta { content_index: 0, delta: r#"ME.md","lines":[1,2]}"#.into() });
+        complete_frames.push(AssistantMessageFrame::ToolcallDelta {
+            content_index: 0,
+            delta: r#"ME.md","lines":[1,2]}"#.into(),
+        });
         complete_frames.push(AssistantMessageFrame::ToolcallEnd {
             content_index: 0,
             id: "final-id".into(),
@@ -717,7 +1131,9 @@ mod tests {
             thought_signature: Some("thought".into()),
             namespace: Some("files".into()),
         });
-        let reduced = reduce_assistant_message_frames(&complete_frames).unwrap().unwrap();
+        let reduced = reduce_assistant_message_frames(&complete_frames)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             reduced.content[0],
             ContentBlock::ToolCall(ToolCall {
@@ -751,7 +1167,10 @@ mod tests {
         for delta in ["Hel", "lo", " ", "world"] {
             text.push_str(delta);
             partial.content[0] = ContentBlock::Text(text_content(&text));
-            kinds.push(Kind::TextDelta { content_index: 0, delta: delta.into() });
+            kinds.push(Kind::TextDelta {
+                content_index: 0,
+                delta: delta.into(),
+            });
         }
 
         let mut encoder = AssistantMessageFrameEncoder::new();
@@ -759,44 +1178,97 @@ mod tests {
             .into_iter()
             .filter_map(|kind| {
                 let event = match kind {
-                    Kind::Start => AssistantMessageEvent::Start { partial: partial.clone() },
-                    Kind::TextStart { content_index } => AssistantMessageEvent::TextStart { content_index, partial: partial.clone() },
-                    Kind::TextDelta { content_index, delta } => AssistantMessageEvent::TextDelta { content_index, delta, partial: partial.clone() },
+                    Kind::Start => AssistantMessageEvent::Start {
+                        partial: partial.clone(),
+                    },
+                    Kind::TextStart { content_index } => AssistantMessageEvent::TextStart {
+                        content_index,
+                        partial: partial.clone(),
+                    },
+                    Kind::TextDelta {
+                        content_index,
+                        delta,
+                    } => AssistantMessageEvent::TextDelta {
+                        content_index,
+                        delta,
+                        partial: partial.clone(),
+                    },
                 };
                 encoder.encode(&event).expect("no encoder error")
             })
             .collect();
 
-        assert_eq!(frames.iter().map(AssistantMessageFrame::type_name).collect::<Vec<_>>(), vec!["start", "text_start"]);
-        let AssistantMessageFrame::Start { partial: started } = &frames[0] else { panic!("expected start") };
+        assert_eq!(
+            frames
+                .iter()
+                .map(AssistantMessageFrame::type_name)
+                .collect::<Vec<_>>(),
+            vec!["start", "text_start"]
+        );
+        let AssistantMessageFrame::Start { partial: started } = &frames[0] else {
+            panic!("expected start")
+        };
         assert!(started.content.is_empty());
         assert_eq!(started.stop_reason, StopReason::Pending);
         let reduced = reduce_assistant_message_frames(&frames).unwrap().unwrap();
-        assert_eq!(reduced.content, vec![ContentBlock::Text(text_content("Hello world"))]);
+        assert_eq!(
+            reduced.content,
+            vec![ContentBlock::Text(text_content("Hello world"))]
+        );
     }
 
     #[test]
     fn trims_only_the_covered_prefix_when_a_start_snapshot_lands_inside_a_delta() {
         let mut partial = seed();
         let mut encoder = AssistantMessageFrameEncoder::new();
-        let mut frames = vec![frame(&mut encoder, AssistantMessageEvent::Start { partial: partial.clone() })];
-        partial.content.push(ContentBlock::Text(text_content("Hel")));
-        frames.push(frame(&mut encoder, AssistantMessageEvent::TextStart { content_index: 0, partial: partial.clone() }));
+        let mut frames = vec![frame(
+            &mut encoder,
+            AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            },
+        )];
+        partial
+            .content
+            .push(ContentBlock::Text(text_content("Hel")));
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::TextStart {
+                content_index: 0,
+                partial: partial.clone(),
+            },
+        ));
         assert_eq!(
             encoder
-                .encode(&AssistantMessageEvent::TextDelta { content_index: 0, delta: "He".into(), partial: partial.clone() })
+                .encode(&AssistantMessageEvent::TextDelta {
+                    content_index: 0,
+                    delta: "He".into(),
+                    partial: partial.clone()
+                })
                 .unwrap(),
             None
         );
         let remainder = encoder
-            .encode(&AssistantMessageEvent::TextDelta { content_index: 0, delta: "llo".into(), partial: partial.clone() })
+            .encode(&AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "llo".into(),
+                partial: partial.clone(),
+            })
             .unwrap()
             .expect("expected uncovered text delta");
         frames.push(remainder.clone());
 
-        assert_eq!(remainder, AssistantMessageFrame::TextDelta { content_index: 0, delta: "lo".into() });
+        assert_eq!(
+            remainder,
+            AssistantMessageFrame::TextDelta {
+                content_index: 0,
+                delta: "lo".into()
+            }
+        );
         let reduced = reduce_assistant_message_frames(&frames).unwrap().unwrap();
-        assert_eq!(reduced.content, vec![ContentBlock::Text(text_content("Hello"))]);
+        assert_eq!(
+            reduced.content,
+            vec![ContentBlock::Text(text_content("Hello"))]
+        );
     }
 
     #[test]
@@ -810,36 +1282,69 @@ mod tests {
             ToolcallDelta { content_index: usize, delta: String },
         }
         let mut kinds = vec![Kind::Start];
-        partial.content.push(ContentBlock::ToolCall(tool_call("call", "write", json!({}))));
+        partial.content.push(ContentBlock::ToolCall(tool_call(
+            "call",
+            "write",
+            json!({}),
+        )));
         kinds.push(Kind::ToolcallStart { content_index: 0 });
-        partial.content[0] = ContentBlock::ToolCall(tool_call("call", "write", json!({"path": "README.md"})));
-        kinds.push(Kind::ToolcallDelta { content_index: 0, delta: r#"{"path":"READ"#.into() });
-        kinds.push(Kind::ToolcallDelta { content_index: 0, delta: r#"ME.md"}"#.into() });
+        partial.content[0] =
+            ContentBlock::ToolCall(tool_call("call", "write", json!({"path": "README.md"})));
+        kinds.push(Kind::ToolcallDelta {
+            content_index: 0,
+            delta: r#"{"path":"READ"#.into(),
+        });
+        kinds.push(Kind::ToolcallDelta {
+            content_index: 0,
+            delta: r#"ME.md"}"#.into(),
+        });
 
         let mut encoder = AssistantMessageFrameEncoder::new();
         let frames: Vec<AssistantMessageFrame> = kinds
             .into_iter()
             .filter_map(|kind| {
                 let event = match kind {
-                    Kind::Start => AssistantMessageEvent::Start { partial: partial.clone() },
-                    Kind::ToolcallStart { content_index } => AssistantMessageEvent::ToolcallStart { content_index, partial: partial.clone() },
-                    Kind::ToolcallDelta { content_index, delta } => AssistantMessageEvent::ToolcallDelta { content_index, delta, partial: partial.clone() },
+                    Kind::Start => AssistantMessageEvent::Start {
+                        partial: partial.clone(),
+                    },
+                    Kind::ToolcallStart { content_index } => AssistantMessageEvent::ToolcallStart {
+                        content_index,
+                        partial: partial.clone(),
+                    },
+                    Kind::ToolcallDelta {
+                        content_index,
+                        delta,
+                    } => AssistantMessageEvent::ToolcallDelta {
+                        content_index,
+                        delta,
+                        partial: partial.clone(),
+                    },
                 };
                 encoder.encode(&event).expect("no encoder error")
             })
             .collect();
         assert_eq!(
-            frames.iter().map(AssistantMessageFrame::type_name).collect::<Vec<_>>(),
+            frames
+                .iter()
+                .map(AssistantMessageFrame::type_name)
+                .collect::<Vec<_>>(),
             vec!["start", "toolcall_start", "toolcall_checkpoint"]
         );
         assert_eq!(
             frames.last(),
-            Some(&AssistantMessageFrame::ToolcallCheckpoint { content_index: 0, json: r#"{"path":"README.md"}"#.into() })
+            Some(&AssistantMessageFrame::ToolcallCheckpoint {
+                content_index: 0,
+                json: r#"{"path":"README.md"}"#.into()
+            })
         );
         let reduced = reduce_assistant_message_frames(&frames).unwrap().unwrap();
         assert_eq!(
             reduced.content,
-            vec![ContentBlock::ToolCall(tool_call("call", "write", json!({"path": "README.md"})))]
+            vec![ContentBlock::ToolCall(tool_call(
+                "call",
+                "write",
+                json!({"path": "README.md"})
+            ))]
         );
     }
 
@@ -847,44 +1352,111 @@ mod tests {
     fn resumes_legacy_grammar_tool_json_from_initial_arguments() {
         let mut partial = seed();
         let mut encoder = AssistantMessageFrameEncoder::new();
-        let mut frames = vec![frame(&mut encoder, AssistantMessageEvent::Start { partial: partial.clone() })];
-        partial.content.push(ContentBlock::ToolCall(tool_call("call", "bash", json!({"input": "a"}))));
-        frames.push(frame(&mut encoder, AssistantMessageEvent::ToolcallStart { content_index: 0, partial: partial.clone() }));
-        partial.content[0] = ContentBlock::ToolCall(tool_call("call", "bash", json!({"input": "ab"})));
-        frames.push(frame(&mut encoder, AssistantMessageEvent::ToolcallDelta { content_index: 0, delta: r#"{"input":"ab"#.into(), partial: partial.clone() }));
-        partial.content[0] = ContentBlock::ToolCall(tool_call("call", "bash", json!({"input": "abc"})));
-        frames.push(frame(&mut encoder, AssistantMessageEvent::ToolcallDelta { content_index: 0, delta: r#"c"}"#.into(), partial: partial.clone() }));
+        let mut frames = vec![frame(
+            &mut encoder,
+            AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            },
+        )];
+        partial.content.push(ContentBlock::ToolCall(tool_call(
+            "call",
+            "bash",
+            json!({"input": "a"}),
+        )));
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::ToolcallStart {
+                content_index: 0,
+                partial: partial.clone(),
+            },
+        ));
+        partial.content[0] =
+            ContentBlock::ToolCall(tool_call("call", "bash", json!({"input": "ab"})));
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::ToolcallDelta {
+                content_index: 0,
+                delta: r#"{"input":"ab"#.into(),
+                partial: partial.clone(),
+            },
+        ));
+        partial.content[0] =
+            ContentBlock::ToolCall(tool_call("call", "bash", json!({"input": "abc"})));
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::ToolcallDelta {
+                content_index: 0,
+                delta: r#"c"}"#.into(),
+                partial: partial.clone(),
+            },
+        ));
 
         assert_eq!(
             &frames[2..],
             &[
-                AssistantMessageFrame::ToolcallCheckpoint { content_index: 0, json: r#"{"input":"ab"#.into() },
-                AssistantMessageFrame::ToolcallDelta { content_index: 0, delta: r#"c"}"#.into() },
+                AssistantMessageFrame::ToolcallCheckpoint {
+                    content_index: 0,
+                    json: r#"{"input":"ab"#.into()
+                },
+                AssistantMessageFrame::ToolcallDelta {
+                    content_index: 0,
+                    delta: r#"c"}"#.into()
+                },
             ]
         );
         let reduced = reduce_assistant_message_frames(&frames).unwrap().unwrap();
-        assert_eq!(reduced.content, vec![ContentBlock::ToolCall(tool_call("call", "bash", json!({"input": "abc"})))]);
+        assert_eq!(
+            reduced.content,
+            vec![ContentBlock::ToolCall(tool_call(
+                "call",
+                "bash",
+                json!({"input": "abc"})
+            ))]
+        );
     }
 
     #[test]
     fn streams_tool_json_compactly_from_an_empty_argument_start() {
         let mut partial = seed();
         let mut encoder = AssistantMessageFrameEncoder::new();
-        let mut frames = vec![frame(&mut encoder, AssistantMessageEvent::Start { partial: partial.clone() })];
-        partial.content.push(ContentBlock::ToolCall(tool_call("call", "bash", json!({}))));
-        frames.push(frame(&mut encoder, AssistantMessageEvent::ToolcallStart { content_index: 0, partial: partial.clone() }));
-        partial.content[0] = ContentBlock::ToolCall(tool_call("call", "bash", json!({"command": "ls -la /tmp"})));
+        let mut frames = vec![frame(
+            &mut encoder,
+            AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            },
+        )];
+        partial
+            .content
+            .push(ContentBlock::ToolCall(tool_call("call", "bash", json!({}))));
         frames.push(frame(
             &mut encoder,
-            AssistantMessageEvent::ToolcallDelta { content_index: 0, delta: r#"{"command":"ls -la /tmp"}"#.into(), partial: partial.clone() },
+            AssistantMessageEvent::ToolcallStart {
+                content_index: 0,
+                partial: partial.clone(),
+            },
+        ));
+        partial.content[0] =
+            ContentBlock::ToolCall(tool_call("call", "bash", json!({"command": "ls -la /tmp"})));
+        frames.push(frame(
+            &mut encoder,
+            AssistantMessageEvent::ToolcallDelta {
+                content_index: 0,
+                delta: r#"{"command":"ls -la /tmp"}"#.into(),
+                partial: partial.clone(),
+            },
         ));
 
         assert_eq!(
             frames.last(),
-            Some(&AssistantMessageFrame::ToolcallDelta { content_index: 0, delta: r#"{"command":"ls -la /tmp"}"#.into() })
+            Some(&AssistantMessageFrame::ToolcallDelta {
+                content_index: 0,
+                delta: r#"{"command":"ls -la /tmp"}"#.into()
+            })
         );
         let reduced = reduce_assistant_message_frames(&frames).unwrap().unwrap();
-        let ContentBlock::ToolCall(first) = &reduced.content[0] else { panic!("expected tool call") };
+        let ContentBlock::ToolCall(first) = &reduced.content[0] else {
+            panic!("expected tool call")
+        };
         assert_eq!(first.arguments, obj(&[("command", json!("ls -la /tmp"))]));
     }
 
@@ -894,32 +1466,62 @@ mod tests {
         failed.stop_reason = StopReason::Error;
         failed.error_message = Some("setup failed".into());
         assert_eq!(
-            AssistantMessageFrameEncoder::new().encode(&AssistantMessageEvent::Error { reason: ErrorReason::Error, error: failed }).unwrap(),
+            AssistantMessageFrameEncoder::new()
+                .encode(&AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error: failed
+                })
+                .unwrap(),
             None
         );
 
         let mut completed = seed();
         completed.stop_reason = StopReason::Stop;
         let err = AssistantMessageFrameEncoder::new()
-            .encode(&AssistantMessageEvent::Done { reason: DoneReason::Stop, message: completed })
+            .encode(&AssistantMessageEvent::Done {
+                reason: DoneReason::Stop,
+                message: completed,
+            })
             .unwrap_err();
-        assert!(err.0.contains("done event appears before start"), "{}", err.0);
+        assert!(
+            err.0.contains("done event appears before start"),
+            "{}",
+            err.0
+        );
 
         let err = AssistantMessageFrameEncoder::new()
-            .encode(&AssistantMessageEvent::TextDelta { content_index: 0, delta: "x".into(), partial: seed() })
+            .encode(&AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "x".into(),
+                partial: seed(),
+            })
             .unwrap_err();
-        assert!(err.0.contains("text_delta event appears before start"), "{}", err.0);
+        assert!(
+            err.0.contains("text_delta event appears before start"),
+            "{}",
+            err.0
+        );
     }
 
     #[test]
     fn treats_end_signature_metadata_including_absence_as_authoritative() {
         let frames = vec![
-            AssistantMessageFrame::Start { partial: Box::new(seed()) },
+            AssistantMessageFrame::Start {
+                partial: Box::new(seed()),
+            },
             AssistantMessageFrame::TextStart {
                 content_index: 0,
-                content: TextContent { text: "".into(), text_signature: Some("stale-text".into()), ..TextContent::default() },
+                content: TextContent {
+                    text: "".into(),
+                    text_signature: Some("stale-text".into()),
+                    ..TextContent::default()
+                },
             },
-            AssistantMessageFrame::TextEnd { content_index: 0, content: "".into(), text_signature: None },
+            AssistantMessageFrame::TextEnd {
+                content_index: 0,
+                content: "".into(),
+                text_signature: None,
+            },
             AssistantMessageFrame::ThinkingStart {
                 content_index: 1,
                 content: ThinkingContent {
@@ -961,8 +1563,18 @@ mod tests {
             reduced.content,
             vec![
                 ContentBlock::Text(text_content("")),
-                ContentBlock::Thinking(ThinkingContent { thinking: "".into(), thinking_signature: Some("".into()), redacted: Some(false), ..ThinkingContent::default() }),
-                ContentBlock::ToolCall(ToolCall { id: "call".into(), name: "read".into(), arguments: Map::new(), ..ToolCall::default() }),
+                ContentBlock::Thinking(ThinkingContent {
+                    thinking: "".into(),
+                    thinking_signature: Some("".into()),
+                    redacted: Some(false),
+                    ..ThinkingContent::default()
+                }),
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call".into(),
+                    name: "read".into(),
+                    arguments: Map::new(),
+                    ..ToolCall::default()
+                }),
             ]
         );
     }
@@ -978,12 +1590,32 @@ mod tests {
             namespace: Some("files".into()),
             ..ToolCall::default()
         };
-        partial.content.push(ContentBlock::ToolCall(tool_call.clone()));
+        partial
+            .content
+            .push(ContentBlock::ToolCall(tool_call.clone()));
 
         let mut encoder = AssistantMessageFrameEncoder::new();
-        frame(&mut encoder, AssistantMessageEvent::Start { partial: partial.clone() });
-        frame(&mut encoder, AssistantMessageEvent::ToolcallStart { content_index: 0, partial: partial.clone() });
-        let end = frame(&mut encoder, AssistantMessageEvent::ToolcallEnd { content_index: 0, tool_call: tool_call.clone(), partial: partial.clone() });
+        frame(
+            &mut encoder,
+            AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            },
+        );
+        frame(
+            &mut encoder,
+            AssistantMessageEvent::ToolcallStart {
+                content_index: 0,
+                partial: partial.clone(),
+            },
+        );
+        let end = frame(
+            &mut encoder,
+            AssistantMessageEvent::ToolcallEnd {
+                content_index: 0,
+                tool_call: tool_call.clone(),
+                partial: partial.clone(),
+            },
+        );
         assert_eq!(
             end,
             AssistantMessageFrame::ToolcallEnd {
@@ -1000,13 +1632,33 @@ mod tests {
     #[test]
     fn supports_interleaved_streams_by_content_index() {
         let frames = vec![
-            AssistantMessageFrame::Start { partial: Box::new(seed()) },
-            AssistantMessageFrame::TextStart { content_index: 0, content: text_content("") },
-            AssistantMessageFrame::ToolcallStart { content_index: 1, tool_call: tool_call("call", "lookup", json!({})) },
-            AssistantMessageFrame::ThinkingStart { content_index: 2, content: thinking_content("") },
-            AssistantMessageFrame::TextDelta { content_index: 0, delta: "answer".into() },
-            AssistantMessageFrame::ToolcallDelta { content_index: 1, delta: r#"{"query":"pi"}"#.into() },
-            AssistantMessageFrame::ThinkingDelta { content_index: 2, delta: "check".into() },
+            AssistantMessageFrame::Start {
+                partial: Box::new(seed()),
+            },
+            AssistantMessageFrame::TextStart {
+                content_index: 0,
+                content: text_content(""),
+            },
+            AssistantMessageFrame::ToolcallStart {
+                content_index: 1,
+                tool_call: tool_call("call", "lookup", json!({})),
+            },
+            AssistantMessageFrame::ThinkingStart {
+                content_index: 2,
+                content: thinking_content(""),
+            },
+            AssistantMessageFrame::TextDelta {
+                content_index: 0,
+                delta: "answer".into(),
+            },
+            AssistantMessageFrame::ToolcallDelta {
+                content_index: 1,
+                delta: r#"{"query":"pi"}"#.into(),
+            },
+            AssistantMessageFrame::ThinkingDelta {
+                content_index: 2,
+                delta: "check".into(),
+            },
             AssistantMessageFrame::ToolcallEnd {
                 content_index: 1,
                 id: "call".into(),
@@ -1015,8 +1667,17 @@ mod tests {
                 thought_signature: None,
                 namespace: None,
             },
-            AssistantMessageFrame::TextEnd { content_index: 0, content: "answer".into(), text_signature: None },
-            AssistantMessageFrame::ThinkingEnd { content_index: 2, content: "check".into(), thinking_signature: None, redacted: None },
+            AssistantMessageFrame::TextEnd {
+                content_index: 0,
+                content: "answer".into(),
+                text_signature: None,
+            },
+            AssistantMessageFrame::ThinkingEnd {
+                content_index: 2,
+                content: "check".into(),
+                thinking_signature: None,
+                redacted: None,
+            },
         ];
 
         let reduced = reduce_assistant_message_frames(&frames).unwrap().unwrap();
@@ -1040,49 +1701,106 @@ mod tests {
             details: Some(obj(&[("value", json!("original"))])),
         }]);
         let mut encoder = AssistantMessageFrameEncoder::new();
-        let start = frame(&mut encoder, AssistantMessageEvent::Start { partial: partial.clone() });
+        let start = frame(
+            &mut encoder,
+            AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            },
+        );
         if let Some(diagnostics) = partial.diagnostics.as_mut() {
-            diagnostics[0].details.as_mut().unwrap().insert("value".into(), json!("mutated"));
+            diagnostics[0]
+                .details
+                .as_mut()
+                .unwrap()
+                .insert("value".into(), json!("mutated"));
         }
         partial.usage.cost.total = 99.0;
 
-        partial.content.push(ContentBlock::ToolCall(tool_call("call", "run", json!({"nested": {"value": "original"}}))));
-        let tool_start = frame(&mut encoder, AssistantMessageEvent::ToolcallStart { content_index: 0, partial: partial.clone() });
+        partial.content.push(ContentBlock::ToolCall(tool_call(
+            "call",
+            "run",
+            json!({"nested": {"value": "original"}}),
+        )));
+        let tool_start = frame(
+            &mut encoder,
+            AssistantMessageEvent::ToolcallStart {
+                content_index: 0,
+                partial: partial.clone(),
+            },
+        );
         if let ContentBlock::ToolCall(source_tool) = &mut partial.content[0] {
-            source_tool.arguments.insert("nested".into(), json!("mutated"));
+            source_tool
+                .arguments
+                .insert("nested".into(), json!("mutated"));
         }
 
-        let reduced = reduce_assistant_message_frames(&[start, tool_start.clone()]).unwrap().unwrap();
+        let reduced = reduce_assistant_message_frames(&[start, tool_start.clone()])
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            reduced.diagnostics.as_ref().and_then(|d| d[0].details.as_ref()).and_then(|d| d.get("value")),
+            reduced
+                .diagnostics
+                .as_ref()
+                .and_then(|d| d[0].details.as_ref())
+                .and_then(|d| d.get("value")),
             Some(&json!("original"))
         );
         assert_eq!(reduced.usage.cost.total, 0.0);
-        let ContentBlock::ToolCall(reduced_tool) = &reduced.content[0] else { panic!("expected tool call") };
-        assert_eq!(reduced_tool.arguments.get("nested"), Some(&json!({"value": "original"})));
+        let ContentBlock::ToolCall(reduced_tool) = &reduced.content[0] else {
+            panic!("expected tool call")
+        };
+        assert_eq!(
+            reduced_tool.arguments.get("nested"),
+            Some(&json!({"value": "original"}))
+        );
 
         let mut reduced = reduced;
         if let ContentBlock::ToolCall(reduced_tool) = &mut reduced.content[0] {
-            reduced_tool.arguments.insert("nested".into(), json!("changed-output"));
+            reduced_tool
+                .arguments
+                .insert("nested".into(), json!("changed-output"));
         }
-        let AssistantMessageFrame::ToolcallStart { tool_call: started_tool, .. } = &tool_start else { panic!("expected toolcall_start") };
-        assert_eq!(started_tool.arguments.get("nested"), Some(&json!({"value": "original"})));
+        let AssistantMessageFrame::ToolcallStart {
+            tool_call: started_tool,
+            ..
+        } = &tool_start
+        else {
+            panic!("expected toolcall_start")
+        };
+        assert_eq!(
+            started_tool.arguments.get("nested"),
+            Some(&json!({"value": "original"}))
+        );
     }
 
     #[test]
     fn omits_terminal_events_because_settlement_is_separate() {
         let mut message = seed();
         let mut completed = AssistantMessageFrameEncoder::new();
-        completed.encode(&AssistantMessageEvent::Start { partial: message.clone() }).unwrap();
+        completed
+            .encode(&AssistantMessageEvent::Start {
+                partial: message.clone(),
+            })
+            .unwrap();
         message.stop_reason = StopReason::Stop;
         assert_eq!(
-            completed.encode(&AssistantMessageEvent::Done { reason: DoneReason::Stop, message: message.clone() }).unwrap(),
+            completed
+                .encode(&AssistantMessageEvent::Done {
+                    reason: DoneReason::Stop,
+                    message: message.clone()
+                })
+                .unwrap(),
             None
         );
         message.stop_reason = StopReason::Error;
         message.error_message = Some("failed".into());
         assert_eq!(
-            AssistantMessageFrameEncoder::new().encode(&AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message }).unwrap(),
+            AssistantMessageFrameEncoder::new()
+                .encode(&AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error: message
+                })
+                .unwrap(),
             None
         );
     }
@@ -1091,7 +1809,11 @@ mod tests {
     fn returns_none_when_there_is_no_start_frame() {
         assert_eq!(reduce_assistant_message_frames(&[]).unwrap(), None);
         assert_eq!(
-            reduce_assistant_message_frames(&[AssistantMessageFrame::TextDelta { content_index: 0, delta: "x".into() }]).unwrap(),
+            reduce_assistant_message_frames(&[AssistantMessageFrame::TextDelta {
+                content_index: 0,
+                delta: "x".into()
+            }])
+            .unwrap(),
             None
         );
     }
@@ -1099,32 +1821,63 @@ mod tests {
     #[test]
     fn rejects_frames_before_start_wrong_block_kinds_duplicate_ends_and_index_gaps() {
         let err = reduce_assistant_message_frames(&[
-            AssistantMessageFrame::TextDelta { content_index: 0, delta: "x".into() },
-            AssistantMessageFrame::Start { partial: Box::new(seed()) },
+            AssistantMessageFrame::TextDelta {
+                content_index: 0,
+                delta: "x".into(),
+            },
+            AssistantMessageFrame::Start {
+                partial: Box::new(seed()),
+            },
         ])
         .unwrap_err();
         assert!(err.0.contains("before the start frame"), "{}", err.0);
 
         let err = reduce_assistant_message_frames(&[
-            AssistantMessageFrame::Start { partial: Box::new(seed()) },
-            AssistantMessageFrame::ToolcallStart { content_index: 0, tool_call: tool_call("call", "run", json!({})) },
-            AssistantMessageFrame::TextDelta { content_index: 0, delta: "wrong".into() },
+            AssistantMessageFrame::Start {
+                partial: Box::new(seed()),
+            },
+            AssistantMessageFrame::ToolcallStart {
+                content_index: 0,
+                tool_call: tool_call("call", "run", json!({})),
+            },
+            AssistantMessageFrame::TextDelta {
+                content_index: 0,
+                delta: "wrong".into(),
+            },
         ])
         .unwrap_err();
         assert!(err.0.contains("expected text block"), "{}", err.0);
 
         let err = reduce_assistant_message_frames(&[
-            AssistantMessageFrame::Start { partial: Box::new(seed()) },
-            AssistantMessageFrame::TextStart { content_index: 0, content: text_content("") },
-            AssistantMessageFrame::TextEnd { content_index: 0, content: "".into(), text_signature: None },
-            AssistantMessageFrame::TextEnd { content_index: 0, content: "".into(), text_signature: None },
+            AssistantMessageFrame::Start {
+                partial: Box::new(seed()),
+            },
+            AssistantMessageFrame::TextStart {
+                content_index: 0,
+                content: text_content(""),
+            },
+            AssistantMessageFrame::TextEnd {
+                content_index: 0,
+                content: "".into(),
+                text_signature: None,
+            },
+            AssistantMessageFrame::TextEnd {
+                content_index: 0,
+                content: "".into(),
+                text_signature: None,
+            },
         ])
         .unwrap_err();
         assert!(err.0.contains("follows the end"), "{}", err.0);
 
         let err = reduce_assistant_message_frames(&[
-            AssistantMessageFrame::Start { partial: Box::new(seed()) },
-            AssistantMessageFrame::TextStart { content_index: 1, content: text_content("") },
+            AssistantMessageFrame::Start {
+                partial: Box::new(seed()),
+            },
+            AssistantMessageFrame::TextStart {
+                content_index: 1,
+                content: text_content(""),
+            },
         ])
         .unwrap_err();
         assert!(err.0.contains("would leave a gap"), "{}", err.0);
@@ -1134,10 +1887,24 @@ mod tests {
     fn rejects_conversion_events_whose_content_index_points_to_the_wrong_block_kind() {
         let mut partial = seed();
         let mut encoder = AssistantMessageFrameEncoder::new();
-        encoder.encode(&AssistantMessageEvent::Start { partial: partial.clone() }).unwrap();
-        partial.content.push(ContentBlock::Thinking(thinking_content("")));
-        let err = encoder.encode(&AssistantMessageEvent::TextStart { content_index: 0, partial }).unwrap_err();
-        assert!(err.0.contains("text_start event points to thinking block"), "{}", err.0);
+        encoder
+            .encode(&AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            })
+            .unwrap();
+        partial
+            .content
+            .push(ContentBlock::Thinking(thinking_content("")));
+        let err = encoder
+            .encode(&AssistantMessageEvent::TextStart {
+                content_index: 0,
+                partial,
+            })
+            .unwrap_err();
+        assert!(
+            err.0.contains("text_start event points to thinking block"),
+            "{}",
+            err.0
+        );
     }
 }
-

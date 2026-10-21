@@ -60,8 +60,8 @@ impl TerminalSessionBundle {
         // shares this generation's arcs, taking from it would swap in empty state and drop the
         // live manager, killing every running terminal and monitor process group.
         if Arc::ptr_eq(&self.manager,&source.manager) {return;}
-        *self.manager.lock().expect("terminal manager")=std::mem::take(&mut *source.manager.lock().expect("terminal manager"));
-        *self.monitors.lock().expect("monitor registry")=std::mem::replace(&mut *source.monitors.lock().expect("monitor registry"),MonitorRegistry::new(|_|{}));
+        *self.manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=std::mem::take(&mut *source.manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        *self.monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=std::mem::replace(&mut *source.monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner),MonitorRegistry::new(|_|{}));
         *self.backgrounds.lock().expect("terminal backgrounds")=std::mem::take(&mut *source.backgrounds.lock().expect("terminal backgrounds"));
     }
     pub fn bind(&mut self,sink:MonitorSink) {
@@ -81,7 +81,7 @@ impl TerminalSessionBundle {
         if self.routing.lock().expect("terminal routing").torndown {return;}
         self.background_state=Some(state.clone());self.background_exit=Some(exit.clone());state(&self.background_snapshot());
         let parked=std::mem::take(&mut *self.parked_exits.lock().expect("parked exits"));
-        for id in parked {if let Some(runtime)=self.manager.lock().expect("terminal manager").get(&id) {exit(&id,runtime);}}
+        for id in parked {if let Some(runtime)=self.manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {exit(&id,runtime);}}
     }
     pub fn publish_state(&self,snapshot:&[MonitorSnapshotEntry],transition:bool) {if let Some(sink)=&self.state_sink {sink(snapshot,transition);}}
     pub fn background_snapshot(&self)->Vec<BackgroundSession> {self.backgrounds.lock().expect("terminal backgrounds").values().cloned().collect()}
@@ -93,13 +93,13 @@ impl TerminalSessionBundle {
         if self.routing.lock().expect("terminal routing").torndown {return;}
         let removed=self.backgrounds.lock().expect("terminal backgrounds").shift_remove(id).is_some();
         if removed&&let Some(state)=&self.background_state {state(&self.background_snapshot());}
-        if let Some(exit)=&self.background_exit {if let Some(runtime)=self.manager.lock().expect("terminal manager").get(id) {exit(id,runtime);}return;}
+        if let Some(exit)=&self.background_exit {if let Some(runtime)=self.manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id) {exit(id,runtime);}return;}
         let mut parked=self.parked_exits.lock().expect("parked exits");if parked.len()<32 {parked.insert(id.to_owned());}
     }
     pub fn park(&mut self) {self.routing.lock().expect("terminal routing").sink=None;self.ended_routing.lock().expect("terminal ended routing").sink=None;self.state_sink=None;self.background_state=None;self.background_exit=None;}
     pub fn teardown(&mut self)->Result<(),crate::runtime_session::RuntimeError> {
         if !self.begin_teardown()? {return Ok(());}
-        self.manager.lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.teardown()
+        self.manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).teardown()
     }
     /// Everything teardown does before stopping terminals; `false` when already torn down. Async
     /// callers then await `manager::teardown_shared` on `manager` with no bundle lock held, so the
@@ -110,7 +110,7 @@ impl TerminalSessionBundle {
         self.parked_exits.lock().expect("parked exits").clear();
         let had_backgrounds=!self.backgrounds.lock().expect("terminal backgrounds").is_empty();
         if had_backgrounds {self.backgrounds.lock().expect("terminal backgrounds").clear();if let Some(state)=&self.background_state {state(&[]);}}self.state_sink=None;self.background_state=None;self.background_exit=None;
-        self.monitors.lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.dispose();Ok(true)
+        self.monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).dispose();Ok(true)
     }
 }
 #[cfg(test)]

@@ -60,29 +60,31 @@ fn test_extracts_paths_and_preserves_whitespace_filenames() {
 async fn test_coalesces_duplicate_in_flight_paths() {
     let runs = Arc::new(AtomicUsize::new(0));
     let sf = SingleFlight::<i32>::new();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
 
     let runs1 = Arc::clone(&runs);
-    let sf1 = sf.clone();
-    let first = tokio::spawn(async move {
-        sf1.run("a.ts", || async move {
+    let mut first = Box::pin(sf.run("a.ts", || async move {
             runs1.fetch_add(1, Ordering::SeqCst);
-            tokio::task::yield_now().await;
+            release_rx.await.expect("test releases the leader");
             42
-        }).await
-    });
+        }));
 
     let runs2 = Arc::clone(&runs);
-    let sf2 = sf.clone();
-    let second = tokio::spawn(async move {
-        sf2.run("a.ts", || async move {
+    let mut second = Box::pin(sf.run("a.ts", || async move {
             runs2.fetch_add(1, Ordering::SeqCst);
             7
-        }).await
-    });
+        }));
 
-    let (r1, r2) = tokio::join!(first, second);
-    assert_eq!(r1.unwrap(), 42);
-    assert_eq!(r2.unwrap(), 42);
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(first.as_mut(), cx).is_pending());
+        assert!(std::future::Future::poll(second.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    }).await;
+    release_tx.send(()).expect("leader still awaits release");
+    let results = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(first, second)
+    }).await.expect("both callers receive the completed result");
+    assert_eq!(results, (42, 42));
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 

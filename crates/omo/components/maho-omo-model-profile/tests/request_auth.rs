@@ -136,7 +136,7 @@ async fn rotation_disabled_in_models_json_turns_rotation_off_for_that_provider_o
 async fn a_registry_reporting_the_runtime_source_turns_rotation_off_for_that_provider() {
     let registry = TestRegistry::new(vec![model("anthropic", ""), model("zai", "glm-5.3")]).with_auth_status(
         "anthropic",
-        ProviderAuthStatus { configured: true, source: Some("runtime".into()), label: None },
+        ProviderAuthStatus { ambient: false, configured: true, source: Some("runtime".into()), label: None },
     );
     let policy = credential_rotation_policy(&registry, None);
     assert!(!policy.may_rotate("anthropic"));
@@ -230,7 +230,7 @@ async fn a_registry_reporting_the_runtime_source_so_only_the_flat_credential_is_
             .with_accounts("anthropic", vec![account("expired", false), account("healthy", false)])
             .with_auth_status(
                 "anthropic",
-                ProviderAuthStatus { configured: true, source: Some("runtime".into()), label: None },
+                ProviderAuthStatus { ambient: false, configured: true, source: Some("runtime".into()), label: None },
             ),
     );
     let policy = credential_rotation_policy(registry.as_ref(), None);

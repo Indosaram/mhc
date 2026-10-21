@@ -187,11 +187,11 @@ fn bound_factory(buses: Arc<std::sync::Mutex<Vec<(maho_core::agent_session::Agen
             use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider, faux_streams};
             use maho_core::agent_session::{AgentSession, AgentSessionConfig};
             let cwd = options.cwd.clone().unwrap_or_default();
-            let provider = faux_provider(RegisterFauxProviderOptions {api:Some("faux".into()),models:Some(vec![maho_ai::providers::faux::FauxModelDefinition {id:"faux-1".into(),..Default::default()}]),..Default::default()});
+            let provider = faux_provider(RegisterFauxProviderOptions {api:Some("faux".into()),models:Some(vec![maho_ai::providers::faux::FauxModelDefinition {id:"faux-1".into(),..Default::default()}]),..Default::default()}).expect("valid faux provider");
             let model = provider.get_model(Some("faux-1")).ok_or("Missing faux model")?;
             let streams = faux_streams(provider.core.clone());
             let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model,context,options.map(|options|options.simple)));
-            let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {providers:Some(vec![provider.provider.clone()]),..Default::default()});
+            let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {providers:Some(vec![provider.provider.clone()]),..Default::default()}).expect("valid model runtime");
             let session = AgentSession::new(AgentSessionConfig {
                 agent:maho_agent::Agent::new(maho_agent::AgentOptions {initial_state:Some(maho_agent::agent::PartialAgentState {model:Some(model),..Default::default()}),stream_fn:Some(stream_fn),..Default::default()}),
                 session_manager:options.session_manager.ok_or("Missing session manager")?,settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),

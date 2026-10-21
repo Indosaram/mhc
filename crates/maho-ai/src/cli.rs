@@ -20,12 +20,12 @@ struct CliProvider {
     name: String,
 }
 
-fn providers() -> Vec<CliProvider> {
-    crate::providers::all::builtin_providers()
+fn providers() -> Result<Vec<CliProvider>, crate::models::ModelsError> {
+    Ok(crate::providers::all::builtin_providers()?
         .into_iter()
         .filter(|provider| BUILTIN_OAUTH_PROVIDERS.iter().any(|(id, _)| *id == provider.id()))
         .map(|provider| CliProvider { id: provider.id().to_owned(), name: provider.name().to_owned() })
-        .collect()
+        .collect())
 }
 
 async fn prompt(question: String) -> anyhow::Result<String> {
@@ -130,7 +130,7 @@ fn usage(providers: &[CliProvider]) -> String {
 }
 
 pub async fn main(args: &[String]) -> anyhow::Result<()> {
-    let providers = providers();
+    let providers = providers()?;
     let command = args.first().map(String::as_str);
     match command {
         None | Some("help" | "--help" | "-h") => {
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn lists_only_oauth_capable_builtin_providers() {
-        let ids: Vec<String> = providers().into_iter().map(|provider| provider.id).collect();
+        let ids: Vec<String> = providers().expect("providers").into_iter().map(|provider| provider.id).collect();
         assert!(ids.iter().all(|id| BUILTIN_OAUTH_PROVIDERS.iter().any(|(oauth_id, _)| oauth_id == id)));
         assert!(ids.contains(&"anthropic".to_owned()));
     }

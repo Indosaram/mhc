@@ -1,8 +1,9 @@
 //! File-for-file native Rust port of upstream `post-mutation.ts`.
 
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use comment_checker_core::extract_apply_patch_edits;
 use maho_ext_api::ToolResultEvent;
 use serde_json::Value;
@@ -159,8 +160,6 @@ impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
             Follower(watch::Receiver<Option<T>>),
         }
 
-        let mut work_opt = Some(work);
-
         loop {
             let state = {
                 let mut lock = self.flights.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -195,7 +194,6 @@ impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
                     continue;
                 }
                 State::Leader(guard, tx) => {
-                    let work = work_opt.take().expect("Leader work called once");
                     let result = work().await;
                     let _ = tx.send(Some(result.clone()));
                     drop(guard); // Cleans up map entry
@@ -206,15 +204,24 @@ impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
     }
 }
 
+static FLIGHTS: LazyLock<SingleFlight<Arc<dyn Any + Send + Sync>>> =
+    LazyLock::new(SingleFlight::new);
+
 /// Global single-flight execution helper for string-identified paths.
+/// Concurrent callers for the same path must use the same result type.
 pub async fn run_single_flight<T, F, Fut>(path: &str, work: F) -> T
 where
     T: Clone + Send + Sync + 'static,
     F: FnOnce() -> Fut + Send,
     Fut: Future<Output = T> + Send,
 {
-    let sf = SingleFlight::<T>::new();
-    sf.run(path, work).await
+    let result = FLIGHTS
+        .run(path, || async { Arc::new(work().await) as Arc<dyn Any + Send + Sync> })
+        .await;
+    match result.downcast_ref::<T>() {
+        Some(value) => value.clone(),
+        None => panic!("concurrent single-flight callers must use the same result type"),
+    }
 }
 
 /// Session notice tracking matching upstream `createPostMutationSessionState`.
@@ -249,4 +256,79 @@ impl PostMutationSessionState {
 
 pub fn create_post_mutation_session_state() -> PostMutationSessionState {
     PostMutationSessionState::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_single_flight;
+    use std::future::{poll_fn, Future};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::Poll;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn coalesces_duplicate_global_paths_and_releases_completed_flights() {
+        // Given: a leader blocked on an exact completion signal.
+        let runs = AtomicUsize::new(0);
+        let (release_tx, release_rx) = oneshot::channel();
+        let mut first = Box::pin(run_single_flight("global-coalescing.ts", || async {
+            runs.fetch_add(1, Ordering::SeqCst);
+            release_rx.await.expect("test releases the leader");
+            42
+        }));
+        let mut second = Box::pin(run_single_flight("global-coalescing.ts", || async {
+            runs.fetch_add(1, Ordering::SeqCst);
+            7
+        }));
+
+        // When: both calls are polled before the leader is released.
+        poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            assert!(second.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        release_tx.send(()).expect("leader still awaits release");
+        let results = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("both callers receive the completed result");
+
+        // Then: only the leader ran, and the path can be used again.
+        assert_eq!(results, (42, 42));
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(run_single_flight("global-coalescing.ts", || async { 9 }).await, 9);
+    }
+
+    #[tokio::test]
+    async fn global_paths_are_independent_and_failed_results_are_not_cached() {
+        // Given: one path remains in flight.
+        let mut blocked = Box::pin(run_single_flight("global-blocked.ts", || async {
+            std::future::pending::<i32>().await
+        }));
+        poll_fn(|cx| {
+            assert!(blocked.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        // When: another path completes with an error result.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_single_flight("global-error.ts", || async { Err::<i32, _>("failed") }),
+        )
+        .await
+        .expect("unrelated paths execute independently");
+
+        // Then: its error is returned, and subsequent work can succeed.
+        assert_eq!(result, Err("failed"));
+        assert_eq!(
+            run_single_flight("global-error.ts", || async { Ok::<_, &str>(42) }).await,
+            Ok(42)
+        );
+        drop(blocked);
+        assert_eq!(run_single_flight("global-blocked.ts", || async { 7 }).await, 7);
+    }
 }

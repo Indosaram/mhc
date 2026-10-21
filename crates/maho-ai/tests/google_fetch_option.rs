@@ -10,7 +10,9 @@
 mod google_fixtures;
 
 use google_fixtures::model_with;
-use maho_ai::api::google_generative_ai::{stream as stream_google, stream_simple as stream_simple_google};
+use maho_ai::api::google_generative_ai::{
+    stream as stream_google, stream_simple as stream_simple_google,
+};
 use maho_ai::api::google_vertex::stream as stream_vertex;
 use maho_ai::types::{Context, Message, ProviderRequestOptions, StreamOptions};
 
@@ -33,7 +35,12 @@ fn options(fetch: Option<reqwest::Client>) -> StreamOptions {
 }
 
 fn empty_context() -> Context {
-    Context { system_prompt: None, messages: Vec::<Message>::new(), tools: None }
+    Context {
+        active_tool_names: None,
+        system_prompt: None,
+        messages: Vec::<Message>::new(),
+        tools: None,
+    }
 }
 
 #[tokio::test]
@@ -42,15 +49,24 @@ async fn rejects_custom_fetch_for_google_adapters_instead_of_silently_bypassing_
 
     let google = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        stream_google(&test_model("google-generative-ai"), &empty_context(), Some(options(Some(custom.clone()))))
-            .result(),
+        stream_google(
+            &test_model("google-generative-ai"),
+            &empty_context(),
+            Some(options(Some(custom.clone()))),
+        )
+        .result(),
     )
     .await
     .expect("bounded wait")
     .expect("result");
     let vertex = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        stream_vertex(&test_model("google-vertex"), &empty_context(), Some(options(Some(custom)))).result(),
+        stream_vertex(
+            &test_model("google-vertex"),
+            &empty_context(),
+            Some(options(Some(custom))),
+        )
+        .result(),
     )
     .await
     .expect("bounded wait")
@@ -60,7 +76,10 @@ async fn rejects_custom_fetch_for_google_adapters_instead_of_silently_bypassing_
         google.error_message.as_deref(),
         Some("Custom fetch is not supported by the Google Generative AI adapter")
     );
-    assert_eq!(vertex.error_message.as_deref(), Some("Custom fetch is not supported by the Google Vertex adapter"));
+    assert_eq!(
+        vertex.error_message.as_deref(),
+        Some("Custom fetch is not supported by the Google Vertex adapter")
+    );
 }
 
 #[tokio::test]
@@ -74,5 +93,8 @@ async fn throws_when_auth_is_missing_for_the_google_generative_ai_adapter() {
         .await
         .expect("bounded wait")
         .expect("result");
-    assert_eq!(message.error_message.as_deref(), Some("No API key for provider: test-provider"));
+    assert_eq!(
+        message.error_message.as_deref(),
+        Some("No API key for provider: test-provider")
+    );
 }

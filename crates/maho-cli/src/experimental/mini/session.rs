@@ -160,7 +160,7 @@ pub async fn connect(transport: &SocketTransport, session_id: Option<&str>, cwd:
     });
     {
         let weak = Arc::downgrade(&shared);
-        peer.on(LANE, move |payload| {
+        peer.on(&LANE, move |payload| {
             if let Some(shared) = weak.upgrade() {
                 handle_lane_event(&shared, payload);
             }
@@ -168,7 +168,7 @@ pub async fn connect(transport: &SocketTransport, session_id: Option<&str>, cwd:
     }
     {
         let weak = Arc::downgrade(&shared);
-        peer.on(MODELS, move |payload| {
+        peer.on(&MODELS, move |payload| {
             if let Some(shared) = weak.upgrade() {
                 handle_models_event(&shared, payload);
             }

@@ -430,6 +430,32 @@ fn context_executor_and_renderers_publish_without_a_registration_scope() {
 }
 
 #[test]
+fn typed_result_round_trip_preserves_nested_calls() {
+    let mut result = AgentToolResult::text("done");
+    result.details = JsonValue::from(7u64);
+    result.nested_calls = Some(maho_ai::types::NestedToolCalls {
+        calls: vec![maho_ai::types::NestedToolCallRecord {
+            id: "nested-call".into(),
+            name: "read".into(),
+            arguments: Some(serde_json::Map::new()),
+            arguments_bytes: Some(2),
+            status: maho_ai::types::NestedToolCallStatus::Ok,
+            duration_ms: Some(3),
+            error: None,
+        }],
+        complete: true,
+    });
+
+    let typed = TypedAgentToolResult::<u64>::from_agent_result(&result).unwrap();
+    assert_eq!(typed.nested_calls, result.nested_calls);
+    assert_eq!(typed.into_agent_result().unwrap().nested_calls, result.nested_calls);
+
+    result.nested_calls = None;
+    let typed = TypedAgentToolResult::<u64>::from_agent_result(&result).unwrap();
+    assert_eq!(typed.into_agent_result().unwrap().nested_calls, None);
+}
+
+#[test]
 fn typed_result_renderer_receives_decoded_details_and_result_metadata() {
     let renderer = typed_tool_result_renderer(Arc::new(|result: &TypedAgentToolResult<u64>, _, _, context: &mut ToolRenderContext<usize, String>| {
         assert_eq!(result.terminate, Some(true)); context.state += 1;

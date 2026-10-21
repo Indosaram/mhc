@@ -2,6 +2,62 @@
 
 use serde_json::Value;
 
+#[derive(Default)]
+pub(crate) struct NestedCallRecorder {
+    calls: Vec<maho_ai::types::NestedToolCallRecord>,
+    argument_bytes: usize,
+    incomplete: bool,
+    pub(crate) usage: Option<maho_ai::types::Usage>,
+}
+
+impl NestedCallRecorder {
+    pub(crate) fn start(&mut self, id: &str, name: &str, arguments: &Value) -> Option<usize> {
+        if self.calls.len() >= 256 {
+            self.incomplete = true;
+            return None;
+        }
+        let bytes = arguments.to_string().len();
+        let retained = bytes <= 8 * 1024 && self.argument_bytes.saturating_add(bytes) <= 32 * 1024;
+        if retained { self.argument_bytes += bytes; } else { self.incomplete = true; }
+        let index = self.calls.len();
+        self.calls.push(maho_ai::types::NestedToolCallRecord {
+            id: id.to_owned(), name: name.to_owned(),
+            arguments: retained.then(|| arguments.as_object().cloned().unwrap_or_default()),
+            arguments_bytes: (!retained).then_some(bytes),
+            status: maho_ai::types::NestedToolCallStatus::Unfinished,
+            duration_ms: None, error: None,
+        });
+        Some(index)
+    }
+
+    pub(crate) fn finish(&mut self, index: Option<usize>, elapsed: std::time::Duration, result: &maho_agent::types::AgentToolResult) {
+        if let Some(usage) = &result.usage {
+            self.usage = Some(match &self.usage {
+                Some(previous) => crate::compaction::combine_usage(previous, usage),
+                None => *usage,
+            });
+        }
+        if let Some(index) = index {
+            let record = &mut self.calls[index];
+            let failed = result.is_error == Some(true);
+            record.status = if failed { maho_ai::types::NestedToolCallStatus::Error } else { maho_ai::types::NestedToolCallStatus::Ok };
+            record.duration_ms = Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+            if failed {
+                let text = maho_ai::utils::text::content_text(&result.content, "\n");
+                if !text.is_empty() { record.error = Some(text.chars().take(500).collect()); }
+            }
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<maho_ai::types::NestedToolCalls> {
+        if self.calls.is_empty() && !self.incomplete { return None; }
+        Some(maho_ai::types::NestedToolCalls {
+            calls: self.calls.clone(), complete: !self.incomplete && self.calls.iter()
+                .all(|call| call.status != maho_ai::types::NestedToolCallStatus::Unfinished),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibleMessage {
     pub text: String,
@@ -69,6 +125,50 @@ pub fn session_info_name(entry: &Value) -> Option<Option<String>> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn nested_arguments_total_budget_omits_only_over_budget_payloads() {
+        // Given
+        let mut recorder = NestedCallRecorder::default();
+        let arguments = json!({"data": "x".repeat(7000)});
+        let result = maho_agent::types::AgentToolResult::text("ok");
+        // When
+        for index in 0..5 {
+            let record = recorder.start(&format!("root/{index}"), "read", &arguments);
+            recorder.finish(record, std::time::Duration::ZERO, &result);
+        }
+        // Then
+        let snapshot = recorder.snapshot().expect("nested calls");
+        assert_eq!(snapshot.calls.len(), 5);
+        assert!(snapshot.calls[..4].iter().all(|call| call.arguments.is_some()));
+        assert!(snapshot.calls[4].arguments.is_none());
+        assert!(!snapshot.complete);
+    }
+
+    #[test]
+    fn nested_recorder_bounds_arguments_calls_and_errors_without_fabrication() {
+        // Given
+        let mut recorder = NestedCallRecorder::default();
+        assert!(recorder.snapshot().is_none());
+        let args = json!({"value": "x".repeat(8192)});
+        let first = recorder.start("parent/1", "read", &args);
+        let mut result = maho_agent::types::AgentToolResult::text("e".repeat(600));
+        result.is_error = Some(true);
+        // When
+        recorder.finish(first, std::time::Duration::from_millis(23), &result);
+        for index in 1..257 { recorder.start(&format!("parent/{index}"), "read", &json!({})); }
+        // Then
+        let snapshot = recorder.snapshot().expect("calls were made");
+        assert!(!snapshot.complete);
+        assert_eq!(snapshot.calls.len(), 256);
+        let first = &snapshot.calls[0];
+        assert!(first.arguments.is_none());
+        assert_eq!(first.arguments_bytes, Some(args.to_string().len()));
+        assert_eq!(first.duration_ms, Some(23));
+        assert_eq!(first.error.as_ref().expect("bounded error").len(), 500);
+        assert_eq!(first.status, maho_ai::types::NestedToolCallStatus::Error);
+        assert_eq!(snapshot.calls[1].status, maho_ai::types::NestedToolCallStatus::Unfinished);
+    }
 
     #[test]
     fn malformed_and_blank_lines_are_skipped() {

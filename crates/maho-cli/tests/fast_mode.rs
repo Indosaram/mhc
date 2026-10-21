@@ -30,7 +30,7 @@ async fn create_fast_session(
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     let mut runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path:Some(dir.join("models.json")),auth_path:Some(dir.join("auth.json")),providers:Some(Vec::new()),..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_provider("fixture",maho_core::provider_composer::ProviderConfigInput {
         config:maho_core::model_config_schema::ModelsJsonProvider {
             api:Some(CODEX_RESPONSES_API.into()),base_url:Some("https://example.invalid".into()),api_key:Some("synthetic-fast-mode".into()),
@@ -63,7 +63,7 @@ async fn create_fast_session(
 
 async fn create_fast_session_with_sibling_provider(dir:&std::path::Path)->maho_core::agent_session::AgentSession{
     let cwd=dir.to_string_lossy().into_owned();let agent_dir=dir.join("agent");std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions{models_path:Some(dir.join("models.json")),auth_path:Some(dir.join("auth.json")),providers:Some(Vec::new()),..Default::default()});
+    let mut runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions{models_path:Some(dir.join("models.json")),auth_path:Some(dir.join("auth.json")),providers:Some(Vec::new()),..Default::default()}).expect("valid model runtime");
     for (provider,id,tier,upstream) in [("fixture","codex",None,None),("other-fixture","codex-fast",Some(maho_ai::types::ServiceTierPreference::Priority),Some("wire-codex"))]{
         runtime.register_provider(provider,maho_core::provider_composer::ProviderConfigInput{config:maho_core::model_config_schema::ModelsJsonProvider{
             api:Some(CODEX_RESPONSES_API.into()),base_url:Some("https://example.invalid".into()),api_key:Some("fixture-key".into()),

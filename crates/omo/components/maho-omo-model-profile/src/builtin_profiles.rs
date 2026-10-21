@@ -24,14 +24,8 @@
 //! OpenCode where they serve the model. A user overlay that names `openai/` is scoped to that
 //! provider.
 //!
-//! Unset sessions run `recommended`, which is not a lane (no family/tier): the same ladder senpi's
-//! `recommended-models` builtin ships (`RECOMMENDED_DEFAULT_MODELS`, senpi#2074, with GPT-6.1 Sol in
-//! the GPT-6 Sol slot from senpi#2394), so the TUI and the desktop start from one order. OmO carries
-//! one extra rung: `gpt-6-sol` (medium) right behind `gpt-6.1-sol`, because 6.1 Sol is served only on
-//! the two OpenAI lanes and a Copilot or OpenCode Zen user must still reach a GPT-6 Sol rung. Every
-//! builtin rung, in `recommended` and in the lanes, is served ONLY by its listed providers: a
-//! gateway aggregator's vendor-prefixed copy (`opengateway/anthropic/`) never becomes the session
-//! model (#9146).
+//! Unset sessions start on Daily · Normal or the first resolving default lane.
+//! Every builtin is a lane; the retired `recommended` id starts the same default.
 
 use indexmap::IndexMap;
 
@@ -69,9 +63,9 @@ impl ModelProfileTier {
 pub struct BuiltinModelProfile {
     pub display_name: &'static str,
     pub description: &'static str,
-    /// Picker axes; absent on `recommended`, which is the default rather than a lane.
-    pub family: Option<ModelProfileFamily>,
-    pub tier: Option<ModelProfileTier>,
+    /// Picker axes: every builtin is a lane.
+    pub family: ModelProfileFamily,
+    pub tier: ModelProfileTier,
     pub models: &'static [BuiltinRung],
 }
 
@@ -84,7 +78,12 @@ pub struct BuiltinRung {
 }
 
 /// Fresh-session default when `model_profile` is unset. Not written back to config.
-pub const DEFAULT_MODEL_PROFILE_ID: &str = "recommended";
+pub const DEFAULT_MODEL_PROFILE_ORDER: [&str; 4] =
+    ["daily-normal", "daily-heavy", "geeky-normal", "geeky-heavy"];
+pub const DEFAULT_MODEL_PROFILE_ID: &str = DEFAULT_MODEL_PROFILE_ORDER[0];
+
+/// Saved builtin ids that start the unset default unless the user defines that name.
+pub const RETIRED_MODEL_PROFILE_IDS: &[&str] = &["recommended"];
 
 const CLAUDE_PROVIDERS: &[&str] = &["anthropic-subscription", "anthropic", "anthropic-api", "github-copilot", "opencode"];
 const KIMI_PROVIDERS: &[&str] = &["kimi-coding", "kimi-for-coding", "moonshotai", "opencode-go"];
@@ -92,19 +91,9 @@ const KIMI_PROVIDERS: &[&str] = &["kimi-coding", "kimi-for-coding", "moonshotai"
 const GLM_PROVIDERS: &[&str] = &["zai", "zai-coding-cn", "opencode-go"];
 const GPT_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "github-copilot", "opencode"];
 // GPT-6.1 Sol and its Fast tier are served only on the two OpenAI lanes (not Copilot or OpenCode Zen),
-// so their rungs list just those; the rung behind them (GPT-5.6 Sol in Geeky · Normal, GPT-6 Sol in
-// Recommended) keeps the profile on every GPT provider.
+// so their rungs list just those; GPT-5.6 Sol in Geeky · Normal keeps every GPT provider eligible.
 const GPT_6_1_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];
 
-const RECOMMENDED_MODELS: &[BuiltinRung] = &[
-    BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-opus-5-5", variant: Some("medium") },
-    BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-fable-5-1", variant: Some("xhigh") },
-    BuiltinRung { providers: KIMI_PROVIDERS, model: "kimi-k3", variant: Some("max") },
-    BuiltinRung { providers: GPT_PROVIDERS, model: "gpt-6-astra", variant: Some("xhigh") },
-    BuiltinRung { providers: GPT_6_1_PROVIDERS, model: "gpt-6.1-sol", variant: Some("medium") },
-    BuiltinRung { providers: GPT_PROVIDERS, model: "gpt-6-sol", variant: Some("medium") },
-    BuiltinRung { providers: GLM_PROVIDERS, model: "glm-5.3", variant: Some("max") },
-];
 const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
     BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-opus-5-5", variant: Some("medium") },
     BuiltinRung { providers: KIMI_PROVIDERS, model: "kimi-k3", variant: Some("max") },
@@ -129,22 +118,12 @@ const GEEKY_HEAVY_MODELS: &[BuiltinRung] =
 pub fn builtin_model_profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
     let mut profiles = IndexMap::new();
     profiles.insert(
-        "recommended",
-        BuiltinModelProfile {
-            display_name: "Recommended",
-            description: "The best model you have connected, in OmO's recommended order.",
-            family: None,
-            tier: None,
-            models: RECOMMENDED_MODELS,
-        },
-    );
-    profiles.insert(
         "daily-normal",
         BuiltinModelProfile {
             display_name: "Daily · Normal",
             description: "Gets any task done without fuss.",
-            family: Some(ModelProfileFamily::Daily),
-            tier: Some(ModelProfileTier::Normal),
+            family: ModelProfileFamily::Daily,
+            tier: ModelProfileTier::Normal,
             models: DAILY_NORMAL_MODELS,
         },
     );
@@ -153,8 +132,8 @@ pub fn builtin_model_profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
         BuiltinModelProfile {
             display_name: "Daily · Heavy",
             description: "Gets any task done, after thinking it over from more sides.",
-            family: Some(ModelProfileFamily::Daily),
-            tier: Some(ModelProfileTier::Heavy),
+            family: ModelProfileFamily::Daily,
+            tier: ModelProfileTier::Heavy,
             models: DAILY_HEAVY_MODELS,
         },
     );
@@ -163,8 +142,8 @@ pub fn builtin_model_profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
         BuiltinModelProfile {
             display_name: "Geeky · Normal",
             description: "Works on one task and thinks it through.",
-            family: Some(ModelProfileFamily::Geeky),
-            tier: Some(ModelProfileTier::Normal),
+            family: ModelProfileFamily::Geeky,
+            tier: ModelProfileTier::Normal,
             models: GEEKY_NORMAL_MODELS,
         },
     );
@@ -173,10 +152,28 @@ pub fn builtin_model_profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
         BuiltinModelProfile {
             display_name: "Geeky · Heavy",
             description: "Works on one task and thinks it over from every side.",
-            family: Some(ModelProfileFamily::Geeky),
-            tier: Some(ModelProfileTier::Heavy),
+            family: ModelProfileFamily::Geeky,
+            tier: ModelProfileTier::Heavy,
             models: GEEKY_HEAVY_MODELS,
         },
     );
     profiles
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_builtin_is_a_lane_in_default_order() {
+        let profiles = builtin_model_profiles();
+        assert_eq!(profiles.keys().copied().collect::<Vec<_>>(), DEFAULT_MODEL_PROFILE_ORDER);
+        assert_eq!(DEFAULT_MODEL_PROFILE_ID, "daily-normal");
+        assert_eq!(RETIRED_MODEL_PROFILE_IDS, &["recommended"]);
+        assert!(!profiles.contains_key("recommended"));
+        let axes: Vec<_> = profiles.values()
+            .map(|profile| (profile.family.as_str(), profile.tier.as_str()))
+            .collect();
+        assert_eq!(axes, [("daily", "normal"), ("daily", "heavy"), ("geeky", "normal"), ("geeky", "heavy")]);
+    }
 }

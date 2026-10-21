@@ -5,6 +5,20 @@ use maho_omo_skill_pointers::*;
 use support::*;
 
 #[tokio::test]
+async fn delegated_roles_suppress_skill_pointers_while_root_sessions_inject() {
+    for role in ["child", "dag_child", "member", "future-role"] {
+        let harness = setup_harness_with_role("/skills/", Some(role));
+        let result = dispatch_input(&harness, "mass ulw research the market", InputSource::Interactive, None, "session").await;
+        expect_no_injection(&harness, &result);
+    }
+    let harness = setup_harness_with_role("/skills/", Some(""));
+    let result = dispatch_input(&harness, "ulw-loop", InputSource::Interactive, None, "root").await;
+    expect_pointer_injections(&harness, &result, &[
+        ExpectedPointer { custom_type: ULW_LOOP_CUSTOM_TYPE, skill_name: "ulw-loop" },
+    ]);
+}
+
+#[tokio::test]
 async fn given_quoted_and_relayed_mentions_when_a_mention_is_inside_inline_code_then_no_pointer_is_injected() {
     let harness = setup_harness("/skills/");
     for text in ["explain `ulw-loop` without running it", "explain ``ulw-loop `status` ``"] {
@@ -90,6 +104,7 @@ async fn given_suppression_conditions_when_skill_ulw_loop_args_mention_ulw_resea
     let result = dispatch_input(&harness, "/skill:ulw-loop then ulw research the fallout", InputSource::Interactive, None, "test-session").await;
     expect_pointer_injections(&harness, &result, &[
         ExpectedPointer { custom_type: ULW_RESEARCH_CUSTOM_TYPE, skill_name: "ulw-research" },
+        ExpectedPointer { custom_type: BROWSER_CUSTOM_TYPE, skill_name: "browser" },
         ExpectedPointer { custom_type: ULTIMATE_BROWSING_CUSTOM_TYPE, skill_name: "ultimate-browsing" },
     ]);
 }
@@ -116,14 +131,12 @@ async fn given_suppression_conditions_when_the_component_flag_is_disabled_then_n
 }
 
 #[tokio::test]
-async fn given_suppression_conditions_when_the_pinned_mass_ulw_flag_is_disabled_then_only_the_mass_ulw_pointer_is_suppressed() {
+async fn given_suppression_conditions_when_the_obsolete_mass_flag_is_set_then_it_has_no_effect() {
     let harness = setup_harness("/skills/");
-    harness.api.runtime.set_flag(MASS_ULW_DISABLED_FLAG, FlagValue::Boolean(true));
+    harness.api.runtime.set_flag("omo-senpi-mass-ulw-disabled", FlagValue::Boolean(true));
     let result = dispatch_input(&harness, "mass ulw", InputSource::Interactive, None, "test-session").await;
-    expect_no_injection(&harness, &result);
-    let result = dispatch_input(&harness, "run ulw-loop", InputSource::Interactive, None, "test-session").await;
     expect_pointer_injections(&harness, &result, &[
-        ExpectedPointer { custom_type: ULW_LOOP_CUSTOM_TYPE, skill_name: "ulw-loop" },
+        ExpectedPointer { custom_type: MASS_ULW_CUSTOM_TYPE, skill_name: "mass-ulw" },
     ]);
 }
 

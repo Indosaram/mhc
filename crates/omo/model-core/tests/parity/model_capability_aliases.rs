@@ -156,6 +156,10 @@ fn normalizes_openai_gpt_5_6_fast_service_tier_aliases() {
         ("gpt-5.6-sol-fast", "gpt-5.6-sol"),
         ("gpt-5.6-terra-fast", "gpt-5.6-terra"),
         ("gpt-5.6-luna-fast", "gpt-5.6-luna"),
+        ("gpt-6-astra-fast", "gpt-6-astra"),
+        ("gpt-6-sol-fast", "gpt-6-sol"),
+        ("gpt-6.1-sol-fast", "gpt-6.1-sol"),
+        ("gpt-6-luna-fast", "gpt-6-luna"),
     ] {
         assert_eq!(
             resolve_model_id_alias(alias_model_id, Some("openai")),
@@ -163,7 +167,7 @@ fn normalizes_openai_gpt_5_6_fast_service_tier_aliases() {
                 alias_model_id,
                 canonical_model_id,
                 AliasSource::PatternAlias,
-                Some("openai-gpt-5.6-fast-service-tier-alias")
+                Some("openai-gpt-fast-service-tier-alias")
             )
         );
     }

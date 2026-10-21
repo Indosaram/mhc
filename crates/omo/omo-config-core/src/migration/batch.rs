@@ -169,6 +169,27 @@ fn ensure_backup_directories(
     Ok(())
 }
 
+fn planned_target_backup_path(
+    target_path: &str,
+    clock: &dyn MigrationClock,
+    file_system: &dyn MigrationFileSystem,
+) -> Result<Option<String>, MigrationError> {
+    if !file_system.exists(target_path) {
+        return Ok(None);
+    }
+    let timestamp = jiff::Timestamp::from_millisecond(clock.now())
+        .map_err(|error| MigrationError::transaction(error.to_string()))?;
+    let iso = format!("{timestamp:.3}").replace([':', '.'], "-");
+    let base = format!("{target_path}.bak.{iso}");
+    let mut candidate = base.clone();
+    let mut attempt = 1usize;
+    while file_system.exists(&candidate) {
+        candidate = format!("{base}.{attempt}");
+        attempt += 1;
+    }
+    Ok(Some(candidate))
+}
+
 pub struct ExecutePlanInput<'a, 'p> {
     pub clock: &'a dyn MigrationClock,
     pub dry_run: bool,
@@ -209,6 +230,7 @@ pub fn execute_plan(input: ExecutePlanInput<'_, '_>) -> Result<MigrationRunResul
         return Ok(MigrationRunResult {
             diagnostics: Vec::new(),
             journal_resumed,
+            target_backup_path: None,
             preview: None,
             status: MigrationStatus::Skipped,
         });
@@ -228,6 +250,7 @@ pub fn execute_plan(input: ExecutePlanInput<'_, '_>) -> Result<MigrationRunResul
         return Ok(MigrationRunResult {
             diagnostics: Vec::new(),
             journal_resumed,
+            target_backup_path: None,
             preview: None,
             status: MigrationStatus::Skipped,
         });
@@ -260,11 +283,6 @@ pub fn execute_plan(input: ExecutePlanInput<'_, '_>) -> Result<MigrationRunResul
     diagnostics.extend(prepared.diagnostics.clone());
 
     let moves = backup_moves(&existing_sources, &plan.id, file_system, &protected_paths)?;
-    let planned_backup = if replace_target {
-        None
-    } else {
-        moves.iter().find(|movement| movement.from == plan.target_path).map(|movement| movement.to.clone())
-    };
     let preview = MigrationPreview {
         backup_moves: moves.clone(),
         target_path: plan.target_path.clone(),
@@ -275,18 +293,21 @@ pub fn execute_plan(input: ExecutePlanInput<'_, '_>) -> Result<MigrationRunResul
         return Ok(MigrationRunResult {
             diagnostics,
             journal_resumed,
+            target_backup_path: None,
             preview: Some(preview),
             status: MigrationStatus::Planned,
         });
     }
 
     ensure_backup_directories(&moves, file_system)?;
+    let planned_backup = planned_target_backup_path(&plan.target_path, input.clock, file_system)?;
 
     let journal = MigrationJournal {
         backup_moves: moves,
         completed_moves: Vec::new(),
         diagnostics: diagnostics.clone(),
         migration_id: plan.id.clone(),
+        target_backup_path: planned_backup.clone(),
         target_path: plan.target_path.clone(),
         target_write: MigrationJournalTargetWrite {
             additions: transformed.document,
@@ -349,6 +370,7 @@ pub fn execute_plan(input: ExecutePlanInput<'_, '_>) -> Result<MigrationRunResul
     Ok(MigrationRunResult {
         diagnostics,
         journal_resumed,
+        target_backup_path: planned_backup,
         preview: Some(preview),
         status: MigrationStatus::Migrated,
     })
@@ -386,6 +408,7 @@ pub fn run_migrations(
         None => {
             return Ok(MigrationBatchRunResult {
                 journal_resumed: false,
+                resumed_target_backup_path: None,
                 results: Vec::new(),
                 status: MigrationBatchStatus::Locked,
             });
@@ -394,7 +417,7 @@ pub fn run_migrations(
 
     let renew_lock = || lock.renew();
 
-    let journal_resumed = resume_migration_journal(ResumeMigrationJournalInput {
+    let resumed = resume_migration_journal(ResumeMigrationJournalInput {
         clock,
         env,
         file_system,
@@ -402,6 +425,7 @@ pub fn run_migrations(
         renew_lock: &renew_lock,
         write_target,
     })?;
+    let journal_resumed = resumed.resumed;
 
     renew_lock()?;
 
@@ -433,6 +457,7 @@ pub fn run_migrations(
 
     Ok(MigrationBatchRunResult {
         journal_resumed,
+        resumed_target_backup_path: resumed.target_backup_path,
         results,
         status: MigrationBatchStatus::Completed,
     })

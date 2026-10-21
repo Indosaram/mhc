@@ -1,8 +1,8 @@
 //! Port of senpi packages/ai/src/utils/stop-details.ts.
 
-use crate::types::{AssistantMessage, AssistantStopDetails, StopReason};
 #[cfg(test)]
 use crate::types::Usage;
+use crate::types::{AssistantMessage, AssistantStopDetails, StopReason};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -16,10 +16,16 @@ pub fn is_classifier_refusal(message: &AssistantMessage) -> bool {
     if message.stop_reason != StopReason::Error && message.stop_reason != StopReason::ToolUse {
         return false;
     }
-    if matches!(message.stop_details, Some(AssistantStopDetails::Refusal { .. } | AssistantStopDetails::Sensitive)) {
+    if matches!(
+        message.stop_details,
+        Some(AssistantStopDetails::Refusal { .. } | AssistantStopDetails::Sensitive)
+    ) {
         return true;
     }
-    message.error_message.as_deref().is_some_and(|text| ANTHROPIC_POLICY_REFUSAL_PATTERN.is_match(text))
+    message
+        .error_message
+        .as_deref()
+        .is_some_and(|text| ANTHROPIC_POLICY_REFUSAL_PATTERN.is_match(text))
 }
 
 #[cfg(test)]
@@ -30,8 +36,16 @@ mod tests {
 
     /// Port of `fauxAssistantMessage("", options)` (providers/faux.ts): a plain builder over the
     /// faux provider's zero-usage default, no wire/registration machinery involved.
-    fn message(stop: StopReason, error: Option<&str>, details: Option<AssistantStopDetails>) -> AssistantMessage {
+    fn message(
+        stop: StopReason,
+        error: Option<&str>,
+        details: Option<AssistantStopDetails>,
+    ) -> AssistantMessage {
         AssistantMessage {
+            error_cause: None,
+            prompt_cache_diagnostics: None,
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "faux".into(),
             provider: "faux".into(),
@@ -63,14 +77,28 @@ mod tests {
 
     #[test]
     fn recognizes_typed_classifier_details_on_error_and_tool_use_stops() {
-        let classifier_refusal = message(StopReason::Error, None, Some(AssistantStopDetails::Refusal { explanation: None }));
-        let classifier_sensitive = message(StopReason::Error, None, Some(AssistantStopDetails::Sensitive));
+        let classifier_refusal = message(
+            StopReason::Error,
+            None,
+            Some(AssistantStopDetails::Refusal { explanation: None }),
+        );
+        let classifier_sensitive = message(
+            StopReason::Error,
+            None,
+            Some(AssistantStopDetails::Sensitive),
+        );
         let tool_use_refusal = message(
             StopReason::ToolUse,
             Some(ANTHROPIC_POLICY_REFUSAL),
-            Some(AssistantStopDetails::Refusal { explanation: Some(ANTHROPIC_POLICY_REFUSAL.into()) }),
+            Some(AssistantStopDetails::Refusal {
+                explanation: Some(ANTHROPIC_POLICY_REFUSAL.into()),
+            }),
         );
-        let non_error = message(StopReason::Stop, None, Some(AssistantStopDetails::Refusal { explanation: None }));
+        let non_error = message(
+            StopReason::Stop,
+            None,
+            Some(AssistantStopDetails::Refusal { explanation: None }),
+        );
         let absent = message(StopReason::Error, None, None);
 
         assert!(is_classifier_refusal(&classifier_refusal));
@@ -96,7 +124,9 @@ mod tests {
     fn does_not_infer_refusal_from_ordinary_anthropic_policy_documentation_errors() {
         let ordinary_policy_error = message(
             StopReason::Error,
-            Some("Provider configuration failed. Review Anthropic's Usage Policy at https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback."),
+            Some(
+                "Provider configuration failed. Review Anthropic's Usage Policy at https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback.",
+            ),
             None,
         );
         assert!(!is_classifier_refusal(&ordinary_policy_error));

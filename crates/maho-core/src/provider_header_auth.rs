@@ -6,7 +6,9 @@ use maho_ai::auth::headers::{has_credential_headers, is_credential_header_name};
 use maho_ai::auth::types::{AuthCheck, AuthContext, AuthType};
 use maho_ai::types::ProviderHeaders;
 
-use crate::resolve_config_value::{get_config_value_env_var_names, is_command_config_value, is_config_value_configured};
+use crate::resolve_config_value::{
+    get_config_value_env_var_names, is_command_config_value, is_config_value_configured,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeaderAuthStatusSource {
@@ -16,7 +18,10 @@ pub enum HeaderAuthStatusSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfiguredHeaderAuthStatus {
-    Configured { source: String, label: Option<String> },
+    Configured {
+        source: String,
+        label: Option<String>,
+    },
     NotConfigured,
 }
 
@@ -31,8 +36,16 @@ fn effective_headers(
     extension_headers: Option<&BTreeMap<String, String>>,
 ) -> BTreeMap<String, EffectiveHeader> {
     let mut effective = BTreeMap::new();
-    add_headers(&mut effective, config_headers, HeaderAuthStatusSource::ModelsJsonHeaders);
-    add_headers(&mut effective, extension_headers, HeaderAuthStatusSource::ExtensionHeaders);
+    add_headers(
+        &mut effective,
+        config_headers,
+        HeaderAuthStatusSource::ModelsJsonHeaders,
+    );
+    add_headers(
+        &mut effective,
+        extension_headers,
+        HeaderAuthStatusSource::ExtensionHeaders,
+    );
     effective
 }
 
@@ -43,7 +56,14 @@ fn add_headers(
 ) {
     if let Some(headers) = headers {
         for (name, value) in headers {
-            target.insert(name.to_lowercase(), EffectiveHeader { name: name.clone(), value: value.clone(), source });
+            target.insert(
+                name.to_lowercase(),
+                EffectiveHeader {
+                    name: name.clone(),
+                    value: value.clone(),
+                    source,
+                },
+            );
         }
     }
 }
@@ -73,7 +93,10 @@ pub fn configured_header_auth_status(
         }
         saw_credential_header = true;
         if is_command_config_value(&header.value) {
-            return Some(ConfiguredHeaderAuthStatus::Configured { source: "models_json_command".to_owned(), label: None });
+            return Some(ConfiguredHeaderAuthStatus::Configured {
+                source: "models_json_command".to_owned(),
+                label: None,
+            });
         }
         let env_names = get_config_value_env_var_names(&header.value);
         if !env_names.is_empty() {
@@ -86,10 +109,17 @@ pub fn configured_header_auth_status(
             continue;
         }
         if has_credential_headers(Some(&single_header(&header.name, &header.value))) {
-            return Some(ConfiguredHeaderAuthStatus::Configured { source: source_label(header.source).to_owned(), label: None });
+            return Some(ConfiguredHeaderAuthStatus::Configured {
+                source: source_label(header.source).to_owned(),
+                label: None,
+            });
         }
     }
-    if saw_credential_header { Some(ConfiguredHeaderAuthStatus::NotConfigured) } else { None }
+    if saw_credential_header {
+        Some(ConfiguredHeaderAuthStatus::NotConfigured)
+    } else {
+        None
+    }
 }
 
 pub fn header_auth_resolution_source(
@@ -127,7 +157,11 @@ pub async fn check_configured_header_auth(
             continue;
         }
         if is_command_config_value(&header.value) {
-            return Some(AuthCheck { source: source.map(str::to_owned), auth_type: AuthType::ApiKey });
+            return Some(AuthCheck {
+                ambient: false,
+                source: source.map(str::to_owned),
+                auth_type: AuthType::ApiKey,
+            });
         }
         let env_names = get_config_value_env_var_names(&header.value);
         let mut configured = true;
@@ -138,7 +172,11 @@ pub async fn check_configured_header_auth(
             }
         }
         if configured && has_credential_headers(Some(&single_header(&header.name, &header.value))) {
-            return Some(AuthCheck { source: source.map(str::to_owned), auth_type: AuthType::ApiKey });
+            return Some(AuthCheck {
+                ambient: false,
+                source: source.map(str::to_owned),
+                auth_type: AuthType::ApiKey,
+            });
         }
     }
     None
@@ -149,7 +187,10 @@ mod tests {
     use super::*;
 
     fn headers(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
-        entries.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect()
+        entries
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect()
     }
 
     #[test]
@@ -164,7 +205,10 @@ mod tests {
         let status = configured_header_auth_status(Some(&config), None, None).expect("status");
         assert_eq!(
             status,
-            ConfiguredHeaderAuthStatus::Configured { source: "models_json_headers".to_owned(), label: None }
+            ConfiguredHeaderAuthStatus::Configured {
+                source: "models_json_headers".to_owned(),
+                label: None
+            }
         );
     }
 
@@ -174,21 +218,32 @@ mod tests {
         let status = configured_header_auth_status(Some(&config), None, None).expect("status");
         assert_eq!(
             status,
-            ConfiguredHeaderAuthStatus::Configured { source: "models_json_command".to_owned(), label: None }
+            ConfiguredHeaderAuthStatus::Configured {
+                source: "models_json_command".to_owned(),
+                label: None
+            }
         );
     }
 
     #[test]
     fn a_missing_env_reports_not_configured() {
         let config = headers(&[("Authorization", "Bearer ${MISSING_KEY}")]);
-        let status = configured_header_auth_status(Some(&config), None, Some(&std::collections::HashMap::new())).expect("status");
+        let status = configured_header_auth_status(
+            Some(&config),
+            None,
+            Some(&std::collections::HashMap::new()),
+        )
+        .expect("status");
         assert_eq!(status, ConfiguredHeaderAuthStatus::NotConfigured);
     }
 
     #[test]
     fn the_resolution_source_names_the_origin() {
         let config = headers(&[("Authorization", "Bearer abc")]);
-        assert_eq!(header_auth_resolution_source(Some(&config), None).as_deref(), Some("models.json headers"));
+        assert_eq!(
+            header_auth_resolution_source(Some(&config), None).as_deref(),
+            Some("models.json headers")
+        );
     }
 
     struct Env(std::collections::HashMap<String, String>);
@@ -207,7 +262,9 @@ mod tests {
     async fn a_literal_header_passes_the_async_check() {
         let config = headers(&[("Authorization", "Bearer abc")]);
         let ctx = Env(std::collections::HashMap::new());
-        let check = check_configured_header_auth(Some(&config), &ctx, Some("models.json headers")).await.expect("check");
+        let check = check_configured_header_auth(Some(&config), &ctx, Some("models.json headers"))
+            .await
+            .expect("check");
         assert_eq!(check.auth_type, AuthType::ApiKey);
         assert_eq!(check.source.as_deref(), Some("models.json headers"));
     }
@@ -216,6 +273,10 @@ mod tests {
     async fn a_missing_env_fails_the_async_check() {
         let config = headers(&[("Authorization", "Bearer ${MISSING_KEY}")]);
         let ctx = Env(std::collections::HashMap::new());
-        assert!(check_configured_header_auth(Some(&config), &ctx, None).await.is_none());
+        assert!(
+            check_configured_header_auth(Some(&config), &ctx, None)
+                .await
+                .is_none()
+        );
     }
 }

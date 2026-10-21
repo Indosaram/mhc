@@ -9,17 +9,22 @@
 
 use crate::api::cursor_agent::deterministic_id::deterministic_uuid;
 use crate::api::devin_agent::r#gen::cascade_pb::{
-    chat_tool_choice, CacheControlType, ChatMessagePrompt, ChatMessageRequestType, ChatMessageSource, ChatToolCall,
-    ChatToolChoice, ChatToolDefinition, CompletionConfiguration, ConversationalPlannerMode, GetChatMessageRequest,
-    ImageData, PromptCacheOptions,
+    CacheControlType, ChatMessagePrompt, ChatMessageRequestType, ChatMessageSource, ChatToolCall,
+    ChatToolChoice, ChatToolDefinition, CompletionConfiguration, ConversationalPlannerMode,
+    GetChatMessageRequest, ImageData, PromptCacheOptions, chat_tool_choice,
 };
 use crate::api::devin_agent::metadata::devin_cli_metadata;
 use crate::types::{ContentBlock, Context, Message, Model, Tool, UserContent};
 
 /// `DEVIN_DEFAULT_STOP_PATTERNS`: Cascade's own stop vocabulary; the server echoes these as
 /// STOP_PATTERN.
-pub const DEVIN_DEFAULT_STOP_PATTERNS: [&str; 5] =
-    ["<|user|>", "<|bot|>", "<|context_request|>", "<|endoftext|>", "<|end_of_turn|>"];
+pub const DEVIN_DEFAULT_STOP_PATTERNS: [&str; 5] = [
+    "<|user|>",
+    "<|bot|>",
+    "<|context_request|>",
+    "<|endoftext|>",
+    "<|end_of_turn|>",
+];
 
 const DEFAULT_TEMPERATURE: f64 = 0.4;
 /// Cascade refuses a temperature of exactly 0 (proto3 drops it) with an opaque invalid_argument.
@@ -48,15 +53,28 @@ pub struct DevinChatRequestInput<'a> {
 
 /// `buildDevinChatRequest`.
 pub fn build_devin_chat_request(input: &DevinChatRequestInput<'_>) -> GetChatMessageRequest {
-    let temperature = input.temperature.unwrap_or(DEFAULT_TEMPERATURE).max(MIN_TEMPERATURE);
-    let mut stop_patterns: Vec<String> = DEVIN_DEFAULT_STOP_PATTERNS.iter().map(|pattern| (*pattern).to_owned()).collect();
+    let temperature = input
+        .temperature
+        .unwrap_or(DEFAULT_TEMPERATURE)
+        .max(MIN_TEMPERATURE);
+    let mut stop_patterns: Vec<String> = DEVIN_DEFAULT_STOP_PATTERNS
+        .iter()
+        .map(|pattern| (*pattern).to_owned())
+        .collect();
     stop_patterns.extend(input.stop_sequences.unwrap_or_default().iter().cloned());
     let chat_model_uid = match input.assignment {
         Some(assignment) => assignment.model_uid.clone(),
-        None => input.model.upstream_model_id.clone().unwrap_or_else(|| input.model.id.clone()),
+        None => input
+            .model
+            .upstream_model_id
+            .clone()
+            .unwrap_or_else(|| input.model.id.clone()),
     };
     GetChatMessageRequest {
-        metadata: Some(devin_cli_metadata(input.api_key, input.user_jwt.unwrap_or_default())),
+        metadata: Some(devin_cli_metadata(
+            input.api_key,
+            input.user_jwt.unwrap_or_default(),
+        )),
         prompt: input.context.system_prompt.clone().unwrap_or_default(),
         chat_message_prompts: map_history(&input.context.messages, input.cascade_id, input.model),
         use_internal_chat_model: false,
@@ -74,19 +92,35 @@ pub fn build_devin_chat_request(input: &DevinChatRequestInput<'_>) -> GetChatMes
             seed: 0,
             fim_eot_prob_threshold: 1.0,
         }),
-        tools: input.context.tools.as_deref().unwrap_or_default().iter().map(tool_definition).collect(),
-        disable_parallel_tool_calls: input.model.compat.as_ref().and_then(|compat| compat.devin_agent().supports_parallel_tool_calls) != Some(true),
+        tools: input
+            .context
+            .tools
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(tool_definition)
+            .collect(),
+        disable_parallel_tool_calls: input
+            .model
+            .compat
+            .as_ref()
+            .and_then(|compat| compat.devin_agent().supports_parallel_tool_calls)
+            != Some(true),
         tool_choice: Some(ChatToolChoice {
             choice: Some(chat_tool_choice::Choice::OptionName(String::from("auto"))),
         }),
-        system_prompt_cache_options: Some(PromptCacheOptions { r#type: CacheControlType::Ephemeral as i32 }),
+        system_prompt_cache_options: Some(PromptCacheOptions {
+            r#type: CacheControlType::Ephemeral as i32,
+        }),
         chat_model_name: String::new(),
         cascade_id: input.cascade_id.to_owned(),
         prompt_id: String::new(),
         planner_mode: ConversationalPlannerMode::Default as i32,
         chat_model_uid,
         execution_id: uuid::Uuid::new_v4().to_string(),
-        model_assignment_jwt: input.assignment.map(|assignment| assignment.assignment_jwt.clone()),
+        model_assignment_jwt: input
+            .assignment
+            .map(|assignment| assignment.assignment_jwt.clone()),
     }
 }
 
@@ -105,7 +139,8 @@ fn tool_definition(tool: &Tool) -> ChatToolDefinition {
     ChatToolDefinition {
         name: tool.name.clone(),
         description: tool.description.clone(),
-        json_schema_string: serde_json::to_string(&tool.parameters).unwrap_or_else(|_| String::from("{}")),
+        json_schema_string: serde_json::to_string(&tool.parameters)
+            .unwrap_or_else(|_| String::from("{}")),
         attribution_field_names: Vec::new(),
         server_name: String::new(),
         read_only_hint: None,
@@ -122,7 +157,11 @@ fn map_history(messages: &[Message], cascade_id: &str, model: &Model) -> Vec<Cha
         match message {
             Message::User(user) => prompts.push(user_prompt(user, &deterministic_uuid(&seed))),
             Message::Assistant(assistant) => {
-                if let Some(prompt) = assistant_prompt(assistant, model, &format!("bot-{}", deterministic_uuid(&seed))) {
+                if let Some(prompt) = assistant_prompt(
+                    assistant,
+                    model,
+                    &format!("bot-{}", deterministic_uuid(&seed)),
+                ) {
                     prompts.push(prompt);
                 }
             }
@@ -130,7 +169,7 @@ fn map_history(messages: &[Message], cascade_id: &str, model: &Model) -> Vec<Cha
                 tool_result,
                 &deterministic_uuid(&format!("{seed}\u{0}{}", tool_result.tool_call_id)),
             )),
-            Message::ConfigurationUpdate(_) => {}
+            Message::System(_) | Message::ConfigurationUpdate(_) => {}
         }
     }
     prompts
@@ -164,7 +203,8 @@ fn assistant_prompt(
     model: &Model,
     fallback_id: &str,
 ) -> Option<ChatMessagePrompt> {
-    let native = message.api == model.api && message.provider == model.provider && message.model == model.id;
+    let native =
+        message.api == model.api && message.provider == model.provider && message.model == model.id;
     let mut text = String::new();
     let mut thinking = String::new();
     let mut signature = String::new();
@@ -174,7 +214,8 @@ fn assistant_prompt(
             ContentBlock::Text(block) => text.push_str(&block.text),
             ContentBlock::Thinking(block) => {
                 thinking.push_str(&block.thinking);
-                if native && signature.is_empty()
+                if native
+                    && signature.is_empty()
                     && let Some(block_signature) = block.thinking_signature.as_ref()
                 {
                     signature = block_signature.clone();
@@ -183,7 +224,8 @@ fn assistant_prompt(
             ContentBlock::ToolCall(block) => tool_calls.push(ChatToolCall {
                 id: block.id.clone(),
                 name: block.name.clone(),
-                arguments_json: serde_json::to_string(&block.arguments).unwrap_or_else(|_| String::from("{}")),
+                arguments_json: serde_json::to_string(&block.arguments)
+                    .unwrap_or_else(|_| String::from("{}")),
                 invalid_json_str: String::new(),
                 invalid_json_err: String::new(),
                 is_custom_tool_call: false,
@@ -194,7 +236,14 @@ fn assistant_prompt(
     if text.is_empty() && thinking.is_empty() && signature.is_empty() && tool_calls.is_empty() {
         return None;
     }
-    let message_id = if native { message.response_id.clone().unwrap_or_else(|| fallback_id.to_owned()) } else { fallback_id.to_owned() };
+    let message_id = if native {
+        message
+            .response_id
+            .clone()
+            .unwrap_or_else(|| fallback_id.to_owned())
+    } else {
+        fallback_id.to_owned()
+    };
     Some(ChatMessagePrompt {
         message_id,
         source: ChatMessageSource::System as i32,
@@ -213,7 +262,10 @@ fn assistant_prompt(
     })
 }
 
-fn tool_result_prompt(message: &crate::types::ToolResultMessage, message_id: &str) -> ChatMessagePrompt {
+fn tool_result_prompt(
+    message: &crate::types::ToolResultMessage,
+    message_id: &str,
+) -> ChatMessagePrompt {
     let (text, images) = split_content(&message.content);
     ChatMessagePrompt {
         message_id: message_id.to_owned(),

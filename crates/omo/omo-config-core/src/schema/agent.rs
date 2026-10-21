@@ -23,6 +23,23 @@ fn agent_permission_schema() -> Node {
     record(bash_permission_schema())
 }
 
+fn refine_agent_permissions(
+    value: &serde_json::Value,
+    path: &[String],
+    issues: &mut crate::issue::Issues,
+) {
+    if let Some(permissions) = value.get("permission").and_then(serde_json::Value::as_object) {
+        for (key, permission) in permissions {
+            if key != "bash" {
+                let permission_path = crate::issue::field(&crate::issue::field(path, "permission"), key);
+                let _parsed = crate::internal::validate::parse(
+                    &permission_value_schema(), permission, &permission_path, issues,
+                );
+            }
+        }
+    }
+}
+
 fn omo_agent_def_input_spec() -> ObjectSpec {
     ObjectSpec {
         fields: vec![
@@ -47,7 +64,7 @@ fn omo_agent_def_input_spec() -> ObjectSpec {
         ],
         strict: true,
         preprocess: Some(normalize_legacy_model_fields as PreprocessFn),
-        refine: None,
+        refine: Some(refine_agent_permissions),
     }
 }
 

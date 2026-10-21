@@ -139,6 +139,39 @@ fn no_changes() -> StaleWorkReconcileResult {
 }
 
 #[test]
+fn fractional_transcript_activity_survives_threshold_comparison() {
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
+    let sessions = tempfile::tempdir().expect("sessions");
+    let path = sessions.path().join(STALE_TRANSCRIPT_FILE);
+    let file = std::fs::File::create(&path).expect("transcript");
+    file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_micros(1_000_500)).expect("mtime");
+    let activity = boulder_state::find_newest_session_transcript_ms_precise(
+        sessions.path(), &[STALE_SESSION_ID.to_string()], &[],
+    ).expect("activity");
+    assert!((activity - 1000.5).abs() < 0.001);
+    let result = reconcile_stale_works(directory.path(), &ReconcileStaleWorksOptions {
+        now: Some(1001), threshold_ms: Some(0.75), sessions_directory: Some(sessions.path().to_path_buf()), env: None,
+    });
+    assert_eq!(result, no_changes());
+    assert!(!boulder_state::is_work_stale_precise(Some(activity), 1001, 0.75));
+}
+
+#[cfg(unix)]
+#[test]
+fn preepoch_transcript_activity_formats_with_date_timeclip() {
+    let directory = create_project(stale_works(json!({})), STALE_WORK_ID);
+    let sessions = tempfile::tempdir().expect("sessions");
+    let file = std::fs::File::create(sessions.path().join(STALE_TRANSCRIPT_FILE)).expect("transcript");
+    file.set_modified(SystemTime::UNIX_EPOCH - Duration::from_micros(1500)).expect("mtime");
+    let activity = boulder_state::find_newest_session_transcript_ms_precise(sessions.path(), &[STALE_SESSION_ID.to_string()], &[]).expect("activity");
+    assert!((activity + 1.5).abs() < 0.001);
+    let result = reconcile_stale_works(directory.path(), &ReconcileStaleWorksOptions {
+        now: Some(10), threshold_ms: Some(1.0), sessions_directory: Some(sessions.path().to_path_buf()), env: None,
+    });
+    assert_eq!(result.demoted[0].last_activity_at.as_deref(), Some("1969-12-31T23:59:59.999Z"));
+}
+
+#[test]
 fn windows_shaped_session_cwd_encodes_without_colon_or_separator() {
     // A drive colon and a backslash are both illegal inside a Windows path segment.
     let encoded = encode_session_cwd(Path::new(

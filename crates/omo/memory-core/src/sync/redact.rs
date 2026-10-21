@@ -1,27 +1,63 @@
-//! Credential redaction for memory-repository URLs.
+//! Secret-like material scanning and credential redaction for memory boundaries.
 
 use std::sync::LazyLock;
 
 const MASK: &str = "***";
 
-/// Upstream `SECRET_PATTERN_SOURCES`, in replacement order: each pattern source
-/// paired with the JavaScript flags it is compiled with.
+/// The classification of a secret-like match. No matched text is returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretPatternClass {
+    AwsAccessKey,
+    CredentialAssignment,
+    AuthorizationHeader,
+    OpenaiKey,
+    VendorToken,
+    PemBlock,
+    SplitCredentialAssignment,
+}
+
+/// Original-input span, in UTF-16 code units like upstream JavaScript indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecretMatch {
+    pub class: SecretPatternClass,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Upstream pattern classes, sources and JavaScript flags, in declaration order.
 ///
 /// The patterns are matched through the port's established `regress` UTF-16 seam
 /// (`Regex::from_unicode` over UTF-16 code units, then `find_from_ucs2`), which
 /// reproduces the non-`u` JavaScript semantics: `\b` is ASCII-only, `\s`
-/// includes U+FEFF and excludes U+0085, and `\S{1,256}` counts UTF-16 code units.
-const SECRET_PATTERN_SOURCES: [(&str, &str); 5] = [
-    (r"\bAKIA[0-9A-Z]{16}\b", ""),
+/// includes U+FEFF and excludes U+0085, and value bounds count UTF-16 code units.
+pub const SECRET_PATTERN_SOURCES: [(SecretPatternClass, &str, &str); 5] = [
     (
-        r"\b(?:bearer|token|api[_-]?key|secret|password|passwd|pwd)\s*[=:]\s*\S{1,256}",
+        SecretPatternClass::AwsAccessKey,
+        r"\bAKIA[0-9A-Z]{16}\b",
+        "",
+    ),
+    (
+        SecretPatternClass::CredentialAssignment,
+        r#"\b(?:bearer|token|api[_-]?key|secret|password|passwd|pwd)\s*[=:]\s*[^\s"'<>,}\])]{1,256}"#,
         "i",
     ),
-    (r"\bAuthorization\s*:\s*Bearer\s+\S{1,256}", "i"),
-    (r"\bsk-(?:proj-)?[-_A-Za-z0-9]+\b", ""),
-    (r"\b(?:ghp|github_pat|glpat|xox[baprs])-[-_A-Za-z0-9]+\b", ""),
+    (
+        SecretPatternClass::AuthorizationHeader,
+        r#"\bAuthorization\s*:\s*Bearer\s+[^\s"'<>,}\])]{1,256}"#,
+        "i",
+    ),
+    (
+        SecretPatternClass::OpenaiKey,
+        r"\bsk-(?:proj-)?[-_A-Za-z0-9]+\b",
+        "",
+    ),
+    (
+        SecretPatternClass::VendorToken,
+        r"\b(?:ghp|github_pat|glpat|xox[baprs])[-_][-_A-Za-z0-9]+\b",
+        "",
+    ),
 ];
-const SPLIT_CREDENTIAL_ASSIGNMENT: &str = r#"(?:a\s*u\s*t\s*h\s*o\s*r\s*i\s*z\s*a\s*t\s*i\s*o\s*n|p\s*a\s*s\s*s\s*w\s*(?:o\s*r\s*)?d|s\s*e\s*c\s*r\s*e\s*t|t\s*o\s*k\s*e\s*n|a\s*p\s*i\s*[_-]?\s*k\s*e\s*y)\s*[:=]\s*\S{6,256}"#;
+const SPLIT_CREDENTIAL_ASSIGNMENT: &str = r#"(?:a\s*u\s*t\s*h\s*o\s*r\s*i\s*z\s*a\s*t\s*i\s*o\s*n|p\s*a\s*s\s*s\s*w\s*(?:o\s*r\s*)?d|s\s*e\s*c\s*r\s*e\s*t|t\s*o\s*k\s*e\s*n|a\s*p\s*i\s*[_-]?\s*k\s*e\s*y)\s*[:=]\s*[^\s"'<>,}\])]{6,256}"#;
 
 /// Compiled once. Upstream keeps a non-global and a global copy of every pattern
 /// only because a JavaScript `RegExp` carries `lastIndex` state; `regress`
@@ -29,7 +65,7 @@ const SPLIT_CREDENTIAL_ASSIGNMENT: &str = r#"(?:a\s*u\s*t\s*h\s*o\s*r\s*i\s*z\s*
 static SECRET_PATTERNS: LazyLock<Vec<regress::Regex>> = LazyLock::new(|| {
     SECRET_PATTERN_SOURCES
         .iter()
-        .map(|(source, flags)| {
+        .map(|(_, source, flags)| {
             regress::Regex::from_unicode(source.encode_utf16().map(u32::from), *flags)
                 .expect("static regex literals are valid")
         })
@@ -43,143 +79,249 @@ static SPLIT_CREDENTIAL_PATTERN: LazyLock<regress::Regex> = LazyLock::new(|| {
     .expect("static split credential regex is valid")
 });
 
-/// True when `value` holds secret-like material (upstream `containsSecretLikeMaterial`).
-pub fn contains_secret_like_material(value: &str) -> bool {
-    if normalized_secret_detect(value) {
-        return true;
-    }
-    let units: Vec<u16> = value.encode_utf16().collect();
-    SECRET_PATTERNS
-        .iter()
-        .any(|pattern| pattern.find_from_ucs2(&units, 0).next().is_some())
-        || find_pem_block(&units, 0).is_some()
-}
-
-/// Mask every secret-like pattern in upstream order, then every complete PEM block.
-pub fn redact_secret_like_material(value: &str) -> String {
-    let normalized = normalized_secret_spans(value);
-    if !normalized.is_empty() {
-        return mask_spans(value, normalized);
-    }
-    let mut units: Vec<u16> = value.encode_utf16().collect();
-    for pattern in SECRET_PATTERNS.iter() {
-        units = replace_all_ucs2(pattern, &units);
-    }
-    let mask_len = MASK.encode_utf16().count();
-    let mut offset = 0;
-    while let Some(block) = find_pem_block(&units, offset) {
-        let mut replaced: Vec<u16> = Vec::with_capacity(units.len());
-        replaced.extend_from_slice(&units[..block.start]);
-        replaced.extend(MASK.encode_utf16());
-        replaced.extend_from_slice(&units[block.end..]);
-        units = replaced;
-        offset = block.start + mask_len;
-    }
-    String::from_utf16_lossy(&units)
-}
-
-fn normalized_secret_detect(value: &str) -> bool {
-    !normalized_secret_spans(value).is_empty()
-}
-
-fn normalized_secret_spans(value: &str) -> Vec<(usize, usize)> {
+/// Scan normalized shadows, returning only classes and original UTF-16 spans.
+pub fn scan_secret_like_material(value: &str) -> Vec<SecretMatch> {
     let joined = normalize_secret_shadow(value, true);
     let separated = normalize_secret_shadow(value, false);
-    let mut spans = secret_spans(&joined);
-    let separated_spans = secret_spans(&separated);
-    for candidate in separated_spans {
-        if !spans
-            .iter()
-            .any(|matched| matched.0 <= candidate.0 && matched.1 >= candidate.1)
+    let mut matches = Vec::new();
+    let mut offset = 0;
+    while let Some(block) = find_pem_block(&joined.units, offset) {
+        if let Some(span) =
+            joined.original_match(SecretPatternClass::PemBlock, block.start, block.end)
         {
-            spans.push(candidate);
+            matches.push(span);
         }
+        offset = block.end;
     }
-    for matched in SPLIT_CREDENTIAL_PATTERN.find_from_ucs2(&joined.units, 0) {
-        if let Some(span) = joined.original_span(matched.range().start, matched.range().end) {
-            spans.push(span);
-        }
+    matches.extend(secret_matches(&joined));
+    keep_uncovered(&mut matches, secret_matches(&separated));
+    keep_uncovered(&mut matches, seam_matches(&joined));
+    keep_uncovered(
+        &mut matches,
+        pattern_matches(
+            &joined,
+            SecretPatternClass::SplitCredentialAssignment,
+            &SPLIT_CREDENTIAL_PATTERN,
+        ),
+    );
+    matches.sort_by_key(|span| (span.start, span.end));
+    matches
+}
+
+/// True when `value` holds secret-like material (upstream `containsSecretLikeMaterial`).
+pub fn contains_secret_like_material(value: &str) -> bool {
+    !scan_secret_like_material(value).is_empty()
+}
+
+/// Mask the union of every scanner span, preserving surrounding delimiters.
+pub fn redact_secret_like_material(value: &str) -> String {
+    let spans = merge_spans(
+        scan_secret_like_material(value)
+            .into_iter()
+            .map(|span| (span.start, span.end))
+            .collect(),
+    );
+    if spans.is_empty() {
+        return value.to_owned();
     }
-    merge_spans(spans)
+    mask_spans(value, spans)
 }
 
 struct SecretShadow {
     units: Vec<u16>,
-    byte_starts: Vec<usize>,
-    byte_ends: Vec<usize>,
+    map: Vec<usize>,
     seams: Vec<usize>,
 }
 
 impl SecretShadow {
-    fn original_span(&self, start: usize, end: usize) -> Option<(usize, usize)> {
-        Some((
-            *self.byte_starts.get(start)?,
-            *self.byte_ends.get(end.checked_sub(1)?)?,
-        ))
+    fn original_match(
+        &self,
+        class: SecretPatternClass,
+        start: usize,
+        end: usize,
+    ) -> Option<SecretMatch> {
+        Some(SecretMatch {
+            class,
+            start: *self.map.get(start)?,
+            end: self.map.get(end.checked_sub(1)?)? + 1,
+        })
     }
 }
 
 fn normalize_secret_shadow(value: &str, drop_format: bool) -> SecretShadow {
-    let mut shadow = String::new();
-    let mut byte_starts = Vec::new();
-    let mut byte_ends = Vec::new();
+    let mut units = Vec::new();
+    let mut map = Vec::new();
     let mut seams = Vec::new();
     let mut dropped = false;
-    for (index, character) in value.char_indices() {
-        let control = (character as u32) < 0x20 && character != '\n' && character != '\t';
-        let format = matches!(character as u32, 0x00AD | 0x061C | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF);
-        let end = index + character.len_utf8();
-        if character == '\u{00A0}' {
-            shadow.push(' ');
-            byte_starts.push(index);
-            byte_ends.push(end);
-            dropped = false;
+    let mut index = 0;
+    for character in value.chars() {
+        let control = u32::from(character) < 0x20 && character != '\n' && character != '\t';
+        let format = is_format_character(character);
+        if character == '\u{00A0}' || (!drop_format && (control || format)) {
+            units.push(u16::from(b' '));
+            map.push(index);
         } else if (control || format) && drop_format {
             dropped = true;
-        } else if control || format {
-            shadow.push(' ');
-            byte_starts.push(index);
-            byte_ends.push(end);
-            dropped = false;
         } else {
             if dropped {
-                seams.push(shadow.encode_utf16().count());
+                seams.push(units.len());
                 dropped = false;
             }
-            shadow.push(character);
-            for _ in 0..character.len_utf16() {
-                byte_starts.push(index);
-                byte_ends.push(end);
+            let mut buffer = [0; 2];
+            for (offset, unit) in character.encode_utf16(&mut buffer).iter().enumerate() {
+                units.push(*unit);
+                map.push(index + offset);
             }
         }
+        index += character.len_utf16();
     }
-    SecretShadow { units: shadow.encode_utf16().collect(), byte_starts, byte_ends, seams }
+    SecretShadow { units, map, seams }
 }
 
-fn secret_spans(shadow: &SecretShadow) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
-    for pattern in SECRET_PATTERNS.iter() {
-        for matched in pattern.find_from_ucs2(&shadow.units, 0) {
+fn is_format_character(character: char) -> bool {
+    // Unicode General_Category=Cf, including supplementary format/tag blocks.
+    matches!(u32::from(character),
+        0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891 |
+        0x08E2 | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064 |
+        0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0x110BD | 0x110CD |
+        0x13430..=0x1343F | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A |
+        0xE0001 | 0xE0020..=0xE007F)
+}
+
+fn pattern_matches(
+    shadow: &SecretShadow,
+    class: SecretPatternClass,
+    pattern: &regress::Regex,
+) -> Vec<SecretMatch> {
+    pattern
+        .find_from_ucs2(&shadow.units, 0)
+        .filter_map(|matched| {
             let range = matched.range();
-            if let Some(span) = shadow.original_span(range.start, range.end) {
-                spans.push(span);
-            }
+            shadow.original_match(class, range.start, range.end)
+        })
+        .collect()
+}
+
+fn secret_matches(shadow: &SecretShadow) -> Vec<SecretMatch> {
+    SECRET_PATTERN_SOURCES
+        .iter()
+        .zip(SECRET_PATTERNS.iter())
+        .flat_map(|((class, _, _), pattern)| pattern_matches(shadow, *class, pattern))
+        .collect()
+}
+
+fn keep_uncovered(matches: &mut Vec<SecretMatch>, candidates: Vec<SecretMatch>) {
+    let mut sorted: Vec<_> = matches.iter().map(|span| (span.start, span.end)).collect();
+    sorted.sort_unstable();
+    let mut maximum = 0;
+    for (_, end) in &mut sorted {
+        maximum = maximum.max(*end);
+        *end = maximum;
+    }
+    for candidate in candidates {
+        let index = sorted.partition_point(|(start, _)| *start <= candidate.start);
+        if index == 0 || sorted[index - 1].1 < candidate.end {
+            matches.push(candidate);
         }
-        for &seam in &shadow.seams {
-            let Some(previous) = seam.checked_sub(1).and_then(|index| shadow.units.get(index)) else { continue };
-            let Some(current) = shadow.units.get(seam) else { continue };
-            if is_ascii_word_unit(*previous) == is_ascii_word_unit(*current) { continue; }
-            let begin = seam.saturating_sub(12);
-            for matched in pattern.find_from_ucs2(&shadow.units, begin) {
-                let range = matched.range();
-                if range.start > seam || range.end < seam { continue; }
-                if let Some(span) = shadow.original_span(range.start, range.end) {
-                    spans.push(span);
+    }
+}
+
+struct SeamPattern {
+    sticky: regress::Regex,
+    whole: regress::Regex,
+    boundary: regress::Regex,
+    trailing: bool,
+    unbounded_tail: bool,
+}
+
+static SEAM_PATTERNS: LazyLock<Vec<SeamPattern>> = LazyLock::new(|| {
+    SECRET_PATTERN_SOURCES
+        .iter()
+        .map(|(_, source, flags)| {
+            let trailing = source.ends_with(r"\b");
+            let body = &source[2..source.len() - if trailing { 2 } else { 0 }];
+            let compile = |source: &str| {
+                regress::Regex::from_unicode(source.encode_utf16().map(u32::from), *flags)
+                    .expect("static seam regex is valid")
+            };
+            SeamPattern {
+                sticky: compile(&format!("^(?:{body})")),
+                whole: compile(&format!("^(?:{body})$")),
+                boundary: compile(&format!(r"\b{body}")),
+                trailing,
+                unbounded_tail: body.ends_with("]+"),
+            }
+        })
+        .collect()
+});
+
+fn boundary_or_seam(shadow: &SecretShadow, end: usize) -> bool {
+    shadow.seams.binary_search(&end).is_ok()
+        || end
+            .checked_sub(1)
+            .and_then(|index| shadow.units.get(index))
+            .is_some_and(|unit| is_ascii_word_unit(*unit))
+            != shadow
+                .units
+                .get(end)
+                .is_some_and(|unit| is_ascii_word_unit(*unit))
+}
+
+fn seam_matches(shadow: &SecretShadow) -> Vec<SecretMatch> {
+    let mut found = Vec::new();
+    if shadow.seams.is_empty() {
+        return found;
+    }
+    for ((class, _, _), pattern) in SECRET_PATTERN_SOURCES.iter().zip(SEAM_PATTERNS.iter()) {
+        let mut starts = shadow.seams.clone();
+        if pattern.trailing {
+            starts.extend(
+                pattern
+                    .boundary
+                    .find_from_ucs2(&shadow.units, 0)
+                    .map(|matched| matched.range().start),
+            );
+            starts.sort_unstable();
+            starts.dedup();
+        }
+        let mut accepted_end = 0;
+        for start in starts {
+            if pattern.unbounded_tail && start < accepted_end {
+                continue;
+            }
+            let Some(matched) = pattern
+                .sticky
+                .find_from_ucs2(&shadow.units[start..], 0)
+                .next()
+            else {
+                continue;
+            };
+            let mut end = start + matched.range().end;
+            if pattern.trailing {
+                while end > start && !boundary_or_seam(shadow, end) {
+                    end -= 1;
                 }
+                if end == start
+                    || !pattern
+                        .whole
+                        .find_from_ucs2(&shadow.units[start..end], 0)
+                        .any(|matched| matched.range() == (0..end - start))
+                {
+                    continue;
+                }
+            }
+            if shadow.seams.binary_search(&start).is_err()
+                && shadow.seams.binary_search(&end).is_err()
+            {
+                continue;
+            }
+            if let Some(span) = shadow.original_match(*class, start, end) {
+                found.push(span);
+                accepted_end = end;
             }
         }
     }
-    spans
+    found
 }
 
 fn is_ascii_word_unit(unit: u16) -> bool {
@@ -193,37 +335,28 @@ fn merge_spans(mut spans: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     spans.sort_unstable();
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for span in spans {
-        if let Some(last) = merged.last_mut() && span.0 <= last.1 { last.1 = last.1.max(span.1); }
-        else { merged.push(span); }
+        if let Some(last) = merged.last_mut()
+            && span.0 <= last.1
+        {
+            last.1 = last.1.max(span.1);
+        } else {
+            merged.push(span);
+        }
     }
     merged
 }
 
 fn mask_spans(value: &str, spans: Vec<(usize, usize)>) -> String {
-    let mut output = String::new();
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let mut output = Vec::new();
     let mut cursor = 0;
     for (start, end) in spans {
-        output.push_str(&value[cursor..start]);
-        output.push_str(MASK);
+        output.extend_from_slice(&units[cursor..start]);
+        output.extend(MASK.encode_utf16());
         cursor = end;
     }
-    output.push_str(&value[cursor..]);
-    output
-}
-
-/// Replace every non-overlapping match of `pattern` in `input` with the mask,
-/// mirroring `String.prototype.replace` with a global regular expression.
-fn replace_all_ucs2(pattern: &regress::Regex, input: &[u16]) -> Vec<u16> {
-    let mut out: Vec<u16> = Vec::with_capacity(input.len());
-    let mut last = 0;
-    for matched in pattern.find_from_ucs2(input, 0) {
-        let range = matched.range();
-        out.extend_from_slice(&input[last..range.start]);
-        out.extend(MASK.encode_utf16());
-        last = range.end;
-    }
-    out.extend_from_slice(&input[last..]);
-    out
+    output.extend_from_slice(&units[cursor..]);
+    String::from_utf16_lossy(&output)
 }
 
 /// The code unit span of one complete PEM block (upstream `findPemBlock`).
@@ -381,98 +514,23 @@ fn redact_url_userinfo(input: &str) -> String {
     out
 }
 
+static SCP_USERINFO: LazyLock<regress::Regex> = LazyLock::new(|| {
+    regress::Regex::from_unicode(
+        r#"(^|[\s'"(<])([^\s:/@]{1,256})@([^\s:/@]{1,256}):"#
+            .encode_utf16()
+            .map(u32::from),
+        "",
+    )
+    .expect("static SCP userinfo regex is valid")
+});
+
 fn redact_scp_userinfo(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut cursor = 0;
-
-    while let Some(rel_idx) = input[cursor..].find('@') {
-        let at_idx = cursor + rel_idx;
-
-        let _before_at = &input[cursor..at_idx];
-        let mut user_start = at_idx;
-        while user_start > cursor {
-            let prev_char = input[..user_start].chars().next_back().unwrap();
-            if prev_char.is_whitespace() || prev_char == ':' || prev_char == '/' || prev_char == '@'
-            {
-                break;
-            }
-            user_start -= prev_char.len_utf8();
-        }
-
-        let user_part = &input[user_start..at_idx];
-        if user_part.is_empty() {
-            out.push_str(&input[cursor..=at_idx]);
-            cursor = at_idx + 1;
-            continue;
-        }
-
-        let valid_prefix = if user_start == 0 {
-            true
-        } else {
-            let prefix_char = input[..user_start].chars().next_back().unwrap();
-            prefix_char.is_whitespace()
-                || prefix_char == '\''
-                || prefix_char == '"'
-                || prefix_char == '('
-                || prefix_char == '<'
-        };
-
-        if !valid_prefix {
-            out.push_str(&input[cursor..=at_idx]);
-            cursor = at_idx + 1;
-            continue;
-        }
-
-        let after_at = &input[at_idx + 1..];
-        let mut host_len = 0;
-        let mut colon_found = false;
-
-        for (offset, character) in after_at.char_indices() {
-            if character == ':' {
-                host_len = offset;
-                colon_found = true;
-                break;
-            }
-            if character.is_whitespace() || character == '/' || character == '@' {
-                break;
-            }
-        }
-
-        if !colon_found || host_len == 0 {
-            out.push_str(&input[cursor..=at_idx]);
-            cursor = at_idx + 1;
-            continue;
-        }
-
-        let colon_idx = at_idx + 1 + host_len;
-        let after_colon = &input[colon_idx + 1..];
-
-        let mut has_slash_before_whitespace = false;
-        for character in after_colon.chars() {
-            if character.is_whitespace() {
-                break;
-            }
-            if character == '/' {
-                has_slash_before_whitespace = true;
-                break;
-            }
-        }
-
-        if !has_slash_before_whitespace {
-            out.push_str(&input[cursor..=at_idx]);
-            cursor = at_idx + 1;
-            continue;
-        }
-
-        out.push_str(&input[cursor..user_start]);
-        out.push_str(MASK);
-        out.push('@');
-        out.push_str(&input[at_idx + 1..=colon_idx]);
-        cursor = colon_idx + 1;
-    }
-
-    out.push_str(&input[cursor..]);
-    out
+    let units: Vec<u16> = input.encode_utf16().collect();
+    let spans = SCP_USERINFO
+        .find_from_ucs2(&units, 0)
+        .filter_map(|matched| matched.group(2).map(|range| (range.start, range.end)))
+        .collect();
+    mask_spans(input, spans)
 }
 
 /// Mask credentials in a URL, or in free text containing URLs.
@@ -488,3 +546,183 @@ pub fn redact_url(value: &str) -> String {
 #[cfg(test)]
 #[path = "redact_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod audit_regression_tests {
+    use super::*;
+
+    #[test]
+    fn scanner_reports_original_utf16_span_when_key_is_obfuscated() {
+        let value = "\u{1f600} to\u{e0061}ken=abcdef";
+        let matches = scan_secret_like_material(value);
+        assert_eq!(
+            matches,
+            vec![SecretMatch {
+                class: SecretPatternClass::CredentialAssignment,
+                start: 3,
+                end: value.encode_utf16().count(),
+            }]
+        );
+    }
+
+    #[test]
+    fn scanner_classifies_each_pattern_when_material_is_present() {
+        for (value, class) in [
+            ("AKIA1234567890ABCDEF", SecretPatternClass::AwsAccessKey),
+            ("token=abcdef", SecretPatternClass::CredentialAssignment),
+            ("sk-proj-abcdef", SecretPatternClass::OpenaiKey),
+            ("github_pat_abcdef", SecretPatternClass::VendorToken),
+            (
+                "-----BEGIN A-----x-----END A-----",
+                SecretPatternClass::PemBlock,
+            ),
+            (
+                "t o k e n=abcdef",
+                SecretPatternClass::SplitCredentialAssignment,
+            ),
+        ] {
+            let matches = scan_secret_like_material(value);
+            assert_eq!(
+                matches,
+                vec![SecretMatch {
+                    class,
+                    start: 0,
+                    end: value.len()
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn scanner_keeps_overlapping_classes_when_header_contains_bearer_assignment() {
+        let value = "Authorization: Bearer token=abcdef";
+        let matches = scan_secret_like_material(value);
+        assert_eq!(
+            matches,
+            vec![
+                SecretMatch {
+                    class: SecretPatternClass::AuthorizationHeader,
+                    start: 0,
+                    end: value.len()
+                },
+                SecretMatch {
+                    class: SecretPatternClass::CredentialAssignment,
+                    start: 22,
+                    end: value.len()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn masking_preserves_delimiters_when_assignments_are_embedded() {
+        for (value, expected) in [
+            ("see token=abcdef, next", "see ***, next"),
+            (r#"{"d":"token=abcdef","n":3}"#, r#"{"d":"***","n":3}"#),
+            ("<x a='password=abcdef'>", "<x a='***'>"),
+            ("[token=abcdef](x)", "[***](x)"),
+            ("(Authorization: Bearer abcdef)", "(***)"),
+            ("[t o k e n=abcdef]", "[***]"),
+        ] {
+            let redacted = redact_secret_like_material(value);
+            assert_eq!(redacted, expected);
+        }
+    }
+
+    #[test]
+    fn masking_normalizes_all_format_blocks_when_credentials_are_split() {
+        for character in [
+            '\u{600}',
+            '\u{6dd}',
+            '\u{70f}',
+            '\u{890}',
+            '\u{8e2}',
+            '\u{180e}',
+            '\u{fff9}',
+            '\u{110bd}',
+            '\u{110cd}',
+            '\u{13430}',
+            '\u{1bca0}',
+            '\u{1d173}',
+            '\u{e0001}',
+            '\u{e007f}',
+        ] {
+            let value = format!("to{character}ken=abcdef");
+            let redacted = redact_secret_like_material(&value);
+            assert_eq!(redacted, "***");
+        }
+    }
+
+    #[test]
+    fn masking_retains_unassigned_character_when_it_is_not_format() {
+        let value = "to\u{2065}ken=abcdef";
+        let redacted = redact_secret_like_material(value);
+        assert_eq!(redacted, value);
+    }
+
+    #[test]
+    fn masking_recovers_hidden_boundaries_when_token_has_internal_seams() {
+        for (value, expected) in [
+            ("prefix\u{200b}sk-proj-ab\u{200b}cdef", "prefix\u{200b}***"),
+            (
+                "prefix\u{200b}AKIA1234567890ABCDEF\u{200b}suffix",
+                "prefix\u{200b}***\u{200b}suffix",
+            ),
+            ("AKIA1234567890ABCDEF\u{200b}suffix", "***\u{200b}suffix"),
+            ("prefix\u{200b}to\u{200b}ken=abcdef", "prefix\u{200b}***"),
+        ] {
+            let redacted = redact_secret_like_material(value);
+            assert_eq!(redacted, expected);
+        }
+    }
+
+    #[test]
+    fn masking_includes_pem_when_other_secrets_are_present() {
+        let value = "token=abcdef -----BEGIN PRIVATE KEY-----x-----END PRIVATE KEY-----";
+        let redacted = redact_secret_like_material(value);
+        assert_eq!(redacted, "*** ***");
+    }
+
+    #[test]
+    fn masking_includes_normalized_pem_when_marker_is_obfuscated() {
+        let value = "note -----BEGIN PRIV\u{200b}ATE KEY-----x-----END PRIVATE KEY----- tail";
+        let redacted = redact_secret_like_material(value);
+        assert_eq!(redacted, "note *** tail");
+    }
+
+    #[test]
+    fn predicate_detects_material_when_only_normalized_pem_or_seam_token_exists() {
+        for value in [
+            "-----BEGIN PRIV\u{13430}ATE KEY-----x-----END PRIVATE KEY-----",
+            "prefix\u{200b}AKIA1234567890ABCDEF\u{200b}suffix",
+            "ghp_abcdef",
+            "glpat_abcdef",
+            "xoxb_abcdef",
+        ] {
+            let detected = contains_secret_like_material(value);
+            assert!(detected);
+        }
+    }
+
+    #[test]
+    fn scp_userinfo_is_masked_when_path_has_no_slash() {
+        for (value, expected) in [
+            ("alice@host:repo", "***@host:repo"),
+            ("alice@host:", "***@host:"),
+            ("remote 'alice@host:repo'", "remote ***@host:repo'"),
+            ("(alice@host:repo)", "***@host:repo)"),
+            ("alice@example.com", "alice@example.com"),
+            ("/alice@host:repo", "/alice@host:repo"),
+        ] {
+            let redacted = redact_url(value);
+            assert_eq!(redacted, expected);
+        }
+    }
+
+    #[test]
+    fn scp_userinfo_is_not_masked_when_host_exceeds_utf16_bound() {
+        let value = format!("alice@{}:repo", "a".repeat(257));
+        let redacted = redact_url(&value);
+        assert_eq!(redacted, value);
+    }
+}

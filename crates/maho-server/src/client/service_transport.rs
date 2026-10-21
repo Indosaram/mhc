@@ -1,5 +1,5 @@
 use super::{Client, api::ServiceSubscription, errors::ClientError};
-use serde_json::Value;
+use maho_chord::types::{JsonValue as Value, JsString, ServiceMode};
 use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::{
     sync::{oneshot, watch},
@@ -33,13 +33,13 @@ impl ClientServiceTransport {
     }
     pub async fn subscribe(
         &self,
-        service_id: &str,
-        mode: &str,
+        service_id: &JsString,
+        mode: ServiceMode,
         listener: ServiceListener,
     ) -> Result<CallbackSubscription, ClientError> {
         self.subscribe_with_cancellation(service_id,mode,listener,None).await
     }
-    pub async fn subscribe_with_cancellation(&self,service_id:&str,mode:&str,listener:ServiceListener,cancel:Option<watch::Receiver<Option<ClientError>>>)->Result<CallbackSubscription,ClientError> {
+    pub async fn subscribe_with_cancellation(&self,service_id:&JsString,mode:ServiceMode,listener:ServiceListener,cancel:Option<watch::Receiver<Option<ClientError>>>)->Result<CallbackSubscription,ClientError> {
         let mut subscription = self
             .client
             .subscribe_with_cancellation(self.target()?, service_id, mode,cancel)

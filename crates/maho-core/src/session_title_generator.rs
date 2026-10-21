@@ -213,7 +213,9 @@ mod tests {
     }
 
     fn assistant_with_text(text: &str) -> AssistantMessage {
-        AssistantMessage {
+        AssistantMessage { thinking_level: None, provider_diagnostic: None,
+            prompt_cache_diagnostics: None,
+            error_cause: None,
             content: vec![ContentBlock::Text(TextContent { text: text.to_owned(), audience: None, text_signature: None })],
             api: "anthropic".to_owned(),
             provider: "anthropic".to_owned(),

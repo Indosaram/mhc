@@ -23,7 +23,7 @@ async fn api_key_round_trips_through_auth_json() {
     let written = store
         .modify(
             "anthropic",
-            Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("k".into()), env: None }))) })),
+            Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("k".into()), env: None, extra: Default::default() }))) })),
             None,
         )
         .await
@@ -49,7 +49,7 @@ async fn oauth_round_trips_with_extra_fields() {
 async fn modify_returning_none_leaves_the_entry_unchanged() {
     let (_dir, store) = store();
     store
-        .modify("p", Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("first".into()), env: None }))) })), None)
+        .modify("p", Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("first".into()), env: None, extra: Default::default() }))) })), None)
         .await
         .unwrap();
     let result = store
@@ -64,7 +64,7 @@ async fn modify_returning_none_leaves_the_entry_unchanged() {
 async fn delete_removes_the_entry() {
     let (_dir, store) = store();
     store
-        .modify("p", Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("k".into()), env: None }))) })), None)
+        .modify("p", Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("k".into()), env: None, extra: Default::default() }))) })), None)
         .await
         .unwrap();
     store.delete("p", None).await.unwrap();
@@ -75,7 +75,7 @@ async fn delete_removes_the_entry() {
 async fn list_reports_metadata_without_secrets() {
     let (_dir, store) = store();
     store
-        .modify("anthropic", Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("secret".into()), env: None }))) })), None)
+        .modify("anthropic", Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("secret".into()), env: None, extra: Default::default() }))) })), None)
         .await
         .unwrap();
     let listed = store.list(None).await.unwrap();
@@ -90,7 +90,7 @@ async fn stored_bytes_use_the_auth_json_shape() {
     let path = dir.path().join("auth.json");
     let store = AuthStorageCredentialStore::create(&path.to_string_lossy());
     store
-        .modify("anthropic", Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("k".into()), env: None }))) })), None)
+        .modify("anthropic", Box::new(|_| Box::pin(async { Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("k".into()), env: None, extra: Default::default() }))) })), None)
         .await
         .unwrap();
     let storage = AuthStorage::create(&path.to_string_lossy());

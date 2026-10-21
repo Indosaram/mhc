@@ -3,8 +3,91 @@ use super::{
     framing::{DEFAULT_MAX_FRAME_LENGTH, FrameDecoder, encode_frame},
     messages::{PROTOCOL_VERSION, valid_client_message, valid_server_message},
 };
-use serde_json::Value;
+use maho_chord::types::JsonValue as Value;
 use thiserror::Error;
+
+#[macro_export]
+macro_rules! transport_json {
+    (null) => { maho_chord::types::JsonValue::Null };
+    ([]) => { maho_chord::types::JsonValue::array(Vec::new()) };
+    ({}) => { maho_chord::types::JsonValue::object(Vec::new()) };
+    ([$($tokens:tt)*]) => {{
+        let mut values = Vec::new();
+        $crate::transport_json!(@items values; $($tokens)*);
+        maho_chord::types::JsonValue::array(values)
+    }};
+    (@items $values:ident;) => {};
+    (@items $values:ident; [$($items:tt)*] $(, $($rest:tt)*)?) => {{
+        $values.push($crate::transport_json!([$($items)*]));
+        $crate::transport_json!(@items $values; $($($rest)*)?);
+    }};
+    (@items $values:ident; {$($items:tt)*} $(, $($rest:tt)*)?) => {{
+        $values.push($crate::transport_json!({$($items)*}));
+        $crate::transport_json!(@items $values; $($($rest)*)?);
+    }};
+    (@items $values:ident; null $(, $($rest:tt)*)?) => {{
+        $values.push(maho_chord::types::JsonValue::Null);
+        $crate::transport_json!(@items $values; $($($rest)*)?);
+    }};
+    (@items $values:ident; $value:expr $(, $($rest:tt)*)?) => {{
+        $values.push($crate::protocol::codec::transport_value(&$value));
+        $crate::transport_json!(@items $values; $($($rest)*)?);
+    }};
+    ({$($tokens:tt)*}) => {{
+        let mut fields = Vec::new();
+        $crate::transport_json!(@fields fields; $($tokens)*);
+        maho_chord::types::JsonValue::object(fields)
+    }};
+    (@fields $fields:ident;) => {};
+    (@fields $fields:ident; $key:literal: [$($values:tt)*] $(, $($rest:tt)*)?) => {{
+        $fields.push(($key.into(), $crate::transport_json!([$($values)*])));
+        $crate::transport_json!(@fields $fields; $($($rest)*)?);
+    }};
+    (@fields $fields:ident; $key:literal: {$($values:tt)*} $(, $($rest:tt)*)?) => {{
+        $fields.push(($key.into(), $crate::transport_json!({$($values)*})));
+        $crate::transport_json!(@fields $fields; $($($rest)*)?);
+    }};
+    (@fields $fields:ident; $key:literal: null $(, $($rest:tt)*)?) => {{
+        $fields.push(($key.into(), maho_chord::types::JsonValue::Null));
+        $crate::transport_json!(@fields $fields; $($($rest)*)?);
+    }};
+    (@fields $fields:ident; $key:literal: $value:expr $(, $($rest:tt)*)?) => {{
+        $fields.push(($key.into(), $crate::protocol::codec::transport_value(&$value)));
+        $crate::transport_json!(@fields $fields; $($($rest)*)?);
+    }};
+    ($value:expr) => { $crate::protocol::codec::transport_value(&$value) };
+}
+
+pub trait TransportValue {
+    fn transport_value(&self) -> Value;
+}
+impl<T: TransportValue + ?Sized> TransportValue for &T {
+    fn transport_value(&self) -> Value { (*self).transport_value() }
+}
+impl TransportValue for Value {
+    fn transport_value(&self) -> Value { self.clone() }
+}
+impl TransportValue for str {
+    fn transport_value(&self) -> Value { Value::String(self.into()) }
+}
+impl TransportValue for String {
+    fn transport_value(&self) -> Value { Value::String(self.clone().into()) }
+}
+impl TransportValue for maho_chord::js_string::JsString {
+    fn transport_value(&self) -> Value { Value::String(self.clone()) }
+}
+impl TransportValue for bool {
+    fn transport_value(&self) -> Value { Value::Bool(*self) }
+}
+impl TransportValue for u64 {
+    fn transport_value(&self) -> Value { Value::Number((*self).into()) }
+}
+impl TransportValue for i32 {
+    fn transport_value(&self) -> Value { Value::Number((*self).into()) }
+}
+pub fn transport_value(value: &(impl TransportValue + ?Sized)) -> Value {
+    value.transport_value()
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("{0}")]
@@ -63,7 +146,7 @@ fn encode(value: &Value, kind: MessageKind, max: u32) -> Result<Vec<u8>, Protoco
             .map_err(|e| ProtocolValidationError(e.to_string()))?,
         ..CborOptions::default()
     };
-    let cbor = CborValue::from_json(value)
+    let cbor = CborValue::from_chord(value)
         .and_then(|v| encode_cbor(&v, options))
         .map_err(|e| {
             ProtocolValidationError(format!(
@@ -140,7 +223,7 @@ impl MessageDecoder {
                     ..CborOptions::default()
                 };
                 let value = decode_cbor(&frame, options)
-                    .and_then(CborValue::into_json)
+                    .and_then(CborValue::into_chord)
                     .map_err(|e| {
                         ProtocolValidationError(format!(
                             "Invalid {} protocol frame: {}",

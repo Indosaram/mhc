@@ -154,7 +154,7 @@ pub fn register_with_router(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync:
                     AccountAction::Add=> {
                         if !ctx.has_ui {anyhow::bail!("/cursor-account add requires an interactive UI.");}
                         use maho_ai::auth::types::{AuthInteraction,OAuthAuth,ProviderAuthInteraction};
-                        let interaction=std::sync::Arc::new(maho_ext_builtin_loose::oauth_login_interaction::ExtensionLoginInteraction::new(ctx.ui.clone(),ctx.mode,crate::oauth_login::PROVIDER_NAME.into(),Some(crate::oauth_login::PROVIDER_ID),std::sync::Arc::new(|url| {
+                        let interaction:std::sync::Arc<dyn AuthInteraction>=std::sync::Arc::new(maho_ext_builtin_loose::oauth_login_interaction::ExtensionLoginInteraction::new(ctx.ui.clone(),ctx.mode,crate::oauth_login::PROVIDER_NAME.into(),Some(crate::oauth_login::PROVIDER_ID),std::sync::Arc::new(|url| {
                             let url=url.to_owned();
                             tokio::spawn(async move {
                                 let (program,args)=match std::env::consts::OS {"macos"=>("open",vec![url]),"windows"=>("rundll32",vec!["url.dll,FileProtocolHandler".into(),url]),_=>("xdg-open",vec![url])};
@@ -163,10 +163,11 @@ pub fn register_with_router(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync:
                             });
                         })));
                         let interaction=ProviderAuthInteraction::new(interaction.signal().expect("login signal"),interaction);
+                        let before=store.read(crate::oauth_login::PROVIDER_ID,None).await?.and_then(Credential::into_oauth).unwrap_or_else(empty_credential);
                         let credential=oauth.login(&interaction).await?;
                         runtime.assert_active()?;
                         let mutation_runtime=runtime.clone();
-                        store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |_|Box::pin(async move {mutation_runtime.assert_active()?;Ok(Some(Credential::OAuth(credential)))})),None).await?;
+                        store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |current|Box::pin(async move {mutation_runtime.assert_active()?;Ok(Some(Credential::OAuth(crate::oauth_login::merge_login(current,&before,credential)?)))})),None).await?;
                         runtime.assert_active()?;
                         maho_ext_anthropic_subscription::account_events::emit_provider_accounts_changed(crate::oauth_login::PROVIDER_ID);
                         ctx.ui.notify("Cursor CLI (OAuth) account added.",maho_ext_api::NotificationType::Info);
@@ -238,6 +239,27 @@ pub fn register_with_router(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn removal_preserves_sibling_blocks_pinning_and_provider_metadata() {
+        use maho_ai::auth::credential_store::InMemoryCredentialStore;
+        let store = InMemoryCredentialStore::new();
+        let slot = |name: &str| crate::accounts::CursorCliAccountSlot {
+            name: name.into(), display_name: Some(name.into()), access: name.into(), refresh: "refresh".into(),
+            expires: 1000.0, source: crate::accounts::AccountSource::Login, blocked_until: Some(500.0),
+            block_reason: Some(crate::accounts::BlockReason::RateLimit),
+        };
+        let credential = crate::accounts::add_account(&crate::accounts::add_account(&empty_credential(), slot("default")).expect("initial slot"), slot("work")).expect("sibling")
+            .with_extra("pinned", serde_json::json!("work"))
+            .with_extra("providerMetadata", serde_json::json!({"revision": 2}));
+        store.modify(crate::oauth_login::PROVIDER_ID, Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })), None).await.expect("seed");
+
+        mutate_account(&store, AccountAction::Remove("default".into())).await.expect("remove");
+
+        let remaining = store.read(crate::oauth_login::PROVIDER_ID, None).await.expect("read").expect("stored").into_oauth().expect("oauth");
+        assert_eq!(list_accounts(&remaining).expect("accounts"), [slot("work")]);
+        assert_eq!(remaining.get_extra_str("pinned"), Some("work"));
+        assert_eq!(remaining.get_extra("providerMetadata"), Some(&serde_json::json!({"revision": 2})));
+    }
     #[test]
     fn arguments_route_actions() {
         assert_eq!(parse_action(""),AccountAction::List);assert_eq!(parse_action(" pin work "),AccountAction::Pin("work".into()));assert_eq!(parse_action("import native"),AccountAction::ImportNative);assert_eq!(parse_action("import invalid"),AccountAction::Usage);assert_eq!(parse_action("remove"),AccountAction::Usage);

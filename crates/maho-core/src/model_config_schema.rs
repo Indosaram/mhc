@@ -35,6 +35,23 @@ pub struct ModelInputLimits {
     pub images: Option<ModelImageInputLimits>,
 }
 
+impl ModelInputLimits {
+    pub(crate) fn to_shared(&self) -> maho_ai::types::ModelInputLimits {
+        maho_ai::types::ModelInputLimits {
+            max_request_bytes: self.max_request_bytes.map(|value| value as usize),
+            images: self.images.as_ref().map(|images| maho_ai::types::ModelImageInputLimits {
+                max_per_message: images.max_per_message.map(|value| value as usize),
+                max_per_request: images.max_per_request.map(|value| value as usize),
+                resize: images.resize.as_ref().map(|resize| maho_ai::types::ModelImageResizeOptions {
+                    max_width: resize.max_width, max_height: resize.max_height,
+                    max_bytes: resize.max_bytes.map(|value| value as usize),
+                    jpeg_quality: resize.jpeg_quality.map(|value| value as u8),
+                }),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CredentialSlotRef {
@@ -69,6 +86,11 @@ pub const CREDENTIAL_POLICY_DEFAULTS: CredentialPolicyDefaults = CredentialPolic
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelsJsonModel {
+    #[serde(rename = "type")]
+    pub model_type: Option<maho_ai::types::ModelType>,
+    pub output: Option<Vec<maho_ai::types::ImagesOutputModality>>,
+    pub image_cost: Option<maho_ai::types::ImagesModelCost>,
+    pub supports_assistant_prefill: Option<bool>,
     pub id: String,
     pub name: Option<String>,
     pub upstream_model_id: Option<String>,

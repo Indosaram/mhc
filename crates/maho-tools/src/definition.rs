@@ -1,8 +1,11 @@
 //! Non-rendering tool contracts owned by this crate, shared with extension hosts.
-use std::{future::Future, path::Path, pin::Pin, sync::Arc};
-use maho_ai::{model::Model, types::{ConstrainedSampling, FreeformToolFormat, ThinkingLevel}};
+use maho_ai::{
+    model::Model,
+    types::{ConstrainedSampling, FreeformToolFormat, ThinkingLevel},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{future::Future, path::Path, pin::Pin, sync::Arc};
 
 pub type ToolFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ToolError>> + Send + 'a>>;
 
@@ -35,7 +38,9 @@ pub fn node_fs_error(error: std::io::Error, syscall: &str, path: &Path) -> std::
         _ => None,
     };
     let message = match code {
-        Some((code, description)) => format!("{code}: {description}, {syscall} '{}'", path.display()),
+        Some((code, description)) => {
+            format!("{code}: {description}, {syscall} '{}'", path.display())
+        }
         None => format!("{error}, {syscall} '{}'", path.display()),
     };
     std::io::Error::new(error.kind(), message)
@@ -53,17 +58,27 @@ pub trait ToolContext: Send + Sync {
     fn thinking_level(&self) -> Option<ThinkingLevel>;
     fn session_manager(&self) -> &dyn ToolSessionManager;
     fn goal_store_file(&self) -> Option<&Path>;
-    fn browser_engine(&self) -> Option<&str> { None }
+    fn browser_engine(&self) -> Option<&str> {
+        None
+    }
     /// The session's steering abort signal, when the host exposes one (codemode detaches a
     /// running eval cell on steering). Defaults to `None` for hosts without a steering surface.
-    fn get_steering_signal(&self) -> Option<AbortSignal> { None }
+    fn get_steering_signal(&self) -> Option<AbortSignal> {
+        None
+    }
     /// The session's live prompt-cache-safe foreground wait budget in seconds
     /// (`getPromptCacheSafeWaitSeconds`). Defaults to `None` for hosts without a session.
-    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { None }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> {
+        None
+    }
     fn take_approved_monitor_parent(
-        &self, _tool_call_id: &str, _input: &Value,
+        &self,
+        _tool_call_id: &str,
+        _input: &Value,
     ) -> Result<Option<std::path::PathBuf>, ToolError> {
-        Err(ToolError::Message("Approved monitor parent is unavailable".into()))
+        Err(ToolError::Message(
+            "Approved monitor parent is unavailable".into(),
+        ))
     }
 }
 
@@ -71,19 +86,33 @@ pub trait ToolContext: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct AbortSignal(tokio::sync::watch::Sender<bool>);
 impl Default for AbortSignal {
-    fn default() -> Self { Self(tokio::sync::watch::channel(false).0) }
+    fn default() -> Self {
+        Self(tokio::sync::watch::channel(false).0)
+    }
 }
 impl AbortSignal {
-    pub fn abort(&self) { self.0.send_replace(true); }
-    pub fn is_aborted(&self) -> bool { *self.0.borrow() }
+    pub fn abort(&self) {
+        self.0.send_replace(true);
+    }
+    pub fn is_aborted(&self) -> bool {
+        *self.0.borrow()
+    }
     pub fn check(&self) -> Result<(), ToolError> {
-        if self.is_aborted() { Err(ToolError::Aborted) } else { Ok(()) }
+        if self.is_aborted() {
+            Err(ToolError::Aborted)
+        } else {
+            Ok(())
+        }
     }
     pub async fn cancelled(&self) {
         let mut receiver = self.0.subscribe();
         loop {
-            if *receiver.borrow_and_update() { return; }
-            if receiver.changed().await.is_err() { return; }
+            if *receiver.borrow_and_update() {
+                return;
+            }
+            if receiver.changed().await.is_err() {
+                return;
+            }
         }
     }
 }
@@ -91,11 +120,24 @@ impl AbortSignal {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ToolContent {
-    Text { text: String, #[serde(skip_serializing_if = "Option::is_none")] audience: Option<String> },
-    Image { data: String, #[serde(rename = "mimeType")] mime_type: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        audience: Option<String>,
+    },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
 }
 impl ToolContent {
-    pub fn text(text: impl Into<String>) -> Self { Self::Text { text: text.into(), audience: None } }
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            audience: None,
+        }
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
@@ -104,19 +146,43 @@ pub struct ToolResult {
     pub details: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub structured_content: Option<Value>,
+    #[serde(
+        rename = "isError",
+        alias = "is_error",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_error: Option<bool>,
 }
 impl ToolResult {
-    pub fn text(text: impl Into<String>) -> Self { Self { content: vec![ToolContent::text(text)], details: None, structured_content: None } }
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            content: vec![ToolContent::text(text)],
+            details: None,
+            structured_content: None,
+            is_error: None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ToolExposure { Direct, Search, Eval }
+pub enum ToolExposure {
+    Direct,
+    Search,
+    Eval,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ToolExecutionMode { Sequential, Parallel }
+pub enum ToolExecutionMode {
+    Sequential,
+    Parallel,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum RenderShell { Default, #[serde(rename = "self")] Own }
+pub enum RenderShell {
+    Default,
+    #[serde(rename = "self")]
+    Own,
+}
 
 pub type ToolUpdateCallback = Arc<dyn Fn(ToolResult) -> Result<(), ToolError> + Send + Sync>;
 pub type PrepareArguments = Arc<dyn Fn(Value) -> Result<Value, ToolError> + Send + Sync>;
@@ -137,7 +203,8 @@ pub struct ToolCall<'a> {
     pub on_update: Option<ToolUpdateCallback>,
     pub context: Option<&'a dyn ToolContext>,
 }
-pub type ToolExecutor = Arc<dyn for<'a> Fn(ToolCall<'a>) -> ToolFuture<'a, ToolResult> + Send + Sync>;
+pub type ToolExecutor =
+    Arc<dyn for<'a> Fn(ToolCall<'a>) -> ToolFuture<'a, ToolResult> + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolPermissionRequest {
@@ -147,10 +214,15 @@ pub struct ToolPermissionRequest {
 }
 impl ToolPermissionRequest {
     pub fn new(permission: impl Into<String>, patterns: Vec<String>, always: Vec<String>) -> Self {
-        Self { permission: permission.into(), patterns, always }
+        Self {
+            permission: permission.into(),
+            patterns,
+            always,
+        }
     }
 }
-pub type ToolPermissionParser = Arc<dyn Fn(&Value, &Path) -> Vec<ToolPermissionRequest> + Send + Sync>;
+pub type ToolPermissionParser =
+    Arc<dyn Fn(&Value, &Path) -> Vec<ToolPermissionRequest> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ToolDefinition {
@@ -177,11 +249,27 @@ pub struct ToolDefinition {
 }
 impl ToolDefinition {
     pub fn new(name: &str, description: &str, parameters: Value, execute: ToolExecutor) -> Self {
-        Self { name: name.into(), label: name.into(), description: description.into(), parameters, execute,
-            exposure: None, search_text: None, search_keywords: None, search_group: None,
-            allow_lazy_activation: None, prompt_snippet: None, prompt_guidelines: None,
-            freeform: None, constrained_sampling: None, render_shell: None,
-            prepare_arguments: None, execution_mode: None,
-            permission_parser: None, kernel_prelude: None, output_schema: None }
+        Self {
+            name: name.into(),
+            label: name.into(),
+            description: description.into(),
+            parameters,
+            execute,
+            exposure: None,
+            search_text: None,
+            search_keywords: None,
+            search_group: None,
+            allow_lazy_activation: None,
+            prompt_snippet: None,
+            prompt_guidelines: None,
+            freeform: None,
+            constrained_sampling: None,
+            render_shell: None,
+            prepare_arguments: None,
+            execution_mode: None,
+            permission_parser: None,
+            kernel_prelude: None,
+            output_schema: None,
+        }
     }
 }

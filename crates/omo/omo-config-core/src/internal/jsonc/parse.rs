@@ -56,6 +56,9 @@ impl JsonNode {
 }
 
 pub fn parse_tree(text: &str) -> Result<JsonNode, JsoncParseError> {
+    if let Some(error) = parse_errors(text).into_iter().next() {
+        return Err(error);
+    }
     let mut reader = Reader {
         scanner: Scanner::new(text),
         current: Token {
@@ -79,6 +82,118 @@ pub fn parse_tree(text: &str) -> Result<JsonNode, JsoncParseError> {
 struct Reader<'a> {
     scanner: Scanner<'a>,
     current: Token,
+}
+
+/// Collect errors using jsonc-parser's synchronization points, in encounter order.
+pub fn parse_errors(text: &str) -> Vec<JsoncParseError> {
+    let mut parser = RecoveryReader {
+        scanner: Scanner::new(text),
+        current: Token { kind: TokenKind::Eof, offset: 0, length: 0 },
+        errors: Vec::new(),
+    };
+    parser.next();
+    if !parser.value() {
+        parser.error("ValueExpected");
+    } else if parser.current.kind != TokenKind::Eof {
+        parser.error("EndOfFileExpected");
+    }
+    parser.errors
+}
+
+struct RecoveryReader<'a> {
+    scanner: Scanner<'a>,
+    current: Token,
+    errors: Vec<JsoncParseError>,
+}
+
+impl RecoveryReader<'_> {
+    fn error(&mut self, message: &str) {
+        let text = self.scanner.text();
+        self.errors.push(JsoncParseError::new(
+            message,
+            text[..self.current.offset].encode_utf16().count(),
+            text[self.current.offset..self.current.end()].encode_utf16().count(),
+        ));
+    }
+
+    fn next(&mut self) {
+        loop {
+            self.current = self.scanner.scan();
+            if let Some(message) = self.scanner.token_error() {
+                self.error(message);
+            }
+            match self.current.kind {
+                TokenKind::Unknown => self.error("InvalidSymbol"),
+                TokenKind::Trivia | TokenKind::LineBreak | TokenKind::LineComment | TokenKind::BlockComment => {}
+                _ => break,
+            }
+        }
+    }
+
+    fn recover(&mut self, message: &str, close: TokenKind) {
+        self.error(message);
+        while !matches!(self.current.kind, TokenKind::Eof | TokenKind::Comma)
+            && self.current.kind != close
+        {
+            self.next();
+        }
+    }
+
+    fn value(&mut self) -> bool {
+        match self.current.kind {
+            TokenKind::OpenBrace => self.container(true),
+            TokenKind::OpenBracket => self.container(false),
+            TokenKind::String | TokenKind::Number | TokenKind::True | TokenKind::False | TokenKind::Null => {
+                self.next();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn container(&mut self, object: bool) -> bool {
+        let close = if object { TokenKind::CloseBrace } else { TokenKind::CloseBracket };
+        self.next();
+        let mut needs_comma = false;
+        while self.current.kind != close && self.current.kind != TokenKind::Eof {
+            if self.current.kind == TokenKind::Comma {
+                if !needs_comma {
+                    self.error("ValueExpected");
+                }
+                self.next();
+                if self.current.kind == close {
+                    break;
+                }
+            } else if needs_comma {
+                self.error("CommaExpected");
+            }
+            if object {
+                if self.current.kind != TokenKind::String {
+                    self.recover("PropertyNameExpected", close);
+                    self.recover("ValueExpected", close);
+                } else {
+                    self.next();
+                    if self.current.kind == TokenKind::Colon {
+                        self.next();
+                        if !self.value() {
+                            self.recover("ValueExpected", close);
+                        }
+                    } else {
+                        self.recover("ColonExpected", close);
+                    }
+                }
+            } else if !self.value() {
+                self.recover("ValueExpected", close);
+            }
+            needs_comma = true;
+        }
+        if self.current.kind == close {
+            self.next();
+        } else {
+            self.error(if object { "CloseBraceExpected" } else { "CloseBracketExpected" });
+        }
+        true
+    }
 }
 
 impl<'a> Reader<'a> {

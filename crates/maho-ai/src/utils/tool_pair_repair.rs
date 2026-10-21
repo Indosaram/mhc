@@ -67,6 +67,7 @@ pub fn repair_orphaned_tool_results(messages: &[Message]) -> Vec<Message> {
                 TOOL_RESULT_PLACEHOLDER.to_owned()
             };
             output.push(Message::ToolResult(ToolResultMessage {
+                nested_calls: None,
                 tool_call_id: call.id.clone(),
                 tool_name: call.name.clone(),
                 content: vec![ContentBlock::text(text)],
@@ -126,6 +127,7 @@ mod tests {
 
     fn tool_result(id: &str, name: &str, timestamp: i64, text: &str) -> Message {
         Message::ToolResult(ToolResultMessage {
+            nested_calls: None,
             tool_call_id: id.into(),
             tool_name: name.into(),
             content: vec![ContentBlock::text(text)],
