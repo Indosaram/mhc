@@ -6,8 +6,12 @@
 
 use std::sync::OnceLock;
 
-/// The engine's own CalVer-style version. maho keeps senpi's version string shape.
-pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The engine's own CalVer-style version. maho keeps senpi's version string shape: a release build's
+/// `MHC_BUILD_VERSION` (what `mhc --version` prints), else the crate version.
+pub const ENGINE_VERSION: &str = match option_env!("MHC_BUILD_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineOrdinalScheme {
