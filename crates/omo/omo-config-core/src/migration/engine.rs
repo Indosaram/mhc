@@ -43,6 +43,7 @@ pub fn run_migration<'a>(
         return Ok(MigrationRunResult {
             diagnostics: Vec::new(),
             journal_resumed: false,
+            target_backup_path: None,
             preview: None,
             status: MigrationStatus::Locked,
         });
@@ -55,6 +56,7 @@ pub fn run_migration<'a>(
         .unwrap_or(MigrationRunResult {
             diagnostics: Vec::new(),
             journal_resumed: batch_result.journal_resumed,
+            target_backup_path: None,
             preview: None,
             status: MigrationStatus::Skipped,
         }))

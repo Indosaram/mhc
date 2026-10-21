@@ -163,5 +163,5 @@ fn placeholder_is_inert_instead_of_immediate_attach() {
 fn placeholder_keeps_single_quotes_and_percent_signs_inside_printf_arguments() {
     let cmd = build_tmux_placeholder_command("Fix Bob's 100% broken pane");
     assert!(cmd.contains(r"printf '%s\n%s\n'"));
-    assert!(cmd.contains(r#"\"OMO subagent pane ready: Fix Bob's 100% broken pane\""#));
+    assert!(cmd.contains(r"'OMO subagent pane ready: Fix Bob'\\''s 100% broken pane'"));
 }

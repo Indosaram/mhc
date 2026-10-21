@@ -4,6 +4,7 @@ import { createKernelToolPump } from "./kernel-tools-pump.js";
 import { hostDeniedError, hostToolRefusal } from "./kernel-tools-scope.js";
 import { JsWorkerRuntime } from "./worker-runtime.js";
 import { createHeapProbe } from "./worker-heap.js";
+import { readProcessFootprint } from "./process-footprint.js";
 
 // Mirrors INTERRUPT_ACK_OP and CHILD_LIFECYCLE_OP in src/bridge/reserved.ts (this worker file cannot import TypeScript).
 const INTERRUPT_ACK_OP = "interrupt-ack";
@@ -35,6 +36,11 @@ export function createWorkerCore(transport, options) {
 	});
 
 	function emit(message) {
+		if (options.processModeMemory && message.type === "result") {
+			const liveBytes = readProcessFootprint();
+			delete message.memory;
+			if (liveBytes !== undefined) message.memory = { liveBytes, measure: "footprint" };
+		}
 		transport.send(message);
 	}
 
@@ -109,12 +115,17 @@ export function createWorkerCore(transport, options) {
 				onShellWaitChange: () => {
 					if (activeCell?.interruption) emit({ type: "status", event: { op: INTERRUPT_ACK_OP, cellId: activeCell.cellId, shellWaitActive: runtime.shellWaitActive } });
 				},
-				memory: message.memory,
+				memory: options.processModeMemory ? undefined : message.memory,
 			});
 			emit({ type: "ready" });
 			return;
 		}
 		if (message.type === "memory-query") {
+			if (options.processModeMemory) {
+				const liveBytes = readProcessFootprint();
+				if (liveBytes !== undefined) emit({ type: "memory-query-result", requestId: message.requestId, liveBytes, measure: "footprint" });
+				return;
+			}
 			heapProbe ??= createHeapProbe();
 			emit({ type: "memory-query-result", requestId: message.requestId, liveBytes: Math.round(heapProbe.estimate()), measure: "heap" });
 			return;

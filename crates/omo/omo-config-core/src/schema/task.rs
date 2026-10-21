@@ -46,7 +46,7 @@ fn default_max_depth() -> Value {
 }
 
 fn default_residency_max_children() -> Value {
-    json!(8)
+    json!("unlimited")
 }
 
 fn default_ttl_ms() -> Value {
@@ -94,7 +94,7 @@ fn default_dag_max_prompt_bytes() -> Value {
 }
 
 pub fn residency_max_children_schema() -> Node {
-    union(vec![positive_integer(), literal("unlimited")])
+    union(vec![nonnegative_integer(), literal("unlimited")])
 }
 
 pub fn omo_task_wait_schema() -> Node {
@@ -208,11 +208,12 @@ pub fn omo_task_settings_schema() -> Node {
         defaulted("host_shard_prewarm", enumeration(&["off", "first-turn", "session-start"]), || json!("first-turn")),
         defaulted(
             "default_concurrency",
-            positive_integer(),
+            nonnegative_integer(),
             default_concurrency,
         ),
-        optional("provider_concurrency", record(positive_integer())),
-        optional("model_concurrency", record(positive_integer())),
+        defaulted("global_concurrency", nonnegative_integer(), || json!(8)),
+        optional("provider_concurrency", record(nonnegative_integer())),
+        optional("model_concurrency", record(nonnegative_integer())),
         defaulted("max_depth", nonnegative_integer(), default_max_depth),
         defaulted(
             "residency_max_children",
@@ -220,6 +221,7 @@ pub fn omo_task_settings_schema() -> Node {
             default_residency_max_children,
         ),
         defaulted("ttl_ms", positive_integer(), default_ttl_ms),
+        defaulted("resident_idle_timeout_ms", integer_between(1, 9_007_199_254_740_991), || json!(900000)),
         optional("state_dir", string()),
         optional("reattach_on_reconcile", boolean()),
         defaulted("resume_children", boolean(), default_resume_children),
@@ -274,12 +276,14 @@ pub fn omo_task_settings_layer_schema() -> Node {
         optional("host_engine_policy", enumeration(&["upgrade", "fallback"])),
         optional("host_idle_exit_ms", positive_integer()),
         optional("host_shard_prewarm", enumeration(&["off", "first-turn", "session-start"])),
-        optional("default_concurrency", positive_integer()),
-        optional("provider_concurrency", record(positive_integer())),
-        optional("model_concurrency", record(positive_integer())),
+        optional("default_concurrency", nonnegative_integer()),
+        optional("global_concurrency", nonnegative_integer()),
+        optional("provider_concurrency", record(nonnegative_integer())),
+        optional("model_concurrency", record(nonnegative_integer())),
         optional("max_depth", nonnegative_integer()),
         optional("residency_max_children", residency_max_children_schema()),
         optional("ttl_ms", positive_integer()),
+        optional("resident_idle_timeout_ms", integer_between(1, 9_007_199_254_740_991)),
         optional("state_dir", string()),
         optional("reattach_on_reconcile", boolean()),
         optional("resume_children", boolean()),
@@ -299,9 +303,12 @@ pub fn resolve_omo_task_settings(
     let Value::Object(mut merged) = record_value else {
         return Err(vec![crate::issue::invalid_type(&[], "object", input)]);
     };
-    if !merged.contains_key("residency_max_children") {
-        let parallelism = std::cmp::max(8, resolve_parallelism() * 3);
-        merged.insert("residency_max_children".into(), json!(parallelism));
+    if merged.get("residency_max_children").is_none_or(Value::is_null) {
+        merged.insert("residency_max_children".into(), default_residency_max_children());
+    }
+    if merged.get("global_concurrency").is_none_or(Value::is_null) {
+        let parallelism = std::cmp::max(8, resolve_parallelism().saturating_mul(2));
+        merged.insert("global_concurrency".into(), json!(parallelism));
     }
     crate::internal::validate::safe_parse(&omo_task_settings_schema(), &Value::Object(merged))
 }

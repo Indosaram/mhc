@@ -27,7 +27,7 @@ async fn fixture() -> (Arc<Lane>, Arc<ModelRuntimeHandle>) {
     .await
     .expect("harness");
     let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.expect("lane");
-    let runtime = ModelRuntimeHandle::new(ModelRuntime::create(CreateModelRuntimeOptions::default()).await);
+    let runtime = ModelRuntimeHandle::new(ModelRuntime::create(CreateModelRuntimeOptions::default()).await.expect("valid model runtime"));
     (lane, runtime)
 }
 
@@ -111,8 +111,8 @@ async fn abort_without_an_operation_reports_it() {
 
 #[tokio::test]
 async fn models_login_rejects_an_unknown_provider() {
-    let runtime = ModelRuntimeHandle::new(ModelRuntime::create(CreateModelRuntimeOptions::default()).await);
-    let service = ModelsService::new(runtime, Arc::new(|_event| {})).await;
+    let runtime = ModelRuntimeHandle::new(ModelRuntime::create(CreateModelRuntimeOptions::default()).await.expect("valid model runtime"));
+    let service = ModelsService::new(runtime, Arc::new(|_event| {})).await.expect("valid model service inventory");
     match service.login("definitely-not-a-provider", AuthType::Oauth).await {
         CommandResult::Error(message) => assert!(message.contains("Unknown provider"), "unexpected error: {message}"),
         CommandResult::Ok => panic!("unknown provider accepted"),
@@ -190,7 +190,7 @@ async fn worker_model_runtime_resolves_the_initial_model_from_the_agent_models_j
         .to_string(),
     )
     .unwrap();
-    let runtime = ModelRuntime::create(model_runtime_options(&agent.to_string_lossy())).await;
+    let runtime = ModelRuntime::create(model_runtime_options(&agent.to_string_lossy())).await.expect("valid model runtime");
     let initial = find_initial_model(
         InitialModelOptions { cli_provider: None, cli_model: None, scoped_models: &[], is_continuing: false, default_provider: Some("offline"), default_model_id: Some("offline"), model_thinking_levels: None },
         &runtime,

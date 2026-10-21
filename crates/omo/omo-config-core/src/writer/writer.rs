@@ -1,5 +1,6 @@
 use crate::internal::jsonc::parse_jsonc_safe;
-use crate::internal::jsonc::{FormattingOptions, ModificationOptions, apply_edits, modify};
+use crate::internal::jsonc::{FormattingOptions, ModificationOptions};
+use crate::writer::surgical_edit::apply_omo_config_edit;
 use crate::internal::posix_path::{posix_dirname, posix_join};
 use crate::loader::paths::{process_env, resolve_user_omo_config_path};
 use crate::loader::types::OmoConfigEnv;
@@ -230,17 +231,60 @@ pub fn update_omo_config(
 
     let mut next_content = content;
     for edit in &options.edits {
-        let edits = modify(
-            &next_content,
-            &edit.path,
-            edit.value.as_ref(),
-            &formatting_options(),
-        )
-        .map_err(|error| OmoConfigWriteError::new(&path, "parse", error))?;
-        next_content = apply_edits(&next_content, &edits)
-            .map_err(|error| OmoConfigWriteError::new(&path, "write", error))?;
+        next_content = apply_omo_config_edit(&next_content, edit)
+            .map_err(|error| {
+                let operation = if error == crate::internal::jsonc::JsoncEditError::OverlappingEdit {
+                    "write"
+                } else {
+                    "parse"
+                };
+                OmoConfigWriteError::new(&path, operation, error)
+            })?;
     }
 
     write_atomically(&path, &next_content, file_system)?;
     Ok(UpdateOmoConfigResult { backup_path, path })
+}
+
+#[cfg(test)]
+mod parity_5138_tests {
+    use super::*;
+    use crate::issue::PathSegment;
+    use crate::writer::types::OmoConfigEdit;
+
+    #[test]
+    fn writer_reports_every_recovered_parse_error_before_touching_the_file() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("omo.jsonc");
+        let content = "{\"a\":,\"b\":}";
+        std::fs::write(&path, content).expect("fixture");
+        let error = update_omo_config(&UpdateOmoConfigOptions {
+            target_path: Some(path.to_string_lossy().to_string()),
+            timestamp: Some("fixed".to_string()),
+            edits: vec![OmoConfigEdit::set(vec![PathSegment::Key("c".to_string())], serde_json::json!(3))],
+            ..UpdateOmoConfigOptions::default()
+        }).expect_err("invalid jsonc must not be edited");
+        assert_eq!(error.operation, "parse");
+        assert_eq!(error.detail, "ValueExpected at offset 5, ValueExpected at offset 10");
+        assert_eq!(std::fs::read_to_string(&path).expect("unchanged"), content);
+    }
+
+    #[test]
+    fn writer_routes_insertions_and_removals_through_surgical_edit() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("omo.jsonc");
+        let content = "{\r\n\t\"a\": 1, // keep\r\n\t\"b\": 2\r\n}\r\n";
+        std::fs::write(&path, content).expect("fixture");
+        let result = update_omo_config(&UpdateOmoConfigOptions {
+            target_path: Some(path.to_string_lossy().to_string()),
+            timestamp: Some("fixed".to_string()),
+            edits: vec![
+                OmoConfigEdit::set(vec![PathSegment::Key("c".to_string())], serde_json::json!(3)),
+                OmoConfigEdit::remove(vec![PathSegment::Key("b".to_string())]),
+            ],
+            ..UpdateOmoConfigOptions::default()
+        }).expect("write");
+        assert_eq!(std::fs::read_to_string(&path).expect("result"), "{\r\n\t\"a\": 1, // keep\r\n\t\"c\": 3\r\n}\r\n");
+        assert_eq!(std::fs::read_to_string(result.backup_path.expect("backup path")).expect("backup"), content);
+    }
 }
