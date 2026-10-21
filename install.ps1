@@ -31,11 +31,18 @@ $base = if ($version -eq 'latest') { "https://github.com/$repo/releases/latest/d
 
 function Get-PayloadVersion([string]$exe) {
     if (-not (Test-Path -LiteralPath $exe)) { return $null }
+    # Windows PowerShell 5.1: `2>$null` under $ErrorActionPreference 'Stop' makes the first native
+    # stderr line a terminating error, and piping into Select-Object -First 1 stops the process
+    # before $LASTEXITCODE is set. $null -ne 0, so a successful `--version` comes back empty.
+    $ErrorActionPreference = 'Continue'
     try {
-        $line = (& $exe --version 2>$null | Select-Object -First 1)
-        if ($LASTEXITCODE -ne 0 -or -not $line) { return $null }
-        return ([string]$line).Trim() -replace '^[vV]', ''
+        $output = & $exe --version 2>$null
+        $code = $LASTEXITCODE
     } catch { return $null }
+    if ($code -ne 0 -or -not $output) { return $null }
+    $line = @($output) | Select-Object -First 1
+    if (-not $line) { return $null }
+    return ([string]$line).Trim() -replace '^[vV]', ''
 }
 
 function Test-VersionName([string]$name) {
