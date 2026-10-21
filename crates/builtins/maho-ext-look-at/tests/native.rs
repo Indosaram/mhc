@@ -6,7 +6,7 @@ impl maho_ext_api::ModelRegistry for VisionRegistry {
     fn find(&self,_:&str,_:&str)->Option<maho_ext_api::Model>{Some(self.0.clone())}
     fn has_configured_auth(&self,_:&maho_ext_api::Model)->bool{true}
     fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->maho_ext_api::ExtensionFuture<'a,Option<String>>{Box::pin(async{panic!("provider fallback forbidden")})}
-    fn get_api_key_and_headers<'a>(&'a self,model:&'a maho_ext_api::Model)->maho_ext_api::ExtensionFuture<'a,maho_ext_api::ResolvedRequestAuth>{Box::pin(async move{assert_eq!(model.id,self.0.id);Ok(maho_ext_api::ResolvedRequestAuth{auth:maho_ai::models::ProviderAuthResult{api_key:Some("fixture".into()),headers:None,base_url:None},extra_body:None,upstream_model_id:None,service_tier:None,env:None})})}
+    fn get_api_key_and_headers<'a>(&'a self,model:&'a maho_ext_api::Model)->maho_ext_api::ExtensionFuture<'a,maho_ext_api::ResolvedRequestAuth>{Box::pin(async move{assert_eq!(model.id,self.0.id);Ok(maho_ext_api::ResolvedRequestAuth{ambient:false,auth:maho_ai::models::ProviderAuthResult{api_key:Some("fixture".into()),headers:None,base_url:None},extra_body:None,upstream_model_id:None,service_tier:None,env:None})})}
 }
 impl maho_ext_api::Extension for ActiveLook {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi) {

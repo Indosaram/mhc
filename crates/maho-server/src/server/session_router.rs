@@ -1,8 +1,12 @@
 use super::{
     errors::ServerError,
-    types::{Context, Publisher, RoutedSessionAttachment, RoutedSessionHandle, ServerFuture, ServerHost},
+    types::{
+        Context, Publisher, RoutedSessionAttachment, RoutedSessionHandle, ServerFuture, ServerHost,
+    },
 };
-use serde_json::{Value, json};
+use maho_chord::context::BACKGROUND_CONTEXT;
+use maho_chord::types::JsonValue as Value;
+use crate::transport_json as json;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -16,7 +20,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 pub type RouterErrorReporter = Arc<dyn Fn(ServerError) + Send + Sync>;
 /// Publishes `attachment:null` to the owning client after the router releases its attachment
 /// (pinned `clearAttachment` with publish=true).
-pub type DetachNotifier = Arc<dyn Fn() -> ServerFuture<'static, ()> + Send + Sync>;
+pub type DetachNotifier = Arc<dyn Fn(Context) -> ServerFuture<'static, ()> + Send + Sync>;
 
 pub struct Attachment {
     pub target: Value,
@@ -25,13 +29,16 @@ pub struct Attachment {
     /// concurrently on one attachment, and release takes the write side to wait for them.
     client_lock: RwLock<()>,
     released: AtomicBool,
-    release_result: tokio::sync::OnceCell<Result<(),ServerError>>,
+    release_result: tokio::sync::OnceCell<Result<(), ServerError>>,
     detach_notifier: std::sync::Mutex<Option<DetachNotifier>>,
 }
 impl Attachment {
     /// Register the owning client's detach publisher for router-initiated releases.
     pub fn set_detach_notifier(&self, notifier: DetachNotifier) {
-        *self.detach_notifier.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(notifier);
+        *self
+            .detach_notifier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(notifier);
     }
     pub async fn invoke(
         &self,
@@ -45,12 +52,15 @@ impl Attachment {
         }
         self.lease.invoke_service(call, publish, context).await
     }
-    pub async fn release(&self) -> Result<(), ServerError> {
-        self.release_result.get_or_init(||async {
-            let _client = self.client_lock.write().await;
-            self.released.store(true, Ordering::SeqCst);
-            self.lease.release().await
-        }).await.clone()
+    pub async fn release(&self, context: Context) -> Result<(), ServerError> {
+        self.release_result
+            .get_or_init(|| async {
+                let _client = self.client_lock.write().await;
+                self.released.store(true, Ordering::SeqCst);
+                self.lease.release(context).await
+            })
+            .await
+            .clone()
     }
 }
 
@@ -62,15 +72,27 @@ pub struct SessionRouter {
     admissions: RwLock<()>,
     attachments: Mutex<BTreeMap<String, Vec<Weak<Attachment>>>>,
     closing: AtomicBool,
-    close_result: tokio::sync::OnceCell<Result<(),ServerError>>,
+    close_result: tokio::sync::OnceCell<Result<(), ServerError>>,
     self_weak: std::sync::Mutex<Weak<SessionRouter>>,
     invalidations: watch::Sender<u64>,
     report_error: RouterErrorReporter,
 }
-struct OpenSlot { receiver: watch::Receiver<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>> }
-enum Acquire { Wait(Arc<OpenSlot>), Lead(watch::Sender<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>>, Arc<OpenSlot>) }
+struct OpenSlot {
+    receiver: watch::Receiver<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>>,
+}
+enum Acquire {
+    Wait(Arc<OpenSlot>),
+    Lead(
+        watch::Sender<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>>,
+        Arc<OpenSlot>,
+    ),
+}
 impl SessionRouter {
-    pub fn new(host: Arc<dyn ServerHost>, server_id: String, report_error: RouterErrorReporter) -> Self {
+    pub fn new(
+        host: Arc<dyn ServerHost>,
+        server_id: String,
+        report_error: RouterErrorReporter,
+    ) -> Self {
         Self {
             host,
             server_id,
@@ -86,17 +108,24 @@ impl SessionRouter {
         }
     }
     pub fn bind_self(self: &Arc<Self>) {
-        *self.self_weak.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::downgrade(self);
+        *self
+            .self_weak
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::downgrade(self);
     }
-    pub async fn attach(&self, session_id: &str) -> Result<Arc<Attachment>, ServerError> {
-        let _admission=self.admissions.read().await;
+    pub async fn attach(
+        &self,
+        session_id: &str,
+        context: Context,
+    ) -> Result<Arc<Attachment>, ServerError> {
+        let _admission = self.admissions.read().await;
         if self.closing.load(Ordering::SeqCst) {
             return Err(ServerError::draining());
         }
-        let handle = self.acquire(session_id).await?;
-        let lease = handle.attach_client().await?;
+        let handle = self.acquire(session_id, context.clone()).await?;
+        let lease = handle.attach_client(context.clone()).await?;
         if self.closing.load(Ordering::SeqCst) {
-            lease.release().await?;
+            lease.release(context).await?;
             return Err(ServerError::draining());
         }
         let attachment = Arc::new(Attachment {
@@ -108,8 +137,15 @@ impl SessionRouter {
             detach_notifier: std::sync::Mutex::new(None),
         });
         let mut attachments = self.attachments.lock().await;
-        if self.closing.load(Ordering::SeqCst) || !self.hosted.lock().await.get(session_id).is_some_and(|current|Arc::ptr_eq(current,&handle)) {
-            attachment.release().await?;
+        if self.closing.load(Ordering::SeqCst)
+            || !self
+                .hosted
+                .lock()
+                .await
+                .get(session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &handle))
+        {
+            attachment.release(context).await?;
             return Err(ServerError::draining());
         }
         let leases = attachments.entry(session_id.into()).or_default();
@@ -117,7 +153,11 @@ impl SessionRouter {
         leases.push(Arc::downgrade(&attachment));
         Ok(attachment)
     }
-    async fn acquire(&self, session_id: &str) -> Result<Arc<dyn RoutedSessionHandle>, ServerError> {
+    async fn acquire(
+        &self,
+        session_id: &str,
+        context: Context,
+    ) -> Result<Arc<dyn RoutedSessionHandle>, ServerError> {
         loop {
             if let Some(handle) = self.hosted.lock().await.get(session_id).cloned() {
                 return Ok(handle);
@@ -139,19 +179,31 @@ impl SessionRouter {
                 Acquire::Wait(slot) => {
                     let mut receiver = slot.receiver.clone();
                     loop {
-                        if let Some(result) = receiver.borrow_and_update().clone() { return result; }
-                        if receiver.changed().await.is_err() { break; }
+                        if let Some(result) = receiver.borrow_and_update().clone() {
+                            return result;
+                        }
+                        if receiver.changed().await.is_err() {
+                            break;
+                        }
                     }
                     let mut opening = self.opening.lock().await;
-                    if opening.get(session_id).and_then(Weak::upgrade).is_some_and(|current| Arc::ptr_eq(&current, &slot)) {
+                    if opening
+                        .get(session_id)
+                        .and_then(Weak::upgrade)
+                        .is_some_and(|current| Arc::ptr_eq(&current, &slot))
+                    {
                         opening.remove(session_id);
                     }
                 }
                 Acquire::Lead(sender, slot) => {
-                    let result = self.open(session_id).await;
+                    let result = self.open(session_id, context.clone()).await;
                     sender.send_replace(Some(result.clone()));
                     let mut opening = self.opening.lock().await;
-                    if opening.get(session_id).and_then(Weak::upgrade).is_some_and(|current| Arc::ptr_eq(&current, &slot)) {
+                    if opening
+                        .get(session_id)
+                        .and_then(Weak::upgrade)
+                        .is_some_and(|current| Arc::ptr_eq(&current, &slot))
+                    {
                         opening.remove(session_id);
                     }
                     return result;
@@ -159,22 +211,38 @@ impl SessionRouter {
             }
         }
     }
-    async fn open(&self, session_id: &str) -> Result<Arc<dyn RoutedSessionHandle>, ServerError> {
-        let metadata = self.host.resolve_session(session_id).await?;
-        let handle = self.host.open_session(metadata).await?;
+    async fn open(
+        &self,
+        session_id: &str,
+        context: Context,
+    ) -> Result<Arc<dyn RoutedSessionHandle>, ServerError> {
+        let metadata = self
+            .host
+            .resolve_session(session_id, context.clone())
+            .await?;
+        let handle = self.host.open_session(metadata, context.clone()).await?;
         if self.closing.load(Ordering::SeqCst) {
-            handle.close().await?;
+            handle.close(context).await?;
             return Err(ServerError::draining());
         }
-        self.hosted.lock().await.insert(session_id.into(), handle.clone());
+        self.hosted
+            .lock()
+            .await
+            .insert(session_id.into(), handle.clone());
         if let Some(terminated) = handle.terminated() {
-            let router = self.self_weak.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade();
+            let router = self
+                .self_weak
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .upgrade();
             if let Some(router) = router {
                 let session_id = session_id.to_owned();
                 let handle_for_task = handle.clone();
                 tokio::spawn(async move {
                     let error = terminated.await;
-                    router.invalidate(&session_id, &handle_for_task, error).await;
+                    router
+                        .invalidate(&session_id, &handle_for_task, error)
+                        .await;
                 });
             }
         }
@@ -182,15 +250,23 @@ impl SessionRouter {
     }
     /// Subscribe before triggering termination; the count increments once each watcher's
     /// invalidation (including a stale no-op) has fully processed. Test/monitor support.
-    pub fn invalidation_events(&self) -> watch::Receiver<u64> { self.invalidations.subscribe() }
+    pub fn invalidation_events(&self) -> watch::Receiver<u64> {
+        self.invalidations.subscribe()
+    }
     /// Tell the attachment's client it was detached; publish failures are reported.
-    async fn publish_detach(&self, attachment: &Attachment) {
-        let notifier = attachment.detach_notifier.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        if let Some(notifier) = notifier && let Err(error) = notifier().await {
+    async fn publish_detach(&self, attachment: &Attachment, context: Context) {
+        let notifier = attachment
+            .detach_notifier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(notifier) = notifier
+            && let Err(error) = notifier(context).await
+        {
             (self.report_error)(error);
         }
     }
-    pub async fn remove(&self, session_id: &str) -> Result<(), ServerError> {
+    pub async fn remove(&self, session_id: &str, context: Context) -> Result<(), ServerError> {
         if self.closing.load(Ordering::SeqCst) {
             return Err(ServerError::draining());
         }
@@ -201,10 +277,14 @@ impl SessionRouter {
         };
         let mut errors = Vec::new();
         for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
-            if let Err(error) = lease.release().await { errors.push(error.message); }
-            self.publish_detach(&lease).await;
+            if let Err(error) = lease.release(context.clone()).await {
+                errors.push(error.message);
+            }
+            self.publish_detach(&lease, context.clone()).await;
         }
-        if let Some(handle) = handle && let Err(error) = handle.close().await {
+        if let Some(handle) = handle
+            && let Err(error) = handle.close(context).await
+        {
             errors.push(error.message);
         }
         if !errors.is_empty() {
@@ -212,15 +292,26 @@ impl SessionRouter {
         }
         Ok(())
     }
-    pub async fn close(&self) -> Result<(), ServerError> {
+    pub async fn close(&self, context: Context) -> Result<(), ServerError> {
         self.closing.store(true, Ordering::SeqCst);
-        self.close_result.get_or_init(||self.close_internal()).await.clone()
+        self.close_result
+            .get_or_init(|| self.close_internal(context))
+            .await
+            .clone()
     }
-    async fn invalidate(&self, session_id: &str, handle: &Arc<dyn RoutedSessionHandle>, error: Option<ServerError>) {
+    async fn invalidate(
+        &self,
+        session_id: &str,
+        handle: &Arc<dyn RoutedSessionHandle>,
+        error: Option<ServerError>,
+    ) {
         let leases = {
             let mut attachments = self.attachments.lock().await;
             let mut hosted = self.hosted.lock().await;
-            if !hosted.get(session_id).is_some_and(|current| Arc::ptr_eq(current, handle)) {
+            if !hosted
+                .get(session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, handle))
+            {
                 None
             } else {
                 hosted.remove(session_id);
@@ -229,23 +320,42 @@ impl SessionRouter {
         };
         if let Some(leases) = leases {
             for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
-                if let Err(release) = lease.release().await { (self.report_error)(release); }
-                self.publish_detach(&lease).await;
+                if let Err(release) = lease.release(BACKGROUND_CONTEXT.clone()).await {
+                    (self.report_error)(release);
+                }
+                self.publish_detach(&lease, BACKGROUND_CONTEXT.clone())
+                    .await;
             }
-            if let Some(error) = error { (self.report_error)(error); }
+            if let Some(error) = error {
+                (self.report_error)(error);
+            }
         }
         self.invalidations.send_modify(|count| *count += 1);
     }
-    async fn close_internal(&self) -> Result<(), ServerError> {
-        let admissions=self.admissions.write().await;
+    async fn close_internal(&self, context: Context) -> Result<(), ServerError> {
+        let admissions = self.admissions.write().await;
         let attachments = std::mem::take(&mut *self.attachments.lock().await);
         let handles = std::mem::take(&mut *self.hosted.lock().await);
         let mut errors = Vec::new();
-        let leases=attachments.into_values().flatten().filter_map(|lease|lease.upgrade()).collect::<Vec<_>>();
-        for result in futures_util::future::join_all(leases.iter().map(|lease|lease.release())).await {
-            if let Err(error) = result { errors.push(error.message); }
+        let leases = attachments
+            .into_values()
+            .flatten()
+            .filter_map(|lease| lease.upgrade())
+            .collect::<Vec<_>>();
+        for result in futures_util::future::join_all(
+            leases.iter().map(|lease| lease.release(context.clone())),
+        )
+        .await
+        {
+            if let Err(error) = result {
+                errors.push(error.message);
+            }
         }
-        for result in futures_util::future::join_all(handles.values().map(|handle|handle.close())).await {
+        for result in futures_util::future::join_all(
+            handles.values().map(|handle| handle.close(context.clone())),
+        )
+        .await
+        {
             if let Err(error) = result {
                 errors.push(error.message);
             }
@@ -254,7 +364,7 @@ impl SessionRouter {
         // waiting on admissions, and publishing takes that same lock.
         drop(admissions);
         for lease in &leases {
-            self.publish_detach(lease).await;
+            self.publish_detach(lease, context.clone()).await;
         }
         if errors.is_empty() {
             Ok(())

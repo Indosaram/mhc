@@ -7,7 +7,9 @@
 //! the CLI setup.
 
 use crate::images_api_registry::register_builtin_images_api_provider;
-use crate::types::{AssistantImages, BoxFuture, ImagesContext, ImagesModel, ImagesOptions, ProviderImages};
+use crate::types::{
+    AssistantImages, BoxFuture, ImagesContext, ImagesModel, ImagesOptions, ProviderImages,
+};
 use std::sync::{Arc, Once};
 
 struct OpenRouterImages;
@@ -18,8 +20,10 @@ impl ProviderImages for OpenRouterImages {
         model: &'a ImagesModel,
         context: &'a ImagesContext,
         options: Option<ImagesOptions>,
-    ) -> BoxFuture<'a, AssistantImages> {
-        Box::pin(crate::api::openrouter_images::generate_images(model, context, options))
+    ) -> BoxFuture<'a, Result<AssistantImages, String>> {
+        Box::pin(async move {
+            Ok(crate::api::openrouter_images::generate_images(model, context, options).await)
+        })
     }
 }
 
@@ -31,8 +35,10 @@ impl ProviderImages for OpenAiImages {
         model: &'a ImagesModel,
         context: &'a ImagesContext,
         options: Option<ImagesOptions>,
-    ) -> BoxFuture<'a, AssistantImages> {
-        Box::pin(crate::api::openai_images::generate_images(model, context, options))
+    ) -> BoxFuture<'a, Result<AssistantImages, String>> {
+        Box::pin(async move {
+            Ok(crate::api::openai_images::generate_images(model, context, options).await)
+        })
     }
 }
 
@@ -64,7 +70,9 @@ mod tests {
     fn registers_a_lazy_generate_images_for_each_builtin_images_api() {
         ensure_built_in_images_api_providers();
         for api in ["openai-images", "openrouter-images"] {
-            let provider = get_images_api_provider(api).expect("registry").expect("builtin registered");
+            let provider = get_images_api_provider(api)
+                .expect("registry")
+                .expect("builtin registered");
             assert_eq!(provider.api, api);
         }
     }

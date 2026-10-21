@@ -25,7 +25,7 @@ use std::sync::{Arc, RwLock};
 /// once a credential exists, `refresh_models` replaces it with the account's real lanes and KEEPS
 /// the seed whenever discovery fails or reports nothing, because publishing an empty catalog would
 /// strip a working provider.
-pub fn devin_provider() -> Arc<dyn Provider> {
+pub fn devin_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     let mut api = IndexMap::new();
     api.insert("devin-agent".to_owned(), builtin_api_streams("devin-agent"));
     let seed = super::devin_models::devin_models();
@@ -39,9 +39,10 @@ pub fn devin_provider() -> Arc<dyn Provider> {
         fetch_models: None,
         restore_models: None,
         filter_models: None,
+        images: indexmap::IndexMap::new(),
         api: ProviderApi::ByApi(api),
-    });
-    Arc::new(DevinProvider { provider, models: Arc::new(RwLock::new(seed)), client: reqwest::Client::new() })
+    })?;
+    Ok(Arc::new(DevinProvider { provider, models: Arc::new(RwLock::new(seed)), client: reqwest::Client::new() }))
 }
 
 /// `{ ...provider, getModels, refreshModels }`: the created provider with its catalog replaced.
@@ -217,7 +218,7 @@ mod tests {
         let store: Arc<dyn ModelsStore> = Arc::new(InMemoryModelsStore::new());
         store.write("devin", &stale, None).await.expect("seed store");
         let models = create_models(Some(CreateModelsOptions { models_store: Some(store), auth: Some(Arc::new(StoredOnlyAuth)) }));
-        models.set_provider(devin_provider());
+        models.set_provider(devin_provider().expect("provider"));
 
         let result = models.refresh(ModelsRefreshOptions { allow_network: Some(false), ..ModelsRefreshOptions::default() }).await;
         assert!(result.errors.is_empty());

@@ -1,18 +1,38 @@
-use std::{cell::{Cell, RefCell}, path::PathBuf, rc::Rc, sync::Arc};
 use maho_tui::{components::editor::EditorTuiHost, terminal::Terminal, tui::Component};
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+};
 
-use super::shared_host::{is_truthy_env_flag, join_shared_host, should_join_shared_host, shared_host_setting_enabled, SharedHostMount, SHARED_HOST_ENABLE_ENV_SUFFIX};
+use super::shared_host::{
+    SHARED_HOST_ENABLE_ENV_SUFFIX, SharedHostMount, is_truthy_env_flag, join_shared_host,
+    shared_host_setting_enabled, should_join_shared_host,
+};
 
-struct EditorHost { rows: Cell<usize>, render: Cell<bool>, full_redraws: Cell<u64> }
+struct EditorHost {
+    rows: Cell<usize>,
+    render: Cell<bool>,
+    full_redraws: Cell<u64>,
+}
 impl EditorTuiHost for EditorHost {
-    fn request_render(&self) { self.render.set(true); }
-    fn terminal_rows(&self) -> usize { self.rows.get() }
-    fn full_redraws(&self) -> u64 { self.full_redraws.get() }
+    fn request_render(&self) {
+        self.render.set(true);
+    }
+    fn terminal_rows(&self) -> usize {
+        self.rows.get()
+    }
+    fn full_redraws(&self) -> u64 {
+        self.full_redraws.get()
+    }
 }
 
 struct RenderedMode(Vec<String>);
 impl Component for RenderedMode {
-    fn render(&mut self, _width: usize) -> Vec<String> { self.0.clone() }
+    fn render(&mut self, _width: usize) -> Vec<String> {
+        self.0.clone()
+    }
     fn invalidate(&mut self) {}
 }
 
@@ -22,19 +42,28 @@ impl Component for RenderedMode {
 /// terminal height (senpi `chat-viewport.ts` `follow: "end"`).
 struct LinesBuffer(Rc<RefCell<Vec<String>>>);
 impl Component for LinesBuffer {
-    fn render(&mut self, _width: usize) -> Vec<String> { self.0.borrow().clone() }
+    fn render(&mut self, _width: usize) -> Vec<String> {
+        self.0.borrow().clone()
+    }
     fn invalidate(&mut self) {}
 }
 
 /// senpi `main.ts`: join the shared session host before the interactive runtime is mounted, using
 /// the policy in `core/shared-host-policy.ts`.
-pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession, parsed: &super::args::Args) -> Option<SharedHostMount> {
+pub async fn mount_shared_host(
+    session: &maho_core::agent_session::AgentSession,
+    parsed: &super::args::Args,
+) -> Option<SharedHostMount> {
     let env = maho_core::config::current_env();
     let enable_env = is_truthy_env_flag(
         maho_core::brand::env_value(SHARED_HOST_ENABLE_ENV_SUFFIX, &env).as_deref(),
     );
     let setting_enabled = session.with_settings_manager(shared_host_setting_enabled);
-    if !should_join_shared_host(maho_core::project_trust::AppMode::Interactive, enable_env, setting_enabled) {
+    if !should_join_shared_host(
+        maho_core::project_trust::AppMode::Interactive,
+        enable_env,
+        setting_enabled,
+    ) {
         return None;
     }
     let agent_dir = session.agent_dir();
@@ -51,31 +80,85 @@ pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession,
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, extensions: Vec<maho_ext_api::LoadedExtension>, mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<maho_interactive::interactive_extension_ui::UiRequest>, migrated_providers: Vec<String>, model_fallback_message: Option<String>, startup_benchmark: bool) -> Result<(), String> {
-    use maho_interactive::{interactive_mode::{InteractiveMode, InteractiveModeOptions}, tui_renderer::TuiMode};
+pub async fn run(
+    session: Arc<maho_core::agent_session::AgentSession>,
+    parsed: &super::args::Args,
+    initial: super::initial_message::InitialMessageResult,
+    extensions: Vec<maho_ext_api::LoadedExtension>,
+    mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<
+        maho_interactive::interactive_extension_ui::UiRequest,
+    >,
+    migrated_providers: Vec<String>,
+    model_fallback_message: Option<String>,
+    startup_benchmark: bool,
+) -> Result<(), String> {
+    use maho_interactive::{
+        interactive_mode::{InteractiveMode, InteractiveModeOptions},
+        tui_renderer::TuiMode,
+    };
+    let (notice_sender, mut notices) = tokio::sync::mpsc::unbounded_channel::<StartupNotice>();
+    let version_sender = notice_sender.clone();
+    tokio::spawn(async move {
+        if let Some(release) = crate::native_update::release::available_cached().await {
+            let _ = version_sender.send(StartupNotice::NewVersion(release));
+        }
+    });
     let shared_host = mount_shared_host(&session, parsed).await;
-    if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { maho_core::output_guard::maho_write_stderr(&format!("{message}\n")); }
-    let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
+    if let Some(message) = shared_host
+        .as_ref()
+        .and_then(SharedHostMount::warning_message)
+    {
+        maho_core::output_guard::maho_write_stderr(&format!("{message}\n"));
+    }
+    let theme_setting = parsed
+        .use_theme
+        .clone()
+        .or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
     // senpi `applyGrokNeoThemeFallback`: grok-night until the user chooses a theme (never persisted).
     let theme_setting = theme_setting.or_else(|| parsed.grok_neo.then(|| "grok-night".to_owned()));
-    let (theme, registered_themes) = resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
+    let (theme, registered_themes) =
+        resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
     let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
-    let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true), full_redraws: Cell::new(0) });
+    let host = Rc::new(EditorHost {
+        rows: Cell::new(usize::from(terminal.rows())),
+        render: Cell::new(true),
+        full_redraws: Cell::new(0),
+    });
     // senpi main.ts:1192-1195 `autoTrustOnReloadCwd`.
     let session_cwd = session.with_session_manager(|manager| manager.cwd().to_owned());
     let auto_trust_on_reload_cwd = (parsed.project_trust_override.is_none()
-        && !maho_core::trust_manager::has_trust_requiring_project_resources(&session_cwd, None)).then_some(session_cwd);
-    let mut mode = InteractiveMode::new_with_options(session.clone(), theme.clone(), host.clone(), InteractiveModeOptions {
-        verbose: parsed.verbose,
-        chrome: parsed.grok_neo.then(|| maho_interactive::grok::chrome::GrokChrome::new(theme.clone())),
-        migrated_providers,
-        model_fallback_message,
-        auto_trust_on_reload_cwd,
-        initial_title_prompt: initial.initial_title_prompt.clone(),
-    });
-    *mode.extension_ui.registered_themes.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registered_themes;
-    *mode.extension_ui.builtin_theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PathBuf::from(crate::config::get_themes_dir()));
-    if let Some(host) = shared_host.as_ref().and_then(|mount| mount.outcome.session_host()) {
+        && !maho_core::trust_manager::has_trust_requiring_project_resources(&session_cwd, None))
+    .then_some(session_cwd);
+    let mut mode = InteractiveMode::new_with_options(
+        session.clone(),
+        theme.clone(),
+        host.clone(),
+        InteractiveModeOptions {
+            verbose: parsed.verbose,
+            chrome: parsed
+                .grok_neo
+                .then(|| maho_interactive::grok::chrome::GrokChrome::new(theme.clone())),
+            migrated_providers,
+            model_fallback_message,
+            auto_trust_on_reload_cwd,
+            initial_title_prompt: initial.initial_title_prompt.clone(),
+        },
+    );
+    *mode
+        .extension_ui
+        .registered_themes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = registered_themes;
+    *mode
+        .extension_ui
+        .builtin_theme_directory
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(PathBuf::from(crate::config::get_themes_dir()));
+    if let Some(host) = shared_host
+        .as_ref()
+        .and_then(|mount| mount.outcome.session_host())
+    {
         mode.set_session_host(host);
     }
     mode.rebuild_history();
@@ -86,24 +169,54 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     // senpi: ensure fd and rg (download when missing, honouring offline mode) after the header is up;
     // fd feeds the `@` file-mention search.
     {
-        use crate::utils::tools_manager::{ensure_tool, Tool, ToolStatus};
+        use crate::utils::tools_manager::{Tool, ToolStatus, ensure_tool};
         let statuses = RefCell::new(Vec::<ToolStatus>::new());
         let (fd_path, _rg_path) = tokio::join!(
             ensure_tool(Tool::Fd, |status| statuses.borrow_mut().push(status)),
             ensure_tool(Tool::Rg, |status| statuses.borrow_mut().push(status)),
         );
-        for status in statuses.into_inner() { mode.show_managed_tool_status(status.kind, &status.message); }
+        for status in statuses.into_inner() {
+            mode.show_managed_tool_status(status.kind, &status.message);
+        }
         mode.set_fd_path(fd_path);
     }
     mode.show_startup_warnings();
+    if let Some(notice) = crate::legacy_pi_edits::legacy_pi_edit_startup_notice(
+        std::path::Path::new(&session.agent_dir()),
+        std::path::Path::new(&maho_core::config::home_dir()),
+    ) {
+        mode.show_warning(&notice);
+    }
     // senpi `options.tuiMode ?? settingsManager.getTuiMode()`: the flag, then the persisted setting.
-    let fullscreen = parsed.tui_mode.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("tuiMode"))).as_deref() == Some("fullscreen");
+    let fullscreen = parsed
+        .tui_mode
+        .clone()
+        .or_else(|| session.with_settings_manager(|settings| settings.get_string("tuiMode")))
+        .as_deref()
+        == Some("fullscreen");
     let document_lines = Rc::new(RefCell::new(Vec::<String>::new()));
     let dock_lines = Rc::new(RefCell::new(Vec::<String>::new()));
     let rendered = Rc::new(RefCell::new(RenderedMode(Vec::new())));
     // senpi `onRightClickPaste`: the alternate screen flags the press; the loop reads the clipboard.
     let right_click_paste = Rc::new(Cell::new(false));
-    let MountedScreen { mut screen, mut component, mut transcript } = mount_screen(&session, if fullscreen { TuiMode::Fullscreen } else { TuiMode::Regular }, theme, mode.terminal_settings().0, &right_click_paste, &document_lines, &dock_lines, &rendered);
+    let MountedScreen {
+        mut screen,
+        mut component,
+        mut transcript,
+    } = mount_screen(
+        &session,
+        if fullscreen {
+            TuiMode::Fullscreen
+        } else {
+            TuiMode::Regular
+        },
+        theme,
+        mode.terminal_settings().0,
+        &right_click_paste,
+        &document_lines,
+        &dock_lines,
+        &rendered,
+    );
     let mut fullscreen = fullscreen;
     // senpi focuses the editor (`ui.setFocus(this.editor)`); a focused editor emits the cursor
     // marker the renderer turns into the per-frame hardware cursor restore (row move + absolute
@@ -115,30 +228,36 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     // the caller's `session_shutdown`); SIGWINCH re-reports the width to a mounted shared host.
     #[cfg(unix)]
     let mut signals = {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let install = |kind: SignalKind| signal(kind).map_err(|error| error.to_string());
-        (install(SignalKind::terminate())?, install(SignalKind::hangup())?, install(SignalKind::window_change())?)
+        (
+            install(SignalKind::terminate())?,
+            install(SignalKind::hangup())?,
+            install(SignalKind::window_change())?,
+        )
     };
     // senpi `run()`: the version check and tmux probe start asynchronously; their notices land in
     // the transcript when they resolve.
-    let (notice_sender, mut notices) = tokio::sync::mpsc::unbounded_channel::<StartupNotice>();
-    let version_sender = notice_sender.clone();
     tokio::spawn(async move {
-        if let Some(release) = crate::utils::version_check::check_for_new_version(env!("CARGO_PKG_VERSION")).await {
-            let _ = version_sender.send(StartupNotice::NewVersion(release.version));
-        }
-    });
-    tokio::spawn(async move {
-        if let Some(warning) = maho_interactive::interactive_mode::check_tmux_keyboard_setup().await {
+        if let Some(warning) = maho_interactive::interactive_mode::check_tmux_keyboard_setup().await
+        {
             let _ = notice_sender.send(StartupNotice::Warning(warning));
         }
     });
     // senpi `TuiAltScreen` `mouse: terminalMouseMode !== "off"`; multiplexers get button-motion
     // tracking. The `TuiBase.start()` sequence brackets `terminal.start`.
-    let mut mouse_enabled = session.with_settings_manager(|settings| settings.get_terminal_mouse()) != "off";
+    let mut mouse_enabled =
+        session.with_settings_manager(|settings| settings.get_terminal_mouse()) != "off";
     screen.base_mut().prepare_start();
-    screen.before_terminal_start(&mut terminal, mouse_enabled, maho_tui::tui_alt_screen::prefers_button_motion_mouse());
-    terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+    screen.before_terminal_start(
+        &mut terminal,
+        mouse_enabled,
+        maho_tui::tui_alt_screen::prefers_button_motion_mouse(),
+    );
+    terminal.start(
+        Box::new(move |chunk| captured.borrow_mut().push(chunk.into())),
+        Box::new(|| {}),
+    );
     screen.base_mut().after_terminal_start(&mut terminal);
     mode.resume_question_mouse_capture(&mut screen, &mut terminal);
     mode.bind_terminal_theme(&mut screen, theme_setting);
@@ -180,11 +299,15 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             }
             while let Ok(notice) = notices.try_recv() {
                 match notice {
-                    StartupNotice::NewVersion(version) => {
-                        let brand = maho_core::brand::brand_profile();
-                        let action = brand.update.as_ref().map_or_else(|| format!("{} update", maho_core::config::app_name()), |channel| channel.command.clone());
-                        let url = crate::utils::version_check::get_release_changelog_url(&version, brand.update.as_ref().and_then(|channel| channel.changelog_url.as_deref()));
-                        mode.show_new_version_notification(&version, &action, &url);
+                    StartupNotice::NewVersion(release) => {
+                        // senpi `BRAND?.update?.command ?? `${APP_NAME} update``. The shell
+                        // command is the executable (`app_command`, `mhc`), not the display name.
+                        let action = maho_core::brand::brand_profile()
+                            .update
+                            .map(|channel| channel.command)
+                            .unwrap_or_else(|| format!("{} update", maho_core::config::app_command()));
+                        let url = format!("https://github.com/Indosaram/mhc/releases/tag/{}", release.tag);
+                        mode.show_new_version_notification(&release.version, &action, &url);
                     }
                     StartupNotice::Warning(warning) => mode.show_warning(&warning),
                 }
@@ -348,7 +471,9 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     // sequences cannot leak to the parent shell over slow SSH (signal and interactive quit alike).
     terminal.drain_input(1000, 50);
     // senpi `stop()`: clear the progress indicator.
-    if progress_active { terminal.set_progress(false); }
+    if progress_active {
+        terminal.set_progress(false);
+    }
     // senpi `stopInteractiveTui`: the "transcript" exit output switches fullscreen to the regular
     // renderer (without starting it) and renders once, so the transcript lands in scrollback.
     if fullscreen && (mode.fatal_runtime_error || mode.fullscreen_exit_output() == maho_interactive::components::settings_selector::FullscreenExitOutput::Transcript) {
@@ -373,7 +498,9 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     mode.pause_question_mouse_capture(&mut screen, &mut terminal);
     screen.base_mut().begin_stop(&mut terminal);
     screen.before_terminal_stop(&mut terminal, mouse_enabled);
-    screen.base_mut().finish_stop_output(&mut terminal, fullscreen);
+    screen
+        .base_mut()
+        .finish_stop_output(&mut terminal, fullscreen);
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, fullscreen);
     screen.base_mut().reset_for_stop();
@@ -392,14 +519,23 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         std::process::exit(1);
     }
     // senpi `shutdown`: after the terminal stops, tell the user how to reopen this session.
-    let resume_command = session.with_session_manager(|manager| maho_interactive::interactive_mode::format_resume_command(manager, std::io::IsTerminal::is_terminal(&std::io::stdout())));
-    if let Some(command) = resume_command { maho_core::output_guard::maho_write_stdout(&format!("\x1b[2mTo resume this session:\x1b[22m {command}\n")); }
+    let resume_command = session.with_session_manager(|manager| {
+        maho_interactive::interactive_mode::format_resume_command(
+            manager,
+            std::io::IsTerminal::is_terminal(&std::io::stdout()),
+        )
+    });
+    if let Some(command) = resume_command {
+        maho_core::output_guard::maho_write_stdout(&format!(
+            "\x1b[2mTo resume this session:\x1b[22m {command}\n"
+        ));
+    }
     result.and(stopped)
 }
 
 /// A startup check result delivered to the render loop (senpi's `.then` callbacks in `run()`).
 enum StartupNotice {
-    NewVersion(String),
+    NewVersion(crate::native_update::release::Release),
     Warning(String),
 }
 
@@ -412,9 +548,14 @@ struct MountedScreen {
 }
 
 /// senpi `settingsManager.getFullscreenScrollbar()`.
-fn fullscreen_scrollbar(session: &maho_core::agent_session::AgentSession) -> maho_tui::components::scroll_view::ScrollViewScrollbar {
+fn fullscreen_scrollbar(
+    session: &maho_core::agent_session::AgentSession,
+) -> maho_tui::components::scroll_view::ScrollViewScrollbar {
     use maho_tui::components::scroll_view::ScrollViewScrollbar;
-    match session.with_settings_manager(|settings| settings.get_string("fullscreenScrollbar")).as_deref() {
+    match session
+        .with_settings_manager(|settings| settings.get_string("fullscreenScrollbar"))
+        .as_deref()
+    {
         Some("always") => ScrollViewScrollbar::Always,
         Some("hidden") => ScrollViewScrollbar::Hidden,
         _ => ScrollViewScrollbar::Auto,
@@ -424,15 +565,35 @@ fn fullscreen_scrollbar(session: &maho_core::agent_session::AgentSession) -> mah
 /// senpi `createInteractiveTui` + `mountInteractiveTui` for this entry: build the renderer for
 /// `tui_mode` and mount the line buffers the loop fills each frame.
 #[allow(clippy::too_many_arguments)]
-fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho_interactive::tui_renderer::TuiMode, theme: maho_interactive::theme::Theme, show_hardware_cursor: bool, right_click_paste: &Rc<Cell<bool>>, document_lines: &Rc<RefCell<Vec<String>>>, dock_lines: &Rc<RefCell<Vec<String>>>, rendered: &Rc<RefCell<RenderedMode>>) -> MountedScreen {
-    use maho_interactive::tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode};
-    let mut screen = create_interactive_tui(InteractiveTuiOptions { tui_mode, show_hardware_cursor, bottom_shortcut: String::new() }, theme);
+fn mount_screen(
+    session: &maho_core::agent_session::AgentSession,
+    tui_mode: maho_interactive::tui_renderer::TuiMode,
+    theme: maho_interactive::theme::Theme,
+    show_hardware_cursor: bool,
+    right_click_paste: &Rc<Cell<bool>>,
+    document_lines: &Rc<RefCell<Vec<String>>>,
+    dock_lines: &Rc<RefCell<Vec<String>>>,
+    rendered: &Rc<RefCell<RenderedMode>>,
+) -> MountedScreen {
+    use maho_interactive::tui_renderer::{InteractiveTuiOptions, TuiMode, create_interactive_tui};
+    let mut screen = create_interactive_tui(
+        InteractiveTuiOptions {
+            tui_mode,
+            show_hardware_cursor,
+            bottom_shortcut: String::new(),
+        },
+        theme,
+    );
     // senpi interactive-mode.ts `logDirectory: getAgentDir()`.
-    screen.base_mut().set_log_directory(PathBuf::from(maho_core::config::get_agent_dir()));
+    screen
+        .base_mut()
+        .set_log_directory(PathBuf::from(maho_core::config::get_agent_dir()));
     // senpi tui-renderer.ts: fullscreen opens OSC 8 links in the browser, copies selections
     // through the platform clipboard (flashing the real outcome) and honors fullscreenCopyOnSelect.
     if let maho_interactive::tui_renderer::InteractiveTui::Fullscreen(alt) = &mut screen {
-        alt.set_open_url(Some(Rc::new(|url: &str| crate::utils::open_browser::open_browser(url))));
+        alt.set_open_url(Some(Rc::new(|url: &str| {
+            crate::utils::open_browser::open_browser(url)
+        })));
         let paste = right_click_paste.clone();
         alt.set_on_right_click_paste(Some(Rc::new(move || paste.set(true))));
         alt.set_copy_selection(Some(Rc::new(|text: String| {
@@ -441,12 +602,20 @@ fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho
                 let copied = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .is_ok_and(|runtime| runtime.block_on(crate::utils::clipboard::copy_to_clipboard(&text)).is_ok());
+                    .is_ok_and(|runtime| {
+                        runtime
+                            .block_on(crate::utils::clipboard::copy_to_clipboard(&text))
+                            .is_ok()
+                    });
                 let _ = sender.send(copied);
             });
             receiver
         })));
-        alt.set_copy_on_select(session.with_settings_manager(|settings| settings.get_bool("fullscreenCopyOnSelect")).unwrap_or(true));
+        alt.set_copy_on_select(
+            session
+                .with_settings_manager(|settings| settings.get_bool("fullscreenCopyOnSelect"))
+                .unwrap_or(true),
+        );
     }
     // senpi mounts the fullscreen render root as the chat viewport (interactive-mode.ts
     // `mountInteractiveTui` -> `setLayoutRoot(this.fullscreenLayoutRoot)`), whose transcript scroll
@@ -455,22 +624,42 @@ fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho
     // top-anchored and the input dock falls below the fold once the document exceeds the terminal
     // height. The two `LinesBuffer`s reproduce the split: the loop fills the document and dock
     // buffers separately, the transcript follows the end, and the dock stays pinned.
-    let (component, transcript): (Rc<RefCell<dyn Component>>, _) = if tui_mode == TuiMode::Fullscreen {
-        let empty = || Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding("", 0, 0))) as Rc<RefCell<dyn Component>>;
-        let viewport = maho_interactive::chat_viewport::create_chat_viewport(maho_interactive::chat_viewport::ChatViewportOptions {
-            document: Rc::new(RefCell::new(LinesBuffer(document_lines.clone()))),
-            editor: Rc::new(RefCell::new(LinesBuffer(dock_lines.clone()))),
-            pending_messages: empty(), status: empty(), footer: empty(),
-            hook_status: None, widgets_above: None, widgets_below: None,
-            scrollbar: Some(fullscreen_scrollbar(session)), scrollbar_track_style: None, scrollbar_thumb_style: None,
-        });
-        (viewport.root as Rc<RefCell<dyn Component>>, Some(viewport.transcript))
-    } else {
-        (rendered.clone() as Rc<RefCell<dyn Component>>, None)
-    };
+    let (component, transcript): (Rc<RefCell<dyn Component>>, _) =
+        if tui_mode == TuiMode::Fullscreen {
+            let empty = || {
+                Rc::new(RefCell::new(
+                    maho_tui::components::text::Text::with_padding("", 0, 0),
+                )) as Rc<RefCell<dyn Component>>
+            };
+            let viewport = maho_interactive::chat_viewport::create_chat_viewport(
+                maho_interactive::chat_viewport::ChatViewportOptions {
+                    document: Rc::new(RefCell::new(LinesBuffer(document_lines.clone()))),
+                    editor: Rc::new(RefCell::new(LinesBuffer(dock_lines.clone()))),
+                    pending_messages: empty(),
+                    status: empty(),
+                    footer: empty(),
+                    hook_status: None,
+                    widgets_above: None,
+                    widgets_below: None,
+                    scrollbar: Some(fullscreen_scrollbar(session)),
+                    scrollbar_track_style: None,
+                    scrollbar_thumb_style: None,
+                },
+            );
+            (
+                viewport.root as Rc<RefCell<dyn Component>>,
+                Some(viewport.transcript),
+            )
+        } else {
+            (rendered.clone() as Rc<RefCell<dyn Component>>, None)
+        };
     screen.set_render_root(component.clone());
     screen.base_mut().set_focus(Some(component.clone()));
-    MountedScreen { screen, component, transcript }
+    MountedScreen {
+        screen,
+        component,
+        transcript,
+    }
 }
 
 /// senpi `TuiBase.handleTerminalInput` for the mounted interactive renderer: terminal protocol
@@ -480,12 +669,24 @@ fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho
 /// (`ui.onDebug = handleDebugCommand`), overlay focus is restored, and input for a focused overlay
 /// is delivered through the renderer. Returns the (listener-filtered) input for the interactive
 /// mode when the mounted root holds focus.
-fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::InteractiveTui, terminal: &mut dyn Terminal, mode: &mut maho_interactive::interactive_mode::InteractiveMode, root: &Rc<RefCell<dyn Component>>, chunk: &str, now_ms: u64) -> Option<String> {
+fn route_terminal_input(
+    screen: &mut maho_interactive::tui_renderer::InteractiveTui,
+    terminal: &mut dyn Terminal,
+    mode: &mut maho_interactive::interactive_mode::InteractiveMode,
+    root: &Rc<RefCell<dyn Component>>,
+    chunk: &str,
+    now_ms: u64,
+) -> Option<String> {
     let data = screen.base_mut().consume_terminal_protocol_input(chunk)?;
     if screen.handle_mouse_input(&data, i64::try_from(now_ms).unwrap_or(i64::MAX), terminal) {
         return None;
     }
-    let root_focused = |screen: &maho_interactive::tui_renderer::InteractiveTui| screen.base().get_focused_component().is_some_and(|focused| Rc::ptr_eq(&focused, root));
+    let root_focused = |screen: &maho_interactive::tui_renderer::InteractiveTui| {
+        screen
+            .base()
+            .get_focused_component()
+            .is_some_and(|focused| Rc::ptr_eq(&focused, root))
+    };
     if root_focused(&*screen)
         && let maho_interactive::tui_renderer::InteractiveTui::Fullscreen(alt) = &mut *screen
         && alt.handle_viewport_input(&data, maho_tui::keys::is_key_release(&data))
@@ -493,7 +694,9 @@ fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::Interactive
         return None;
     }
     let data = mode.filter_terminal_input(&data)?;
-    if data.is_empty() { return None; }
+    if data.is_empty() {
+        return None;
+    }
     if maho_tui::keys::matches_key(&data, "shift+ctrl+d") {
         mode.handle_debug_command();
         return None;
@@ -502,10 +705,14 @@ fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::Interactive
     if root_focused(&*screen) {
         // senpi `handleTerminalInput`: key release events reach the focused component only when it
         // opts in with `wantsKeyRelease`.
-        if maho_tui::keys::is_key_release(&data) && !root.borrow().wants_key_release() { return None; }
+        if maho_tui::keys::is_key_release(&data) && !root.borrow().wants_key_release() {
+            return None;
+        }
         return Some(data);
     }
-    screen.base_mut().handle_terminal_input(&data, maho_tui::keys::is_key_release(&data));
+    screen
+        .base_mut()
+        .handle_terminal_input(&data, maho_tui::keys::is_key_release(&data));
     None
 }
 
@@ -513,11 +720,17 @@ fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::Interactive
 /// before `kill` returns, so returning here means `SIGCONT` (`fg`) resumed it.
 #[cfg(unix)]
 fn suspend_process() -> Result<(), String> {
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(0), nix::sys::signal::Signal::SIGTSTP).map_err(|error| error.to_string())
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(0),
+        nix::sys::signal::Signal::SIGTSTP,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(not(unix))]
-fn suspend_process() -> Result<(), String> { Ok(()) }
+fn suspend_process() -> Result<(), String> {
+    Ok(())
+}
 
 /// senpi `createStartupTui`'s theme half, owned by this interactive entry: register the
 /// package/CLI-resolved theme resources before the first frame, then resolve the configured name.
@@ -529,7 +742,13 @@ async fn resolve_interactive_startup_theme(
     session: &maho_core::agent_session::AgentSession,
     parsed: &super::args::Args,
     setting: Option<&str>,
-) -> Result<(maho_interactive::theme::Theme, Vec<maho_interactive::theme::Theme>), String> {
+) -> Result<
+    (
+        maho_interactive::theme::Theme,
+        Vec<maho_interactive::theme::Theme>,
+    ),
+    String,
+> {
     let cwd = session.cwd();
     let agent_dir = session.agent_dir();
     let mut diagnostics: Vec<String> = Vec::new();
@@ -538,26 +757,50 @@ async fn resolve_interactive_startup_theme(
     let mut theme_paths: Vec<PathBuf> = Vec::new();
     if !parsed.no_themes {
         let mut settings = startup_theme_settings_manager(session);
-        let manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
-            cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
-        });
+        let manager = maho_core::package_manager::DefaultPackageManager::new(
+            maho_core::package_manager::PackageManagerOptions {
+                cwd: &cwd,
+                agent_dir: &agent_dir,
+                settings_manager: &mut settings,
+            },
+        );
         match manager.resolve(None).await {
-            Ok(paths) => theme_paths.extend(paths.themes.into_iter().filter(|resource| resource.enabled).map(|resource| PathBuf::from(resource.path))),
+            Ok(paths) => theme_paths.extend(
+                paths
+                    .themes
+                    .into_iter()
+                    .filter(|resource| resource.enabled)
+                    .map(|resource| PathBuf::from(resource.path)),
+            ),
             Err(error) => diagnostics.push(format!("package themes: {error}")),
         }
     }
     // senpi `resolveCliPaths`: the `--theme` paths resolved against the launch cwd.
-    let runtime_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(parsed, &cwd, &agent_dir, maho_core::project_trust::AppMode::Interactive);
+    let runtime_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(
+        parsed,
+        &cwd,
+        &agent_dir,
+        maho_core::project_trust::AppMode::Interactive,
+    );
     let cli_theme_paths = runtime_config.resolved_theme_paths();
     theme_paths.extend(cli_theme_paths.iter().map(PathBuf::from));
-    let (registered, mut theme_diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::detect_color_mode());
+    let (registered, mut theme_diagnostics) = super::startup_ui::load_theme_resources(
+        theme_paths,
+        maho_interactive::theme::detect_color_mode(),
+    );
     // senpi resource-loader.ts:765-770: a missing additional (`--theme`) path is an error unless
     // the load already reported that path.
     for path in cli_theme_paths {
-        if !std::path::Path::new(&path).exists() && !theme_diagnostics.iter().any(|diagnostic| diagnostic.path.as_deref() == Some(path.as_str())) {
+        if !std::path::Path::new(&path).exists()
+            && !theme_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.path.as_deref() == Some(path.as_str()))
+        {
             theme_diagnostics.push(maho_core::diagnostics::ResourceDiagnostic {
                 diagnostic_type: maho_core::diagnostics::ResourceDiagnosticType::Error,
-                message: "Theme path does not exist".into(), path: Some(path), collision: None,
+                message: "Theme path does not exist".into(),
+                path: Some(path),
+                collision: None,
             });
         }
     }
@@ -565,12 +808,22 @@ async fn resolve_interactive_startup_theme(
     session.set_theme_diagnostics(theme_diagnostics);
     let custom_directory = PathBuf::from(crate::config::get_custom_themes_dir());
     let resolution = super::startup_ui::resolve_startup_theme_with_registered(
-        setting, std::env::var("COLORFGBG").ok().as_deref(), &custom_directory, registered.clone(),
+        setting,
+        std::env::var("COLORFGBG").ok().as_deref(),
+        &custom_directory,
+        registered.clone(),
     )?;
     // senpi `applyFromSettings` reports a configured theme that fails to load in the TUI
     // (`poll_terminal_theme`), so only the resource diagnostics go to stderr here.
-    diagnostics.extend(resolution.diagnostics.into_iter().filter(|diagnostic| resolution.load_error.as_ref() != Some(diagnostic)));
-    for diagnostic in &diagnostics { maho_core::output_guard::maho_write_stderr(&format!("theme: {diagnostic}\n")); }
+    diagnostics.extend(
+        resolution
+            .diagnostics
+            .into_iter()
+            .filter(|diagnostic| resolution.load_error.as_ref() != Some(diagnostic)),
+    );
+    for diagnostic in &diagnostics {
+        maho_core::output_guard::maho_write_stderr(&format!("theme: {diagnostic}\n"));
+    }
     Ok((resolution.theme, registered))
 }
 
@@ -578,8 +831,13 @@ async fn resolve_interactive_startup_theme(
 /// `SettingsManager.inMemory(settingsManager.getGlobalSettings(), { projectTrusted: false })`.
 /// The package-resolved theme paths come from the session's **live** global settings (honouring
 /// unsaved in-memory overrides), with project settings excluded.
-fn startup_theme_settings_manager(session: &maho_core::agent_session::AgentSession) -> maho_core::settings_manager::SettingsManager {
-    maho_core::settings_manager::SettingsManager::in_memory(session.with_settings_manager(|settings| settings.get_global().clone()), false)
+fn startup_theme_settings_manager(
+    session: &maho_core::agent_session::AgentSession,
+) -> maho_core::settings_manager::SettingsManager {
+    maho_core::settings_manager::SettingsManager::in_memory(
+        session.with_settings_manager(|settings| settings.get_global().clone()),
+        false,
+    )
 }
 
 #[cfg(test)]
@@ -589,24 +847,53 @@ mod tests {
     /// A real `AgentSession` whose settings manager holds `global` **in memory**
     /// (`SettingsManager::in_memory`), with `agent_dir` on an isolated temp dir. Building the real
     /// session is what makes the regression exercise the production seam instead of a wrapper.
-    fn theme_session(global: maho_core::settings_manager::Settings, agent_dir: &std::path::Path) -> maho_core::agent_session::AgentSession {
-        use std::sync::Arc;
+    fn theme_session(
+        global: maho_core::settings_manager::Settings,
+        agent_dir: &std::path::Path,
+    ) -> maho_core::agent_session::AgentSession {
         use maho_core::agent_session::{AgentSession, AgentSessionConfig};
-        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
-        let stream_fn: maho_agent::types::StreamFn = Arc::new(|_, _, _| maho_ai::types::AssistantMessageEventStream::assistant());
+        use std::sync::Arc;
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                providers: Some(Vec::new()),
+                ..Default::default()
+            },
+        ).expect("model runtime");
+        let stream_fn: maho_agent::types::StreamFn =
+            Arc::new(|_, _, _| maho_ai::types::AssistantMessageEventStream::assistant());
         let cwd = agent_dir.to_string_lossy().into_owned();
         AgentSession::new(AgentSessionConfig {
-            agent: maho_agent::Agent::new(maho_agent::AgentOptions { stream_fn: Some(stream_fn), ..Default::default() }),
-            session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd, None, None),
-            settings_manager: maho_core::settings_manager::SettingsManager::in_memory(global, false),
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+                stream_fn: Some(stream_fn),
+                ..Default::default()
+            }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                &cwd, None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::in_memory(
+                global, false,
+            ),
             cwd: cwd.clone(),
             agent_dir: Some(cwd),
-            fallback_now: None, retry_random: None,
-            scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
-            model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false),
-            initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
-            session_start_event: None, auto_title_sessions: Some(false),
-        }).expect("session")
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: Default::default(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
+        })
+        .expect("session")
     }
 
     #[test]
@@ -615,24 +902,49 @@ mod tests {
         let agent_dir = root.path().join("agent");
         std::fs::create_dir_all(&agent_dir).expect("agent dir");
         // The disk carries a DIFFERENT global with no theme sources; the seam must not read it.
-        std::fs::write(agent_dir.join("settings.json"), r#"{"theme":"disk-theme"}"#).expect("disk settings");
+        std::fs::write(agent_dir.join("settings.json"), r#"{"theme":"disk-theme"}"#)
+            .expect("disk settings");
 
         let mut unsaved = maho_core::settings_manager::Settings::new();
         unsaved.insert("theme".to_owned(), serde_json::json!("unsaved-theme"));
-        unsaved.insert("themes".to_owned(), serde_json::json!([root.path().join("global-themes").to_string_lossy()]));
+        unsaved.insert(
+            "themes".to_owned(),
+            serde_json::json!([root.path().join("global-themes").to_string_lossy()]),
+        );
         let session = theme_session(unsaved.clone(), &agent_dir);
 
         // The production seam behind `resolve_interactive_startup_theme`: the session's live global
         // settings, with project scope excluded.
         let manager = startup_theme_settings_manager(&session);
-        assert_eq!(manager.get_global(), &unsaved, "the seam resolves from the session's live global settings");
-        assert!(manager.get_global().get("themes").is_some(), "the unsaved global theme source is preserved");
-        assert!(manager.get_project().is_empty(), "project theme sources are excluded");
-        assert!(!manager.is_project_trusted(), "project scope is not trusted for startup themes");
+        assert_eq!(
+            manager.get_global(),
+            &unsaved,
+            "the seam resolves from the session's live global settings"
+        );
+        assert!(
+            manager.get_global().get("themes").is_some(),
+            "the unsaved global theme source is preserved"
+        );
+        assert!(
+            manager.get_project().is_empty(),
+            "project theme sources are excluded"
+        );
+        assert!(
+            !manager.is_project_trusted(),
+            "project scope is not trusted for startup themes"
+        );
 
         // A disk reload drops the unsaved global, so this fails if the seam reverts to
         // `SettingsManager::create` (it would carry the disk global, which has no theme sources).
-        let disk = maho_core::settings_manager::SettingsManager::create(&session.cwd(), &agent_dir.to_string_lossy(), &root.path().to_string_lossy(), false);
-        assert!(disk.get_global().get("themes").is_none(), "a disk-create manager cannot see the unsaved global theme source");
+        let disk = maho_core::settings_manager::SettingsManager::create(
+            &session.cwd(),
+            &agent_dir.to_string_lossy(),
+            &root.path().to_string_lossy(),
+            false,
+        );
+        assert!(
+            disk.get_global().get("themes").is_none(),
+            "a disk-create manager cannot see the unsaved global theme source"
+        );
     }
 }

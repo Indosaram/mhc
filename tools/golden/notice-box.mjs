@@ -5,7 +5,7 @@ const source = process.env.SENPI_SRC;
 if (!source) throw new Error("SENPI_SRC is required");
 const pin = Bun.spawn(["git", "-C", source, "rev-parse", "HEAD"], { stdout: "pipe" });
 const revision = await new Response(pin.stdout).text();
-if (await pin.exited !== 0 || revision.trim() !== "cf69f5e72eb325219a93e17bb54bbd4ba787899e") {
+if (await pin.exited !== 0 || revision.trim() !== "903b83367545bea516f35fc7f7c7cb692847988d") {
   throw new Error("notice fixture source must match the pinned commit");
 }
 plugin({

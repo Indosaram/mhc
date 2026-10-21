@@ -16,7 +16,7 @@ maho-tools = { path = "../../maho-tools" }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-tui = { path = "../../maho-tui" }
 maho-interactive = { path = "../../maho-interactive" }
-thiserror = "=2.0.18"
+thiserror = "=2.0.20"
 reqwest = { version = "=0.13.2", default-features = false, features = ["rustls", "stream"] }
 url = "=2.5.8"
 regex = "=1.12.3"

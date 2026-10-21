@@ -54,7 +54,7 @@ pub fn register(api: &mut ExtensionApi, oauth: Arc<crate::oauth_login::Anthropic
                     ["add"] => {
                         if !ctx.has_ui { anyhow::bail!("/claude-account add requires an interactive UI."); }
                         use maho_ai::auth::types::{AuthInteraction, OAuthAuth, Credential, ProviderAuthInteraction};
-                        let interaction = Arc::new(maho_ext_builtin_loose::oauth_login_interaction::ExtensionLoginInteraction::new(ctx.ui.clone(), ctx.mode, crate::oauth_login::PROVIDER_NAME.into(), Some(PROVIDER), Arc::new(|url| {
+                        let interaction: Arc<dyn AuthInteraction> = Arc::new(maho_ext_builtin_loose::oauth_login_interaction::ExtensionLoginInteraction::new(ctx.ui.clone(), ctx.mode, crate::oauth_login::PROVIDER_NAME.into(), Some(PROVIDER), Arc::new(|url| {
                             let url=url.to_owned();
                             tokio::spawn(async move {
                                 let (program,args)=match std::env::consts::OS {"macos"=>("open",vec![url]),"windows"=>("rundll32",vec!["url.dll,FileProtocolHandler".into(),url]),_=>("xdg-open",vec![url])};
@@ -63,10 +63,11 @@ pub fn register(api: &mut ExtensionApi, oauth: Arc<crate::oauth_login::Anthropic
                             });
                         })));
                         let interaction = ProviderAuthInteraction::new(interaction.signal().expect("login signal"), interaction);
+                        let before = store.read(PROVIDER, None).await?.and_then(Credential::into_oauth).unwrap_or_else(crate::accounts::empty_credential);
                         let credential = oauth.login(&interaction).await?;
                         runtime.assert_active()?;
                         let mutation_runtime=runtime.clone();
-                        store.modify(PROVIDER, Box::new(move |_| Box::pin(async move {mutation_runtime.assert_active()?; Ok(Some(Credential::OAuth(credential))) })), None).await?;
+                        store.modify(PROVIDER, Box::new(move |current| Box::pin(async move {mutation_runtime.assert_active()?; Ok(Some(Credential::OAuth(crate::oauth_login::merge_login(current, &before, credential)?))) })), None).await?;
                         runtime.assert_active()?;
                         crate::account_events::emit_provider_accounts_changed(PROVIDER);
                     },

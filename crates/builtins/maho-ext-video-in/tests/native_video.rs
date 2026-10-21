@@ -10,14 +10,14 @@ use std::sync::Arc;
 async fn registered_video_activation_and_attachment() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let root = tempfile::tempdir()?;
     let project = root.path();
-    let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+    let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() })?;
     let mut model = provider.get_model(Some("faux-1")).ok_or("Missing faux model")?;
     model.input.push(maho_ai::types::InputModality::Video);
     let streams = faux_streams(provider.core.clone());
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(project.join("models.json")), auth_path: Some(project.join("auth.json")),
         providers: Some(vec![provider.provider.clone()]), ..Default::default()
-    });
+    })?;
     let cwd = project.to_string_lossy().into_owned();
     let session = AgentSession::new(AgentSessionConfig {
         agent: maho_agent::Agent::new(maho_agent::AgentOptions {

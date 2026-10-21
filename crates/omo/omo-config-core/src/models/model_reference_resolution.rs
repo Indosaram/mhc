@@ -233,7 +233,7 @@ fn profile_diagnostics(view: &Value) -> Vec<ModelReferenceDiagnostic> {
             });
         }
     }
-    for section in ["agents", "categories"] {
+    for section in ["categories", "agents"] {
         let Some(definitions) = view.get(section).and_then(Value::as_object) else { continue };
         for (name, definition) in definitions {
             let Some(models) = definition.get("models").and_then(Value::as_array) else { continue };
@@ -280,11 +280,11 @@ fn cycle_diagnostics(catalog: Option<&Map<String, Value>>) -> Vec<ModelReference
 pub fn resolve_model_references(view: &Value) -> ResolveModelReferencesResult {
     let catalog = view.get("models").and_then(Value::as_object);
     let mut diagnostics = cycle_diagnostics(catalog);
-    diagnostics.extend(profile_diagnostics(view));
     let cycle_names: HashSet<String> = diagnostics
         .iter()
         .filter_map(|diagnostic| diagnostic.path.split('.').nth(1).map(str::to_string))
         .collect();
+    diagnostics.extend(profile_diagnostics(view));
 
     let mut resolved_view = view.as_object().cloned().unwrap_or_default();
 
@@ -327,5 +327,110 @@ pub fn resolve_model_references(view: &Value) -> ResolveModelReferencesResult {
     ResolveModelReferencesResult {
         diagnostics,
         view: Value::Object(resolved_view),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_model_references;
+    use serde_json::json;
+
+    #[test]
+    fn catalog_resolves_when_a_profile_shadows_its_name() {
+        // Given a valid catalog alias with a same-named profile.
+        let view = json!({
+            "models": { "shared": { "model": "provider/model", "reasoning": "high" } },
+            "model_profiles": { "shared": { "models": ["shared"] } },
+            "agents": { "worker": { "model": "shared", "models": ["shared"] } },
+            "categories": { "quick": { "model": "shared", "fallback_models": "shared" } }
+        });
+
+        // When resolving catalog references despite profile validation errors.
+        let result = resolve_model_references(&view);
+
+        // Then shadowing is reported without preventing alias or tuning resolution.
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == "validation" && diagnostic.path == "model_profiles.shared"
+        }));
+        assert_eq!(result.view["agents"]["worker"]["model"], json!("provider/model"));
+        assert_eq!(result.view["agents"]["worker"]["reasoning"], json!("high"));
+        let chain = json!([{ "model": "provider/model", "reasoning": "high" }]);
+        assert_eq!(result.view["agents"]["worker"]["models"], chain);
+        assert_eq!(result.view["model_profiles"]["shared"]["models"], chain);
+        assert_eq!(result.view["categories"]["quick"]["model"], json!("provider/model"));
+        assert_eq!(result.view["categories"]["quick"]["fallback_models"], chain);
+    }
+
+    #[test]
+    fn catalog_resolves_when_a_splice_owner_has_its_name() {
+        // Given category and agent splice owners named like valid catalog aliases.
+        let view = json!({
+            "models": {
+                "quick": { "model": "provider/quick" },
+                "worker": { "model": "provider/worker" },
+                "cycle_a": { "model": "cycle_b" },
+                "cycle_b": { "model": "cycle_a" }
+            },
+            "model_profiles": { "daily": { "models": ["quick", "worker"] } },
+            "categories": { "quick": { "models": ["daily", "quick", "worker", "cycle_a"] } },
+            "agents": { "worker": { "models": ["daily", "quick", "worker", "cycle_b"] } }
+        });
+
+        // When resolving references with both validation diagnostics and real cycles.
+        let result = resolve_model_references(&view);
+
+        // Then only genuine cycles prevent resolution, not the splice owners' names.
+        assert_eq!(result.diagnostics.len(), 4);
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == "validation" && diagnostic.path == "categories.quick.models.0"
+        }));
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == "validation" && diagnostic.path == "agents.worker.models.0"
+        }));
+        assert_eq!(
+            result.view["categories"]["quick"]["models"],
+            json!(["daily", "provider/quick", "provider/worker", "cycle_a"])
+        );
+        assert_eq!(
+            result.view["agents"]["worker"]["models"],
+            json!(["daily", "provider/quick", "provider/worker", "cycle_b"])
+        );
+        assert_eq!(
+            result.view["model_profiles"]["daily"]["models"],
+            json!(["provider/quick", "provider/worker"])
+        );
+    }
+
+    #[test]
+    fn diagnostics_order_cycles_then_shadows_then_category_and_agent_splices() {
+        // Given one diagnostic of each kind in a single input.
+        let view = json!({
+            "models": {
+                "cycle": { "model": "cycle" },
+                "shared": { "model": "provider/model" }
+            },
+            "model_profiles": { "shared": { "models": ["provider/other"] } },
+            "categories": { "quick": { "models": ["shared"] } },
+            "agents": { "worker": { "models": ["shared"] } }
+        });
+
+        // When collecting resolver diagnostics.
+        let result = resolve_model_references(&view);
+
+        // Then machine-consumed kinds and paths follow upstream section order.
+        let diagnostics: Vec<_> = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.kind, diagnostic.path.as_str()))
+            .collect();
+        assert_eq!(
+            diagnostics,
+            vec![
+                ("model_catalog_cycle", "models.cycle.model"),
+                ("validation", "model_profiles.shared"),
+                ("validation", "categories.quick.models.0"),
+                ("validation", "agents.worker.models.0"),
+            ]
+        );
     }
 }

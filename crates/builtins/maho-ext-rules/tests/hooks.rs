@@ -74,7 +74,7 @@ async fn static_hook_reemits_from_base_and_omits_native_context() {
  let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
  let home = tempfile::tempdir().unwrap();
  maho_ext_rules::Rules::register_with_config(&mut api, maho_ext_rules::config::config_from_environment(|_| None), home.path().into());
- let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), images: None, system_prompt: "base".into(), system_prompt_options: (ctx.get_system_prompt_options_fn)() });
+ let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), trigger: "prompt".into(), preview: false, images: None, system_prompt: "base".into(), system_prompt_options: (ctx.get_system_prompt_options_fn)() });
  let hook = &api.registered.handlers[&EventKind::BeforeAgentStart][0];
  let first = hook(&mut event, &ctx).await.unwrap();
  let second = hook(&mut event, &ctx).await.unwrap();

@@ -1,5 +1,6 @@
 //! Rust port of the `@code-yeongyu/lsp-daemon` package.
 
+pub mod client;
 pub mod crypto;
 pub mod daemon_client;
 pub mod daemon_failure_result;

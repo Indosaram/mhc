@@ -11,7 +11,7 @@ impl ModelRegistry for Registry{
     fn find(&self,_:&str,_:&str)->Option<Model>{None}
     fn has_configured_auth(&self,_:&Model)->bool{true}
     fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>>{Box::pin(async{panic!("resolved auth required")})}
-    fn get_api_key_and_headers<'a>(&'a self,_:&'a Model)->ExtensionFuture<'a,ResolvedRequestAuth>{Box::pin(async{Ok(ResolvedRequestAuth{auth:maho_ai::models::ProviderAuthResult{api_key:Some("side-secret".into()),..Default::default()},extra_body:Some(serde_json::Map::from_iter([("fixture".into(),serde_json::json!(true))])),upstream_model_id:None,service_tier:None,env:None})})}
+    fn get_api_key_and_headers<'a>(&'a self,_:&'a Model)->ExtensionFuture<'a,ResolvedRequestAuth>{Box::pin(async{Ok(ResolvedRequestAuth{ambient:false,auth:maho_ai::models::ProviderAuthResult{api_key:Some("side-secret".into()),..Default::default()},extra_body:Some(serde_json::Map::from_iter([("fixture".into(),serde_json::json!(true))])),upstream_model_id:None,service_tier:None,env:None})})}
     fn stream_simple(&self,_:&Model,context:&Context,options:Option<SimpleStreamOptions>)->Result<AssistantMessageEventStream,ExtensionFailure>{
         let options=options.expect("options");self.entered.send_replace(options.stream.request.signal.clone());self.calls.lock().expect("calls").push((context.clone(),options));
         let stream=AssistantMessageEventStream::assistant();

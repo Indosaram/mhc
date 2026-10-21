@@ -8,11 +8,11 @@ use std::time::Duration;
 use maho_ai::models::ModelsRefreshOptions;
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 use maho_ext_api::{
-    Extension, ExtensionApi, ExtensionCommandContext, ExtensionMode,
-    ExtensionTuiHost, ExtensionUi, ModelRegistry, NotificationType,
+    Extension, ExtensionApi, ExtensionCommandContext, ExtensionMode, ExtensionTuiHost, ExtensionUi,
+    ModelRegistry, NotificationType,
 };
 
-use crate::client::{LlamaClient, LlamaModelInfo, format_bytes, normalize_llama_server_url};
+use crate::client::{LlamaClient, LlamaModelInfo, format_bytes};
 use crate::huggingface::{HuggingFaceClient, HuggingFaceModel, find_hugging_face_token};
 use crate::provider::{LLAMA_PROVIDER_ID, llama_provider_config};
 use crate::ui::{
@@ -26,7 +26,11 @@ fn is_connection_error(message: &str) -> bool {
 }
 
 fn connection_error_message(error: &str) -> String {
-    if is_connection_error(error) { "Could not connect to the server.".to_owned() } else { error.to_owned() }
+    if is_connection_error(error) {
+        "Could not connect to the server.".to_owned()
+    } else {
+        error.to_owned()
+    }
 }
 
 /// Pinned `parseHuggingFaceModel`: `owner/repository[:quant]`.
@@ -35,7 +39,10 @@ fn parse_hugging_face_model(value: &str) -> (String, Option<String>) {
     match value[after_owner..].find(':') {
         Some(offset) => {
             let colon = after_owner + offset;
-            (value[..colon].to_owned(), Some(value[colon + 1..].to_owned()))
+            (
+                value[..colon].to_owned(),
+                Some(value[colon + 1..].to_owned()),
+            )
         }
         None => (value.to_owned(), None),
     }
@@ -53,11 +60,19 @@ fn timeout_signal(ms: u64) -> AbortSignal {
 }
 
 /// Pinned `configuredClient`: resolve the server URL and key from the registered provider auth.
-async fn configured_client(ctx: &ExtensionCommandContext) -> Option<LlamaClient> {
-    let result = ctx.model_registry.get_provider_auth(LLAMA_PROVIDER_ID).await.ok().flatten();
+async fn configured_client(
+    ctx: &ExtensionCommandContext,
+) -> Result<Option<LlamaClient>, maho_ext_api::ExtensionFailure> {
+    let result = ctx
+        .model_registry
+        .get_provider_auth(LLAMA_PROVIDER_ID)
+        .await?;
     let Some(result) = result else {
-        ctx.ui.notify(&format!("Configure llama.cpp with /login {LLAMA_PROVIDER_ID}"), NotificationType::Warning);
-        return None;
+        ctx.ui.notify(
+            &format!("Configure llama.cpp with /login {LLAMA_PROVIDER_ID}"),
+            NotificationType::Warning,
+        );
+        return Ok(None);
     };
     let configured_url = result
         .env
@@ -65,10 +80,11 @@ async fn configured_client(ctx: &ExtensionCommandContext) -> Option<LlamaClient>
         .and_then(|env| env.get("LLAMA_BASE_URL"))
         .filter(|value| !value.is_empty())
         .cloned();
-    let server_url = configured_url
-        .unwrap_or_else(|| result.auth.base_url.clone().unwrap_or_default());
-    let server_url = normalize_llama_server_url(&server_url).unwrap_or(server_url);
-    LlamaClient::new(&server_url, result.auth.api_key.as_deref()).ok()
+    let server_url =
+        configured_url.unwrap_or_else(|| result.auth.base_url.clone().unwrap_or_default());
+    LlamaClient::new(&server_url, result.auth.api_key.as_deref())
+        .map(Some)
+        .map_err(maho_ext_api::ExtensionFailure::new)
 }
 
 /// Pinned `syncCatalog`: list (or reuse) the catalog, then refresh the provider catalog.
@@ -110,7 +126,10 @@ async fn read_catalog(
         match sync_catalog(registry, client, None).await {
             Ok(catalog) => return Some(catalog),
             Err(error) => {
-                if !ui.connection_error(client.server_url.clone(), connection_error_message(&error)).await {
+                if !ui
+                    .connection_error(client.server_url.clone(), connection_error_message(&error))
+                    .await
+                {
                     return None;
                 }
             }
@@ -149,8 +168,16 @@ async fn load_model(
     if !loaded.is_empty() {
         let choice = ui
             .select(
-                format!("{} model{} loaded", loaded.len(), if loaded.len() == 1 { " is" } else { "s are" }),
-                vec!["Unload all and load".to_owned(), "Keep loaded and load".to_owned(), "Cancel".to_owned()],
+                format!(
+                    "{} model{} loaded",
+                    loaded.len(),
+                    if loaded.len() == 1 { " is" } else { "s are" }
+                ),
+                vec![
+                    "Unload all and load".to_owned(),
+                    "Keep loaded and load".to_owned(),
+                    "Cancel".to_owned(),
+                ],
             )
             .await;
         match choice.as_deref() {
@@ -178,12 +205,18 @@ async fn load_model(
             run: Box::new(move |signal, mut update| {
                 let client = run_client.clone();
                 let model = run_target.clone();
-                Box::pin(async move { client.load_and_wait(&model, &mut |progress| update(progress), Some(&signal)).await })
+                Box::pin(async move {
+                    client
+                        .load_and_wait(&model, &mut |progress| update(progress), Some(&signal))
+                        .await
+                })
             }),
             cancel: Box::new(move || {
                 let client = cancel_client.clone();
                 let model = cancel_target.clone();
-                Box::pin(async move { let _ = client.unload(&model, None).await; })
+                Box::pin(async move {
+                    let _ = client.unload(&model, None).await;
+                })
             }),
         },
     )
@@ -224,7 +257,10 @@ async fn unload_model(
     ui: Arc<dyn LlamaUi>,
     model: LlamaModelInfo,
 ) -> Result<(), String> {
-    if !ui.confirm("Unload model?".to_owned(), model.id.clone()).await {
+    if !ui
+        .confirm("Unload model?".to_owned(), model.id.clone())
+        .await
+    {
         return Ok(());
     }
     client.unload_and_wait(&model.id, None).await?;
@@ -243,10 +279,14 @@ async fn download_model(
     let hugging_face = Arc::new(HuggingFaceClient::new(find_hugging_face_token(&env), None));
     let search: SearchFn = {
         let hugging_face = hugging_face.clone();
-        Arc::new(move |query: String, signal: AbortSignal| -> UiFuture<'static, Result<Vec<HuggingFaceModel>, String>> {
-            let hugging_face = hugging_face.clone();
-            Box::pin(async move { hugging_face.search(&query, Some(&signal)).await })
-        })
+        Arc::new(
+            move |query: String,
+                  signal: AbortSignal|
+                  -> UiFuture<'static, Result<Vec<HuggingFaceModel>, String>> {
+                let hugging_face = hugging_face.clone();
+                Box::pin(async move { hugging_face.search(&query, Some(&signal)).await })
+            },
+        )
     };
     let Some(selected) = ui.search_models(search).await else {
         return Ok(());
@@ -255,7 +295,11 @@ async fn download_model(
     ui.show_status("Loading model details".to_owned(), repository.clone());
     let details = hugging_face.details(&repository, None).await?;
     if details.gated.is_some() {
-        let approval = if details.gated.as_deref() == Some("manual") { "Manual approval is required" } else { "Accept the access terms" };
+        let approval = if details.gated.as_deref() == Some("manual") {
+            "Manual approval is required"
+        } else {
+            "Accept the access terms"
+        };
         let choice = ui
             .select(
                 format!(
@@ -282,10 +326,20 @@ async fn download_model(
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(" · ");
-                if detail.is_empty() { entry.name.clone() } else { format!("{} · {}", entry.name, detail) }
+                if detail.is_empty() {
+                    entry.name.clone()
+                } else {
+                    format!("{} · {}", entry.name, detail)
+                }
             })
             .collect();
-        let Some(choice) = ui.select(format!("Select quantization\n{}", details.id), options.clone()).await else {
+        let Some(choice) = ui
+            .select(
+                format!("Select quantization\n{}", details.id),
+                options.clone(),
+            )
+            .await
+        else {
             return Ok(());
         };
         quantization = options
@@ -316,12 +370,18 @@ async fn download_model(
             run: Box::new(move |signal, mut update| {
                 let client = run_client.clone();
                 let model = run_model.clone();
-                Box::pin(async move { client.download_and_wait(&model, &mut |progress| update(progress), Some(&signal)).await })
+                Box::pin(async move {
+                    client
+                        .download_and_wait(&model, &mut |progress| update(progress), Some(&signal))
+                        .await
+                })
             }),
             cancel: Box::new(move || {
                 let client = cancel_client.clone();
                 let model = cancel_model.clone();
-                Box::pin(async move { let _ = client.unload(&model, None).await; })
+                Box::pin(async move {
+                    let _ = client.unload(&model, None).await;
+                })
             }),
         },
     )
@@ -344,7 +404,9 @@ async fn run_flow(
         return;
     };
     loop {
-        let action = ui.show_models(client.server_url.clone(), catalog.clone()).await;
+        let action = ui
+            .show_models(client.server_url.clone(), catalog.clone())
+            .await;
         if matches!(action, LlamaManagerAction::Close) {
             return;
         }
@@ -356,17 +418,37 @@ async fn run_flow(
                 }
             }
             LlamaManagerAction::Model(model) if model_is_loaded(model) => {
-                if let Err(error) = unload_model(&notify, &registry, &client, ui.clone(), model.as_ref().clone()).await {
+                if let Err(error) = unload_model(
+                    &notify,
+                    &registry,
+                    &client,
+                    ui.clone(),
+                    model.as_ref().clone(),
+                )
+                .await
+                {
                     action_error = Some(error);
                 }
             }
             LlamaManagerAction::Model(model) if model.status.value == "unloaded" => {
-                if let Err(error) = load_model(&notify, &registry, &client, ui.clone(), catalog.clone(), model.as_ref().clone()).await {
+                if let Err(error) = load_model(
+                    &notify,
+                    &registry,
+                    &client,
+                    ui.clone(),
+                    catalog.clone(),
+                    model.as_ref().clone(),
+                )
+                .await
+                {
                     action_error = Some(error);
                 }
             }
             LlamaManagerAction::Model(model) => {
-                notify.notify(&format!("{} is {}", model.id, model.status.value), NotificationType::Warning);
+                notify.notify(
+                    &format!("{} is {}", model.id, model.status.value),
+                    NotificationType::Warning,
+                );
             }
             LlamaManagerAction::Close => return,
         }
@@ -410,28 +492,37 @@ impl Extension for LlamaExtension {
             "llama",
             Some("Manage llama.cpp router models".to_owned()),
             None,
-            Arc::new(|_args, ctx| Box::pin(async move {
-                if ctx.mode != ExtensionMode::Tui {
-                    ctx.ui.notify("/llama is available in interactive mode", NotificationType::Warning);
-                    return Ok(());
-                }
-                let Some(client) = configured_client(ctx).await else {
-                    return Ok(());
-                };
-                let registry = ctx.model_registry.clone();
-                let notify = ctx.ui.clone();
-                let render = ui_render_binding(ctx.ui.clone());
-                let flow_client = client;
-                show_llama_ui(
-                    ctx.context.clone(),
-                    ShowLlamaOptions {
-                        render,
-                        flow: Box::new(move |ui| Box::pin(async move { run_flow(registry, notify, flow_client, ui).await })),
-                    },
-                )
-                .await?;
-                Ok(())
-            })),
+            Arc::new(|_args, ctx| {
+                Box::pin(async move {
+                    if ctx.mode != ExtensionMode::Tui {
+                        ctx.ui.notify(
+                            "/llama is available in interactive mode",
+                            NotificationType::Warning,
+                        );
+                        return Ok(());
+                    }
+                    let Some(client) = configured_client(ctx).await? else {
+                        return Ok(());
+                    };
+                    let registry = ctx.model_registry.clone();
+                    let notify = ctx.ui.clone();
+                    let render = ui_render_binding(ctx.ui.clone());
+                    let flow_client = client;
+                    show_llama_ui(
+                        ctx.context.clone(),
+                        ShowLlamaOptions {
+                            render,
+                            flow: Box::new(move |ui| {
+                                Box::pin(async move {
+                                    run_flow(registry, notify, flow_client, ui).await
+                                })
+                            }),
+                        },
+                    )
+                    .await?;
+                    Ok(())
+                })
+            }),
         );
     }
 }
@@ -443,81 +534,171 @@ pub fn llama() -> Box<dyn Extension> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use maho_ext_api::{
         BuildSystemPromptOptions, ComponentFactory, CustomComponentFactory, CustomUiFactoryOptions,
         CustomUiOptions, EditMessageOptions, EditMessageResult, EventBus, ExtensionApi,
-        ExtensionCommandContext, ExtensionCommandContextActions, ExtensionContext, ExtensionFailure,
-        ExtensionFuture, ExtensionRuntime, ExtensionSessionProfile, ExtensionTreeNavigationOptions, ExtensionUi,
-        ExtensionUiDialogOptions, ExtensionUiFactories, ExtensionWidgetOptions, FooterComponentFactory,
-        ForkOptions, JsonValue, LoadedExtension, Model, ModelRegistry, NewSessionOptions,
-        NotificationType, SessionEntry, SessionManager, SessionNavigationResult, SourceInfo,
-        SwitchSessionOptions, Theme, ToolSessionManager, TuiComponentFactory, UiFuture, WidgetContent,
+        ExtensionCommandContext, ExtensionCommandContextActions, ExtensionContext,
+        ExtensionFailure, ExtensionFuture, ExtensionRuntime, ExtensionSessionProfile,
+        ExtensionTreeNavigationOptions, ExtensionUi, ExtensionUiDialogOptions,
+        ExtensionUiFactories, ExtensionWidgetOptions, FooterComponentFactory, ForkOptions,
+        JsonValue, LoadedExtension, Model, ModelRegistry, NewSessionOptions, NotificationType,
+        SessionEntry, SessionManager, SessionNavigationResult, SourceInfo, SwitchSessionOptions,
+        Theme, ToolSessionManager, TuiComponentFactory, UiFuture, WidgetContent,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn parse_hugging_face_model_splits_quantization_after_the_owner() {
-        assert_eq!(parse_hugging_face_model("owner/repo"), ("owner/repo".to_owned(), None));
-        assert_eq!(parse_hugging_face_model("owner/repo:Q4_K_M"), ("owner/repo".to_owned(), Some("Q4_K_M".to_owned())));
+        assert_eq!(
+            parse_hugging_face_model("owner/repo"),
+            ("owner/repo".to_owned(), None)
+        );
+        assert_eq!(
+            parse_hugging_face_model("owner/repo:Q4_K_M"),
+            ("owner/repo".to_owned(), Some("Q4_K_M".to_owned()))
+        );
         assert_eq!(parse_hugging_face_model("repo"), ("repo".to_owned(), None));
-        assert_eq!(parse_hugging_face_model("a/b:q:x"), ("a/b".to_owned(), Some("q:x".to_owned())));
+        assert_eq!(
+            parse_hugging_face_model("a/b:q:x"),
+            ("a/b".to_owned(), Some("q:x".to_owned()))
+        );
     }
 
     #[test]
     fn connection_errors_map_to_the_pinned_message() {
-        assert_eq!(connection_error_message("fetch failed"), "Could not connect to the server.");
-        assert_eq!(connection_error_message("request timeout"), "Could not connect to the server.");
-        assert_eq!(connection_error_message("network down"), "Could not connect to the server.");
+        assert_eq!(
+            connection_error_message("fetch failed"),
+            "Could not connect to the server."
+        );
+        assert_eq!(
+            connection_error_message("request timeout"),
+            "Could not connect to the server."
+        );
+        assert_eq!(
+            connection_error_message("network down"),
+            "Could not connect to the server."
+        );
         assert_eq!(connection_error_message("HTTP 500"), "HTTP 500");
     }
 
     struct FauxSession;
     impl ToolSessionManager for FauxSession {
-        fn session_id(&self) -> &str { "llama-flow-test" }
-        fn session_file(&self) -> Option<&std::path::Path> { None }
+        fn session_id(&self) -> &str {
+            "llama-flow-test"
+        }
+        fn session_file(&self) -> Option<&std::path::Path> {
+            None
+        }
     }
     impl SessionManager for FauxSession {
-        fn get_entries(&self) -> Vec<SessionEntry> { Vec::new() }
-        fn get_branch(&self) -> Vec<SessionEntry> { Vec::new() }
-        fn get_leaf_id(&self) -> Option<String> { None }
-        fn get_session_name(&self) -> Option<String> { None }
+        fn get_entries(&self) -> Vec<SessionEntry> {
+            Vec::new()
+        }
+        fn get_branch(&self) -> Vec<SessionEntry> {
+            Vec::new()
+        }
+        fn get_leaf_id(&self) -> Option<String> {
+            None
+        }
+        fn get_session_name(&self) -> Option<String> {
+            None
+        }
     }
 
-    struct FauxRegistry;
+    struct FauxRegistry {
+        auth: Option<maho_ai::models::AuthResolution>,
+        fail: bool,
+    }
     impl ModelRegistry for FauxRegistry {
-        fn get_all(&self) -> Vec<Model> { Vec::new() }
-        fn get_available(&self) -> Vec<Model> { Vec::new() }
-        fn find(&self, _: &str, _: &str) -> Option<Model> { None }
-        fn has_configured_auth(&self, _: &Model) -> bool { true }
-        fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(Some("key".to_owned())) }) }
-        fn get_provider_auth<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+        fn get_all(&self) -> Vec<Model> {
+            Vec::new()
+        }
+        fn get_available(&self) -> Vec<Model> {
+            Vec::new()
+        }
+        fn find(&self, _: &str, _: &str) -> Option<Model> {
+            None
+        }
+        fn has_configured_auth(&self, _: &Model) -> bool {
+            true
+        }
+        fn get_api_key_for_provider<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> ExtensionFuture<'a, Option<String>> {
+            Box::pin(async { Ok(Some("key".to_owned())) })
+        }
+        fn get_provider_auth<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
             Box::pin(async {
-                Ok(Some(maho_ai::models::AuthResolution {
-                    auth: maho_ai::models::ProviderAuthResult { api_key: Some("key".to_owned()), headers: None, base_url: Some("http://127.0.0.1:8080".to_owned()) },
-                    env: None,
-                }))
+                if self.fail {
+                    return Err(ExtensionFailure::new("auth resolution failed"));
+                }
+                Ok(self.auth.clone())
             })
         }
     }
 
-    struct FauxFactories { custom_calls: AtomicUsize }
+    struct FauxFactories {
+        custom_calls: AtomicUsize,
+    }
     impl ExtensionUiFactories for FauxFactories {
-        fn set_widget_factory(&self, _: &str, _: Option<TuiComponentFactory>, _: ExtensionWidgetOptions) {}
+        fn set_widget_factory(
+            &self,
+            _: &str,
+            _: Option<TuiComponentFactory>,
+            _: ExtensionWidgetOptions,
+        ) {
+        }
         fn set_header_factory(&self, _: Option<TuiComponentFactory>) {}
         fn set_footer_factory(&self, _: Option<FooterComponentFactory>) {}
-        fn custom_factory(&self, _: CustomComponentFactory, _: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue> {
+        fn custom_factory(
+            &self,
+            _: CustomComponentFactory,
+            _: CustomUiFactoryOptions,
+        ) -> ExtensionFuture<'_, JsonValue> {
             self.custom_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(JsonValue::Null) })
         }
     }
 
-    struct FauxUi { factories: FauxFactories, notifies: AtomicUsize }
+    struct FauxUi {
+        factories: FauxFactories,
+        notifies: AtomicUsize,
+    }
     impl ExtensionUi for FauxUi {
-        fn factories(&self) -> Option<&dyn ExtensionUiFactories> { Some(&self.factories) }
-        fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
-        fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
-        fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
-        fn notify(&self, _: &str, _: NotificationType) { self.notifies.fetch_add(1, Ordering::SeqCst); }
+        fn factories(&self) -> Option<&dyn ExtensionUiFactories> {
+            Some(&self.factories)
+        }
+        fn select<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a [String],
+            _: ExtensionUiDialogOptions,
+        ) -> UiFuture<'a, Option<String>> {
+            Box::pin(async { None })
+        }
+        fn confirm<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: ExtensionUiDialogOptions,
+        ) -> UiFuture<'a, bool> {
+            Box::pin(async { false })
+        }
+        fn input<'a>(
+            &'a self,
+            _: &'a str,
+            _: Option<&'a str>,
+            _: ExtensionUiDialogOptions,
+        ) -> UiFuture<'a, Option<String>> {
+            Box::pin(async { None })
+        }
+        fn notify(&self, _: &str, _: NotificationType) {
+            self.notifies.fetch_add(1, Ordering::SeqCst);
+        }
         fn set_status(&self, _: &str, _: Option<&str>) {}
         fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
         fn set_header(&self, _: Option<ComponentFactory>) {}
@@ -525,45 +706,200 @@ mod tests {
         fn set_title(&self, _: &str) {}
         fn paste_to_editor(&self, _: &str) {}
         fn set_editor_text(&self, _: &str) {}
-        fn get_editor_text(&self) -> String { String::new() }
-        fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err(ExtensionFailure::new("unavailable")) }) }
-        fn theme(&self) -> Theme { Theme::default() }
+        fn get_editor_text(&self) -> String {
+            String::new()
+        }
+        fn custom(
+            &self,
+            _: ComponentFactory,
+            _: CustomUiOptions,
+        ) -> ExtensionFuture<'_, JsonValue> {
+            Box::pin(async { Err(ExtensionFailure::new("unavailable")) })
+        }
+        fn theme(&self) -> Theme {
+            Theme::default()
+        }
     }
 
     struct FauxActions;
     impl ExtensionCommandContextActions for FauxActions {
-        fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
-        fn new_session(&self, _: NewSessionOptions) -> ExtensionFuture<'_, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult::default()) }) }
-        fn fork<'a>(&'a self, _: &'a str, _: ForkOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult::default()) }) }
-        fn navigate_tree<'a>(&'a self, _: &'a str, _: ExtensionTreeNavigationOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult::default()) }) }
-        fn edit_assistant_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult::default()) }) }
-        fn edit_user_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult::default()) }) }
-        fn switch_session<'a>(&'a self, _: &'a str, _: SwitchSessionOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult::default()) }) }
-        fn reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+        fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+        fn new_session(
+            &self,
+            _: NewSessionOptions,
+        ) -> ExtensionFuture<'_, SessionNavigationResult> {
+            Box::pin(async { Ok(SessionNavigationResult::default()) })
+        }
+        fn fork<'a>(
+            &'a self,
+            _: &'a str,
+            _: ForkOptions,
+        ) -> ExtensionFuture<'a, SessionNavigationResult> {
+            Box::pin(async { Ok(SessionNavigationResult::default()) })
+        }
+        fn navigate_tree<'a>(
+            &'a self,
+            _: &'a str,
+            _: ExtensionTreeNavigationOptions,
+        ) -> ExtensionFuture<'a, SessionNavigationResult> {
+            Box::pin(async { Ok(SessionNavigationResult::default()) })
+        }
+        fn edit_assistant_message<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: EditMessageOptions,
+        ) -> ExtensionFuture<'a, EditMessageResult> {
+            Box::pin(async { Ok(EditMessageResult::default()) })
+        }
+        fn edit_user_message<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: EditMessageOptions,
+        ) -> ExtensionFuture<'a, EditMessageResult> {
+            Box::pin(async { Ok(EditMessageResult::default()) })
+        }
+        fn switch_session<'a>(
+            &'a self,
+            _: &'a str,
+            _: SwitchSessionOptions,
+        ) -> ExtensionFuture<'a, SessionNavigationResult> {
+            Box::pin(async { Ok(SessionNavigationResult::default()) })
+        }
+        fn reload(&self) -> ExtensionFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
     }
 
-    fn command_context(dir: &std::path::Path, mode: ExtensionMode) -> (ExtensionCommandContext, Arc<FauxUi>) {
-        let ui = Arc::new(FauxUi { factories: FauxFactories { custom_calls: AtomicUsize::new(0) }, notifies: AtomicUsize::new(0) });
+    fn command_context(
+        dir: &std::path::Path,
+        mode: ExtensionMode,
+    ) -> (ExtensionCommandContext, Arc<FauxUi>) {
+        let ui = Arc::new(FauxUi {
+            factories: FauxFactories {
+                custom_calls: AtomicUsize::new(0),
+            },
+            notifies: AtomicUsize::new(0),
+        });
         let context = ExtensionContext {
-            ui: ui.clone(), mode, has_ui: mode == ExtensionMode::Tui, cwd: dir.into(), agent_dir: dir.into(),
-            session_manager: Arc::new(FauxSession), model_registry: Arc::new(FauxRegistry), model: None, thinking_level: None,
-            service_tier: None, effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None,
-            loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
-            is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})), is_project_trusted_fn: Arc::new(|| true),
-            is_compacting_fn: Arc::new(|| false), get_system_prompt_fn: Arc::new(String::new),
-            get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: Vec::new(),
-            update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default(),
+            ui: ui.clone(),
+            mode,
+            has_ui: mode == ExtensionMode::Tui,
+            cwd: dir.into(),
+            agent_dir: dir.into(),
+            session_manager: Arc::new(FauxSession),
+            model_registry: Arc::new(FauxRegistry {
+                auth: Some(maho_ai::models::AuthResolution {
+                    ambient: false,
+                    auth: maho_ai::models::ProviderAuthResult {
+                        api_key: Some("key".to_owned()),
+                        headers: None,
+                        base_url: Some("http://127.0.0.1:8080".to_owned()),
+                    },
+                    env: None,
+                }),
+                fail: false,
+            }),
+            model: None,
+            thinking_level: None,
+            service_tier: None,
+            effective_service_tier: None,
+            scoped_models: Vec::new(),
+            goal_store_file: None,
+            loaded_extension_paths: Vec::new(),
+            signal: None,
+            steering_signal: None,
+            is_idle_fn: Arc::new(|| true),
+            wait_for_idle_fn: Arc::new(|| Box::pin(async {})),
+            is_project_trusted_fn: Arc::new(|| true),
+            is_compacting_fn: Arc::new(|| false),
+            get_system_prompt_fn: Arc::new(String::new),
+            get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default),
+            registered_mcp_servers: Vec::new(),
+            update_tool_hook_status: None,
+            idle_coordinator: None,
+            logger: None,
+            defer_macrotask: None,
+            compaction_signal: Default::default(),
         };
-        (ExtensionCommandContext { context, actions: Arc::new(FauxActions), runtime: ExtensionRuntime::default() }, ui)
+        (
+            ExtensionCommandContext {
+                context,
+                actions: Arc::new(FauxActions),
+                runtime: ExtensionRuntime::default(),
+            },
+            ui,
+        )
     }
 
     fn llama_command(dir: &std::path::Path) -> maho_ext_api::CommandContextHandler {
         let mut api = ExtensionApi::new(
             LoadedExtension::new("<inline:llama.cpp>", dir.into(), SourceInfo::default()),
-            ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default(),
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            ExtensionRuntime::default(),
         );
         LlamaExtension.register(&mut api);
-        api.registered.command_context_handlers.get("llama").cloned().expect("the llama command is registered")
+        api.registered
+            .command_context_handlers
+            .get("llama")
+            .cloned()
+            .expect("the llama command is registered")
+    }
+
+    #[tokio::test]
+    async fn configured_client_accepts_ambient_auth_without_a_key() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (mut ctx, ui) = command_context(dir.path(), ExtensionMode::Tui);
+        ctx.context.model_registry = Arc::new(FauxRegistry {
+            auth: Some(maho_ai::models::AuthResolution {
+                ambient: true,
+                auth: maho_ai::models::ProviderAuthResult {
+                    api_key: None,
+                    headers: None,
+                    base_url: Some("http://127.0.0.1:8080/v1".into()),
+                },
+                env: Some(BTreeMap::from([(
+                    "LLAMA_BASE_URL".into(),
+                    "http://127.0.0.1:9090/v1".into(),
+                )])),
+            }),
+            fail: false,
+        });
+        let client = configured_client(&ctx).await.expect("client").expect("configured");
+        assert_eq!(client.server_url, "http://127.0.0.1:9090");
+        assert_eq!(ui.notifies.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn configured_client_propagates_invalid_server_url() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (mut ctx, _) = command_context(dir.path(), ExtensionMode::Tui);
+        ctx.context.model_registry = Arc::new(FauxRegistry {
+            auth: Some(maho_ai::models::AuthResolution {
+                ambient: false,
+                auth: maho_ai::models::ProviderAuthResult {
+                    api_key: None,
+                    headers: None,
+                    base_url: Some("file:///tmp/llama".into()),
+                },
+                env: None,
+            }),
+            fail: false,
+        });
+        assert!(configured_client(&ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn configured_client_propagates_auth_resolution_failure() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (mut ctx, ui) = command_context(dir.path(), ExtensionMode::Tui);
+        ctx.context.model_registry = Arc::new(FauxRegistry { auth: None, fail: true });
+        assert!(configured_client(&ctx).await.is_err());
+        assert_eq!(ui.notifies.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -571,8 +907,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let handler = llama_command(dir.path());
         let (ctx, ui) = command_context(dir.path(), ExtensionMode::Tui);
-        handler("", &ctx).await.expect("the /llama handler succeeds");
-        assert_eq!(ui.factories.custom_calls.load(Ordering::SeqCst), 1, "the registered command must start the llama UI flow");
+        handler("", &ctx)
+            .await
+            .expect("the /llama handler succeeds");
+        assert_eq!(
+            ui.factories.custom_calls.load(Ordering::SeqCst),
+            1,
+            "the registered command must start the llama UI flow"
+        );
     }
 
     #[tokio::test]
@@ -580,8 +922,18 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let handler = llama_command(dir.path());
         let (ctx, ui) = command_context(dir.path(), ExtensionMode::Print);
-        handler("", &ctx).await.expect("the /llama handler succeeds");
-        assert_eq!(ui.factories.custom_calls.load(Ordering::SeqCst), 0, "a non-interactive mode must not start the UI flow");
-        assert_eq!(ui.notifies.load(Ordering::SeqCst), 1, "a non-interactive mode must notify instead");
+        handler("", &ctx)
+            .await
+            .expect("the /llama handler succeeds");
+        assert_eq!(
+            ui.factories.custom_calls.load(Ordering::SeqCst),
+            0,
+            "a non-interactive mode must not start the UI flow"
+        );
+        assert_eq!(
+            ui.notifies.load(Ordering::SeqCst),
+            1,
+            "a non-interactive mode must notify instead"
+        );
     }
 }

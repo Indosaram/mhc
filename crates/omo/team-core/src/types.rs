@@ -103,13 +103,21 @@ pub(crate) fn as_integer(value: &Value) -> Option<i64> {
 }
 
 fn is_uuid(value: &str) -> bool {
+    if value == "00000000-0000-0000-0000-000000000000"
+        || value.eq_ignore_ascii_case("ffffffff-ffff-ffff-ffff-ffffffffffff")
+    {
+        return true;
+    }
     let bytes = value.as_bytes();
     bytes.len() == 36
         && bytes.iter().enumerate().all(|(index, byte)| match index {
             8 | 13 | 18 | 23 => *byte == b'-',
+            14 => matches!(*byte, b'1'..=b'8'),
+            19 => matches!(*byte, b'8' | b'9' | b'a' | b'b' | b'A' | b'B'),
             _ => byte.is_ascii_hexdigit(),
         })
 }
+
 
 pub(crate) fn is_member_name(value: &str) -> bool {
     !value.is_empty()
@@ -1366,4 +1374,19 @@ pub fn parse_member(input: &Value) -> Result<Member, MemberParseError> {
         ));
     }
     member_parser::parse_member_base(input)
+}
+
+#[cfg(test)]
+mod uuid_tests {
+    use super::is_uuid;
+
+    #[test]
+    fn uuid_requires_rfc_version_and_variant_or_nil_or_max() {
+        for value in ["00000000-0000-0000-0000-000000000000", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", "abcdefab-1234-1234-8123-abcdefabcdef", "abcdefab-1234-8234-B123-abcdefabcdef"] {
+            assert!(is_uuid(value), "{value}");
+        }
+        for value in ["abcdefab-1234-0234-8123-abcdefabcdef", "abcdefab-1234-9234-8123-abcdefabcdef", "abcdefab-1234-4234-7123-abcdefabcdef", "abcdefab-1234-4234-c123-abcdefabcdef", "abcdefab1234-4234-8123-abcdefabcdef"] {
+            assert!(!is_uuid(value), "{value}");
+        }
+    }
 }

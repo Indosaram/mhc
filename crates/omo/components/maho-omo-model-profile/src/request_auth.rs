@@ -228,12 +228,94 @@ fn sanitized_line(error: &ExtensionFailure) -> String {
     line.chars().take(DETAIL_MAX_LENGTH).collect()
 }
 
+// One redacted line for any link of an error chain: an `ExtensionFailure` keeps its class name, any
+// other error is rendered from its `Display` text alone.
+fn sanitized_chain_line(error: &(dyn std::error::Error + 'static)) -> String {
+    match error.downcast_ref::<ExtensionFailure>() {
+        Some(failure) => sanitized_line(failure),
+        None => sanitized_line(&ExtensionFailure::new(error.to_string())),
+    }
+}
+
+const DETAIL_MAX_LINKS: usize = 4;
+
+/// Redacted, bounded description of an error and its `source()` chain (upstream `error.cause`): up
+/// to 4 links, one redacted line each, joined with ` <- `, so a wrapped `OAuthRefreshExchangeError`
+/// keeps its class name in the detail. The link limit also bounds a cyclic chain.
+pub fn sanitized_error_chain_detail(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(link) = current {
+        if lines.len() >= DETAIL_MAX_LINKS {
+            break;
+        }
+        lines.push(sanitized_chain_line(link));
+        current = link.source();
+    }
+    lines.join(" <- ")
+}
+
 /// Redacted, bounded description of an auth failure for opt-in (debug) diagnostics only.
 ///
-/// Outstanding signature: senpi walks the `error.cause` chain (up to 4 links, joined with ` <- `) so
-/// a wrapped `OAuthRefreshExchangeError` keeps its class name in the detail. `ExtensionFailure` has
-/// no `cause` field yet, so this reports the top failure only; recorded in
-/// `.omo/authoring/model-profile.md` section 2.
+/// `ExtensionFailure` carries no `cause` field, so its own `source()` is `None` and this reports the
+/// top failure; the chain walk itself lives in [`sanitized_error_chain_detail`].
 pub fn sanitized_auth_error_detail(error: Option<&ExtensionFailure>) -> String {
-    error.map(sanitized_line).unwrap_or_default()
+    error.map(|failure| sanitized_error_chain_detail(failure)).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fmt;
+
+    #[derive(Debug)]
+    struct Wrapped {
+        message: &'static str,
+        cause: Option<Box<dyn std::error::Error + 'static>>,
+    }
+
+    impl fmt::Display for Wrapped {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+
+    impl std::error::Error for Wrapped {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.cause.as_deref()
+        }
+    }
+
+    fn chain(depth: usize) -> Wrapped {
+        let mut error = Wrapped { message: "link 0", cause: None };
+        let messages = ["link 1", "link 2", "link 3", "link 4", "link 5"];
+        for message in messages.iter().take(depth.saturating_sub(1)) {
+            error = Wrapped { message, cause: Some(Box::new(error)) };
+        }
+        error
+    }
+
+    #[test]
+    fn the_cause_chain_is_joined_with_arrows_and_keeps_the_inner_class_name() {
+        let inner = ExtensionFailure::classified("exchange rejected", Some("OAuthRefreshExchangeError".to_owned()), None);
+        let outer = Wrapped { message: "refresh failed", cause: Some(Box::new(inner)) };
+        assert_eq!(
+            sanitized_error_chain_detail(&outer),
+            "refresh failed <- OAuthRefreshExchangeError: exchange rejected"
+        );
+    }
+
+    #[test]
+    fn the_cause_chain_stops_after_four_links() {
+        let detail = sanitized_error_chain_detail(&chain(6));
+        assert_eq!(detail.split(" <- ").count(), 4, "{detail}");
+        assert!(detail.starts_with("link 5"), "{detail}");
+        assert!(!detail.contains("link 0"), "{detail}");
+    }
+
+    #[test]
+    fn a_failure_without_a_cause_reports_only_itself() {
+        let failure = ExtensionFailure::classified("nope", Some("ModelsError".to_owned()), None);
+        assert_eq!(sanitized_auth_error_detail(Some(&failure)), "ModelsError: nope");
+    }
 }

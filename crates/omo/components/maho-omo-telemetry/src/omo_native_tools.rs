@@ -3,7 +3,7 @@ use serde_json::{Value,json};
 pub fn matches_tool_name(name:&str,expected:&str)->bool {let name=name.trim().to_lowercase().replace('-',"_");let expected=expected.trim().to_lowercase().replace('-',"_");name==expected || ["_",":","/"].iter().any(|s|name.ends_with(&format!("{s}{expected}")))}
 pub fn builtin_skill_name(root:&Path,target:&Path)->Option<String> {builtin_skill_name_in(root,target,&crate::product_identity::pinned_skill_names().into_iter().collect())}
 /// The gate the runtime uses: membership in the SELECTED skill vocabulary (staged root manifest),
-/// never the pinned constant, so a latest-only name like `browser` still emits. Windows resolves
+/// never the pinned constant, so a selected name outside the pinned set still emits. Windows resolves
 /// through the same selected allowlist.
 pub fn builtin_skill_name_in(root:&Path,target:&Path,allowlist:&BTreeSet<String>)->Option<String> {let root=root.canonicalize().ok()?;let target=target.canonicalize().ok()?;if cfg!(windows) {return builtin_skill_name_from_windows_canonical_paths_in(root.to_str()?,target.to_str()?,allowlist);}let relative=target.strip_prefix(root).ok()?;let parts:Vec<_>=relative.components().collect();if parts.len()!=2 || parts[1].as_os_str()!="SKILL.md" {return None;}let name=parts[0].as_os_str().to_str()?;allowlist.contains(name).then(||name.into())}
 fn identifier(v:Option<&Value>)->Option<&str> {v?.as_str().map(str::trim).filter(|s|!s.is_empty())}
@@ -89,10 +89,15 @@ mod tests {
         assert!(telemetry.record(&read("start-work"),"s","hash",&skills,&skills).is_empty(),"a retired name outside the selected vocabulary emits nothing");
     }
     #[test] fn windows_selected_identity_gate_uses_the_supplied_allowlist() {
-        let selected:BTreeSet<String>=["browser".to_string()].into_iter().collect();
+        let selected:BTreeSet<String>=["selected-only-skill".to_string()].into_iter().collect();
+        let pinned:BTreeSet<String>=crate::product_identity::pinned_skill_names().into_iter().collect();
         let root=r"C:\plugin\skills";
-        assert_eq!(builtin_skill_name_from_windows_canonical_paths_in(root,r"C:\plugin\skills\browser\SKILL.md",&selected),Some("browser".into()));
+        let selected_path=r"C:\plugin\skills\selected-only-skill\SKILL.md";
+        assert!(!pinned.contains("selected-only-skill"),"fixture must be outside the pinned vocabulary");
+        assert_eq!(builtin_skill_name_from_windows_canonical_paths_in(root,selected_path,&selected),Some("selected-only-skill".into()));
         assert!(builtin_skill_name_from_windows_canonical_paths_in(root,r"C:\plugin\skills\start-work\SKILL.md",&selected).is_none());
-        assert!(builtin_skill_name_from_windows_canonical_paths_in(root,r"C:\plugin\skills\browser\SKILL.md",&crate::product_identity::pinned_skill_names().into_iter().collect()).is_none(),"the pinned helper default does not know the latest-only name");
+        assert!(builtin_skill_name_from_windows_canonical_paths_in(root,selected_path,&pinned).is_none());
+        assert_eq!(builtin_skill_name_from_windows_canonical_paths(root,r"C:\plugin\skills\browser\SKILL.md"),Some("browser".into()));
+        assert!(builtin_skill_name_from_windows_canonical_paths_in(root,r"C:\plugin\skills\browser\SKILL.md",&selected).is_none(),"a pinned name outside the selected vocabulary must not emit");
     }
 }

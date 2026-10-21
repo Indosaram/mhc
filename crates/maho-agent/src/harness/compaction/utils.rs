@@ -50,7 +50,11 @@ pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut File
 
 /// Compute sorted read-only and modified file lists from accumulated operations.
 pub fn compute_file_lists(file_ops: &FileOperations) -> (Vec<String>, Vec<String>) {
-    let modified: BTreeSet<&String> = file_ops.edited.iter().chain(file_ops.written.iter()).collect();
+    let modified: BTreeSet<&String> = file_ops
+        .edited
+        .iter()
+        .chain(file_ops.written.iter())
+        .collect();
     let read_only: Vec<String> = file_ops
         .read
         .iter()
@@ -65,7 +69,10 @@ pub fn compute_file_lists(file_ops: &FileOperations) -> (Vec<String>, Vec<String
 pub fn format_file_operations(read_files: &[String], modified_files: &[String]) -> String {
     let mut sections: Vec<String> = Vec::new();
     if !read_files.is_empty() {
-        sections.push(format!("<read-files>\n{}\n</read-files>", read_files.join("\n")));
+        sections.push(format!(
+            "<read-files>\n{}\n</read-files>",
+            read_files.join("\n")
+        ));
     }
     if !modified_files.is_empty() {
         sections.push(format!(
@@ -86,11 +93,15 @@ fn safe_json_stringify(value: &Value) -> String {
 }
 
 fn truncate_for_summary(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
+    let length = text.encode_utf16().count();
+    if length <= max_chars {
         return text.to_owned();
     }
-    let truncated_chars = text.chars().count() - max_chars;
-    let head: String = text.chars().take(max_chars).collect();
+    let truncated_chars = length - max_chars;
+    // Rust strings cannot retain the lone surrogate produced by JS slice; replace it with U+FFFD.
+    let head: String = char::decode_utf16(text.encode_utf16().take(max_chars))
+        .map(|character| character.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect();
     format!("{head}\n\n[... {truncated_chars} more characters truncated]")
 }
 
@@ -132,7 +143,9 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
 
                 for block in &assistant.content {
                     match block {
-                        ContentBlock::Thinking(thinking) => thinking_parts.push(thinking.thinking.clone()),
+                        ContentBlock::Thinking(thinking) => {
+                            thinking_parts.push(thinking.thinking.clone())
+                        }
                         ContentBlock::ToolCall(call) => {
                             let args = call
                                 .arguments
@@ -147,7 +160,10 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                 }
 
                 if !thinking_parts.is_empty() {
-                    parts.push(format!("[Assistant thinking]: {}", thinking_parts.join("\n")));
+                    parts.push(format!(
+                        "[Assistant thinking]: {}",
+                        thinking_parts.join("\n")
+                    ));
                 }
                 if assistant
                     .content
@@ -172,7 +188,7 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                     ));
                 }
             }
-            Message::ConfigurationUpdate(_) => {}
+            Message::System(_) | Message::ConfigurationUpdate(_) => {}
         }
     }
 

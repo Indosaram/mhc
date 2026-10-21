@@ -69,12 +69,16 @@ fn absorb_static_levels(current: &Model, flat_group: Option<&Model>) -> Model {
     Model { thinking_level_map: Some(thinking_level_map), ..current.clone() }
 }
 
-fn entry_to_model(entry: &CursorCatalogEntry, max_tokens_by_id: &BTreeMap<String, u64>) -> Model {
+fn entry_to_model(entry: &CursorCatalogEntry, max_tokens_by_id: &BTreeMap<String, u64>, source_models: &[Model]) -> Model {
     let representative = entry
         .representative_variant_id
         .clone()
         .or_else(|| entry.legacy_aliases.first().cloned())
         .unwrap_or_else(|| entry.id.clone());
+    let source = source_models
+        .iter()
+        .find(|model| model.id == representative)
+        .or_else(|| source_models.iter().find(|model| model.id == entry.id));
     let max_tokens = max_tokens_by_id
         .get(&representative)
         .or_else(|| max_tokens_by_id.get(&entry.id))
@@ -102,6 +106,8 @@ fn entry_to_model(entry: &CursorCatalogEntry, max_tokens_by_id: &BTreeMap<String
         reasoning: entry.reasoning,
         default_thinking_level: None,
         thinking_level_map: entry.thinking_level_map.clone(),
+        prompt_cache: source.and_then(|model| model.prompt_cache.clone()),
+        supports_assistant_prefill: source.and_then(|model| model.supports_assistant_prefill),
         input: entry.input.iter().filter_map(|modality| to_modality(modality)).collect(),
         cost: ModelCost::default(),
         context_window: resolve_cursor_context_window(&entry.id, entry.window) as u64,
@@ -190,7 +196,7 @@ pub fn regroup_stored_cursor_models(models: &[Model]) -> Vec<Model> {
     .into_iter()
     .map(|entry| {
         let id = entry.id.clone();
-        (id, entry_to_model(&entry, &max_tokens_by_id))
+        (id, entry_to_model(&entry, &max_tokens_by_id, models))
     })
     .collect();
     let mut merged: Vec<(String, Model)> = Vec::new();
@@ -344,6 +350,8 @@ mod tests {
             reasoning: source.as_ref().is_some_and(|entry| entry.reasoning),
             default_thinking_level: None,
             thinking_level_map: None,
+            prompt_cache: None,
+            supports_assistant_prefill: None,
             input: source
                 .as_ref()
                 .map(|entry| entry.input.iter().filter_map(|value| to_modality(value)).collect())
@@ -446,7 +454,7 @@ mod tests {
     }
 
     fn entry_to_cursor_model(entry: &CursorCatalogEntry) -> Model {
-        entry_to_model(entry, &BTreeMap::new())
+        entry_to_model(entry, &BTreeMap::new(), &[])
     }
 
     /// `resolveCursorSelectionDescriptor(model, { level, source: "explicit" }).modelId`.

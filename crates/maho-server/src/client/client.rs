@@ -6,7 +6,8 @@ use super::{
     types::{ConnectionOptions, ConnectionState, ConnectionStateChange},
 };
 use crate::protocol::{codec::encode_client_message, messages::is_server_id};
-use serde_json::{Value, json};
+use maho_chord::types::JsonValue as Value;
+use crate::transport_json as json;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -19,7 +20,7 @@ type AttachmentListener = Arc<dyn Fn(Option<Value>) + Send + Sync>;
 type ListenerErrorObserver=Arc<dyn Fn(ClientError)+Send+Sync>;
 struct Pending {
     reply: Option<Reply>,
-    subscription: Option<String>,
+    subscription: Option<maho_chord::types::JsString>,
 }
 struct SubscriptionState {
     decoder: ServiceStateDecoder,
@@ -36,7 +37,7 @@ struct State {
     hello: Option<Value>,
     attachment: Option<Value>,
     pending: BTreeMap<String, Pending>,
-    subscriptions: BTreeMap<String, SubscriptionState>,
+    subscriptions: BTreeMap<maho_chord::types::JsString, SubscriptionState>,
     listener_sequence: u64,
     connection_listeners: BTreeMap<u64, ConnectionListener>,
     attachment_listeners: BTreeMap<u64, AttachmentListener>,
@@ -294,7 +295,7 @@ impl Client {
         &self,
         target: Value,
         call: Value,
-        subscription: Option<String>,
+        subscription: Option<maho_chord::types::JsString>,
     ) -> Result<
         (
             String,
@@ -333,7 +334,7 @@ impl Client {
         let result = self
             .request(
                 target,
-                json!({"serviceId":"$chord.service","member":"catalogue","args":[]}),
+                super::service_wire::create_service_catalogue_call()?,
                 None,
             )
             .await?
@@ -347,20 +348,20 @@ impl Client {
     pub async fn subscribe(
         self: &Arc<Self>,
         target: Value,
-        service_id: &str,
-        mode: &str,
+        service_id: &maho_chord::types::JsString,
+        mode: maho_chord::types::ServiceMode,
     ) -> Result<ServiceSubscription, ClientError> {
         self.subscribe_with_cancellation(target,service_id,mode,None).await
     }
     pub async fn subscribe_with_cancellation(
-        self:&Arc<Self>,target:Value,service_id:&str,mode:&str,mut cancellation:Option<watch::Receiver<Option<ClientError>>>,
+        self:&Arc<Self>,target:Value,service_id:&maho_chord::types::JsString,mode:maho_chord::types::ServiceMode,mut cancellation:Option<watch::Receiver<Option<ClientError>>>,
     )->Result<ServiceSubscription,ClientError> {
         if let Some(reason)=cancellation.as_ref().and_then(|signal|signal.borrow().clone()) {return Err(reason);}
         let (updates, rx) = mpsc::unbounded_channel();
         let id = {
             let mut state = lock(&self.state);
             state.subscription_sequence = state.subscription_sequence.wrapping_add(1);
-            let id = format!("service-{}", state.subscription_sequence);
+            let id = maho_chord::types::JsString::from(format!("service-{}", state.subscription_sequence));
             state.subscriptions.insert(
                 id.clone(),
                 SubscriptionState {
@@ -375,7 +376,8 @@ impl Client {
             id
         };
         let result=async {
-            let (request_id,reply)=self.begin_request(target.clone(),json!({"serviceId":"$chord.service","member":"subscribe","args":[id,service_id,mode]}),Some(id.clone())).await?;
+            let call=super::service_wire::create_service_subscribe_call(&id,service_id,mode)?;
+            let (request_id,reply)=self.begin_request(target.clone(),call,Some(id.clone())).await?;
             if let Some(signal)=cancellation.as_mut() {
                 tokio::select! {
                     result=reply=>result.map_err(|_|ClientError::Disconnected("Client is disconnected".into()))?,
@@ -415,7 +417,7 @@ impl Client {
 }
 
 pub struct ServiceSubscription {
-    pub id: String,
+    pub id: maho_chord::types::JsString,
     pub target: Value,
     pub snapshot: Value,
     pub updates: mpsc::UnboundedReceiver<Value>,
@@ -469,7 +471,7 @@ impl ServiceSubscription {
             self.client
                 .request(
                     self.target.clone(),
-                    json!({"serviceId":"$chord.service","member":"unsubscribe","args":[self.id]}),
+                    super::service_wire::create_service_unsubscribe_call(&self.id)?,
                     None,
                 )
                 .await?;
@@ -488,12 +490,12 @@ fn handle_message(
     match message["type"].as_str() {
         Some("attachment") => {
             let value = &message["attachment"];
-            if !value.is_null() && value["serverId"].as_str() != Some(server_id) {
+            if !matches!(value, Value::Null) && value["serverId"].as_str() != Some(server_id) {
                 return Err(ClientError::Protocol(
                     "Attachment update belongs to another server".into(),
                 ));
             }
-            let value = if value.is_null() {
+            let value = if matches!(value, Value::Null) {
                 None
             } else {
                 Some(value.clone())
@@ -504,7 +506,7 @@ fn handle_message(
             }
         }
         Some("service_update") => {
-            let id = message["subscriptionId"].as_str().unwrap_or_default();
+            let Value::String(id) = &message["subscriptionId"] else { return Err(ClientError::Protocol("Invalid subscription ID".into())); };
             if let Some(active) = state.subscriptions.get_mut(id) {
                 if !active.hydrated {
                     active.wire.push(message["update"].clone());
@@ -526,7 +528,7 @@ fn handle_message(
                 .ok_or_else(|| ClientError::Protocol("Response has no matching request".into()))?;
             let transformed = pending.subscription.is_some();
             let result = (|| {
-                if message["ok"] == false {
+                if message["ok"] == Value::Bool(false) {
                     return Err(ClientError::Server {
                         code: message["error"]["code"].as_str().unwrap_or_default().into(),
                         message: message["error"]["message"]

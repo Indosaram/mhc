@@ -84,10 +84,6 @@ fn default_auto() -> Value {
     json!("auto")
 }
 
-fn default_direct() -> Value {
-    json!("direct")
-}
-
 fn default_quick() -> Value {
     json!("quick")
 }
@@ -312,8 +308,23 @@ pub fn omo_memory_recall_schema() -> Node {
     ])
 }
 
+pub fn omo_memory_projection_schema() -> Node {
+    strict_object(vec![
+        defaulted("max_entries_per_directory", nonnegative_integer(), || json!(40)),
+        defaulted("max_bytes", nonnegative_integer(), || json!(24576)),
+    ])
+}
+
+pub fn omo_memory_projection_layer_schema() -> Node {
+    strict_object(vec![
+        optional("max_entries_per_directory", nonnegative_integer()),
+        optional("max_bytes", nonnegative_integer()),
+    ])
+}
+
 pub fn omo_memory_agent_overrides_schema() -> Node {
     strict_object(vec![
+        optional("projection", omo_memory_projection_layer_schema()),
         optional_field("enabled", boolean()),
         optional_field("agent", non_empty_string()),
         optional_field("reflection", omo_memory_reflection_layer_schema()),
@@ -334,11 +345,9 @@ pub fn omo_memory_settings_schema() -> Node {
     strict_object(vec![
         defaulted("enabled", boolean(), default_true),
         defaulted("agent", non_empty_string(), default_auto),
-        defaulted(
-            "tool_exposure",
-            enumeration(&["direct", "search"]),
-            default_direct,
-        ),
+        defaulted("projection", omo_memory_projection_schema(), || {
+            json!({ "max_entries_per_directory": 40, "max_bytes": 24576 })
+        }),
         defaulted(
             "reflection",
             omo_memory_reflection_schema(),
@@ -374,7 +383,7 @@ pub fn omo_memory_settings_layer_schema() -> Node {
     strict_object(vec![
         optional_field("enabled", boolean()),
         optional_field("agent", non_empty_string()),
-        optional_field("tool_exposure", enumeration(&["direct", "search"])),
+        optional("projection", omo_memory_projection_layer_schema()),
         optional_field("reflection", omo_memory_reflection_layer_schema()),
         optional_field("nudge", omo_memory_nudge_layer_schema()),
         optional_field("facts", omo_memory_facts_layer_schema()),

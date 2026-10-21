@@ -157,6 +157,12 @@ pub(crate) fn project_work_to_mirror(state: &mut JsObj, work: &JsObj) {
 
 /// Works of a validated document, in enumeration order.
 pub(crate) fn work_objects(state: &JsObj) -> Vec<JsObj> {
+    if let Some(items) = state.get("works").and_then(Js::as_array) {
+        return items.iter().filter_map(|item| match Js::from_value(item.clone()) {
+            Js::Object(work) => Some(work),
+            _ => None,
+        }).collect();
+    }
     state
         .get_obj("works")
         .map(|works| works.values().filter_map(Js::as_object).cloned().collect())

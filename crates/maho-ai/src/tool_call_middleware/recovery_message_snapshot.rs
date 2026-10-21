@@ -33,6 +33,10 @@ mod tests {
 
     fn message() -> AssistantMessage {
         AssistantMessage {
+            error_cause: None,
+            prompt_cache_diagnostics: None,
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -55,9 +59,14 @@ mod tests {
 
     #[test]
     fn snapshot_of_a_done_event_preserves_message_identity_fields() {
-        let event = AssistantMessageEvent::Done { reason: DoneReason::Stop, message: message() };
+        let event = AssistantMessageEvent::Done {
+            reason: DoneReason::Stop,
+            message: message(),
+        };
         let snapshot = snapshot_recovery_event(event);
-        let AssistantMessageEvent::Done { message, .. } = snapshot else { panic!("expected done event") };
+        let AssistantMessageEvent::Done { message, .. } = snapshot else {
+            panic!("expected done event")
+        };
         assert_eq!(message.model, "m");
     }
 
@@ -65,7 +74,9 @@ mod tests {
     fn snapshot_of_a_start_event_preserves_the_partial_message() {
         let event = AssistantMessageEvent::Start { partial: message() };
         let snapshot = snapshot_recovery_event(event);
-        let AssistantMessageEvent::Start { partial } = snapshot else { panic!("expected start event") };
+        let AssistantMessageEvent::Start { partial } = snapshot else {
+            panic!("expected start event")
+        };
         assert_eq!(partial.provider, "openai");
     }
 }

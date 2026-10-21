@@ -63,7 +63,7 @@ async fn prompt_main_hooks_match_pinned_reference() {
   if step == 2 || step == 3 { options.custom_prompt = Some("custom".into()); }
   let mut selected = model.clone(); if step == 4 { selected.id = "unknown".into(); selected.name = "unknown".into(); }
   if step >= 5 { selected.id = families[step-5].into(); selected.name = families[step-5].into(); }
-  let mut event = if step == 0 || step == 2 { ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), images: None, system_prompt: "base".into(), system_prompt_options: options }) } else { ExtensionEvent::ModelSelect(ModelSelectEvent { model: selected, previous_model: None, source: ModelSelectSource::Set, system_prompt: "base".into(), system_prompt_options: options }) };
+  let mut event = if step == 0 || step == 2 { ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), trigger: "prompt".into(), preview: false, images: None, system_prompt: "base".into(), system_prompt_options: options }) } else { ExtensionEvent::ModelSelect(ModelSelectEvent { model: selected, previous_model: None, source: ModelSelectSource::Set, system_prompt: "base".into(), system_prompt_options: options }) };
   let result = api.registered.handlers[&event.kind()][0](&mut event, &ctx).await.unwrap();
   actual.push(match result {
    EventResult::None => serde_json::Value::Null,
@@ -103,7 +103,7 @@ async fn preset_prompt_renders_forwarded_tool_snippets_and_guidelines() {
  maho_ext_prompt_preset::PromptPreset.register(&mut api);
  let mut options = BuildSystemPromptOptions { cwd: "<root>".into(), tools: vec!["read".into()], prompt_guidelines: vec!["Fixture guideline".into()], ..Default::default() };
  options.tool_snippets.insert("read".into(), "Fixture read snippet".into());
- let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), images: None, system_prompt: "base".into(), system_prompt_options: options });
+ let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), trigger: "prompt".into(), preview: false, images: None, system_prompt: "base".into(), system_prompt_options: options });
  let EventResult::BeforeAgentStart(result) = api.registered.handlers[&EventKind::BeforeAgentStart][0](&mut event, &ctx).await.unwrap() else { panic!("expected preset prompt") };
  let prompt = result.system_prompt.unwrap();
  assert!(prompt.contains("- read: Fixture read snippet"));

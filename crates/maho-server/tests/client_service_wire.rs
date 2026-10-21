@@ -8,9 +8,9 @@ use serde_json::json;
 
 #[test]
 fn control_calls_round_trip_and_reject_malformed_shapes() {
-    assert_eq!(decode_service_control_call(&create_service_catalogue_call()), Some(ServiceControlCall::Catalogue));
-    assert_eq!(decode_service_control_call(&create_service_subscribe_call("s1", "svc", "keyed")), Some(ServiceControlCall::Subscribe { subscription_id: "s1".into(), service_id: "svc".into(), mode: "keyed".into() }));
-    assert_eq!(decode_service_control_call(&create_service_unsubscribe_call("s1")), Some(ServiceControlCall::Unsubscribe { subscription_id: "s1".into() }));
+    assert_eq!(decode_service_control_call(&create_service_catalogue_call().expect("catalogue")), Some(ServiceControlCall::Catalogue));
+    assert_eq!(decode_service_control_call(&create_service_subscribe_call(&"s1".into(), &"svc".into(), maho_chord::types::ServiceMode::Keyed).expect("subscribe")), Some(ServiceControlCall::Subscribe { subscription_id: "s1".into(), service_id: "svc".into(), mode: maho_chord::types::ServiceMode::Keyed }));
+    assert_eq!(decode_service_control_call(&create_service_unsubscribe_call(&"s1".into()).expect("unsubscribe")), Some(ServiceControlCall::Unsubscribe { subscription_id: "s1".into() }));
     for call in [
         json!({"serviceId":"$chord.service","member":"subscribe","args":["s1","svc","invalid"]}),
         json!({"serviceId":"$chord.service","member":"subscribe","args":["s1","svc"]}),

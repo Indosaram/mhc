@@ -100,7 +100,7 @@ pub fn register(api: &mut maho_ext_api::ExtensionApi, watch: std::sync::Arc<std:
         Box::pin(async move {
             runtime.assert_active()?;
             if maho_ai::legacy_provider_ids::normalize_provider_id(ctx.model.as_ref().map_or("", |model| &model.provider)) != "anthropic-subscription" { return Ok(EventResult::None); }
-            if let ExtensionEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } = event {
+            if let ExtensionEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error, .. } = event {
                 let content = content_text(&result["content"]);
                 let content = if content.is_empty() { result.to_string() } else { content };
                 let execution = TrackedToolExecution { tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), content: truncate(&content, 4000), is_error: *is_error, timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis() as i64 };

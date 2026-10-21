@@ -1,32 +1,31 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use maho_ext_api::{
-    EventKind, EventResult, ExtensionEvent, ResourcesDiscoverEvent, SessionReason, SlashCommandInfo, ThinkingLevel,
     BuildSystemPromptOptions, ComponentFactory, CustomComponentFactory, CustomUiFactoryOptions,
-    CustomUiOptions, EditMessageOptions, EditMessageResult, EventBus, ExtensionApi,
-    ExtensionCommandContext, ExtensionCommandContextActions, ExtensionContext,
-    ExtensionFailure, ExtensionFuture, ExtensionMode, ExtensionRuntime,
+    CustomUiOptions, EditMessageOptions, EditMessageResult, EventBus, EventKind, EventResult,
+    ExtensionApi, ExtensionCommandContext, ExtensionCommandContextActions, ExtensionContext,
+    ExtensionEvent, ExtensionFailure, ExtensionFuture, ExtensionMode, ExtensionRuntime,
     ExtensionSessionProfile, ExtensionTreeNavigationOptions, ExtensionUi, ExtensionUiDialogOptions,
     ExtensionUiFactories, ExtensionWidgetOptions, FooterComponentFactory, ForkOptions, JsonValue,
     LoadedExtension, Model, ModelRegistry, NewSessionOptions, NotificationType,
-    SessionEntry, SessionManager, SessionNavigationResult, SourceInfo, SourceOrigin, SourceScope,
-    SwitchSessionOptions, Theme, ToolSessionManager, TuiComponentFactory, UiFuture, WidgetContent,
+    ResourcesDiscoverEvent, SessionEntry, SessionManager, SessionNavigationResult, SessionReason,
+    SlashCommandInfo, SourceInfo, SourceOrigin, SourceScope, SwitchSessionOptions, Theme,
+    ThinkingLevel, ToolSessionManager, TuiComponentFactory, UiFuture, WidgetContent,
 };
-use maho_omo_computer_use::index::{
-    COMPUTER_UNAVAILABLE, COMPUTER_USE_COMPONENT_NAME,
-};
+use maho_omo_computer_use::index::{COMPUTER_UNAVAILABLE, COMPUTER_USE_COMPONENT_NAME};
 use maho_omo_computer_use::runtime_loader::{
     ComputerHostApi, ComputerRuntimeLoader, ComputerRuntimeLoaderOptions,
 };
 use maho_omo_computer_use::telemetry::{
-    ComputerUseTelemetryObservation, ComputerUseTelemetryObservers, SharedComputerUseTelemetryObservers,
+    ComputerUseTelemetryObservation, ComputerUseTelemetryObservers,
+    SharedComputerUseTelemetryObservers,
 };
 use maho_omo_computer_use::{ComputerUseComponent, ComputerUseComponentOptions};
 use senpi_desktop_tool::registration::{
-    is_supported_host, COMPUTER_SKILL_NAME, COMPUTER_SUBCOMMANDS,
+    COMPUTER_SKILL_NAME, COMPUTER_SUBCOMMANDS, is_supported_host,
 };
 use senpi_desktop_tool::session::{ComputerHostContext, SimpleSessionManager};
 use senpi_desktop_tool::settings::{AuditLogSettings, ComputerSettings, ScreenshotGcSettings};
@@ -60,11 +59,7 @@ struct TestHostApi {
 
 impl ComputerHostApi for TestHostApi {
     fn get_active_tools(&self) -> Result<Vec<String>, ExtensionFailure> {
-        let tools = self
-            .tools
-            .lock()
-            .map(|t| t.clone())
-            .unwrap_or_default();
+        let tools = self.tools.lock().map(|t| t.clone()).unwrap_or_default();
         Ok(tools)
     }
 
@@ -91,10 +86,21 @@ struct TestSessionActions {
 }
 
 impl maho_ext_api::ExtensionSessionActions for TestSessionActions {
-    fn set_session_name(&self, _: &str) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn get_session_name(&self) -> Result<Option<String>, ExtensionFailure> { Ok(None) }
-    fn set_label(&self, _: &str, _: Option<&str>) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn execute_tool<'a>(&'a self, _: &'a str, _: JsonValue, _: maho_ext_api::ExecuteToolOptions) -> maho_ext_api::ExecuteToolFuture<'a> {
+    fn set_session_name(&self, _: &str) -> Result<(), ExtensionFailure> {
+        Ok(())
+    }
+    fn get_session_name(&self) -> Result<Option<String>, ExtensionFailure> {
+        Ok(None)
+    }
+    fn set_label(&self, _: &str, _: Option<&str>) -> Result<(), ExtensionFailure> {
+        Ok(())
+    }
+    fn execute_tool<'a>(
+        &'a self,
+        _: &'a str,
+        _: JsonValue,
+        _: maho_ext_api::ExecuteToolOptions,
+    ) -> maho_ext_api::ExecuteToolFuture<'a> {
         Box::pin(async {
             Ok(maho_ext_api::AgentToolResult {
                 content: vec![],
@@ -104,6 +110,7 @@ impl maho_ext_api::ExtensionSessionActions for TestSessionActions {
                 added_tool_names: Some(vec![]),
                 structured_content: None,
                 usage: None,
+                nested_calls: None,
             })
         })
     }
@@ -114,23 +121,56 @@ impl maho_ext_api::ExtensionSessionActions for TestSessionActions {
         *self.tools.lock().unwrap_or_else(|e| e.into_inner()) = names;
         Ok(())
     }
-    fn refresh_tools(&self) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn register_removed_tool_hint(&self, _: &str, _: &str) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn register_lazy_tool_activator(&self, _: maho_ext_api::LazyToolActivator) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn refresh_tools(&self) -> Result<(), ExtensionFailure> {
+        Ok(())
+    }
+    fn register_removed_tool_hint(&self, _: &str, _: &str) -> Result<(), ExtensionFailure> {
+        Ok(())
+    }
+    fn register_lazy_tool_activator(
+        &self,
+        _: maho_ext_api::LazyToolActivator,
+    ) -> Result<(), ExtensionFailure> {
+        Ok(())
+    }
     fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure> {
         Ok(self.commands.clone())
     }
-    fn set_model(&self, _: Model) -> ExtensionFuture<'_, bool> { Box::pin(async { Ok(true) }) }
-    fn get_thinking_level(&self) -> Result<ThinkingLevel, ExtensionFailure> { Ok(ThinkingLevel::Minimal) }
-    fn set_thinking_level(&self, _: ThinkingLevel) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn set_session_model(&self, _: Model) -> ExtensionFuture<'_, bool> { Box::pin(async { Ok(true) }) }
-    fn set_session_thinking_level(&self, _: ThinkingLevel) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn set_session_fast_mode(&self, _: bool) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn exec<'a>(&'a self, _: &'a str, _: &'a [String], _: &'a Path, _: maho_ext_api::ExecOptions) -> ExtensionFuture<'a, maho_ext_api::ExecResult> {
-        Box::pin(async { Ok(maho_ext_api::ExecResult { stdout: String::new(), stderr: String::new(), code: 0, killed: false }) })
+    fn set_model(&self, _: Model) -> ExtensionFuture<'_, bool> {
+        Box::pin(async { Ok(true) })
+    }
+    fn get_thinking_level(&self) -> Result<ThinkingLevel, ExtensionFailure> {
+        Ok(ThinkingLevel::Minimal)
+    }
+    fn set_thinking_level(&self, _: ThinkingLevel) -> Result<(), ExtensionFailure> {
+        Ok(())
+    }
+    fn set_session_model(&self, _: Model) -> ExtensionFuture<'_, bool> {
+        Box::pin(async { Ok(true) })
+    }
+    fn set_session_thinking_level(&self, _: ThinkingLevel) -> Result<(), ExtensionFailure> {
+        Ok(())
+    }
+    fn set_session_fast_mode(&self, _: bool) -> Result<(), ExtensionFailure> {
+        Ok(())
+    }
+    fn exec<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: &'a Path,
+        _: maho_ext_api::ExecOptions,
+    ) -> ExtensionFuture<'a, maho_ext_api::ExecResult> {
+        Box::pin(async {
+            Ok(maho_ext_api::ExecResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                code: 0,
+                killed: false,
+            })
+        })
     }
 }
-
 
 fn sample_settings(enabled: bool, cua_adapter: bool) -> ComputerSettings {
     ComputerSettings {
@@ -212,9 +252,13 @@ impl ModelRegistry for FauxRegistry {
     fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> {
         Box::pin(async { Ok(Some("key".to_owned())) })
     }
-    fn get_provider_auth<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+    fn get_provider_auth<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
         Box::pin(async {
             Ok(Some(maho_ai::models::AuthResolution {
+                ambient: false,
                 auth: maho_ai::models::ProviderAuthResult {
                     api_key: Some("key".to_owned()),
                     headers: None,
@@ -230,10 +274,20 @@ struct FauxFactories {
     custom_calls: AtomicUsize,
 }
 impl ExtensionUiFactories for FauxFactories {
-    fn set_widget_factory(&self, _: &str, _: Option<TuiComponentFactory>, _: ExtensionWidgetOptions) {}
+    fn set_widget_factory(
+        &self,
+        _: &str,
+        _: Option<TuiComponentFactory>,
+        _: ExtensionWidgetOptions,
+    ) {
+    }
     fn set_header_factory(&self, _: Option<TuiComponentFactory>) {}
     fn set_footer_factory(&self, _: Option<FooterComponentFactory>) {}
-    fn custom_factory(&self, _: CustomComponentFactory, _: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue> {
+    fn custom_factory(
+        &self,
+        _: CustomComponentFactory,
+        _: CustomUiFactoryOptions,
+    ) -> ExtensionFuture<'_, JsonValue> {
         self.custom_calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(JsonValue::Null) })
     }
@@ -247,13 +301,28 @@ impl ExtensionUi for FauxUi {
     fn factories(&self) -> Option<&dyn ExtensionUiFactories> {
         Some(&self.factories)
     }
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, message: &str, level: NotificationType) {
@@ -287,19 +356,41 @@ impl ExtensionCommandContextActions for FauxActions {
     fn new_session(&self, _: NewSessionOptions) -> ExtensionFuture<'_, SessionNavigationResult> {
         Box::pin(async { Ok(SessionNavigationResult::default()) })
     }
-    fn fork<'a>(&'a self, _: &'a str, _: ForkOptions) -> ExtensionFuture<'a, SessionNavigationResult> {
+    fn fork<'a>(
+        &'a self,
+        _: &'a str,
+        _: ForkOptions,
+    ) -> ExtensionFuture<'a, SessionNavigationResult> {
         Box::pin(async { Ok(SessionNavigationResult::default()) })
     }
-    fn navigate_tree<'a>(&'a self, _: &'a str, _: ExtensionTreeNavigationOptions) -> ExtensionFuture<'a, SessionNavigationResult> {
+    fn navigate_tree<'a>(
+        &'a self,
+        _: &'a str,
+        _: ExtensionTreeNavigationOptions,
+    ) -> ExtensionFuture<'a, SessionNavigationResult> {
         Box::pin(async { Ok(SessionNavigationResult::default()) })
     }
-    fn edit_assistant_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> {
+    fn edit_assistant_message<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: EditMessageOptions,
+    ) -> ExtensionFuture<'a, EditMessageResult> {
         Box::pin(async { Ok(EditMessageResult::default()) })
     }
-    fn edit_user_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> {
+    fn edit_user_message<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: EditMessageOptions,
+    ) -> ExtensionFuture<'a, EditMessageResult> {
         Box::pin(async { Ok(EditMessageResult::default()) })
     }
-    fn switch_session<'a>(&'a self, _: &'a str, _: SwitchSessionOptions) -> ExtensionFuture<'a, SessionNavigationResult> {
+    fn switch_session<'a>(
+        &'a self,
+        _: &'a str,
+        _: SwitchSessionOptions,
+    ) -> ExtensionFuture<'a, SessionNavigationResult> {
         Box::pin(async { Ok(SessionNavigationResult::default()) })
     }
     fn reload(&self) -> ExtensionFuture<'_, ()> {
@@ -310,7 +401,9 @@ impl ExtensionCommandContextActions for FauxActions {
 fn command_context(dir: &Path, mode: ExtensionMode) -> (ExtensionCommandContext, NotifyLog) {
     let notifies = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ui = Arc::new(FauxUi {
-        factories: FauxFactories { custom_calls: AtomicUsize::new(0) },
+        factories: FauxFactories {
+            custom_calls: AtomicUsize::new(0),
+        },
         notifies: Arc::clone(&notifies),
     });
     let context = ExtensionContext {
@@ -364,8 +457,18 @@ fn test_given_unsupported_host_when_registered_then_all_features_absent() {
     comp.register(&mut api);
 
     assert!(api.registered.commands.iter().any(|c| c.name == "computer"));
-    assert!(!api.registered.tools.iter().any(|t| t.definition.name == "computer"));
-    assert!(!api.registered.tools.iter().any(|t| t.definition.name == "computer_actions"));
+    assert!(
+        !api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer")
+    );
+    assert!(
+        !api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer_actions")
+    );
 }
 
 #[tokio::test]
@@ -378,7 +481,12 @@ async fn test_given_unsupported_host_when_command_runs_then_notifies_unavailable
     });
     comp.register(&mut api);
 
-    let handler = api.registered.command_context_handlers.get("computer").cloned().expect("test value");
+    let handler = api
+        .registered
+        .command_context_handlers
+        .get("computer")
+        .cloned()
+        .expect("test value");
     let (ctx, notifies) = command_context(Path::new("/tmp"), ExtensionMode::Tui);
     handler("status", &ctx).await.expect("test value");
 
@@ -399,8 +507,18 @@ fn test_given_supported_host_disabled_when_registered_then_only_command_register
     comp.register(&mut api);
 
     assert!(api.registered.commands.iter().any(|c| c.name == "computer"));
-    assert!(!api.registered.tools.iter().any(|t| t.definition.name == "computer"));
-    assert!(!api.registered.tools.iter().any(|t| t.definition.name == "computer_actions"));
+    assert!(
+        !api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer")
+    );
+    assert!(
+        !api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer_actions")
+    );
 }
 
 #[test]
@@ -414,8 +532,18 @@ fn test_given_supported_host_enabled_without_cua_when_registered_then_only_compu
     comp.register(&mut api);
 
     assert!(api.registered.commands.iter().any(|c| c.name == "computer"));
-    assert!(api.registered.tools.iter().any(|t| t.definition.name == "computer"));
-    assert!(!api.registered.tools.iter().any(|t| t.definition.name == "computer_actions"));
+    assert!(
+        api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer")
+    );
+    assert!(
+        !api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer_actions")
+    );
 }
 
 #[test]
@@ -429,8 +557,18 @@ fn test_given_supported_host_enabled_with_cua_when_registered_then_both_tools_pr
     comp.register(&mut api);
 
     assert!(api.registered.commands.iter().any(|c| c.name == "computer"));
-    assert!(api.registered.tools.iter().any(|t| t.definition.name == "computer"));
-    assert!(api.registered.tools.iter().any(|t| t.definition.name == "computer_actions"));
+    assert!(
+        api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer")
+    );
+    assert!(
+        api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer_actions")
+    );
 }
 
 #[test]
@@ -460,14 +598,23 @@ fn test_given_command_registered_when_subcommands_completed_then_matches_parity(
     });
     comp.register(&mut api);
 
-    let cmd = api.registered.commands.iter().find(|c| c.name == "computer").expect("test value");
+    let cmd = api
+        .registered
+        .commands
+        .iter()
+        .find(|c| c.name == "computer")
+        .expect("test value");
     assert_eq!(cmd.name, "computer");
     assert_eq!(
         cmd.description,
         Some("Computer use (experimental): on, off, status, stop, or resume (stop and resume are user-only)".to_string())
     );
     assert_eq!(cmd.argument_hint, Some(COMPUTER_SUBCOMMANDS.join("|")));
-    assert!(api.registered.command_argument_completions.contains_key("computer"));
+    assert!(
+        api.registered
+            .command_argument_completions
+            .contains_key("computer")
+    );
 }
 
 #[test]
@@ -481,7 +628,12 @@ fn test_given_invalid_settings_when_load_fails_then_behaves_as_disabled() {
     comp.register(&mut api);
 
     assert!(api.registered.commands.iter().any(|c| c.name == "computer"));
-    assert!(!api.registered.tools.iter().any(|t| t.definition.name == "computer"));
+    assert!(
+        !api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer")
+    );
 }
 
 #[test]
@@ -496,7 +648,12 @@ fn test_given_custom_env_when_registered_then_used_for_ancestry_detection() {
         ..Default::default()
     });
     comp.register(&mut api);
-    assert!(api.registered.tools.iter().any(|t| t.definition.name == "computer"));
+    assert!(
+        api.registered
+            .tools
+            .iter()
+            .any(|t| t.definition.name == "computer")
+    );
 }
 
 #[test]
@@ -597,7 +754,12 @@ async fn test_given_status_command_when_executed_then_reports_engine_prelude_sou
     });
     comp.register(&mut api);
 
-    let handler = api.registered.command_context_handlers.get("computer").cloned().expect("test value");
+    let handler = api
+        .registered
+        .command_context_handlers
+        .get("computer")
+        .cloned()
+        .expect("test value");
     let (ctx, notifies) = command_context(Path::new("/tmp"), ExtensionMode::Tui);
     handler("status", &ctx).await.expect("test value");
 
@@ -615,10 +777,17 @@ async fn test_given_disabled_skills_names_computer_use_then_no_skill_contributed
     let dir = tempfile::tempdir().expect("test value");
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".omo")).expect("test value");
-    std::fs::write(home.join(".omo/omo.jsonc"), "{\"disabled_skills\":[\"computer-use\"]}").expect("config");
+    std::fs::write(
+        home.join(".omo/omo.jsonc"),
+        "{\"disabled_skills\":[\"computer-use\"]}",
+    )
+    .expect("config");
     let mut env = BTreeMap::new();
     env.insert("HOME".to_string(), home.to_string_lossy().to_string());
-    env.insert("USERPROFILE".to_string(), home.to_string_lossy().to_string());
+    env.insert(
+        "USERPROFILE".to_string(),
+        home.to_string_lossy().to_string(),
+    );
     let skill = maho_omo_bundled_skills::contributed_skill::resolve_contributed_skill(
         maho_omo_bundled_skills::contributed_skill::ResolveContributedSkillOptions {
             commands: None,
@@ -649,11 +818,17 @@ async fn test_given_cua_adapter_activation_changes_update_host_active_tools() {
     });
 
     let rt = loader.load().await.expect("test value");
-    assert_eq!(host.get_active_tools().expect("test value"), vec!["read".to_string()]);
+    assert_eq!(
+        host.get_active_tools().expect("test value"),
+        vec!["read".to_string()]
+    );
 
     let host_ctx = ComputerHostContext {
         cwd: PathBuf::from("/tmp"),
-        session_manager: Arc::new(SimpleSessionManager { session_id: "s1".to_string(), session_dir: PathBuf::from("/tmp") }),
+        session_manager: Arc::new(SimpleSessionManager {
+            session_id: "s1".to_string(),
+            session_dir: PathBuf::from("/tmp"),
+        }),
         model: None,
     };
 
@@ -685,7 +860,10 @@ async fn test_given_no_cua_adapter_activation_changes_only_activates_computer() 
     let rt = loader.load().await.expect("test value");
     let host_ctx = ComputerHostContext {
         cwd: PathBuf::from("/tmp"),
-        session_manager: Arc::new(SimpleSessionManager { session_id: "s2".to_string(), session_dir: PathBuf::from("/tmp") }),
+        session_manager: Arc::new(SimpleSessionManager {
+            session_id: "s2".to_string(),
+            session_dir: PathBuf::from("/tmp"),
+        }),
         model: None,
     };
 
@@ -696,7 +874,8 @@ async fn test_given_no_cua_adapter_activation_changes_only_activates_computer() 
 }
 
 #[tokio::test]
-async fn test_given_telemetry_observers_when_tool_activated_and_command_off_runs_both_transitions_fire() {
+async fn test_given_telemetry_observers_when_tool_activated_and_command_off_runs_both_transitions_fire()
+ {
     let obs = Arc::new(SharedComputerUseTelemetryObservers::new());
     let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
 
@@ -716,15 +895,20 @@ async fn test_given_telemetry_observers_when_tool_activated_and_command_off_runs
     comp.register(&mut api);
 
     // Context from SessionStart
-    api.events.emit("session_start", &json!({ "session_id": "telem-session" }));
+    api.events
+        .emit("session_start", &json!({ "session_id": "telem-session" }));
 
     // Trigger tool activated via registered event bus boundary
-    api.events.emit("tool_activated", &json!({ "toolNames": ["computer"] }));
+    api.events
+        .emit("tool_activated", &json!({ "toolNames": ["computer"] }));
 
     // The activation runs on a spawned task: await the exact observation, bounded.
     let activated = tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
         while let Some(event) = received.recv().await {
-            if matches!(event, ComputerUseTelemetryObservation::Activation { active: true, .. }) {
+            if matches!(
+                event,
+                ComputerUseTelemetryObservation::Activation { active: true, .. }
+            ) {
                 return true;
             }
         }
@@ -754,10 +938,12 @@ async fn test_given_another_tool_activated_then_no_activation_emitted() {
     });
     comp.register(&mut api);
 
-    api.events.emit("session_start", &json!({ "session_id": "telem-session" }));
+    api.events
+        .emit("session_start", &json!({ "session_id": "telem-session" }));
 
     // Trigger tool activated for another tool via registered event bus boundary
-    api.events.emit("tool_activated", &json!({ "toolNames": ["read", "bash"] }));
+    api.events
+        .emit("tool_activated", &json!({ "toolNames": ["read", "bash"] }));
 
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -775,7 +961,12 @@ async fn test_given_user_skill_registered_when_resources_discover_fires_then_bui
     });
     comp.register(&mut api);
 
-    let handler = api.registered.handlers.get(&EventKind::ResourcesDiscover).expect("handler registered")[0].clone();
+    let handler = api
+        .registered
+        .handlers
+        .get(&EventKind::ResourcesDiscover)
+        .expect("handler registered")[0]
+        .clone();
     let temp = tempfile::tempdir().expect("tempdir");
     let (ctx, _notifies) = command_context(temp.path(), ExtensionMode::Tui);
 
@@ -786,7 +977,9 @@ async fn test_given_user_skill_registered_when_resources_discover_fires_then_bui
         scoped_entries: false,
     });
     let res = handler(&mut evt, &ctx).await.expect("success");
-    let EventResult::ResourcesDiscover(discovered) = res else { panic!("expected resources discover") };
+    let EventResult::ResourcesDiscover(discovered) = res else {
+        panic!("expected resources discover")
+    };
     assert_eq!(discovered.skill_paths.len(), 1);
 }
 
@@ -818,7 +1011,12 @@ async fn test_given_user_skill_when_status_runs_then_names_user_skill_in_its_pla
     });
     comp.register(&mut api);
 
-    let handler = api.registered.handlers.get(&EventKind::ResourcesDiscover).expect("handler registered")[0].clone();
+    let handler = api
+        .registered
+        .handlers
+        .get(&EventKind::ResourcesDiscover)
+        .expect("handler registered")[0]
+        .clone();
     let temp = tempfile::tempdir().expect("tempdir");
     let (ctx, notifies) = command_context(temp.path(), ExtensionMode::Tui);
 
@@ -829,7 +1027,12 @@ async fn test_given_user_skill_when_status_runs_then_names_user_skill_in_its_pla
     });
     let _ = handler(&mut evt, &ctx).await.expect("success");
 
-    let cmd_handler = api.registered.command_context_handlers.get("computer").cloned().expect("test value");
+    let cmd_handler = api
+        .registered
+        .command_context_handlers
+        .get("computer")
+        .cloned()
+        .expect("test value");
     cmd_handler("status", &ctx).await.expect("status command");
 
     let msgs = notifies.lock().expect("test value");
@@ -854,7 +1057,12 @@ async fn test_given_built_in_skill_contributed_when_status_runs_then_no_skill_li
     });
     comp.register(&mut api);
 
-    let handler = api.registered.handlers.get(&EventKind::ResourcesDiscover).expect("handler registered")[0].clone();
+    let handler = api
+        .registered
+        .handlers
+        .get(&EventKind::ResourcesDiscover)
+        .expect("handler registered")[0]
+        .clone();
     let temp = tempfile::tempdir().expect("tempdir");
     let (ctx, notifies) = command_context(temp.path(), ExtensionMode::Tui);
 
@@ -865,13 +1073,21 @@ async fn test_given_built_in_skill_contributed_when_status_runs_then_no_skill_li
     });
     let _ = handler(&mut evt, &ctx).await.expect("success");
 
-    let cmd_handler = api.registered.command_context_handlers.get("computer").cloned().expect("test value");
+    let cmd_handler = api
+        .registered
+        .command_context_handlers
+        .get("computer")
+        .cloned()
+        .expect("test value");
     cmd_handler("status", &ctx).await.expect("status command");
 
     let msgs = notifies.lock().expect("test value");
     assert!(!msgs.is_empty());
     let status_text = &msgs.last().unwrap().0;
-    let skill_lines: Vec<&str> = status_text.lines().filter(|line| line.starts_with("skill:")).collect();
+    let skill_lines: Vec<&str> = status_text
+        .lines()
+        .filter(|line| line.starts_with("skill:"))
+        .collect();
     assert!(skill_lines.is_empty());
 }
 
@@ -913,16 +1129,16 @@ async fn test_given_concurrent_load_when_shutdown_runs_then_awaits_and_closes() 
 
     // Start load in background
     let loader_for_task = Arc::clone(&loader);
-    let load_task = tokio::spawn(async move {
-        loader_for_task.load().await
-    });
+    let load_task = tokio::spawn(async move { loader_for_task.load().await });
 
     // Await bounded oneshot confirming load is running in flight
     started_rx.await.expect("load has started");
 
     // Check started() returns Some while in-flight
     assert!(loader.is_started());
-    let started_fut = loader.started().expect("started is Some while load in flight");
+    let started_fut = loader
+        .started()
+        .expect("started is Some while load in flight");
 
     // Release gate
     gate_tx.send(()).expect("send gate");
@@ -984,15 +1200,15 @@ async fn test_given_failed_load_when_started_awaited_then_preserves_error_and_re
 
     // Start first load in background
     let loader_task = Arc::clone(&loader);
-    let load_handle = tokio::spawn(async move {
-        loader_task.load().await
-    });
+    let load_handle = tokio::spawn(async move { loader_task.load().await });
 
     // Await bounded oneshot confirming load is running in flight
     started_rx.await.expect("first load started");
 
     // While load is in flight, capture started() future
-    let started_fut = loader.started().expect("started is Some during in-flight load");
+    let started_fut = loader
+        .started()
+        .expect("started is Some during in-flight load");
 
     // Release gate to let load fail
     gate_tx.send(()).expect("send gate");

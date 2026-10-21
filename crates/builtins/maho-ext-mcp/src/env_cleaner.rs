@@ -6,11 +6,9 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use regex::Regex;
-/// Pinned `EXCLUDED_ENV_PATTERNS`, order preserved. `(?i)` marks the pinned `/i` patterns; the bare
-/// `^npm_config_`, `^YARN_`, `^PNPM_` and `^NO_UPDATE_NOTIFIER$` stay case-sensitive exactly as
-/// pinned.
+/// Pinned `EXCLUDED_ENV_PATTERNS`, order preserved. `(?i)` marks the pinned `/i` patterns.
 pub const EXCLUDED_ENV_PATTERNS: &[&str] = &[
-    r"(?i)^NPM_CONFIG_", r"^npm_config_", r"^YARN_", r"^PNPM_", r"^NO_UPDATE_NOTIFIER$",
+    r"(?i)^NPM_CONFIG_", r"(?i)^YARN_", r"(?i)^PNPM_", r"(?i)^NO_UPDATE_NOTIFIER$",
     r"(?i)^ANTHROPIC_API_KEY$", r"(?i)^AWS_ACCESS_KEY_ID$", r"(?i)^AWS_SECRET_ACCESS_KEY$",
     r"(?i)^GOOGLE_APPLICATION_CREDENTIALS$", r"(?i)^GOOGLE_CLOUD_PROJECT$", r"(?i)^GITHUB_TOKEN$",
     r"(?i)^DATABASE_URL$", r"(?i)^OPENAI_API_KEY$", r"(?i)^AZURE_", r"(?i)^GCP_",

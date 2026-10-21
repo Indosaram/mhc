@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn the_agent_union_roundtrips_through_serde() {
-        assert_roundtrips(&AgentSessionEvent::Agent(AgentEvent::ToolExecutionStart { tool_call_id: "call".into(), tool_name: "read".into(), args: json!({"path": "a"}) }));
+        assert_roundtrips(&AgentSessionEvent::Agent(AgentEvent::ToolExecutionStart { tool_call_id: "call".into(), tool_name: "read".into(), args: json!({"path": "a"}), parent_tool_call_id: None }));
         assert_roundtrips(&AgentSessionEvent::Agent(AgentEvent::AgentStart));
     }
 

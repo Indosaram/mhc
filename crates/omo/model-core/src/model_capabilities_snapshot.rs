@@ -173,8 +173,36 @@ pub trait SnapshotFetcher {
     ) -> impl Future<Output = Result<FetchResponse, SnapshotFetchError>> + Send;
 }
 
-/// Downloads and normalizes a snapshot; `source_url` defaults to [`MODELS_DEV_SOURCE_URL`].
+/// Native HTTP GET implementation used when no fetch implementation is injected.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HttpSnapshotFetcher;
+
+impl SnapshotFetcher for HttpSnapshotFetcher {
+    async fn fetch(&self, url: &str) -> Result<FetchResponse, SnapshotFetchError> {
+        let response = reqwest::get(url)
+            .await
+            .map_err(|error| SnapshotFetchError::Transport(error.to_string()))?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(SnapshotFetchError::Status(status));
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|error| SnapshotFetchError::Transport(error.to_string()))?;
+        Ok(FetchResponse { status, body })
+    }
+}
+
+/// Downloads a snapshot with native HTTP; `source_url` defaults to [`MODELS_DEV_SOURCE_URL`].
 pub async fn fetch_model_capabilities_snapshot(
+    source_url: Option<&str>,
+) -> Result<ModelCapabilitiesSnapshot, SnapshotFetchError> {
+    fetch_model_capabilities_snapshot_with_fetcher(&HttpSnapshotFetcher, source_url).await
+}
+
+/// Downloads and normalizes a snapshot using an injected HTTP implementation.
+pub async fn fetch_model_capabilities_snapshot_with_fetcher(
     fetcher: &impl SnapshotFetcher,
     source_url: Option<&str>,
 ) -> Result<ModelCapabilitiesSnapshot, SnapshotFetchError> {
@@ -188,4 +216,44 @@ pub async fn fetch_model_capabilities_snapshot(
         source_url: source_url.to_string(),
         ..build_model_capabilities_snapshot_from_models_dev(&raw)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FixtureFetcher {
+        status: u16,
+        body: &'static str,
+        expected_url: &'static str,
+    }
+
+    impl SnapshotFetcher for FixtureFetcher {
+        async fn fetch(&self, url: &str) -> Result<FetchResponse, SnapshotFetchError> {
+            assert_eq!(url, self.expected_url);
+            Ok(FetchResponse { status: self.status, body: self.body.to_string() })
+        }
+    }
+
+    #[test]
+    fn injected_fetcher_uses_default_and_custom_source_urls() {
+        for source_url in [None, Some("https://fixture.local/models.json")] {
+            let expected_url = source_url.unwrap_or(MODELS_DEV_SOURCE_URL);
+            let fetcher = FixtureFetcher {
+                status: 200,
+                body: r#"{"openai":{"models":{"gpt-5.4":{"id":"gpt-5.4","limit":{"output":128000}}}}}"#,
+                expected_url,
+            };
+            let snapshot = futures::executor::block_on(fetch_model_capabilities_snapshot_with_fetcher(&fetcher, source_url))
+                .expect("fixture fetch succeeds");
+            assert_eq!(snapshot.source_url, expected_url);
+            assert_eq!(snapshot.models["gpt-5.4"].limit.as_ref().and_then(|limit| limit.output), Some(128_000));
+        }
+    }
+
+    #[test]
+    fn status_failure_precedes_json_parsing() {
+        let fetcher = FixtureFetcher { status: 503, body: "not JSON", expected_url: MODELS_DEV_SOURCE_URL };
+        assert!(matches!(futures::executor::block_on(fetch_model_capabilities_snapshot_with_fetcher(&fetcher, None)), Err(SnapshotFetchError::Status(503))));
+    }
 }

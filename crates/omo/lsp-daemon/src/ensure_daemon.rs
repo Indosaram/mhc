@@ -1,10 +1,11 @@
 //! Port of `ensure-daemon.ts`: authenticated probe, detached spawn, readiness polling.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use lsp_core::abort::AbortSignal;
@@ -15,16 +16,20 @@ use crate::ipc_protocol::{auth_envelope, read_auth_token};
 use crate::ownership::{DaemonOwner, OwnerPing};
 use crate::paths::{DaemonPaths, packaged_runtime_defaults};
 use crate::runtime_contract::{
-    DaemonRuntimeDefaults, Env, InvalidRuntimeOverrideError, resolve_daemon_runtime,
+    DaemonRuntimeDefaults, DaemonRuntimeError, Env, resolve_daemon_runtime,
 };
 use crate::socket_jsonrpc::{LineBuffer, encode_json_line};
 use crate::transport;
 
 pub use crate::runtime_contract::OMO_LSP_DAEMON_CLI;
 
-pub const PROBE_TIMEOUT_MS: u64 = 500;
+pub const PROBE_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_READY_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_POLL_INTERVAL_MS: u64 = 100;
+const FAILED_SPAWN_COOLDOWN_MS: u64 = 5_000;
+static FAILED_SPAWN_UNTIL: LazyLock<Mutex<HashMap<PathBuf, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static CLOCK_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// Failures of `ensure_daemon_running`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,14 +76,13 @@ pub struct EnsureDaemonDeps {
 
 impl Default for EnsureDaemonDeps {
     fn default() -> Self {
-        let epoch = Instant::now();
         Self {
             probe: Arc::new(|paths, signal| {
                 Box::pin(async move { probe_daemon(&paths, PROBE_TIMEOUT_MS, signal).await })
             }),
             spawn_daemon: Arc::new(spawn_daemon_process),
             sleep: Arc::new(|ms, _signal| Box::pin(tokio::time::sleep(Duration::from_millis(ms)))),
-            now: Arc::new(move || u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX)),
+            now: Arc::new(|| u64::try_from(CLOCK_EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX)),
         }
     }
 }
@@ -102,10 +106,34 @@ pub async fn ensure_daemon_running(
     let signal = options.signal;
     throw_if_aborted(signal.as_ref())?;
     if await_with_signal((deps.probe)(paths.clone(), signal.clone()), signal.as_ref()).await? {
+        FAILED_SPAWN_UNTIL.lock().unwrap_or_else(PoisonError::into_inner).remove(&paths.socket);
         return Ok(());
     }
     throw_if_aborted(signal.as_ref())?;
+    {
+        let mut failed = FAILED_SPAWN_UNTIL.lock().unwrap_or_else(PoisonError::into_inner);
+        if failed.get(&paths.socket).is_some_and(|retry_at| (deps.now)() < *retry_at) {
+            return Err(EnsureDaemonError::Unreachable { socket: paths.socket.clone() });
+        }
+        failed.remove(&paths.socket);
+    }
     (deps.spawn_daemon)(paths).map_err(|error| EnsureDaemonError::Spawn(error.to_string()))?;
+    let result = wait_until_reachable(paths, deps, ready_timeout_ms, poll_interval_ms, signal).await;
+    if result.is_err() {
+        FAILED_SPAWN_UNTIL.lock().unwrap_or_else(PoisonError::into_inner).insert(
+            paths.socket.clone(), (deps.now)().saturating_add(FAILED_SPAWN_COOLDOWN_MS),
+        );
+    }
+    result
+}
+
+async fn wait_until_reachable(
+    paths: &DaemonPaths,
+    deps: &EnsureDaemonDeps,
+    ready_timeout_ms: u64,
+    poll_interval_ms: u64,
+    signal: Option<AbortSignal>,
+) -> Result<(), EnsureDaemonError> {
     let deadline = (deps.now)().saturating_add(ready_timeout_ms);
     loop {
         throw_if_aborted(signal.as_ref())?;
@@ -229,7 +257,7 @@ pub fn resolve_daemon_node_executable(
 pub fn resolve_daemon_cli_path(
     env: &Env,
     defaults: &DaemonRuntimeDefaults,
-) -> Result<PathBuf, InvalidRuntimeOverrideError> {
+) -> Result<PathBuf, DaemonRuntimeError> {
     resolve_daemon_runtime(env, defaults).map(|runtime| runtime.cli_path)
 }
 
@@ -272,6 +300,13 @@ pub fn spawn_daemon_process(paths: &DaemonPaths) -> std::io::Result<()> {
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     }
     match command.spawn() {
         // The child is intentionally not waited on (TS `child.unref()`).

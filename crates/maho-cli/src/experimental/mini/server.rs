@@ -78,7 +78,7 @@ fn sessions_list(state: &Arc<ServerState>) -> Handler {
 async fn spawn_route(state: &Arc<ServerState>, session_id: Option<String>, cwd: String) -> Result<Arc<Route>, String> {
     let worker = (state.spawn)(session_id, cwd).await?;
     let unsupported: Handler = Arc::new(|_, _| Box::pin(async { Err("Only presentations attach to sessions".to_owned()) }));
-    worker.peer.provide(SESSIONS, HashMap::from([("list".to_owned(), sessions_list(state)), ("attach".to_owned(), unsupported)]));
+    worker.peer.provide(&SESSIONS, HashMap::from([("list".to_owned(), sessions_list(state)), ("attach".to_owned(), unsupported)]));
     let described = match worker.peer.call_with(CallOptions { timeout_ms: Some(30_000), ..Default::default() }, "worker.describe", vec![]).await {
         Ok(described) => described,
         Err(error) => { (worker.stop)(); worker.peer.close(); return Err(error); }
@@ -128,7 +128,7 @@ fn presentation(socket: tokio::net::UnixStream, state: &Arc<ServerState>) -> Arc
         Box::pin(async move {
             let route = route.ok_or("Not attached to a session")?;
             let service = method.split_once('.').map_or("", |(name, _)| name);
-            if !route.worker.peer.announced().contains(service) { return Err(format!("No host provides {service}: server has [sessions], worker has [{}]", route.worker.peer.announced().into_iter().collect::<Vec<_>>().join(","))); }
+            if !route.worker.peer.announced().contains(&maho_chord::types::JsString::from(service)) { return Err(format!("No host provides {service}: server has [sessions], worker has {:?}", route.worker.peer.announced())); }
             route.worker.peer.call(&method, args).await
         })
     });
@@ -149,7 +149,7 @@ fn presentation(socket: tokio::net::UnixStream, state: &Arc<ServerState>) -> Arc
             Ok(serde_json::Value::String(session))
         })
     });
-    peer.provide(SESSIONS, HashMap::from([("list".to_owned(), sessions_list(state)), ("attach".to_owned(), attach)]));
+    peer.provide(&SESSIONS, HashMap::from([("list".to_owned(), sessions_list(state)), ("attach".to_owned(), attach)]));
     let changed = state.changed.clone();
     peer.on_close(move || {
         if let Some(old) = attached.lock().expect("mini attachment lock").take() {

@@ -53,8 +53,8 @@ pub fn get_plan_name(plan_path: &str) -> String {
 /// Top-level checklist progress of the plan at `plan_path`; a missing or unreadable
 /// plan counts as empty.
 pub fn get_plan_progress(plan_path: &Path) -> PlanProgress {
-    let checklist = std::fs::read_to_string(plan_path)
-        .map(|content| parse_plan_checklist(&content))
+    let checklist = std::fs::read(plan_path)
+        .map(|content| parse_plan_checklist(&String::from_utf8_lossy(&content)))
         .ok();
     match checklist {
         Some(checklist) => PlanProgress {

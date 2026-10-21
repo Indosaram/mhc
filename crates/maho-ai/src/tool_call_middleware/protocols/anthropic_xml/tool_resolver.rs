@@ -8,14 +8,16 @@ use crate::types::Tool;
 // (`mcp_<hash>-Name`) collapse onto the same alphanumeric alias key as the
 // registered snake_case tool name.
 fn strip_cc_mcp_prefix(name: &str) -> String {
-    let mut result = name;
-    while let Some(rest) = result.strip_prefix("mcp__") {
-        match rest.find("__") {
-            Some(idx) => result = &rest[idx + 2..],
-            None => break,
+    let Some(mut rest) = name.strip_prefix("mcp__") else {
+        return name.to_string();
+    };
+    while let Some(index) = rest.find("__") {
+        if index == 0 || rest[..index].contains('_') {
+            break;
         }
+        rest = &rest[index + 2..];
     }
-    result.to_string()
+    rest.to_string()
 }
 
 fn strip_hashed_mcp_prefix(name: &str) -> String {
@@ -23,7 +25,10 @@ fn strip_hashed_mcp_prefix(name: &str) -> String {
         return name.to_string();
     }
     let rest = &name[4..];
-    let hash_len = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).count();
+    let hash_len = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .count();
     if hash_len == 0 {
         return name.to_string();
     }
@@ -35,7 +40,11 @@ fn strip_hashed_mcp_prefix(name: &str) -> String {
 
 fn to_alias_key(name: &str) -> String {
     let stripped = strip_hashed_mcp_prefix(&strip_cc_mcp_prefix(name));
-    stripped.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+    stripped
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
 }
 
 pub struct ToolResolver<'a> {
@@ -69,7 +78,11 @@ impl<'a> ToolResolver<'a> {
                 })
                 .or_insert(Some(tool));
         }
-        Self { exact, insensitive, alias }
+        Self {
+            exact,
+            insensitive,
+            alias,
+        }
     }
 
     pub fn resolve(&self, tool_name: &str) -> Option<&'a Tool> {
@@ -89,35 +102,58 @@ mod tests {
     use serde_json::json;
 
     fn tool(name: &str) -> Tool {
-        Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), output_schema: None, freeform: None, constrained_sampling: None }
+        Tool {
+            name: name.into(),
+            description: "d".into(),
+            parameters: json!({"type": "object"}),
+            output_schema: None,
+            freeform: None,
+            constrained_sampling: None,
+        }
     }
 
     #[test]
     fn resolves_exact_name() {
         let tools = vec![tool("get_weather")];
         let resolver = ToolResolver::new(&tools);
-        assert_eq!(resolver.resolve("get_weather").map(|t| t.name.as_str()), Some("get_weather"));
+        assert_eq!(
+            resolver.resolve("get_weather").map(|t| t.name.as_str()),
+            Some("get_weather")
+        );
     }
 
     #[test]
     fn resolves_case_insensitively_when_unambiguous() {
         let tools = vec![tool("get_weather")];
         let resolver = ToolResolver::new(&tools);
-        assert_eq!(resolver.resolve("GET_WEATHER").map(|t| t.name.as_str()), Some("get_weather"));
+        assert_eq!(
+            resolver.resolve("GET_WEATHER").map(|t| t.name.as_str()),
+            Some("get_weather")
+        );
     }
 
     #[test]
     fn resolves_cc_sdk_mcp_decorated_name_via_alias() {
         let tools = vec![tool("get_weather")];
         let resolver = ToolResolver::new(&tools);
-        assert_eq!(resolver.resolve("mcp__server__get_weather").map(|t| t.name.as_str()), Some("get_weather"));
+        assert_eq!(
+            resolver
+                .resolve("mcp__server__get_weather")
+                .map(|t| t.name.as_str()),
+            Some("get_weather")
+        );
     }
 
     #[test]
     fn resolves_hashed_mcp_prefix_name_via_alias() {
         let tools = vec![tool("get_weather")];
         let resolver = ToolResolver::new(&tools);
-        assert_eq!(resolver.resolve("mcp_ab12cd-GetWeather").map(|t| t.name.as_str()), Some("get_weather"));
+        assert_eq!(
+            resolver
+                .resolve("mcp_ab12cd-GetWeather")
+                .map(|t| t.name.as_str()),
+            Some("get_weather")
+        );
     }
 
     #[test]

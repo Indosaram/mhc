@@ -11,7 +11,7 @@ maho-agent = { path = "../maho-agent" }
 maho-grep = { path = "../vendor/maho-grep" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
-thiserror = "=2.0.18"
+thiserror = "=2.0.20"
 tokio = { version = "=1.52.3", features = ["fs", "sync", "rt-multi-thread", "macros", "time", "process", "io-util", "test-util"] }
 unicode-normalization = "=0.1.25"
 regex = "=1.12.3"

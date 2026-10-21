@@ -37,9 +37,13 @@ async fn resolve_value(
     if let Some(value) = from_credential {
         return Ok(Some(value));
     }
-    signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
+    signal
+        .throw_if_aborted()
+        .map_err(|reason| anyhow::anyhow!("{reason}"))?;
     let value = ctx.env(name).await;
-    signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
+    signal
+        .throw_if_aborted()
+        .map_err(|reason| anyhow::anyhow!("{reason}"))?;
     Ok(value.filter(|v| !v.is_empty()))
 }
 
@@ -86,7 +90,11 @@ async fn resolve_cloudflare_env(
         CLOUDFLARE_API_KEY.to_string()
     };
 
-    Ok(Some(ResolvedCloudflareEnv { api_key, env, source }))
+    Ok(Some(ResolvedCloudflareEnv {
+        api_key,
+        env,
+        source,
+    }))
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -102,22 +110,35 @@ impl ApiKeyAuth for CloudflareWorkersAIAuth {
         true
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<ApiKeyCredential> {
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<ApiKeyCredential> {
         let key = interaction
             .prompt(AuthPrompt {
-                kind: AuthPromptKind::Secret { message: "Enter Cloudflare API key".into(), placeholder: None },
+                kind: AuthPromptKind::Secret {
+                    message: "Enter Cloudflare API key".into(),
+                    placeholder: None,
+                },
                 signal: None,
             })
             .await?;
         let account_id = interaction
             .prompt(AuthPrompt {
-                kind: AuthPromptKind::Text { message: "Enter Cloudflare account ID".into(), placeholder: None },
+                kind: AuthPromptKind::Text {
+                    message: "Enter Cloudflare account ID".into(),
+                    placeholder: None,
+                },
                 signal: None,
             })
             .await?;
         let mut env = ProviderEnv::new();
         env.insert(CLOUDFLARE_ACCOUNT_ID.to_string(), account_id);
-        Ok(ApiKeyCredential { key: Some(key), env: Some(env) })
+        Ok(ApiKeyCredential {
+            key: Some(key),
+            env: Some(env),
+            ..Default::default()
+        })
     }
 
     async fn resolve(
@@ -126,12 +147,18 @@ impl ApiKeyAuth for CloudflareWorkersAIAuth {
         credential: Option<&ApiKeyCredential>,
         signal: &AbortSignal,
     ) -> anyhow::Result<Option<AuthResult>> {
-        let resolved = resolve_cloudflare_env(CloudflareAuthKind::WorkersAi, ctx, credential, signal).await?;
+        let resolved =
+            resolve_cloudflare_env(CloudflareAuthKind::WorkersAi, ctx, credential, signal).await?;
         let Some(resolved) = resolved else {
             return Ok(None);
         };
         Ok(Some(AuthResult {
-            auth: ModelAuth { api_key: Some(resolved.api_key), headers: None, base_url: None },
+            ambient: false,
+            auth: ModelAuth {
+                api_key: Some(resolved.api_key),
+                headers: None,
+                base_url: None,
+            },
             env: Some(resolved.env),
             source: Some(resolved.source),
         }))
@@ -155,29 +182,45 @@ impl ApiKeyAuth for CloudflareAIGatewayAuth {
         true
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<ApiKeyCredential> {
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<ApiKeyCredential> {
         let key = interaction
             .prompt(AuthPrompt {
-                kind: AuthPromptKind::Secret { message: "Enter Cloudflare API key".into(), placeholder: None },
+                kind: AuthPromptKind::Secret {
+                    message: "Enter Cloudflare API key".into(),
+                    placeholder: None,
+                },
                 signal: None,
             })
             .await?;
         let account_id = interaction
             .prompt(AuthPrompt {
-                kind: AuthPromptKind::Text { message: "Enter Cloudflare account ID".into(), placeholder: None },
+                kind: AuthPromptKind::Text {
+                    message: "Enter Cloudflare account ID".into(),
+                    placeholder: None,
+                },
                 signal: None,
             })
             .await?;
         let gateway_id = interaction
             .prompt(AuthPrompt {
-                kind: AuthPromptKind::Text { message: "Enter Cloudflare AI Gateway ID".into(), placeholder: None },
+                kind: AuthPromptKind::Text {
+                    message: "Enter Cloudflare AI Gateway ID".into(),
+                    placeholder: None,
+                },
                 signal: None,
             })
             .await?;
         let mut env = ProviderEnv::new();
         env.insert(CLOUDFLARE_ACCOUNT_ID.to_string(), account_id);
         env.insert(CLOUDFLARE_GATEWAY_ID.to_string(), gateway_id);
-        Ok(ApiKeyCredential { key: Some(key), env: Some(env) })
+        Ok(ApiKeyCredential {
+            key: Some(key),
+            env: Some(env),
+            ..Default::default()
+        })
     }
 
     async fn resolve(
@@ -186,16 +229,25 @@ impl ApiKeyAuth for CloudflareAIGatewayAuth {
         credential: Option<&ApiKeyCredential>,
         signal: &AbortSignal,
     ) -> anyhow::Result<Option<AuthResult>> {
-        let resolved = resolve_cloudflare_env(CloudflareAuthKind::AiGateway, ctx, credential, signal).await?;
+        let resolved =
+            resolve_cloudflare_env(CloudflareAuthKind::AiGateway, ctx, credential, signal).await?;
         let Some(resolved) = resolved else {
             return Ok(None);
         };
         let mut headers = ProviderHeaders::new();
-        headers.insert("cf-aig-authorization".to_string(), Some(format!("Bearer {}", resolved.api_key)));
+        headers.insert(
+            "cf-aig-authorization".to_string(),
+            Some(format!("Bearer {}", resolved.api_key)),
+        );
         headers.insert("Authorization".to_string(), None);
         headers.insert("x-api-key".to_string(), None);
         Ok(Some(AuthResult {
-            auth: ModelAuth { api_key: None, headers: Some(headers), base_url: None },
+            ambient: false,
+            auth: ModelAuth {
+                api_key: None,
+                headers: Some(headers),
+                base_url: None,
+            },
             env: Some(resolved.env),
             source: Some(resolved.source),
         }))
@@ -250,17 +302,27 @@ mod tests {
     #[tokio::test]
     async fn workers_ai_auth_resolves_from_ambient_env() {
         let mut env_map = HashMap::new();
-        env_map.insert("CLOUDFLARE_API_KEY".to_string(), "cf-ambient-key".to_string());
+        env_map.insert(
+            "CLOUDFLARE_API_KEY".to_string(),
+            "cf-ambient-key".to_string(),
+        );
         env_map.insert("CLOUDFLARE_ACCOUNT_ID".to_string(), "acct-123".to_string());
         let ctx = TestAuthContext { env_map };
         let signal = crate::utils::abort::AbortController::new().signal();
 
         let auth = cloudflare_workers_ai_auth();
-        let res = auth.resolve(&ctx, None, &signal).await.unwrap().expect("resolved");
+        let res = auth
+            .resolve(&ctx, None, &signal)
+            .await
+            .unwrap()
+            .expect("resolved");
         assert_eq!(res.auth.api_key.as_deref(), Some("cf-ambient-key"));
         assert_eq!(res.source.as_deref(), Some("CLOUDFLARE_API_KEY"));
         let env = res.env.expect("env");
-        assert_eq!(env.get("CLOUDFLARE_ACCOUNT_ID").map(String::as_str), Some("acct-123"));
+        assert_eq!(
+            env.get("CLOUDFLARE_ACCOUNT_ID").map(String::as_str),
+            Some("acct-123")
+        );
         assert!(!env.contains_key("CLOUDFLARE_GATEWAY_ID"));
     }
 
@@ -278,25 +340,43 @@ mod tests {
         let credential = ApiKeyCredential {
             key: Some("cred-key".to_string()),
             env: Some(cred_env),
+            ..Default::default()
         };
 
         let auth = cloudflare_ai_gateway_auth();
-        let res = auth.resolve(&ctx, Some(&credential), &signal).await.unwrap().expect("resolved");
+        let res = auth
+            .resolve(&ctx, Some(&credential), &signal)
+            .await
+            .unwrap()
+            .expect("resolved");
         assert_eq!(res.source.as_deref(), Some("stored credential"));
         assert!(res.auth.api_key.is_none());
         let headers = res.auth.headers.expect("headers");
-        assert_eq!(headers.get("cf-aig-authorization").and_then(|v| v.as_deref()), Some("Bearer cred-key"));
+        assert_eq!(
+            headers
+                .get("cf-aig-authorization")
+                .and_then(|v| v.as_deref()),
+            Some("Bearer cred-key")
+        );
         assert_eq!(headers.get("Authorization"), Some(&None));
         assert_eq!(headers.get("x-api-key"), Some(&None));
 
         let env = res.env.expect("env");
-        assert_eq!(env.get("CLOUDFLARE_ACCOUNT_ID").map(String::as_str), Some("cred-acct"));
-        assert_eq!(env.get("CLOUDFLARE_GATEWAY_ID").map(String::as_str), Some("env-gw"));
+        assert_eq!(
+            env.get("CLOUDFLARE_ACCOUNT_ID").map(String::as_str),
+            Some("cred-acct")
+        );
+        assert_eq!(
+            env.get("CLOUDFLARE_GATEWAY_ID").map(String::as_str),
+            Some("env-gw")
+        );
     }
 
     #[tokio::test]
     async fn workers_ai_auth_returns_none_if_missing_key_or_account() {
-        let ctx = TestAuthContext { env_map: HashMap::new() };
+        let ctx = TestAuthContext {
+            env_map: HashMap::new(),
+        };
         let signal = crate::utils::abort::AbortController::new().signal();
         let auth = cloudflare_workers_ai_auth();
         assert!(auth.resolve(&ctx, None, &signal).await.unwrap().is_none());
@@ -330,7 +410,10 @@ mod tests {
         let cred = auth.login(&interaction).await.unwrap();
         assert_eq!(cred.key.as_deref(), Some("my-key"));
         let env = cred.env.expect("env");
-        assert_eq!(env.get("CLOUDFLARE_ACCOUNT_ID").map(String::as_str), Some("my-acct"));
+        assert_eq!(
+            env.get("CLOUDFLARE_ACCOUNT_ID").map(String::as_str),
+            Some("my-acct")
+        );
     }
 
     #[tokio::test]
@@ -338,14 +421,24 @@ mod tests {
         let interaction = ProviderAuthInteraction::new(
             crate::utils::abort::AbortController::new().signal(),
             Arc::new(MockInteraction {
-                responses: std::sync::Mutex::new(vec!["my-key".into(), "my-acct".into(), "my-gw".into()]),
+                responses: std::sync::Mutex::new(vec![
+                    "my-key".into(),
+                    "my-acct".into(),
+                    "my-gw".into(),
+                ]),
             }),
         );
         let auth = cloudflare_ai_gateway_auth();
         let cred = auth.login(&interaction).await.unwrap();
         assert_eq!(cred.key.as_deref(), Some("my-key"));
         let env = cred.env.expect("env");
-        assert_eq!(env.get("CLOUDFLARE_ACCOUNT_ID").map(String::as_str), Some("my-acct"));
-        assert_eq!(env.get("CLOUDFLARE_GATEWAY_ID").map(String::as_str), Some("my-gw"));
+        assert_eq!(
+            env.get("CLOUDFLARE_ACCOUNT_ID").map(String::as_str),
+            Some("my-acct")
+        );
+        assert_eq!(
+            env.get("CLOUDFLARE_GATEWAY_ID").map(String::as_str),
+            Some("my-gw")
+        );
     }
 }

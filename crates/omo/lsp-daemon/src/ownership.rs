@@ -285,9 +285,7 @@ where
             return Err(StartupError::Deferred("owner_pid_live_unreachable"));
         }
         let reread = read_daemon_owner(paths);
-        let endpoint = endpoint_identity(owner.endpoint.path());
-        let unchanged = reread.is_some_and(|reread| reread.nonce == owner.nonce)
-            && same_endpoint(&endpoint, &owner.endpoint);
+        let unchanged = reread.is_some_and(|reread| same_owner(&reread, &owner));
         if !unchanged {
             return Err(StartupError::Deferred("owner_changed_during_cleanup"));
         }
@@ -355,4 +353,77 @@ pub fn iso_timestamp(time: SystemTime) -> String {
         (rem % 3_600) / 60,
         rem % 60
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dead_owner(paths: &DaemonPaths) -> DaemonOwner {
+        DaemonOwner {
+            pid: 9_999_999,
+            nonce: "dead".to_string(),
+            started_at: "old".to_string(),
+            endpoint: EndpointIdentity::Unix {
+                path: paths.socket.to_string_lossy().into_owned(), dev: 1, ino: 1,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_socket_with_stale_unix_identity_is_reclaimed() {
+        let root = tempfile::tempdir().expect("temporary owner root");
+        let paths = DaemonPaths::under_dir(root.path(), "1");
+        write_private_file(&paths.auth, "old-token").expect("write token");
+        write_daemon_owner(&paths, &dead_owner(&paths)).expect("write dead owner");
+        let token = validate_existing_owner(&paths, &|_| async { None }).await.expect("reclaim dead owner");
+        assert_ne!(token, "old-token");
+        assert!(read_daemon_owner(&paths).is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn orphan_socket_device_drift_is_reclaimed() {
+        let root = tempfile::Builder::new().prefix("owner-").tempdir_in("/tmp").expect("short owner root");
+        let paths = DaemonPaths::under_dir(root.path(), "1");
+        let listener = std::os::unix::net::UnixListener::bind(&paths.socket).expect("bind orphan socket");
+        drop(listener);
+        let mut owner = dead_owner(&paths);
+        let mut endpoint = endpoint_identity(&paths.socket.to_string_lossy());
+        if let EndpointIdentity::Unix { dev, .. } = &mut endpoint {
+            *dev = dev.wrapping_add(1);
+        } else {
+            panic!("socket must have Unix identity");
+        }
+        owner.endpoint = endpoint;
+        write_private_file(&paths.auth, "old-token").expect("write token");
+        write_daemon_owner(&paths, &owner).expect("write dead owner");
+        let token = validate_existing_owner(&paths, &|_| async { None }).await.expect("reclaim orphan");
+        assert_ne!(token, "old-token");
+        assert!(!paths.socket.exists());
+    }
+
+    #[tokio::test]
+    async fn changed_owner_pid_or_endpoint_defers_even_with_same_nonce() {
+        for change_pid in [true, false] {
+            let root = tempfile::tempdir().expect("temporary owner root");
+            let paths = DaemonPaths::under_dir(root.path(), "1");
+            let owner = dead_owner(&paths);
+            write_private_file(&paths.auth, "old-token").expect("write token");
+            write_daemon_owner(&paths, &owner).expect("write dead owner");
+            let mut replacement = owner.clone();
+            if change_pid {
+                replacement.pid -= 1;
+            } else {
+                replacement.endpoint = EndpointIdentity::Missing { path: "other".to_string() };
+            }
+            let result = validate_existing_owner(&paths, &|_| {
+                write_daemon_owner(&paths, &replacement).expect("rewrite owner during probe");
+                async { None }
+            }).await;
+            assert!(matches!(result, Err(StartupError::Deferred("owner_changed_during_cleanup"))));
+            assert_eq!(read_daemon_owner(&paths), Some(replacement));
+            assert_eq!(read_auth_token(&paths).as_deref(), Some("old-token"));
+        }
+    }
 }

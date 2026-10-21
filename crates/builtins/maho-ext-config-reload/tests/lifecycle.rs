@@ -146,11 +146,11 @@ async fn external_handoff_change_is_rejected_under_its_registration_id() {
     let cwd = root.path().to_string_lossy().into_owned();
     let external_path = external.path().join("external.json");
     std::fs::write(&external_path, "{}").expect("external baseline created");
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("reload fixture operation must succeed");
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(root.path().join("models.json")), auth_path: Some(root.path().join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let session = create_agent_session(CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model: Some(model), model_runtime: Some(runtime),
         session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
@@ -241,11 +241,11 @@ async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().expect("reload fixture operation must succeed");
     let cwd = root.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).expect("reload fixture operation must succeed");
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(root.path().join("models.json")), auth_path: Some(root.path().join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let session = create_agent_session(CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model: Some(model), model_runtime: Some(runtime),
         session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
@@ -501,9 +501,9 @@ async fn scoped_real_reload_preserves_session_identity_and_provider_scope() {
     use maho_ext_config_reload::protocol::CONFIG_WATCH_RELOADED;
     let root = tempfile::tempdir().unwrap();
     let cwd = root.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).unwrap();
-    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions { models_path: Some(root.path().join("models.json")), auth_path: Some(root.path().join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default() });
+    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions { models_path: Some(root.path().join("models.json")), auth_path: Some(root.path().join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default() }).expect("valid model runtime");
     let session = create_agent_session(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model: Some(model), model_runtime: Some(runtime), session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)), settings_manager: Some(maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false)), auto_title_sessions: Some(false), ..Default::default() }).await.unwrap().session;
     let expected_id = session.session_id();
     let scope = maho_ai::node::provider_scope::ProviderScope::new();

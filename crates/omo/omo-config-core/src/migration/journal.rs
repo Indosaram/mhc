@@ -22,6 +22,7 @@ pub struct MigrationJournal {
     pub completed_moves: Vec<String>,
     pub diagnostics: Vec<String>,
     pub migration_id: String,
+    pub target_backup_path: Option<String>,
     pub target_path: String,
     pub target_write: MigrationJournalTargetWrite,
     pub target_written: bool,
@@ -164,6 +165,12 @@ pub fn parse_journal(value: &Value) -> Result<MigrationJournal, MigrationError> 
         }
     }
 
+    let target_backup_path = match map.get("targetBackupPath") {
+        None => None,
+        Some(Value::String(path)) => Some(path.clone()),
+        Some(_) => return Err(MigrationError::transaction("Migration journal target backup is invalid")),
+    };
+
     let backup_moves_val = match map.get("backupMoves").and_then(Value::as_array) {
         Some(arr) => arr,
         None => {
@@ -204,6 +211,7 @@ pub fn parse_journal(value: &Value) -> Result<MigrationJournal, MigrationError> 
         completed_moves,
         diagnostics,
         migration_id,
+        target_backup_path,
         target_path,
         target_write: MigrationJournalTargetWrite {
             additions,
@@ -260,6 +268,9 @@ pub fn write_migration_journal(
     journal_map.insert("completedMoves".to_string(), json!(journal.completed_moves));
     journal_map.insert("diagnostics".to_string(), json!(journal.diagnostics));
     journal_map.insert("migrationId".to_string(), json!(journal.migration_id));
+    if let Some(path) = &journal.target_backup_path {
+        journal_map.insert("targetBackupPath".to_string(), json!(path));
+    }
     journal_map.insert("targetPath".to_string(), json!(journal.target_path));
     journal_map.insert("targetWrite".to_string(), Value::Object(target_write_map));
     journal_map.insert("targetWritten".to_string(), json!(journal.target_written));

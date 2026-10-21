@@ -21,7 +21,7 @@ pub fn thinking_config(toggle: bool) -> (ThinkingLevelMap, Option<ModelCompat>) 
 }
 pub fn model_config(id: String, name: String) -> ProviderModelConfig {
     let (map, compat) = thinking_config(false);
-    ProviderModelConfig { id, name, reasoning: true, input: vec![InputModality::Text], cost: ModelCost::default(), context_window: 1_000_000, max_tokens: 131_072,
+    ProviderModelConfig { model_type: None, output: None, image_cost: None, input_limits: None, prompt_cache: None, supports_assistant_prefill: None, default_thinking_level: None, id, name, reasoning: true, input: vec![InputModality::Text], cost: ModelCost::default(), context_window: 1_000_000, max_tokens: 131_072,
         thinking_level_map: Some(map), compat, upstream_model_id: None, api: None, base_url: None, recover_text_tool_calls: None, headers: None, extra_body: None }
 }
 pub fn parse_catalog(payload: &Value) -> Vec<ProviderModelConfig> {
@@ -42,13 +42,14 @@ pub fn parse_catalog(payload: &Value) -> Vec<ProviderModelConfig> {
     }).collect()
 }
 pub fn persisted(models: &[ProviderModelConfig]) -> Vec<Model> {
-    models.iter().map(|model| Model { id: model.id.clone(), name: model.name.clone(), api: "anthropic-messages".into(), provider: "glm-zcode".into(), base_url: resolve_base_url(), reasoning: model.reasoning, thinking_level_map: model.thinking_level_map.clone(), input: model.input.clone(), cost: model.cost.clone(), context_window: model.context_window, max_tokens: model.max_tokens, compat: model.compat.as_ref().map(anthropic_compat), headers: None, upstream_model_id: None, sampling_params: None, cache_retention: None, service_tier: None, recover_text_tool_calls: None, default_thinking_level: None, input_limits: None }).collect()
+    models.iter().map(|model| Model { id: model.id.clone(), name: model.name.clone(), api: "anthropic-messages".into(), provider: "glm-zcode".into(), base_url: resolve_base_url(), reasoning: model.reasoning, thinking_level_map: model.thinking_level_map.clone(), input: model.input.clone(), cost: model.cost.clone(), context_window: model.context_window, max_tokens: model.max_tokens, compat: model.compat.as_ref().map(anthropic_compat), headers: None, upstream_model_id: None, sampling_params: None, cache_retention: None, service_tier: None, recover_text_tool_calls: None, default_thinking_level: model.default_thinking_level, input_limits: model.input_limits.clone(), prompt_cache: model.prompt_cache.clone(), supports_assistant_prefill: model.supports_assistant_prefill }).collect()
 }
 pub fn stored_to_config(stored: Option<&ModelsStoreEntry>) -> Vec<ProviderModelConfig> {
     stored.into_iter().flat_map(|stored| &stored.models).filter(|model| !model.id.is_empty() && !model.name.is_empty() && model.context_window > 0 && model.max_tokens > 0 && [model.cost.input,model.cost.output,model.cost.cache_read,model.cost.cache_write].iter().all(|value| value.is_finite())).map(|model| {
         let mut config = model_config(model.id.clone(), model.name.clone());
         config.reasoning = model.reasoning; config.input = if model.input.is_empty() { vec![InputModality::Text] } else { model.input.clone() };
         config.cost = model.cost.clone(); config.context_window = model.context_window; config.max_tokens = model.max_tokens;
+        config.input_limits = model.input_limits.clone(); config.prompt_cache = model.prompt_cache.clone(); config.supports_assistant_prefill = model.supports_assistant_prefill; config.default_thinking_level = model.default_thinking_level;
         if let Some(map) = &model.thinking_level_map { config.thinking_level_map = Some(map.clone()); config.compat = model.compat.as_ref().map(anthropic_compat); }
         config
     }).collect()

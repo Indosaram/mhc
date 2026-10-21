@@ -54,6 +54,7 @@ pub mod provider_composer;
 pub mod resolve_config_value;
 pub mod resource_loader;
 pub mod retry_fallback;
+pub mod schedule;
 pub mod session_manager;
 pub mod session_resident_store;
 pub mod session_title_generator;

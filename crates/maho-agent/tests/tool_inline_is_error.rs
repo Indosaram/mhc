@@ -1,11 +1,14 @@
 mod support;
 
-use maho_agent::{AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, identity_convert_to_llm};
+use maho_agent::{
+    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult,
+    identity_convert_to_llm,
+};
 use maho_ai::types::{ContentBlock, Message, StopReason, ToolResultMessage};
 use serde_json::json;
 use support::{
-    assistant, collect_events, recording_sink, result_tool, scripted_stream_fn, test_model, text_block, tool_call,
-    user_message,
+    assistant, collect_events, recording_sink, result_tool, scripted_stream_fn, test_model,
+    text_block, tool_call, user_message,
 };
 
 fn tool_result_from(events: &[AgentEvent]) -> ToolResultMessage {
@@ -21,7 +24,10 @@ fn tool_result_from(events: &[AgentEvent]) -> ToolResultMessage {
 
 fn tool_execution_end(events: &[AgentEvent]) -> (serde_json::Value, bool) {
     for event in events {
-        if let AgentEvent::ToolExecutionEnd { result, is_error, .. } = event {
+        if let AgentEvent::ToolExecutionEnd {
+            result, is_error, ..
+        } = event
+        {
             return (result.clone(), *is_error);
         }
     }
@@ -30,7 +36,12 @@ fn tool_execution_end(events: &[AgentEvent]) -> (serde_json::Value, bool) {
 
 async fn run_single_tool_call(tool: AgentTool) -> Vec<AgentEvent> {
     let name = tool.name().to_owned();
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: Some(vec![tool]) };
+    let context = AgentContext {
+        declared_tools: None,
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Some(vec![tool]),
+    };
     let config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
     let stream = maho_agent::agent_loop::agent_loop(
         vec![user_message("go")],
@@ -38,19 +49,27 @@ async fn run_single_tool_call(tool: AgentTool) -> Vec<AgentEvent> {
         config,
         None,
         Some(scripted_stream_fn(vec![
-            assistant(vec![tool_call("tool-1", &name, json!({}))], StopReason::ToolUse),
+            assistant(
+                vec![tool_call("tool-1", &name, json!({}))],
+                StopReason::ToolUse,
+            ),
             assistant(vec![text_block("done")], StopReason::Stop),
         ])),
     );
     collect_events(&stream).await
 }
 
-fn inline_result(content: &str, details: serde_json::Value, is_error: Option<bool>) -> AgentToolResult {
+fn inline_result(
+    content: &str,
+    details: serde_json::Value,
+    is_error: Option<bool>,
+) -> AgentToolResult {
     AgentToolResult {
         content: vec![text_block(content)],
         details,
         structured_content: None,
         usage: None,
+        nested_calls: None,
         added_tool_names: None,
         terminate: None,
         is_error,
@@ -59,7 +78,14 @@ fn inline_result(content: &str, details: serde_json::Value, is_error: Option<boo
 
 #[tokio::test]
 async fn marks_a_result_returned_with_is_error_true_as_a_tool_error_without_discarding_details() {
-    let tool = result_tool("inline_fail", inline_result("member 'x' failed to start", json!({ "kind": "runtime_error" }), Some(true)));
+    let tool = result_tool(
+        "inline_fail",
+        inline_result(
+            "member 'x' failed to start",
+            json!({ "kind": "runtime_error" }),
+            Some(true),
+        ),
+    );
 
     let events = run_single_tool_call(tool).await;
     let (result, is_error) = tool_execution_end(&events);
@@ -72,7 +98,10 @@ async fn marks_a_result_returned_with_is_error_true_as_a_tool_error_without_disc
 
 #[tokio::test]
 async fn keeps_a_result_without_an_is_error_flag_as_a_successful_tool_result() {
-    let tool = result_tool("plain_ok", inline_result("ok", json!({ "kind": "created" }), None));
+    let tool = result_tool(
+        "plain_ok",
+        inline_result("ok", json!({ "kind": "created" }), None),
+    );
 
     let events = run_single_tool_call(tool).await;
     let (_, is_error) = tool_execution_end(&events);
@@ -97,7 +126,12 @@ async fn the_recording_sink_sees_the_same_event_sequence() {
     let tool = result_tool("plain_ok", inline_result("ok", json!({}), None));
     let name = tool.name().to_owned();
     let (emit, recorded) = recording_sink();
-    let context = AgentContext { system_prompt: String::new(), messages: Vec::new(), tools: Some(vec![tool]) };
+    let context = AgentContext {
+        declared_tools: None,
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Some(vec![tool]),
+    };
     let config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
     maho_agent::agent_loop::run_agent_loop(
         vec![user_message("go")],
@@ -106,7 +140,10 @@ async fn the_recording_sink_sees_the_same_event_sequence() {
         emit,
         None,
         Some(scripted_stream_fn(vec![
-            assistant(vec![tool_call("tool-1", &name, json!({}))], StopReason::ToolUse),
+            assistant(
+                vec![tool_call("tool-1", &name, json!({}))],
+                StopReason::ToolUse,
+            ),
             assistant(vec![text_block("done")], StopReason::Stop),
         ])),
     )
@@ -114,6 +151,10 @@ async fn the_recording_sink_sees_the_same_event_sequence() {
     let events = recorded.lock().unwrap().clone();
     assert_eq!(support::event_names(&events).first(), Some(&"agent_start"));
     assert_eq!(support::event_names(&events).last(), Some(&"agent_end"));
-    assert!(events.iter().any(|event| matches!(event, AgentEvent::ToolExecutionEnd { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ToolExecutionEnd { .. }))
+    );
     let _ = ContentBlock::text("");
 }

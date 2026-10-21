@@ -64,7 +64,31 @@ pub fn build_rpc_respawn_runner(options: senpi_task::runners::rpc_process::RpcPr
     std::sync::Arc::new(ConfiguredRpcRespawn(senpi_task::runners::rpc_process::RpcProcessRunner::new(options)))
 }
 pub fn resolve_task_agents(config: &Value) -> BTreeMap<String, AgentDefinition> {
+    resolve_task_agents_with_definitions(config, BTreeMap::new())
+}
+
+pub fn resolve_task_agents_with_compat(config: &Value, cwd: &std::path::Path, claude_dir: &std::path::Path) -> BTreeMap<String, AgentDefinition> {
+    let definitions = match claude_code_compat_core::load_native_agents(cwd, claude_dir, None) {
+        Ok(definitions) => definitions,
+        Err(error) => {
+            maho_ext_api::diagnostic(&format!("Claude agent loading failed: {error}"));
+            BTreeMap::new()
+        }
+    };
+    resolve_task_agents_with_definitions(config, definitions)
+}
+
+fn resolve_task_agents_with_definitions(config: &Value, definitions: BTreeMap<String, claude_code_compat_core::ClaudeCodeAgentConfig>) -> BTreeMap<String, AgentDefinition> {
     let mut merged: BTreeMap<_, _> = BUILTIN_AGENT_DEFAULTS.iter().map(|definition| (definition.name.clone(), definition.clone())).collect();
+    for (name, agent) in definitions {
+        use claude_code_compat_core::{AgentMode, AgentModel};
+        let definition = merged.entry(name.clone()).or_insert_with(|| AgentDefinition::named(&name));
+        if agent.description.is_some() { definition.description = agent.description; }
+        if agent.prompt.is_some() { definition.prompt = agent.prompt; }
+        if let Some(mode) = agent.mode { definition.mode = Some(match mode { AgentMode::Subagent => "subagent", AgentMode::Primary => "primary", AgentMode::All => "all" }.into()); }
+        if let Some(model) = agent.model { definition.model = Some(match model { AgentModel::String(model) => model, AgentModel::Provider { provider_id, model_id } => format!("{provider_id}/{model_id}") }); }
+        if let Some(tools) = agent.tools { definition.tools = Some(tools.into_iter().map(|(name, allow)| senpi_task::agents::AgentToolRule::new(&name, allow)).collect()); }
+    }
     for (name, overlay) in map_omo_config_agents(config) {
         let definition = merged.entry(name).or_insert_with(|| AgentDefinition::named(&overlay.name));
         macro_rules! overlay_fields { ($($field:ident),* $(,)?) => { $(if overlay.$field.is_some() { definition.$field = overlay.$field; })* }; }

@@ -26,21 +26,32 @@ mod tests {
     fn monitor()->ManifestMonitor {
         let tmp = std::env::temp_dir();
         let tmp_str = tmp.to_str().unwrap();
-        crate::restore::parse_terminal_manifest(&json!({"monitors":[{"monitorId":"mon_saved","sessionId":"s","description":"watch","runtimeKind":"command","durabilityClass":"restartable-command","command":"stty -echo; printf 'restored\\n'","cwd":tmp_str,"createdAt":1,"expiresAt":null,"persistent":true,"suspended":false,"lastCheckpoint":null,"deliveryPaused":true,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap().monitors.remove(0)
+        crate::restore::parse_terminal_manifest(&json!({"monitors":[{"monitorId":"mon_saved","sessionId":"s","description":"watch","runtimeKind":"command","durabilityClass":"restartable-command","command":"printf 'restored\\n'","cwd":tmp_str,"createdAt":1,"expiresAt":null,"persistent":true,"suspended":false,"lastCheckpoint":null,"deliveryPaused":true,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap().monitors.remove(0)
     }
-    #[test]
-    fn configured_restore_preserves_shell_and_geometry() {
-        let mut saved=monitor();saved.command=Some("stty -echo; stty size; printf 'shell:%s\\n' \"${BASH_VERSION:+bash}\"".to_owned());let mut manager=TerminalManager::default();let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_rows=33.0;settings.default_cols=91.0;
+    /// A spawned pid does not prove ConPTY's startup handshake and shell init have finished.
+    /// `subscribe_output` pairs the retained history with the live stream atomically.
+    async fn await_shell_marker(manager:&mut TerminalManager,marker:&str) {
+        let (mut observed,mut output)={let runtime=manager.get("bash_1").unwrap();runtime.subscribe_output().unwrap()};
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {while !observed.contains(marker) {observed.push_str(&output.recv().await.expect("shell ready output"));}}).await.unwrap();
+    }
+    #[tokio::test]
+    async fn configured_restore_preserves_shell_and_geometry() {
+        let mut saved=monitor();
+        // `stty` is absent or does not return under ConPTY. Bash reports the same winsize
+        // after one external command once `checkwinsize` is on.
+        saved.command=Some(if cfg!(windows) {"shopt -s checkwinsize; /usr/bin/true; printf '%s %s\\nshell:%s\\n' \"$LINES\" \"$COLUMNS\" \"${BASH_VERSION:+bash}\"".to_owned()} else {"stty -echo; stty size; printf 'shell:%s\\n' \"${BASH_VERSION:+bash}\"".to_owned()});let mut manager=TerminalManager::default();let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_rows=33.0;settings.default_cols=91.0;
         let default_shell=maho_tools::shell::get_shell_config(None).ok().map(|s| s.shell);
         let shell=if cfg!(windows) {default_shell.as_deref()} else {Some("/bin/bash")};
         assert_eq!(restore_configured_command(&saved,&mut manager,shell,&settings,|_,_,_|Ok(())),RestoreOutcome::Muted);
+        await_shell_marker(&mut manager,"33 91\r\nshell:bash\r\n").await;
         let runtime=manager.get("bash_1").unwrap();runtime.wait(std::time::Duration::from_secs(5)).unwrap();assert_eq!(runtime.full_output().unwrap(),"33 91\r\nshell:bash\r\n");manager.teardown().unwrap();
     }
-    #[test]
-    fn restores_once_with_stable_identity_and_fresh_muted_runtime() {
+    #[tokio::test]
+    async fn restores_once_with_stable_identity_and_fresh_muted_runtime() {
         let saved=monitor();let mut manager=TerminalManager::default();let mut calls=0;
         assert_eq!(restore_command(&saved,&mut manager,|id,_,record| {calls+=1;assert_eq!(id,"bash_1");assert!(record.snapshot.paused);assert_eq!(record.snapshot.deadline_ms,None);assert_eq!(record.snapshot.fire_window.unwrap().start_ms,saved.fire_window.start_ms);Ok(())}),RestoreOutcome::Muted);
         assert_eq!(calls,1);assert_eq!(manager.resolve_id("mon_saved"),Some("bash_1".to_owned()));
+        await_shell_marker(&mut manager,"restored\r\n").await;
         let runtime=manager.get("bash_1").unwrap();runtime.wait(std::time::Duration::from_secs(5)).unwrap();assert_eq!(runtime.full_output().unwrap(),"restored\r\n");manager.teardown().unwrap();
     }
     #[test]
@@ -53,6 +64,7 @@ mod tests {
     }
     #[tokio::test]
     async fn restored_runtime_is_observed_by_live_registry() {
+        // `monitor()` prints `restored` with no `stty`. `register` subscribes before the line is required.
         let mut saved=monitor();saved.delivery_paused=false;
         let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=crate::monitor_registry::MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=TerminalManager::default();
         assert_eq!(restore_command(&saved,&mut manager,|_,runtime,record|registry.register(runtime,record)),RestoreOutcome::Restored);

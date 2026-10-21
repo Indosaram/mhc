@@ -15,3 +15,6 @@ pub mod transcript;
 pub mod types;
 
 pub use harness::create_agent_harness;
+
+#[cfg(test)]
+mod parity_tests;

@@ -59,6 +59,7 @@ pub mod theme_selector;
 pub mod thinking_selector;
 pub mod todo_strike;
 pub mod tool_execution;
+pub mod tool_execution_cache;
 pub mod tool_execution_fallback;
 pub mod tool_execution_images;
 pub mod tool_execution_renderer;

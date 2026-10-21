@@ -11,6 +11,10 @@ use super::harness::*;
 
 fn tool_result_images_compat() -> ResolvedOpenAICompletionsCompat {
     ResolvedOpenAICompletionsCompat {
+        supports_web_search: None,
+        supports_mid_convo_system_messages: false,
+        supports_mid_convo_tool_additions: false,
+        supports_forced_tool_choice: None,
         supports_store: true,
         supports_developer_role: true,
         supports_reasoning_effort: true,
@@ -65,6 +69,7 @@ fn image_tool_result(tool_call_id: &str, tool_name: &str, timestamp: i64) -> mah
         ],
         details: None,
         usage: None,
+        nested_calls: None,
         added_tool_names: None,
         is_error: false,
         timestamp,
@@ -78,6 +83,7 @@ fn empty_tool_result(tool_call_id: &str, tool_name: &str, timestamp: i64) -> mah
         content: vec![text_block("")],
         details: None,
         usage: None,
+        nested_calls: None,
         added_tool_names: None,
         is_error: false,
         timestamp,

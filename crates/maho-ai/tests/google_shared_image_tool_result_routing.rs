@@ -2,7 +2,7 @@
 
 mod google_fixtures;
 
-use google_fixtures::{assistant, context, image, image_model, text, tool_call, tool_result, user_text};
+use google_fixtures::{assistant, context, image, image_model, text, tool_call, tool_call_with_signature, tool_result, user_text};
 use maho_ai::api::google_shared::{convert_messages, ConvertMessagesOptions};
 use maho_ai::types::{Context, Model, StopReason};
 use serde_json::{json, Value};
@@ -13,7 +13,11 @@ fn make_context(model: &Model) -> Context {
         assistant(
             model,
             vec![
-                tool_call("call_a", "read", json!({ "path": "a.txt" })),
+                if model.id.starts_with("gemini-3") {
+                    tool_call_with_signature("call_a", "read", json!({ "path": "a.txt" }), "AAAAAAAAAAAAAAAAAAAAAA==")
+                } else {
+                    tool_call("call_a", "read", json!({ "path": "a.txt" }))
+                },
                 tool_call("call_img", "read", json!({ "path": "image.png" })),
                 tool_call("call_b", "read", json!({ "path": "b.txt" })),
             ],
@@ -31,16 +35,19 @@ fn convert(model: &Model) -> Value {
 }
 
 #[test]
-fn keeps_separate_synthetic_image_turn_for_gemini_2_x_google_api_models() {
+fn keeps_synthetic_images_inside_the_tool_result_turn_for_gemini_2_x_google_api_models() {
     let model = image_model("google-generative-ai", "google", "gemini-2.5-flash");
     let contents = convert(&model);
 
     let items = contents.as_array().expect("contents is an array");
-    assert_eq!(items.len(), 5);
-    assert!(items[2]["parts"].as_array().expect("parts").iter().all(|part| part.get("functionResponse").is_some()));
-    assert_eq!(items[3]["parts"][0]["text"], json!("Tool result image:"));
-    assert!(items[3]["parts"][1].get("inlineData").is_some());
-    assert!(items[4]["parts"][0].get("functionResponse").is_some());
+    assert_eq!(items.len(), 3);
+    let parts = items[2]["parts"].as_array().expect("parts");
+    assert_eq!(parts.len(), 5);
+    assert!(parts[0].get("functionResponse").is_some());
+    assert!(parts[1].get("functionResponse").is_some());
+    assert_eq!(parts[2]["text"], json!("Tool result image:"));
+    assert!(parts[3].get("inlineData").is_some());
+    assert!(parts[4].get("functionResponse").is_some());
 }
 
 #[test]

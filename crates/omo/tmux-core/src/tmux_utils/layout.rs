@@ -34,9 +34,11 @@ impl From<u32> for MainPaneWidthOptions {
 
 fn calculate_main_pane_width(window_width: u32, options: MainPaneWidthOptions) -> u32 {
     let divider_width = 1;
-    let size_percent = u64::from(options.main_pane_size.unwrap_or(50).clamp(20, 80));
-    let usable = u64::from(window_width.saturating_sub(divider_width));
-    let desired = u32::try_from(usable * size_percent / 100).unwrap_or(u32::MAX);
+    let size_percent = f64::from(options.main_pane_size.unwrap_or(50).clamp(20, 80));
+    let usable = f64::from(window_width.saturating_sub(divider_width));
+    // Preserve JavaScript's division-before-multiplication rounding (100 * .29 < 29).
+    // The floored value is nonnegative and at most 80% of u32::MAX.
+    let desired = (usable * (size_percent / 100.0)).floor() as u32;
     let max_main = window_width
         .saturating_sub(divider_width)
         .saturating_sub(options.agent_pane_min_width.unwrap_or(0));
@@ -104,4 +106,52 @@ pub fn enforce_main_pane_width(
             "agentPaneMinWidth": options.agent_pane_min_width,
         })),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[test]
+    fn width_preserves_javascript_rounding_and_minimums() {
+        for (width, options, expected) in [
+            (101, MainPaneWidthOptions::from(29), 28),
+            (100, MainPaneWidthOptions::from(95), 79),
+            (100, MainPaneWidthOptions {
+                main_pane_size: Some(50),
+                main_pane_min_width: Some(90),
+                agent_pane_min_width: Some(20),
+            }, 79),
+            (0, MainPaneWidthOptions::default(), 0),
+        ] {
+            assert_eq!(calculate_main_pane_width(width, options), expected);
+        }
+    }
+
+    #[test]
+    fn enforce_resizes_with_clamped_width_and_skips_missing_tmux() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&calls);
+        let mut deps = EnforceMainPaneWidthDeps {
+            get_tmux_path: Arc::new(|| Some("tmux".to_owned())),
+            run_tmux_command: Arc::new(move |_, args| {
+                sink.lock().expect("recorded calls lock").push(args.to_vec());
+                crate::runner::TmuxCommandResult::new("", "", 0)
+            }),
+            ..EnforceMainPaneWidthDeps::default()
+        };
+        enforce_main_pane_width("%1", 100, 95, &deps);
+        enforce_main_pane_width("%1", 100, MainPaneWidthOptions {
+            main_pane_size: Some(50),
+            main_pane_min_width: Some(90),
+            agent_pane_min_width: Some(20),
+        }, &deps);
+        deps.get_tmux_path = Arc::new(|| None);
+        enforce_main_pane_width("%1", 100, 50, &deps);
+        assert_eq!(*calls.lock().expect("recorded calls lock"), vec![
+            strings(&["resize-pane", "-t", "%1", "-x", "79"]),
+            strings(&["resize-pane", "-t", "%1", "-x", "79"]),
+        ]);
+    }
 }

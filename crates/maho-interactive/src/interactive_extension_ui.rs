@@ -35,6 +35,7 @@ pub fn theme_from_extension(theme: &maho_ext_api::Theme, mode: crate::theme::Col
 
 pub enum UiRequest {
     WidgetFrame,
+    SideColumn(Option<ExtensionSideColumn>),
     Select { title: String, options: Vec<String>, timeout_ms: Option<u64>, reply: tokio::sync::oneshot::Sender<Option<String>> },
     Input { title: String, timeout_ms: Option<u64>, reply: tokio::sync::oneshot::Sender<Option<String>> },
     Notify(String, NotificationType),
@@ -215,6 +216,9 @@ impl ExtensionUi for InteractiveExtensionUi {
     }
     fn request_render(&self) -> Result<(), ExtensionFailure> {
         self.sender.send(UiRequest::WidgetFrame).map_err(|_| ExtensionFailure::new("Interactive UI request channel is closed"))
+    }
+    fn set_side_column(&self, column: Option<ExtensionSideColumn>) -> Result<(), ExtensionFailure> {
+        self.sender.send(UiRequest::SideColumn(column)).map_err(|_| ExtensionFailure::new("Interactive UI request channel is closed"))
     }
     fn notify(&self, message: &str, kind: NotificationType) { self.send(UiRequest::Notify(message.into(), kind)); }
     fn set_status(&self, key: &str, text: Option<&str>) {

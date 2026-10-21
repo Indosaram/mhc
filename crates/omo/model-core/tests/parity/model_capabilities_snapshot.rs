@@ -5,7 +5,7 @@ use model_core::SnapshotFetcher;
 use model_core::SnapshotLimit;
 use model_core::SnapshotModalities;
 use model_core::build_model_capabilities_snapshot_from_models_dev;
-use model_core::fetch_model_capabilities_snapshot;
+use model_core::fetch_model_capabilities_snapshot_with_fetcher;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -117,7 +117,7 @@ fn fetches_snapshot_using_injected_fetch_implementation() {
         .to_string(),
     };
 
-    let snapshot = futures::executor::block_on(fetch_model_capabilities_snapshot(
+    let snapshot = futures::executor::block_on(fetch_model_capabilities_snapshot_with_fetcher(
         &fetcher,
         Some(source_url),
     ))

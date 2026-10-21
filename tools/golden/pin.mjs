@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 
-export const SENPI_PIN = "cf69f5e72eb325219a93e17bb54bbd4ba787899e";
+export const SENPI_PIN = "903b83367545bea516f35fc7f7c7cb692847988d";
 
 /** Returns the absolute SENPI_SRC path, or exits 3 when it is not a checkout at the pinned commit. */
 export function pinnedSenpiRoot() {

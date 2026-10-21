@@ -14,7 +14,9 @@ pub trait PublisherClock: Send + Sync {
 
 /// Wall-clock clock backed by the system time and tokio timers.
 #[derive(Default)]
-pub struct SystemPublisherClock;
+pub struct SystemPublisherClock {
+    timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
 
 impl PublisherClock for SystemPublisherClock {
     fn now_ms(&self) -> i64 {
@@ -25,20 +27,29 @@ impl PublisherClock for SystemPublisherClock {
     }
 
     fn set_timeout(&self, wait_ms: u64, callback: Box<dyn FnOnce() + Send>) {
-        tokio::spawn(async move {
+        let mut timer = self.timer.lock().expect("publisher timer poisoned");
+        if let Some(previous) = timer.take() {
+            previous.abort();
+        }
+        *timer = Some(tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
             callback();
-        });
+        }));
     }
 
-    fn clear_timeout(&self) {}
+    fn clear_timeout(&self) {
+        if let Some(timer) = self.timer.lock().expect("publisher timer poisoned").take() {
+            timer.abort();
+        }
+    }
 }
 
 /// `snapshot()` of the published value.
 pub type SnapshotFn<TValue> = Box<dyn Fn() -> TValue + Send + Sync>;
 
 /// `update(previous, current)`.
-pub type UpdateFn<TValue, TUpdate> = Box<dyn Fn(Option<&TValue>, &TValue) -> Option<TUpdate> + Send + Sync>;
+pub type UpdateFn<TValue, TUpdate> =
+    Box<dyn Fn(Option<&TValue>, &TValue) -> Option<TUpdate> + Send + Sync>;
 
 /// `measure(update)`.
 pub type MeasureFn<TUpdate> = Box<dyn Fn(&TUpdate) -> u64 + Send + Sync>;
@@ -83,12 +94,19 @@ pub struct AdaptivePublisher<TValue, TUpdate> {
 
 impl<TValue, TUpdate> Clone for AdaptivePublisher<TValue, TUpdate> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
-impl<TValue: Clone + Send + Sync + 'static, TUpdate: Send + 'static> AdaptivePublisher<TValue, TUpdate> {
-    pub fn new(options: AdaptivePublisherOptions<TValue, TUpdate>, clock: Arc<dyn PublisherClock>) -> Self {
+impl<TValue: Clone + Send + Sync + 'static, TUpdate: Send + 'static>
+    AdaptivePublisher<TValue, TUpdate>
+{
+    pub fn new(
+        options: AdaptivePublisherOptions<TValue, TUpdate>,
+        clock: Arc<dyn PublisherClock>,
+    ) -> Self {
         let min_interval_ms = options.min_interval_ms.unwrap_or(100);
         let target_bytes_per_second = options.target_bytes_per_second.unwrap_or(100 * 1024);
         Self {
@@ -144,7 +162,13 @@ impl<TValue: Clone + Send + Sync + 'static, TUpdate: Send + 'static> AdaptivePub
             (self.inner.options.snapshot)()
         };
 
-        let previous = self.inner.state.lock().expect("publisher state poisoned").published.clone();
+        let previous = self
+            .inner
+            .state
+            .lock()
+            .expect("publisher state poisoned")
+            .published
+            .clone();
         let update = (self.inner.options.update)(previous.as_ref(), &current);
 
         let Some(update) = update else {
@@ -194,12 +218,69 @@ impl<TValue: Clone + Send + Sync + 'static, TUpdate: Send + 'static> AdaptivePub
                     let mut state = inner.state.lock().expect("publisher state poisoned");
                     state.timer_armed = false;
                 }
-                let result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| AdaptivePublisher { inner: inner.clone() }.flush(false)));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    AdaptivePublisher {
+                        inner: inner.clone(),
+                    }
+                    .flush(false)
+                }));
                 if result.is_err() {
                     (inner.options.on_error)("adaptive publisher flush panicked".to_string());
                 }
             }),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PublisherClock, SystemPublisherClock};
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    #[tokio::test(start_paused = true)]
+    async fn clear_timeout_cancels_pending_callback() {
+        let clock = SystemPublisherClock::default();
+        let (sent, received) = oneshot::channel();
+        clock.set_timeout(
+            100,
+            Box::new(move || sent.send(()).expect("receiver alive")),
+        );
+
+        clock.clear_timeout();
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), received)
+                .await
+                .expect("cancelled callback released")
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replacement_cancels_old_callback_and_delivers_new_callback() {
+        let clock = SystemPublisherClock::default();
+        let (old_sent, old_received) = oneshot::channel();
+        clock.set_timeout(
+            100,
+            Box::new(move || old_sent.send(()).expect("receiver alive")),
+        );
+        let (new_sent, new_received) = oneshot::channel();
+
+        clock.set_timeout(
+            200,
+            Box::new(move || new_sent.send(()).expect("receiver alive")),
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), old_received)
+                .await
+                .expect("old callback released")
+                .is_err()
+        );
+        tokio::time::timeout(Duration::from_secs(1), new_received)
+            .await
+            .expect("new callback deadline")
+            .expect("new callback delivered");
     }
 }

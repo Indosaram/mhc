@@ -104,18 +104,18 @@ impl CliKibitzerChildSpawner {
         category: Option<String>,
         registry_for: SessionModelRegistry,
         resources: KibitzerChildResourcesFactory,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>, maho_ai::models::ModelsError> {
         let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
             auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")),
             ..Default::default()
-        });
+        })?;
         let factory = maho_core::sdk::HostRuntimeFactory {
             model_registry: maho_core::model_registry::ModelRegistry::new(model_runtime.clone()),
             model_runtime,
             extension_factories: Vec::new(),
         };
-        Self::new(executor, factory, (cwd, agent_dir), config, category, registry_for, resources)
+        Ok(Self::new(executor, factory, (cwd, agent_dir), config, category, registry_for, resources))
     }
 
     /// Publish nudges accepted this turn to the resident child's `subscribe_nudges` listeners.
@@ -278,11 +278,13 @@ impl CliKibitzerChild {
         let owner_out = prompt_owner.clone();
         let subscription = session.subscribe(Arc::new(move |event| {
             let observation = match event {
-                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::ToolExecutionStart { tool_call_id, tool_name, .. }) => Some(KibitzerChildObservation::ToolStart {
+                // The sidecar budgets the child's top-level calls. Nested tool events belong to
+                // their parent call and must not add starts/ends or terminate the sidecar early.
+                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::ToolExecutionStart { tool_call_id, tool_name, parent_tool_call_id: None, .. }) => Some(KibitzerChildObservation::ToolStart {
                     tool_call_id: tool_call_id.clone(),
                     name: tool_name.clone(),
                 }),
-                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error }) => Some(KibitzerChildObservation::ToolEnd {
+                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error, parent_tool_call_id: None }) => Some(KibitzerChildObservation::ToolEnd {
                     tool_call_id: tool_call_id.clone(),
                     name: tool_name.clone(),
                     is_error: *is_error || result_is_error(result),

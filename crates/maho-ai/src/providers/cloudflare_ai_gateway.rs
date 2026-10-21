@@ -21,7 +21,7 @@ fn gateway_models() -> Vec<Model> {
     models
 }
 
-pub fn cloudflare_ai_gateway_provider() -> Arc<dyn Provider> {
+pub fn cloudflare_ai_gateway_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     let mut api = IndexMap::new();
     for id in ["anthropic-messages", "openai-completions", "openai-responses"] {
         api.insert(id.to_owned(), cloudflare_streams(builtin_api_streams(id)));
@@ -36,6 +36,7 @@ pub fn cloudflare_ai_gateway_provider() -> Arc<dyn Provider> {
         fetch_models: None,
         restore_models: None,
         filter_models: None,
+        images: indexmap::IndexMap::new(),
         api: ProviderApi::ByApi(api),
     })
 }

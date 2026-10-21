@@ -39,6 +39,8 @@ pub const AST_GREP_MCP_NAME: &str = "ast_grep";
 pub const AST_GREP_SERVER_NAME: &str = "ast_grep";
 pub const AST_GREP_SERVER_VERSION: &str = "0.1.0";
 const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
+pub const DEFAULT_AST_GREP_IDLE_TIMEOUT_MS: u64 = 10 * 60_000;
+const IDLE_TIMEOUT_ENV_KEY: &str = "OMO_AST_GREP_IDLE_TIMEOUT_MS";
 
 pub const AST_GREP_ERROR_CODES: [&str; 19] = [
     "INVALID_ARGUMENT",
@@ -248,10 +250,6 @@ pub fn ast_grep_mcp_tools() -> Vec<McpToolDescriptor> {
                 "type": "object",
                 "properties": scan,
                 "required": ["paths"],
-                "oneOf": [
-                    { "type": "object", "required": ["ruleFile"], "not": { "required": ["inlineRules"] } },
-                    { "type": "object", "required": ["inlineRules"], "not": { "required": ["ruleFile"] } },
-                ],
                 "additionalProperties": false,
             }),
         },
@@ -283,6 +281,8 @@ pub struct AstGrepMcpOptions {
     pub executors: AstGrepToolExecutors,
     pub signal: Option<AbortSignal>,
     pub lifecycle_log: Option<Arc<dyn McpLifecycleLog + Send + Sync>>,
+    /// Explicit override; wins over `OMO_AST_GREP_IDLE_TIMEOUT_MS`. Nonpositive values disable it.
+    pub idle_timeout_ms: Option<f64>,
     pub parent_watchdog: Option<ParentWatchdogConfig>,
 }
 
@@ -512,6 +512,8 @@ where
     let handler_active = Arc::clone(&active);
     let parent_watchdog = options.parent_watchdog.clone().unwrap_or_default();
     let lifecycle_log = options.lifecycle_log.clone();
+    let idle_timeout_env = std::env::var(IDLE_TIMEOUT_ENV_KEY).ok();
+    let idle_timeout_ms = resolve_idle_timeout_ms(options.idle_timeout_ms, idle_timeout_env.as_deref());
     let handler =
         move |request: &Value| -> Result<Option<JsonRpcResponse>, std::convert::Infallible> {
             let signal = AbortSignal::new();
@@ -529,7 +531,7 @@ where
             Ok(response)
         };
     let mut config = JsonRpcStdioServerConfig::new(handler);
-    config.idle_timeout_ms = Some(0);
+    config.idle_timeout_ms = Some(idle_timeout_ms);
     config.parent_watchdog = Some(parent_watchdog);
     config.log = lifecycle_log;
     config.on_parent_exit = Some(Arc::new(move || {
@@ -542,4 +544,144 @@ where
         }
     }));
     run_json_rpc_stdio_server(input, output, config)
+}
+
+// Explicit option > environment > ten-minute default. The transport uses whole milliseconds;
+// nonpositive values disable its timer, and invalid environment values must not disable it.
+fn resolve_idle_timeout_ms(explicit: Option<f64>, raw: Option<&str>) -> u64 {
+    let timeout = explicit.unwrap_or_else(|| {
+        raw.filter(|value| !value.is_empty())
+            .and_then(|value| {
+                let value = value.trim();
+                if value.is_empty() {
+                    return Some(0.0);
+                }
+                for (prefix, radix) in [("0x", 16), ("0o", 8), ("0b", 2)] {
+                    if let Some(digits) = value
+                        .strip_prefix(prefix)
+                        .or_else(|| value.strip_prefix(&prefix.to_ascii_uppercase()))
+                    {
+                        return u64::from_str_radix(digits, radix)
+                            .ok()
+                            .map(|value| value as f64);
+                    }
+                }
+                value.parse::<f64>().ok()
+            })
+            .filter(|value| value.is_finite())
+            .unwrap_or(DEFAULT_AST_GREP_IDLE_TIMEOUT_MS as f64)
+    });
+    timeout.max(0.0) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::AstGrepMcpOptions;
+    use super::DEFAULT_AST_GREP_IDLE_TIMEOUT_MS;
+    use super::ast_grep_mcp_tools;
+    use super::resolve_idle_timeout_ms;
+    use super::run_mcp_stdio_server;
+    use mcp_stdio_core::ServerOutcome;
+    use serde_json::Value;
+
+    #[test]
+    fn advertised_schemas_have_no_composition_keywords_at_any_depth() {
+        fn check(value: &Value) {
+            match value {
+                Value::Object(properties) => {
+                    for (key, value) in properties {
+                        assert!(!["oneOf", "anyOf", "allOf", "not"].contains(&key.as_str()));
+                        check(value);
+                    }
+                }
+                Value::Array(values) => values.iter().for_each(check),
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+            }
+        }
+        for tool in ast_grep_mcp_tools() {
+            check(&tool.input_schema);
+        }
+    }
+
+    #[test]
+    fn idle_timeout_uses_default_when_environment_is_missing_or_invalid() {
+        for raw in [
+            None,
+            Some(""),
+            Some("typo"),
+            Some("NaN"),
+            Some("Infinity"),
+            Some("-Infinity"),
+        ] {
+            assert_eq!(
+                resolve_idle_timeout_ms(None, raw),
+                DEFAULT_AST_GREP_IDLE_TIMEOUT_MS
+            );
+        }
+    }
+
+    #[test]
+    fn idle_timeout_parses_environment_and_preserves_opt_out() {
+        for (raw, expected) in [
+            ("25", 25),
+            (" 1234 ", 1234),
+            ("0", 0),
+            ("-1", 0),
+            ("   ", 0),
+            ("1e3", 1000),
+            ("25.9", 25),
+            ("0x10", 16),
+            ("0O10", 8),
+            ("0b10", 2),
+        ] {
+            assert_eq!(resolve_idle_timeout_ms(None, Some(raw)), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn explicit_idle_timeout_wins_over_environment_including_opt_out() {
+        for (explicit, expected) in [(4321.0, 4321), (0.0, 0), (-25.0, 0)] {
+            assert_eq!(
+                resolve_idle_timeout_ms(Some(explicit), Some("1234")),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn idle_server_exits_while_parent_holds_input_open() {
+        struct HeldInput(mpsc::Receiver<()>);
+        impl Read for HeldInput {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.0.recv() {
+                    Ok(()) | Err(mpsc::RecvError) => Ok(0),
+                }
+            }
+        }
+
+        let (input_sender, input_receiver) = mpsc::channel();
+        let (finished_sender, finished_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let result = run_mcp_stdio_server(
+                HeldInput(input_receiver),
+                &mut Vec::new(),
+                AstGrepMcpOptions {
+                    idle_timeout_ms: Some(25.0),
+                    ..AstGrepMcpOptions::default()
+                },
+            );
+            finished_sender.send(result).expect("test receiver is alive");
+        });
+        let outcome = finished_receiver.recv_timeout(Duration::from_secs(5));
+        drop(input_sender);
+        server.join().expect("server thread completes");
+        assert_eq!(
+            outcome.expect("idle server settles").expect("server succeeds"),
+            ServerOutcome::IdleTimeout
+        );
+    }
 }

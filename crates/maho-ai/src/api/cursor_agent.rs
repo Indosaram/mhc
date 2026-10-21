@@ -31,14 +31,15 @@ use std::time::Duration;
 use base64::Engine as _;
 use bytes::Bytes;
 use prost::Message as _;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::cursor::composer_prompt::{is_cursor_composer_model, CURSOR_COMPOSER_PROMPT};
+use crate::cursor::composer_prompt::{CURSOR_COMPOSER_PROMPT, is_cursor_composer_model};
 use crate::models::calculate_cost;
 use crate::session_resources::register_session_resource_cleanup;
 use crate::types::{
-    AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason, ErrorReason, Message, Model,
-    SimpleStreamOptions, StreamOptions, TextContent, Tool, ToolCall, ToolResultMessage, Usage,
+    AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason, ErrorReason,
+    Message, Model, SimpleStreamOptions, StreamOptions, TextContent, Tool, ToolCall,
+    ToolResultMessage, Usage,
 };
 use crate::utils::abort::AbortSignal;
 use crate::utils::block_symbols::StreamingBlockState;
@@ -55,51 +56,61 @@ fn random_uuid() -> String {
 }
 
 use super::cursor_agent::exec_modern::{
-    build_mcp_state_result, build_neutral_hook_result, build_pi_bash_error, build_pi_bash_result, build_pi_edit_error,
-    build_pi_edit_rejected, build_pi_edit_result, build_pi_find_error, build_pi_find_result, build_pi_grep_error,
-    build_pi_grep_result, build_pi_ls_error, build_pi_ls_result, build_pi_read_error, build_pi_read_result,
-    build_pi_write_error, build_pi_write_rejected, build_pi_write_result,
-};
-use super::cursor_agent::r#gen::agent_pb::{
-    agent_client_message, agent_server_message, conversation_action, conversation_step, conversation_turn_structure,
-    exec_client_control_message, exec_client_message, exec_server_message, interaction_update, kv_client_message,
-    kv_server_message, mcp_result, mcp_tool_result, mcp_tool_result_content_item, read_result, read_success,
-    shell_result, shell_stream, tool_call, AgentClientMessage, AgentConversationTurnStructure, AgentRunRequest,
-    AgentServerMessage, AgentStoreConflictError, AgentStoreConflictResult, BackgroundShellSpawnResult,
-    CanvasDiagnosticsError, CanvasDiagnosticsResult, ClientHeartbeat, ComputerUseError, ComputerUseResult,
-    ConversationAction, ConversationSearchError, ConversationSearchResult, ConversationStateStructure,
-    ConversationStep, ConversationTurnStructure, DeleteError, DeleteRejected, DeleteResult, DeleteSuccess,
-    DiagnosticsError, DiagnosticsRejected, DiagnosticsResult, DiagnosticsSuccess, ExecClientControlMessage,
-    ExecClientHeartbeat, ExecClientMessage, ExecClientStreamClose, ExecClientThrow, ExecServerMessage, FetchError,
-    FetchResult, ForceBackgroundShellResult, ForceBackgroundShellStatus, ForceBackgroundSubagentResult,
-    ForceBackgroundSubagentStatus, GetBlobResult, GetUsableModelsRequest, GetUsableModelsResponse, GrepContentMatch,
-    GrepContentResult, GrepCountResult, GrepError, GrepFileCount, GrepFileMatch, GrepFilesResult, GrepResult,
-    GrepSuccess, GrepUnionResult, KvClientMessage, KvServerMessage, ListMcpResourcesExecResult,
-    ListMcpResourcesSuccess, LsDirectoryTreeNode, LsDirectoryTreeNodeFile, LsError, LsRejected, LsResult, LsSuccess,
-    McpAllowlistPrecheckResult, McpApproved, McpArgs, McpError, McpImageContent, McpRejected, McpResult, McpSuccess,
-    McpTextContent, McpToolCall, McpToolDefinition, McpToolError, McpToolNotFound, McpToolResult,
-    McpToolResultContentItem, ModelDetails, ReadError, ReadMcpResourceExecResult, ReadMcpResourceNotFound,
-    ReadRejected, ReadResult, ReadSuccess, RecordScreenFailure, RecordScreenResult, RequestContext,
-    RequestContextResult, RequestContextSuccess, RequestedModel, ResumeAction, SelectedContext, SelectedImage,
-    SetBlobResult, ShellAllowlistPrecheckResult, ShellArgs, ShellFailure, ShellRejected, ShellResult, ShellStream,
-    ShellStreamExit, ShellStreamStderr, ShellStreamStdout, ShellSuccess, SmartModeClassifierError,
-    SmartModeClassifierResult, SubagentAwaitNotFound, SubagentAwaitResult, SubagentError, SubagentResult, ToolCall as PbToolCall,
-    TurnEndedUpdate, UserMessage as PbUserMessage, UserMessageAction, WebFetchAllowlistPrecheckResult, WriteError,
-    WriteRejected, WriteResult, WriteShellStdinError, WriteShellStdinResult, WriteSuccess,
+    build_mcp_state_result, build_neutral_hook_result, build_pi_bash_error, build_pi_bash_result,
+    build_pi_edit_error, build_pi_edit_rejected, build_pi_edit_result, build_pi_find_error,
+    build_pi_find_result, build_pi_grep_error, build_pi_grep_result, build_pi_ls_error,
+    build_pi_ls_result, build_pi_read_error, build_pi_read_result, build_pi_write_error,
+    build_pi_write_rejected, build_pi_write_result,
 };
 use super::cursor_agent::r#gen::agent_pb::*;
-use super::cursor_agent::pi_args::{compose_shell_command, omit_undefined_args, pi_limit, pi_ls_path, pi_read_args, pi_timeout};
+use super::cursor_agent::r#gen::agent_pb::{
+    AgentClientMessage, AgentConversationTurnStructure, AgentRunRequest, AgentServerMessage,
+    AgentStoreConflictError, AgentStoreConflictResult, BackgroundShellSpawnResult,
+    CanvasDiagnosticsError, CanvasDiagnosticsResult, ClientHeartbeat, ComputerUseError,
+    ComputerUseResult, ConversationAction, ConversationSearchError, ConversationSearchResult,
+    ConversationStateStructure, ConversationStep, ConversationTurnStructure, DeleteError,
+    DeleteRejected, DeleteResult, DeleteSuccess, DiagnosticsError, DiagnosticsRejected,
+    DiagnosticsResult, DiagnosticsSuccess, ExecClientControlMessage, ExecClientHeartbeat,
+    ExecClientMessage, ExecClientStreamClose, ExecClientThrow, ExecServerMessage, FetchError,
+    FetchResult, ForceBackgroundShellResult, ForceBackgroundShellStatus,
+    ForceBackgroundSubagentResult, ForceBackgroundSubagentStatus, GetBlobResult,
+    GetUsableModelsRequest, GetUsableModelsResponse, GrepContentMatch, GrepContentResult,
+    GrepCountResult, GrepError, GrepFileCount, GrepFileMatch, GrepFilesResult, GrepResult,
+    GrepSuccess, GrepUnionResult, KvClientMessage, KvServerMessage, ListMcpResourcesExecResult,
+    ListMcpResourcesSuccess, LsDirectoryTreeNode, LsDirectoryTreeNodeFile, LsError, LsRejected,
+    LsResult, LsSuccess, McpAllowlistPrecheckResult, McpApproved, McpArgs, McpError,
+    McpImageContent, McpRejected, McpResult, McpSuccess, McpTextContent, McpToolCall,
+    McpToolDefinition, McpToolError, McpToolNotFound, McpToolResult, McpToolResultContentItem,
+    ModelDetails, ReadError, ReadMcpResourceExecResult, ReadMcpResourceNotFound, ReadRejected,
+    ReadResult, ReadSuccess, RecordScreenFailure, RecordScreenResult, RequestContext,
+    RequestContextResult, RequestContextSuccess, RequestedModel, ResumeAction, SelectedContext,
+    SelectedImage, SetBlobResult, ShellAllowlistPrecheckResult, ShellArgs, ShellFailure,
+    ShellRejected, ShellResult, ShellStream, ShellStreamExit, ShellStreamStderr, ShellStreamStdout,
+    ShellSuccess, SmartModeClassifierError, SmartModeClassifierResult, SubagentAwaitNotFound,
+    SubagentAwaitResult, SubagentError, SubagentResult, ToolCall as PbToolCall, TurnEndedUpdate,
+    UserMessage as PbUserMessage, UserMessageAction, WebFetchAllowlistPrecheckResult, WriteError,
+    WriteRejected, WriteResult, WriteShellStdinError, WriteShellStdinResult, WriteSuccess,
+    agent_client_message, agent_server_message, conversation_action, conversation_step,
+    conversation_turn_structure, exec_client_control_message, exec_client_message,
+    exec_server_message, interaction_update, kv_client_message, kv_server_message, mcp_result,
+    mcp_tool_result, mcp_tool_result_content_item, read_result, read_success, shell_result,
+    shell_stream, tool_call,
+};
+use super::cursor_agent::pi_args::{
+    compose_shell_command, omit_undefined_args, pi_limit, pi_ls_path, pi_read_args, pi_timeout,
+};
 use super::cursor_agent::reasoning_params::build_requested_model;
 use super::cursor_agent::stream_retry::{
-    cursor_stream_retry_delay_ms, wait_for_cursor_stream_retry, CursorStreamRetryCause,
+    CursorStreamRetryCause, cursor_stream_retry_delay_ms, wait_for_cursor_stream_retry,
 };
 use super::cursor_agent::types::{
-    CursorAgentOptions, CursorExecHandlerResult, CursorExecHandlers, CursorExecPairing, CursorMcpCall,
-    CursorPiCall, CursorShellStreamCallbacks, CursorToolResultHandler,
+    CursorAgentOptions, CursorExecHandlerResult, CursorExecHandlers, CursorExecPairing,
+    CursorMcpCall, CursorPiCall, CursorShellStreamCallbacks, CursorToolResultHandler,
 };
 use super::cursor_agent::value_pb::{value_from_bytes, value_to_bytes};
 use super::cursor_conversation_rotation::{
-    is_zero_token_resource_exhausted, ConversationRotationStore, PoisonDecision, CURSOR_CONVERSATION_POISONED_MESSAGE,
+    CURSOR_CONVERSATION_POISONED_MESSAGE, ConversationRotationStore, PoisonDecision,
+    is_zero_token_resource_exhausted,
 };
 use super::cursor_task_args::keep_usable_cursor_task_args;
 
@@ -111,7 +122,8 @@ const EXEC_HEARTBEAT_INTERVAL_MS: u64 = 3000;
 /// Maximum inbound silence before a Cursor turn without turnEnded is failed.
 pub const CURSOR_STREAM_HEALTH_FAIL_THRESHOLD_MS: u64 = 30_000;
 /// Deprecated: heartbeats and checkpoints count as inbound liveness without a separate deadline.
-pub const CURSOR_STREAM_HEALTH_HEARTBEAT_ONLY_THRESHOLD_MS: u64 = CURSOR_STREAM_HEALTH_FAIL_THRESHOLD_MS * 3;
+pub const CURSOR_STREAM_HEALTH_HEARTBEAT_ONLY_THRESHOLD_MS: u64 =
+    CURSOR_STREAM_HEALTH_FAIL_THRESHOLD_MS * 3;
 /// Maximum time allowed to drain exec handlers after turnEnded.
 pub const CURSOR_TURN_END_DRAIN_TIMEOUT_MS: u64 = 5000;
 
@@ -143,7 +155,9 @@ const NOT_IMPLEMENTED: &str = "Not implemented by this client";
 const CONNECT_END_STREAM_FLAG: u8 = 0b0000_0010;
 
 /// Reduce caller-supplied headers to what this HTTP/2 request can legally carry.
-pub fn sanitize_cursor_caller_headers(headers: Option<&BTreeMap<String, String>>) -> BTreeMap<String, String> {
+pub fn sanitize_cursor_caller_headers(
+    headers: Option<&BTreeMap<String, String>>,
+) -> BTreeMap<String, String> {
     let mut sanitized = BTreeMap::new();
     for (name, value) in headers.into_iter().flatten() {
         let field = name.to_lowercase();
@@ -177,8 +191,14 @@ fn parse_connect_end_stream(data: &[u8]) -> Option<String> {
     if error.is_null() {
         return None;
     }
-    let code = error.get("code").and_then(Value::as_str).unwrap_or("unknown");
-    let message = error.get("message").and_then(Value::as_str).unwrap_or("Unknown error");
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("Unknown error");
     Some(format!("Connect error {code}: {message}"))
 }
 
@@ -196,17 +216,23 @@ pub fn map_h2_transport_error(code: Option<&str>, message: &str, base_url: &str)
 }
 
 fn log(kind: &str, subtype: Option<&str>, data: Option<Value>) {
-    let Ok(debug) = std::env::var("DEBUG_CURSOR") else { return };
+    let Ok(debug) = std::env::var("DEBUG_CURSOR") else {
+        return;
+    };
     if debug.is_empty() {
         return;
     }
     let verbose = debug == "2" || debug == "verbose";
     let mut data_str = String::new();
     if verbose && let Some(data) = data {
-        let rendered = serde_json::to_string(&data).unwrap_or_else(|_| "[unserializable]".to_owned());
+        let rendered =
+            serde_json::to_string(&data).unwrap_or_else(|_| "[unserializable]".to_owned());
         data_str = format!(" {}", &rendered[..rendered.len().min(500)]);
     }
-    eprintln!("[CURSOR] {kind}{}{data_str}", subtype.map(|s| format!(": {s}")).unwrap_or_default());
+    eprintln!(
+        "[CURSOR] {kind}{}{data_str}",
+        subtype.map(|s| format!(": {s}")).unwrap_or_default()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +251,10 @@ fn read_positive_int_env(raw: Option<String>, fallback: usize) -> usize {
 }
 
 fn conversation_cache_limit() -> usize {
-    read_positive_int_env(std::env::var("PI_CURSOR_CONVERSATION_CACHE_LIMIT").ok(), DEFAULT_CONVERSATION_CACHE_LIMIT)
+    read_positive_int_env(
+        std::env::var("PI_CURSOR_CONVERSATION_CACHE_LIMIT").ok(),
+        DEFAULT_CONVERSATION_CACHE_LIMIT,
+    )
 }
 
 fn conversation_blob_limit_bytes() -> usize {
@@ -400,12 +429,16 @@ static CONVERSATIONS: LazyLock<Mutex<ConversationCaches>> = LazyLock::new(|| {
 });
 
 fn conversations() -> MutexGuard<'static, ConversationCaches> {
-    CONVERSATIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    CONVERSATIONS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn register_conversation_cache_key(session_id: Option<&str>, conversation_id: &str) {
     let Some(session_id) = session_id else { return };
-    conversations().key_sessions.insert(conversation_id.to_owned(), session_id.to_owned());
+    conversations()
+        .key_sessions
+        .insert(conversation_id.to_owned(), session_id.to_owned());
 }
 
 fn forget_conversation_cache_key(conversation_id: &str) {
@@ -417,14 +450,19 @@ fn forget_conversation_cache_key(conversation_id: &str) {
 
 fn retain_live_conversation(conversation_id: &str) {
     let mut caches = conversations();
-    *caches.live_keys.entry(conversation_id.to_owned()).or_insert(0) += 1;
+    *caches
+        .live_keys
+        .entry(conversation_id.to_owned())
+        .or_insert(0) += 1;
 }
 
 fn release_live_conversation(conversation_id: &str) {
     let mut caches = conversations();
     match caches.live_keys.get(conversation_id).copied() {
         Some(holders) if holders > 1 => {
-            caches.live_keys.insert(conversation_id.to_owned(), holders - 1);
+            caches
+                .live_keys
+                .insert(conversation_id.to_owned(), holders - 1);
         }
         Some(_) => {
             caches.live_keys.remove(conversation_id);
@@ -472,7 +510,10 @@ fn enforce_conversation_total_blob_limit() {
         let mut cold = Vec::new();
         let mut live = Vec::new();
         for (key, store) in &caches.blobs {
-            let bytes = store.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).total_bytes();
+            let bytes = store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .total_bytes();
             total += bytes;
             if caches.live_keys.contains_key(key) {
                 live.push((key.clone(), store.clone()));
@@ -490,7 +531,9 @@ fn enforce_conversation_total_blob_limit() {
             break;
         }
         let (released, empty) = {
-            let mut store = store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut store = store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let keep = store.total_bytes().saturating_sub(total - limit);
             (store.shed_unpinned_bytes(keep), store.is_empty())
         };
@@ -516,7 +559,9 @@ fn get_or_create_conversation_blob_store(
         return existing;
     }
     let store = Arc::new(Mutex::new(ConversationBlobStore::new()));
-    conversations().blobs.insert(conversation_id.to_owned(), store.clone());
+    conversations()
+        .blobs
+        .insert(conversation_id.to_owned(), store.clone());
     enforce_conversation_cache_limit(conversation_id, session_id);
     store
 }
@@ -563,7 +608,10 @@ pub fn get_cursor_conversation_cache_stats() -> CursorConversationCacheStats {
     let caches = conversations();
     let mut blob_bytes = 0;
     for store in caches.blobs.values() {
-        blob_bytes += store.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).total_bytes();
+        blob_bytes += store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .total_bytes();
     }
     CursorConversationCacheStats {
         conversations: caches.blobs.len(),
@@ -584,9 +632,10 @@ struct RotationStoreHolder {
 }
 
 static ROTATION: LazyLock<Mutex<RotationStoreHolder>> = LazyLock::new(|| {
-    let persist_path = super::cursor_conversation_rotation::resolve_conversation_rotation_persist_path(
-        &std::env::vars().collect(),
-    );
+    let persist_path =
+        super::cursor_conversation_rotation::resolve_conversation_rotation_persist_path(
+            &std::env::vars().collect(),
+        );
     Mutex::new(RotationStoreHolder {
         store: ConversationRotationStore::new(persist_path.clone().into()),
         persist_path,
@@ -594,10 +643,13 @@ static ROTATION: LazyLock<Mutex<RotationStoreHolder>> = LazyLock::new(|| {
 });
 
 fn rotation_store() -> MutexGuard<'static, RotationStoreHolder> {
-    let mut holder = ROTATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let persist_path = super::cursor_conversation_rotation::resolve_conversation_rotation_persist_path(
-        &std::env::vars().collect(),
-    );
+    let mut holder = ROTATION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let persist_path =
+        super::cursor_conversation_rotation::resolve_conversation_rotation_persist_path(
+            &std::env::vars().collect(),
+        );
     if persist_path != holder.persist_path {
         holder.persist_path = persist_path.clone();
         holder.store = ConversationRotationStore::new(persist_path.into());
@@ -636,9 +688,9 @@ fn tool_result_to_text(tool_result: &ToolResultMessage) -> String {
         .map(|item| match item {
             ContentBlock::Text(text) => text.text.clone(),
             ContentBlock::Image(image) => format!("[{} image]", image.mime_type),
-            ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
-                "[undefined image]".to_owned()
-            }
+            ContentBlock::Thinking(_)
+            | ContentBlock::ToolCall(_)
+            | ContentBlock::ProviderNative(_) => "[undefined image]".to_owned(),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -672,7 +724,11 @@ fn read_total_lines_from_details(tool_result: &ToolResultMessage) -> Option<i64>
     }
     let meta = details.get("meta")?;
     let truncation = meta.get("truncation")?;
-    truncation.get("totalLines").and_then(Value::as_f64).filter(|value| value.is_finite()).map(|value| value as i64)
+    truncation
+        .get("totalLines")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .map(|value| value as i64)
 }
 
 fn read_file_size_from_details(tool_result: &ToolResultMessage) -> Option<f64> {
@@ -685,16 +741,28 @@ fn read_file_size_from_details(tool_result: &ToolResultMessage) -> Option<f64> {
     }
 }
 
-fn build_read_result_from_tool_result(path: &str, tool_result: &ToolResultMessage, range_applied: bool) -> ReadResult {
+fn build_read_result_from_tool_result(
+    path: &str,
+    tool_result: &ToolResultMessage,
+    range_applied: bool,
+) -> ReadResult {
     let text = tool_result_to_text(tool_result);
     if tool_result.is_error {
-        return build_read_error_result(path, if text.is_empty() { "Read failed" } else { &text });
+        return build_read_error_result(
+            path,
+            if text.is_empty() {
+                "Read failed"
+            } else {
+                &text
+            },
+        );
     }
-    let total_lines = read_total_lines_from_details(tool_result).unwrap_or(if range_applied || text.is_empty() {
-        0
-    } else {
-        text.split('\n').count() as i64
-    });
+    let total_lines =
+        read_total_lines_from_details(tool_result).unwrap_or(if range_applied || text.is_empty() {
+            0
+        } else {
+            text.split('\n').count() as i64
+        });
     let file_size = read_file_size_from_details(tool_result).unwrap_or(text.len() as f64);
     ReadResult {
         result: Some(read_result::Result::Success(ReadSuccess {
@@ -711,13 +779,19 @@ fn build_read_result_from_tool_result(path: &str, tool_result: &ToolResultMessag
 
 fn build_read_error_result(path: &str, error: &str) -> ReadResult {
     ReadResult {
-        result: Some(read_result::Result::Error(ReadError { path: path.to_owned(), error: error.to_owned() })),
+        result: Some(read_result::Result::Error(ReadError {
+            path: path.to_owned(),
+            error: error.to_owned(),
+        })),
     }
 }
 
 fn build_read_rejected_result(path: &str, reason: &str) -> ReadResult {
     ReadResult {
-        result: Some(read_result::Result::Rejected(ReadRejected { path: path.to_owned(), reason: reason.to_owned() })),
+        result: Some(read_result::Result::Rejected(ReadRejected {
+            path: path.to_owned(),
+            reason: reason.to_owned(),
+        })),
     }
 }
 
@@ -728,82 +802,131 @@ struct WriteResultArgs<'a> {
     return_file_content_after_write: Option<bool>,
 }
 
-fn build_write_result_from_tool_result(args: &WriteResultArgs<'_>, tool_result: &ToolResultMessage) -> WriteResult {
+fn build_write_result_from_tool_result(
+    args: &WriteResultArgs<'_>,
+    tool_result: &ToolResultMessage,
+) -> WriteResult {
     let text = tool_result_to_text(tool_result);
     if tool_result.is_error {
-        return build_write_error_result(args.path, if text.is_empty() { "Write failed" } else { &text });
+        return build_write_error_result(
+            args.path,
+            if text.is_empty() {
+                "Write failed"
+            } else {
+                &text
+            },
+        );
     }
     let file_text = args.file_text.unwrap_or("");
-    let file_size = args.file_bytes.map(<[u8]>::len).unwrap_or_else(|| file_text.len());
-    let lines_created = if file_text.is_empty() { 0 } else { file_text.split('\n').count() };
+    let file_size = args
+        .file_bytes
+        .map(<[u8]>::len)
+        .unwrap_or_else(|| file_text.len());
+    let lines_created = if file_text.is_empty() {
+        0
+    } else {
+        file_text.split('\n').count()
+    };
     WriteResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::write_result::Result::Success(WriteSuccess {
-            path: args.path.to_owned(),
-            lines_created: lines_created as i32,
-            file_size: file_size as i32,
-            file_content_after_write: args.return_file_content_after_write.unwrap_or(false).then(|| file_text.to_owned()),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::write_result::Result::Success(WriteSuccess {
+                path: args.path.to_owned(),
+                lines_created: lines_created as i32,
+                file_size: file_size as i32,
+                file_content_after_write: args
+                    .return_file_content_after_write
+                    .unwrap_or(false)
+                    .then(|| file_text.to_owned()),
+            }),
+        ),
     }
 }
 
 fn build_write_error_result(path: &str, error: &str) -> WriteResult {
     WriteResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::write_result::Result::Error(WriteError {
-            path: path.to_owned(),
-            error: error.to_owned(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::write_result::Result::Error(WriteError {
+                path: path.to_owned(),
+                error: error.to_owned(),
+            }),
+        ),
     }
 }
 
 fn build_write_rejected_result(path: &str, reason: &str) -> WriteResult {
     WriteResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::write_result::Result::Rejected(WriteRejected {
-            path: path.to_owned(),
-            reason: reason.to_owned(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::write_result::Result::Rejected(WriteRejected {
+                path: path.to_owned(),
+                reason: reason.to_owned(),
+            }),
+        ),
     }
 }
 
-fn build_delete_result_from_tool_result(path: &str, tool_result: &ToolResultMessage) -> DeleteResult {
+fn build_delete_result_from_tool_result(
+    path: &str,
+    tool_result: &ToolResultMessage,
+) -> DeleteResult {
     let text = tool_result_to_text(tool_result);
     if tool_result.is_error {
-        return build_delete_error_result(path, if text.is_empty() { "Delete failed" } else { &text });
+        return build_delete_error_result(
+            path,
+            if text.is_empty() {
+                "Delete failed"
+            } else {
+                &text
+            },
+        );
     }
     DeleteResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::delete_result::Result::Success(DeleteSuccess {
-            path: path.to_owned(),
-            deleted_file: path.to_owned(),
-            file_size: 0,
-            prev_content: String::new(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::delete_result::Result::Success(DeleteSuccess {
+                path: path.to_owned(),
+                deleted_file: path.to_owned(),
+                file_size: 0,
+                prev_content: String::new(),
+            }),
+        ),
     }
 }
 
 fn build_delete_error_result(path: &str, error: &str) -> DeleteResult {
     DeleteResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::delete_result::Result::Error(DeleteError {
-            path: path.to_owned(),
-            error: error.to_owned(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::delete_result::Result::Error(DeleteError {
+                path: path.to_owned(),
+                error: error.to_owned(),
+            }),
+        ),
     }
 }
 
 fn build_delete_rejected_result(path: &str, reason: &str) -> DeleteResult {
     DeleteResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::delete_result::Result::Rejected(DeleteRejected {
-            path: path.to_owned(),
-            reason: reason.to_owned(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::delete_result::Result::Rejected(DeleteRejected {
+                path: path.to_owned(),
+                reason: reason.to_owned(),
+            }),
+        ),
     }
 }
 
-fn build_shell_result_from_tool_result(args: &ShellArgs, tool_result: &ToolResultMessage) -> ShellResult {
+fn build_shell_result_from_tool_result(
+    args: &ShellArgs,
+    tool_result: &ToolResultMessage,
+) -> ShellResult {
     let output = tool_result_to_text(tool_result);
     if tool_result.is_error {
         return build_shell_failure_result(
             &args.command,
             &args.working_directory,
-            if output.is_empty() { "Shell failed" } else { &output },
+            if output.is_empty() {
+                "Shell failed"
+            } else {
+                &output
+            },
         );
     }
     ShellResult {
@@ -838,7 +961,11 @@ fn build_shell_failure_result(command: &str, working_directory: &str, error: &st
     }
 }
 
-fn build_shell_rejected_result(command: &str, working_directory: &str, reason: &str) -> ShellResult {
+fn build_shell_rejected_result(
+    command: &str,
+    working_directory: &str,
+    reason: &str,
+) -> ShellResult {
     ShellResult {
         result: Some(shell_result::Result::Rejected(ShellRejected {
             command: command.to_owned(),
@@ -875,7 +1002,10 @@ fn build_ls_result_from_tool_result(path: &str, tool_result: &ToolResultMessage)
                 num_files: 0,
             });
         } else {
-            children_files.push(LsDirectoryTreeNodeFile { name: name.to_owned(), terminal_metadata: None });
+            children_files.push(LsDirectoryTreeNodeFile {
+                name: name.to_owned(),
+                terminal_metadata: None,
+            });
         }
     }
     let num_files = children_files.len() as i32;
@@ -888,58 +1018,87 @@ fn build_ls_result_from_tool_result(path: &str, tool_result: &ToolResultMessage)
         num_files,
     };
     LsResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::ls_result::Result::Success(LsSuccess {
-            directory_tree_root: Some(root),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::ls_result::Result::Success(LsSuccess {
+                directory_tree_root: Some(root),
+            }),
+        ),
     }
 }
 
 fn build_ls_error_result(path: &str, error: &str) -> LsResult {
     LsResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::ls_result::Result::Error(LsError {
-            path: path.to_owned(),
-            error: error.to_owned(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::ls_result::Result::Error(LsError {
+                path: path.to_owned(),
+                error: error.to_owned(),
+            }),
+        ),
     }
 }
 
 fn build_ls_rejected_result(path: &str, reason: &str) -> LsResult {
     LsResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::ls_result::Result::Rejected(LsRejected {
-            path: path.to_owned(),
-            reason: reason.to_owned(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::ls_result::Result::Rejected(LsRejected {
+                path: path.to_owned(),
+                reason: reason.to_owned(),
+            }),
+        ),
     }
 }
 
-fn build_grep_result_from_tool_result(args: &GrepArgs, tool_result: &ToolResultMessage) -> GrepResult {
+fn build_grep_result_from_tool_result(
+    args: &GrepArgs,
+    tool_result: &ToolResultMessage,
+) -> GrepResult {
     let text = tool_result_to_text(tool_result);
     if tool_result.is_error {
-        return build_grep_error_result(if text.is_empty() { "Grep failed" } else { &text });
+        return build_grep_error_result(if text.is_empty() {
+            "Grep failed"
+        } else {
+            &text
+        });
     }
-    let output_mode = args.output_mode.as_deref().filter(|mode| !mode.is_empty()).unwrap_or("content").to_owned();
+    let output_mode = args
+        .output_mode
+        .as_deref()
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or("content")
+        .to_owned();
     let client_truncated = tool_result_detail_boolean(tool_result, "truncated");
     let args_offset = args.offset;
     let lines: Vec<&str> = text
         .split('\n')
         .map(str::trim_end)
         .filter(|line| {
-            !line.is_empty() && !line.starts_with('[') && !line.to_lowercase().starts_with("no matches")
+            !line.is_empty()
+                && !line.starts_with('[')
+                && !line.to_lowercase().starts_with("no matches")
         })
         .collect();
-    let workspace_key = args.path.as_deref().filter(|path| !path.is_empty()).unwrap_or(".").to_owned();
+    let workspace_key = args
+        .path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+        .unwrap_or(".")
+        .to_owned();
 
     let union_result = if output_mode == "files_with_matches" {
         let files: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
         GrepUnionResult {
-            result: Some(super::cursor_agent::r#gen::agent_pb::grep_union_result::Result::Files(GrepFilesResult {
-                total_files: files.len() as i32,
-                files,
-                client_truncated,
-                ripgrep_truncated: false,
-                offset_applied: args_offset,
-                ..GrepFilesResult::default()
-            })),
+            result: Some(
+                super::cursor_agent::r#gen::agent_pb::grep_union_result::Result::Files(
+                    GrepFilesResult {
+                        total_files: files.len() as i32,
+                        files,
+                        client_truncated,
+                        ripgrep_truncated: false,
+                        offset_applied: args_offset,
+                        ..GrepFilesResult::default()
+                    },
+                ),
+            ),
         }
     } else if output_mode == "count" {
         let counts: Vec<GrepFileCount> = lines
@@ -951,32 +1110,44 @@ fn build_grep_result_from_tool_result(args: &GrepArgs, tool_result: &ToolResultM
                 if file.is_empty() {
                     return None;
                 }
-                Some(GrepFileCount { file: file.to_owned(), count })
+                Some(GrepFileCount {
+                    file: file.to_owned(),
+                    count,
+                })
             })
             .collect();
         let total_matches: i32 = counts.iter().map(|entry| entry.count).sum();
         GrepUnionResult {
-            result: Some(super::cursor_agent::r#gen::agent_pb::grep_union_result::Result::Count(GrepCountResult {
-                total_files: counts.len() as i32,
-                total_matches,
-                counts,
-                client_truncated,
-                ripgrep_truncated: false,
-                offset_applied: args_offset,
-                head_limit_applied: None,
-            })),
+            result: Some(
+                super::cursor_agent::r#gen::agent_pb::grep_union_result::Result::Count(
+                    GrepCountResult {
+                        total_files: counts.len() as i32,
+                        total_matches,
+                        counts,
+                        client_truncated,
+                        ripgrep_truncated: false,
+                        offset_applied: args_offset,
+                        head_limit_applied: None,
+                    },
+                ),
+            ),
         }
     } else {
-        let mut match_map: indexmap::IndexMap<String, Vec<(i32, String, bool)>> = indexmap::IndexMap::new();
+        let mut match_map: indexmap::IndexMap<String, Vec<(i32, String, bool)>> =
+            indexmap::IndexMap::new();
         let mut total_matched_lines = 0;
         for line in &lines {
-            let Some((file, line_number, content, is_context_line)) = parse_grep_content_line(line) else {
+            let Some((file, line_number, content, is_context_line)) = parse_grep_content_line(line)
+            else {
                 continue;
             };
             if !is_context_line {
                 total_matched_lines += 1;
             }
-            match_map.entry(file).or_default().push((line_number, content, is_context_line));
+            match_map
+                .entry(file)
+                .or_default()
+                .push((line_number, content, is_context_line));
         }
         let matches: Vec<GrepFileMatch> = match_map
             .into_iter()
@@ -995,26 +1166,32 @@ fn build_grep_result_from_tool_result(args: &GrepArgs, tool_result: &ToolResultM
             .collect();
         let total_lines: i32 = matches.iter().map(|entry| entry.matches.len() as i32).sum();
         GrepUnionResult {
-            result: Some(super::cursor_agent::r#gen::agent_pb::grep_union_result::Result::Content(GrepContentResult {
-                total_lines,
-                total_matched_lines,
-                matches,
-                client_truncated,
-                ripgrep_truncated: false,
-                offset_applied: args_offset,
-                ..GrepContentResult::default()
-            })),
+            result: Some(
+                super::cursor_agent::r#gen::agent_pb::grep_union_result::Result::Content(
+                    GrepContentResult {
+                        total_lines,
+                        total_matched_lines,
+                        matches,
+                        client_truncated,
+                        ripgrep_truncated: false,
+                        offset_applied: args_offset,
+                        ..GrepContentResult::default()
+                    },
+                ),
+            ),
         }
     };
 
     GrepResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::grep_result::Result::Success(GrepSuccess {
-            pattern: args.pattern.clone(),
-            path: args.path.clone().unwrap_or_default(),
-            output_mode: output_mode.to_owned(),
-            workspace_results: BTreeMap::from([(workspace_key, union_result)]),
-            ..GrepSuccess::default()
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::grep_result::Result::Success(GrepSuccess {
+                pattern: args.pattern.clone(),
+                path: args.path.clone().unwrap_or_default(),
+                output_mode: output_mode.to_owned(),
+                workspace_results: BTreeMap::from([(workspace_key, union_result)]),
+                ..GrepSuccess::default()
+            }),
+        ),
     }
 }
 
@@ -1023,7 +1200,8 @@ fn parse_grep_content_line(line: &str) -> Option<(String, i32, String, bool)> {
     if let Some((file, line_number, content)) = match_grep_line(line, ':') {
         return Some((file, line_number, content, false));
     }
-    match_grep_line(line, '-').map(|(file, line_number, content)| (file, line_number, content, true))
+    match_grep_line(line, '-')
+        .map(|(file, line_number, content)| (file, line_number, content, true))
 }
 
 fn match_grep_line(line: &str, separator: char) -> Option<(String, i32, String)> {
@@ -1040,7 +1218,11 @@ fn match_grep_line(line: &str, separator: char) -> Option<(String, i32, String)>
         let after = &rest[digits.len()..];
         let content = after.strip_prefix(' ').unwrap_or(after);
         if let Ok(line_number) = digits.parse::<i32>() {
-            return Some((bytes[..index].iter().collect(), line_number, content.to_owned()));
+            return Some((
+                bytes[..index].iter().collect(),
+                line_number,
+                content.to_owned(),
+            ));
         }
     }
     None
@@ -1048,9 +1230,11 @@ fn match_grep_line(line: &str, separator: char) -> Option<(String, i32, String)>
 
 fn build_grep_error_result(error: &str) -> GrepResult {
     GrepResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::grep_result::Result::Error(GrepError {
-            error: error.to_owned(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::grep_result::Result::Error(GrepError {
+                error: error.to_owned(),
+            }),
+        ),
     }
 }
 
@@ -1072,35 +1256,54 @@ pub fn empty_grep_pattern_rejection(pattern: Option<&str>, glob: Option<&str>) -
     Some("grep pattern is required (received an empty pattern).".to_owned())
 }
 
-fn build_diagnostics_result_from_tool_result(path: &str, tool_result: &ToolResultMessage) -> DiagnosticsResult {
+fn build_diagnostics_result_from_tool_result(
+    path: &str,
+    tool_result: &ToolResultMessage,
+) -> DiagnosticsResult {
     let text = tool_result_to_text(tool_result);
     if tool_result.is_error {
-        return build_diagnostics_error_result(if text.is_empty() { "Diagnostics failed" } else { &text });
+        return build_diagnostics_error_result(if text.is_empty() {
+            "Diagnostics failed"
+        } else {
+            &text
+        });
     }
     DiagnosticsResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::diagnostics_result::Result::Success(DiagnosticsSuccess {
-            path: path.to_owned(),
-            diagnostics: Vec::new(),
-            total_diagnostics: 0,
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::diagnostics_result::Result::Success(
+                DiagnosticsSuccess {
+                    path: path.to_owned(),
+                    diagnostics: Vec::new(),
+                    total_diagnostics: 0,
+                },
+            ),
+        ),
     }
 }
 
 fn build_diagnostics_error_result(error: &str) -> DiagnosticsResult {
     DiagnosticsResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::diagnostics_result::Result::Error(DiagnosticsError {
-            path: String::new(),
-            error: error.to_owned(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::diagnostics_result::Result::Error(
+                DiagnosticsError {
+                    path: String::new(),
+                    error: error.to_owned(),
+                },
+            ),
+        ),
     }
 }
 
 fn build_diagnostics_rejected_result(path: &str, reason: &str) -> DiagnosticsResult {
     DiagnosticsResult {
-        result: Some(super::cursor_agent::r#gen::agent_pb::diagnostics_result::Result::Rejected(DiagnosticsRejected {
-            path: path.to_owned(),
-            reason: reason.to_owned(),
-        })),
+        result: Some(
+            super::cursor_agent::r#gen::agent_pb::diagnostics_result::Result::Rejected(
+                DiagnosticsRejected {
+                    path: path.to_owned(),
+                    reason: reason.to_owned(),
+                },
+            ),
+        ),
     }
 }
 
@@ -1124,19 +1327,34 @@ fn decode_mcp_arg_value(value: &[u8]) -> Value {
 
 fn decode_mcp_args_map(args: Option<&BTreeMap<String, Bytes>>) -> Option<Map<String, Value>> {
     let args = args?;
-    Some(args.iter().map(|(key, value)| (key.clone(), decode_mcp_arg_value(value))).collect())
+    Some(
+        args.iter()
+            .map(|(key, value)| (key.clone(), decode_mcp_arg_value(value)))
+            .collect(),
+    )
 }
 
 fn decode_mcp_call(args: &McpArgs) -> CursorMcpCall {
-    let decoded_args: Map<String, Value> =
-        args.args.iter().map(|(key, value)| (key.clone(), decode_mcp_arg_value(value))).collect();
+    let decoded_args: Map<String, Value> = args
+        .args
+        .iter()
+        .map(|(key, value)| (key.clone(), decode_mcp_arg_value(value)))
+        .collect();
     CursorMcpCall {
         name: args.name.clone(),
         provider_identifier: args.provider_identifier.clone(),
-        tool_name: if args.tool_name.is_empty() { args.name.clone() } else { args.tool_name.clone() },
+        tool_name: if args.tool_name.is_empty() {
+            args.name.clone()
+        } else {
+            args.tool_name.clone()
+        },
         tool_call_id: args.tool_call_id.clone(),
         args: decoded_args,
-        raw_args: args.args.iter().map(|(key, value)| (key.clone(), value.to_vec())).collect(),
+        raw_args: args
+            .args
+            .iter()
+            .map(|(key, value)| (key.clone(), value.to_vec()))
+            .collect(),
         approval_only: Some(args.smart_mode_approval_only),
     }
 }
@@ -1163,7 +1381,9 @@ struct TodoDisplayItem {
     status: String,
 }
 
-fn map_todo_snapshot(todos: &[super::cursor_agent::r#gen::agent_pb::TodoItem]) -> Vec<TodoDisplayItem> {
+fn map_todo_snapshot(
+    todos: &[super::cursor_agent::r#gen::agent_pb::TodoItem],
+) -> Vec<TodoDisplayItem> {
     todos
         .iter()
         .map(|todo| TodoDisplayItem {
@@ -1173,7 +1393,9 @@ fn map_todo_snapshot(todos: &[super::cursor_agent::r#gen::agent_pb::TodoItem]) -
         .collect()
 }
 
-fn select_todo_calls(tool_call: &PbToolCall) -> (Option<&UpdateTodosToolCall>, Option<&ReadTodosToolCall>) {
+fn select_todo_calls(
+    tool_call: &PbToolCall,
+) -> (Option<&UpdateTodosToolCall>, Option<&ReadTodosToolCall>) {
     match &tool_call.tool {
         Some(tool_call::Tool::UpdateTodosToolCall(call)) => (Some(call), None),
         Some(tool_call::Tool::ReadTodosToolCall(call)) => (None, Some(call)),
@@ -1213,7 +1435,9 @@ fn select_connect_scm_call(tool_call: Option<&PbToolCall>) -> Option<&ConnectScm
     }
 }
 
-fn select_connect_scm_repository(call: Option<&ConnectScmToolCall>) -> Option<&ConnectScmGithubRepository> {
+fn select_connect_scm_repository(
+    call: Option<&ConnectScmToolCall>,
+) -> Option<&ConnectScmGithubRepository> {
     match call?.args.as_ref()?.target.as_ref()? {
         super::cursor_agent::r#gen::agent_pb::connect_scm_args::Target::Github(github) => {
             github.repository.as_ref()
@@ -1223,15 +1447,29 @@ fn select_connect_scm_repository(call: Option<&ConnectScmToolCall>) -> Option<&C
 
 /// Render a settled `ConnectScmResult` as the text of its paired tool result.
 fn describe_connect_scm_result(call: Option<&ConnectScmToolCall>) -> (String, bool) {
-    match call.and_then(|call| call.result.as_ref()).and_then(|result| result.result.as_ref()) {
+    match call
+        .and_then(|call| call.result.as_ref())
+        .and_then(|result| result.result.as_ref())
+    {
         Some(super::cursor_agent::r#gen::agent_pb::connect_scm_result::Result::Success(_)) => {
             ("SCM connected".to_owned(), false)
         }
-        Some(super::cursor_agent::r#gen::agent_pb::connect_scm_result::Result::Error(error)) => {
-            (if error.error.is_empty() { "SCM connection failed".to_owned() } else { error.error.clone() }, true)
-        }
-        Some(super::cursor_agent::r#gen::agent_pb::connect_scm_result::Result::Rejected(rejected)) => (
-            if rejected.reason.is_empty() { "SCM connection rejected".to_owned() } else { rejected.reason.clone() },
+        Some(super::cursor_agent::r#gen::agent_pb::connect_scm_result::Result::Error(error)) => (
+            if error.error.is_empty() {
+                "SCM connection failed".to_owned()
+            } else {
+                error.error.clone()
+            },
+            true,
+        ),
+        Some(super::cursor_agent::r#gen::agent_pb::connect_scm_result::Result::Rejected(
+            rejected,
+        )) => (
+            if rejected.reason.is_empty() {
+                "SCM connection rejected".to_owned()
+            } else {
+                rejected.reason.clone()
+            },
             true,
         ),
         None => ("SCM connection reported no result".to_owned(), true),
@@ -1241,9 +1479,9 @@ fn describe_connect_scm_result(call: Option<&ConnectScmToolCall>) -> (String, bo
 fn extract_todo_snapshot(tool_call: &PbToolCall) -> Option<TodoSnapshot> {
     let (update, read) = select_todo_calls(tool_call);
     if read.is_some_and(|read| {
-        read.args.as_ref().is_some_and(|args| {
-            !args.status_filter.is_empty() || !args.id_filter.is_empty()
-        })
+        read.args
+            .as_ref()
+            .is_some_and(|args| !args.status_filter.is_empty() || !args.id_filter.is_empty())
     }) {
         return None;
     }
@@ -1279,7 +1517,10 @@ fn extract_todo_snapshot(tool_call: &PbToolCall) -> Option<TodoSnapshot> {
     if mapped.iter().any(|todo| todo.content.is_empty()) {
         return None;
     }
-    Some(TodoSnapshot { todos: mapped, merged })
+    Some(TodoSnapshot {
+        todos: mapped,
+        merged,
+    })
 }
 
 /// Error text when the server itself rejected the call.
@@ -1304,12 +1545,18 @@ fn extract_todo_error(tool_call: &PbToolCall) -> Option<String> {
         }
         (None, None) => return None,
     };
-    Some(if error.is_empty() { "Todo operation failed".to_owned() } else { error })
+    Some(if error.is_empty() {
+        "Todo operation failed".to_owned()
+    } else {
+        error
+    })
 }
 
 /// Args echoed onto the synthesized display block, for rendering only.
 fn build_todo_display_args(tool_call: &PbToolCall) -> Map<String, Value> {
-    let args = select_todo_calls(tool_call).0.and_then(|update| update.args.as_ref());
+    let args = select_todo_calls(tool_call)
+        .0
+        .and_then(|update| update.args.as_ref());
     let mut object = Map::new();
     object.insert(
         "todos".to_owned(),
@@ -1327,11 +1574,18 @@ fn build_todo_display_args(tool_call: &PbToolCall) -> Map<String, Value> {
     object
 }
 
-fn build_todo_tool_result(tool_call_id: &str, snapshot: Option<&TodoSnapshot>, error: Option<&str>) -> ToolResultMessage {
-    let text = error
-        .map(str::to_owned)
-        .unwrap_or_else(|| snapshot.map(|snapshot| format_todo_snapshot_summary(&snapshot.todos)).unwrap_or_else(|| "Todo snapshot not mirrored".to_owned()));
+fn build_todo_tool_result(
+    tool_call_id: &str,
+    snapshot: Option<&TodoSnapshot>,
+    error: Option<&str>,
+) -> ToolResultMessage {
+    let text = error.map(str::to_owned).unwrap_or_else(|| {
+        snapshot
+            .map(|snapshot| format_todo_snapshot_summary(&snapshot.todos))
+            .unwrap_or_else(|| "Todo snapshot not mirrored".to_owned())
+    });
     ToolResultMessage {
+        nested_calls: None,
         tool_call_id: tool_call_id.to_owned(),
         tool_name: "todo".to_owned(),
         content: vec![ContentBlock::text(text)],
@@ -1347,42 +1601,63 @@ fn format_todo_snapshot_summary(todos: &[TodoDisplayItem]) -> String {
     if todos.is_empty() {
         return "No todos".to_owned();
     }
-    let done = todos.iter().filter(|todo| todo.status == "completed").count();
+    let done = todos
+        .iter()
+        .filter(|todo| todo.status == "completed")
+        .count();
     format!("{done}/{} tasks completed", todos.len())
 }
 
 fn build_mcp_result_from_tool_result(tool_result: &ToolResultMessage) -> McpResult {
     if tool_result.is_error {
         let text = tool_result_to_text(tool_result);
-        return build_mcp_error_result(if text.is_empty() { "MCP tool failed" } else { &text });
+        return build_mcp_error_result(if text.is_empty() {
+            "MCP tool failed"
+        } else {
+            &text
+        });
     }
     let content = tool_result
         .content
         .iter()
         .map(|item| match item {
             ContentBlock::Image(image) => McpToolResultContentItem {
-                content: Some(mcp_tool_result_content_item::Content::Image(McpImageContent {
-                    data: base64::engine::general_purpose::STANDARD.decode(&image.data).unwrap_or_default().into(),
-                    mime_type: image.mime_type.clone(),
-                })),
+                content: Some(mcp_tool_result_content_item::Content::Image(
+                    McpImageContent {
+                        data: base64::engine::general_purpose::STANDARD
+                            .decode(&image.data)
+                            .unwrap_or_default()
+                            .into(),
+                        mime_type: image.mime_type.clone(),
+                    },
+                )),
             },
             ContentBlock::Text(text) => McpToolResultContentItem {
-                content: Some(mcp_tool_result_content_item::Content::Text(McpTextContent {
-                    text: text.text.clone(),
-                    ..McpTextContent::default()
-                })),
+                content: Some(mcp_tool_result_content_item::Content::Text(
+                    McpTextContent {
+                        text: text.text.clone(),
+                        ..McpTextContent::default()
+                    },
+                )),
             },
-            ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
-                McpToolResultContentItem {
-                    content: Some(mcp_tool_result_content_item::Content::Text(McpTextContent {
+            ContentBlock::Thinking(_)
+            | ContentBlock::ToolCall(_)
+            | ContentBlock::ProviderNative(_) => McpToolResultContentItem {
+                content: Some(mcp_tool_result_content_item::Content::Text(
+                    McpTextContent {
                         text: "[undefined image]".to_owned(),
                         ..McpTextContent::default()
-                    })),
-                }
-            }
+                    },
+                )),
+            },
         })
         .collect();
-    McpResult { result: Some(mcp_result::Result::Success(McpSuccess { content, is_error: false })) }
+    McpResult {
+        result: Some(mcp_result::Result::Success(McpSuccess {
+            content,
+            is_error: false,
+        })),
+    }
 }
 
 fn build_mcp_tool_not_found_result(mcp_call: &CursorMcpCall) -> McpResult {
@@ -1395,7 +1670,11 @@ fn build_mcp_tool_not_found_result(mcp_call: &CursorMcpCall) -> McpResult {
 }
 
 fn build_mcp_error_result(error: &str) -> McpResult {
-    McpResult { result: Some(mcp_result::Result::Error(McpError { error: error.to_owned() })) }
+    McpResult {
+        result: Some(mcp_result::Result::Error(McpError {
+            error: error.to_owned(),
+        })),
+    }
 }
 
 /// Merge the decoded completion-frame `McpArgs` map into the args assembled
@@ -1405,12 +1684,16 @@ pub fn merge_cursor_mcp_tool_call_args(
     completion: Option<&Map<String, Value>>,
 ) -> Map<String, Value> {
     let mut merged = streamed.cloned().unwrap_or_default();
-    let Some(completion) = completion else { return merged };
+    let Some(completion) = completion else {
+        return merged;
+    };
     for (key, completion_value) in completion {
         let streamed_value = merged.get(key);
         // JS typeof on an array is also "object", so a string completion must
         // not downgrade a streamed array either.
-        if completion_value.is_string() && streamed_value.is_some_and(|value| value.is_object() || value.is_array()) {
+        if completion_value.is_string()
+            && streamed_value.is_some_and(|value| value.is_object() || value.is_array())
+        {
             continue;
         }
         merged.insert(key.clone(), completion_value.clone());
@@ -1418,13 +1701,23 @@ pub fn merge_cursor_mcp_tool_call_args(
     merged
 }
 
-fn end_current_text_block(output: &mut AssistantMessage, stream: &AssistantMessageEventStream, state: &mut BlockState) {
-    let Some(index) = state.current_text_index else { return };
+fn end_current_text_block(
+    output: &mut AssistantMessage,
+    stream: &AssistantMessageEventStream,
+    state: &mut BlockState,
+) {
+    let Some(index) = state.current_text_index else {
+        return;
+    };
     let content = match output.content.get(index) {
         Some(ContentBlock::Text(block)) => block.text.clone(),
         _ => String::new(),
     };
-    stream.push(AssistantMessageEvent::TextEnd { content_index: index, content, partial: output.clone() });
+    stream.push(AssistantMessageEvent::TextEnd {
+        content_index: index,
+        content,
+        partial: output.clone(),
+    });
     state.current_text_block = None;
     state.current_text_index = None;
 }
@@ -1434,19 +1727,28 @@ fn end_current_thinking_block(
     stream: &AssistantMessageEventStream,
     state: &mut BlockState,
 ) {
-    let Some(index) = state.current_thinking_index else { return };
+    let Some(index) = state.current_thinking_index else {
+        return;
+    };
     let content = match output.content.get(index) {
         Some(ContentBlock::Thinking(block)) => block.thinking.clone(),
         _ => String::new(),
     };
-    stream.push(AssistantMessageEvent::ThinkingEnd { content_index: index, content, partial: output.clone() });
+    stream.push(AssistantMessageEvent::ThinkingEnd {
+        content_index: index,
+        content,
+        partial: output.clone(),
+    });
     state.current_thinking_block = None;
     state.current_thinking_index = None;
 }
 
 /// Ensure a Cursor exec frame's tool-call id is present and unique within the
 /// assistant message before a block is synthesized from it. Exported for tests.
-pub fn ensure_unique_cursor_exec_tool_call_id(output: &AssistantMessage, tool_call_id: &mut Option<String>) {
+pub fn ensure_unique_cursor_exec_tool_call_id(
+    output: &AssistantMessage,
+    tool_call_id: &mut Option<String>,
+) {
     let Some(base) = tool_call_id.clone().filter(|id| !id.is_empty()) else {
         *tool_call_id = Some(random_uuid());
         return;
@@ -1489,9 +1791,17 @@ pub fn synthesize_cursor_exec_tool_call(
     output.content.push(block.clone());
     state.streaming.insert(
         index,
-        StreamingBlockState { block_index: Some(index), block_kind: Some("cursor-exec".to_owned()), cursor_exec_resolved: true, ..StreamingBlockState::default() },
+        StreamingBlockState {
+            block_index: Some(index),
+            block_kind: Some("cursor-exec".to_owned()),
+            cursor_exec_resolved: true,
+            ..StreamingBlockState::default()
+        },
     );
-    stream.push(AssistantMessageEvent::ToolcallStart { content_index: index, partial: output.clone() });
+    stream.push(AssistantMessageEvent::ToolcallStart {
+        content_index: index,
+        partial: output.clone(),
+    });
     stream.push(AssistantMessageEvent::ToolcallEnd {
         content_index: index,
         tool_call: match block {
@@ -1511,6 +1821,7 @@ async fn pair_synthesized_exec_result(
     is_error: bool,
 ) {
     let synthesized = ToolResultMessage {
+        nested_calls: None,
         tool_call_id: tool_call_id.to_owned(),
         tool_name: tool_name.to_owned(),
         content: vec![ContentBlock::text(text)],
@@ -1520,7 +1831,9 @@ async fn pair_synthesized_exec_result(
         is_error,
         timestamp: now_ms(),
     };
-    let Some(sink) = on_tool_result.or(state.on_tool_result.as_ref()) else { return };
+    let Some(sink) = on_tool_result.or(state.on_tool_result.as_ref()) else {
+        return;
+    };
     sink(synthesized).await;
 }
 
@@ -1536,7 +1849,11 @@ pub fn process_interaction_update(
     usage_state: &mut UsageState,
 ) {
     let update_case = update.message.as_ref();
-    log("interactionUpdate", update_case.map(interaction_case_name), None);
+    log(
+        "interactionUpdate",
+        update_case.map(interaction_case_name),
+        None,
+    );
 
     match update_case {
         Some(interaction_update::Message::TextDelta(delta_update)) => {
@@ -1545,11 +1862,22 @@ pub fn process_interaction_update(
                 Some(index) => index,
                 None => {
                     let index = output.content.len();
-                    output.content.push(ContentBlock::Text(TextContent::default()));
+                    output
+                        .content
+                        .push(ContentBlock::Text(TextContent::default()));
                     state.current_text_index = Some(index);
                     state.current_text_block = Some(TextContent::default());
-                    state.streaming.insert(index, StreamingBlockState { block_index: Some(index), ..StreamingBlockState::default() });
-                    stream.push(AssistantMessageEvent::TextStart { content_index: index, partial: output.clone() });
+                    state.streaming.insert(
+                        index,
+                        StreamingBlockState {
+                            block_index: Some(index),
+                            ..StreamingBlockState::default()
+                        },
+                    );
+                    stream.push(AssistantMessageEvent::TextStart {
+                        content_index: index,
+                        partial: output.clone(),
+                    });
                     index
                 }
             };
@@ -1557,7 +1885,11 @@ pub fn process_interaction_update(
                 block.text.push_str(&delta);
                 state.current_text_block = Some(block.clone());
             }
-            stream.push(AssistantMessageEvent::TextDelta { content_index: index, delta, partial: output.clone() });
+            stream.push(AssistantMessageEvent::TextDelta {
+                content_index: index,
+                delta,
+                partial: output.clone(),
+            });
         }
         Some(interaction_update::Message::ThinkingDelta(delta_update)) => {
             let delta = delta_update.text.clone();
@@ -1565,11 +1897,22 @@ pub fn process_interaction_update(
                 Some(index) => index,
                 None => {
                     let index = output.content.len();
-                    output.content.push(ContentBlock::Thinking(crate::types::ThinkingContent::default()));
+                    output.content.push(ContentBlock::Thinking(
+                        crate::types::ThinkingContent::default(),
+                    ));
                     state.current_thinking_index = Some(index);
                     state.current_thinking_block = Some(crate::types::ThinkingContent::default());
-                    state.streaming.insert(index, StreamingBlockState { block_index: Some(index), ..StreamingBlockState::default() });
-                    stream.push(AssistantMessageEvent::ThinkingStart { content_index: index, partial: output.clone() });
+                    state.streaming.insert(
+                        index,
+                        StreamingBlockState {
+                            block_index: Some(index),
+                            ..StreamingBlockState::default()
+                        },
+                    );
+                    stream.push(AssistantMessageEvent::ThinkingStart {
+                        content_index: index,
+                        partial: output.clone(),
+                    });
                     index
                 }
             };
@@ -1577,7 +1920,11 @@ pub fn process_interaction_update(
                 block.thinking.push_str(&delta);
                 state.current_thinking_block = Some(block.clone());
             }
-            stream.push(AssistantMessageEvent::ThinkingDelta { content_index: index, delta, partial: output.clone() });
+            stream.push(AssistantMessageEvent::ThinkingDelta {
+                content_index: index,
+                delta,
+                partial: output.clone(),
+            });
         }
         Some(interaction_update::Message::ThinkingCompleted(_)) => {
             end_current_thinking_block(output, stream, state);
@@ -1622,7 +1969,10 @@ pub fn process_interaction_update(
                     },
                 );
                 retain_streamed_call(state, index, &block, &started.call_id);
-                stream.push(AssistantMessageEvent::ToolcallStart { content_index: index, partial: output.clone() });
+                stream.push(AssistantMessageEvent::ToolcallStart {
+                    content_index: index,
+                    partial: output.clone(),
+                });
                 return;
             }
             if is_exec_owned_tool_call(tool_call.as_ref()) {
@@ -1637,17 +1987,30 @@ pub fn process_interaction_update(
             }
             end_current_text_block(output, stream, state);
             end_current_thinking_block(output, stream, state);
-            let Some(tool_call) = tool_call.as_ref() else { return };
+            let Some(tool_call) = tool_call.as_ref() else {
+                return;
+            };
             if let Some(mcp_call) = select_mcp_call(Some(tool_call)) {
                 let args = mcp_call.args.clone().unwrap_or_default();
-                let id = if args.tool_call_id.is_empty() { random_uuid() } else { args.tool_call_id.clone() };
+                let id = if args.tool_call_id.is_empty() {
+                    random_uuid()
+                } else {
+                    args.tool_call_id.clone()
+                };
                 let resolved_by_exec = state.resolved_mcp_tool_call_ids.remove(&id);
                 if resolved_by_exec
-                    && output.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(call) if call.id == id))
+                    && output
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::ToolCall(call) if call.id == id))
                 {
                     return;
                 }
-                let name = if args.tool_name.is_empty() { args.name.clone() } else { args.tool_name.clone() };
+                let name = if args.tool_name.is_empty() {
+                    args.name.clone()
+                } else {
+                    args.tool_name.clone()
+                };
                 let block = ToolCall {
                     id: id.clone(),
                     name,
@@ -1671,14 +2034,20 @@ pub fn process_interaction_update(
                     },
                 );
                 retain_streamed_call(state, index, &block, &started.call_id);
-                stream.push(AssistantMessageEvent::ToolcallStart { content_index: index, partial: output.clone() });
+                stream.push(AssistantMessageEvent::ToolcallStart {
+                    content_index: index,
+                    partial: output.clone(),
+                });
                 return;
             }
 
             let (update_call, read_call) = select_todo_calls(tool_call);
             if update_call.is_some() || read_call.is_some() {
-                let call_id =
-                    if started.call_id.is_empty() { random_uuid() } else { started.call_id.clone() };
+                let call_id = if started.call_id.is_empty() {
+                    random_uuid()
+                } else {
+                    started.call_id.clone()
+                };
                 let block = ToolCall {
                     id: call_id.clone(),
                     name: "todo".to_owned(),
@@ -1701,7 +2070,10 @@ pub fn process_interaction_update(
                     },
                 );
                 retain_streamed_call(state, index, &block, &started.call_id);
-                stream.push(AssistantMessageEvent::ToolcallStart { content_index: index, partial: output.clone() });
+                stream.push(AssistantMessageEvent::ToolcallStart {
+                    content_index: index,
+                    partial: output.clone(),
+                });
             }
         }
         Some(interaction_update::Message::ToolCallDelta(delta_update)) => {
@@ -1711,28 +2083,44 @@ pub fn process_interaction_update(
             apply_streamed_args_delta(output, stream, state, &delta_update.call_id, "");
         }
         Some(interaction_update::Message::PartialToolCall(partial)) => {
-            apply_streamed_args_delta(output, stream, state, &partial.call_id, &partial.args_text_delta);
+            apply_streamed_args_delta(
+                output,
+                stream,
+                state,
+                &partial.call_id,
+                &partial.args_text_delta,
+            );
         }
         Some(interaction_update::Message::ToolCallCompleted(completed)) => {
-            let Some(settled) = resolve_streamed_call(state, &completed.call_id) else { return };
+            let Some(settled) = resolve_streamed_call(state, &completed.call_id) else {
+                return;
+            };
             let tool_call = completed.tool_call.as_ref();
-            let kind = state.streaming.get(&settled).and_then(|entry| entry.block_kind.clone());
+            let kind = state
+                .streaming
+                .get(&settled)
+                .and_then(|entry| entry.block_kind.clone());
             match kind.as_deref() {
                 Some("mcp") => {
                     let previous_args = match &output.content[settled] {
                         ContentBlock::ToolCall(call) => call.arguments.clone(),
                         _ => Map::new(),
                     };
-                    let partial = state.streaming.get(&settled).and_then(|entry| entry.partial_json.clone());
+                    let partial = state
+                        .streaming
+                        .get(&settled)
+                        .and_then(|entry| entry.partial_json.clone());
                     let mut arguments = match partial {
                         Some(partial) => parse_streaming_json(Some(&partial)),
                         None => Value::Object(previous_args.clone()),
                     };
-                    let decoded = decode_mcp_args_map(select_mcp_call(tool_call).and_then(|call| call.args.as_ref()).map(|args| &args.args));
-                    let merged = merge_cursor_mcp_tool_call_args(
-                        arguments.as_object(),
-                        decoded.as_ref(),
+                    let decoded = decode_mcp_args_map(
+                        select_mcp_call(tool_call)
+                            .and_then(|call| call.args.as_ref())
+                            .map(|args| &args.args),
                     );
+                    let merged =
+                        merge_cursor_mcp_tool_call_args(arguments.as_object(), decoded.as_ref());
                     arguments = Value::Object(merged);
                     if let ContentBlock::ToolCall(call) = &mut output.content[settled] {
                         call.arguments = match arguments {
@@ -1764,6 +2152,7 @@ pub fn process_interaction_update(
                     let (text, is_error) = describe_connect_scm_result(scm_call);
                     if let Some(sink) = state.on_tool_result.as_ref() {
                         let result = ToolResultMessage {
+                            nested_calls: None,
                             tool_call_id: tool_call_id_at(output, settled),
                             tool_name: "connect_scm".to_owned(),
                             content: vec![ContentBlock::text(text)],
@@ -1798,7 +2187,11 @@ pub fn process_interaction_update(
                         ]);
                     }
                     if let Some(sink) = state.on_tool_result.as_ref() {
-                        let result = build_todo_tool_result(&tool_call_id_at(output, settled), snapshot.as_ref(), error.as_deref());
+                        let result = build_todo_tool_result(
+                            &tool_call_id_at(output, settled),
+                            snapshot.as_ref(),
+                            error.as_deref(),
+                        );
                         let sink = sink.clone();
                         tokio::spawn(async move { sink(result).await });
                     }
@@ -1850,18 +2243,37 @@ fn apply_streamed_args_delta(
     call_id: &str,
     args_text_delta: &str,
 ) {
-    let Some(target) = resolve_streamed_call(state, call_id) else { return };
-    if state.streaming.get(&target).and_then(|entry| entry.block_kind.clone()).as_deref() != Some("mcp") {
+    let Some(target) = resolve_streamed_call(state, call_id) else {
+        return;
+    };
+    if state
+        .streaming
+        .get(&target)
+        .and_then(|entry| entry.block_kind.clone())
+        .as_deref()
+        != Some("mcp")
+    {
         return;
     }
     let snapshot = args_text_delta;
-    let current = state.streaming.get(&target).and_then(|entry| entry.partial_json.clone()).unwrap_or_default();
-    let chunk = snapshot.strip_prefix(current.as_str()).unwrap_or(snapshot).to_owned();
+    let current = state
+        .streaming
+        .get(&target)
+        .and_then(|entry| entry.partial_json.clone())
+        .unwrap_or_default();
+    let chunk = snapshot
+        .strip_prefix(current.as_str())
+        .unwrap_or(snapshot)
+        .to_owned();
     if chunk.is_empty() {
         return;
     }
     let next_buffer = format!("{current}{chunk}");
-    let last_parse_len = state.streaming.get(&target).and_then(|entry| entry.last_parse_len).unwrap_or(0);
+    let last_parse_len = state
+        .streaming
+        .get(&target)
+        .and_then(|entry| entry.last_parse_len)
+        .unwrap_or(0);
     if let Some(entry) = state.streaming.get_mut(&target) {
         entry.partial_json = Some(next_buffer.clone());
     }
@@ -1924,12 +2336,20 @@ fn tool_call_case_name(tool_call: &PbToolCall) -> Option<&'static str> {
 }
 
 /// Cursor's production schema carries the billed token split on `turnEnded`.
-fn apply_billed_turn_ended_usage(update: &TurnEndedUpdate, output: &mut AssistantMessage, usage_state: &mut UsageState) {
+fn apply_billed_turn_ended_usage(
+    update: &TurnEndedUpdate,
+    output: &mut AssistantMessage,
+    usage_state: &mut UsageState,
+) {
     let input_tokens = update.input_tokens;
     let output_tokens = update.output_tokens;
     let cache_read_tokens = update.cache_read_tokens;
     let cache_write_tokens = update.cache_write_tokens;
-    if input_tokens.is_none() && output_tokens.is_none() && cache_read_tokens.is_none() && cache_write_tokens.is_none() {
+    if input_tokens.is_none()
+        && output_tokens.is_none()
+        && cache_read_tokens.is_none()
+        && cache_write_tokens.is_none()
+    {
         return;
     }
     usage_state.saw_turn_ended_usage = true;
@@ -1942,14 +2362,19 @@ fn apply_billed_turn_ended_usage(update: &TurnEndedUpdate, output: &mut Assistan
             usage.output = output_tokens.max(0) as u64;
         }
         usage.cache_read = 0;
-        usage.cache_write = if cache_write <= live_used { cache_write } else { 0 };
+        usage.cache_write = if cache_write <= live_used {
+            cache_write
+        } else {
+            0
+        };
         usage.input = live_used.saturating_sub(usage.output + usage.cache_write);
         usage.total_tokens = live_used;
         return;
     }
     usage.cache_read = cache_read;
     usage.cache_write = cache_write;
-    usage.input = (input_tokens.unwrap_or(0).max(0) as u64).saturating_sub(usage.cache_read + usage.cache_write);
+    usage.input = (input_tokens.unwrap_or(0).max(0) as u64)
+        .saturating_sub(usage.cache_read + usage.cache_write);
     if let Some(output_tokens) = output_tokens {
         usage.output = output_tokens.max(0) as u64;
     }
@@ -1966,24 +2391,32 @@ fn apply_checkpoint_token_details(
     if usage_state.saw_turn_ended_usage {
         return;
     }
-    let used_tokens = checkpoint.token_details.as_ref().map(|details| details.used_tokens).unwrap_or(0);
+    let used_tokens = checkpoint
+        .token_details
+        .as_ref()
+        .map(|details| details.used_tokens)
+        .unwrap_or(0);
     if used_tokens == 0 {
         return;
     }
     usage_state.live_used_tokens = Some(used_tokens as u64);
     let usage = &mut output.usage;
-    usage.input = (used_tokens as u64).saturating_sub(usage.output + usage.cache_read + usage.cache_write);
+    usage.input =
+        (used_tokens as u64).saturating_sub(usage.output + usage.cache_read + usage.cache_write);
     usage.total_tokens = usage.input + usage.output + usage.cache_read + usage.cache_write;
 }
 
 /// Local tools Cursor already drives natively over the exec channel.
-const CURSOR_NATIVE_TOOL_NAMES: &[&str] = &["bash", "read", "write", "delete", "ls", "grep", "todo"];
+const CURSOR_NATIVE_TOOL_NAMES: &[&str] =
+    &["bash", "read", "write", "delete", "ls", "grep", "todo"];
 
 const CURSOR_UNSUPPORTED_SCHEMA_KEYS: &[&str] = &["oneOf", "anyOf", "allOf"];
 
 pub fn sanitize_cursor_tool_schema(schema: &Value) -> Value {
     match schema {
-        Value::Array(items) => Value::Array(items.iter().map(sanitize_cursor_tool_schema).collect()),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(sanitize_cursor_tool_schema).collect())
+        }
         Value::Object(entries) => {
             let mut sanitized = Map::new();
             for (key, value) in entries {
@@ -1999,9 +2432,13 @@ pub fn sanitize_cursor_tool_schema(schema: &Value) -> Value {
 }
 
 pub fn build_mcp_tool_definitions(tools: Option<&[Tool]>) -> Vec<McpToolDefinition> {
-    let Some(tools) = tools.filter(|tools| !tools.is_empty()) else { return Vec::new() };
-    let advertised: Vec<&Tool> =
-        tools.iter().filter(|tool| !CURSOR_NATIVE_TOOL_NAMES.contains(&tool.name.as_str())).collect();
+    let Some(tools) = tools.filter(|tools| !tools.is_empty()) else {
+        return Vec::new();
+    };
+    let advertised: Vec<&Tool> = tools
+        .iter()
+        .filter(|tool| !CURSOR_NATIVE_TOOL_NAMES.contains(&tool.name.as_str()))
+        .collect();
     if advertised.is_empty() {
         return Vec::new();
     }
@@ -2037,7 +2474,9 @@ fn retain_streamed_call(state: &mut BlockState, index: usize, block: &ToolCall, 
         entry.envelope_id = Some(envelope_id.to_owned()).filter(|id| !id.is_empty());
     }
     if !envelope_id.is_empty() {
-        state.open_tool_calls.insert(envelope_id.to_owned(), (index, block.id.clone()));
+        state
+            .open_tool_calls
+            .insert(envelope_id.to_owned(), (index, block.id.clone()));
     }
     state.current_tool_call = Some(index);
 }
@@ -2051,7 +2490,11 @@ fn resolve_streamed_call(state: &BlockState, envelope_id: &str) -> Option<usize>
     }
     match state.current_tool_call {
         Some(index)
-            if state.streaming.get(&index).and_then(|entry| entry.envelope_id.as_ref()).is_none() =>
+            if state
+                .streaming
+                .get(&index)
+                .and_then(|entry| entry.envelope_id.as_ref())
+                .is_none() =>
         {
             Some(index)
         }
@@ -2060,7 +2503,10 @@ fn resolve_streamed_call(state: &BlockState, envelope_id: &str) -> Option<usize>
 }
 
 fn release_streamed_call(state: &mut BlockState, index: usize) {
-    let envelope_id = state.streaming.get(&index).and_then(|entry| entry.envelope_id.clone());
+    let envelope_id = state
+        .streaming
+        .get(&index)
+        .and_then(|entry| entry.envelope_id.clone());
     if let Some(envelope_id) = envelope_id {
         state.open_tool_calls.remove(&envelope_id);
     }
@@ -2070,29 +2516,46 @@ fn release_streamed_call(state: &mut BlockState, index: usize) {
 }
 
 /// Close every tool-call block still open when the stream ends. Exported for tests.
-pub fn flush_open_tool_calls(output: &mut AssistantMessage, stream: &AssistantMessageEventStream, state: &mut BlockState) {
-    let mut open_blocks: Vec<usize> = state.open_tool_calls.values().map(|(index, _)| *index).collect();
+pub fn flush_open_tool_calls(
+    output: &mut AssistantMessage,
+    stream: &AssistantMessageEventStream,
+    state: &mut BlockState,
+) {
+    let mut open_blocks: Vec<usize> = state
+        .open_tool_calls
+        .values()
+        .map(|(index, _)| *index)
+        .collect();
     if let Some(current) = state.current_tool_call
         && !open_blocks.contains(&current)
     {
         open_blocks.push(current);
     }
     for index in open_blocks {
-        let partial_json = state.streaming.get(&index).and_then(|entry| entry.partial_json.clone());
+        let partial_json = state
+            .streaming
+            .get(&index)
+            .and_then(|entry| entry.partial_json.clone());
         if let Some(partial_json) = partial_json {
             let parsed = parse_streaming_json(Some(&partial_json));
-            if let (Value::Object(map), Some(ContentBlock::ToolCall(call))) = (parsed, output.content.get_mut(index)) {
+            if let (Value::Object(map), Some(ContentBlock::ToolCall(call))) =
+                (parsed, output.content.get_mut(index))
+            {
                 call.arguments = map;
             }
             if let Some(entry) = state.streaming.get_mut(&index) {
                 entry.partial_json = None;
             }
         }
-        let kind = state.streaming.get(&index).and_then(|entry| entry.block_kind.clone());
+        let kind = state
+            .streaming
+            .get(&index)
+            .and_then(|entry| entry.block_kind.clone());
         if matches!(kind.as_deref(), Some("connect-scm") | Some("todo"))
             && let Some(sink) = state.on_tool_result.as_ref()
         {
             let result = ToolResultMessage {
+                nested_calls: None,
                 tool_call_id: tool_call_id_at(output, index),
                 tool_name: match output.content.get(index) {
                     Some(ContentBlock::ToolCall(call)) => call.name.clone(),
@@ -2146,7 +2609,9 @@ pub struct UsageState {
 // ---------------------------------------------------------------------------
 
 fn extract_user_message_text(message: &Message) -> String {
-    let Message::User(user) = message else { return String::new() };
+    let Message::User(user) = message else {
+        return String::new();
+    };
     match &user.content {
         crate::types::UserContent::Text(text) => text.trim().to_owned(),
         crate::types::UserContent::Blocks(blocks) => blocks
@@ -2191,7 +2656,9 @@ fn build_cursor_root_prompt_content(content: &crate::types::UserContent) -> Vec<
                         "image": format!("data:{};base64,{}", image.mime_type, image.data),
                         "mediaType": image.mime_type,
                     })),
-                    ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
+                    ContentBlock::Thinking(_)
+                    | ContentBlock::ToolCall(_)
+                    | ContentBlock::ProviderNative(_) => {
                         parts.push(json!({
                             "type": "image",
                             "image": "data:undefined;base64,undefined",
@@ -2228,7 +2695,9 @@ fn cursor_user_content_key(content: &crate::types::UserContent) -> String {
                         data.push_str(&image.mime_type);
                         data.push_str(&image.data);
                     }
-                    ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
+                    ContentBlock::Thinking(_)
+                    | ContentBlock::ToolCall(_)
+                    | ContentBlock::ProviderNative(_) => {
                         data.push_str("image");
                         data.push_str("undefined");
                         data.push_str("undefined");
@@ -2255,21 +2724,29 @@ fn build_cursor_assistant_content(message: &AssistantMessage) -> Vec<Value> {
                 "toolName": call.name,
                 "args": call.arguments,
             })),
-            ContentBlock::Thinking(_) | ContentBlock::Image(_) | ContentBlock::ProviderNative(_) => {}
+            ContentBlock::Thinking(_)
+            | ContentBlock::Image(_)
+            | ContentBlock::ProviderNative(_) => {}
         }
     }
     content
 }
 
-pub fn build_cursor_system_prompt_jsons(system_prompt: Option<&str>, model_id: Option<&str>) -> Vec<String> {
-    let trimmed = system_prompt.map(str::trim).filter(|prompt| !prompt.is_empty());
+pub fn build_cursor_system_prompt_jsons(
+    system_prompt: Option<&str>,
+    model_id: Option<&str>,
+) -> Vec<String> {
+    let trimmed = system_prompt
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty());
     let host = vec![match trimmed {
         Some(prompt) => json!({ "role": "system", "content": prompt }).to_string(),
         None => json!({ "role": "system", "content": "You are a helpful assistant." }).to_string(),
     }];
     match model_id {
         Some(model_id) if is_cursor_composer_model(model_id) => {
-            let mut result = vec![json!({ "role": "system", "content": CURSOR_COMPOSER_PROMPT }).to_string()];
+            let mut result =
+                vec![json!({ "role": "system", "content": CURSOR_COMPOSER_PROMPT }).to_string()];
             result.extend(host);
             result
         }
@@ -2296,7 +2773,9 @@ fn build_root_prompt_messages_json(
                 }
                 entries.push(store_cursor_blob(
                     blob_store,
-                    json!({ "role": "user", "content": content }).to_string().into_bytes(),
+                    json!({ "role": "user", "content": content })
+                        .to_string()
+                        .into_bytes(),
                 ));
             }
             Message::Assistant(assistant) => {
@@ -2306,7 +2785,9 @@ fn build_root_prompt_messages_json(
                 }
                 entries.push(store_cursor_blob(
                     blob_store,
-                    json!({ "role": "assistant", "content": content }).to_string().into_bytes(),
+                    json!({ "role": "assistant", "content": content })
+                        .to_string()
+                        .into_bytes(),
                 ));
             }
             Message::ToolResult(result) => {
@@ -2321,10 +2802,12 @@ fn build_root_prompt_messages_json(
                 }
                 entries.push(store_cursor_blob(
                     blob_store,
-                    json!({ "role": "tool", "id": result.tool_call_id, "content": [item] }).to_string().into_bytes(),
+                    json!({ "role": "tool", "id": result.tool_call_id, "content": [item] })
+                        .to_string()
+                        .into_bytes(),
                 ));
             }
-            Message::ConfigurationUpdate(_) => {}
+            Message::System(_) | Message::ConfigurationUpdate(_) => {}
         }
     }
     entries
@@ -2343,7 +2826,10 @@ fn encode_cursor_mcp_arguments(tool_call: &ToolCall) -> Result<BTreeMap<String, 
     let mut encoded = BTreeMap::new();
     for (name, value) in &tool_call.arguments {
         if !is_json_value(value) {
-            return Err(format!("Cursor tool argument {}.{} is not JSON-serializable", tool_call.name, name));
+            return Err(format!(
+                "Cursor tool argument {}.{} is not JSON-serializable",
+                tool_call.name, name
+            ));
         }
         encoded.insert(name.clone(), value_to_bytes(value).into());
     }
@@ -2364,28 +2850,42 @@ fn create_cursor_mcp_result(result: &ToolResultMessage) -> McpToolResult {
         .iter()
         .map(|item| match item {
             ContentBlock::Image(image) => McpToolResultContentItem {
-                content: Some(mcp_tool_result_content_item::Content::Image(McpImageContent {
-                    data: base64::engine::general_purpose::STANDARD.decode(&image.data).unwrap_or_default().into(),
-                    mime_type: image.mime_type.clone(),
-                })),
+                content: Some(mcp_tool_result_content_item::Content::Image(
+                    McpImageContent {
+                        data: base64::engine::general_purpose::STANDARD
+                            .decode(&image.data)
+                            .unwrap_or_default()
+                            .into(),
+                        mime_type: image.mime_type.clone(),
+                    },
+                )),
             },
             ContentBlock::Text(text) => McpToolResultContentItem {
-                content: Some(mcp_tool_result_content_item::Content::Text(McpTextContent {
-                    text: text.text.clone(),
-                    ..McpTextContent::default()
-                })),
+                content: Some(mcp_tool_result_content_item::Content::Text(
+                    McpTextContent {
+                        text: text.text.clone(),
+                        ..McpTextContent::default()
+                    },
+                )),
             },
-            ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
-                McpToolResultContentItem {
-                    content: Some(mcp_tool_result_content_item::Content::Text(McpTextContent {
+            ContentBlock::Thinking(_)
+            | ContentBlock::ToolCall(_)
+            | ContentBlock::ProviderNative(_) => McpToolResultContentItem {
+                content: Some(mcp_tool_result_content_item::Content::Text(
+                    McpTextContent {
                         text: "[undefined image]".to_owned(),
                         ..McpTextContent::default()
-                    })),
-                }
-            }
+                    },
+                )),
+            },
         })
         .collect();
-    McpToolResult { result: Some(mcp_tool_result::Result::Success(McpSuccess { content, is_error: false })) }
+    McpToolResult {
+        result: Some(mcp_tool_result::Result::Success(McpSuccess {
+            content,
+            is_error: false,
+        })),
+    }
 }
 
 fn create_cursor_tool_call_step(
@@ -2433,7 +2933,7 @@ fn build_conversation_turns(
                     }
                 }
             }
-            Message::User(_) | Message::ConfigurationUpdate(_) => {}
+            Message::User(_) | Message::System(_) | Message::ConfigurationUpdate(_) => {}
         }
     }
 
@@ -2454,7 +2954,11 @@ fn build_conversation_turns(
         let user_message = create_cursor_user_message(
             &user.content,
             &user_text,
-            deterministic_uuid(&format!("u:{}:{}", turns.len(), cursor_user_content_key(&user.content))),
+            deterministic_uuid(&format!(
+                "u:{}:{}",
+                turns.len(),
+                cursor_user_content_key(&user.content)
+            )),
         );
         let user_message_blob_id = store_cursor_blob(blob_store, user_message.encode_to_vec());
         let mut step_blob_ids: Vec<Vec<u8>> = Vec::new();
@@ -2477,18 +2981,25 @@ fn build_conversation_turns(
                                 }
                             }
                             ContentBlock::Thinking(_) => continue,
-                            ContentBlock::ToolCall(call) => {
-                                create_cursor_tool_call_step(call, tool_results.get(&call.id).copied())?
-                            }
+                            ContentBlock::ToolCall(call) => create_cursor_tool_call_step(
+                                call,
+                                tool_results.get(&call.id).copied(),
+                            )?,
                             ContentBlock::Image(_) | ContentBlock::ProviderNative(_) => continue,
                         };
                         step_blob_ids.push(store_cursor_blob(blob_store, step.encode_to_vec()));
                     }
                 }
-                Message::ToolResult(result) if !paired_tool_call_ids.contains(&result.tool_call_id) => {
+                Message::ToolResult(result)
+                    if !paired_tool_call_ids.contains(&result.tool_call_id) =>
+                {
                     let text = tool_result_to_text(result);
                     if !text.is_empty() {
-                        let prefix = if result.is_error { "[Tool Error]" } else { "[Tool Result]" };
+                        let prefix = if result.is_error {
+                            "[Tool Error]"
+                        } else {
+                            "[Tool Result]"
+                        };
                         let step = ConversationStep {
                             message: Some(conversation_step::Message::AssistantMessage(
                                 super::cursor_agent::r#gen::agent_pb::AssistantMessage {
@@ -2499,7 +3010,10 @@ fn build_conversation_turns(
                         step_blob_ids.push(store_cursor_blob(blob_store, step.encode_to_vec()));
                     }
                 }
-                Message::User(_) | Message::ToolResult(_) | Message::ConfigurationUpdate(_) => {}
+                Message::User(_)
+                | Message::ToolResult(_)
+                | Message::System(_)
+                | Message::ConfigurationUpdate(_) => {}
             }
             index += 1;
         }
@@ -2509,7 +3023,9 @@ fn build_conversation_turns(
             request_id: None,
         };
         let turn = ConversationTurnStructure {
-            turn: Some(conversation_turn_structure::Turn::AgentConversationTurn(agent_turn)),
+            turn: Some(conversation_turn_structure::Turn::AgentConversationTurn(
+                agent_turn,
+            )),
         };
         turns.push(store_cursor_blob(blob_store, turn.encode_to_vec()));
     }
@@ -2521,7 +3037,10 @@ pub fn build_cursor_history_for_test(
     messages: &[Message],
     active_user_message_index: Option<usize>,
 ) -> Result<crate::api::cursor_agent::measure::CursorHistoryForTest, String> {
-    crate::api::cursor_agent::measure::build_cursor_history_for_test(messages, active_user_message_index)
+    crate::api::cursor_agent::measure::build_cursor_history_for_test(
+        messages,
+        active_user_message_index,
+    )
 }
 
 fn create_cursor_user_message(
@@ -2539,7 +3058,10 @@ fn create_cursor_user_message(
         selected_context: if images.is_empty() {
             None
         } else {
-            Some(SelectedContext { selected_images: images, ..SelectedContext::default() })
+            Some(SelectedContext {
+                selected_images: images,
+                ..SelectedContext::default()
+            })
         },
         ..PbUserMessage::default()
     }
@@ -2552,9 +3074,14 @@ fn extract_images(blocks: &[ContentBlock]) -> Vec<SelectedImage> {
             ContentBlock::Image(image) => Some(SelectedImage {
                 uuid: random_uuid(),
                 mime_type: image.mime_type.clone(),
-                data_or_blob_id: Some(super::cursor_agent::r#gen::agent_pb::selected_image::DataOrBlobId::Data(
-                    base64::engine::general_purpose::STANDARD.decode(&image.data).unwrap_or_default().into(),
-                )),
+                data_or_blob_id: Some(
+                    super::cursor_agent::r#gen::agent_pb::selected_image::DataOrBlobId::Data(
+                        base64::engine::general_purpose::STANDARD
+                            .decode(&image.data)
+                            .unwrap_or_default()
+                            .into(),
+                    ),
+                ),
                 ..SelectedImage::default()
             }),
             _ => None,
@@ -2563,7 +3090,9 @@ fn extract_images(blocks: &[ContentBlock]) -> Vec<SelectedImage> {
 }
 
 fn has_images(content: &[ContentBlock]) -> bool {
-    content.iter().any(|item| matches!(item, ContentBlock::Image(_)))
+    content
+        .iter()
+        .any(|item| matches!(item, ContentBlock::Image(_)))
 }
 
 fn extract_text(content: &[ContentBlock]) -> String {
@@ -2600,10 +3129,11 @@ async fn build_grpc_request(
     state: GrpcRequestState,
 ) -> Result<GrpcRequestOutput, String> {
     let blob_store = state.blob_store.clone();
-    let system_prompt_ids: Vec<Vec<u8>> = build_cursor_system_prompt_jsons(context.system_prompt.as_deref(), Some(&model.id))
-        .into_iter()
-        .map(|json| store_cursor_blob(&blob_store, json.into_bytes()))
-        .collect();
+    let system_prompt_ids: Vec<Vec<u8>> =
+        build_cursor_system_prompt_jsons(context.system_prompt.as_deref(), Some(&model.id))
+            .into_iter()
+            .map(|json| store_cursor_blob(&blob_store, json.into_bytes()))
+            .collect();
 
     let active_user_message_index = context.messages.len().checked_sub(1);
     let active_user_message = active_user_message_index
@@ -2626,8 +3156,8 @@ async fn build_grpc_request(
         }
     }
 
-    let send_user_message =
-        !state.force_resume_action && user_content.is_some_and(|_| !user_text.trim().is_empty() || user_has_images);
+    let send_user_message = !state.force_resume_action
+        && user_content.is_some_and(|_| !user_text.trim().is_empty() || user_has_images);
     let action = ConversationAction {
         action: Some(if send_user_message {
             conversation_action::Action::UserMessageAction(UserMessageAction {
@@ -2646,28 +3176,47 @@ async fn build_grpc_request(
     let turns = build_conversation_turns(
         &context.messages,
         &blob_store,
-        if active_user_message.is_some() { active_user_message_index } else { None },
+        if active_user_message.is_some() {
+            active_user_message_index
+        } else {
+            None
+        },
     )?;
     let root_prompt_messages_json = build_root_prompt_messages_json(
         &context.messages,
         &system_prompt_ids,
         &blob_store,
-        if active_user_message.is_some() { active_user_message_index } else { None },
+        if active_user_message.is_some() {
+            active_user_message_index
+        } else {
+            None
+        },
     );
 
     let cached_prompt_head: Vec<Vec<u8>> = state
         .conversation_state
         .as_ref()
         .map(|cached| {
-            cached.root_prompt_messages_json.iter().take(system_prompt_ids.len()).map(|bytes| bytes.to_vec()).collect()
+            cached
+                .root_prompt_messages_json
+                .iter()
+                .take(system_prompt_ids.len())
+                .map(|bytes| bytes.to_vec())
+                .collect()
         })
         .unwrap_or_default();
     let has_matching_prompt = cached_prompt_head.len() == system_prompt_ids.len()
-        && system_prompt_ids.iter().zip(cached_prompt_head.iter()).all(|(id, cached)| id == cached);
+        && system_prompt_ids
+            .iter()
+            .zip(cached_prompt_head.iter())
+            .all(|(id, cached)| id == cached);
     let base_state = match &state.conversation_state {
         Some(cached) if has_matching_prompt => cached.clone(),
         _ => ConversationStateStructure {
-            root_prompt_messages_json: system_prompt_ids.iter().map(|id| id.clone().into()).collect(),
+            root_prompt_messages_json: system_prompt_ids
+                .iter()
+                .map(|id| id.clone().into())
+                .collect(),
             turns: Vec::new(),
             todos: Vec::new(),
             pending_tool_calls: Vec::new(),
@@ -2684,24 +3233,35 @@ async fn build_grpc_request(
     };
 
     let conversation_state = ConversationStateStructure {
-        root_prompt_messages_json: root_prompt_messages_json.iter().map(|id| id.clone().into()).collect(),
+        root_prompt_messages_json: root_prompt_messages_json
+            .iter()
+            .map(|id| id.clone().into())
+            .collect(),
         turns: turns.iter().map(|id| id.clone().into()).collect(),
         ..base_state
     };
 
-    let requested_model = state
-        .pinned_requested_model
-        .clone()
-        .unwrap_or_else(|| build_requested_model(model, options.and_then(|options| options.thinking_selection.as_ref())));
-    let wire_model_id = requested_model.model_id.clone();
-    let cursor_max_mode = model.compat.as_ref().is_some_and(|compat| compat.cursor_agent().cursor_max_mode == Some(true));
-    let model_details = state.pinned_model_details.clone().unwrap_or_else(|| ModelDetails {
-        model_id: wire_model_id.clone(),
-        display_model_id: model.id.clone(),
-        display_name: model.name.clone(),
-        max_mode: cursor_max_mode.then_some(true),
-        ..ModelDetails::default()
+    let requested_model = state.pinned_requested_model.clone().unwrap_or_else(|| {
+        build_requested_model(
+            model,
+            options.and_then(|options| options.thinking_selection.as_ref()),
+        )
     });
+    let wire_model_id = requested_model.model_id.clone();
+    let cursor_max_mode = model
+        .compat
+        .as_ref()
+        .is_some_and(|compat| compat.cursor_agent().cursor_max_mode == Some(true));
+    let model_details = state
+        .pinned_model_details
+        .clone()
+        .unwrap_or_else(|| ModelDetails {
+            model_id: wire_model_id.clone(),
+            display_model_id: model.id.clone(),
+            display_name: model.name.clone(),
+            max_mode: cursor_max_mode.then_some(true),
+            ..ModelDetails::default()
+        });
 
     let mut run_request = AgentRunRequest {
         conversation_state: Some(conversation_state.clone()),
@@ -2711,11 +3271,17 @@ async fn build_grpc_request(
         conversation_id: Some(state.conversation_id.clone()),
         ..AgentRunRequest::default()
     };
-    if let Some(custom_system_prompt) = options.and_then(|options| options.custom_system_prompt.clone()) {
+    if let Some(custom_system_prompt) =
+        options.and_then(|options| options.custom_system_prompt.clone())
+    {
         run_request.custom_system_prompt = Some(custom_system_prompt);
     }
     if let Some(options) = options {
-        let _ = options.base.request.apply_payload_hook(&run_request_payload(&run_request), model, None).await?;
+        let _ = options
+            .base
+            .request
+            .apply_payload_hook(&run_request_payload(&run_request), model, None)
+            .await?;
     }
 
     let client_message = AgentClientMessage {
@@ -2725,10 +3291,17 @@ async fn build_grpc_request(
     log(
         "info",
         Some("builtRunRequest"),
-        Some(json!({ "bytes": request_bytes.len(), "tools": context.tools.as_ref().map(Vec::len).unwrap_or(0) })),
+        Some(
+            json!({ "bytes": request_bytes.len(), "tools": context.tools.as_ref().map(Vec::len).unwrap_or(0) }),
+        ),
     );
 
-    Ok(GrpcRequestOutput { request_bytes, conversation_state, requested_model, model_details })
+    Ok(GrpcRequestOutput {
+        request_bytes,
+        conversation_state,
+        requested_model,
+        model_details,
+    })
 }
 
 /// JSON view of the run request handed to the onPayload hook. The TS hook
@@ -2783,7 +3356,14 @@ fn run_request_payload(run_request: &AgentRunRequest) -> Value {
 
 fn deterministic_uuid(seed: &str) -> String {
     let hex = sha256_hex(seed.as_bytes());
-    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2815,14 +3395,18 @@ impl CursorTransport {
             let _ = stream.send_data(Bytes::from(bytes), false);
         }
     }
-
 }
 
 fn parse_base_url(base_url: &str) -> Result<(String, String, bool), String> {
     let url = url::Url::parse(base_url).map_err(|error| error.to_string())?;
     let scheme = url.scheme().to_owned();
-    let host = url.host_str().ok_or_else(|| "base url has no host".to_owned())?.to_owned();
-    let port = url.port_or_known_default().unwrap_or(if scheme == "https" { 443 } else { 80 });
+    let host = url
+        .host_str()
+        .ok_or_else(|| "base url has no host".to_owned())?
+        .to_owned();
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(if scheme == "https" { 443 } else { 80 });
     Ok((format!("{host}:{port}"), host, scheme == "https"))
 }
 
@@ -2830,7 +3414,9 @@ async fn open_h2(
     base_url: &str,
 ) -> Result<(h2::client::SendRequest<Bytes>, tokio::task::JoinHandle<()>), String> {
     let (authority, host, tls) = parse_base_url(base_url)?;
-    let tcp = tokio::net::TcpStream::connect(&authority).await.map_err(|error| error.to_string())?;
+    let tcp = tokio::net::TcpStream::connect(&authority)
+        .await
+        .map_err(|error| error.to_string())?;
     let _ = tcp.set_nodelay(true);
 
     if tls {
@@ -2843,18 +3429,25 @@ async fn open_h2(
         let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
         let server_name = rustls_pki_types::ServerName::try_from(host.clone())
             .map_err(|error| error.to_string())?;
-        let stream = connector.connect(server_name, tcp).await.map_err(|error| error.to_string())?;
+        let stream = connector
+            .connect(server_name, tcp)
+            .await
+            .map_err(|error| error.to_string())?;
         handshake(stream).await
     } else {
         handshake(tcp).await
     }
 }
 
-async fn handshake<S>(stream: S) -> Result<(h2::client::SendRequest<Bytes>, tokio::task::JoinHandle<()>), String>
+async fn handshake<S>(
+    stream: S,
+) -> Result<(h2::client::SendRequest<Bytes>, tokio::task::JoinHandle<()>), String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let (send_request, connection) = h2::client::handshake(stream).await.map_err(|error| error.to_string())?;
+    let (send_request, connection) = h2::client::handshake(stream)
+        .await
+        .map_err(|error| error.to_string())?;
     let task = tokio::spawn(async move {
         let _ = connection.await;
     });
@@ -2901,9 +3494,13 @@ pub async fn send_exec_client_message(
         ..ExecClientMessage::default()
     };
     let client_message = AgentClientMessage {
-        message: Some(agent_client_message::Message::ExecClientMessage(exec_client_message)),
+        message: Some(agent_client_message::Message::ExecClientMessage(
+            exec_client_message,
+        )),
     };
-    transport.write_frame(frame_connect_message(&client_message.encode_to_vec(), 0)).await;
+    transport
+        .write_frame(frame_connect_message(&client_message.encode_to_vec(), 0))
+        .await;
     log("execClientMessage", Some(case), None);
 }
 
@@ -2938,32 +3535,57 @@ async fn send_exec_client_throw(
     error_code: Option<&str>,
 ) {
     let control_message = ExecClientControlMessage {
-        message: Some(exec_client_control_message::Message::Throw(ExecClientThrow {
-            id: exec_msg.id,
-            error: error.to_owned(),
-            error_code: error_code.map(str::to_owned),
-            ..ExecClientThrow::default()
-        })),
+        message: Some(exec_client_control_message::Message::Throw(
+            ExecClientThrow {
+                id: exec_msg.id,
+                error: error.to_owned(),
+                error_code: error_code.map(str::to_owned),
+                ..ExecClientThrow::default()
+            },
+        )),
     };
     let client_message = AgentClientMessage {
-        message: Some(agent_client_message::Message::ExecClientControlMessage(control_message)),
+        message: Some(agent_client_message::Message::ExecClientControlMessage(
+            control_message,
+        )),
     };
-    transport.write_frame(frame_connect_message(&client_message.encode_to_vec(), 0)).await;
-    log("execClientControl", Some("throw"), Some(json!({ "id": exec_msg.id, "execId": exec_msg.exec_id, "error": error, "errorCode": error_code })));
+    transport
+        .write_frame(frame_connect_message(&client_message.encode_to_vec(), 0))
+        .await;
+    log(
+        "execClientControl",
+        Some("throw"),
+        Some(
+            json!({ "id": exec_msg.id, "execId": exec_msg.exec_id, "error": error, "errorCode": error_code }),
+        ),
+    );
 }
 
 async fn send_exec_client_stream_close(transport: &CursorTransport, exec_msg: &ExecServerMessage) {
     let close_message = ExecClientControlMessage {
-        message: Some(exec_client_control_message::Message::StreamClose(ExecClientStreamClose { id: exec_msg.id })),
+        message: Some(exec_client_control_message::Message::StreamClose(
+            ExecClientStreamClose { id: exec_msg.id },
+        )),
     };
     let client_message = AgentClientMessage {
-        message: Some(agent_client_message::Message::ExecClientControlMessage(close_message)),
+        message: Some(agent_client_message::Message::ExecClientControlMessage(
+            close_message,
+        )),
     };
-    transport.write_frame(frame_connect_message(&client_message.encode_to_vec(), 0)).await;
-    log("execClientControl", Some("streamClose"), Some(json!({ "id": exec_msg.id, "execId": exec_msg.exec_id })));
+    transport
+        .write_frame(frame_connect_message(&client_message.encode_to_vec(), 0))
+        .await;
+    log(
+        "execClientControl",
+        Some("streamClose"),
+        Some(json!({ "id": exec_msg.id, "execId": exec_msg.exec_id })),
+    );
 }
 
-fn arm_cursor_exec_heartbeat(transport: &CursorTransport, exec_msg: &ExecServerMessage) -> tokio::task::JoinHandle<()> {
+fn arm_cursor_exec_heartbeat(
+    transport: &CursorTransport,
+    exec_msg: &ExecServerMessage,
+) -> tokio::task::JoinHandle<()> {
     let transport = transport.clone();
     let exec_msg = exec_msg.clone();
     tokio::spawn(async move {
@@ -2975,13 +3597,23 @@ fn arm_cursor_exec_heartbeat(transport: &CursorTransport, exec_msg: &ExecServerM
                 return;
             }
             let control_message = ExecClientControlMessage {
-                message: Some(exec_client_control_message::Message::Heartbeat(ExecClientHeartbeat { id: exec_msg.id })),
+                message: Some(exec_client_control_message::Message::Heartbeat(
+                    ExecClientHeartbeat { id: exec_msg.id },
+                )),
             };
             let client_message = AgentClientMessage {
-                message: Some(agent_client_message::Message::ExecClientControlMessage(control_message)),
+                message: Some(agent_client_message::Message::ExecClientControlMessage(
+                    control_message,
+                )),
             };
-            transport.write_frame(frame_connect_message(&client_message.encode_to_vec(), 0)).await;
-            log("execClientControl", Some("heartbeat"), Some(json!({ "id": exec_msg.id, "execId": exec_msg.exec_id })));
+            transport
+                .write_frame(frame_connect_message(&client_message.encode_to_vec(), 0))
+                .await;
+            log(
+                "execClientControl",
+                Some("heartbeat"),
+                Some(json!({ "id": exec_msg.id, "execId": exec_msg.exec_id })),
+            );
         }
     })
 }
@@ -2989,7 +3621,9 @@ fn arm_cursor_exec_heartbeat(transport: &CursorTransport, exec_msg: &ExecServerM
 /// Exported for tests: dispatches one exec frame onto its handler.
 pub async fn resolve_exec_handler<TArgs, TResult>(
     args: TArgs,
-    handler: Option<&Arc<dyn Fn(TArgs) -> crate::api::cursor_agent::types::ExecFuture<TResult> + Send + Sync>>,
+    handler: Option<
+        &Arc<dyn Fn(TArgs) -> crate::api::cursor_agent::types::ExecFuture<TResult> + Send + Sync>,
+    >,
     on_tool_result: Option<&CursorToolResultHandler>,
     build_from_tool_result: impl Fn(&ToolResultMessage) -> TResult,
     build_rejected: impl Fn(&str) -> TResult,
@@ -3003,18 +3637,19 @@ where
     let pair = |text: String, is_error: bool| {
         let pairing = pairing.cloned();
         async move {
-        let pairing = pairing?;
-        let synthesized = ToolResultMessage {
-            tool_call_id: pairing.tool_call_id.clone(),
-            tool_name: pairing.tool_name.clone(),
-            content: vec![ContentBlock::text(text)],
-            details: None,
-            usage: None,
-            added_tool_names: None,
-            is_error,
-            timestamp: now_ms(),
-        };
-        apply_tool_result_handler(Some(synthesized), on_tool_result).await
+            let pairing = pairing?;
+            let synthesized = ToolResultMessage {
+                nested_calls: None,
+                tool_call_id: pairing.tool_call_id.clone(),
+                tool_name: pairing.tool_name.clone(),
+                content: vec![ContentBlock::text(text)],
+                details: None,
+                usage: None,
+                added_tool_names: None,
+                is_error,
+                timestamp: now_ms(),
+            };
+            apply_tool_result_handler(Some(synthesized), on_tool_result).await
         }
     };
 
@@ -3046,9 +3681,14 @@ where
     (build_rejected(reason), tool_result)
 }
 
-fn split_exec_handler_result<TResult>(result: CursorExecHandlerResult<TResult>) -> (Option<TResult>, Option<ToolResultMessage>) {
+fn split_exec_handler_result<TResult>(
+    result: CursorExecHandlerResult<TResult>,
+) -> (Option<TResult>, Option<ToolResultMessage>) {
     match result {
-        CursorExecHandlerResult::WithToolResult { result, tool_result } => (Some(result), tool_result),
+        CursorExecHandlerResult::WithToolResult {
+            result,
+            tool_result,
+        } => (Some(result), tool_result),
         CursorExecHandlerResult::Result(result) => (Some(result), None),
         CursorExecHandlerResult::ToolResult(tool_result) => (None, Some(tool_result)),
     }
@@ -3059,7 +3699,9 @@ async fn apply_tool_result_handler(
     on_tool_result: Option<&CursorToolResultHandler>,
 ) -> Option<ToolResultMessage> {
     let tool_result = tool_result?;
-    let Some(on_tool_result) = on_tool_result else { return Some(tool_result) };
+    let Some(on_tool_result) = on_tool_result else {
+        return Some(tool_result);
+    };
     let updated = on_tool_result(tool_result.clone()).await;
     Some(updated.unwrap_or(tool_result))
 }
@@ -3117,7 +3759,11 @@ impl DescribeExecResult for McpResult {
                 }
                 let text = mcp_content_to_text(&success.content);
                 (
-                    if text.is_empty() { "MCP tool reported an error".to_owned() } else { text },
+                    if text.is_empty() {
+                        "MCP tool reported an error".to_owned()
+                    } else {
+                        text
+                    },
                     true,
                 )
             }
@@ -3182,26 +3828,87 @@ macro_rules! describe_three_variant_result {
     };
 }
 
-describe_oneof_result!(ReadResult, super::cursor_agent::r#gen::agent_pb::read_result, read, ReadSuccess);
-describe_oneof_result!(LsResult, super::cursor_agent::r#gen::agent_pb::ls_result, ls, LsSuccess);
-describe_oneof_result!(WriteResult, super::cursor_agent::r#gen::agent_pb::write_result, write, WriteSuccess);
-describe_oneof_result!(DeleteResult, super::cursor_agent::r#gen::agent_pb::delete_result, delete, DeleteSuccess);
-describe_oneof_result!(DiagnosticsResult, super::cursor_agent::r#gen::agent_pb::diagnostics_result, diagnostics, DiagnosticsSuccess);
-describe_two_variant_result!(GrepResult, super::cursor_agent::r#gen::agent_pb::grep_result, grep);
-describe_three_variant_result!(PiEditExecResult, super::cursor_agent::r#gen::agent_pb::pi_edit_exec_result, piEdit);
-describe_three_variant_result!(PiWriteExecResult, super::cursor_agent::r#gen::agent_pb::pi_write_exec_result, piWrite);
-describe_two_variant_result!(PiReadExecResult, super::cursor_agent::r#gen::agent_pb::pi_read_exec_result, piRead);
-describe_two_variant_result!(PiBashExecResult, super::cursor_agent::r#gen::agent_pb::pi_bash_exec_result, piBash);
-describe_two_variant_result!(PiGrepExecResult, super::cursor_agent::r#gen::agent_pb::pi_grep_exec_result, piGrep);
-describe_two_variant_result!(PiFindExecResult, super::cursor_agent::r#gen::agent_pb::pi_find_exec_result, piFind);
-describe_two_variant_result!(PiLsExecResult, super::cursor_agent::r#gen::agent_pb::pi_ls_exec_result, piLs);
+describe_oneof_result!(
+    ReadResult,
+    super::cursor_agent::r#gen::agent_pb::read_result,
+    read,
+    ReadSuccess
+);
+describe_oneof_result!(
+    LsResult,
+    super::cursor_agent::r#gen::agent_pb::ls_result,
+    ls,
+    LsSuccess
+);
+describe_oneof_result!(
+    WriteResult,
+    super::cursor_agent::r#gen::agent_pb::write_result,
+    write,
+    WriteSuccess
+);
+describe_oneof_result!(
+    DeleteResult,
+    super::cursor_agent::r#gen::agent_pb::delete_result,
+    delete,
+    DeleteSuccess
+);
+describe_oneof_result!(
+    DiagnosticsResult,
+    super::cursor_agent::r#gen::agent_pb::diagnostics_result,
+    diagnostics,
+    DiagnosticsSuccess
+);
+describe_two_variant_result!(
+    GrepResult,
+    super::cursor_agent::r#gen::agent_pb::grep_result,
+    grep
+);
+describe_three_variant_result!(
+    PiEditExecResult,
+    super::cursor_agent::r#gen::agent_pb::pi_edit_exec_result,
+    piEdit
+);
+describe_three_variant_result!(
+    PiWriteExecResult,
+    super::cursor_agent::r#gen::agent_pb::pi_write_exec_result,
+    piWrite
+);
+describe_two_variant_result!(
+    PiReadExecResult,
+    super::cursor_agent::r#gen::agent_pb::pi_read_exec_result,
+    piRead
+);
+describe_two_variant_result!(
+    PiBashExecResult,
+    super::cursor_agent::r#gen::agent_pb::pi_bash_exec_result,
+    piBash
+);
+describe_two_variant_result!(
+    PiGrepExecResult,
+    super::cursor_agent::r#gen::agent_pb::pi_grep_exec_result,
+    piGrep
+);
+describe_two_variant_result!(
+    PiFindExecResult,
+    super::cursor_agent::r#gen::agent_pb::pi_find_exec_result,
+    piFind
+);
+describe_two_variant_result!(
+    PiLsExecResult,
+    super::cursor_agent::r#gen::agent_pb::pi_ls_exec_result,
+    piLs
+);
 
 impl DescribeExecResult for ShellResult {
     fn describe_exec_result(&self) -> (String, bool) {
         match &self.result {
             Some(shell_result::Result::Success(_)) => describe_success_without_error(),
             Some(shell_result::Result::Failure(failure)) => (
-                if failure.stderr.is_empty() { "Tool call failure".to_owned() } else { failure.stderr.clone() },
+                if failure.stderr.is_empty() {
+                    "Tool call failure".to_owned()
+                } else {
+                    failure.stderr.clone()
+                },
                 true,
             ),
             Some(shell_result::Result::Rejected(rejected)) => (rejected.reason.clone(), true),
@@ -3214,7 +3921,9 @@ impl DescribeExecResult for ShellResult {
 }
 
 fn sanitize_shell_exec_result(exec_result: ShellResult) -> ShellResult {
-    let Some(result) = exec_result.result.as_ref() else { return exec_result };
+    let Some(result) = exec_result.result.as_ref() else {
+        return exec_result;
+    };
     match result {
         shell_result::Result::Success(value) => {
             let mut value = value.clone();
@@ -3224,7 +3933,10 @@ fn sanitize_shell_exec_result(exec_result: ShellResult) -> ShellResult {
             if !value.stderr.is_empty() {
                 value.stderr = sanitize_surrogates(&value.stderr);
             }
-            ShellResult { result: Some(shell_result::Result::Success(value)), ..ShellResult::default() }
+            ShellResult {
+                result: Some(shell_result::Result::Success(value)),
+                ..ShellResult::default()
+            }
         }
         shell_result::Result::Failure(value) => {
             let mut value = value.clone();
@@ -3234,14 +3946,26 @@ fn sanitize_shell_exec_result(exec_result: ShellResult) -> ShellResult {
             if !value.stderr.is_empty() {
                 value.stderr = sanitize_surrogates(&value.stderr);
             }
-            ShellResult { result: Some(shell_result::Result::Failure(value)), ..ShellResult::default() }
+            ShellResult {
+                result: Some(shell_result::Result::Failure(value)),
+                ..ShellResult::default()
+            }
         }
         _ => exec_result,
     }
 }
 
-async fn send_shell_stream_event(transport: &CursorTransport, exec_msg: &ExecServerMessage, event: shell_stream::Event) {
-    send_exec_client_message(transport, exec_msg, exec_client_message::Message::ShellStream(ShellStream { event: Some(event) })).await;
+async fn send_shell_stream_event(
+    transport: &CursorTransport,
+    exec_msg: &ExecServerMessage,
+    event: shell_stream::Event,
+) {
+    send_exec_client_message(
+        transport,
+        exec_msg,
+        exec_client_message::Message::ShellStream(ShellStream { event: Some(event) }),
+    )
+    .await;
 }
 
 /// Length of a trailing incomplete ANSI escape sequence: the TS
@@ -3280,13 +4004,23 @@ async fn handle_shell_stream_args(
     on_tool_result: Option<&CursorToolResultHandler>,
 ) {
     let working_directory = if args.working_directory.is_empty() {
-        std::env::current_dir().map(|path| path.display().to_string()).unwrap_or_default()
+        std::env::current_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default()
     } else {
         args.working_directory.clone()
     };
-    let normalized_args = ShellArgs { working_directory: working_directory.clone(), ..args.clone() };
+    let normalized_args = ShellArgs {
+        working_directory: working_directory.clone(),
+        ..args.clone()
+    };
 
-    send_shell_stream_event(transport, exec_msg, shell_stream::Event::Start(Default::default())).await;
+    send_shell_stream_event(
+        transport,
+        exec_msg,
+        shell_stream::Event::Start(Default::default()),
+    )
+    .await;
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<shell_stream::Event>();
     let event_writer = {
@@ -3303,8 +4037,18 @@ async fn handle_shell_stream_args(
         if let Some(shell_stream) = handlers.shell_stream.clone() {
             let stream_buffer = stream_buffer.clone();
             Some(Arc::new(move |args: ShellArgs| {
-                shell_stream(args, Box::new(ShellStreamCallbackHandle { buffer: stream_buffer.clone() }))
-            }) as Arc<dyn Fn(ShellArgs) -> crate::api::cursor_agent::types::ExecFuture<ShellResult> + Send + Sync>)
+                shell_stream(
+                    args,
+                    Box::new(ShellStreamCallbackHandle {
+                        buffer: stream_buffer.clone(),
+                    }),
+                )
+            })
+                as Arc<
+                    dyn Fn(ShellArgs) -> crate::api::cursor_agent::types::ExecFuture<ShellResult>
+                        + Send
+                        + Sync,
+                >)
         } else {
             handlers.shell.clone()
         }
@@ -3315,24 +4059,51 @@ async fn handle_shell_stream_args(
         handler.as_ref(),
         on_tool_result,
         |tool_result| build_shell_result_from_tool_result(&normalized_args, tool_result),
-        |reason| build_shell_rejected_result(&normalized_args.command, &normalized_args.working_directory, reason),
-        |error| build_shell_failure_result(&normalized_args.command, &normalized_args.working_directory, error),
-        Some(&CursorExecPairing { tool_call_id: args.tool_call_id.clone(), tool_name: "bash".to_owned() }),
+        |reason| {
+            build_shell_rejected_result(
+                &normalized_args.command,
+                &normalized_args.working_directory,
+                reason,
+            )
+        },
+        |error| {
+            build_shell_failure_result(
+                &normalized_args.command,
+                &normalized_args.working_directory,
+                error,
+            )
+        },
+        Some(&CursorExecPairing {
+            tool_call_id: args.tool_call_id.clone(),
+            tool_name: "bash".to_owned(),
+        }),
     )
     .await;
 
-    if exec_handlers.and_then(|handlers| handlers.shell_stream.as_ref()).is_some() {
-        let mut buffer = stream_buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if exec_handlers
+        .and_then(|handlers| handlers.shell_stream.as_ref())
+        .is_some()
+    {
+        let mut buffer = stream_buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         buffer.flush_stdout();
         buffer.flush_stderr();
     }
     drop(event_tx);
     let _ = event_writer.await;
 
-    let send_buffered_output = exec_handlers.and_then(|handlers| handlers.shell_stream.as_ref()).is_none();
+    let send_buffered_output = exec_handlers
+        .and_then(|handlers| handlers.shell_stream.as_ref())
+        .is_none();
     let sanitized = sanitize_shell_exec_result(exec_result);
     send_shell_stream_exit_from_result(transport, exec_msg, &sanitized, send_buffered_output).await;
-    send_exec_client_message(transport, exec_msg, exec_client_message::Message::ShellResult(sanitized)).await;
+    send_exec_client_message(
+        transport,
+        exec_msg,
+        exec_client_message::Message::ShellResult(sanitized),
+    )
+    .await;
 }
 
 /// Forwards a streaming shell's output chunks in real time, holding back an
@@ -3346,11 +4117,19 @@ struct ShellStreamBuffer {
 
 impl ShellStreamBuffer {
     fn new(sender: tokio::sync::mpsc::UnboundedSender<shell_stream::Event>) -> Self {
-        Self { sender, stdout: String::new(), stderr: String::new() }
+        Self {
+            sender,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
     }
 
     fn push(&mut self, stdout: bool, data: &str) {
-        let buffer = if stdout { &mut self.stdout } else { &mut self.stderr };
+        let buffer = if stdout {
+            &mut self.stdout
+        } else {
+            &mut self.stderr
+        };
         buffer.push_str(data);
         if buffer.contains('\n') || buffer.len() > 4096 {
             self.flush(stdout);
@@ -3358,7 +4137,11 @@ impl ShellStreamBuffer {
     }
 
     fn flush(&mut self, stdout: bool) {
-        let buffer = if stdout { &mut self.stdout } else { &mut self.stderr };
+        let buffer = if stdout {
+            &mut self.stdout
+        } else {
+            &mut self.stderr
+        };
         if buffer.is_empty() {
             return;
         }
@@ -3393,11 +4176,17 @@ struct ShellStreamCallbackHandle {
 
 impl CursorShellStreamCallbacks for ShellStreamCallbackHandle {
     fn on_stdout(&mut self, data: &str) {
-        self.buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(true, data);
+        self.buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(true, data);
     }
 
     fn on_stderr(&mut self, data: &str) {
-        self.buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(false, data);
+        self.buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(false, data);
     }
 }
 
@@ -3407,69 +4196,139 @@ async fn send_shell_stream_exit_from_result(
     exec_result: &ShellResult,
     send_buffered_output: bool,
 ) {
-    let Some(result) = exec_result.result.as_ref() else { return };
+    let Some(result) = exec_result.result.as_ref() else {
+        return;
+    };
     match result {
         shell_result::Result::Success(value) => {
             if send_buffered_output {
                 if !value.stdout.is_empty() {
-                    send_shell_stream_event(transport, exec_msg, shell_stream::Event::Stdout(ShellStreamStdout { data: sanitize_surrogates(&value.stdout) })).await;
+                    send_shell_stream_event(
+                        transport,
+                        exec_msg,
+                        shell_stream::Event::Stdout(ShellStreamStdout {
+                            data: sanitize_surrogates(&value.stdout),
+                        }),
+                    )
+                    .await;
                 }
                 if !value.stderr.is_empty() {
-                    send_shell_stream_event(transport, exec_msg, shell_stream::Event::Stderr(ShellStreamStderr { data: sanitize_surrogates(&value.stderr) })).await;
+                    send_shell_stream_event(
+                        transport,
+                        exec_msg,
+                        shell_stream::Event::Stderr(ShellStreamStderr {
+                            data: sanitize_surrogates(&value.stderr),
+                        }),
+                    )
+                    .await;
                 }
             }
-            send_shell_stream_event(transport, exec_msg, shell_stream::Event::Exit(ShellStreamExit {
-                code: value.exit_code as u32,
-                cwd: value.working_directory.clone(),
-                aborted: false,
-                ..ShellStreamExit::default()
-            })).await;
+            send_shell_stream_event(
+                transport,
+                exec_msg,
+                shell_stream::Event::Exit(ShellStreamExit {
+                    code: value.exit_code as u32,
+                    cwd: value.working_directory.clone(),
+                    aborted: false,
+                    ..ShellStreamExit::default()
+                }),
+            )
+            .await;
         }
         shell_result::Result::Failure(value) => {
             if send_buffered_output {
                 if !value.stdout.is_empty() {
-                    send_shell_stream_event(transport, exec_msg, shell_stream::Event::Stdout(ShellStreamStdout { data: sanitize_surrogates(&value.stdout) })).await;
+                    send_shell_stream_event(
+                        transport,
+                        exec_msg,
+                        shell_stream::Event::Stdout(ShellStreamStdout {
+                            data: sanitize_surrogates(&value.stdout),
+                        }),
+                    )
+                    .await;
                 }
                 if !value.stderr.is_empty() {
-                    send_shell_stream_event(transport, exec_msg, shell_stream::Event::Stderr(ShellStreamStderr { data: sanitize_surrogates(&value.stderr) })).await;
+                    send_shell_stream_event(
+                        transport,
+                        exec_msg,
+                        shell_stream::Event::Stderr(ShellStreamStderr {
+                            data: sanitize_surrogates(&value.stderr),
+                        }),
+                    )
+                    .await;
                 }
             }
-            send_shell_stream_event(transport, exec_msg, shell_stream::Event::Exit(ShellStreamExit {
-                code: value.exit_code as u32,
-                cwd: value.working_directory.clone(),
-                aborted: value.aborted,
-                abort_reason: value.abort_reason,
-                ..ShellStreamExit::default()
-            })).await;
+            send_shell_stream_event(
+                transport,
+                exec_msg,
+                shell_stream::Event::Exit(ShellStreamExit {
+                    code: value.exit_code as u32,
+                    cwd: value.working_directory.clone(),
+                    aborted: value.aborted,
+                    abort_reason: value.abort_reason,
+                    ..ShellStreamExit::default()
+                }),
+            )
+            .await;
         }
         shell_result::Result::Rejected(value) => {
-            send_shell_stream_event(transport, exec_msg, shell_stream::Event::Rejected(value.clone())).await;
-            send_shell_stream_event(transport, exec_msg, shell_stream::Event::Exit(ShellStreamExit {
-                code: 1,
-                cwd: value.working_directory.clone(),
-                aborted: false,
-                ..ShellStreamExit::default()
-            })).await;
+            send_shell_stream_event(
+                transport,
+                exec_msg,
+                shell_stream::Event::Rejected(value.clone()),
+            )
+            .await;
+            send_shell_stream_event(
+                transport,
+                exec_msg,
+                shell_stream::Event::Exit(ShellStreamExit {
+                    code: 1,
+                    cwd: value.working_directory.clone(),
+                    aborted: false,
+                    ..ShellStreamExit::default()
+                }),
+            )
+            .await;
         }
         shell_result::Result::Timeout(value) => {
-            send_shell_stream_event(transport, exec_msg, shell_stream::Event::Stderr(ShellStreamStderr {
-                data: format!("Command timed out after {}ms", value.timeout_ms),
-            })).await;
-            send_shell_stream_event(transport, exec_msg, shell_stream::Event::Exit(ShellStreamExit {
-                code: 1,
-                cwd: value.working_directory.clone(),
-                aborted: true,
-                ..ShellStreamExit::default()
-            })).await;
+            send_shell_stream_event(
+                transport,
+                exec_msg,
+                shell_stream::Event::Stderr(ShellStreamStderr {
+                    data: format!("Command timed out after {}ms", value.timeout_ms),
+                }),
+            )
+            .await;
+            send_shell_stream_event(
+                transport,
+                exec_msg,
+                shell_stream::Event::Exit(ShellStreamExit {
+                    code: 1,
+                    cwd: value.working_directory.clone(),
+                    aborted: true,
+                    ..ShellStreamExit::default()
+                }),
+            )
+            .await;
         }
         shell_result::Result::PermissionDenied(value) => {
-            send_shell_stream_event(transport, exec_msg, shell_stream::Event::PermissionDenied(value.clone())).await;
-            send_shell_stream_event(transport, exec_msg, shell_stream::Event::Exit(ShellStreamExit {
-                code: 1,
-                cwd: value.working_directory.clone(),
-                aborted: false,
-                ..ShellStreamExit::default()
-            })).await;
+            send_shell_stream_event(
+                transport,
+                exec_msg,
+                shell_stream::Event::PermissionDenied(value.clone()),
+            )
+            .await;
+            send_shell_stream_event(
+                transport,
+                exec_msg,
+                shell_stream::Event::Exit(ShellStreamExit {
+                    code: 1,
+                    cwd: value.working_directory.clone(),
+                    aborted: false,
+                    ..ShellStreamExit::default()
+                }),
+            )
+            .await;
         }
         _ => {}
     }
@@ -3487,15 +4346,27 @@ async fn handle_exec_server_message(
     state: &mut BlockState,
 ) {
     let Some(exec_case) = exec_msg.message.as_ref() else {
-        log("warn", Some("unknownExecVariant"), Some(json!({ "id": exec_msg.id, "execId": exec_msg.exec_id })));
-        send_exec_client_throw(transport, &exec_msg, "Unknown exec message variant", Some("unknown_exec_variant")).await;
+        log(
+            "warn",
+            Some("unknownExecVariant"),
+            Some(json!({ "id": exec_msg.id, "execId": exec_msg.exec_id })),
+        );
+        send_exec_client_throw(
+            transport,
+            &exec_msg,
+            "Unknown exec message variant",
+            Some("unknown_exec_variant"),
+        )
+        .await;
         send_exec_client_stream_close(transport, &exec_msg).await;
         return;
     };
     log(
         "exec",
         Some("dispatch"),
-        Some(json!({ "execCase": exec_server_case_name(exec_case), "execId": exec_msg.exec_id, "hasHandlers": exec_handlers.is_some() })),
+        Some(
+            json!({ "execCase": exec_server_case_name(exec_case), "execId": exec_msg.exec_id, "hasHandlers": exec_handlers.is_some() }),
+        ),
     );
     let heartbeat = arm_cursor_exec_heartbeat(transport, &exec_msg);
     let dispatch = dispatch_exec_server_message(
@@ -3510,8 +4381,18 @@ async fn handle_exec_server_message(
     )
     .await;
     if let Err(error) = dispatch {
-        log("error", Some("execDispatch"), Some(json!({ "error": error, "id": exec_msg.id, "execId": exec_msg.exec_id })));
-        send_exec_client_throw(transport, &exec_msg, "Local exec dispatch failed", Some("exec_dispatch_failed")).await;
+        log(
+            "error",
+            Some("execDispatch"),
+            Some(json!({ "error": error, "id": exec_msg.id, "execId": exec_msg.exec_id })),
+        );
+        send_exec_client_throw(
+            transport,
+            &exec_msg,
+            "Local exec dispatch failed",
+            Some("exec_dispatch_failed"),
+        )
+        .await;
     }
     heartbeat.abort();
     send_exec_client_stream_close(transport, &exec_msg).await;
@@ -3571,11 +4452,21 @@ async fn dispatch_exec_server_message(
             ..RequestContext::default()
         };
         let request_context_result = RequestContextResult {
-            result: Some(super::cursor_agent::r#gen::agent_pb::request_context_result::Result::Success(
-                RequestContextSuccess { request_context: Some(request_context), ..RequestContextSuccess::default() },
-            )),
+            result: Some(
+                super::cursor_agent::r#gen::agent_pb::request_context_result::Result::Success(
+                    RequestContextSuccess {
+                        request_context: Some(request_context),
+                        ..RequestContextSuccess::default()
+                    },
+                ),
+            ),
         };
-        send_exec_client_message(transport, exec_msg, exec_client_message::Message::RequestContextResult(request_context_result)).await;
+        send_exec_client_message(
+            transport,
+            exec_msg,
+            exec_client_message::Message::RequestContextResult(request_context_result),
+        )
+        .await;
         return Ok(());
     }
 
@@ -3586,28 +4477,59 @@ async fn dispatch_exec_server_message(
             let tool_call_id = tool_call_id.unwrap_or_default();
             let mut block_args = Map::new();
             block_args.insert("path".to_owned(), json!(args.path));
-            block_args.insert("offset".to_owned(), args.offset.map(Value::from).unwrap_or(Value::Null));
-            block_args.insert("limit".to_owned(), args.limit.map(Value::from).unwrap_or(Value::Null));
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "read", block_args);
+            block_args.insert(
+                "offset".to_owned(),
+                args.offset.map(Value::from).unwrap_or(Value::Null),
+            );
+            block_args.insert(
+                "limit".to_owned(),
+                args.limit.map(Value::from).unwrap_or(Value::Null),
+            );
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "read",
+                block_args,
+            );
             let range_applied = args.offset.is_some() || args.limit.is_some();
             let (exec_result, _) = resolve_exec_handler(
                 args.clone(),
                 exec_handlers.and_then(|handlers| handlers.read.as_ref()),
                 on_tool_result,
-                |tool_result| build_read_result_from_tool_result(&args.path, tool_result, range_applied),
+                |tool_result| {
+                    build_read_result_from_tool_result(&args.path, tool_result, range_applied)
+                },
                 |reason| build_read_rejected_result(&args.path, reason),
                 |error| build_read_error_result(&args.path, error),
-                Some(&CursorExecPairing { tool_call_id, tool_name: "read".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "read".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::ReadResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::ReadResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::LsArgs(args) => {
             let mut tool_call_id = Some(args.tool_call_id.clone());
             ensure_unique_cursor_exec_tool_call_id(output, &mut tool_call_id);
             let tool_call_id = tool_call_id.unwrap_or_default();
-            let block_args = Map::from_iter([("path".to_owned(), json!(pi_ls_path(Some(&args.path))))]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "ls", block_args);
+            let block_args =
+                Map::from_iter([("path".to_owned(), json!(pi_ls_path(Some(&args.path))))]);
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "ls",
+                block_args,
+            );
             let (exec_result, _) = resolve_exec_handler(
                 args.clone(),
                 exec_handlers.and_then(|handlers| handlers.ls.as_ref()),
@@ -3615,34 +4537,68 @@ async fn dispatch_exec_server_message(
                 |tool_result| build_ls_result_from_tool_result(&args.path, tool_result),
                 |reason| build_ls_rejected_result(&args.path, reason),
                 |error| build_ls_error_result(&args.path, error),
-                Some(&CursorExecPairing { tool_call_id, tool_name: "ls".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "ls".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::LsResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::LsResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::GrepArgs(args) => {
             let mut tool_call_id = Some(args.tool_call_id.clone());
             ensure_unique_cursor_exec_tool_call_id(output, &mut tool_call_id);
             let tool_call_id = tool_call_id.unwrap_or_default();
-            if let Some(error) = empty_grep_pattern_rejection(Some(&args.pattern), args.glob.as_deref()) {
-                send_exec_client_message(transport, exec_msg, exec_client_message::Message::GrepResult(build_grep_error_result(&error))).await;
+            if let Some(error) =
+                empty_grep_pattern_rejection(Some(&args.pattern), args.glob.as_deref())
+            {
+                send_exec_client_message(
+                    transport,
+                    exec_msg,
+                    exec_client_message::Message::GrepResult(build_grep_error_result(&error)),
+                )
+                .await;
                 return Ok(());
             }
             let mut block_args = Map::new();
             block_args.insert("pattern".to_owned(), json!(args.pattern));
             block_args.insert(
                 "path".to_owned(),
-                args.path.as_deref().filter(|path| !path.is_empty()).map(Value::from).unwrap_or(Value::Null),
+                args.path
+                    .as_deref()
+                    .filter(|path| !path.is_empty())
+                    .map(Value::from)
+                    .unwrap_or(Value::Null),
             );
             block_args.insert(
                 "glob".to_owned(),
-                args.glob.as_deref().filter(|glob| !glob.is_empty()).map(Value::from).unwrap_or(Value::Null),
+                args.glob
+                    .as_deref()
+                    .filter(|glob| !glob.is_empty())
+                    .map(Value::from)
+                    .unwrap_or(Value::Null),
             );
             block_args.insert(
                 "ignoreCase".to_owned(),
-                if args.case_insensitive == Some(true) { Value::Bool(true) } else { Value::Null },
+                if args.case_insensitive == Some(true) {
+                    Value::Bool(true)
+                } else {
+                    Value::Null
+                },
             );
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "grep", block_args);
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "grep",
+                block_args,
+            );
             let (exec_result, _) = resolve_exec_handler(
                 args.clone(),
                 exec_handlers.and_then(|handlers| handlers.grep.as_ref()),
@@ -3650,10 +4606,18 @@ async fn dispatch_exec_server_message(
                 |tool_result| build_grep_result_from_tool_result(args, tool_result),
                 build_grep_error_result,
                 build_grep_error_result,
-                Some(&CursorExecPairing { tool_call_id, tool_name: "grep".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "grep".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::GrepResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::GrepResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::WriteArgs(args) => {
             let mut tool_call_id = Some(args.tool_call_id.clone());
@@ -3664,12 +4628,30 @@ async fn dispatch_exec_server_message(
             } else {
                 args.file_text.clone()
             };
-            let block_args = Map::from_iter([("path".to_owned(), json!(args.path)), ("content".to_owned(), json!(content))]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "write", block_args);
+            let block_args = Map::from_iter([
+                ("path".to_owned(), json!(args.path)),
+                ("content".to_owned(), json!(content)),
+            ]);
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "write",
+                block_args,
+            );
             let write_args = WriteResultArgs {
                 path: &args.path,
-                file_text: if args.file_text.is_empty() { None } else { Some(args.file_text.as_str()) },
-                file_bytes: if args.file_bytes.is_empty() { None } else { Some(&args.file_bytes) },
+                file_text: if args.file_text.is_empty() {
+                    None
+                } else {
+                    Some(args.file_text.as_str())
+                },
+                file_bytes: if args.file_bytes.is_empty() {
+                    None
+                } else {
+                    Some(&args.file_bytes)
+                },
                 return_file_content_after_write: Some(args.return_file_content_after_write),
             };
             let (exec_result, _) = resolve_exec_handler(
@@ -3679,17 +4661,32 @@ async fn dispatch_exec_server_message(
                 |tool_result| build_write_result_from_tool_result(&write_args, tool_result),
                 |reason| build_write_rejected_result(&args.path, reason),
                 |error| build_write_error_result(&args.path, error),
-                Some(&CursorExecPairing { tool_call_id, tool_name: "write".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "write".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::WriteResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::WriteResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::DeleteArgs(args) => {
             let mut tool_call_id = Some(args.tool_call_id.clone());
             ensure_unique_cursor_exec_tool_call_id(output, &mut tool_call_id);
             let tool_call_id = tool_call_id.unwrap_or_default();
             let block_args = Map::from_iter([("path".to_owned(), json!(args.path))]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "delete", block_args);
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "delete",
+                block_args,
+            );
             let (exec_result, _) = resolve_exec_handler(
                 args.clone(),
                 exec_handlers.and_then(|handlers| handlers.delete.as_ref()),
@@ -3697,10 +4694,18 @@ async fn dispatch_exec_server_message(
                 |tool_result| build_delete_result_from_tool_result(&args.path, tool_result),
                 |reason| build_delete_rejected_result(&args.path, reason),
                 |error| build_delete_error_result(&args.path, error),
-                Some(&CursorExecPairing { tool_call_id, tool_name: "delete".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "delete".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::DeleteResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::DeleteResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::ShellArgs(args) => {
             let mut tool_call_id = Some(args.tool_call_id.clone());
@@ -3708,53 +4713,112 @@ async fn dispatch_exec_server_message(
             let tool_call_id = tool_call_id.unwrap_or_default();
             let normalized = ShellArgs {
                 working_directory: if args.working_directory.is_empty() {
-                    std::env::current_dir().map(|path| path.display().to_string()).unwrap_or_default()
+                    std::env::current_dir()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_default()
                 } else {
                     args.working_directory.clone()
                 },
                 ..args.clone()
             };
-            let shell_timeout = if args.timeout > 0 { Some(args.timeout) } else { None };
+            let shell_timeout = if args.timeout > 0 {
+                Some(args.timeout)
+            } else {
+                None
+            };
             let block_args = Map::from_iter([
                 (
                     "command".to_owned(),
                     json!(compose_shell_command(
                         &args.command,
-                        if args.working_directory.is_empty() { None } else { Some(&args.working_directory) }
+                        if args.working_directory.is_empty() {
+                            None
+                        } else {
+                            Some(&args.working_directory)
+                        }
                     )),
                 ),
-                ("timeout".to_owned(), shell_timeout.map(Value::from).unwrap_or(Value::Null)),
+                (
+                    "timeout".to_owned(),
+                    shell_timeout.map(Value::from).unwrap_or(Value::Null),
+                ),
             ]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "bash", block_args);
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "bash",
+                block_args,
+            );
             let (exec_result, _) = resolve_exec_handler(
                 normalized.clone(),
                 exec_handlers.and_then(|handlers| handlers.shell.as_ref()),
                 on_tool_result,
                 |tool_result| build_shell_result_from_tool_result(&normalized, tool_result),
-                |reason| build_shell_rejected_result(&normalized.command, &normalized.working_directory, reason),
-                |error| build_shell_failure_result(&normalized.command, &normalized.working_directory, error),
-                Some(&CursorExecPairing { tool_call_id, tool_name: "bash".to_owned() }),
+                |reason| {
+                    build_shell_rejected_result(
+                        &normalized.command,
+                        &normalized.working_directory,
+                        reason,
+                    )
+                },
+                |error| {
+                    build_shell_failure_result(
+                        &normalized.command,
+                        &normalized.working_directory,
+                        error,
+                    )
+                },
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "bash".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::ShellResult(sanitize_shell_exec_result(exec_result))).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::ShellResult(sanitize_shell_exec_result(exec_result)),
+            )
+            .await;
         }
         exec_server_message::Message::ShellStreamArgs(args) => {
             let mut tool_call_id = Some(args.tool_call_id.clone());
             ensure_unique_cursor_exec_tool_call_id(output, &mut tool_call_id);
             let tool_call_id = tool_call_id.unwrap_or_default();
-            let shell_timeout = if args.timeout > 0 { Some(args.timeout) } else { None };
+            let shell_timeout = if args.timeout > 0 {
+                Some(args.timeout)
+            } else {
+                None
+            };
             let block_args = Map::from_iter([
                 (
                     "command".to_owned(),
                     json!(compose_shell_command(
                         &args.command,
-                        if args.working_directory.is_empty() { None } else { Some(&args.working_directory) }
+                        if args.working_directory.is_empty() {
+                            None
+                        } else {
+                            Some(&args.working_directory)
+                        }
                     )),
                 ),
-                ("timeout".to_owned(), shell_timeout.map(Value::from).unwrap_or(Value::Null)),
+                (
+                    "timeout".to_owned(),
+                    shell_timeout.map(Value::from).unwrap_or(Value::Null),
+                ),
             ]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id, "bash", block_args);
-            handle_shell_stream_args(args, exec_msg, transport, exec_handlers, on_tool_result).await;
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id,
+                "bash",
+                block_args,
+            );
+            handle_shell_stream_args(args, exec_msg, transport, exec_handlers, on_tool_result)
+                .await;
         }
         exec_server_message::Message::MiniSweAgentBashArgs(args) => {
             let mut tool_call_id = Some(args.tool_call_id.clone());
@@ -3762,7 +4826,9 @@ async fn dispatch_exec_server_message(
             let tool_call_id = tool_call_id.unwrap_or_default();
             let normalized = ShellArgs {
                 working_directory: if args.working_directory.is_empty() {
-                    std::env::current_dir().map(|path| path.display().to_string()).unwrap_or_default()
+                    std::env::current_dir()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_default()
                 } else {
                     args.working_directory.clone()
                 },
@@ -3773,29 +4839,68 @@ async fn dispatch_exec_server_message(
                     "command".to_owned(),
                     json!(compose_shell_command(
                         &args.command,
-                        if args.working_directory.is_empty() { None } else { Some(&args.working_directory) }
+                        if args.working_directory.is_empty() {
+                            None
+                        } else {
+                            Some(&args.working_directory)
+                        }
                     )),
                 ),
                 (
                     "timeout".to_owned(),
-                    if args.timeout > 0 { json!(args.timeout) } else { Value::Null },
+                    if args.timeout > 0 {
+                        json!(args.timeout)
+                    } else {
+                        Value::Null
+                    },
                 ),
             ]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "bash", block_args);
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "bash",
+                block_args,
+            );
             let (exec_result, _) = resolve_exec_handler(
                 normalized.clone(),
                 exec_handlers.and_then(|handlers| handlers.shell.as_ref()),
                 on_tool_result,
                 |tool_result| build_shell_result_from_tool_result(&normalized, tool_result),
-                |reason| build_shell_rejected_result(&normalized.command, &normalized.working_directory, reason),
-                |error| build_shell_failure_result(&normalized.command, &normalized.working_directory, error),
-                Some(&CursorExecPairing { tool_call_id, tool_name: "bash".to_owned() }),
+                |reason| {
+                    build_shell_rejected_result(
+                        &normalized.command,
+                        &normalized.working_directory,
+                        reason,
+                    )
+                },
+                |error| {
+                    build_shell_failure_result(
+                        &normalized.command,
+                        &normalized.working_directory,
+                        error,
+                    )
+                },
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "bash".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::MiniSweAgentBashResult(sanitize_shell_exec_result(exec_result))).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::MiniSweAgentBashResult(sanitize_shell_exec_result(
+                    exec_result,
+                )),
+            )
+            .await;
         }
         exec_server_message::Message::DiagnosticsArgs(args) => {
-            let tool_call_id = Some(args.tool_call_id.clone()).filter(|id| !id.is_empty()).unwrap_or_else(random_uuid);
+            let tool_call_id = Some(args.tool_call_id.clone())
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(random_uuid);
             let _ = &tool_call_id;
             let (exec_result, _) = resolve_exec_handler(
                 args.clone(),
@@ -3807,12 +4912,19 @@ async fn dispatch_exec_server_message(
                 None,
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::DiagnosticsResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::DiagnosticsResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::McpArgs(args) => {
             let mcp_call = decode_mcp_call(args);
             if mcp_call.approval_only == Some(true) {
-                let approved = match exec_handlers.and_then(|handlers| handlers.mcp_approval_preflight.clone()) {
+                let approved = match exec_handlers
+                    .and_then(|handlers| handlers.mcp_approval_preflight.clone())
+                {
                     Some(preflight) => preflight(mcp_call.clone()).await,
                     None => false,
                 };
@@ -3823,16 +4935,27 @@ async fn dispatch_exec_server_message(
                         mcp_result::Result::Rejected(McpRejected {
                             reason: format!(
                                 "Tool \"{}\" is not approved to run without asking.",
-                                if mcp_call.tool_name.is_empty() { mcp_call.name.clone() } else { mcp_call.tool_name.clone() }
+                                if mcp_call.tool_name.is_empty() {
+                                    mcp_call.name.clone()
+                                } else {
+                                    mcp_call.tool_name.clone()
+                                }
                             ),
                             is_readonly: false,
                         })
                     }),
                 };
-                send_exec_client_message(transport, exec_msg, exec_client_message::Message::McpResult(result)).await;
+                send_exec_client_message(
+                    transport,
+                    exec_msg,
+                    exec_client_message::Message::McpResult(result),
+                )
+                .await;
                 return Ok(());
             }
-            let has_mcp_handler = exec_handlers.and_then(|handlers| handlers.mcp.as_ref()).is_some();
+            let has_mcp_handler = exec_handlers
+                .and_then(|handlers| handlers.mcp.as_ref())
+                .is_some();
             if has_mcp_handler {
                 let existing = output.content.iter().position(|block| {
                     matches!(block, ContentBlock::ToolCall(call) if call.id == mcp_call.tool_call_id)
@@ -3840,9 +4963,22 @@ async fn dispatch_exec_server_message(
                 match existing {
                     Some(index) => mark_cursor_exec_resolved(state, index),
                     None => {
-                        let name = if mcp_call.tool_name.is_empty() { mcp_call.name.clone() } else { mcp_call.tool_name.clone() };
-                        synthesize_cursor_exec_tool_call(output, stream, state, mcp_call.tool_call_id.clone(), &name, mcp_call.args.clone());
-                        state.resolved_mcp_tool_call_ids.insert(mcp_call.tool_call_id.clone());
+                        let name = if mcp_call.tool_name.is_empty() {
+                            mcp_call.name.clone()
+                        } else {
+                            mcp_call.tool_name.clone()
+                        };
+                        synthesize_cursor_exec_tool_call(
+                            output,
+                            stream,
+                            state,
+                            mcp_call.tool_call_id.clone(),
+                            &name,
+                            mcp_call.args.clone(),
+                        );
+                        state
+                            .resolved_mcp_tool_call_ids
+                            .insert(mcp_call.tool_call_id.clone());
                     }
                 }
             }
@@ -3860,7 +4996,12 @@ async fn dispatch_exec_server_message(
                 pairing.as_ref(),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::McpResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::McpResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::PiReadArgs(args) => {
             let tool_call_id = random_uuid();
@@ -3885,12 +5026,25 @@ async fn dispatch_exec_server_message(
                 }
                 None => Map::from_iter([
                     ("path".to_owned(), json!(args.path)),
-                    ("offset".to_owned(), args.offset.map(Value::from).unwrap_or(Value::Null)),
+                    (
+                        "offset".to_owned(),
+                        args.offset.map(Value::from).unwrap_or(Value::Null),
+                    ),
                     ("limit".to_owned(), json!(0)),
                 ]),
             };
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "read", block_args);
-            let call = CursorPiCall { args: args.clone(), tool_call_id: tool_call_id.clone() };
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "read",
+                block_args,
+            );
+            let call = CursorPiCall {
+                args: args.clone(),
+                tool_call_id: tool_call_id.clone(),
+            };
             let (exec_result, _) = resolve_exec_handler(
                 call,
                 exec_handlers.and_then(|handlers| handlers.pi_read.as_ref()),
@@ -3898,19 +5052,42 @@ async fn dispatch_exec_server_message(
                 build_pi_read_result,
                 build_pi_read_error,
                 build_pi_read_error,
-                Some(&CursorExecPairing { tool_call_id, tool_name: "read".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "read".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::PiReadResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::PiReadResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::PiBashArgs(args) => {
             let tool_call_id = random_uuid();
             let block_args = Map::from_iter([
                 ("command".to_owned(), json!(args.command)),
-                ("timeout".to_owned(), pi_timeout(args.timeout).map(Value::from).unwrap_or(Value::Null)),
+                (
+                    "timeout".to_owned(),
+                    pi_timeout(args.timeout)
+                        .map(Value::from)
+                        .unwrap_or(Value::Null),
+                ),
             ]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "bash", block_args);
-            let call = CursorPiCall { args: args.clone(), tool_call_id: tool_call_id.clone() };
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "bash",
+                block_args,
+            );
+            let call = CursorPiCall {
+                args: args.clone(),
+                tool_call_id: tool_call_id.clone(),
+            };
             let (exec_result, _) = resolve_exec_handler(
                 call,
                 exec_handlers.and_then(|handlers| handlers.pi_bash.as_ref()),
@@ -3918,10 +5095,18 @@ async fn dispatch_exec_server_message(
                 build_pi_bash_result,
                 build_pi_bash_error,
                 build_pi_bash_error,
-                Some(&CursorExecPairing { tool_call_id, tool_name: "bash".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "bash".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::PiBashResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::PiBashResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::PiEditArgs(args) => {
             let tool_call_id = random_uuid();
@@ -3930,9 +5115,22 @@ async fn dispatch_exec_server_message(
                 .iter()
                 .map(|edit| json!({ "oldText": edit.old_text, "newText": edit.new_text }))
                 .collect();
-            let block_args = Map::from_iter([("path".to_owned(), json!(args.path)), ("edits".to_owned(), Value::Array(edits))]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "edit", block_args);
-            let call = CursorPiCall { args: args.clone(), tool_call_id: tool_call_id.clone() };
+            let block_args = Map::from_iter([
+                ("path".to_owned(), json!(args.path)),
+                ("edits".to_owned(), Value::Array(edits)),
+            ]);
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "edit",
+                block_args,
+            );
+            let call = CursorPiCall {
+                args: args.clone(),
+                tool_call_id: tool_call_id.clone(),
+            };
             let (exec_result, _) = resolve_exec_handler(
                 call,
                 exec_handlers.and_then(|handlers| handlers.pi_edit.as_ref()),
@@ -3940,16 +5138,37 @@ async fn dispatch_exec_server_message(
                 build_pi_edit_result,
                 build_pi_edit_rejected,
                 build_pi_edit_error,
-                Some(&CursorExecPairing { tool_call_id, tool_name: "edit".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "edit".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::PiEditResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::PiEditResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::PiWriteArgs(args) => {
             let tool_call_id = random_uuid();
-            let block_args = Map::from_iter([("path".to_owned(), json!(args.path)), ("content".to_owned(), json!(args.content))]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "write", block_args);
-            let call = CursorPiCall { args: args.clone(), tool_call_id: tool_call_id.clone() };
+            let block_args = Map::from_iter([
+                ("path".to_owned(), json!(args.path)),
+                ("content".to_owned(), json!(args.content)),
+            ]);
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "write",
+                block_args,
+            );
+            let call = CursorPiCall {
+                args: args.clone(),
+                tool_call_id: tool_call_id.clone(),
+            };
             let (exec_result, _) = resolve_exec_handler(
                 call,
                 exec_handlers.and_then(|handlers| handlers.pi_write.as_ref()),
@@ -3957,24 +5176,78 @@ async fn dispatch_exec_server_message(
                 build_pi_write_result,
                 build_pi_write_rejected,
                 build_pi_write_error,
-                Some(&CursorExecPairing { tool_call_id, tool_name: "write".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "write".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::PiWriteResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::PiWriteResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::PiGrepArgs(args) => {
             let tool_call_id = random_uuid();
             let block_args = Map::from_iter([
                 ("pattern".to_owned(), json!(args.pattern)),
-                ("path".to_owned(), if args.path.as_deref().unwrap_or("").is_empty() { Value::Null } else { json!(args.path) }),
-                ("glob".to_owned(), if args.glob.as_deref().unwrap_or("").is_empty() { Value::Null } else { json!(args.glob) }),
-                ("ignoreCase".to_owned(), if args.ignore_case == Some(true) { Value::Bool(true) } else { Value::Null }),
-                ("literal".to_owned(), if args.literal == Some(true) { Value::Bool(true) } else { Value::Null }),
-                ("context".to_owned(), args.context.map(Value::from).unwrap_or(Value::Null)),
-                ("limit".to_owned(), pi_limit(args.limit.map(f64::from)).map(Value::from).unwrap_or(Value::Null)),
+                (
+                    "path".to_owned(),
+                    if args.path.as_deref().unwrap_or("").is_empty() {
+                        Value::Null
+                    } else {
+                        json!(args.path)
+                    },
+                ),
+                (
+                    "glob".to_owned(),
+                    if args.glob.as_deref().unwrap_or("").is_empty() {
+                        Value::Null
+                    } else {
+                        json!(args.glob)
+                    },
+                ),
+                (
+                    "ignoreCase".to_owned(),
+                    if args.ignore_case == Some(true) {
+                        Value::Bool(true)
+                    } else {
+                        Value::Null
+                    },
+                ),
+                (
+                    "literal".to_owned(),
+                    if args.literal == Some(true) {
+                        Value::Bool(true)
+                    } else {
+                        Value::Null
+                    },
+                ),
+                (
+                    "context".to_owned(),
+                    args.context.map(Value::from).unwrap_or(Value::Null),
+                ),
+                (
+                    "limit".to_owned(),
+                    pi_limit(args.limit.map(f64::from))
+                        .map(Value::from)
+                        .unwrap_or(Value::Null),
+                ),
             ]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "grep", block_args);
-            let call = CursorPiCall { args: args.clone(), tool_call_id: tool_call_id.clone() };
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "grep",
+                block_args,
+            );
+            let call = CursorPiCall {
+                args: args.clone(),
+                tool_call_id: tool_call_id.clone(),
+            };
             let (exec_result, _) = resolve_exec_handler(
                 call,
                 exec_handlers.and_then(|handlers| handlers.pi_grep.as_ref()),
@@ -3982,20 +5255,50 @@ async fn dispatch_exec_server_message(
                 build_pi_grep_result,
                 build_pi_grep_error,
                 build_pi_grep_error,
-                Some(&CursorExecPairing { tool_call_id, tool_name: "grep".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "grep".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::PiGrepResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::PiGrepResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::PiFindArgs(args) => {
             let tool_call_id = random_uuid();
             let block_args = Map::from_iter([
                 ("pattern".to_owned(), json!(args.pattern)),
-                ("path".to_owned(), if args.path.as_deref().unwrap_or("").is_empty() { Value::Null } else { json!(args.path) }),
-                ("limit".to_owned(), pi_limit(args.limit.map(f64::from)).map(Value::from).unwrap_or(Value::Null)),
+                (
+                    "path".to_owned(),
+                    if args.path.as_deref().unwrap_or("").is_empty() {
+                        Value::Null
+                    } else {
+                        json!(args.path)
+                    },
+                ),
+                (
+                    "limit".to_owned(),
+                    pi_limit(args.limit.map(f64::from))
+                        .map(Value::from)
+                        .unwrap_or(Value::Null),
+                ),
             ]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "find", block_args);
-            let call = CursorPiCall { args: args.clone(), tool_call_id: tool_call_id.clone() };
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "find",
+                block_args,
+            );
+            let call = CursorPiCall {
+                args: args.clone(),
+                tool_call_id: tool_call_id.clone(),
+            };
             let (exec_result, _) = resolve_exec_handler(
                 call,
                 exec_handlers.and_then(|handlers| handlers.pi_find.as_ref()),
@@ -4003,19 +5306,42 @@ async fn dispatch_exec_server_message(
                 build_pi_find_result,
                 build_pi_find_error,
                 build_pi_find_error,
-                Some(&CursorExecPairing { tool_call_id, tool_name: "find".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "find".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::PiFindResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::PiFindResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::PiLsArgs(args) => {
             let tool_call_id = random_uuid();
             let block_args = Map::from_iter([
                 ("path".to_owned(), json!(pi_ls_path(args.path.as_deref()))),
-                ("limit".to_owned(), pi_limit(args.limit.map(f64::from)).map(Value::from).unwrap_or(Value::Null)),
+                (
+                    "limit".to_owned(),
+                    pi_limit(args.limit.map(f64::from))
+                        .map(Value::from)
+                        .unwrap_or(Value::Null),
+                ),
             ]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "ls", block_args);
-            let call = CursorPiCall { args: args.clone(), tool_call_id: tool_call_id.clone() };
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "ls",
+                block_args,
+            );
+            let call = CursorPiCall {
+                args: args.clone(),
+                tool_call_id: tool_call_id.clone(),
+            };
             let (exec_result, _) = resolve_exec_handler(
                 call,
                 exec_handlers.and_then(|handlers| handlers.pi_ls.as_ref()),
@@ -4023,10 +5349,18 @@ async fn dispatch_exec_server_message(
                 build_pi_ls_result,
                 build_pi_ls_error,
                 build_pi_ls_error,
-                Some(&CursorExecPairing { tool_call_id, tool_name: "ls".to_owned() }),
+                Some(&CursorExecPairing {
+                    tool_call_id,
+                    tool_name: "ls".to_owned(),
+                }),
             )
             .await;
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::PiLsResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::PiLsResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::ListMcpResourcesExecArgs(_) => {
             let exec_result = ListMcpResourcesExecResult {
@@ -4034,7 +5368,12 @@ async fn dispatch_exec_server_message(
                     ListMcpResourcesSuccess { resources: Vec::new() },
                 )),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::ListMcpResourcesExecResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::ListMcpResourcesExecResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::ReadMcpResourceExecArgs(args) => {
             let exec_result = ReadMcpResourceExecResult {
@@ -4042,24 +5381,47 @@ async fn dispatch_exec_server_message(
                     ReadMcpResourceNotFound { uri: args.uri.clone() },
                 )),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::ReadMcpResourceExecResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::ReadMcpResourceExecResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::RecordScreenArgs(_) => {
             let exec_result = RecordScreenResult {
-                result: Some(super::cursor_agent::r#gen::agent_pb::record_screen_result::Result::Failure(RecordScreenFailure {
-                    error: NOT_IMPLEMENTED.to_owned(),
-                })),
+                result: Some(
+                    super::cursor_agent::r#gen::agent_pb::record_screen_result::Result::Failure(
+                        RecordScreenFailure {
+                            error: NOT_IMPLEMENTED.to_owned(),
+                        },
+                    ),
+                ),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::RecordScreenResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::RecordScreenResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::ComputerUseArgs(_) => {
             let exec_result = ComputerUseResult {
-                result: Some(super::cursor_agent::r#gen::agent_pb::computer_use_result::Result::Error(ComputerUseError {
-                    error: NOT_IMPLEMENTED.to_owned(),
-                    ..ComputerUseError::default()
-                })),
+                result: Some(
+                    super::cursor_agent::r#gen::agent_pb::computer_use_result::Result::Error(
+                        ComputerUseError {
+                            error: NOT_IMPLEMENTED.to_owned(),
+                            ..ComputerUseError::default()
+                        },
+                    ),
+                ),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::ComputerUseResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::ComputerUseResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::BackgroundShellSpawnArgs(args) => {
             let exec_result = BackgroundShellSpawnResult {
@@ -4070,24 +5432,45 @@ async fn dispatch_exec_server_message(
                     is_readonly: false,
                 })),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::BackgroundShellSpawnResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::BackgroundShellSpawnResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::WriteShellStdinArgs(_) => {
             let exec_result = WriteShellStdinResult {
-                result: Some(super::cursor_agent::r#gen::agent_pb::write_shell_stdin_result::Result::Error(WriteShellStdinError {
-                    error: "Not implemented".to_owned(),
-                })),
+                result: Some(
+                    super::cursor_agent::r#gen::agent_pb::write_shell_stdin_result::Result::Error(
+                        WriteShellStdinError {
+                            error: "Not implemented".to_owned(),
+                        },
+                    ),
+                ),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::WriteShellStdinResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::WriteShellStdinResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::FetchArgs(args) => {
             let exec_result = FetchResult {
-                result: Some(super::cursor_agent::r#gen::agent_pb::fetch_result::Result::Error(FetchError {
-                    url: args.url.clone(),
-                    error: "Not implemented".to_owned(),
-                })),
+                result: Some(
+                    super::cursor_agent::r#gen::agent_pb::fetch_result::Result::Error(FetchError {
+                        url: args.url.clone(),
+                        error: "Not implemented".to_owned(),
+                    }),
+                ),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::FetchResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::FetchResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::RedactedReadArgs(args) => {
             send_exec_client_message(
@@ -4104,14 +5487,22 @@ async fn dispatch_exec_server_message(
             send_exec_client_message(
                 transport,
                 exec_msg,
-                exec_client_message::Message::McpStateExecResult(build_mcp_state_result(request_context_tools, &args.server_identifiers)),
+                exec_client_message::Message::McpStateExecResult(build_mcp_state_result(
+                    request_context_tools,
+                    &args.server_identifiers,
+                )),
             )
             .await;
         }
         exec_server_message::Message::ExecuteHookArgs(args) => {
             match build_neutral_hook_result(args.request.as_ref()) {
                 Some(exec_result) => {
-                    send_exec_client_message(transport, exec_msg, exec_client_message::Message::ExecuteHookResult(exec_result)).await;
+                    send_exec_client_message(
+                        transport,
+                        exec_msg,
+                        exec_client_message::Message::ExecuteHookResult(exec_result),
+                    )
+                    .await;
                 }
                 None => {
                     let case = args
@@ -4120,37 +5511,73 @@ async fn dispatch_exec_server_message(
                         .and_then(|request| request.request.as_ref())
                         .map(execute_hook_case_name)
                         .unwrap_or("unset");
-                    send_exec_client_throw(transport, exec_msg, &format!("Unsupported hook request: {case}"), Some("unknown_hook_request")).await;
+                    send_exec_client_throw(
+                        transport,
+                        exec_msg,
+                        &format!("Unsupported hook request: {case}"),
+                        Some("unknown_hook_request"),
+                    )
+                    .await;
                 }
             }
         }
         exec_server_message::Message::SubagentArgs(_) => {
             let exec_result = SubagentResult {
-                result: Some(super::cursor_agent::r#gen::agent_pb::subagent_result::Result::Error(SubagentError {
-                    error: format!("Subagents are {NOT_IMPLEMENTED_SUFFIX}"),
-                    ..SubagentError::default()
-                })),
+                result: Some(
+                    super::cursor_agent::r#gen::agent_pb::subagent_result::Result::Error(
+                        SubagentError {
+                            error: format!("Subagents are {NOT_IMPLEMENTED_SUFFIX}"),
+                            ..SubagentError::default()
+                        },
+                    ),
+                ),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::SubagentResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::SubagentResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::SubagentAwaitArgs(args) => {
             let exec_result = SubagentAwaitResult {
-                result: Some(super::cursor_agent::r#gen::agent_pb::subagent_await_result::Result::NotFound(SubagentAwaitNotFound {
-                    agent_id: args.agent_id.clone(),
-                })),
+                result: Some(
+                    super::cursor_agent::r#gen::agent_pb::subagent_await_result::Result::NotFound(
+                        SubagentAwaitNotFound {
+                            agent_id: args.agent_id.clone(),
+                        },
+                    ),
+                ),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::SubagentAwaitResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::SubagentAwaitResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::ForceBackgroundShellArgs(_) => {
             let exec_result = ForceBackgroundShellResult {
                 status: ForceBackgroundShellStatus::NotFound as i32,
                 ..ForceBackgroundShellResult::default()
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::ForceBackgroundShellResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::ForceBackgroundShellResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::ForceBackgroundSubagentArgs(_) => {
-            let exec_result = ForceBackgroundSubagentResult { status: ForceBackgroundSubagentStatus::NotFound as i32 };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::ForceBackgroundSubagentResult(exec_result)).await;
+            let exec_result = ForceBackgroundSubagentResult {
+                status: ForceBackgroundSubagentStatus::NotFound as i32,
+            };
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::ForceBackgroundSubagentResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::SmartModeClassifierArgs(_) => {
             let exec_result = SmartModeClassifierResult {
@@ -4158,22 +5585,38 @@ async fn dispatch_exec_server_message(
                     SmartModeClassifierError { error: format!("Smart-mode classification is {NOT_IMPLEMENTED_SUFFIX}") },
                 )),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::SmartModeClassifierResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::SmartModeClassifierResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::CanvasDiagnosticsArgs(args) => {
             let exec_result = CanvasDiagnosticsResult {
-                result: Some(super::cursor_agent::r#gen::agent_pb::canvas_diagnostics_result::Result::Error(CanvasDiagnosticsError {
-                    path: args.path.clone(),
-                    error: format!("Canvas diagnostics are {NOT_IMPLEMENTED_SUFFIX}"),
-                })),
+                result: Some(
+                    super::cursor_agent::r#gen::agent_pb::canvas_diagnostics_result::Result::Error(
+                        CanvasDiagnosticsError {
+                            path: args.path.clone(),
+                            error: format!("Canvas diagnostics are {NOT_IMPLEMENTED_SUFFIX}"),
+                        },
+                    ),
+                ),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::CanvasDiagnosticsResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::CanvasDiagnosticsResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::ShellAllowlistPrecheckArgs(_) => {
             send_exec_client_message(
                 transport,
                 exec_msg,
-                exec_client_message::Message::ShellAllowlistPrecheckResult(ShellAllowlistPrecheckResult { allowlisted: false }),
+                exec_client_message::Message::ShellAllowlistPrecheckResult(
+                    ShellAllowlistPrecheckResult { allowlisted: false },
+                ),
             )
             .await;
         }
@@ -4181,7 +5624,9 @@ async fn dispatch_exec_server_message(
             send_exec_client_message(
                 transport,
                 exec_msg,
-                exec_client_message::Message::McpAllowlistPrecheckResult(McpAllowlistPrecheckResult { allowlisted: false }),
+                exec_client_message::Message::McpAllowlistPrecheckResult(
+                    McpAllowlistPrecheckResult { allowlisted: false },
+                ),
             )
             .await;
         }
@@ -4189,25 +5634,56 @@ async fn dispatch_exec_server_message(
             send_exec_client_message(
                 transport,
                 exec_msg,
-                exec_client_message::Message::WebFetchAllowlistPrecheckResult(WebFetchAllowlistPrecheckResult { allowlisted: false }),
+                exec_client_message::Message::WebFetchAllowlistPrecheckResult(
+                    WebFetchAllowlistPrecheckResult { allowlisted: false },
+                ),
             )
             .await;
         }
         exec_server_message::Message::ConversationSearchArgs(args) => {
-            let tool_call_id = if args.tool_call_id.is_empty() { random_uuid() } else { args.tool_call_id.clone() };
+            let tool_call_id = if args.tool_call_id.is_empty() {
+                random_uuid()
+            } else {
+                args.tool_call_id.clone()
+            };
             let error = format!("Conversation search is {NOT_IMPLEMENTED_SUFFIX}");
             let block_args = Map::from_iter([
                 ("query".to_owned(), json!(args.query)),
-                ("limit".to_owned(), args.limit.map(Value::from).unwrap_or(Value::Null)),
+                (
+                    "limit".to_owned(),
+                    args.limit.map(Value::from).unwrap_or(Value::Null),
+                ),
             ]);
-            synthesize_cursor_exec_tool_call(output, stream, state, tool_call_id.clone(), "search_conversations", block_args);
-            pair_synthesized_exec_result(state, on_tool_result, &tool_call_id, "search_conversations", &error, true).await;
+            synthesize_cursor_exec_tool_call(
+                output,
+                stream,
+                state,
+                tool_call_id.clone(),
+                "search_conversations",
+                block_args,
+            );
+            pair_synthesized_exec_result(
+                state,
+                on_tool_result,
+                &tool_call_id,
+                "search_conversations",
+                &error,
+                true,
+            )
+            .await;
             let exec_result = ConversationSearchResult {
-                result: Some(super::cursor_agent::r#gen::agent_pb::conversation_search_result::Result::Error(ConversationSearchError {
-                    error,
-                })),
+                result: Some(
+                    super::cursor_agent::r#gen::agent_pb::conversation_search_result::Result::Error(
+                        ConversationSearchError { error },
+                    ),
+                ),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::ConversationSearchResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::ConversationSearchResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::AgentStoreConflictArgs(_) => {
             let exec_result = AgentStoreConflictResult {
@@ -4215,21 +5691,44 @@ async fn dispatch_exec_server_message(
                     error: format!("Agent store conflicts are {NOT_IMPLEMENTED_SUFFIX}"),
                 })),
             };
-            send_exec_client_message(transport, exec_msg, exec_client_message::Message::AgentStoreConflictResult(exec_result)).await;
+            send_exec_client_message(
+                transport,
+                exec_msg,
+                exec_client_message::Message::AgentStoreConflictResult(exec_result),
+            )
+            .await;
         }
         exec_server_message::Message::GitDiffRequest(_) => {
-            send_exec_client_throw(transport, exec_msg, &format!("Git diff is {NOT_IMPLEMENTED_SUFFIX}"), Some("exec_variant_unsupported")).await;
+            send_exec_client_throw(
+                transport,
+                exec_msg,
+                &format!("Git diff is {NOT_IMPLEMENTED_SUFFIX}"),
+                Some("exec_variant_unsupported"),
+            )
+            .await;
         }
         other => {
             let case = exec_server_case_name(other);
-            log("warn", Some("unhandledExecMessage"), Some(json!({ "execCase": case })));
-            send_exec_client_throw(transport, exec_msg, &format!("No handler for exec message of type {case}"), Some("exec_variant_unsupported")).await;
+            log(
+                "warn",
+                Some("unhandledExecMessage"),
+                Some(json!({ "execCase": case })),
+            );
+            send_exec_client_throw(
+                transport,
+                exec_msg,
+                &format!("No handler for exec message of type {case}"),
+                Some("exec_variant_unsupported"),
+            )
+            .await;
         }
     }
     Ok(())
 }
 
-fn execute_hook_case_name(request: &super::cursor_agent::r#gen::agent_pb::execute_hook_request::Request) -> &'static str {
+fn execute_hook_case_name(
+    request: &super::cursor_agent::r#gen::agent_pb::execute_hook_request::Request,
+) -> &'static str {
     use super::cursor_agent::r#gen::agent_pb::execute_hook_request::Request;
     match request {
         Request::PreCompact(_) => "preCompact",
@@ -4261,7 +5760,11 @@ pub async fn handle_server_message(
     on_conversation_checkpoint: Option<&(dyn Fn(&ConversationStateStructure) + Send + Sync)>,
 ) {
     let msg_case = msg.message.as_ref();
-    log("serverMessage", msg_case.map(server_message_case_name), None);
+    log(
+        "serverMessage",
+        msg_case.map(server_message_case_name),
+        None,
+    );
     match msg_case {
         Some(agent_server_message::Message::InteractionUpdate(update)) => {
             process_interaction_update(update, output, stream, state, usage_state);
@@ -4297,7 +5800,9 @@ fn server_message_case_name(message: &agent_server_message::Message) -> &'static
         agent_server_message::Message::InteractionUpdate(_) => "interactionUpdate",
         agent_server_message::Message::KvServerMessage(_) => "kvServerMessage",
         agent_server_message::Message::ExecServerMessage(_) => "execServerMessage",
-        agent_server_message::Message::ConversationCheckpointUpdate(_) => "conversationCheckpointUpdate",
+        agent_server_message::Message::ConversationCheckpointUpdate(_) => {
+            "conversationCheckpointUpdate"
+        }
         _ => "otherServerMessage",
     }
 }
@@ -4307,11 +5812,16 @@ async fn handle_kv_server_message(
     blob_store: &Arc<Mutex<ConversationBlobStore>>,
     transport: &CursorTransport,
 ) {
-    let Some(kv_case) = kv_msg.message.as_ref() else { return };
+    let Some(kv_case) = kv_msg.message.as_ref() else {
+        return;
+    };
     match kv_case {
         kv_server_message::Message::GetBlobArgs(args) => {
             let blob_id_key = hex::encode(&args.blob_id);
-            let blob_data = blob_store.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&blob_id_key);
+            let blob_data = blob_store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&blob_id_key);
             let response = KvClientMessage {
                 id: kv_msg.id,
                 message: Some(kv_client_message::Message::GetBlobResult(GetBlobResult {
@@ -4321,8 +5831,14 @@ async fn handle_kv_server_message(
             let client_message = AgentClientMessage {
                 message: Some(agent_client_message::Message::KvClientMessage(response)),
             };
-            transport.write_frame(frame_connect_message(&client_message.encode_to_vec(), 0)).await;
-            log("kvClient", Some("getBlobResult"), Some(json!({ "blobId": &blob_id_key[..blob_id_key.len().min(40)] })));
+            transport
+                .write_frame(frame_connect_message(&client_message.encode_to_vec(), 0))
+                .await;
+            log(
+                "kvClient",
+                Some("getBlobResult"),
+                Some(json!({ "blobId": &blob_id_key[..blob_id_key.len().min(40)] })),
+            );
         }
         kv_server_message::Message::SetBlobArgs(args) => {
             let blob_id_key = hex::encode(&args.blob_id);
@@ -4332,13 +5848,21 @@ async fn handle_kv_server_message(
                 .set(blob_id_key.clone(), args.blob_data.to_vec());
             let response = KvClientMessage {
                 id: kv_msg.id,
-                message: Some(kv_client_message::Message::SetBlobResult(SetBlobResult::default())),
+                message: Some(kv_client_message::Message::SetBlobResult(
+                    SetBlobResult::default(),
+                )),
             };
             let client_message = AgentClientMessage {
                 message: Some(agent_client_message::Message::KvClientMessage(response)),
             };
-            transport.write_frame(frame_connect_message(&client_message.encode_to_vec(), 0)).await;
-            log("kvClient", Some("setBlobResult"), Some(json!({ "blobId": &blob_id_key[..blob_id_key.len().min(40)] })));
+            transport
+                .write_frame(frame_connect_message(&client_message.encode_to_vec(), 0))
+                .await;
+            log(
+                "kvClient",
+                Some("setBlobResult"),
+                Some(json!({ "blobId": &blob_id_key[..blob_id_key.len().min(40)] })),
+            );
         }
     }
 }
@@ -4372,12 +5896,19 @@ pub struct FetchCursorUsableModelsOptions {
 
 /// Fetches Cursor models through GetUsableModels (unary protobuf over HTTP/2)
 /// and normalizes them.
-pub async fn fetch_cursor_usable_models(options: FetchCursorUsableModelsOptions) -> Option<Vec<CursorDiscoveredModel>> {
+pub async fn fetch_cursor_usable_models(
+    options: FetchCursorUsableModelsOptions,
+) -> Option<Vec<CursorDiscoveredModel>> {
     let timeout_ms = options.timeout_ms.unwrap_or(10_000);
-    let base_url = options.base_url.clone().unwrap_or_else(|| CURSOR_API_URL.to_owned());
+    let base_url = options
+        .base_url
+        .clone()
+        .unwrap_or_else(|| CURSOR_API_URL.to_owned());
     let base_url = base_url.trim_end_matches('/').to_owned();
 
-    let request_payload = GetUsableModelsRequest { custom_model_ids: Vec::new() };
+    let request_payload = GetUsableModelsRequest {
+        custom_model_ids: Vec::new(),
+    };
     let body = request_payload.encode_to_vec();
 
     let deadline = tokio::time::sleep(Duration::from_millis(timeout_ms));
@@ -4440,7 +5971,11 @@ pub async fn fetch_cursor_usable_models(options: FetchCursorUsableModelsOptions)
     Some(by_id.into_values().collect())
 }
 
-async fn fetch_usable_models_response(base_url: &str, api_key: &str, body: &[u8]) -> Option<Vec<u8>> {
+async fn fetch_usable_models_response(
+    base_url: &str,
+    api_key: &str,
+    body: &[u8],
+) -> Option<Vec<u8>> {
     let (mut send_request, connection) = open_h2(base_url).await.ok()?;
     let request = http::Request::builder()
         .method("POST")
@@ -4489,9 +6024,12 @@ fn decode_connect_unary_body(payload: &[u8]) -> Option<Vec<u8>> {
     let mut offset = 0;
     while offset + 5 <= payload.len() {
         let flags = payload[offset];
-        let message_length =
-            u32::from_be_bytes([payload[offset + 1], payload[offset + 2], payload[offset + 3], payload[offset + 4]])
-                as usize;
+        let message_length = u32::from_be_bytes([
+            payload[offset + 1],
+            payload[offset + 2],
+            payload[offset + 3],
+            payload[offset + 4],
+        ]) as usize;
         let frame_end = offset + 5 + message_length;
         if frame_end > payload.len() {
             return None;
@@ -4508,7 +6046,9 @@ fn decode_connect_unary_body(payload: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn has_1m_label(value: &str) -> bool {
-    value.split(|c: char| !c.is_alphanumeric()).any(|token| token.eq_ignore_ascii_case("1m"))
+    value
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|token| token.eq_ignore_ascii_case("1m"))
 }
 
 fn has_max_mode_1m_family(id: &str) -> bool {
@@ -4519,10 +6059,7 @@ fn has_multimodal_family(id: &str) -> bool {
     id.contains("claude") || id.contains("gemini") || id.contains("gpt-") || id.contains("codex")
 }
 
-fn pick_model_display_name(
-    model: &ModelDetails,
-    fallback_id: &str,
-) -> String {
+fn pick_model_display_name(model: &ModelDetails, fallback_id: &str) -> String {
     for candidate in [
         Some(model.display_name.as_str()),
         Some(model.display_name_short.as_str()),
@@ -4574,10 +6111,16 @@ struct AttemptContext<'a> {
 }
 
 async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, StreamFailure> {
-    let api_key = ctx.options.base.request.api_key.clone().ok_or_else(|| StreamFailure {
-        message: "Cursor access token is required; run /login cursor".to_owned(),
-        retryable: None,
-    })?;
+    let api_key = ctx
+        .options
+        .base
+        .request
+        .api_key
+        .clone()
+        .ok_or_else(|| StreamFailure {
+            message: "Cursor access token is required; run /login cursor".to_owned(),
+            retryable: None,
+        })?;
 
     let base_conversation_id = ctx
         .options
@@ -4594,9 +6137,15 @@ async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, Str
     register_conversation_cache_key(ctx.options.base.session_id.as_deref(), &conversation_id);
     *ctx.live_key = Some(conversation_id.clone());
     retain_live_conversation(&conversation_id);
-    let blob_store = get_or_create_conversation_blob_store(&conversation_id, ctx.options.base.session_id.as_deref());
+    let blob_store = get_or_create_conversation_blob_store(
+        &conversation_id,
+        ctx.options.base.session_id.as_deref(),
+    );
     *ctx.pinned_store = Some(blob_store.clone());
-    blob_store.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).begin_request_pins();
+    blob_store
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .begin_request_pins();
 
     let cached_state = conversations().state.get(&conversation_id).cloned();
     let request_output = build_grpc_request(
@@ -4613,33 +6162,52 @@ async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, Str
         },
     )
     .await
-    .map_err(|message| StreamFailure { message, retryable: None })?;
+    .map_err(|message| StreamFailure {
+        message,
+        retryable: None,
+    })?;
     if ctx.pinned.requested_model.is_none() {
         ctx.pinned.requested_model = Some(request_output.requested_model.clone());
     }
     if ctx.pinned.model_details.is_none() {
         ctx.pinned.model_details = Some(request_output.model_details.clone());
     }
-    conversations().state.insert(conversation_id.clone(), request_output.conversation_state.clone());
+    conversations().state.insert(
+        conversation_id.clone(),
+        request_output.conversation_state.clone(),
+    );
     enforce_conversation_total_blob_limit();
 
     let request_context_tools = build_mcp_tool_definitions(ctx.context.tools.as_deref());
 
-    let base_url = if ctx.model.base_url.is_empty() { CURSOR_API_URL.to_owned() } else { ctx.model.base_url.clone() };
+    let base_url = if ctx.model.base_url.is_empty() {
+        CURSOR_API_URL.to_owned()
+    } else {
+        ctx.model.base_url.clone()
+    };
     let caller_headers = sanitize_cursor_caller_headers(
         provider_headers_to_record(ctx.options.base.request.headers.as_ref()).as_ref(),
     );
 
-    let (mut send_request, connection) = open_h2(&base_url).await.map_err(|message| StreamFailure {
-        message,
-        retryable: Some(CursorStreamRetryCause::Transport),
-    })?;
-    let request = build_run_request_headers(&base_url, &api_key, &caller_headers)
-        .map_err(|message| StreamFailure { message, retryable: None })?;
-    let (response, send_stream) = send_request.send_request(request, false).map_err(|error| StreamFailure {
-        message: error.to_string(),
-        retryable: Some(CursorStreamRetryCause::Transport),
-    })?;
+    let (mut send_request, connection) =
+        open_h2(&base_url).await.map_err(|message| StreamFailure {
+            message,
+            retryable: Some(CursorStreamRetryCause::Transport),
+        })?;
+    let request =
+        build_run_request_headers(&base_url, &api_key, &caller_headers).map_err(|message| {
+            StreamFailure {
+                message,
+                retryable: None,
+            }
+        })?;
+    let (response, send_stream) =
+        send_request
+            .send_request(request, false)
+            .map_err(|error| StreamFailure {
+                message: error.to_string(),
+                retryable: Some(CursorStreamRetryCause::Transport),
+            })?;
     let transport = CursorTransport {
         send: Arc::new(tokio::sync::Mutex::new(Some(send_stream))),
         closed: Arc::new(AtomicBool::new(false)),
@@ -4651,7 +6219,10 @@ async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, Str
             connection.abort();
             transport.close();
             let message = map_h2_transport_error(None, &error.to_string(), &base_url);
-            return Err(StreamFailure { message, retryable: Some(CursorStreamRetryCause::Transport) });
+            return Err(StreamFailure {
+                message,
+                retryable: Some(CursorStreamRetryCause::Transport),
+            });
         }
     };
     let status = response.status().as_u16();
@@ -4665,12 +6236,16 @@ async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, Str
     }
 
     if ctx.attempt == 1 {
-        ctx.stream.push(AssistantMessageEvent::Start { partial: ctx.output.clone() });
+        ctx.stream.push(AssistantMessageEvent::Start {
+            partial: ctx.output.clone(),
+        });
     }
 
     let mut body = response.into_body();
-    let health_fail_threshold_ms =
-        ctx.options.stream_health_fail_threshold_ms.unwrap_or(CURSOR_STREAM_HEALTH_FAIL_THRESHOLD_MS);
+    let health_fail_threshold_ms = ctx
+        .options
+        .stream_health_fail_threshold_ms
+        .unwrap_or(CURSOR_STREAM_HEALTH_FAIL_THRESHOLD_MS);
 
     let heartbeat = {
         let transport = transport.clone();
@@ -4683,14 +6258,20 @@ async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, Str
                     return;
                 }
                 let heartbeat_message = AgentClientMessage {
-                    message: Some(agent_client_message::Message::ClientHeartbeat(ClientHeartbeat::default())),
+                    message: Some(agent_client_message::Message::ClientHeartbeat(
+                        ClientHeartbeat::default(),
+                    )),
                 };
-                transport.write_frame(frame_connect_message(&heartbeat_message.encode_to_vec(), 0)).await;
+                transport
+                    .write_frame(frame_connect_message(&heartbeat_message.encode_to_vec(), 0))
+                    .await;
             }
         })
     };
 
-    transport.write_frame(frame_connect_message(&request_output.request_bytes, 0)).await;
+    transport
+        .write_frame(frame_connect_message(&request_output.request_bytes, 0))
+        .await;
 
     let mut pending: Vec<u8> = Vec::new();
     let mut end_stream_error: Option<String> = None;
@@ -4741,7 +6322,8 @@ async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, Str
 
         while pending.len() >= 5 {
             let flags = pending[0];
-            let message_length = u32::from_be_bytes([pending[1], pending[2], pending[3], pending[4]]) as usize;
+            let message_length =
+                u32::from_be_bytes([pending[1], pending[2], pending[3], pending[4]]) as usize;
             if pending.len() < 5 + message_length {
                 break;
             }
@@ -4767,7 +6349,10 @@ async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, Str
             if let Some(agent_server_message::Message::ConversationCheckpointUpdate(checkpoint)) =
                 server_message.message.as_ref()
             {
-                let max_tokens = checkpoint.token_details.as_ref().map(|details| details.max_tokens as f64);
+                let max_tokens = checkpoint
+                    .token_details
+                    .as_ref()
+                    .map(|details| details.max_tokens as f64);
                 record_cursor_context_limit(&ctx.model.id, max_tokens);
             }
             let on_tool_result = ctx.state.on_tool_result.clone();
@@ -4799,7 +6384,10 @@ async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, Str
         Ok(outcome) => Ok(outcome),
         Err(failure) => {
             if let Some(end_stream_error) = end_stream_error {
-                return Err(StreamFailure { message: end_stream_error, retryable: None });
+                return Err(StreamFailure {
+                    message: end_stream_error,
+                    retryable: None,
+                });
             }
             Err(failure)
         }
@@ -4813,6 +6401,10 @@ async fn run_stream(
     stream: AssistantMessageEventStream,
 ) {
     let mut output = AssistantMessage {
+        error_cause: None,
+        prompt_cache_diagnostics: None,
+        thinking_level: None,
+        provider_diagnostic: None,
         content: Vec::new(),
         api: model.api.clone(),
         provider: model.provider.clone(),
@@ -4841,16 +6433,21 @@ async fn run_stream(
         open_tool_calls: HashMap::new(),
         resolved_mcp_tool_call_ids: HashSet::new(),
         streaming: HashMap::new(),
-        on_tool_result: options
-            .on_tool_result
-            .clone()
-            .or_else(|| options.exec_handlers.as_ref().and_then(|handlers| handlers.on_tool_result.clone())),
+        on_tool_result: options.on_tool_result.clone().or_else(|| {
+            options
+                .exec_handlers
+                .as_ref()
+                .and_then(|handlers| handlers.on_tool_result.clone())
+        }),
     };
 
     let mut base_conversation_id: Option<String> = None;
     let mut conversation_id: Option<String> = None;
     let mut usage_state = UsageState::default();
-    let mut pinned = PinnedModels { requested_model: None, model_details: None };
+    let mut pinned = PinnedModels {
+        requested_model: None,
+        model_details: None,
+    };
     let mut attempt = 0u32;
     let mut stream_retries = 0u32;
     let mut force_resume_action = false;
@@ -4880,7 +6477,10 @@ async fn run_stream(
         };
 
         if let Some(store) = &pinned_store {
-            store.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).release_request_pins();
+            store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .release_request_pins();
         }
         if let Some(key) = &live_key {
             release_live_conversation(key);
@@ -4900,12 +6500,20 @@ async fn run_stream(
                     crate::types::StopReason::ToolUse => DoneReason::ToolUse,
                     _ => DoneReason::Stop,
                 };
-                stream.push(AssistantMessageEvent::Done { reason, message: output.clone() });
+                stream.push(AssistantMessageEvent::Done {
+                    reason,
+                    message: output.clone(),
+                });
                 stream.end(None);
                 return;
             }
             Err(failure) => {
-                let aborted = options.base.request.signal.as_ref().is_some_and(AbortSignal::aborted);
+                let aborted = options
+                    .base
+                    .request
+                    .signal
+                    .as_ref()
+                    .is_some_and(AbortSignal::aborted);
                 let should_retry = failure.retryable.is_some()
                     && !aborted
                     && stream_retries < options.stream_stall_max_retries.unwrap_or(10);
@@ -4921,7 +6529,13 @@ async fn run_stream(
                     );
                     stream_retries += 1;
                     wait_for_cursor_stream_retry(delay, options.base.request.signal.as_ref()).await;
-                    if options.base.request.signal.as_ref().is_some_and(AbortSignal::aborted) {
+                    if options
+                        .base
+                        .request
+                        .signal
+                        .as_ref()
+                        .is_some_and(AbortSignal::aborted)
+                    {
                         output.stop_reason = crate::types::StopReason::Aborted;
                         output.error_message = Some("Request was aborted".to_owned());
                         stream.push(AssistantMessageEvent::Error {
@@ -4935,7 +6549,8 @@ async fn run_stream(
                 }
 
                 let mut message = failure.message;
-                let zero_token_resource_exhausted = is_zero_token_resource_exhausted(&message, usage_state.saw_token_delta);
+                let zero_token_resource_exhausted =
+                    is_zero_token_resource_exhausted(&message, usage_state.saw_token_delta);
                 if zero_token_resource_exhausted
                     && let (Some(current), Some(base)) =
                         (conversation_id.clone(), base_conversation_id.clone())
@@ -4956,8 +6571,14 @@ async fn run_stream(
                                 if let Some(blobs) = conversations().blobs.get(&current).cloned() {
                                     conversations().blobs.insert(wire_id.clone(), blobs);
                                 }
-                                register_conversation_cache_key(options.base.session_id.as_deref(), &wire_id);
-                                enforce_conversation_cache_limit(&wire_id, options.base.session_id.as_deref());
+                                register_conversation_cache_key(
+                                    options.base.session_id.as_deref(),
+                                    &wire_id,
+                                );
+                                enforce_conversation_cache_limit(
+                                    &wire_id,
+                                    options.base.session_id.as_deref(),
+                                );
                                 if wire_id != current {
                                     forget_conversation_cache_key(&current);
                                 }
@@ -4976,8 +6597,15 @@ async fn run_stream(
                     crate::types::StopReason::Error
                 };
                 output.error_message = Some(message);
-                let reason = if aborted { ErrorReason::Aborted } else { ErrorReason::Error };
-                stream.push(AssistantMessageEvent::Error { reason, error: output.clone() });
+                let reason = if aborted {
+                    ErrorReason::Aborted
+                } else {
+                    ErrorReason::Error
+                };
+                stream.push(AssistantMessageEvent::Error {
+                    reason,
+                    error: output.clone(),
+                });
                 stream.end(None);
                 return;
             }
@@ -5007,8 +6635,18 @@ pub fn stream_with_options(
     stream
 }
 
-pub fn stream(model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
-    stream_with_options(model, context, options.map(cursor_options_from_stream_options))
+pub fn stream(
+    model: &Model,
+    context: &Context,
+    options: Option<StreamOptions>,
+) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
+    stream_with_options(
+        model,
+        context,
+        options.map(cursor_options_from_stream_options),
+    )
 }
 
 pub fn stream_simple(
@@ -5016,6 +6654,8 @@ pub fn stream_simple(
     context: &Context,
     options: Option<SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
+    let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+    let context = &resolved_context;
     let mut cursor_options = options
         .as_ref()
         .map(|options| cursor_options_from_stream_options(options.stream.clone()))
@@ -5027,7 +6667,10 @@ pub fn stream_simple(
 }
 
 fn cursor_options_from_stream_options(base: StreamOptions) -> CursorAgentOptions {
-    CursorAgentOptions { base, ..CursorAgentOptions::default() }
+    CursorAgentOptions {
+        base,
+        ..CursorAgentOptions::default()
+    }
 }
 
 pub struct CursorAgentStreams;
@@ -5039,6 +6682,8 @@ impl crate::types::ProviderStreams for CursorAgentStreams {
         context: &Context,
         options: Option<StreamOptions>,
     ) -> AssistantMessageEventStream {
+        let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+        let context = &resolved_context;
         stream(model, context, options)
     }
 
@@ -5048,6 +6693,8 @@ impl crate::types::ProviderStreams for CursorAgentStreams {
         context: &Context,
         options: Option<SimpleStreamOptions>,
     ) -> AssistantMessageEventStream {
+        let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
+        let context = &resolved_context;
         stream_simple(model, context, options)
     }
 }
@@ -5055,7 +6702,9 @@ impl crate::types::ProviderStreams for CursorAgentStreams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{InputModality, ModelCost, ModelThinkingLevel, ThinkingSelection, ThinkingSelectionSource};
+    use crate::types::{
+        InputModality, ModelCost, ModelThinkingLevel, ThinkingSelection, ThinkingSelectionSource,
+    };
     use serde_json::json;
 
     /// The generic `TResult` in `resolve_exec_handler` must be able to describe
@@ -5078,6 +6727,7 @@ mod tests {
         details: Option<Value>,
     ) -> ToolResultMessage {
         ToolResultMessage {
+            nested_calls: None,
             tool_call_id: tool_call_id.to_owned(),
             tool_name: tool_name.to_owned(),
             content: vec![text_block(content)],
@@ -5102,6 +6752,8 @@ mod tests {
 
     fn model(id: &str, compat: Option<Value>) -> Model {
         Model {
+            prompt_cache: None,
+            supports_assistant_prefill: None,
             id: id.to_owned(),
             name: id.to_owned(),
             api: "cursor-agent".to_owned(),
@@ -5127,6 +6779,10 @@ mod tests {
 
     fn assistant_for_tests() -> AssistantMessage {
         AssistantMessage {
+            error_cause: None,
+            prompt_cache_diagnostics: None,
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "cursor-agent".to_owned(),
             provider: "cursor".to_owned(),
@@ -5182,7 +6838,8 @@ mod tests {
 
     #[test]
     fn merges_streamed_and_completion_mcp_args_per_key() {
-        let streamed = json!({ "tasks": [{ "id": 1 }], "name": "streamed", "keep": "streamed-only" });
+        let streamed =
+            json!({ "tasks": [{ "id": 1 }], "name": "streamed", "keep": "streamed-only" });
         let completion = json!({ "tasks": "[object Object]", "name": "completion" });
         let merged = merge_cursor_mcp_tool_call_args(streamed.as_object(), completion.as_object());
         assert_eq!(
@@ -5197,7 +6854,10 @@ mod tests {
 
     #[test]
     fn rejects_empty_grep_patterns_with_a_glob_aware_hint() {
-        assert_eq!(empty_grep_pattern_rejection(Some("real-pattern"), None), None);
+        assert_eq!(
+            empty_grep_pattern_rejection(Some("real-pattern"), None),
+            None
+        );
         let hinted = empty_grep_pattern_rejection(Some(""), Some("*.ts")).expect("hint");
         assert!(hinted.contains("\"*.ts\""), "{hinted}");
         let plain = empty_grep_pattern_rejection(Some("  "), None).expect("plain");
@@ -5226,7 +6886,9 @@ mod tests {
                 ],
                 ..assistant_for_tests()
             })),
-            Message::ToolResult(tool_result_message("call-1", "read", "contents", false, None)),
+            Message::ToolResult(tool_result_message(
+                "call-1", "read", "contents", false, None,
+            )),
             Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("now summarize".to_owned()),
                 timestamp: 0,
@@ -5253,7 +6915,10 @@ mod tests {
             ]
         );
         assert_eq!(history.turn_user_messages_json.len(), 1);
-        assert_eq!(history.turn_user_messages_json[0]["text"], json!("read the file"));
+        assert_eq!(
+            history.turn_user_messages_json[0]["text"],
+            json!("read the file")
+        );
         assert_eq!(history.turn_step_messages_json[0].len(), 2);
     }
 
@@ -5264,7 +6929,13 @@ mod tests {
                 content: crate::types::UserContent::Text("hi".to_owned()),
                 timestamp: 0,
             }),
-            Message::ToolResult(tool_result_message("orphan-1", "bash", "stray output", true, None)),
+            Message::ToolResult(tool_result_message(
+                "orphan-1",
+                "bash",
+                "stray output",
+                true,
+                None,
+            )),
             Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("next".to_owned()),
                 timestamp: 0,
@@ -5279,7 +6950,9 @@ mod tests {
     fn builds_one_default_system_prompt_blob_when_none_is_provided() {
         assert_eq!(
             build_cursor_system_prompt_jsons(None, None),
-            vec![json!({ "role": "system", "content": "You are a helpful assistant." }).to_string()]
+            vec![
+                json!({ "role": "system", "content": "You are a helpful assistant." }).to_string()
+            ]
         );
         assert_eq!(
             build_cursor_system_prompt_jsons(Some("Be terse."), None),
@@ -5292,10 +6965,20 @@ mod tests {
         let tools = vec![
             tool("bash", "", json!({ "type": "object" })),
             tool("read", "", json!({ "type": "object" })),
-            tool("edit", "edits", json!({ "type": "object", "properties": { "path": { "type": "string" } } })),
+            tool(
+                "edit",
+                "edits",
+                json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+            ),
         ];
         let definitions = build_mcp_tool_definitions(Some(&tools));
-        assert_eq!(definitions.iter().map(|d| d.name.clone()).collect::<Vec<_>>(), vec!["edit".to_owned()]);
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|d| d.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["edit".to_owned()]
+        );
         assert_eq!(definitions[0].provider_identifier, "pi-agent");
         assert_eq!(definitions[0].tool_name, "edit");
     }
@@ -5318,7 +7001,10 @@ mod tests {
 
     #[test]
     fn frames_connect_messages_with_a_five_byte_prefix() {
-        assert_eq!(frame_connect_message(&[1, 2, 3], 0), vec![0, 0, 0, 0, 3, 1, 2, 3]);
+        assert_eq!(
+            frame_connect_message(&[1, 2, 3], 0),
+            vec![0, 0, 0, 0, 3, 1, 2, 3]
+        );
         assert_eq!(frame_connect_message(&[], 2), vec![2, 0, 0, 0, 0]);
     }
 
@@ -5329,7 +7015,10 @@ mod tests {
             parse_connect_end_stream(payload),
             Some("Connect error resource_exhausted: quota exceeded".to_owned())
         );
-        assert_eq!(parse_connect_end_stream(b"not json"), Some("Failed to parse Connect end stream".to_owned()));
+        assert_eq!(
+            parse_connect_end_stream(b"not json"),
+            Some("Failed to parse Connect end stream".to_owned())
+        );
         assert_eq!(parse_connect_end_stream(br#"{}"#), None);
     }
 
@@ -5347,19 +7036,29 @@ mod tests {
 
     #[test]
     fn builds_a_read_exec_result_envelope_from_a_tool_result() {
-        let ok = build_read_result_from_tool_result("a.ts", &tool_result_message("c", "read", "one\ntwo", false, None), false);
+        let ok = build_read_result_from_tool_result(
+            "a.ts",
+            &tool_result_message("c", "read", "one\ntwo", false, None),
+            false,
+        );
         match ok.result {
             Some(read_result::Result::Success(success)) => {
                 assert_eq!(success.path, "a.ts");
                 assert_eq!(success.total_lines, 2);
                 assert_eq!(success.file_size, 7);
                 assert!(!success.range_applied);
-                assert!(matches!(success.output, Some(read_success::Output::Content(ref text)) if text == "one\ntwo"));
+                assert!(
+                    matches!(success.output, Some(read_success::Output::Content(ref text)) if text == "one\ntwo")
+                );
             }
             other => panic!("expected success, got {other:?}"),
         }
 
-        let windowed = build_read_result_from_tool_result("a.ts", &tool_result_message("c", "read", "one\ntwo", false, None), true);
+        let windowed = build_read_result_from_tool_result(
+            "a.ts",
+            &tool_result_message("c", "read", "one\ntwo", false, None),
+            true,
+        );
         match windowed.result {
             Some(read_result::Result::Success(success)) => {
                 assert_eq!(success.total_lines, 0);
@@ -5368,7 +7067,11 @@ mod tests {
             other => panic!("expected success, got {other:?}"),
         }
 
-        let failed = build_read_result_from_tool_result("a.ts", &tool_result_message("c", "read", "boom", true, None), false);
+        let failed = build_read_result_from_tool_result(
+            "a.ts",
+            &tool_result_message("c", "read", "boom", true, None),
+            false,
+        );
         assert!(matches!(
             failed.result,
             Some(read_result::Result::Error(ReadError { ref path, ref error })) if path == "a.ts" && error == "boom"
@@ -5405,11 +7108,16 @@ mod tests {
         let on_tool_result: CursorToolResultHandler = Arc::new(move |result| {
             let sink = sink_paired.clone();
             Box::pin(async move {
-                sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(result);
+                sink.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(result);
                 None
             })
         });
-        let pairing = CursorExecPairing { tool_call_id: "id-1".to_owned(), tool_name: "read".to_owned() };
+        let pairing = CursorExecPairing {
+            tool_call_id: "id-1".to_owned(),
+            tool_name: "read".to_owned(),
+        };
         let (exec_result, tool_result) = resolve_exec_handler::<(), String>(
             (),
             None,
@@ -5422,19 +7130,29 @@ mod tests {
         .await;
         assert_eq!(exec_result, "rejected:Tool not available");
         assert_eq!(tool_result.map(|result| result.is_error), Some(true));
-        assert_eq!(paired.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len(), 1);
+        assert_eq!(
+            paired
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn resolve_exec_handler_derives_the_wire_result_from_a_tool_result_message() {
         let returned = tool_result_message("id-1", "read", "ok", false, None);
         let expected = returned.clone();
-        let handler: Arc<dyn Fn(()) -> crate::api::cursor_agent::types::ExecFuture<String> + Send + Sync> =
-            Arc::new(move |_args| {
-                let returned = returned.clone();
-                Box::pin(async move { CursorExecHandlerResult::ToolResult(returned) })
-            });
-        let pairing = CursorExecPairing { tool_call_id: "id-1".to_owned(), tool_name: "read".to_owned() };
+        let handler: Arc<
+            dyn Fn(()) -> crate::api::cursor_agent::types::ExecFuture<String> + Send + Sync,
+        > = Arc::new(move |_args| {
+            let returned = returned.clone();
+            Box::pin(async move { CursorExecHandlerResult::ToolResult(returned) })
+        });
+        let pairing = CursorExecPairing {
+            tool_call_id: "id-1".to_owned(),
+            tool_name: "read".to_owned(),
+        };
         let (exec_result, tool_result) = resolve_exec_handler::<(), String>(
             (),
             Some(&handler),
@@ -5452,18 +7170,22 @@ mod tests {
     #[tokio::test]
     async fn resolve_exec_handler_lets_the_transformer_rewrite_the_paired_result() {
         let returned = tool_result_message("id-1", "read", "original", false, None);
-        let handler: Arc<dyn Fn(()) -> crate::api::cursor_agent::types::ExecFuture<String> + Send + Sync> =
-            Arc::new(move |_args| {
-                let returned = returned.clone();
-                Box::pin(async move { CursorExecHandlerResult::ToolResult(returned) })
-            });
+        let handler: Arc<
+            dyn Fn(()) -> crate::api::cursor_agent::types::ExecFuture<String> + Send + Sync,
+        > = Arc::new(move |_args| {
+            let returned = returned.clone();
+            Box::pin(async move { CursorExecHandlerResult::ToolResult(returned) })
+        });
         let on_tool_result: CursorToolResultHandler = Arc::new(|mut result| {
             Box::pin(async move {
                 result.content = vec![text_block("rewritten")];
                 Some(result)
             })
         });
-        let pairing = CursorExecPairing { tool_call_id: "id-1".to_owned(), tool_name: "read".to_owned() };
+        let pairing = CursorExecPairing {
+            tool_call_id: "id-1".to_owned(),
+            tool_name: "read".to_owned(),
+        };
         let (_exec_result, tool_result) = resolve_exec_handler::<(), String>(
             (),
             Some(&handler),
@@ -5495,7 +7217,10 @@ mod tests {
         let sanitized = sanitize_cursor_tool_schema(&schema);
         assert_eq!(sanitized.get("oneOf"), None);
         assert_eq!(sanitized["type"], json!("object"));
-        assert_eq!(sanitized["properties"]["ruleFile"], json!({ "type": "string", "minLength": 1 }));
+        assert_eq!(
+            sanitized["properties"]["ruleFile"],
+            json!({ "type": "string", "minLength": 1 })
+        );
         assert_eq!(sanitized["required"], json!(["ruleFile"]));
     }
 
@@ -5510,7 +7235,10 @@ mod tests {
         });
         let sanitized = sanitize_cursor_tool_schema(&schema);
         assert_eq!(sanitized["properties"]["filter"].get("anyOf"), None);
-        assert_eq!(sanitized["properties"]["filter"]["properties"]["kind"], json!({ "type": "string" }));
+        assert_eq!(
+            sanitized["properties"]["filter"]["properties"]["kind"],
+            json!({ "type": "string" })
+        );
         assert_eq!(sanitized["properties"]["list"]["items"].get("allOf"), None);
     }
 
@@ -5540,7 +7268,9 @@ mod tests {
     fn renders_an_absent_selection_as_the_representative_variant() {
         let model = model(
             "gpt-5.5-medium",
-            Some(json!({ "cursorReasoning": { "capabilityId": "gpt-5.5", "representativeVariantId": "gpt-5.5-medium" } })),
+            Some(
+                json!({ "cursorReasoning": { "capabilityId": "gpt-5.5", "representativeVariantId": "gpt-5.5-medium" } }),
+            ),
         );
         let requested = build_requested_model(&model, None);
         assert_eq!(requested.model_id, "gpt-5.5-medium");
@@ -5552,7 +7282,9 @@ mod tests {
     fn renders_an_explicit_selection_as_the_catalog_suffix_variant() {
         let model = model(
             "gpt-5.5",
-            Some(json!({ "cursorReasoning": { "capabilityId": "gpt-5.5", "representativeVariantId": "gpt-5.5-medium" } })),
+            Some(
+                json!({ "cursorReasoning": { "capabilityId": "gpt-5.5", "representativeVariantId": "gpt-5.5-medium" } }),
+            ),
         );
         let selection = ThinkingSelection {
             level: ModelThinkingLevel::Xhigh,
@@ -5588,6 +7320,7 @@ mod tests {
     async fn builds_the_run_request_with_a_user_message_action() {
         let model = model("gpt-5.5-medium", None);
         let context = Context {
+            active_tool_names: None,
             system_prompt: Some("Be terse.".to_owned()),
             messages: vec![Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("hello".to_owned()),
@@ -5631,6 +7364,7 @@ mod tests {
     async fn builds_a_resume_action_when_the_prompt_forces_one() {
         let model = model("gpt-5.5-medium", None);
         let context = Context {
+            active_tool_names: None,
             system_prompt: None,
             messages: vec![Message::User(crate::types::UserMessage {
                 content: crate::types::UserContent::Text("hello".to_owned()),
@@ -5671,19 +7405,29 @@ mod tests {
         let mut usage_state = UsageState::default();
 
         for message in [
-            interaction_update::Message::ThinkingDelta(crate::api::cursor_agent::r#gen::agent_pb::ThinkingDeltaUpdate {
-                text: "pondering".to_owned(),
-            }),
-            interaction_update::Message::TextDelta(crate::api::cursor_agent::r#gen::agent_pb::TextDeltaUpdate {
-                text: "Hello ".to_owned(),
-            }),
-            interaction_update::Message::TextDelta(crate::api::cursor_agent::r#gen::agent_pb::TextDeltaUpdate {
-                text: "world".to_owned(),
-            }),
-            interaction_update::Message::TokenDelta(crate::api::cursor_agent::r#gen::agent_pb::TokenDeltaUpdate { tokens: 7 }),
+            interaction_update::Message::ThinkingDelta(
+                crate::api::cursor_agent::r#gen::agent_pb::ThinkingDeltaUpdate {
+                    text: "pondering".to_owned(),
+                },
+            ),
+            interaction_update::Message::TextDelta(
+                crate::api::cursor_agent::r#gen::agent_pb::TextDeltaUpdate {
+                    text: "Hello ".to_owned(),
+                },
+            ),
+            interaction_update::Message::TextDelta(
+                crate::api::cursor_agent::r#gen::agent_pb::TextDeltaUpdate {
+                    text: "world".to_owned(),
+                },
+            ),
+            interaction_update::Message::TokenDelta(
+                crate::api::cursor_agent::r#gen::agent_pb::TokenDeltaUpdate { tokens: 7 },
+            ),
             interaction_update::Message::TurnEnded(Default::default()),
         ] {
-            let update = crate::api::cursor_agent::r#gen::agent_pb::InteractionUpdate { message: Some(message) };
+            let update = crate::api::cursor_agent::r#gen::agent_pb::InteractionUpdate {
+                message: Some(message),
+            };
             process_interaction_update(&update, &mut output, &stream, &mut state, &mut usage_state);
         }
 
@@ -5708,7 +7452,13 @@ mod tests {
             .collect();
         assert_eq!(
             event_kinds,
-            vec!["thinking_start", "thinking_delta", "text_start", "text_delta", "text_delta"]
+            vec![
+                "thinking_start",
+                "thinking_delta",
+                "text_start",
+                "text_delta",
+                "text_delta"
+            ]
         );
     }
 
@@ -5752,7 +7502,10 @@ mod tests {
     fn ignores_billed_cache_read_that_dwarfs_checkpoint_used_tokens() {
         let mut output = assistant_for_tests();
         output.usage.output = 5;
-        let mut usage_state = UsageState { live_used_tokens: Some(148_256), ..UsageState::default() };
+        let mut usage_state = UsageState {
+            live_used_tokens: Some(148_256),
+            ..UsageState::default()
+        };
         let update = crate::api::cursor_agent::r#gen::agent_pb::TurnEndedUpdate {
             input_tokens: Some(4_090_000),
             output_tokens: Some(5),
@@ -5772,10 +7525,12 @@ mod tests {
         output.usage.output = 5;
         let mut usage_state = UsageState::default();
         let checkpoint = ConversationStateStructure {
-            token_details: Some(crate::api::cursor_agent::r#gen::agent_pb::ConversationTokenDetails {
-                used_tokens: 17_962,
-                max_tokens: 200_000,
-            }),
+            token_details: Some(
+                crate::api::cursor_agent::r#gen::agent_pb::ConversationTokenDetails {
+                    used_tokens: 17_962,
+                    max_tokens: 200_000,
+                },
+            ),
             ..Default::default()
         };
         apply_checkpoint_token_details(&checkpoint, &mut output, &mut usage_state);
@@ -5799,10 +7554,12 @@ mod tests {
             &mut usage_state,
         );
         let checkpoint = ConversationStateStructure {
-            token_details: Some(crate::api::cursor_agent::r#gen::agent_pb::ConversationTokenDetails {
-                used_tokens: 999_999,
-                max_tokens: 200_000,
-            }),
+            token_details: Some(
+                crate::api::cursor_agent::r#gen::agent_pb::ConversationTokenDetails {
+                    used_tokens: 999_999,
+                    max_tokens: 200_000,
+                },
+            ),
             ..Default::default()
         };
         apply_checkpoint_token_details(&checkpoint, &mut output, &mut usage_state);
@@ -5838,6 +7595,9 @@ mod tests {
         flush_open_tool_calls(&mut output, &stream, &mut state);
         assert!(state.open_tool_calls.is_empty());
         assert_eq!(state.current_tool_call, None);
-        assert!(matches!(stream.queue().first(), Some(AssistantMessageEvent::ToolcallEnd { .. })));
+        assert!(matches!(
+            stream.queue().first(),
+            Some(AssistantMessageEvent::ToolcallEnd { .. })
+        ));
     }
 }

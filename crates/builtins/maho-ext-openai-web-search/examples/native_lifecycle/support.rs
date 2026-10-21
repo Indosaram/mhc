@@ -77,7 +77,7 @@ pub async fn run(native: bool, ui_enabled: bool) -> Result<(), Box<dyn std::erro
     let injected = payload["tools"].as_array().expect("tools").iter().any(|tool| tool["type"] == "web_search_preview");
     let enabled = maho_ext_openai_web_search::parse_enabled(std::env::var("PI_OPENAI_WEB_SEARCH").ok().as_deref());
     assert_eq!(injected, native && enabled);
-    let prompt = runner.emit_before_agent_start(BeforeAgentStartEvent {prompt:"hello".into(), images:None, system_prompt:"base".into(), system_prompt_options:Default::default()}).await?;
+    let prompt = runner.emit_before_agent_start(BeforeAgentStartEvent {prompt:"hello".into(), trigger:"prompt".into(), preview:false, images:None, system_prompt:"base".into(), system_prompt_options:Default::default()}).await?;
     assert_eq!(prompt.is_some(),native && enabled);
     runner.emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None})).await?;
     assert!(runner.errors.is_empty());

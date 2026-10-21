@@ -113,6 +113,8 @@ mod tests {
 
     fn create_model(id: &str) -> Model {
         Model {
+            prompt_cache: None,
+            supports_assistant_prefill: None,
             id: id.to_string(),
             name: id.to_string(),
             api: "openai-completions".to_string(),

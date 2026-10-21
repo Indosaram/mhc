@@ -42,6 +42,51 @@ fn task(task_key: &str) -> TaskSessionInput {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn persistence_failures_return_absent_session_task_and_lifecycle_state() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (directory, work_id) = seeded(".omo/plans/alpha.md");
+    start_task_timer(directory.path(), &work_id, &TaskTimerInput {
+        task: task("todo:1"), started_at: Some("2026-10-20T00:00:00Z".to_string()),
+    }).expect("seed timer");
+    let path = directory.path().join(BOULDER_STATE_PATH);
+    let before = std::fs::read(&path).expect("read");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).expect("readonly");
+    assert!(std::fs::write(&path, &before).is_err(), "fixture requires an unprivileged CI user");
+    assert_eq!(append_session_id(directory.path(), "new", BoulderSessionOrigin::Direct).expect("fallback"), None);
+    assert_eq!(append_session_id_for_work(directory.path(), &work_id, "new", BoulderSessionOrigin::Direct).expect("fallback"), None);
+    assert_eq!(upsert_task_session_state(directory.path(), &task("todo:1")).expect("fallback"), None);
+    assert_eq!(boulder_state::upsert_task_session_state_for_work(directory.path(), &work_id, &task("todo:1")).expect("fallback"), None);
+    assert_eq!(start_task_timer(directory.path(), &work_id, &TaskTimerInput { task: task("todo:1"), started_at: None }).expect("fallback"), None);
+    assert_eq!(end_task_timer(directory.path(), &work_id, &EndTaskTimerInput { task_key: "todo:1".to_string(), ended_at: None }).expect("fallback"), None);
+    assert_eq!(boulder_state::select_active_work(directory.path(), &work_id).expect("fallback"), None);
+    assert_eq!(add_boulder_work(directory.path(), &BoulderWorkInput::default()).expect("fallback"), None);
+    assert_eq!(complete_boulder(directory.path(), &CompleteBoulderInput::default()).expect("fallback"), None);
+    assert!(!boulder_state::try_write_boulder_state(directory.path(), &read(directory.path())));
+    assert_eq!(std::fs::read(&path).expect("read"), before);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("restore");
+
+    std::fs::write(&path, r#"{"session_ids":["old","second"]}"#).expect("legacy");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).expect("readonly");
+    assert_eq!(append_session_id(directory.path(), "new", BoulderSessionOrigin::Direct).expect("fallback"), None);
+    assert_eq!(upsert_task_session_state(directory.path(), &task("todo:1")).expect("fallback"), None);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("restore");
+}
+
+#[test]
+fn boolean_write_and_clear_adapters_report_filesystem_failures() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(directory.path().join(BOULDER_STATE_PATH)).expect("directory instead of file");
+    let state = create_boulder_state("p.md", "s", &WorkOwner::default());
+    assert!(!boulder_state::try_write_boulder_state(directory.path(), &state));
+    assert!(!boulder_state::try_clear_boulder_state(directory.path()));
+    let missing = tempfile::tempdir().expect("tempdir");
+    assert!(boulder_state::try_clear_boulder_state(missing.path()));
+    assert!(boulder_state::try_write_boulder_state(missing.path(), &state));
+}
+
 #[test]
 fn generated_work_id_is_slug_plus_eight_hex_digits() {
     // given
@@ -292,6 +337,30 @@ fn task_session_upsert_and_timers_record_elapsed_time() {
         .task_session("todo:1")
         .expect("mirror");
     assert_eq!(mirror_session, session);
+}
+
+#[test]
+fn task_timer_accepts_end_of_day_midnight() {
+    let (directory, work_id) = seeded(".omo/plans/midnight.md");
+    start_task_timer(
+        directory.path(),
+        &work_id,
+        &TaskTimerInput {
+            task: task("todo:midnight"),
+            started_at: Some("2026-10-20T24:00:00Z".into()),
+        },
+    ).expect("start timer").expect("state");
+    end_task_timer(
+        directory.path(),
+        &work_id,
+        &EndTaskTimerInput {
+            task_key: "todo:midnight".into(),
+            ended_at: Some("2026-10-21T00:00:02.500Z".into()),
+        },
+    ).expect("end timer").expect("state");
+    let session = get_task_session_state(directory.path(), "todo:midnight")
+        .expect("read timer").expect("session");
+    assert_eq!(session.elapsed_ms(), Some(2_500));
 }
 
 #[test]

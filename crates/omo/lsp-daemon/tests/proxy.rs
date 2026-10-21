@@ -449,6 +449,7 @@ fn parent_death_exits_the_proxy_while_stdin_stays_open() {
                 let parent_alive = Arc::clone(&parent_alive);
                 move |_pid| parent_alive.load(Ordering::SeqCst)
             })),
+            on_poll: None,
         }),
         ..inert_options(&root)
     };

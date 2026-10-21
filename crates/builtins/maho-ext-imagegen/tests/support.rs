@@ -1,6 +1,9 @@
 //! Offline fixture harness: no network, provider or auth call is made.
 
-use maho_ai::types::{AssistantImages, ContentBlock, ImageContent, ImagesBackground, ImagesContext, ImagesModel, ImagesOptions, ImagesStopReason, TextContent, Usage};
+use maho_ai::types::{
+    AssistantImages, ContentBlock, ImageContent, ImagesBackground, ImagesContext, ImagesModel,
+    ImagesOptions, ImagesStopReason, TextContent, Usage,
+};
 use maho_ext_api::*;
 use maho_ext_imagegen::auth::ImageGenAuthRegistry;
 use maho_ext_imagegen::state::{set_image_gen_registry_override, set_native_bypass};
@@ -34,7 +37,8 @@ impl Drop for GlobalStateGuard {
     }
 }
 
-pub const PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl3T2QAAAAASUVORK5CYII=";
+pub const PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl3T2QAAAAASUVORK5CYII=";
 
 pub struct FixtureSession {
     pub entries: Vec<SessionEntry>,
@@ -73,7 +77,12 @@ pub struct FixtureRegistry {
 
 impl Default for FixtureRegistry {
     fn default() -> Self {
-        Self { stored_api_key: true, provider_api_key: Some("fixture-image-secret".into()), provider_headers: None, models: Vec::new() }
+        Self {
+            stored_api_key: true,
+            provider_api_key: Some("fixture-image-secret".into()),
+            provider_headers: None,
+            models: Vec::new(),
+        }
     }
 }
 
@@ -93,26 +102,46 @@ impl ModelRegistry for FixtureRegistry {
     fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> {
         Box::pin(async { Ok(None) })
     }
-    fn get_stored_credential_type(&self, _: &str) -> Result<Option<maho_ai::auth::types::CredentialType>, ExtensionFailure> {
-        Ok(self.stored_api_key.then_some(maho_ai::auth::types::CredentialType::ApiKey))
+    fn get_stored_credential_type(
+        &self,
+        _: &str,
+    ) -> Result<Option<maho_ai::auth::types::CredentialType>, ExtensionFailure> {
+        Ok(self
+            .stored_api_key
+            .then_some(maho_ai::auth::types::CredentialType::ApiKey))
     }
-    fn get_provider_auth<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+    fn get_provider_auth<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
         let key = self.provider_api_key.clone();
         let headers = self.provider_headers.clone();
         Box::pin(async move {
             Ok(key.map(|api_key| maho_ai::models::AuthResolution {
-                auth: maho_ai::models::ProviderAuthResult { api_key: Some(api_key), headers, base_url: None },
+                ambient: false,
+                auth: maho_ai::models::ProviderAuthResult {
+                    api_key: Some(api_key),
+                    headers,
+                    base_url: None,
+                },
                 env: None,
             }))
         })
     }
-    fn get_api_key_and_headers<'a>(&'a self, model: &'a Model) -> ExtensionFuture<'a, ResolvedRequestAuth> {
+    fn get_api_key_and_headers<'a>(
+        &'a self,
+        model: &'a Model,
+    ) -> ExtensionFuture<'a, ResolvedRequestAuth> {
         let key = self.provider_api_key.clone();
         let headers = self.provider_headers.clone();
         let provider = model.provider.clone();
         Box::pin(async move {
-            Ok(ResolvedRequestAuth {
-                auth: maho_ai::models::ProviderAuthResult { api_key: key, headers, base_url: Some(provider) },
+            Ok(ResolvedRequestAuth { ambient: false,
+                auth: maho_ai::models::ProviderAuthResult {
+                    api_key: key,
+                    headers,
+                    base_url: Some(provider),
+                },
                 extra_body: None,
                 upstream_model_id: None,
                 service_tier: None,
@@ -129,17 +158,35 @@ impl ExtensionUi for TestUi {
     fn factories(&self) -> Option<&dyn ExtensionUiFactories> {
         Some(self)
     }
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, message: &str, kind: NotificationType) {
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((message.into(), kind));
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((message.into(), kind));
     }
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
@@ -160,10 +207,20 @@ impl ExtensionUi for TestUi {
 }
 
 impl ExtensionUiFactories for TestUi {
-    fn set_widget_factory(&self, _: &str, _: Option<TuiComponentFactory>, _: ExtensionWidgetOptions) {}
+    fn set_widget_factory(
+        &self,
+        _: &str,
+        _: Option<TuiComponentFactory>,
+        _: ExtensionWidgetOptions,
+    ) {
+    }
     fn set_header_factory(&self, _: Option<TuiComponentFactory>) {}
     fn set_footer_factory(&self, _: Option<FooterComponentFactory>) {}
-    fn custom_factory(&self, _: CustomComponentFactory, _: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue> {
+    fn custom_factory(
+        &self,
+        _: CustomComponentFactory,
+        _: CustomUiFactoryOptions,
+    ) -> ExtensionFuture<'_, JsonValue> {
         Box::pin(async { Err("UI not available".into()) })
     }
 }
@@ -175,9 +232,17 @@ pub fn gateway_model() -> Model {
 pub fn registry(gateway: bool) -> Arc<FixtureRegistry> {
     Arc::new(FixtureRegistry {
         stored_api_key: !gateway,
-        provider_api_key: Some(if gateway { "gateway-secret".into() } else { "fixture-image-secret".into() }),
+        provider_api_key: Some(if gateway {
+            "gateway-secret".into()
+        } else {
+            "fixture-image-secret".into()
+        }),
         provider_headers: None,
-        models: if gateway { vec![gateway_model()] } else { Vec::new() },
+        models: if gateway {
+            vec![gateway_model()]
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -194,7 +259,11 @@ pub fn text_of(result: &AgentToolResult) -> String {
 }
 
 pub fn image_count(result: &AgentToolResult) -> usize {
-    result.content.iter().filter(|block| matches!(block, ContentBlock::Image(_))).count()
+    result
+        .content
+        .iter()
+        .filter(|block| matches!(block, ContentBlock::Image(_)))
+        .count()
 }
 
 pub async fn run(
@@ -218,7 +287,11 @@ pub async fn run_with(
     let context = context(root, registry);
     let execute = executor("imagegen");
     let outcome = maho_ai::node::provider_scope::run_with_provider_scope_async(&scope, async {
-        maho_ai::images_api_registry::register_images_api_provider("openai-images", stub.clone(), Some("tool-stub"))?;
+        maho_ai::images_api_registry::register_images_api_provider(
+            "openai-images",
+            stub.clone(),
+            Some("tool-stub"),
+        )?;
         let result = execute(tool_call_id, params, None, None, &context).await?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(result)
     })
@@ -234,7 +307,9 @@ pub fn context(cwd: &Path, registry: Arc<dyn ModelRegistry>) -> ExtensionContext
         has_ui: false,
         cwd: cwd.into(),
         agent_dir: cwd.into(),
-        session_manager: Arc::new(FixtureSession { entries: Vec::new() }),
+        session_manager: Arc::new(FixtureSession {
+            entries: Vec::new(),
+        }),
         model_registry: registry,
         model: None,
         thinking_level: None,
@@ -268,7 +343,9 @@ pub fn executor(path: &str) -> ExtensionToolExecutor {
         ExtensionRuntime::default(),
     );
     maho_ext_imagegen::ImageGen::default().register(&mut api);
-    api.runtime.extension_tool_executor(path, "generate_image").expect("registered generate_image executor")
+    api.runtime
+        .extension_tool_executor(path, "generate_image")
+        .expect("registered generate_image executor")
 }
 
 #[derive(Default)]
@@ -284,13 +361,23 @@ pub struct StubImages {
 
 impl StubImages {
     pub fn one() -> Self {
-        Self { images: 1, ..Default::default() }
+        Self {
+            images: 1,
+            ..Default::default()
+        }
     }
     pub fn call_count(&self) -> usize {
-        self.calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
     pub fn first_call(&self) -> Option<(ImagesModel, ImagesContext, ImagesOptions)> {
-        self.calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).first().cloned()
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .first()
+            .cloned()
     }
 }
 
@@ -300,21 +387,31 @@ impl maho_ai::types::ProviderImages for StubImages {
         model: &'a ImagesModel,
         context: &'a ImagesContext,
         options: Option<ImagesOptions>,
-    ) -> maho_ai::types::BoxFuture<'a, AssistantImages> {
+    ) -> maho_ai::types::BoxFuture<'a, Result<AssistantImages, String>> {
         let options = options.unwrap_or_default();
         self.calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((model.clone(), context.clone(), options.clone()));
         let images = self.images;
-        let revised = self.revised_prompts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let revised = self
+            .revised_prompts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let error = self.error.clone();
         let usage = self.usage;
         let background = self.background;
-        let mime = self
-            .mime_type
-            .clone()
-            .unwrap_or_else(|| format!("image/{}", options.extra.get("outputFormat").and_then(serde_json::Value::as_str).unwrap_or("png")));
+        let mime = self.mime_type.clone().unwrap_or_else(|| {
+            format!(
+                "image/{}",
+                options
+                    .extra
+                    .get("outputFormat")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("png")
+            )
+        });
         let api = model.api.clone();
         let provider = model.provider.clone();
         let id = model.id.clone();
@@ -332,16 +429,31 @@ impl maho_ai::types::ProviderImages for StubImages {
                 timestamp: 0,
             };
             if let Some(error) = error {
-                return AssistantImages { stop_reason: ImagesStopReason::Error, error_message: Some(error), ..base };
+                return Ok(AssistantImages {
+                    stop_reason: ImagesStopReason::Error,
+                    error_message: Some(error),
+                    ..base
+                });
             }
             let mut output = Vec::new();
             for index in 0..images {
                 if let Some(revised) = revised.get(index) {
-                    output.push(ContentBlock::Text(TextContent { text: revised.clone(), ..Default::default() }));
+                    output.push(ContentBlock::Text(TextContent {
+                        text: revised.clone(),
+                        ..Default::default()
+                    }));
                 }
-                output.push(ContentBlock::Image(ImageContent { data: PNG_BASE64.into(), mime_type: mime.clone() }));
+                output.push(ContentBlock::Image(ImageContent {
+                    data: PNG_BASE64.into(),
+                    mime_type: mime.clone(),
+                }));
             }
-            AssistantImages { output, usage, background, ..base }
+            Ok(AssistantImages {
+                output,
+                usage,
+                background,
+                ..base
+            })
         })
     }
 }

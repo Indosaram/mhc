@@ -6,16 +6,16 @@
 //! stays browser-safe); the port keeps both, so this module reproduces measure.ts's own
 //! non-cryptographic `hashBytes` rather than the `node:crypto` SHA-256 the API file uses.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::cursor::composer_prompt::{is_cursor_composer_model, CURSOR_COMPOSER_PROMPT};
+use crate::cursor::composer_prompt::{CURSOR_COMPOSER_PROMPT, is_cursor_composer_model};
 use crate::types::{AssistantMessage, ContentBlock, Message, ToolCall, ToolResultMessage};
 
 use super::r#gen::agent_pb::{
-    conversation_step, AgentConversationTurnStructure, AssistantMessage as PbAssistantMessage, ConversationStep,
-    ConversationTurnStructure, McpArgs, McpImageContent, McpSuccess, McpTextContent, McpToolCall, McpToolError,
-    McpToolResult, McpToolResultContentItem, SelectedContext, SelectedImage, ToolCall as PbToolCall,
-    UserMessage as PbUserMessage,
+    AgentConversationTurnStructure, AssistantMessage as PbAssistantMessage, ConversationStep,
+    ConversationTurnStructure, McpArgs, McpImageContent, McpSuccess, McpTextContent, McpToolCall,
+    McpToolError, McpToolResult, McpToolResultContentItem, SelectedContext, SelectedImage,
+    ToolCall as PbToolCall, UserMessage as PbUserMessage, conversation_step,
 };
 use super::value_pb::value_to_bytes;
 
@@ -39,7 +39,14 @@ fn digest_hex(data: &str) -> String {
 }
 
 fn format_uuid(hex: &str) -> String {
-    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 fn deterministic_uuid(seed: &str) -> String {
@@ -57,7 +64,10 @@ fn store_cursor_blob(store: &mut BlobStore, data: Vec<u8>) -> Vec<u8> {
 }
 
 fn read_cursor_blob(store: &BlobStore, blob_id: &[u8]) -> Vec<u8> {
-    store.get(&hex(blob_id)).cloned().unwrap_or_else(|| panic!("Cursor blob not found"))
+    store
+        .get(&hex(blob_id))
+        .cloned()
+        .unwrap_or_else(|| panic!("Cursor blob not found"))
 }
 
 pub fn tool_result_to_text(result: &ToolResultMessage) -> String {
@@ -67,16 +77,18 @@ pub fn tool_result_to_text(result: &ToolResultMessage) -> String {
         .map(|item| match item {
             ContentBlock::Text(text) => text.text.clone(),
             ContentBlock::Image(image) => format!("[{} image]", image.mime_type),
-            ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
-                "[undefined image]".to_owned()
-            }
+            ContentBlock::Thinking(_)
+            | ContentBlock::ToolCall(_)
+            | ContentBlock::ProviderNative(_) => "[undefined image]".to_owned(),
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 fn extract_user_message_text(message: &Message) -> String {
-    let Message::User(user) = message else { return String::new() };
+    let Message::User(user) = message else {
+        return String::new();
+    };
     match &user.content {
         crate::types::UserContent::Text(text) => text.trim().to_owned(),
         crate::types::UserContent::Blocks(blocks) => blocks
@@ -121,7 +133,9 @@ fn build_cursor_root_prompt_content(content: &crate::types::UserContent) -> Vec<
                         "image": format!("data:{};base64,{}", image.mime_type, image.data),
                         "mediaType": image.mime_type,
                     })),
-                    ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
+                    ContentBlock::Thinking(_)
+                    | ContentBlock::ToolCall(_)
+                    | ContentBlock::ProviderNative(_) => {
                         parts.push(json!({
                             "type": "image",
                             "image": "data:undefined;base64,undefined",
@@ -151,7 +165,9 @@ fn cursor_user_content_key(content: &crate::types::UserContent) -> String {
                         data.push_str(&image.mime_type);
                         data.push_str(&image.data);
                     }
-                    ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
+                    ContentBlock::Thinking(_)
+                    | ContentBlock::ToolCall(_)
+                    | ContentBlock::ProviderNative(_) => {
                         data.push_str("image");
                         data.push_str("undefined");
                         data.push_str("undefined");
@@ -178,25 +194,35 @@ fn build_cursor_assistant_content(message: &AssistantMessage) -> Vec<Value> {
                 "toolName": call.name,
                 "args": call.arguments,
             })),
-            ContentBlock::Thinking(_) | ContentBlock::Image(_) | ContentBlock::ProviderNative(_) => {}
+            ContentBlock::Thinking(_)
+            | ContentBlock::Image(_)
+            | ContentBlock::ProviderNative(_) => {}
         }
     }
     content
 }
 
 fn find_last_user_message_index(messages: &[Message]) -> Option<usize> {
-    messages.iter().rposition(|message| matches!(message, Message::User(_)))
+    messages
+        .iter()
+        .rposition(|message| matches!(message, Message::User(_)))
 }
 
-pub fn build_cursor_system_prompt_jsons(system_prompt: Option<&str>, model_id: Option<&str>) -> Vec<String> {
-    let trimmed = system_prompt.map(str::trim).filter(|prompt| !prompt.is_empty());
+pub fn build_cursor_system_prompt_jsons(
+    system_prompt: Option<&str>,
+    model_id: Option<&str>,
+) -> Vec<String> {
+    let trimmed = system_prompt
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty());
     let host = vec![match trimmed {
         Some(prompt) => json!({ "role": "system", "content": prompt }).to_string(),
         None => json!({ "role": "system", "content": "You are a helpful assistant." }).to_string(),
     }];
     match model_id {
         Some(model_id) if is_cursor_composer_model(model_id) => {
-            let mut result = vec![json!({ "role": "system", "content": CURSOR_COMPOSER_PROMPT }).to_string()];
+            let mut result =
+                vec![json!({ "role": "system", "content": CURSOR_COMPOSER_PROMPT }).to_string()];
             result.extend(host);
             result
         }
@@ -221,7 +247,9 @@ fn build_root_prompt_messages_json(
                 if content.is_empty() {
                     continue;
                 }
-                let bytes = json!({ "role": "user", "content": content }).to_string().into_bytes();
+                let bytes = json!({ "role": "user", "content": content })
+                    .to_string()
+                    .into_bytes();
                 entries.push(store_cursor_blob(store, bytes));
             }
             Message::Assistant(assistant) => {
@@ -229,7 +257,9 @@ fn build_root_prompt_messages_json(
                 if content.is_empty() {
                     continue;
                 }
-                let bytes = json!({ "role": "assistant", "content": content }).to_string().into_bytes();
+                let bytes = json!({ "role": "assistant", "content": content })
+                    .to_string()
+                    .into_bytes();
                 entries.push(store_cursor_blob(store, bytes));
             }
             Message::ToolResult(result) => {
@@ -251,7 +281,7 @@ fn build_root_prompt_messages_json(
                 .into_bytes();
                 entries.push(store_cursor_blob(store, bytes));
             }
-            Message::ConfigurationUpdate(_) => {}
+            Message::System(_) | Message::ConfigurationUpdate(_) => {}
         }
     }
     entries
@@ -266,15 +296,25 @@ fn is_json_value(value: &Value) -> bool {
         Value::Null | Value::String(_) | Value::Bool(_) => true,
         Value::Number(number) => number.as_f64().is_some_and(f64::is_finite),
         Value::Array(items) => items.iter().all(is_json_value),
-        Value::Object(_) => is_plain_record(value) && value.as_object().is_some_and(|map| map.values().all(is_json_value)),
+        Value::Object(_) => {
+            is_plain_record(value)
+                && value
+                    .as_object()
+                    .is_some_and(|map| map.values().all(is_json_value))
+        }
     }
 }
 
-fn encode_cursor_mcp_arguments(tool_call: &ToolCall) -> Result<std::collections::HashMap<String, Vec<u8>>, String> {
+fn encode_cursor_mcp_arguments(
+    tool_call: &ToolCall,
+) -> Result<std::collections::HashMap<String, Vec<u8>>, String> {
     let mut encoded = std::collections::HashMap::new();
     for (name, value) in &tool_call.arguments {
         if !is_json_value(value) {
-            return Err(format!("Cursor tool argument {}.{} is not JSON-serializable", tool_call.name, name));
+            return Err(format!(
+                "Cursor tool argument {}.{} is not JSON-serializable",
+                tool_call.name, name
+            ));
         }
         encoded.insert(name.clone(), value_to_bytes(value));
     }
@@ -283,7 +323,9 @@ fn encode_cursor_mcp_arguments(tool_call: &ToolCall) -> Result<std::collections:
 
 fn base64_decode(data: &str) -> Vec<u8> {
     use base64::Engine;
-    base64::engine::general_purpose::STANDARD.decode(data).unwrap_or_default()
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .unwrap_or_default()
 }
 
 fn create_cursor_mcp_result(result: &ToolResultMessage) -> McpToolResult {
@@ -301,29 +343,44 @@ fn create_cursor_mcp_result(result: &ToolResultMessage) -> McpToolResult {
         .iter()
         .map(|item| match item {
             ContentBlock::Image(image) => McpToolResultContentItem {
-                content: Some(super::r#gen::agent_pb::mcp_tool_result_content_item::Content::Image(McpImageContent {
-                    data: base64_decode(&image.data).into(),
-                    mime_type: image.mime_type.clone(),
-                })),
+                content: Some(
+                    super::r#gen::agent_pb::mcp_tool_result_content_item::Content::Image(
+                        McpImageContent {
+                            data: base64_decode(&image.data).into(),
+                            mime_type: image.mime_type.clone(),
+                        },
+                    ),
+                ),
             },
             ContentBlock::Text(text) => McpToolResultContentItem {
-                content: Some(super::r#gen::agent_pb::mcp_tool_result_content_item::Content::Text(McpTextContent {
-                    text: text.text.clone(),
-                    ..McpTextContent::default()
-                })),
+                content: Some(
+                    super::r#gen::agent_pb::mcp_tool_result_content_item::Content::Text(
+                        McpTextContent {
+                            text: text.text.clone(),
+                            ..McpTextContent::default()
+                        },
+                    ),
+                ),
             },
-            ContentBlock::Thinking(_) | ContentBlock::ToolCall(_) | ContentBlock::ProviderNative(_) => {
-                McpToolResultContentItem {
-                    content: Some(super::r#gen::agent_pb::mcp_tool_result_content_item::Content::Text(McpTextContent {
-                        text: "[undefined image]".to_owned(),
-                        ..McpTextContent::default()
-                    })),
-                }
-            }
+            ContentBlock::Thinking(_)
+            | ContentBlock::ToolCall(_)
+            | ContentBlock::ProviderNative(_) => McpToolResultContentItem {
+                content: Some(
+                    super::r#gen::agent_pb::mcp_tool_result_content_item::Content::Text(
+                        McpTextContent {
+                            text: "[undefined image]".to_owned(),
+                            ..McpTextContent::default()
+                        },
+                    ),
+                ),
+            },
         })
         .collect();
     McpToolResult {
-        result: Some(mcp_tool_result::Result::Success(McpSuccess { content, is_error: false })),
+        result: Some(mcp_tool_result::Result::Success(McpSuccess {
+            content,
+            is_error: false,
+        })),
     }
 }
 
@@ -334,7 +391,10 @@ fn create_cursor_tool_call_step(
     let mcp_call = McpToolCall {
         args: Some(McpArgs {
             name: tool_call.name.clone(),
-            args: encode_cursor_mcp_arguments(tool_call)?.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            args: encode_cursor_mcp_arguments(tool_call)?
+                .into_iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect(),
             tool_call_id: tool_call.id.clone(),
             provider_identifier: "pi-agent".to_owned(),
             tool_name: tool_call.name.clone(),
@@ -345,7 +405,9 @@ fn create_cursor_tool_call_step(
     };
     Ok(ConversationStep {
         message: Some(conversation_step::Message::ToolCall(PbToolCall {
-            tool: Some(super::r#gen::agent_pb::tool_call::Tool::McpToolCall(mcp_call)),
+            tool: Some(super::r#gen::agent_pb::tool_call::Tool::McpToolCall(
+                mcp_call,
+            )),
             tool_call_id: Some(tool_call.id.clone()),
         })),
     })
@@ -360,8 +422,10 @@ fn build_conversation_turns(
 
     let mut turns = Vec::new();
     let history_end = active_user_message_index.unwrap_or(messages.len());
-    let mut tool_results: std::collections::HashMap<String, &ToolResultMessage> = std::collections::HashMap::new();
-    let mut paired_tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut tool_results: std::collections::HashMap<String, &ToolResultMessage> =
+        std::collections::HashMap::new();
+    let mut paired_tool_call_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for message in messages.iter().take(history_end) {
         match message {
             Message::ToolResult(result) => {
@@ -374,7 +438,7 @@ fn build_conversation_turns(
                     }
                 }
             }
-            Message::User(_) | Message::ConfigurationUpdate(_) => {}
+            Message::User(_) | Message::System(_) | Message::ConfigurationUpdate(_) => {}
         }
     }
 
@@ -397,7 +461,11 @@ fn build_conversation_turns(
         let user_message = create_cursor_user_message(
             &user.content,
             &user_text,
-            deterministic_uuid(&format!("u:{}:{}", turns.len(), cursor_user_content_key(&user.content))),
+            deterministic_uuid(&format!(
+                "u:{}:{}",
+                turns.len(),
+                cursor_user_content_key(&user.content)
+            )),
         );
         let user_message_blob_id = store_cursor_blob(store, user_message.encode_to_vec());
         let mut step_blob_ids: Vec<Vec<u8>> = Vec::new();
@@ -413,33 +481,47 @@ fn build_conversation_turns(
                                     continue;
                                 }
                                 ConversationStep {
-                                    message: Some(conversation_step::Message::AssistantMessage(PbAssistantMessage {
-                                        text: text.text.clone(),
-                                    })),
+                                    message: Some(conversation_step::Message::AssistantMessage(
+                                        PbAssistantMessage {
+                                            text: text.text.clone(),
+                                        },
+                                    )),
                                 }
                             }
                             ContentBlock::Thinking(_) => continue,
-                            ContentBlock::ToolCall(call) => {
-                                create_cursor_tool_call_step(call, tool_results.get(&call.id).copied())?
-                            }
+                            ContentBlock::ToolCall(call) => create_cursor_tool_call_step(
+                                call,
+                                tool_results.get(&call.id).copied(),
+                            )?,
                             ContentBlock::Image(_) | ContentBlock::ProviderNative(_) => continue,
                         };
                         step_blob_ids.push(store_cursor_blob(store, step.encode_to_vec()));
                     }
                 }
-                Message::ToolResult(result) if !paired_tool_call_ids.contains(&result.tool_call_id) => {
+                Message::ToolResult(result)
+                    if !paired_tool_call_ids.contains(&result.tool_call_id) =>
+                {
                     let text = tool_result_to_text(result);
                     if !text.is_empty() {
-                        let prefix = if result.is_error { "[Tool Error]" } else { "[Tool Result]" };
+                        let prefix = if result.is_error {
+                            "[Tool Error]"
+                        } else {
+                            "[Tool Result]"
+                        };
                         let step = ConversationStep {
-                            message: Some(conversation_step::Message::AssistantMessage(PbAssistantMessage {
-                                text: format!("{prefix}\n{text}"),
-                            })),
+                            message: Some(conversation_step::Message::AssistantMessage(
+                                PbAssistantMessage {
+                                    text: format!("{prefix}\n{text}"),
+                                },
+                            )),
                         };
                         step_blob_ids.push(store_cursor_blob(store, step.encode_to_vec()));
                     }
                 }
-                Message::User(_) | Message::ToolResult(_) | Message::ConfigurationUpdate(_) => {}
+                Message::User(_)
+                | Message::ToolResult(_)
+                | Message::System(_)
+                | Message::ConfigurationUpdate(_) => {}
             }
             index += 1;
         }
@@ -450,7 +532,11 @@ fn build_conversation_turns(
             request_id: None,
         };
         let turn = ConversationTurnStructure {
-            turn: Some(super::r#gen::agent_pb::conversation_turn_structure::Turn::AgentConversationTurn(agent_turn)),
+            turn: Some(
+                super::r#gen::agent_pb::conversation_turn_structure::Turn::AgentConversationTurn(
+                    agent_turn,
+                ),
+            ),
         };
         turns.push(store_cursor_blob(store, turn.encode_to_vec()));
     }
@@ -475,25 +561,30 @@ pub fn build_cursor_history_for_test(
 
     let active = active_user_message_index.or_else(|| find_last_user_message_index(messages));
     let mut store = BlobStore::new();
-    let root_prompt_messages_json = build_root_prompt_messages_json(messages, &[], &mut store, active)
-        .into_iter()
-        .map(|blob_id| {
-            let bytes = read_cursor_blob(&store, &blob_id);
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-        })
-        .collect();
+    let root_prompt_messages_json =
+        build_root_prompt_messages_json(messages, &[], &mut store, active)
+            .into_iter()
+            .map(|blob_id| {
+                let bytes = read_cursor_blob(&store, &blob_id);
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+            })
+            .collect();
 
     let mut turn_user_messages_json = Vec::new();
     let mut turn_step_messages_json = Vec::new();
     for turn_blob_id in build_conversation_turns(messages, &mut store, active)? {
-        let turn = ConversationTurnStructure::decode(read_cursor_blob(&store, &turn_blob_id).as_slice())
-            .map_err(|error| error.to_string())?;
-        let Some(super::r#gen::agent_pb::conversation_turn_structure::Turn::AgentConversationTurn(turn)) = turn.turn
+        let turn =
+            ConversationTurnStructure::decode(read_cursor_blob(&store, &turn_blob_id).as_slice())
+                .map_err(|error| error.to_string())?;
+        let Some(super::r#gen::agent_pb::conversation_turn_structure::Turn::AgentConversationTurn(
+            turn,
+        )) = turn.turn
         else {
             continue;
         };
-        let user_message = PbUserMessage::decode(read_cursor_blob(&store, &turn.user_message).as_slice())
-            .map_err(|error| error.to_string())?;
+        let user_message =
+            PbUserMessage::decode(read_cursor_blob(&store, &turn.user_message).as_slice())
+                .map_err(|error| error.to_string())?;
         turn_user_messages_json.push(user_message_to_json(&user_message));
         turn_step_messages_json.push(
             turn.steps
@@ -506,7 +597,11 @@ pub fn build_cursor_history_for_test(
                 .collect(),
         );
     }
-    Ok(CursorHistoryForTest { root_prompt_messages_json, turn_user_messages_json, turn_step_messages_json })
+    Ok(CursorHistoryForTest {
+        root_prompt_messages_json,
+        turn_user_messages_json,
+        turn_step_messages_json,
+    })
 }
 
 fn create_cursor_user_message(
@@ -524,7 +619,10 @@ fn create_cursor_user_message(
         selected_context: if images.is_empty() {
             None
         } else {
-            Some(SelectedContext { selected_images: images, ..SelectedContext::default() })
+            Some(SelectedContext {
+                selected_images: images,
+                ..SelectedContext::default()
+            })
         },
         ..PbUserMessage::default()
     }
@@ -551,7 +649,10 @@ fn extract_images(blocks: &[ContentBlock]) -> Vec<SelectedImage> {
 fn user_message_to_json(message: &PbUserMessage) -> Value {
     let mut object = Map::new();
     object.insert("text".to_owned(), Value::String(message.text.clone()));
-    object.insert("messageId".to_owned(), Value::String(message.message_id.clone()));
+    object.insert(
+        "messageId".to_owned(),
+        Value::String(message.message_id.clone()),
+    );
     if let Some(context) = &message.selected_context
         && !context.selected_images.is_empty()
     {
@@ -569,7 +670,10 @@ fn user_message_to_json(message: &PbUserMessage) -> Value {
                 })
             })
             .collect();
-        object.insert("selectedContext".to_owned(), json!({ "selectedImages": images }));
+        object.insert(
+            "selectedContext".to_owned(),
+            json!({ "selectedImages": images }),
+        );
     }
     if message.mode != 0 {
         object.insert("mode".to_owned(), Value::from(message.mode));
@@ -672,7 +776,12 @@ pub fn measure_cursor_history_serialized_bytes(
     messages: &[Message],
     active_user_message_index: Option<usize>,
 ) -> Result<usize, String> {
-    Ok(build_cursor_history_wire_bytes_for_test(messages, active_user_message_index)?.iter().map(Vec::len).sum())
+    Ok(
+        build_cursor_history_wire_bytes_for_test(messages, active_user_message_index)?
+            .iter()
+            .map(Vec::len)
+            .sum(),
+    )
 }
 
 pub fn build_cursor_history_wire_bytes_for_test(

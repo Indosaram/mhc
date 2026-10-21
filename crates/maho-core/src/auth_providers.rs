@@ -14,22 +14,22 @@ pub fn is_api_key_login_provider(id:&str,oauth:&HashSet<String>,builtins:&HashSe
     !oauth.contains(id)
 }
 
-pub fn build_login_provider_infos(registry:&ModelRegistry,auth_type:Option<CredentialKind>) -> Vec<AuthProviderInfo> {
-    let oauth=oauth_infos(&registry.auth_storage);let ids:HashSet<_>=oauth.iter().map(|p|p.id.clone()).collect();
+pub fn build_login_provider_infos(registry:&ModelRegistry,auth_type:Option<CredentialKind>) -> Result<Vec<AuthProviderInfo>, maho_ai::models::ModelsError> {
+    let oauth=oauth_infos(&registry.auth_storage)?;let ids:HashSet<_>=oauth.iter().map(|p|p.id.clone()).collect();
     let builtin:HashSet<_>=maho_ai::providers::all::get_builtin_providers().into_iter().map(str::to_owned).collect();
     let mut options=oauth;let mut seen=HashSet::new();
     for model in registry.get_all() {
         if seen.insert(model.provider.clone())&&is_api_key_login_provider(&model.provider,&ids,&builtin){options.push(AuthProviderInfo{name:registry.get_provider_display_name(&model.provider),id:model.provider,auth_type:CredentialKind::ApiKey});}
     }
-    options.retain(|p|auth_type.is_none_or(|kind|kind==p.auth_type));options.sort_by(|a,b|a.name.cmp(&b.name));options
+    options.retain(|p|auth_type.is_none_or(|kind|kind==p.auth_type));options.sort_by(|a,b|a.name.cmp(&b.name));Ok(options)
 }
 
-fn oauth_infos(storage:&crate::auth_storage::AuthStorage)->Vec<AuthProviderInfo> {
-    storage.get_oauth_providers().into_iter().map(|p|AuthProviderInfo{id:p.id,name:p.name,auth_type:CredentialKind::Oauth}).collect()
+fn oauth_infos(storage:&crate::auth_storage::AuthStorage)->Result<Vec<AuthProviderInfo>, maho_ai::models::ModelsError> {
+    Ok(storage.get_oauth_providers()?.into_iter().map(|p|AuthProviderInfo{id:p.id,name:p.name,auth_type:CredentialKind::Oauth}).collect())
 }
 
 /// The builtin OAuth providers (no extension registrations), for callers without a registry.
-pub fn oauth_provider_infos()->Vec<AuthProviderInfo> {
+pub fn oauth_provider_infos()->Result<Vec<AuthProviderInfo>, maho_ai::models::ModelsError> {
     oauth_infos(&crate::auth_storage::AuthStorage::in_memory(Default::default()))
 }
 

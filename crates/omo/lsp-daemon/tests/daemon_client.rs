@@ -12,7 +12,7 @@ use common::{
 };
 use lsp_core::abort::AbortController;
 use lsp_daemon::daemon_client::{
-    CallToolOptions, EnsureFn, call_tool_via_daemon, current_request_context,
+    CallToolOptions, EnsureFn, call_format_via_daemon, call_tool_via_daemon, current_request_context,
 };
 use lsp_daemon::daemon_request_error::DaemonCallError;
 use lsp_daemon::paths::DaemonPaths;
@@ -28,6 +28,7 @@ fn options(paths: &DaemonPaths, root: &tempfile::TempDir, timeout_ms: u64) -> Ca
         request_timeout_ms: Some(timeout_ms),
         ensure: Some(common::noop_ensure()),
         signal: None,
+        ..CallToolOptions::default()
     }
 }
 
@@ -36,6 +37,26 @@ fn setup() -> (tempfile::TempDir, DaemonPaths) {
     let paths = test_paths(&root);
     write_token(&paths, TOKEN);
     (root, paths)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn format_sends_only_file_path_and_context_without_initial_backoff() {
+    let (root, paths) = setup();
+    let fake = spawn_fake_daemon(
+        &paths.socket,
+        Arc::new(|message, _index| Reply::Respond(tool_result(message, "formatted"))),
+    );
+    let mut call = options(&paths, &root, 2_000);
+    call.sleep = Some(Arc::new(|_, _| panic!("first attempt must not sleep")));
+    let result = within(call_format_via_daemon("/a.ts", call)).await.expect("format result");
+    assert_eq!(result.text(), "formatted");
+    assert_eq!(fake.tool_calls(), 1);
+    let received = fake.received();
+    let params = &received[0]["params"];
+    assert_eq!(params["name"], "format");
+    assert_eq!(params["arguments"]["filePath"], "/a.ts");
+    assert!(params["arguments"]["_context"].is_object());
+    assert_eq!(params["arguments"].as_object().expect("tool arguments").len(), 2);
 }
 
 fn token_of(message: &Value) -> Option<&str> {
@@ -140,29 +161,33 @@ async fn socket_appearing_after_first_connect_failure_is_retried_once() {
     let ensure_calls = Arc::new(AtomicUsize::new(0));
     let fake_slot: Arc<std::sync::Mutex<Option<FakeDaemon>>> = Arc::default();
     let ensure: EnsureFn = Arc::new({
-        let (ensure_calls, fake_slot) = (Arc::clone(&ensure_calls), Arc::clone(&fake_slot));
-        move |paths, _signal| {
-            let call = ensure_calls.fetch_add(1, Ordering::SeqCst) + 1;
-            let fake_slot = Arc::clone(&fake_slot);
-            Box::pin(async move {
-                if call == 2 {
-                    let fake = spawn_fake_daemon(
-                        &paths.socket,
-                        Arc::new(|message, _index| Reply::Respond(tool_result(message, "ok"))),
-                    );
-                    *fake_slot.lock().unwrap() = Some(fake);
-                }
-                Ok(())
-            })
+        let ensure_calls = Arc::clone(&ensure_calls);
+        move |_paths, _signal| {
+            ensure_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
         }
     });
     let mut call = options(&paths, &root, 2_000);
     call.ensure = Some(ensure);
+    call.sleep = Some(Arc::new({
+        let fake_slot = Arc::clone(&fake_slot);
+        let socket = paths.socket.clone();
+        move |_ms, _signal| {
+            let fake = spawn_fake_daemon(
+                &socket,
+                Arc::new(|message, _index| Reply::Respond(tool_result(message, "ok"))),
+            );
+            *fake_slot.lock().expect("fake daemon slot") = Some(fake);
+            Box::pin(async {})
+        }
+    }));
+    call.probe = Some(Arc::new(|_, _| Box::pin(async { true })));
     let result = within(call_tool_via_daemon("status", Map::new(), call))
         .await
         .unwrap();
     assert_eq!(result.text(), "ok");
     assert_eq!(fake_slot.lock().unwrap().as_ref().unwrap().tool_calls(), 1);
+    assert_eq!(ensure_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -254,10 +279,13 @@ async fn auth_rejection_refreshes_the_token_once_and_retries() {
             Reply::Respond(tool_result(message, "ok"))
         }),
     );
+    let mut call = options(&paths, &root, 2_000);
+    call.probe = Some(Arc::new(|_, _| Box::pin(async { true })));
+    call.sleep = Some(Arc::new(|_, _| Box::pin(async {})));
     let result = within(call_tool_via_daemon(
         "status",
         Map::new(),
-        options(&paths, &root, 2_000),
+        call,
     ))
     .await
     .unwrap();

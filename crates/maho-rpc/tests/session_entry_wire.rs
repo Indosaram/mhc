@@ -7,12 +7,12 @@ async fn fast_mode_rpc_uses_registered_action_and_reports_refusal() {
     use std::sync::{Arc, Mutex};
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).unwrap();
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(temp.path().join("models.json")), auth_path: Some(temp.path().join("auth.json")),
         providers: Some(vec![provider.provider]), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let calls = Arc::new(Mutex::new(Vec::new()));
     let captured = calls.clone();
     let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
@@ -57,12 +57,12 @@ async fn fast_mode_rpc_uses_registered_action_and_reports_refusal() {
 async fn entries_export_and_cleanup_use_the_real_session() {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let model = provider.get_model(Some("faux-1")).unwrap();
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(temp.path().join("models.json")), auth_path: Some(temp.path().join("auth.json")),
         providers: Some(vec![provider.provider]), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let session = create_agent_session(CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model_runtime: Some(runtime), model: Some(model.clone()),
         session_manager: Some(SessionManager::in_memory(&cwd, None, None)),

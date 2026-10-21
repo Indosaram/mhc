@@ -11,7 +11,7 @@ use maho_server::{
         framing::DEFAULT_MAX_FRAME_LENGTH as MAX,
     },
 };
-use serde_json::json;
+use maho_server::transport_json as json;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -46,10 +46,10 @@ async fn handshake_and_request_use_real_socket() {
                 break;
             }
             for message in decoder.push(&buffer[..n]).unwrap() {
-                let response = if message["type"] == "hello" {
+                let response = if message["type"] == json!("hello") {
                     json!({"type":"hello","version":8,"serverId":ID})
                 } else {
-                    assert_eq!(message["call"]["member"], "list");
+                    assert_eq!(message["call"]["member"], json!("list"));
                     json!({"type":"response","id":message["id"],"ok":true,"result":[]})
                 };
                 let frame = encode_server_message(&response, MAX).unwrap();
@@ -105,7 +105,7 @@ async fn reports_truncated_final_frame() {
                 break;
             }
             for message in decoder.push(&buffer[..n]).unwrap() {
-                if message["type"] == "hello" {
+                if message["type"] == json!("hello") {
                     stream
                         .write_all(
                             &encode_server_message(

@@ -1,10 +1,9 @@
 //! Port of senpi packages/agent/src/harness/compaction/compaction.ts.
 
-
 use maho_ai::models::{Models, ModelsRequestTransforms};
 use maho_ai::types::{
-    AssistantMessage, BoxFuture, CacheRetention, ContentBlock, Context as AiContext, Message, SimpleStreamOptions,
-    StopReason, Usage, UserContent,
+    AssistantMessage, BoxFuture, CacheRetention, ContentBlock, Context as AiContext, Message,
+    SimpleStreamOptions, StopReason, Usage, UserContent,
 };
 use maho_ai::utils::lazy::setup_error_message;
 use maho_ai::utils::retry::{RetryCallbacks, RetryPolicy, retry_assistant_call};
@@ -13,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::harness::context::Context;
-use crate::harness::messages::{convert_to_llm, create_branch_summary_message, create_compaction_summary_message};
+use crate::harness::messages::{
+    convert_to_llm, create_branch_summary_message, create_compaction_summary_message,
+};
 use crate::harness::session::context::{build_context_entries, session_entry_to_context_messages};
 use crate::harness::session::types::{Entry, EntryKind, JsonValue};
 use crate::harness::utils::usage::add_usage;
@@ -21,8 +22,8 @@ use crate::types::{AgentMessage, CustomAgentMessage};
 
 pub use super::utils::serialize_conversation;
 use super::utils::{
-    FileOperations, compute_file_lists, content_text_for_summary, create_file_ops, extract_file_ops_from_message,
-    format_file_operations,
+    FileOperations, compute_file_lists, content_text_for_summary, create_file_ops,
+    extract_file_ops_from_message, format_file_operations,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,22 +85,23 @@ fn extract_file_operations(
     let mut file_ops = create_file_ops();
     if let Some(index) = prev_compaction_index
         && let EntryKind::Compaction { details, .. } = &entries[index].kind
-            && let Some(details) = details {
-                if let Some(read) = details.get("readFiles").and_then(Value::as_array) {
-                    for path in read {
-                        if let Some(path) = path.as_str() {
-                            file_ops.read.insert(path.to_owned());
-                        }
-                    }
-                }
-                if let Some(modified) = details.get("modifiedFiles").and_then(Value::as_array) {
-                    for path in modified {
-                        if let Some(path) = path.as_str() {
-                            file_ops.edited.insert(path.to_owned());
-                        }
-                    }
+        && let Some(details) = details
+    {
+        if let Some(read) = details.get("readFiles").and_then(Value::as_array) {
+            for path in read {
+                if let Some(path) = path.as_str() {
+                    file_ops.read.insert(path.to_owned());
                 }
             }
+        }
+        if let Some(modified) = details.get("modifiedFiles").and_then(Value::as_array) {
+            for path in modified {
+                if let Some(path) = path.as_str() {
+                    file_ops.edited.insert(path.to_owned());
+                }
+            }
+        }
+    }
     for message in messages {
         extract_file_ops_from_message(message, &mut file_ops);
     }
@@ -109,13 +111,11 @@ fn extract_file_operations(
 fn get_message_from_entry(entry: &Entry) -> Option<AgentMessage> {
     match &entry.kind {
         EntryKind::Message { message, .. } => Some(message.clone()),
-        EntryKind::BranchSummary { from_id, summary, .. } => Some(AgentMessage::Custom(
-            CustomAgentMessage::BranchSummary(create_branch_summary_message(
-                summary.clone(),
-                from_id.clone(),
-                entry.timestamp,
-            )),
-        )),
+        EntryKind::BranchSummary {
+            from_id, summary, ..
+        } => Some(AgentMessage::Custom(CustomAgentMessage::BranchSummary(
+            create_branch_summary_message(summary.clone(), from_id.clone(), entry.timestamp),
+        ))),
         EntryKind::Compaction {
             summary,
             tokens_before,
@@ -192,7 +192,9 @@ pub struct SummaryRequestFn<F>(pub F);
 
 impl<F> SummaryRequest for SummaryRequestFn<F>
 where
-    F: Fn(&AiContext, SimpleStreamOptions, &Context) -> BoxFuture<'static, AssistantMessage> + Send + Sync,
+    F: Fn(&AiContext, SimpleStreamOptions, &Context) -> BoxFuture<'static, AssistantMessage>
+        + Send
+        + Sync,
 {
     fn request<'a>(
         &'a self,
@@ -204,10 +206,14 @@ where
     }
 }
 
-pub fn create_summary_request_options(options: SimpleStreamOptions, context: &Context) -> SimpleStreamOptions {
+pub fn create_summary_request_options(
+    options: SimpleStreamOptions,
+    context: &Context,
+) -> SimpleStreamOptions {
     let mut options = options;
     options.stream.request.signal = context.abort_signal();
-    options.stream.request.telemetry_context = crate::harness::context::provider_telemetry_context(context);
+    options.stream.request.telemetry_context =
+        crate::harness::context::provider_telemetry_context(context);
     options.stream.cache_retention = Some(CacheRetention::None);
     if options.stream.session_id.is_none() {
         options.stream.session_id = uuidv7(None).ok();
@@ -230,7 +236,12 @@ pub async fn complete_simple_with_retries(
     retry_assistant_call(
         || async {
             match models
-                .complete_simple(model, ai_context, Some(request_options.clone()), ModelsRequestTransforms::default())
+                .complete_simple(
+                    model,
+                    ai_context,
+                    Some(request_options.clone()),
+                    ModelsRequestTransforms::default(),
+                )
                 .await
             {
                 Ok(message) => message,
@@ -292,9 +303,10 @@ fn get_assistant_usage(message: &AgentMessage) -> Option<Usage> {
 pub fn get_last_assistant_usage(entries: &[Entry]) -> Option<Usage> {
     for entry in entries.iter().rev() {
         if let EntryKind::Message { message, .. } = &entry.kind
-            && let Some(usage) = get_assistant_usage(message) {
-                return Some(usage);
-            }
+            && let Some(usage) = get_assistant_usage(message)
+        {
+            return Some(usage);
+        }
     }
     None
 }
@@ -337,8 +349,12 @@ fn counted_mask(messages: &[AgentMessage]) -> Vec<bool> {
     messages
         .iter()
         .map(|message| match message {
-            AgentMessage::Llm(Message::Assistant(assistant)) => !is_failed_stop(assistant.stop_reason),
-            AgentMessage::Llm(Message::ToolResult(result)) => !failed_ids.contains(&result.tool_call_id),
+            AgentMessage::Llm(Message::Assistant(assistant)) => {
+                !is_failed_stop(assistant.stop_reason)
+            }
+            AgentMessage::Llm(Message::ToolResult(result)) => {
+                !failed_ids.contains(&result.tool_call_id)
+            }
             _ => true,
         })
         .collect()
@@ -396,7 +412,11 @@ pub fn estimate_context_tokens(messages: &[AgentMessage]) -> ContextUsageEstimat
 }
 
 /// Return whether context usage exceeds the configured compaction threshold.
-pub fn should_compact(context_tokens: u64, context_window: u64, settings: &CompactionSettings) -> bool {
+pub fn should_compact(
+    context_tokens: u64,
+    context_window: u64,
+    settings: &CompactionSettings,
+) -> bool {
     if !settings.enabled {
         return false;
     }
@@ -407,11 +427,11 @@ const ESTIMATED_IMAGE_CHARS: usize = 4800;
 
 fn estimate_text_and_image_content_chars(content: &UserContent) -> usize {
     match content {
-        UserContent::Text(text) => text.chars().count(),
+        UserContent::Text(text) => text.encode_utf16().count(),
         UserContent::Blocks(blocks) => blocks
             .iter()
             .map(|block| match block {
-                ContentBlock::Text(text) => text.text.chars().count(),
+                ContentBlock::Text(text) => text.text.encode_utf16().count(),
                 ContentBlock::Image(_) => ESTIMATED_IMAGE_CHARS,
                 _ => 0,
             })
@@ -423,7 +443,7 @@ fn estimate_blocks_chars(blocks: &[ContentBlock]) -> usize {
     blocks
         .iter()
         .map(|block| match block {
-            ContentBlock::Text(text) => text.text.chars().count(),
+            ContentBlock::Text(text) => text.text.encode_utf16().count(),
             ContentBlock::Image(_) => ESTIMATED_IMAGE_CHARS,
             _ => 0,
         })
@@ -440,10 +460,15 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
             let mut chars = 0;
             for block in &assistant.content {
                 match block {
-                    ContentBlock::Text(text) => chars += text.text.chars().count(),
-                    ContentBlock::Thinking(thinking) => chars += thinking.thinking.chars().count(),
+                    ContentBlock::Text(text) => chars += text.text.encode_utf16().count(),
+                    ContentBlock::Thinking(thinking) => {
+                        chars += thinking.thinking.encode_utf16().count()
+                    }
                     ContentBlock::ToolCall(call) => {
-                        chars += call.name.chars().count() + safe_json_stringify(&Value::Object(call.arguments.clone())).chars().count();
+                        chars += call.name.encode_utf16().count()
+                            + safe_json_stringify(&Value::Object(call.arguments.clone()))
+                                .encode_utf16()
+                                .count();
                     }
                     _ => {}
                 }
@@ -453,17 +478,31 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
         AgentMessage::Llm(Message::ToolResult(result)) => {
             return ceil_div(estimate_blocks_chars(&result.content), 4);
         }
+        AgentMessage::Llm(Message::System(system)) => {
+            return ceil_div(
+                maho_ai::utils::text::get_system_message_text(&system.content, &system.sections)
+                    .encode_utf16()
+                    .count(),
+                4,
+            );
+        }
         AgentMessage::Llm(Message::ConfigurationUpdate(_)) => return 0,
         AgentMessage::Custom(CustomAgentMessage::BashExecution(bash)) => {
-            bash.command.chars().count() + bash.output.chars().count()
+            bash.command.encode_utf16().count() + bash.output.encode_utf16().count()
         }
         AgentMessage::Custom(CustomAgentMessage::Custom(custom)) => match &custom.content {
-            crate::harness::messages::CustomMessageContent::Text(text) => text.chars().count(),
-            crate::harness::messages::CustomMessageContent::Blocks(blocks) => estimate_blocks_chars(blocks),
+            crate::harness::messages::CustomMessageContent::Text(text) => {
+                text.encode_utf16().count()
+            }
+            crate::harness::messages::CustomMessageContent::Blocks(blocks) => {
+                estimate_blocks_chars(blocks)
+            }
         },
-        AgentMessage::Custom(CustomAgentMessage::BranchSummary(branch)) => branch.summary.chars().count(),
+        AgentMessage::Custom(CustomAgentMessage::BranchSummary(branch)) => {
+            branch.summary.encode_utf16().count()
+        }
         AgentMessage::Custom(CustomAgentMessage::CompactionSummary(compaction)) => {
-            compaction.summary.chars().count()
+            compaction.summary.encode_utf16().count()
         }
     };
     ceil_div(chars, 4)
@@ -481,12 +520,19 @@ fn find_valid_cut_points(entries: &[Entry], start_index: usize, end_index: usize
                 let role = message.role();
                 if matches!(
                     role,
-                    "bashExecution" | "custom" | "branchSummary" | "compactionSummary" | "user" | "assistant"
+                    "bashExecution"
+                        | "custom"
+                        | "branchSummary"
+                        | "compactionSummary"
+                        | "user"
+                        | "assistant"
                 ) {
                     cut_points.push(index);
                 }
             }
-            EntryKind::Compaction { .. } | EntryKind::BranchSummary { .. } | EntryKind::Custom { .. } => {}
+            EntryKind::Compaction { .. }
+            | EntryKind::BranchSummary { .. }
+            | EntryKind::Custom { .. } => {}
         }
         if matches!(entry.kind, EntryKind::BranchSummary { .. }) {
             cut_points.push(index);
@@ -506,9 +552,10 @@ pub fn find_turn_start_index(entries: &[Entry], entry_index: usize, start_index:
             return index as i64;
         }
         if let EntryKind::Message { message, .. } = &entry.kind
-            && matches!(message.role(), "user" | "bashExecution") {
-                return index as i64;
-            }
+            && matches!(message.role(), "user" | "bashExecution")
+        {
+            return index as i64;
+        }
     }
     -1
 }
@@ -574,7 +621,8 @@ pub fn find_cut_point(
         cut_index -= 1;
     }
     let cut_entry = &entries[cut_index];
-    let is_user_message = matches!(&cut_entry.kind, EntryKind::Message { message, .. } if message.role() == "user");
+    let is_user_message =
+        matches!(&cut_entry.kind, EntryKind::Message { message, .. } if message.role() == "user");
     let turn_start_index = if is_user_message {
         -1
     } else {
@@ -773,19 +821,21 @@ pub async fn generate_summary_with_request(
     let mut completion_options = SimpleStreamOptions::default();
     completion_options.stream.max_tokens = Some(max_tokens);
     if options.model.reasoning
-        && let Some(thinking_level) = options.thinking_level {
-            completion_options.reasoning = Some(thinking_level);
-        }
+        && let Some(thinking_level) = options.thinking_level
+    {
+        completion_options.reasoning = Some(thinking_level);
+    }
 
     let response = request
         .request(
-        &AiContext {
-            system_prompt: Some(SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
-            messages: summarization_messages,
-            tools: None,
-        },
-        create_summary_request_options(completion_options, context),
-        context,
+            &AiContext {
+                system_prompt: Some(SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
+                messages: summarization_messages,
+                tools: None,
+                active_tool_names: None,
+            },
+            create_summary_request_options(completion_options, context),
+            context,
         )
         .await;
 
@@ -811,7 +861,11 @@ pub async fn generate_summary_with_request(
             "Summarization hit the token limit; the summary is incomplete",
         ));
     }
-    if response.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_))) {
+    if response
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+    {
         return Err(CompactionError::new(
             CompactionErrorCode::SummarizationFailed,
             "Summarization attempted to call a tool",
@@ -883,7 +937,9 @@ pub fn prepare_compaction(
     if let Some(index) = prev_compaction_index {
         let prev_compaction = &path_entries[index];
         if let EntryKind::Compaction {
-            summary, retained_tail, ..
+            summary,
+            retained_tail,
+            ..
         } = &prev_compaction.kind
         {
             previous_summary = Some(summary.clone());
@@ -910,13 +966,14 @@ pub fn prepare_compaction(
     }
     let boundary_end = compactable_entries.len();
 
-    let context_messages: Vec<AgentMessage> = build_context_entries(path_entries)
-        .iter()
-        .flat_map(session_entry_to_context_messages)
-        .collect();
-    let tokens_before = estimate_context_tokens(&context_messages).tokens as i64;
+    let tokens_before = estimate_compaction_path_tokens(path_entries) as i64;
 
-    let cut_point = find_cut_point(&compactable_entries, 0, boundary_end, settings.keep_recent_tokens);
+    let cut_point = find_cut_point(
+        &compactable_entries,
+        0,
+        boundary_end,
+        settings.keep_recent_tokens,
+    );
     let history_end = if cut_point.is_split_turn {
         cut_point.turn_start_index.max(0) as usize
     } else {
@@ -950,7 +1007,8 @@ pub fn prepare_compaction(
             retained_tail.push(message);
         }
     }
-    let mut file_ops = extract_file_operations(&messages_to_summarize, path_entries, prev_compaction_index);
+    let mut file_ops =
+        extract_file_operations(&messages_to_summarize, path_entries, prev_compaction_index);
     if cut_point.is_split_turn {
         for message in &turn_prefix_messages {
             extract_file_ops_from_message(message, &mut file_ops);
@@ -969,20 +1027,53 @@ pub fn prepare_compaction(
     }))
 }
 
+/// Usage before the newest compaction measured replaced history, not the summary and retained tail.
+fn estimate_compaction_path_tokens(path_entries: &[Entry]) -> u64 {
+    let entries = build_context_entries(path_entries);
+    let boundary = entries
+        .iter()
+        .rposition(|entry| matches!(entry.kind, EntryKind::Compaction { .. }))
+        .map_or(0, |index| index + 1);
+    let since_messages: Vec<AgentMessage> = entries[boundary..]
+        .iter()
+        .flat_map(session_entry_to_context_messages)
+        .collect();
+    let since = estimate_context_tokens(&since_messages);
+    if since.last_usage_index.is_some() {
+        return since.tokens;
+    }
+    let earlier_messages: Vec<AgentMessage> = entries[..boundary]
+        .iter()
+        .flat_map(session_entry_to_context_messages)
+        .collect();
+    let counted = counted_mask(&earlier_messages);
+    since.tokens
+        + earlier_messages
+            .iter()
+            .zip(counted)
+            .filter(|(_, counted)| *counted)
+            .map(|(message, _)| estimate_tokens(message))
+            .sum::<u64>()
+}
+
 fn message_timestamp(message: &AgentMessage) -> i64 {
     match message {
         AgentMessage::Llm(Message::User(user)) => user.timestamp,
         AgentMessage::Llm(Message::Assistant(assistant)) => assistant.timestamp,
         AgentMessage::Llm(Message::ToolResult(result)) => result.timestamp,
+        AgentMessage::Llm(Message::System(update)) => update.timestamp,
         AgentMessage::Llm(Message::ConfigurationUpdate(update)) => update.timestamp,
         AgentMessage::Custom(CustomAgentMessage::BashExecution(bash)) => bash.timestamp,
         AgentMessage::Custom(CustomAgentMessage::Custom(custom)) => custom.timestamp,
         AgentMessage::Custom(CustomAgentMessage::BranchSummary(branch)) => branch.timestamp,
-        AgentMessage::Custom(CustomAgentMessage::CompactionSummary(compaction)) => compaction.timestamp,
+        AgentMessage::Custom(CustomAgentMessage::CompactionSummary(compaction)) => {
+            compaction.timestamp
+        }
     }
 }
 
-const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+const TURN_PREFIX_SUMMARIZATION_PROMPT: &str =
+    "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
 Summarize the prefix to provide context for the retained suffix:
 
@@ -1143,7 +1234,9 @@ async fn generate_turn_prefix_summary(
     });
     let llm_messages = convert_to_llm(messages.to_vec());
     let conversation_text = serialize_conversation(&llm_messages);
-    let prompt_text = format!("<conversation>\n{conversation_text}\n</conversation>\n\n{TURN_PREFIX_SUMMARIZATION_PROMPT}");
+    let prompt_text = format!(
+        "<conversation>\n{conversation_text}\n</conversation>\n\n{TURN_PREFIX_SUMMARIZATION_PROMPT}"
+    );
     let summarization_messages = vec![Message::User(maho_ai::types::UserMessage {
         content: UserContent::Blocks(vec![ContentBlock::text(prompt_text)]),
         timestamp: now_ms(),
@@ -1152,24 +1245,29 @@ async fn generate_turn_prefix_summary(
     let mut completion_options = SimpleStreamOptions::default();
     completion_options.stream.max_tokens = Some(max_tokens);
     if model.reasoning
-        && let Some(thinking_level) = thinking_level {
-            completion_options.reasoning = Some(thinking_level);
-        }
+        && let Some(thinking_level) = thinking_level
+    {
+        completion_options.reasoning = Some(thinking_level);
+    }
     let response = request
         .request(
-        &AiContext {
-            system_prompt: Some(SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
-            messages: summarization_messages,
-            tools: None,
-        },
-        create_summary_request_options(completion_options, context),
-        context,
+            &AiContext {
+                system_prompt: Some(SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
+                messages: summarization_messages,
+                tools: None,
+                active_tool_names: None,
+            },
+            create_summary_request_options(completion_options, context),
+            context,
         )
         .await;
     if response.stop_reason == StopReason::Aborted {
         return Err(CompactionError::new(
             CompactionErrorCode::Aborted,
-            non_empty(response.error_message.as_deref(), "Turn prefix summarization aborted"),
+            non_empty(
+                response.error_message.as_deref(),
+                "Turn prefix summarization aborted",
+            ),
         ));
     }
     if response.stop_reason == StopReason::Error {
@@ -1188,7 +1286,11 @@ async fn generate_turn_prefix_summary(
             "Turn prefix summarization hit the token limit; the summary is incomplete",
         ));
     }
-    if response.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_))) {
+    if response
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+    {
         return Err(CompactionError::new(
             CompactionErrorCode::SummarizationFailed,
             "Turn prefix summarization attempted to call a tool",

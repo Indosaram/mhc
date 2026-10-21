@@ -20,6 +20,14 @@ pub struct WebSocketCloseError {
     pub was_clean: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WebSocketTransportError {
+    #[error("{0}")]
+    Message(String),
+    #[error(transparent)]
+    Close(#[from] WebSocketCloseError),
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WebSocketErrorEvent {
     pub message: Option<String>,
@@ -51,14 +59,21 @@ pub fn generic_web_socket_error() -> String {
 
 pub fn extract_web_socket_close_error(event: &WebSocketCloseEvent) -> WebSocketCloseError {
     let reason = non_empty_string(event.reason.as_deref());
-    let code_text = event.code.map(|code| format!(" {code}")).unwrap_or_default();
+    let code_text = event
+        .code
+        .map(|code| format!(" {code}"))
+        .unwrap_or_default();
     let reason_text = match &reason {
         Some(reason) => format!(" {reason}"),
-        None if event.code == Some(WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE) => " message too big".to_owned(),
+        None if event.code == Some(WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE) => {
+            " message too big".to_owned()
+        }
         None => String::new(),
     };
     WebSocketCloseError {
-        message: format!("WebSocket closed{code_text}{reason_text}").trim().to_owned(),
+        message: format!("WebSocket closed{code_text}{reason_text}")
+            .trim()
+            .to_owned(),
         code: event.code,
         reason,
         was_clean: event.was_clean,
@@ -66,16 +81,19 @@ pub fn extract_web_socket_close_error(event: &WebSocketCloseEvent) -> WebSocketC
 }
 
 pub struct WebSocketTransportFailure {
-    fail: Arc<dyn Fn(String) + Send + Sync>,
+    fail: Arc<dyn Fn(WebSocketTransportError) + Send + Sync>,
     grace: Mutex<Option<tokio::task::JoinHandle<()>>>,
     reported: Arc<Mutex<bool>>,
     grace_ms: u64,
 }
 
 impl WebSocketTransportFailure {
-    fn report(&self, error: String) {
+    fn report(&self, error: WebSocketTransportError) {
         {
-            let mut reported = self.reported.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut reported = self
+                .reported
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if *reported {
                 return;
             }
@@ -87,11 +105,15 @@ impl WebSocketTransportFailure {
 
     pub fn on_error(&self, event: &WebSocketErrorEvent) {
         if let Some(error) = extract_web_socket_error_message(event) {
-            self.report(error);
+            self.report(WebSocketTransportError::Message(error));
             return;
         }
-        let mut grace = self.grace.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *self.reported.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) || grace.is_some() {
+        let mut grace = self
+            .grace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let report_guard = self.reported.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *report_guard || grace.is_some() {
             return;
         }
         let fail = self.fail.clone();
@@ -103,25 +125,31 @@ impl WebSocketTransportFailure {
         };
         let handle = handle.spawn(async move {
             tokio::time::sleep_until(deadline).await;
-            let mut reported = reported.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut reported = reported
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if *reported {
                 return;
             }
             *reported = true;
             drop(reported);
-            fail(generic_web_socket_error());
+            fail(WebSocketTransportError::Message(generic_web_socket_error()));
         });
         *grace = Some(handle);
+        drop(report_guard);
     }
 
     pub fn on_close(&self, event: &WebSocketCloseEvent) {
         self.dispose();
         let error = extract_web_socket_close_error(event);
-        self.report(error.message);
+        self.report(error.into());
     }
 
     pub fn dispose(&self) {
-        let mut grace = self.grace.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut grace = self
+            .grace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(handle) = grace.take() {
             handle.abort();
         }
@@ -131,7 +159,7 @@ impl WebSocketTransportFailure {
 /// Reports at most one failure to `fail`. A message-bearing `error` reports at once; a message-less
 /// one defers to the `close` that follows, or to the generic error once the grace expires.
 pub fn create_web_socket_transport_failure(
-    fail: impl Fn(String) + Send + Sync + 'static,
+    fail: impl Fn(WebSocketTransportError) + Send + Sync + 'static,
     grace_ms: u64,
 ) -> WebSocketTransportFailure {
     WebSocketTransportFailure {
@@ -150,31 +178,59 @@ mod tests {
     fn reports_close_code_and_reason_after_message_less_error() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let failure = create_web_socket_transport_failure(move |error| sink.lock().unwrap().push(error), 250);
+        let failure =
+            create_web_socket_transport_failure(move |error| sink.lock().unwrap().push(error), 250);
         failure.on_error(&WebSocketErrorEvent::default());
-        failure.on_close(&WebSocketCloseEvent { code: Some(1006), reason: Some("Connection ended".into()), was_clean: Some(false) });
-        assert_eq!(seen.lock().unwrap().as_slice(), ["WebSocket closed 1006 Connection ended"]);
+        failure.on_close(&WebSocketCloseEvent {
+            code: Some(1006),
+            reason: Some("Connection ended".into()),
+            was_clean: Some(false),
+        });
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [WebSocketTransportError::Close(WebSocketCloseError {
+                message: "WebSocket closed 1006 Connection ended".into(),
+                code: Some(1006),
+                reason: Some("Connection ended".into()),
+                was_clean: Some(false)
+            })]
+        );
     }
 
     #[test]
     fn preserves_runtime_error_message_over_close_diagnostics() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let failure = create_web_socket_transport_failure(move |error| sink.lock().unwrap().push(error), 250);
-        failure.on_error(&WebSocketErrorEvent { message: Some("read ECONNRESET".into()), nested_message: None });
-        failure.on_close(&WebSocketCloseEvent { code: Some(1006), reason: Some("Connection ended".into()), was_clean: Some(false) });
-        assert_eq!(seen.lock().unwrap().as_slice(), ["read ECONNRESET"]);
+        let failure =
+            create_web_socket_transport_failure(move |error| sink.lock().unwrap().push(error), 250);
+        failure.on_error(&WebSocketErrorEvent {
+            message: Some("read ECONNRESET".into()),
+            nested_message: None,
+        });
+        failure.on_close(&WebSocketCloseEvent {
+            code: Some(1006),
+            reason: Some("Connection ended".into()),
+            was_clean: Some(false),
+        });
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [WebSocketTransportError::Message("read ECONNRESET".into())]
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn reports_generic_error_when_close_never_arrives() {
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let sink = seen.clone();
-        let failure = create_web_socket_transport_failure(move |error| sink.lock().unwrap().push(error), 250);
+        let (sent, received) = tokio::sync::oneshot::channel();
+        let sent = Mutex::new(Some(sent));
+        let failure =
+            create_web_socket_transport_failure(move |error| {
+                sent.lock().unwrap().take().expect("one failure").send(error).expect("receiver");
+            }, 250);
         failure.on_error(&WebSocketErrorEvent::default());
-        tokio::time::advance(Duration::from_millis(250)).await;
-        tokio::task::yield_now().await;
-        assert_eq!(seen.lock().unwrap().as_slice(), ["WebSocket error"]);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), received).await.expect("bounded failure").expect("failure"),
+            WebSocketTransportError::Message("WebSocket error".into())
+        );
     }
 
     #[test]
@@ -195,12 +251,18 @@ mod tests {
         });
         assert_eq!(too_big.message, "WebSocket closed 1009 message too big");
 
-        assert_eq!(extract_web_socket_close_error(&WebSocketCloseEvent::default()).message, "WebSocket closed");
+        assert_eq!(
+            extract_web_socket_close_error(&WebSocketCloseEvent::default()).message,
+            "WebSocket closed"
+        );
     }
 
     #[test]
     fn error_messages_prefer_the_event_then_the_nested_error() {
-        assert_eq!(extract_web_socket_error_message(&WebSocketErrorEvent::default()), None);
+        assert_eq!(
+            extract_web_socket_error_message(&WebSocketErrorEvent::default()),
+            None
+        );
         assert_eq!(
             extract_web_socket_error_message(&WebSocketErrorEvent {
                 message: Some(String::new()),
@@ -219,59 +281,102 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_message_less_error_waits_for_the_close_frame() {
-        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen: Arc<Mutex<Vec<WebSocketTransportError>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         let failure = create_web_socket_transport_failure(
-            move |error| sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(error),
+            move |error| {
+                sink.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(error)
+            },
             WEBSOCKET_ERROR_CLOSE_GRACE_MS,
         );
 
         failure.on_error(&WebSocketErrorEvent::default());
-        assert!(seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty());
-
-        failure.on_close(&WebSocketCloseEvent { code: Some(1006), reason: None, was_clean: Some(false) });
-        assert_eq!(
-            seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
-            ["WebSocket closed 1006"]
+        assert!(
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
         );
 
-        failure.on_close(&WebSocketCloseEvent { code: Some(1001), reason: None, was_clean: Some(true) });
-        assert_eq!(seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len(), 1);
+        failure.on_close(&WebSocketCloseEvent {
+            code: Some(1006),
+            reason: None,
+            was_clean: Some(false),
+        });
+        assert_eq!(
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            [WebSocketTransportError::Close(WebSocketCloseError {
+                message: "WebSocket closed 1006".into(),
+                code: Some(1006),
+                reason: None,
+                was_clean: Some(false)
+            })]
+        );
+
+        failure.on_close(&WebSocketCloseEvent {
+            code: Some(1001),
+            reason: None,
+            was_clean: Some(true),
+        });
+        assert_eq!(
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            1
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn the_grace_reports_the_generic_error_once() {
-        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen: Arc<Mutex<Vec<WebSocketTransportError>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
+        let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
         let failure = create_web_socket_transport_failure(
-            move |error| sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(error),
+            move |error| {
+                sink.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(error.clone());
+                sent.send(error).expect("receiver");
+            },
             WEBSOCKET_ERROR_CLOSE_GRACE_MS,
         );
 
         failure.on_error(&WebSocketErrorEvent::default());
         failure.on_error(&WebSocketErrorEvent::default());
-        for _ in 0..16 {
-            tokio::time::advance(Duration::from_millis(WEBSOCKET_ERROR_CLOSE_GRACE_MS)).await;
-            tokio::task::yield_now().await;
-            if !seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty() {
-                break;
-            }
-        }
+        tokio::time::timeout(Duration::from_secs(1), received.recv()).await.expect("bounded failure").expect("failure");
         assert_eq!(
-            seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
-            ["WebSocket error"]
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            [WebSocketTransportError::Message("WebSocket error".into())]
         );
 
-        failure.on_close(&WebSocketCloseEvent { code: Some(1006), reason: None, was_clean: None });
-        assert_eq!(seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len(), 1);
+        failure.on_close(&WebSocketCloseEvent {
+            code: Some(1006),
+            reason: None,
+            was_clean: None,
+        });
+        assert_eq!(
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            1
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn dispose_cancels_a_pending_grace() {
-        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen: Arc<Mutex<Vec<WebSocketTransportError>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         let failure = create_web_socket_transport_failure(
-            move |error| sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(error),
+            move |error| {
+                sink.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(error)
+            },
             WEBSOCKET_ERROR_CLOSE_GRACE_MS,
         );
 
@@ -279,19 +384,35 @@ mod tests {
         failure.dispose();
         tokio::time::advance(Duration::from_millis(WEBSOCKET_ERROR_CLOSE_GRACE_MS * 4)).await;
         tokio::task::yield_now().await;
-        assert!(seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty());
+        assert!(
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_message_bearing_error_reports_immediately() {
-        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen: Arc<Mutex<Vec<WebSocketTransportError>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         let failure = create_web_socket_transport_failure(
-            move |error| sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(error),
+            move |error| {
+                sink.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(error)
+            },
             WEBSOCKET_ERROR_CLOSE_GRACE_MS,
         );
 
-        failure.on_error(&WebSocketErrorEvent { message: Some("boom".into()), nested_message: None });
-        assert_eq!(seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(), ["boom"]);
+        failure.on_error(&WebSocketErrorEvent {
+            message: Some("boom".into()),
+            nested_message: None,
+        });
+        assert_eq!(
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            [WebSocketTransportError::Message("boom".into())]
+        );
     }
 }

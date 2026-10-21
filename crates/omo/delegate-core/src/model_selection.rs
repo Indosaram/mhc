@@ -333,7 +333,10 @@ fn resolve_cold_fallback_chain(
     for entry in fallback_chain {
         for provider in &entry.providers {
             if connected.contains(provider) {
-                let transformed_model_id = transform_model_for_provider(provider, &entry.model);
+                let transformed_model_id = transform_model_for_provider(
+                    provider,
+                    model_id_for_provider(provider, &entry.model),
+                );
                 deps.log(
                     "[resolveModelForDelegateTask] fallback chain resolved via connected provider",
                     Some(&json!({ "provider": provider, "model": entry.model })),
@@ -413,4 +416,60 @@ fn resolve_warm_fallback_chain(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cold_fallback_strips_connected_provider_prefix_before_transforming() {
+        for (provider, model, expected) in [
+            ("openai", "gpt-5.4", "openai/gpt-5.4"),
+            ("openai", "openai/gpt-5.4", "openai/gpt-5.4"),
+            ("kimi-coding", "kimi-coding/kimi-k3", "kimi-coding/k3"),
+            ("vercel", "vercel/gpt-5.6-sol", "vercel/openai/gpt-5.6-sol"),
+            ("vercel", "openai/gpt-5.6-sol", "vercel/openai/gpt-5.6-sol"),
+        ] {
+            // Given a cold cache and a disconnected rung before the connected provider.
+            let connected = vec![provider.to_string()];
+            let selected_entry = DelegateFallbackEntry {
+                providers: connected.clone(),
+                model: model.to_string(),
+                variant: Some("medium".to_string()),
+            };
+            let input = DelegateModelResolutionInput {
+                fallback_chain: Some(vec![
+                    DelegateFallbackEntry {
+                        providers: vec!["anthropic".to_string()],
+                        model: "claude-sonnet-4-6".to_string(),
+                        variant: None,
+                    },
+                    selected_entry.clone(),
+                ]),
+                ..Default::default()
+            };
+            let deps = DelegateModelResolutionDeps {
+                connected_providers: Some(&connected),
+                has_provider_models_cache: true,
+                has_connected_providers_cache: true,
+                log: None,
+            };
+
+            // When the fallback chain resolves via the connected provider.
+            let result = resolve_model_for_delegate_task(&input, &deps);
+
+            // Then only the matching provider prefix is stripped before transformation.
+            assert_eq!(
+                result,
+                Some(DelegateModelResolutionResult::Resolved(ResolvedDelegateModel {
+                    model: expected.to_string(),
+                    variant: selected_entry.variant.clone(),
+                    fallback_entry: Some(selected_entry),
+                    matched_fallback: true,
+                })),
+                "provider={provider}, model={model}",
+            );
+        }
+    }
 }

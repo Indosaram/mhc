@@ -3,7 +3,9 @@
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
-use crate::types::{ConstrainedSampling, ConstrainedSamplingConfig, GrammarFormat, JsonSchemaStrictness, Tool};
+use crate::types::{
+    ConstrainedSampling, ConstrainedSamplingConfig, GrammarFormat, JsonSchemaStrictness, Tool,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -37,18 +39,25 @@ fn as_object(value: &Value) -> Option<&Map<String, Value>> {
 }
 
 fn is_structured_schema(schema: &Value) -> bool {
-    let Some(schema) = as_object(schema) else { return false };
+    let Some(schema) = as_object(schema) else {
+        return false;
+    };
     let types: Vec<&Value> = match schema.get("type") {
         Some(Value::String(_)) => schema.get("type").into_iter().collect(),
         Some(Value::Array(types)) => types.iter().collect(),
         _ => Vec::new(),
     };
     let has_type = |name: &str| types.iter().any(|value| value.as_str() == Some(name));
-    has_type("object") || has_type("array") || schema.contains_key("properties") || schema.contains_key("items")
+    has_type("object")
+        || has_type("array")
+        || schema.contains_key("properties")
+        || schema.contains_key("items")
 }
 
 fn schema_allows_null(schema: &Value) -> bool {
-    let Some(schema) = as_object(schema) else { return false };
+    let Some(schema) = as_object(schema) else {
+        return false;
+    };
     if schema.get("type").and_then(Value::as_str) == Some("null") {
         return true;
     }
@@ -71,13 +80,28 @@ fn schema_allows_null(schema: &Value) -> bool {
     }
 }
 
-fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStrictJsonSchemaError> {
+pub type UnsupportedStrictSchemaKeywordCheck = fn(&str, &Value) -> bool;
+
+fn make_json_schema_node_strict(
+    schema: &mut Value,
+    is_unsupported_keyword: Option<UnsupportedStrictSchemaKeywordCheck>,
+) -> Result<(), UnsupportedStrictJsonSchemaError> {
     if as_object(schema).is_none() {
         return Err(unsupported("boolean schemas are unsupported"));
     }
     for key in UNSUPPORTED_STRICT_SCHEMA_KEYS {
         if as_object(schema).is_some_and(|schema| schema.contains_key(*key)) {
             return Err(unsupported(&format!("{key} schemas are unsupported")));
+        }
+    }
+
+    if let Some(check) = is_unsupported_keyword
+        && let Some(object) = as_object(schema)
+    {
+        for (key, value) in object {
+            if check(key, value) {
+                return Err(unsupported(&format!("{key}: {value} is unsupported")));
+            }
         }
     }
 
@@ -93,22 +117,36 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
         }
         let mut strict_variants = Vec::with_capacity(variants.len());
         for mut variant in variants {
-            make_json_schema_node_strict(&mut variant)?;
+            make_json_schema_node_strict(&mut variant, is_unsupported_keyword)?;
             strict_variants.push(variant);
         }
-        schema.as_object_mut().expect("object").insert("anyOf".into(), Value::Array(strict_variants));
+        schema
+            .as_object_mut()
+            .expect("object")
+            .insert("anyOf".into(), Value::Array(strict_variants));
     }
 
     if as_object(schema).is_some_and(|schema| schema.contains_key("items")) {
-        if matches!(as_object(schema).and_then(|schema| schema.get("items")), Some(Value::Array(_))) {
+        if matches!(
+            as_object(schema).and_then(|schema| schema.get("items")),
+            Some(Value::Array(_))
+        ) {
             return Err(unsupported("tuple schemas are unsupported"));
         }
-        let mut items = as_object(schema).and_then(|schema| schema.get("items")).cloned().unwrap_or(Value::Null);
-        make_json_schema_node_strict(&mut items)?;
-        schema.as_object_mut().expect("object").insert("items".into(), items);
+        let mut items = as_object(schema)
+            .and_then(|schema| schema.get("items"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        make_json_schema_node_strict(&mut items, is_unsupported_keyword)?;
+        schema
+            .as_object_mut()
+            .expect("object")
+            .insert("items".into(), items);
     }
 
-    let is_object_schema = as_object(schema).and_then(|schema| schema.get("type")).and_then(Value::as_str)
+    let is_object_schema = as_object(schema)
+        .and_then(|schema| schema.get("type"))
+        .and_then(Value::as_str)
         == Some("object");
     let has_properties = as_object(schema).is_some_and(|schema| schema.contains_key("properties"));
     if has_properties && !is_object_schema {
@@ -117,12 +155,20 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
     if !is_object_schema {
         return Ok(());
     }
-    if let Some(additional) = as_object(schema).and_then(|schema| schema.get("additionalProperties"))
+    if let Some(additional) =
+        as_object(schema).and_then(|schema| schema.get("additionalProperties"))
         && additional != &Value::Bool(false)
     {
-        return Err(unsupported("schema-valued or true additionalProperties is unsupported"));
+        return Err(unsupported(
+            "schema-valued or true additionalProperties is unsupported",
+        ));
     }
-    if has_properties && as_object(schema).and_then(|schema| schema.get("properties")).and_then(as_object).is_none() {
+    if has_properties
+        && as_object(schema)
+            .and_then(|schema| schema.get("properties"))
+            .and_then(as_object)
+            .is_none()
+    {
         return Err(unsupported("object properties must be a schema map"));
     }
     if let Some(required) = as_object(schema).and_then(|schema| schema.get("required")) {
@@ -139,7 +185,10 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
         .unwrap_or_default();
     let property_names: Vec<String> = properties.keys().cloned().collect();
     let required: Vec<String> = match as_object(schema).and_then(|schema| schema.get("required")) {
-        Some(Value::Array(items)) => items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect(),
         _ => Vec::new(),
     };
     if required.iter().any(|key| !property_names.contains(key)) {
@@ -147,10 +196,13 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
     }
     for (key, property) in properties.clone() {
         let mut property = property;
-        make_json_schema_node_strict(&mut property)?;
+        make_json_schema_node_strict(&mut property, is_unsupported_keyword)?;
         if !required.contains(&key) && !schema_allows_null(&property) {
             let mut wrapper = Map::new();
-            wrapper.insert("anyOf".into(), Value::Array(vec![property, serde_json::json!({ "type": "null" })]));
+            wrapper.insert(
+                "anyOf".into(),
+                Value::Array(vec![property, serde_json::json!({ "type": "null" })]),
+            );
             properties.insert(key, Value::Object(wrapper));
         } else {
             properties.insert(key, property);
@@ -160,19 +212,33 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
     if schema.contains_key("properties") {
         schema.insert("properties".into(), Value::Object(properties));
     }
-    schema.insert("required".into(), Value::Array(property_names.into_iter().map(Value::String).collect()));
+    schema.insert(
+        "required".into(),
+        Value::Array(property_names.into_iter().map(Value::String).collect()),
+    );
     schema.insert("additionalProperties".into(), Value::Bool(false));
     Ok(())
 }
 
 /// Convert a tool schema to the strict subset expected by provider constrained sampling.
 pub fn make_strict_json_schema(schema: &Value) -> Result<Value, UnsupportedStrictJsonSchemaError> {
+    make_strict_json_schema_with_keyword_check(schema, None)
+}
+
+pub fn make_strict_json_schema_with_keyword_check(
+    schema: &Value,
+    is_unsupported_keyword: Option<UnsupportedStrictSchemaKeywordCheck>,
+) -> Result<Value, UnsupportedStrictJsonSchemaError> {
     let mut cloned = schema.clone();
     if as_object(&cloned).is_none() {
         return Err(unsupported("root schema must have type object"));
     }
-    make_json_schema_node_strict(&mut cloned)?;
-    if as_object(&cloned).and_then(|cloned| cloned.get("type")).and_then(Value::as_str) != Some("object") {
+    make_json_schema_node_strict(&mut cloned, is_unsupported_keyword)?;
+    if as_object(&cloned)
+        .and_then(|cloned| cloned.get("type"))
+        .and_then(Value::as_str)
+        != Some("object")
+    {
         return Err(unsupported("root schema must have type object"));
     }
     Ok(cloned)
@@ -226,10 +292,14 @@ pub fn append_grammar_tool_input_json_delta(
         if close && next_input == buffer.input {
             return Ok(None);
         }
-        return Err(format!("grammar tool input for property \"{input_property}\" changed after it was closed"));
+        return Err(format!(
+            "grammar tool input for property \"{input_property}\" changed after it was closed"
+        ));
     }
     let Some(input_delta) = next_input.strip_prefix(buffer.input.as_str()) else {
-        return Err(format!("grammar tool input for property \"{input_property}\" changed non-monotonically"));
+        return Err(format!(
+            "grammar tool input for property \"{input_property}\" changed non-monotonically"
+        ));
     };
 
     if !close && input_delta.is_empty() {
@@ -270,28 +340,48 @@ fn infer_grammar_input_property(tool: &Tool) -> Result<String, String> {
         _ => Vec::new(),
     };
     if required.len() != 1 {
-        return Err("grammar constrained sampling requires exactly one required string property".to_owned());
+        return Err(
+            "grammar constrained sampling requires exactly one required string property".to_owned(),
+        );
     }
 
     let input_property = required[0];
     let properties = schema.get("properties").and_then(Value::as_object);
     let Some(property) = properties.and_then(|properties| properties.get(input_property)) else {
-        return Err(format!("grammar constrained sampling requires a properties entry for {input_property}"));
+        return Err(format!(
+            "grammar constrained sampling requires a properties entry for {input_property}"
+        ));
     };
     if property.get("type").and_then(Value::as_str) != Some("string") {
-        return Err(format!("grammar constrained sampling property {input_property} must have type string"));
+        return Err(format!(
+            "grammar constrained sampling property {input_property} must have type string"
+        ));
     }
     Ok(input_property.to_owned())
 }
 
-pub fn resolve_json_schema_strict_sampling(tool: &Tool, supports_strict_mode: bool) -> Result<Option<bool>, String> {
-    let Some(config) = tool.constrained_sampling.as_ref() else { return Ok(None) };
-    let ConstrainedSampling::Config(ConstrainedSamplingConfig::JsonSchema { strict }) = config else {
+pub fn resolve_json_schema_strict_sampling(
+    tool: &Tool,
+    supports_strict_mode: bool,
+) -> Result<Option<bool>, String> {
+    resolve_json_schema_strict_sampling_with_keyword_check(tool, supports_strict_mode, None)
+}
+
+pub fn resolve_json_schema_strict_sampling_with_keyword_check(
+    tool: &Tool,
+    supports_strict_mode: bool,
+    is_unsupported_keyword: Option<UnsupportedStrictSchemaKeywordCheck>,
+) -> Result<Option<bool>, String> {
+    let Some(config) = tool.constrained_sampling.as_ref() else {
+        return Ok(None);
+    };
+    let ConstrainedSampling::Config(ConstrainedSamplingConfig::JsonSchema { strict }) = config
+    else {
         return Ok(None);
     };
 
     if supports_strict_mode {
-        match make_strict_json_schema(&tool.parameters) {
+        match make_strict_json_schema_with_keyword_check(&tool.parameters, is_unsupported_keyword) {
             Ok(_) => return Ok(Some(true)),
             Err(error) => {
                 if *strict != JsonSchemaStrictness::Require {
@@ -317,8 +407,11 @@ pub fn resolve_grammar_constrained_sampling(
     tool: &Tool,
     supports_openai_grammar_tools: bool,
 ) -> Result<Option<GrammarConstrainedSampling>, String> {
-    let Some(config) = tool.constrained_sampling.as_ref() else { return Ok(None) };
-    let ConstrainedSampling::Config(ConstrainedSamplingConfig::Grammar { variants }) = config else {
+    let Some(config) = tool.constrained_sampling.as_ref() else {
+        return Ok(None);
+    };
+    let ConstrainedSampling::Config(ConstrainedSamplingConfig::Grammar { variants }) = config
+    else {
         return Ok(None);
     };
 
@@ -328,8 +421,10 @@ pub fn resolve_grammar_constrained_sampling(
 
     let lark_definition = variants.get(&GrammarFormat::OpenaiLark);
     let regex_definition = variants.get(&GrammarFormat::OpenaiRegex);
-    let has_lark_definition = lark_definition.is_some_and(|definition| !definition.trim().is_empty());
-    let has_regex_definition = regex_definition.is_some_and(|definition| !definition.trim().is_empty());
+    let has_lark_definition =
+        lark_definition.is_some_and(|definition| !definition.trim().is_empty());
+    let has_regex_definition =
+        regex_definition.is_some_and(|definition| !definition.trim().is_empty());
     if !has_lark_definition && !has_regex_definition {
         return Err(format!(
             "Tool \"{}\" cannot use grammar constrained sampling: no supported grammar variant was provided.",
@@ -340,14 +435,27 @@ pub fn resolve_grammar_constrained_sampling(
     let resolved = (|| {
         let input_property = infer_grammar_input_property(tool)?;
         let (format, definition) = if has_lark_definition {
-            (GrammarFormat::OpenaiLark, lark_definition.cloned().unwrap_or_default())
+            (
+                GrammarFormat::OpenaiLark,
+                lark_definition.cloned().unwrap_or_default(),
+            )
         } else {
-            (GrammarFormat::OpenaiRegex, regex_definition.cloned().unwrap_or_default())
+            (
+                GrammarFormat::OpenaiRegex,
+                regex_definition.cloned().unwrap_or_default(),
+            )
         };
-        Ok::<_, String>(GrammarConstrainedSampling { format, definition, input_property })
+        Ok::<_, String>(GrammarConstrainedSampling {
+            format,
+            definition,
+            input_property,
+        })
     })();
     resolved.map(Some).map_err(|error| {
-        format!("Tool \"{}\" cannot use grammar constrained sampling: {}.", tool.name, error)
+        format!(
+            "Tool \"{}\" cannot use grammar constrained sampling: {}.",
+            tool.name, error
+        )
     })
 }
 
@@ -357,7 +465,9 @@ pub fn create_grammar_tool_input_properties(
 ) -> Result<BTreeMap<String, String>, String> {
     let mut properties = BTreeMap::new();
     for tool in tools.unwrap_or_default() {
-        if let Some(grammar) = resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)? {
+        if let Some(grammar) =
+            resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)?
+        {
             properties.insert(tool.name.clone(), grammar.input_property);
         }
     }
@@ -411,31 +521,41 @@ mod tests {
         let schema = serde_json::json!({ "type": "object", "$ref": "#/x" });
         assert_eq!(
             make_strict_json_schema(&schema),
-            Err(UnsupportedStrictJsonSchemaError("$ref schemas are unsupported".into()))
+            Err(UnsupportedStrictJsonSchemaError(
+                "$ref schemas are unsupported".into()
+            ))
         );
         assert_eq!(
             make_strict_json_schema(&serde_json::json!(true)),
-            Err(UnsupportedStrictJsonSchemaError("root schema must have type object".into()))
+            Err(UnsupportedStrictJsonSchemaError(
+                "root schema must have type object".into()
+            ))
         );
         assert_eq!(
             make_strict_json_schema(&serde_json::json!({
                 "type": "object",
                 "properties": { "a": true }
             })),
-            Err(UnsupportedStrictJsonSchemaError("boolean schemas are unsupported".into()))
+            Err(UnsupportedStrictJsonSchemaError(
+                "boolean schemas are unsupported".into()
+            ))
         );
         assert_eq!(
             make_strict_json_schema(&serde_json::json!({ "type": "array" })),
-            Err(UnsupportedStrictJsonSchemaError("root schema must have type object".into()))
+            Err(UnsupportedStrictJsonSchemaError(
+                "root schema must have type object".into()
+            ))
         );
     }
 
     #[test]
     fn strict_sampling_requires_or_falls_back() {
         let mut required = tool("t", serde_json::json!({ "type": "object", "$ref": "#/x" }));
-        required.constrained_sampling = Some(ConstrainedSampling::Config(ConstrainedSamplingConfig::JsonSchema {
-            strict: JsonSchemaStrictness::Require,
-        }));
+        required.constrained_sampling = Some(ConstrainedSampling::Config(
+            ConstrainedSamplingConfig::JsonSchema {
+                strict: JsonSchemaStrictness::Require,
+            },
+        ));
         assert_eq!(
             resolve_json_schema_strict_sampling(&required, true),
             Err("Tool \"t\" requires JSON-schema constrained sampling, but $ref schemas are unsupported.".into())
@@ -446,25 +566,48 @@ mod tests {
         );
 
         let mut prefer = tool("t", serde_json::json!({ "type": "object", "$ref": "#/x" }));
-        prefer.constrained_sampling = Some(ConstrainedSampling::Config(ConstrainedSamplingConfig::JsonSchema {
-            strict: JsonSchemaStrictness::Prefer,
-        }));
+        prefer.constrained_sampling = Some(ConstrainedSampling::Config(
+            ConstrainedSamplingConfig::JsonSchema {
+                strict: JsonSchemaStrictness::Prefer,
+            },
+        ));
         assert_eq!(resolve_json_schema_strict_sampling(&prefer, true), Ok(None));
-        assert_eq!(resolve_json_schema_strict_sampling(&prefer, false), Ok(None));
+        assert_eq!(
+            resolve_json_schema_strict_sampling(&prefer, false),
+            Ok(None)
+        );
 
         let mut disabled = tool("t", serde_json::json!({ "type": "object" }));
         disabled.constrained_sampling = Some(ConstrainedSampling::Disabled(false));
-        assert_eq!(resolve_json_schema_strict_sampling(&disabled, true), Ok(None));
+        assert_eq!(
+            resolve_json_schema_strict_sampling(&disabled, true),
+            Ok(None)
+        );
     }
 
     #[test]
     fn grammar_deltas_stream_the_input_property() {
         let mut buffer = GrammarToolInputJsonBuffer::default();
-        assert_eq!(append_grammar_tool_input_json_delta(&mut buffer, "q", "ab", false), Ok(Some("{\"q\":\"ab".into())));
-        assert_eq!(append_grammar_tool_input_json_delta(&mut buffer, "q", "ab", false), Ok(None));
-        assert_eq!(append_grammar_tool_input_json_delta(&mut buffer, "q", "abcd", false), Ok(Some("cd".into())));
-        assert_eq!(append_grammar_tool_input_json_delta(&mut buffer, "q", "abcd", true), Ok(Some("\"}".into())));
-        assert_eq!(append_grammar_tool_input_json_delta(&mut buffer, "q", "abcd", true), Ok(None));
+        assert_eq!(
+            append_grammar_tool_input_json_delta(&mut buffer, "q", "ab", false),
+            Ok(Some("{\"q\":\"ab".into()))
+        );
+        assert_eq!(
+            append_grammar_tool_input_json_delta(&mut buffer, "q", "ab", false),
+            Ok(None)
+        );
+        assert_eq!(
+            append_grammar_tool_input_json_delta(&mut buffer, "q", "abcd", false),
+            Ok(Some("cd".into()))
+        );
+        assert_eq!(
+            append_grammar_tool_input_json_delta(&mut buffer, "q", "abcd", true),
+            Ok(Some("\"}".into()))
+        );
+        assert_eq!(
+            append_grammar_tool_input_json_delta(&mut buffer, "q", "abcd", true),
+            Ok(None)
+        );
         assert_eq!(
             append_grammar_tool_input_json_delta(&mut buffer, "q", "abcde", true),
             Err("grammar tool input for property \"q\" changed after it was closed".into())
@@ -474,7 +617,10 @@ mod tests {
     #[test]
     fn grammar_non_monotonic_input_is_rejected() {
         let mut buffer = GrammarToolInputJsonBuffer::default();
-        assert_eq!(append_grammar_tool_input_json_delta(&mut buffer, "q", "ab", false), Ok(Some("{\"q\":\"ab".into())));
+        assert_eq!(
+            append_grammar_tool_input_json_delta(&mut buffer, "q", "ab", false),
+            Ok(Some("{\"q\":\"ab".into()))
+        );
         assert_eq!(
             append_grammar_tool_input_json_delta(&mut buffer, "q", "az", false),
             Err("grammar tool input for property \"q\" changed non-monotonically".into())
@@ -487,8 +633,11 @@ mod tests {
             "g",
             serde_json::json!({ "type": "object", "properties": { "q": { "type": "string" } }, "required": ["q"] }),
         );
-        tool_with_grammar.constrained_sampling =
-            Some(ConstrainedSampling::Config(ConstrainedSamplingConfig::Grammar { variants: BTreeMap::new() }));
+        tool_with_grammar.constrained_sampling = Some(ConstrainedSampling::Config(
+            ConstrainedSamplingConfig::Grammar {
+                variants: BTreeMap::new(),
+            },
+        ));
         assert_eq!(
             resolve_grammar_constrained_sampling(&tool_with_grammar, true),
             Err("Tool \"g\" cannot use grammar constrained sampling: no supported grammar variant was provided.".into())
@@ -496,8 +645,9 @@ mod tests {
 
         let mut variants = BTreeMap::new();
         variants.insert(GrammarFormat::OpenaiLark, "start: /[a-z]+/".to_owned());
-        tool_with_grammar.constrained_sampling =
-            Some(ConstrainedSampling::Config(ConstrainedSamplingConfig::Grammar { variants }));
+        tool_with_grammar.constrained_sampling = Some(ConstrainedSampling::Config(
+            ConstrainedSamplingConfig::Grammar { variants },
+        ));
         assert_eq!(
             resolve_grammar_constrained_sampling(&tool_with_grammar, true),
             Ok(Some(GrammarConstrainedSampling {
@@ -506,7 +656,10 @@ mod tests {
                 input_property: "q".into(),
             }))
         );
-        assert_eq!(resolve_grammar_constrained_sampling(&tool_with_grammar, false), Ok(None));
+        assert_eq!(
+            resolve_grammar_constrained_sampling(&tool_with_grammar, false),
+            Ok(None)
+        );
 
         let mut two_required = tool(
             "g",
@@ -518,8 +671,9 @@ mod tests {
         );
         let mut variants = BTreeMap::new();
         variants.insert(GrammarFormat::OpenaiRegex, "[a-z]+".to_owned());
-        two_required.constrained_sampling =
-            Some(ConstrainedSampling::Config(ConstrainedSamplingConfig::Grammar { variants }));
+        two_required.constrained_sampling = Some(ConstrainedSampling::Config(
+            ConstrainedSamplingConfig::Grammar { variants },
+        ));
         assert_eq!(
             resolve_grammar_constrained_sampling(&two_required, true),
             Err(
@@ -539,7 +693,10 @@ mod tests {
             Err("Grammar tool call \"t\" requires argument \"q\" to be a string.".into())
         );
         arguments.insert("q".into(), Value::from("hi"));
-        assert_eq!(get_grammar_tool_input("t", &arguments, "q"), Ok("hi".into()));
+        assert_eq!(
+            get_grammar_tool_input("t", &arguments, "q"),
+            Ok("hi".into())
+        );
     }
 
     #[test]
@@ -550,10 +707,12 @@ mod tests {
             "g",
             serde_json::json!({ "type": "object", "properties": { "q": { "type": "string" } }, "required": ["q"] }),
         );
-        grammar.constrained_sampling =
-            Some(ConstrainedSampling::Config(ConstrainedSamplingConfig::Grammar { variants }));
+        grammar.constrained_sampling = Some(ConstrainedSampling::Config(
+            ConstrainedSamplingConfig::Grammar { variants },
+        ));
         let plain = tool("p", serde_json::json!({ "type": "object" }));
-        let properties = create_grammar_tool_input_properties(Some(&[grammar, plain]), true).expect("properties");
+        let properties = create_grammar_tool_input_properties(Some(&[grammar, plain]), true)
+            .expect("properties");
         assert_eq!(properties.len(), 1);
         assert_eq!(properties.get("g").map(String::as_str), Some("q"));
     }

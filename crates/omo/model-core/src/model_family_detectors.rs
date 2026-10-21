@@ -2,6 +2,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::model_string_parser::parse_variant_from_model_id;
+use crate::reasoning_level::{SplitReasoningSuffixOptions, is_reasoning_level_or_auto};
+
 fn extract_model_name(model: &str) -> &str {
     model.rsplit('/').next().unwrap_or(model)
 }
@@ -18,6 +21,23 @@ fn regex(pattern: &str) -> Regex {
 #[must_use]
 pub fn is_gpt_model(model: &str) -> bool {
     extract_model_name(model).to_lowercase().contains("gpt")
+}
+
+#[must_use]
+pub fn is_gpt6_astra_model(model: Option<&str>) -> bool {
+    let Some(model) = model.filter(|model| !model.is_empty()) else {
+        return false;
+    };
+    let parsed = parse_variant_from_model_id(
+        &model.to_lowercase(),
+        SplitReasoningSuffixOptions {
+            allow_max_suffix: Some(true),
+        },
+    );
+    if parsed.variant.as_deref().is_some_and(|variant| !is_reasoning_level_or_auto(variant)) {
+        return false;
+    }
+    matches!(extract_model_name(&parsed.model_id), "gpt-6-astra" | "gpt-6-astra-fast")
 }
 
 #[must_use]
@@ -207,4 +227,43 @@ pub fn is_gemini_model(model: &str) -> bool {
         return true;
     }
     model_name.starts_with("gemini-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_gpt6_astra_model;
+
+    #[test]
+    fn recognizes_supported_astra_selectors() {
+        // Given the upstream supported bare, prefixed and reasoning-suffixed selectors.
+        for model in [
+            "gpt-6-astra", "gpt-6-astra-fast", "openai/gpt-6-astra",
+            "chatgpt-subscription/gpt-6-astra-fast", "github-copilot/gpt-6-astra",
+            "opencode/gpt-6-astra", "vercel/openai/gpt-6-astra-fast",
+            "openrouter/openai/gpt-6-astra", " GPT-6-Astra ", "gpt-6-astra:high",
+            "gpt-6-astra-fast:max", "chatgpt-subscription/gpt-6-astra (high)",
+            "openai/gpt-6-astra-fast xhigh", "vercel/openai/gpt-6-astra: auto",
+        ] {
+            // When the selector is detected, then only the Astra prompt gate opens.
+            assert!(is_gpt6_astra_model(Some(model)), "{model}");
+        }
+    }
+
+    #[test]
+    fn rejects_other_models_and_unknown_astra_variants() {
+        // Given selectors outside the upstream Astra gate.
+        for model in [
+            None, Some(""), Some("unknown"), Some("openai/gpt-6-sol"),
+            Some("openai/gpt-6-sol-fast:high"), Some("chatgpt-subscription/gpt-6.1-sol"),
+            Some("gpt-6.1-sol-fast (high)"), Some("gpt-6-luna"), Some("gpt-6-luna-fast"),
+            Some("gpt-5.6-sol"), Some("anthropic/claude-fable-5"),
+            Some("gpt-6-astra/claude-opus-5-5"), Some("custom-gpt-6-astra"),
+            Some("gpt-6-astra-preview"), Some("gpt-6-astra-fastest"),
+            Some("gpt-6-astra:unrecognized"), Some("gpt-6-astra (unrecognized)"),
+            Some("gpt-6-astra unrelated"),
+        ] {
+            // When the selector is detected, then the gate stays closed.
+            assert!(!is_gpt6_astra_model(model), "{model:?}");
+        }
+    }
 }

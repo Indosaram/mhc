@@ -1,17 +1,33 @@
 //! Port of senpi packages/ai/src/tool-call-middleware/recovery-stream-terminal.ts.
 
-use crate::types::{AssistantMessage, AssistantMessageEvent, ContentBlock, DoneReason, ErrorReason, StopReason};
+use crate::types::{
+    AssistantMessage, AssistantMessageEvent, ContentBlock, DoneReason, ErrorReason, StopReason,
+};
 use crate::utils::event_stream::{AssistantMessageEventStream, StreamError};
-use crate::utils::server_fallback_receipt::{parse_server_fallback_receipt, SERVER_FALLBACK_ABORTED_DIAGNOSTIC};
+use crate::utils::server_fallback_receipt::{
+    SERVER_FALLBACK_ABORTED_DIAGNOSTIC, parse_server_fallback_receipt,
+};
 
 use super::stream_wrapper_shared::StreamMessageProjection;
 
 fn discard_superseded_tools(message: &mut AssistantMessage) -> bool {
-    let boundary = message.content.iter().enumerate().rev().find_map(|(index, block)| match block {
-        ContentBlock::ProviderNative(native) if parse_server_fallback_receipt(&native.raw).is_some() => Some(index),
-        _ => None,
-    });
-    let Some(boundary) = boundary else { return false };
+    let boundary =
+        message
+            .content
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, block)| match block {
+                ContentBlock::ProviderNative(native)
+                    if parse_server_fallback_receipt(&native.raw).is_some() =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            });
+    let Some(boundary) = boundary else {
+        return false;
+    };
     let mut kept = Vec::with_capacity(message.content.len());
     for (index, block) in message.content.drain(..).enumerate() {
         if index > boundary || !matches!(block, ContentBlock::ToolCall(_)) {
@@ -42,18 +58,35 @@ pub struct RecoveryStreamTerminal {
 
 impl RecoveryStreamTerminal {
     pub fn new(stream: AssistantMessageEventStream) -> Self {
-        Self { emitted: false, stream }
+        Self {
+            emitted: false,
+            stream,
+        }
     }
 
-    pub fn done(&mut self, projection: &mut StreamMessageProjection, source: &AssistantMessage, saw_tool_call: bool, reason: DoneOrLengthOrToolUse) {
+    pub fn done(
+        &mut self,
+        projection: &mut StreamMessageProjection,
+        source: &AssistantMessage,
+        saw_tool_call: bool,
+        reason: DoneOrLengthOrToolUse,
+    ) {
         if self.emitted {
             return;
         }
         projection.finalize_dangling_tool_calls();
         let mut message = projection.finalize(source, saw_tool_call);
         let superseded = discard_superseded_tools(&mut message);
-        let recovered = (!superseded && saw_tool_call) || message.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_)));
-        let final_reason = if recovered && matches!(reason, DoneOrLengthOrToolUse::Stop | DoneOrLengthOrToolUse::Length) {
+        let recovered = (!superseded && saw_tool_call)
+            || message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolCall(_)));
+        let final_reason = if recovered
+            && matches!(
+                reason,
+                DoneOrLengthOrToolUse::Stop | DoneOrLengthOrToolUse::Length
+            ) {
             DoneReason::ToolUse
         } else {
             match reason {
@@ -71,11 +104,21 @@ impl RecoveryStreamTerminal {
         self.emit_done(final_reason, message);
     }
 
-    pub fn source_error(&mut self, projection: &mut StreamMessageProjection, source: &AssistantMessage, saw_tool_call: bool, reason: AbortedOrError) {
+    pub fn source_error(
+        &mut self,
+        projection: &mut StreamMessageProjection,
+        source: &AssistantMessage,
+        saw_tool_call: bool,
+        reason: AbortedOrError,
+    ) {
         if self.emitted {
             return;
         }
-        if source.diagnostics.as_ref().is_some_and(|diagnostics| diagnostics.iter().any(|entry| entry.kind == SERVER_FALLBACK_ABORTED_DIAGNOSTIC)) {
+        if source.diagnostics.as_ref().is_some_and(|diagnostics| {
+            diagnostics
+                .iter()
+                .any(|entry| entry.kind == SERVER_FALLBACK_ABORTED_DIAGNOSTIC)
+        }) {
             let error_reason = match reason {
                 AbortedOrError::Aborted => ErrorReason::Aborted,
                 AbortedOrError::Error => ErrorReason::Error,
@@ -87,9 +130,13 @@ impl RecoveryStreamTerminal {
         projection.finalize_dangling_tool_calls();
         let mut message = projection.finalize(source, saw_tool_call);
         if reason == AbortedOrError::Aborted {
-            message.content.retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
+            message
+                .content
+                .retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
             message.stop_reason = StopReason::Aborted;
-            message.error_message.get_or_insert_with(|| "Request was aborted".to_string());
+            message
+                .error_message
+                .get_or_insert_with(|| "Request was aborted".to_string());
             self.emit_error(ErrorReason::Aborted, message);
             return;
         }
@@ -102,7 +149,11 @@ impl RecoveryStreamTerminal {
         self.emit_error(ErrorReason::Error, message);
     }
 
-    pub fn iterator_failure(&mut self, projection: Option<&mut StreamMessageProjection>, error: StreamError) {
+    pub fn iterator_failure(
+        &mut self,
+        projection: Option<&mut StreamMessageProjection>,
+        error: StreamError,
+    ) {
         if self.emitted {
             return;
         }
@@ -116,7 +167,11 @@ impl RecoveryStreamTerminal {
         let mut message = projection.finalize(&message_snapshot, false);
         message.stop_reason = StopReason::Error;
         let text = error.message.clone();
-        message.error_message = Some(if text.is_empty() { "Assistant message stream failed".to_string() } else { text });
+        message.error_message = Some(if text.is_empty() {
+            "Assistant message stream failed".to_string()
+        } else {
+            text
+        });
         self.emit_error(ErrorReason::Error, message);
     }
 
@@ -125,14 +180,18 @@ impl RecoveryStreamTerminal {
             return;
         }
         let Some(projection) = projection else {
-            self.iterator_failure(None, StreamError::new("Assistant message stream ended without a terminal event"));
+            self.iterator_failure(
+                None,
+                StreamError::new("Assistant message stream ended without a terminal event"),
+            );
             return;
         };
         projection.finalize_dangling_tool_calls();
         let message_snapshot = projection.message.clone();
         let mut message = projection.finalize(&message_snapshot, false);
         message.stop_reason = StopReason::Error;
-        message.error_message = Some("Assistant message stream ended without a terminal event".to_string());
+        message.error_message =
+            Some("Assistant message stream ended without a terminal event".to_string());
         self.emit_error(ErrorReason::Error, message);
     }
 
@@ -141,15 +200,21 @@ impl RecoveryStreamTerminal {
             return;
         }
         let Some(projection) = projection else {
-            self.iterator_failure(None, StreamError::new("Assistant message stream consumption was cancelled"));
+            self.iterator_failure(
+                None,
+                StreamError::new("Assistant message stream consumption was cancelled"),
+            );
             return;
         };
         projection.finalize_dangling_tool_calls();
         let message_snapshot = projection.message.clone();
         let mut message = projection.finalize(&message_snapshot, false);
-        message.content.retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
+        message
+            .content
+            .retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
         message.stop_reason = StopReason::Error;
-        message.error_message = Some("Assistant message stream consumption was cancelled".to_string());
+        message.error_message =
+            Some("Assistant message stream consumption was cancelled".to_string());
         self.emit_error(ErrorReason::Error, message);
     }
 
@@ -158,7 +223,10 @@ impl RecoveryStreamTerminal {
             return;
         }
         self.emitted = true;
-        self.stream.push(AssistantMessageEvent::Done { reason, message: message.clone() });
+        self.stream.push(AssistantMessageEvent::Done {
+            reason,
+            message: message.clone(),
+        });
         self.stream.end(Some(message));
     }
 
@@ -167,7 +235,10 @@ impl RecoveryStreamTerminal {
             return;
         }
         self.emitted = true;
-        self.stream.push(AssistantMessageEvent::Error { reason, error: error.clone() });
+        self.stream.push(AssistantMessageEvent::Error {
+            reason,
+            error: error.clone(),
+        });
         self.stream.end(Some(error));
     }
 }
@@ -181,6 +252,10 @@ mod tests {
 
     fn message() -> AssistantMessage {
         AssistantMessage {
+            error_cause: None,
+            prompt_cache_diagnostics: None,
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "openai-completions".into(),
             provider: "openai".into(),
@@ -204,46 +279,96 @@ mod tests {
     #[tokio::test]
     async fn done_promotes_stop_to_tool_use_when_a_tool_call_was_recovered() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream.clone(), message(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(
+            stream.clone(),
+            message(),
+            StreamMessageProjectionOptions::default(),
+        );
         let mut terminal = RecoveryStreamTerminal::new(stream.clone());
-        terminal.done(&mut projection, &message(), true, DoneOrLengthOrToolUse::Stop);
+        terminal.done(
+            &mut projection,
+            &message(),
+            true,
+            DoneOrLengthOrToolUse::Stop,
+        );
         let event = stream.next().await.expect("event").expect("some");
-        let AssistantMessageEvent::Done { reason, .. } = event else { panic!("expected done event") };
+        let AssistantMessageEvent::Done { reason, .. } = event else {
+            panic!("expected done event")
+        };
         assert_eq!(reason, DoneReason::ToolUse);
     }
 
     #[tokio::test]
     async fn done_keeps_stop_when_no_tool_call_was_recovered() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream.clone(), message(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(
+            stream.clone(),
+            message(),
+            StreamMessageProjectionOptions::default(),
+        );
         let mut terminal = RecoveryStreamTerminal::new(stream.clone());
-        terminal.done(&mut projection, &message(), false, DoneOrLengthOrToolUse::Stop);
+        terminal.done(
+            &mut projection,
+            &message(),
+            false,
+            DoneOrLengthOrToolUse::Stop,
+        );
         let event = stream.next().await.expect("event").expect("some");
-        let AssistantMessageEvent::Done { reason, .. } = event else { panic!("expected done event") };
+        let AssistantMessageEvent::Done { reason, .. } = event else {
+            panic!("expected done event")
+        };
         assert_eq!(reason, DoneReason::Stop);
     }
 
     #[tokio::test]
     async fn source_error_aborted_strips_tool_calls_and_sets_default_message() {
         let mut source = message();
-        source.content.push(ContentBlock::ToolCall(ToolCall { id: "id-1".into(), name: "t".into(), arguments: Map::new(), incomplete: None, error_message: None, thought_signature: None, namespace: None }));
+        source.content.push(ContentBlock::ToolCall(ToolCall {
+            id: "id-1".into(),
+            name: "t".into(),
+            arguments: Map::new(),
+            incomplete: None,
+            error_message: None,
+            thought_signature: None,
+            namespace: None,
+        }));
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream.clone(), source.clone(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(
+            stream.clone(),
+            source.clone(),
+            StreamMessageProjectionOptions::default(),
+        );
         let mut terminal = RecoveryStreamTerminal::new(stream.clone());
         terminal.source_error(&mut projection, &source, false, AbortedOrError::Aborted);
         let event = stream.next().await.expect("event").expect("some");
-        let AssistantMessageEvent::Error { error, .. } = event else { panic!("expected error event") };
+        let AssistantMessageEvent::Error { error, .. } = event else {
+            panic!("expected error event")
+        };
         assert_eq!(error.stop_reason, StopReason::Aborted);
         assert_eq!(error.error_message.as_deref(), Some("Request was aborted"));
-        assert!(!error.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_))));
+        assert!(
+            !error
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+        );
     }
 
     #[tokio::test]
     async fn emit_is_exactly_once() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream.clone(), message(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(
+            stream.clone(),
+            message(),
+            StreamMessageProjectionOptions::default(),
+        );
         let mut terminal = RecoveryStreamTerminal::new(stream.clone());
-        terminal.done(&mut projection, &message(), false, DoneOrLengthOrToolUse::Stop);
+        terminal.done(
+            &mut projection,
+            &message(),
+            false,
+            DoneOrLengthOrToolUse::Stop,
+        );
         terminal.exhausted(Some(&mut projection));
         let _ = stream.next().await;
         assert_eq!(stream.next().await, Ok(None));

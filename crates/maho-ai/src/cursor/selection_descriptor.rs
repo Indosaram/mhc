@@ -161,6 +161,8 @@ mod tests {
 
     fn base_model() -> Model {
         Model {
+            prompt_cache: None,
+            supports_assistant_prefill: None,
             id: "cursor-grok-4.6".to_owned(),
             name: "Cursor Grok 4.6".to_owned(),
             api: "cursor-agent".to_owned(),

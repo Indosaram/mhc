@@ -10,14 +10,14 @@ async fn fresh_session_reports_the_origin_its_model_came_from() {
     let cwd = dir.path().to_string_lossy();
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent.to_string_lossy(), &cwd, false);
     let pinned = resolve_cli_initial_model(
-        Some(("faux".to_owned(), "faux-1".to_owned())), None, false, &settings, &runtime, &[]).await;
+        Some(("faux".to_owned(), "faux-1".to_owned())), None, false, &settings, &runtime, &[]).await.expect("initial model");
     assert_eq!(pinned.provenance, Some("cli"));
-    let automatic = resolve_cli_initial_model(None, None, false, &settings, &runtime, &[]).await;
+    let automatic = resolve_cli_initial_model(None, None, false, &settings, &runtime, &[]).await.expect("initial model");
     assert_eq!(automatic.provenance, Some("first-available"));
-    let continuing = resolve_cli_initial_model(None, None, true, &settings, &runtime, &[]).await;
+    let continuing = resolve_cli_initial_model(None, None, true, &settings, &runtime, &[]).await.expect("initial model");
     assert_eq!(continuing.provenance, None);
     assert!(continuing.model.is_none());
 }
@@ -37,13 +37,13 @@ fn scoped_fixture() -> (
             id: id.to_owned(), reasoning: Some(true), ..Default::default()
         }).to_vec()),
         ..Default::default()
-    });
+    }).expect("valid faux provider");
     std::fs::write(agent.join("settings.json"), "{\"defaultProvider\":\"faux\",\"defaultModel\":\"qa-beta\"}\n")
         .expect("settings fixture");
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(dir.path().join("models.json")), auth_path: Some(dir.path().join("auth.json")),
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("fixture-key".into()), ..Default::default() },
@@ -68,7 +68,7 @@ async fn a_scoped_selection_outranks_the_settings_default_and_reports_the_scoped
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].model.id, "qa-alpha");
     assert_eq!(entries[0].thinking_level, Some(maho_ai::types::ThinkingLevel::High));
-    let resolved = resolve_cli_initial_model(None, None, false, &settings, &runtime, &scope.scoped_models).await;
+    let resolved = resolve_cli_initial_model(None, None, false, &settings, &runtime, &scope.scoped_models).await.expect("initial model");
     assert_eq!(resolved.provenance, Some("scoped"));
     assert_eq!(resolved.model.as_ref().map(|model| model.id.as_str()), Some("qa-alpha"));
     assert_ne!(resolved.model.as_ref().map(|model| model.id.as_str()), settings.get_string("defaultModel").as_deref());
@@ -81,7 +81,7 @@ async fn an_explicit_pair_outranks_a_scoped_selection() {
     let (_dir, provider, runtime, settings) = scoped_fixture();
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(&["qa-alpha:high".to_owned()], &provider.models);
     let explicit = resolve_cli_initial_model(
-        Some(("faux".to_owned(), "qa-beta".to_owned())), None, false, &settings, &runtime, &scope.scoped_models).await;
+        Some(("faux".to_owned(), "qa-beta".to_owned())), None, false, &settings, &runtime, &scope.scoped_models).await.expect("initial model");
     assert_eq!(explicit.provenance, Some("cli"));
     assert_eq!(explicit.model.as_ref().map(|model| model.id.as_str()), Some("qa-beta"));
     assert_ne!(explicit.model.as_ref().map(|model| model.id.as_str()), scope.scoped_models.first().map(|scoped| scoped.model.id.as_str()));
@@ -91,11 +91,22 @@ async fn an_explicit_pair_outranks_a_scoped_selection() {
 async fn a_resumed_session_resolves_no_model_and_keeps_no_origin() {
     let (_dir, provider, runtime, settings) = scoped_fixture();
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(&["qa-alpha:high".to_owned()], &provider.models);
-    let resumed = resolve_cli_initial_model(None, None, true, &settings, &runtime, &scope.scoped_models).await;
+    let resumed = resolve_cli_initial_model(None, None, true, &settings, &runtime, &scope.scoped_models).await.expect("initial model");
     assert_eq!(resumed.provenance, None);
     assert!(resumed.model.is_none());
     assert!(resumed.thinking_level.is_none());
     assert!(resumed.thinking_selection.is_none());
+}
+
+#[tokio::test]
+async fn initial_model_reports_availability_errors_instead_of_no_model() {
+    let (dir, _provider, runtime, _) = scoped_fixture();
+    runtime.credentials.set("faux", Some(serde_json::json!({"type":"invalid-fixture"}))).expect("invalid stored credential");
+    let cwd = dir.path().to_string_lossy();
+    let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &dir.path().join("empty-agent").to_string_lossy(), &cwd, false);
+    let result = resolve_cli_initial_model(None, None, false, &settings, &runtime, &[]).await;
+    assert!(result.is_err());
+    assert!(runtime.get_error().is_some());
 }
 
 fn config(parsed: &Args) -> CliRuntimeConfiguration {
@@ -113,11 +124,11 @@ async fn a_mounted_session_is_bound_to_the_per_runtime_cwd() {
     for path in [&launch, &project, &agent] { std::fs::create_dir_all(path).expect("fixture directory"); }
     let launch_text = launch.to_string_lossy().into_owned();
     let project_text = project.to_string_lossy().into_owned();
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")),
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("fixture-key".into()), ..Default::default() },

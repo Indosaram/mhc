@@ -7,9 +7,9 @@
 
 use crate::model::Model;
 use crate::types::{
-    AssistantMessageEvent, AssistantMessageEventStream, Context, ProviderStreams, SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, Context, ProviderStreams,
+    SimpleStreamOptions, StreamOptions,
 };
-use crate::utils::lazy::setup_error_message;
 use std::sync::Arc;
 
 pub type LazyLoad = Arc<dyn Fn() -> Result<Arc<dyn ProviderStreams>, String> + Send + Sync>;
@@ -18,31 +18,7 @@ pub fn lazy_stream<F>(model: Model, setup: F) -> AssistantMessageEventStream
 where
     F: std::future::Future<Output = Result<AssistantMessageEventStream, String>> + Send + 'static,
 {
-    let outer = AssistantMessageEventStream::assistant();
-    let target = outer.clone();
-    tokio::spawn(async move {
-        match setup.await {
-            Ok(source) => {
-                loop {
-                    match source.next().await {
-                        Ok(Some(event)) => target.push(event),
-                        Ok(None) => break,
-                        Err(error) => {
-                            target.fail(error);
-                            return;
-                        }
-                    }
-                }
-                target.end(source.result().await.ok());
-            }
-            Err(message) => {
-                let error = setup_error_message(&model, &message);
-                target.push(AssistantMessageEvent::Error { reason: crate::types::ErrorReason::Error, error: error.clone() });
-                target.end(Some(error));
-            }
-        }
-    });
-    outer
+    crate::api::lazy::lazy_stream(&model, setup).into_stream()
 }
 
 struct LazyApi {
@@ -50,7 +26,12 @@ struct LazyApi {
 }
 
 impl ProviderStreams for LazyApi {
-    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<StreamOptions>,
+    ) -> AssistantMessageEventStream {
         let load = self.load.clone();
         let context = context.clone();
         let model = model.clone();

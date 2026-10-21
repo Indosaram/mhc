@@ -71,7 +71,7 @@ fn model_ref_object_rejects_out_of_range_tuning_and_unknown_keys() {
 }
 
 #[test]
-fn telemetry_harness_support_names_senpi_for_the_enabled_setting() {
+fn telemetry_harness_support_names_native_for_the_enabled_setting() {
     assert_eq!(
         omo_config_core::TELEMETRY_HARNESS_SUPPORT[0].0,
         "telemetry.enabled"
@@ -79,7 +79,7 @@ fn telemetry_harness_support_names_senpi_for_the_enabled_setting() {
     assert!(
         omo_config_core::TELEMETRY_HARNESS_SUPPORT[0]
             .1
-            .contains(&"senpi")
+            .contains(&"native")
     );
 }
 
@@ -350,7 +350,7 @@ fn config_schema_normalizes_defaults_and_deprecated_category_keys() {
     assert_eq!(value["git_master"]["include_co_authored_by"], json!(false));
     assert_eq!(value["task"]["default_execution_mode"], json!("auto"));
     assert_eq!(value["task"]["default_concurrency"], json!(5));
-    assert_eq!(value["task"]["residency_max_children"], json!(8));
+    assert_eq!(value["task"]["residency_max_children"], json!("unlimited"));
     assert_eq!(value["categories"]["deep"]["max_tokens"], json!(12000));
     assert_eq!(value["categories"]["deep"]["reasoning"], json!("high"));
     assert_eq!(
@@ -659,7 +659,7 @@ fn full_memory_defaults() -> Value {
     json!({
         "enabled": true,
         "agent": "auto",
-        "tool_exposure": "direct",
+        "projection": { "max_entries_per_directory": 40, "max_bytes": 24576 },
         "reflection": {
             "enabled": true,
             "trigger": { "step_count": 25, "on_compaction": true },
@@ -709,7 +709,7 @@ fn memory_settings_preserve_a_fully_specified_block() {
     let input = json!({
         "enabled": false,
         "agent": "backend-lead",
-        "tool_exposure": "search",
+        "projection": { "max_entries_per_directory": 12, "max_bytes": 8192 },
         "reflection": {
             "enabled": false,
             "trigger": { "step_count": 25, "on_compaction": false },

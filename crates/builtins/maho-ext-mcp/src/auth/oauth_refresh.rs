@@ -4,6 +4,23 @@ use super::{oauth::{OAuthRequestError,OAuthServerInfo,request_tokens},oauth_prov
 use futures::FutureExt;
 use std::sync::Arc;
 type RefreshFuture=futures::future::Shared<futures::future::BoxFuture<'static,Result<OAuthTokens,OAuthRequestError>>>;
+static ONGOING_REFRESHES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, RefreshFuture>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+struct RefreshEntryGuard(String);
+
+impl Drop for RefreshEntryGuard {
+    fn drop(&mut self) {
+        ONGOING_REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.0);
+    }
+}
+
+pub fn is_refresh_in_progress(server_url: &str) -> bool {
+    ONGOING_REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(server_url)
+}
+
+pub fn get_active_refresh_count() -> usize {
+    ONGOING_REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+}
 /// Injection seam for the refresh manager (upstream `RefreshManagerOptions`,
 /// `mcp/auth/oauth-refresh.ts:15`). The pinned constructor takes `fetchFn`, `maxRetries`,
 /// `retryDelayMs` and `discover`; this port keeps the transport client as the `fetchFn`
@@ -11,10 +28,10 @@ type RefreshFuture=futures::future::Shared<futures::future::BoxFuture<'static,Re
 pub type DiscoverFn=Arc<dyn Fn(&str)->futures::future::BoxFuture<'static,Result<OAuthServerInfo,OAuthRequestError>>+Send+Sync>;
 #[derive(Clone,Default)]
 pub struct RefreshManagerOptions { pub discover:Option<DiscoverFn>, pub max_retries:Option<usize>, pub retry_delay_ms:Option<u64> }
-pub struct McpRefreshManager {provider:Arc<McpOAuthProvider>,client:reqwest::Client,inflight:tokio::sync::Mutex<Option<Arc<RefreshFuture>>>,discover:Option<DiscoverFn>,pub max_retries:usize,pub retry_delay:std::time::Duration}
+pub struct McpRefreshManager {provider:Arc<McpOAuthProvider>,client:reqwest::Client,discover:Option<DiscoverFn>,pub max_retries:usize,pub retry_delay:std::time::Duration}
 impl McpRefreshManager {
     pub fn new(provider:Arc<McpOAuthProvider>,client:reqwest::Client)->Self {Self::new_with_options(provider,client,RefreshManagerOptions::default())}
-    pub fn new_with_options(provider:Arc<McpOAuthProvider>,client:reqwest::Client,options:RefreshManagerOptions)->Self {Self {provider,client,inflight:tokio::sync::Mutex::new(None),discover:options.discover,max_retries:options.max_retries.unwrap_or(2),retry_delay:std::time::Duration::from_millis(options.retry_delay_ms.unwrap_or(50))}}
+    pub fn new_with_options(provider:Arc<McpOAuthProvider>,client:reqwest::Client,options:RefreshManagerOptions)->Self {Self {provider,client,discover:options.discover,max_retries:options.max_retries.unwrap_or(2),retry_delay:std::time::Duration::from_millis(options.retry_delay_ms.unwrap_or(50))}}
     pub async fn ensure_fresh(&self)->Result<Option<OAuthTokens>,OAuthRequestError> {
         // tokens.json read + parse is blocking file I/O; keep it off the async workers.
         let provider=self.provider.clone();
@@ -29,13 +46,31 @@ impl McpRefreshManager {
     /// short-circuit that `refresh` keeps.
     pub async fn force_refresh(&self)->Result<OAuthTokens,OAuthRequestError> {self.refresh_inner(true).await}
     async fn refresh_inner(&self,force:bool)->Result<OAuthTokens,OAuthRequestError> {
-        // oauth-refresh.ts coalesces every in-process caller onto one in-flight
-        // promise and clears it once settled, so a later call retries.
-        let shared={let mut slot=self.inflight.lock().await;match slot.as_ref() {Some(existing)=>existing.clone(),None=>{let shared:Arc<RefreshFuture>=Arc::new(self.refresh_locked(force).shared());*slot=Some(shared.clone());shared}}};
-        let result=shared.as_ref().clone().await;
-        let mut slot=self.inflight.lock().await;
-        if slot.as_ref().is_some_and(|current|Arc::ptr_eq(current,&shared)) {*slot=None;}
-        result
+        let shared = {
+            let mut flights = ONGOING_REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = self.provider.store.server_url.clone();
+            if let Some(existing) = flights.get(&key) {
+                existing.clone()
+            } else {
+                let refresh = self.refresh_locked(force);
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                let shared = async move {
+                    receiver.await.map_err(|error| OAuthRequestError::Invalid(error.to_string()))?
+                }.boxed().shared();
+                flights.insert(key.clone(), shared.clone());
+                let guard = RefreshEntryGuard(key);
+                tokio::spawn(async move {
+                    let guard = guard;
+                    let result = refresh.await;
+                    drop(guard);
+                    if sender.send(result).is_err() {
+                        eprintln!("OAuth refresh completed after all callers disconnected");
+                    }
+                });
+                shared
+            }
+        };
+        shared.await
     }
     /// Pinned `oauth-handler.ts::handleStepUpIfNeeded` -> `mergeScopes`: the challenge scopes are
     /// unioned into the provider's requested scope set.

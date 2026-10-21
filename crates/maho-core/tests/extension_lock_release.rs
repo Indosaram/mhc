@@ -9,11 +9,11 @@ async fn pending_message_end_handler_does_not_block_renderer_snapshot() {
     let cwd = directory.path().to_string_lossy().into_owned();
     let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
         tokens_per_second: Some(0.0), ..Default::default()
-    });
+    }).expect("valid faux provider");
     provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("done", Default::default()).into()]);
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_native_provider(provider.provider.clone());
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some("fixture-auth".into()), ..Default::default() },

@@ -4,11 +4,18 @@ use std::path::{Path, PathBuf};
 
 /// Failure while reading, parsing, writing or removing a boulder state document.
 ///
-/// A *missing* state file is not an error: [`read_boulder_state`] reports it as
-/// `Ok(None)`. A file that exists but cannot be parsed is an error, so callers never
-/// mistake a damaged work plan for "no work in progress".
+/// Reads follow upstream `readBoulderState`: a missing, unreadable, unparsable or
+/// non-object state file is reported as `Ok(None)` by [`read_boulder_state`], so the
+/// `Read`, `InvalidJson` and `InvalidShape` variants are kept only for source
+/// compatibility. Lifecycle entry points (`append_session_id*`, task upserts/timers,
+/// `select_active_work`, `add_boulder_work`, `complete_boulder`) map a failed write to
+/// `Ok(None)`; only [`write_boulder_state`] and [`clear_boulder_state`] still surface
+/// `Write`/`Remove` (their boolean upstream form is `try_write_boulder_state` /
+/// `try_clear_boulder_state`).
 ///
 /// [`read_boulder_state`]: crate::read_boulder_state
+/// [`write_boulder_state`]: crate::write_boulder_state
+/// [`clear_boulder_state`]: crate::clear_boulder_state
 #[derive(Debug)]
 pub enum BoulderStateError {
     /// The state file exists but could not be read.

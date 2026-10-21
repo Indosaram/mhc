@@ -19,7 +19,7 @@ maho-ext-api = { path = "../../maho-ext-api" }
 maho-tui = { path = "../../maho-tui" }
 maho-core = { path = "../../maho-core" }
 maho-pty = { path = "../../vendor/maho-pty" }
-thiserror = "=2.0.18"
+thiserror = "=2.0.20"
 tokio = { version = "=1.52.3", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]

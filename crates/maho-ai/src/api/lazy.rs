@@ -5,10 +5,11 @@ use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 use crate::types::{
-    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredFetchOptions, DeferredHandle,
-    ErrorReason, Model, ProviderStreams, SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredFetchOptions,
+    DeferredHandle, ErrorReason, Model, ProviderStreams, SimpleStreamOptions, StreamOptions,
 };
 use crate::utils::event_stream::create_assistant_message_event_stream;
+#[cfg(test)]
 use crate::utils::lazy::setup_error_message;
 
 pub use crate::utils::lazy::setup_error_message as create_setup_error_message;
@@ -17,7 +18,7 @@ pub use crate::utils::lazy::setup_error_message as create_setup_error_message;
 /// `LazyAssistantMessageEventStream`'s `return()` cancellation handler.
 pub struct LazyStream {
     stream: AssistantMessageEventStream,
-    task: tokio::task::JoinHandle<()>,
+    cancel_on_drop: bool,
 }
 
 impl Deref for LazyStream {
@@ -29,16 +30,23 @@ impl Deref for LazyStream {
 }
 
 impl LazyStream {
-    pub fn into_stream(self) -> AssistantMessageEventStream {
-        let stream = self.stream.clone();
-        std::mem::forget(self);
-        stream
+    pub fn into_stream(mut self) -> AssistantMessageEventStream {
+        self.cancel_on_drop = false;
+        self.stream.clone()
     }
 }
 
 impl Drop for LazyStream {
     fn drop(&mut self) {
-        self.task.abort();
+        if !self.cancel_on_drop {
+            return;
+        }
+        let stream = self.stream.clone();
+        tokio::spawn(async move {
+            if let Err(error) = stream.cancel().await {
+                stream.fail(error);
+            }
+        });
     }
 }
 
@@ -48,22 +56,80 @@ pub fn lazy_stream(
     model: &Model,
     setup: impl Future<Output = Result<AssistantMessageEventStream, String>> + Send + 'static,
 ) -> LazyStream {
+    lazy_stream_typed(model, async move {
+        setup
+            .await
+            .map_err(crate::utils::event_stream::StreamError::new)
+    })
+}
+
+pub fn lazy_stream_typed(
+    model: &Model,
+    setup: impl Future<
+        Output = Result<AssistantMessageEventStream, crate::utils::event_stream::StreamError>,
+    > + Send
+    + 'static,
+) -> LazyStream {
     let outer = create_assistant_message_event_stream();
+    let (source_tx, source_rx) = tokio::sync::oneshot::channel::<Option<AssistantMessageEventStream>>();
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+    outer.set_cancellation_handler(Box::new(move || Box::pin(async move {
+        let _ = cancel_tx.send(());
+        match source_rx.await {
+            Ok(Some(source)) => source.cancel().await,
+            Ok(None) | Err(_) => Ok(()),
+        }
+    })));
     let forwarding = outer.clone();
     let error_model = model.clone();
     let task = tokio::spawn(async move {
-        match setup.await {
-            Ok(source) => {
-                while let Ok(Some(event)) = source.next().await {
-                    forwarding.push(event);
+        let setup_result = {
+            tokio::pin!(setup);
+            tokio::select! {
+                biased;
+                _ = &mut cancel_rx => {
+                    let _ = source_tx.send(None);
+                    return;
                 }
-                match source.result().await {
-                    Ok(message) => forwarding.end(Some(message)),
-                    Err(_) => forwarding.end(None),
+                result = &mut setup => result,
+            }
+        };
+        match setup_result {
+            Ok(source) => {
+                let _ = source_tx.send(Some(source.clone()));
+                let mut partial = None;
+                loop {
+                    let next = tokio::select! {
+                        biased;
+                        _ = &mut cancel_rx => {
+                            let cancellation = source.cancel().await;
+                            match source.result_if_ready() {
+                                Some(Ok(message)) => forwarding.end(Some(message)),
+                                Some(Err(error)) => forwarding.fail(error),
+                                None => forwarding.end(partial),
+                            }
+                            if let Err(error) = cancellation { forwarding.fail(error); }
+                            return;
+                        }
+                        next = source.next() => next,
+                    };
+                    match next {
+                        Ok(Some(event)) => {
+                            partial = Some(crate::utils::event_stream::extract_message(&event));
+                            forwarding.push(event);
+                        }
+                        Ok(None) => break,
+                        Err(error) => { forwarding.fail(error); return; }
+                    }
+                }
+                match source.result_if_ready() {
+                    Some(Ok(message)) => forwarding.end(Some(message)),
+                    Some(Err(error)) => forwarding.fail(error),
+                    None => forwarding.end(partial),
                 }
             }
             Err(message) => {
-                let error = setup_error_message(&error_model, &message);
+                let error = crate::utils::lazy::setup_stream_error_message(&error_model, &message);
                 forwarding.push(crate::types::AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error: error.clone(),
@@ -72,7 +138,11 @@ pub fn lazy_stream(
             }
         }
     });
-    LazyStream { stream: outer, task }
+    outer.set_cancellation_task(task);
+    LazyStream {
+        stream: outer,
+        cancel_on_drop: true,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -86,7 +156,11 @@ type LoadModule = Arc<dyn Fn() -> Result<Arc<dyn ProviderStreams>, String> + Sen
 /// Wraps a module loader as `ProviderStreams`. The module loads on first stream call; the cached
 /// result deduplicates loads. Load failures terminate the returned stream with an error event.
 pub fn lazy_api(load: LoadModule, capabilities: LazyApiCapabilities) -> Arc<dyn ProviderStreams> {
-    Arc::new(LazyApiProvider { load, capabilities, cached: OnceLock::new() })
+    Arc::new(LazyApiProvider {
+        load,
+        capabilities,
+        cached: OnceLock::new(),
+    })
 }
 
 struct LazyApiProvider {
@@ -193,8 +267,9 @@ mod tests {
     use std::time::Duration;
 
     fn model() -> Model {
-        let mut model =
-            crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("models")[0]
+            .clone();
         model.api = "maho-lazy-test".into();
         model
     }
@@ -235,6 +310,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_drops_pending_setup_and_releases_resources() {
+        let resource = Arc::new(());
+        let owned = resource.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let stream = lazy_stream(&model(), async move {
+            let _owned = owned;
+            entered_tx.send(()).expect("setup subscriber");
+            std::future::pending::<Result<AssistantMessageEventStream, String>>().await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered_rx).await.expect("setup deadline").expect("setup");
+        tokio::time::timeout(Duration::from_secs(5), stream.cancel()).await.expect("cancel deadline").expect("cancel");
+        assert_eq!(Arc::strong_count(&resource), 1);
+        assert_eq!(stream.next().await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn cancellation_preserves_last_partial_without_an_inner_result() {
+        let inner = create_assistant_message_event_stream();
+        let source = inner.clone();
+        let stream = lazy_stream(&model(), async move { Ok(source) });
+        let partial = message(StopReason::Pending);
+        inner.push(crate::types::AssistantMessageEvent::Start { partial: partial.clone() });
+        tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("event deadline").expect("event");
+        tokio::time::timeout(Duration::from_secs(5), stream.cancel()).await.expect("cancel deadline").expect("cancel");
+        assert_eq!(stream.result_if_ready(), Some(Ok(partial)));
+        assert_eq!(inner.next().await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_done_awaits_upstream_resource_release() {
+        let inner = create_assistant_message_event_stream();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        inner.set_cancellation_handler(Box::new(move || Box::pin(async move {
+            entered_tx.send(()).expect("close subscriber");
+            release_rx.await.expect("release");
+            Ok(())
+        })));
+        let final_message = message(StopReason::Stop);
+        inner.push(crate::types::AssistantMessageEvent::Done {
+            reason: DoneReason::Stop,
+            message: final_message.clone(),
+        });
+        let stream = lazy_stream(&model(), async move { Ok(inner) });
+        tokio::time::timeout(Duration::from_secs(5), stream.result()).await.expect("result deadline").expect("result");
+        let mut cancellation = Box::pin(stream.cancel());
+        assert!(futures::poll!(cancellation.as_mut()).is_pending());
+        tokio::time::timeout(Duration::from_secs(5), entered_rx).await.expect("close deadline").expect("close");
+        assert!(futures::poll!(cancellation.as_mut()).is_pending());
+        release_tx.send(()).expect("release subscriber");
+        tokio::time::timeout(Duration::from_secs(5), cancellation).await.expect("cancel deadline").expect("cancel");
+        assert_eq!(stream.result_if_ready(), Some(Ok(final_message)));
+    }
+
+    #[tokio::test]
     async fn setup_failure_terminates_the_stream_with_the_ts_error_event() {
         let stream = lazy_stream(&model(), async { Err("boom".to_owned()) });
         let events = stream.collect().await.expect("events");
@@ -242,14 +372,51 @@ mod tests {
             panic!("expected one error event, got {events:?}");
         };
         assert_eq!(error.error_message.as_deref(), Some("boom"));
-        assert_eq!(stream.result().await.expect("result").error_message.as_deref(), Some("boom"));
+        assert_eq!(
+            stream
+                .result()
+                .await
+                .expect("result")
+                .error_message
+                .as_deref(),
+            Some("boom")
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_setup_oauth_error_reaches_terminal_diagnostics() {
+        let stream = lazy_stream_typed(&model(), async {
+            Err(StreamError::oauth_refresh_unavailable(
+                "refresh unavailable",
+            ))
+        });
+        let result = tokio::time::timeout(Duration::from_secs(1), stream.result())
+            .await
+            .expect("bounded result")
+            .expect("result");
+        let diagnostics = result.diagnostics.expect("diagnostics");
+        assert_eq!(
+            diagnostics[0].kind,
+            crate::utils::retry::OAUTH_REFRESH_UNAVAILABLE_DIAGNOSTIC
+        );
+        let error = crate::utils::lazy::setup_stream_error_message(
+            &model(),
+            &StreamError::new(
+                "Cannot find module '/install/chunks/provider.mjs' imported from main",
+            ),
+        );
+        assert!(error.error_message.expect("message").starts_with(
+            crate::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX
+        ));
     }
 
     #[tokio::test]
     async fn setup_success_forwards_every_event_and_the_result() {
         let stream = lazy_stream(&model(), async {
             let inner = create_assistant_message_event_stream();
-            inner.push(crate::types::AssistantMessageEvent::Start { partial: message(StopReason::Pending) });
+            inner.push(crate::types::AssistantMessageEvent::Start {
+                partial: message(StopReason::Pending),
+            });
             inner.push(crate::types::AssistantMessageEvent::Done {
                 reason: DoneReason::Stop,
                 message: message(StopReason::Stop),
@@ -258,7 +425,10 @@ mod tests {
         });
         let events = stream.collect().await.expect("events");
         assert_eq!(events.len(), 2);
-        assert_eq!(stream.result().await.expect("result").stop_reason, StopReason::Stop);
+        assert_eq!(
+            stream.result().await.expect("result").stop_reason,
+            StopReason::Stop
+        );
     }
 
     #[tokio::test]
@@ -270,13 +440,22 @@ mod tests {
                 counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(Arc::new(DoneProvider) as Arc<dyn ProviderStreams>)
             }),
-            LazyApiCapabilities { fetch_deferred: true, cancel_deferred: false },
+            LazyApiCapabilities {
+                fetch_deferred: true,
+                cancel_deferred: false,
+            },
         );
         let context = Context::default();
         let first = provider.stream(&model(), &context, None);
-        assert_eq!(first.result().await.expect("result").stop_reason, StopReason::Stop);
+        assert_eq!(
+            first.result().await.expect("result").stop_reason,
+            StopReason::Stop
+        );
         let second = provider.stream(&model(), &context, None);
-        assert_eq!(second.result().await.expect("result").stop_reason, StopReason::Stop);
+        assert_eq!(
+            second.result().await.expect("result").stop_reason,
+            StopReason::Stop
+        );
         assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(provider.supports_deferred());
 
@@ -289,17 +468,33 @@ mod tests {
             poll_after_ms: None,
             data: None,
         };
-        let deferred = provider.fetch_deferred(&model(), &handle, None).expect("deferred stream");
+        let deferred = provider
+            .fetch_deferred(&model(), &handle, None)
+            .expect("deferred stream");
         let message = tokio::time::timeout(Duration::from_secs(5), deferred.result())
             .await
             .expect("bounded wait")
             .expect("result");
-        assert_eq!(message.error_message.as_deref(), Some("API does not support deferred responses"));
+        assert_eq!(
+            message.error_message.as_deref(),
+            Some("API does not support deferred responses")
+        );
 
-        let unsupported = lazy_api(Arc::new(|| Err("nope".to_owned())), LazyApiCapabilities::default());
-        assert!(unsupported.fetch_deferred(&model(), &handle, None).is_none());
+        let unsupported = lazy_api(
+            Arc::new(|| Err("nope".to_owned())),
+            LazyApiCapabilities::default(),
+        );
+        assert!(
+            unsupported
+                .fetch_deferred(&model(), &handle, None)
+                .is_none()
+        );
         let failed = unsupported.stream(&model(), &context, None);
-        let actual = failed.result().await.map_err(|error: StreamError| error.message).expect("result");
+        let actual = failed
+            .result()
+            .await
+            .map_err(|error: StreamError| error.message)
+            .expect("result");
         let mut expected = message_with_error("nope");
         expected.timestamp = actual.timestamp;
         assert_eq!(actual, expected);
@@ -315,7 +510,8 @@ mod tests {
     /// attaches `cancelDeferred` only when the capability is declared, and forwards to the loaded
     /// module; an undeclared capability stays unsupported with the pinned error.
     #[tokio::test]
-    async fn lazy_api_exposes_only_the_declared_cancel_capability_and_forwards_to_the_loaded_module() {
+    async fn lazy_api_exposes_only_the_declared_cancel_capability_and_forwards_to_the_loaded_module()
+     {
         struct CancelModule {
             cancelled: std::sync::Mutex<Vec<String>>,
         }
@@ -353,11 +549,16 @@ mod tests {
             }
         }
 
-        let module = Arc::new(CancelModule { cancelled: std::sync::Mutex::new(Vec::new()) });
+        let module = Arc::new(CancelModule {
+            cancelled: std::sync::Mutex::new(Vec::new()),
+        });
         let loaded = module.clone();
         let provider = lazy_api(
             Arc::new(move || Ok(loaded.clone() as Arc<dyn ProviderStreams>)),
-            LazyApiCapabilities { fetch_deferred: false, cancel_deferred: true },
+            LazyApiCapabilities {
+                fetch_deferred: false,
+                cancel_deferred: true,
+            },
         );
         assert!(provider.supports_cancel_deferred());
         let handle = DeferredHandle {
@@ -369,10 +570,19 @@ mod tests {
             poll_after_ms: None,
             data: None,
         };
-        provider.cancel_deferred(&model(), &handle, None).await.expect("cancel forwards to the module");
-        assert_eq!(*module.cancelled.lock().expect("cancelled"), vec!["d".to_owned()]);
+        provider
+            .cancel_deferred(&model(), &handle, None)
+            .await
+            .expect("cancel forwards to the module");
+        assert_eq!(
+            *module.cancelled.lock().expect("cancelled"),
+            vec!["d".to_owned()]
+        );
 
-        let undeclared = lazy_api(Arc::new(|| Err("nope".to_owned())), LazyApiCapabilities::default());
+        let undeclared = lazy_api(
+            Arc::new(|| Err("nope".to_owned())),
+            LazyApiCapabilities::default(),
+        );
         assert!(!undeclared.supports_cancel_deferred());
         assert_eq!(
             undeclared.cancel_deferred(&model(), &handle, None).await,

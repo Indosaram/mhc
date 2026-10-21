@@ -4,7 +4,14 @@ use maho_server::protocol::{
     framing::{DEFAULT_MAX_FRAME_LENGTH as MAX, FrameDecoder, encode_frame},
     messages::{PROTOCOL_VERSION, is_server_id},
 };
-use serde_json::{Value, json};
+use maho_chord::types::JsonValue as Value;
+use maho_server::transport_json as json;
+
+fn put(value: &mut Value, key: &str, replacement: Value) {
+    let Value::Object(fields) = value else { panic!("fixture object"); };
+    let fields = std::sync::Arc::make_mut(fields);
+    if let Some((_, value)) = fields.iter_mut().find(|(name, _)| name.as_str() == Some(key)) { *value = replacement; } else { fields.push((key.into(), replacement)); }
+}
 
 const ID: &str = "00000000-0000-4000-8000-000000000001";
 fn hello() -> Value {
@@ -33,7 +40,7 @@ fn accepts_integer_client_versions_for_negotiation() {
 fn rejects_invalid_client_hello() {
     for value in [
         json!({"type":"hello","version":"8"}),
-        json!({"type":"hello","version":8.5}),
+        json!({"type":"hello","version":Value::Number(serde_json::Number::from_f64(8.5).unwrap())}),
         json!({"type":"hello","version":8,"extra":true}),
     ] {
         assert!(parse_client_message(&value).is_err());
@@ -49,7 +56,7 @@ fn rejects_noncanonical_server_ids() {
         "00000000-0000-4000-8000-00000000000A",
     ] {
         let mut value = request();
-        value["target"]["serverId"] = json!(id);
+        put(&mut value, "target", json!({"serverId":id}));
         assert!(parse_client_message(&value).is_err());
         assert!(!is_server_id(id));
     }
@@ -57,7 +64,7 @@ fn rejects_noncanonical_server_ids() {
 #[test]
 fn keeps_request_and_event_payloads_opaque() {
     let mut value = request();
-    value["call"] = json!({"arbitrary":[true,["opaque"]]});
+    put(&mut value, "call", json!({"arbitrary":[true,["opaque"]]}));
     assert_eq!(parse_client_message(&value).unwrap(), &value);
     assert!(parse_server_message(&json!({"type":"service_update","subscriptionId":"s","update":{"applicationDefined":true}})).is_ok());
 }
@@ -76,10 +83,10 @@ fn rejects_byte_string_opaque_payloads() {
 fn validates_cancellation_envelope() {
     let mut value = json!({"type":"cancel","id":"r","target":{"serverId":ID}});
     assert!(parse_client_message(&value).is_ok());
-    value["id"] = json!("");
+    put(&mut value, "id", json!(""));
     assert!(parse_client_message(&value).is_err());
-    value["id"] = json!("r");
-    value["extra"] = json!(true);
+    put(&mut value, "id", json!("r"));
+    put(&mut value, "extra", json!(true));
     assert!(parse_client_message(&value).is_err());
 }
 #[test]
@@ -93,10 +100,10 @@ fn validates_attachment_route_updates() {
 #[test]
 fn rejects_malformed_request_boundaries() {
     let mut value = request();
-    value["id"] = json!("");
+    put(&mut value, "id", json!(""));
     assert!(parse_client_message(&value).is_err());
-    value["id"] = json!("r");
-    value["extra"] = json!(true);
+    put(&mut value, "id", json!("r"));
+    put(&mut value, "extra", json!(true));
     assert!(parse_client_message(&value).is_err());
 }
 #[test]
@@ -127,14 +134,14 @@ fn accepts_opaque_error_codes() {
 #[test]
 fn rejects_unknown_messages_and_fields() {
     let mut value = server_hello();
-    value["snapshot"] = json!({});
+    put(&mut value, "snapshot", json!({}));
     assert!(parse_server_message(&value).is_err());
     assert!(parse_server_message(&json!({"type":"unknown","event":{}})).is_err());
 }
 #[test]
 fn does_not_parse_json_strings_as_messages() {
-    assert!(parse_client_message(&json!(hello().to_string())).is_err());
-    assert!(parse_server_message(&json!(server_hello().to_string())).is_err());
+    assert!(parse_client_message(&json!(serde_json::to_string(&hello()).unwrap())).is_err());
+    assert!(parse_server_message(&json!(serde_json::to_string(&server_hello()).unwrap())).is_err());
 }
 #[test]
 fn encodes_complete_client_and_server_frames() {
@@ -157,6 +164,27 @@ fn encodes_complete_client_and_server_frames() {
             .len(),
         1
     );
+}
+
+#[test]
+fn opaque_native_payloads_roundtrip_without_scalar_value_intermediates() {
+    let message: Value = serde_json::from_str(r#"{"type":"request","id":"native","target":{"serverId":"00000000-0000-4000-8000-000000000001"},"call":[{"__proto__":null},[1,true,"text"],-0.0]}"#).unwrap();
+    let encoded = encode_client_message(&message, MAX).unwrap();
+    let decoded = MessageDecoder::client().push(&encoded).unwrap().remove(0);
+    assert_eq!(decoded, message);
+    let Value::Number(number) = &decoded["call"][2] else { panic!("negative zero"); };
+    assert_eq!(number.as_f64().unwrap().to_bits(), (-0.0f64).to_bits());
+}
+
+#[test]
+fn native_surrogate_payloads_are_accepted_before_strict_cbor_encoding() {
+    for payload in [r#""\ud800""#, r#"{"\udfff":1}"#] {
+        let value: Value = serde_json::from_str(payload).unwrap();
+        let message = json!({"type":"response","id":"native","ok":true,"result":value});
+        assert!(parse_server_message(&message).is_ok());
+        assert!(encode_server_message(&message, MAX).unwrap_err().to_string().contains("CBOR text strings must contain valid Unicode scalar values"));
+        assert_eq!(serde_json::to_string(&message["result"]).unwrap(), payload);
+    }
 }
 #[test]
 fn enforces_outbound_frame_limits() {
@@ -199,7 +227,7 @@ fn rejects_invalid_frames_and_latches_failure() {
         vec![],
         vec![0xff],
         encode_cbor(
-            &CborValue::from_json(&json!({"type":"hello","version":1,"extra":true})).unwrap(),
+            &CborValue::from_chord(&json!({"type":"hello","version":1,"extra":true})).unwrap(),
             CborOptions::default(),
         )
         .unwrap(),

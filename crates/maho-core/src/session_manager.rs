@@ -523,10 +523,16 @@ fn header_candidate_file(path: &str) -> Option<Option<Value>> {
     read_session_header(path).map(Some)
 }
 
+pub fn resolve_moved_session_path(path: &str) -> String {
+    crate::schedule::moved_paths::resolve(path)
+}
+
 #[derive(Debug, Clone, Default)]
 struct SessionOwnership {
     session_file: Option<String>,
     persisted: bool,
+    hold: Option<crate::schedule::runner_lease::SessionHold>,
+    hold_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -572,7 +578,7 @@ impl SessionManager {
     /// senpi's private constructor up to the session-file step: callers then load a file
     /// (`set_session_file`, which can refuse a corrupt one) or start a new session.
     fn build(cwd: &str, session_dir: &str, persist: bool) -> Self {
-        let ownership = Arc::new(Mutex::new(SessionOwnership { session_file: None, persisted: persist }));
+        let ownership = Arc::new(Mutex::new(SessionOwnership { session_file: None, persisted: persist, ..Default::default() }));
         let writer_token = Arc::new(SessionWriterToken(Arc::clone(&ownership)));
         // Lazily resolved: the session id only exists once the header loads or new_session() runs.
         // Unpersisted sessions disable eviction entirely - dropping strings with no backing would lose them.
@@ -615,6 +621,7 @@ impl SessionManager {
 
     pub fn dispose(&mut self) {
         crate::session_write_reservation::unregister_session_writer(&self.writer_owner());
+        self.ownership.lock().unwrap_or_else(std::sync::PoisonError::into_inner).hold = None;
         self.release_blobs_dir_unless_shared();
     }
 
@@ -623,7 +630,28 @@ impl SessionManager {
     }
 
     fn sync_session_file_ownership(&self) {
-        self.ownership.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_file = self.session_file.clone();
+        self.sync_session_file_hold(false);
+    }
+
+    fn sync_session_file_hold(&self, expect_existing: bool) {
+        let hold = if self.persist {
+            self.session_file.as_ref().map(|file| crate::schedule::runner_lease::hold_session_file(
+                Path::new(file), &self.session_id, &self.cwd, expect_existing,
+            )).transpose()
+        } else { Ok(None) };
+        let mut ownership = self.ownership.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        ownership.session_file = self.session_file.clone();
+        match hold {
+            Ok(hold) => { ownership.hold = hold; ownership.hold_error = None; }
+            Err(error) => { ownership.hold = None; ownership.hold_error = Some(error.to_string()); }
+        }
+    }
+
+    fn check_session_hold(&self) -> Result<(), String> {
+        match &self.ownership.lock().unwrap_or_else(std::sync::PoisonError::into_inner).hold_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 
     fn sync_resident_blobs_dir(&self) {
@@ -665,8 +693,8 @@ impl SessionManager {
         session_dir: Option<&str>,
         options: Option<NewSessionOptions>,
     ) -> Result<Self, String> {
-        let resolved_source_path = resolve_path(source_path, source_path, &PathInputOptions::default());
-        let resolved_target_cwd = resolve_path(target_cwd, target_cwd, &PathInputOptions::default());
+        let resolved_source_path = resolve_moved_session_path(&resolve_path(source_path, source_path, &PathInputOptions::default()));
+        let resolved_target_cwd = resolve_moved_session_path(&resolve_path(target_cwd, target_cwd, &PathInputOptions::default()));
         let source_entries = load_entries_from_file(&resolved_source_path);
         if source_entries.is_empty() {
             return Err(format!("Cannot fork: source session file is empty or invalid: {resolved_source_path}"));
@@ -686,6 +714,8 @@ impl SessionManager {
         let file_timestamp = timestamp.replace([':', '.'], "-");
         let new_session_file = Path::new(&dir).join(format!("{file_timestamp}_{new_session_id}.jsonl")).to_string_lossy().into_owned();
         crate::session_write_reservation::reserve_session_write(&new_session_file);
+        let fork_hold = crate::schedule::runner_lease::hold_session_file(Path::new(&new_session_file), &new_session_id, &resolved_target_cwd, false)
+            .map_err(|error| error.to_string())?;
         let header = json!({
             "type": "session",
             "version": CURRENT_SESSION_VERSION,
@@ -705,16 +735,23 @@ impl SessionManager {
             }
         }
         drop(file);
-        Self::open(&new_session_file, Some(&dir), Some(&resolved_target_cwd), None)
+        let manager = Self::open(&new_session_file, Some(&dir), Some(&resolved_target_cwd), None);
+        drop(fork_hold);
+        manager
     }
 
     /// senpi `SessionManager.open`: fails (rather than panicking) on a non-empty file that does not
     /// parse as a session, with senpi's `Session file is not a valid ... session` message.
     pub fn open(path: &str, session_dir: Option<&str>, cwd_override: Option<&str>, options: Option<NewSessionOptions>) -> Result<Self, String> {
-        crate::session_write_reservation::reserve_session_write(&resolve_path(path, path, &PathInputOptions::default()));
         let process_cwd = std::env::current_dir().map(|cwd| cwd.to_string_lossy().into_owned()).unwrap_or_default();
-        let resolved_path = resolve_path(path, &process_cwd, &PathInputOptions::default());
-        let entries = load_entries_from_file(path);
+        let resolved_path = resolve_moved_session_path(&resolve_path(path, &process_cwd, &PathInputOptions::default()));
+        crate::session_write_reservation::reserve_session_write(&resolved_path);
+        let entries = load_entries_from_file(&resolved_path);
+        let header_cwd = entries.first().and_then(|header| header.get("cwd")).and_then(Value::as_str).map(resolve_moved_session_path);
+        let cwd = cwd_override.map(str::to_owned).or(header_cwd).unwrap_or_else(|| process_cwd.clone());
+        let opening_hold = if let Some(id) = entries.first().and_then(|header| header.get("id")).and_then(Value::as_str) {
+            Some(crate::schedule::runner_lease::hold_session_file(Path::new(&resolved_path), id, &cwd, true).map_err(|error| error.to_string())?)
+        } else { None };
         // This process opens the session for append; normalize a final unterminated JSONL entry
         // here, never from read-only load_entries_from_file callers.
         if Path::new(&resolved_path).exists() {
@@ -728,15 +765,14 @@ impl SessionManager {
                 }
             }
         }
-        let header_cwd = entries.first().and_then(|header| header.get("cwd")).and_then(Value::as_str).map(str::to_owned);
-        let cwd = cwd_override.map(str::to_owned).or(header_cwd).unwrap_or_else(|| process_cwd.clone());
         // If no session_dir is provided, derive it from the file's parent directory.
         let dir = match session_dir {
             Some(session_dir) => normalize_path(session_dir, &PathInputOptions::default()),
             None => Path::new(&resolved_path).parent().map(|parent| parent.to_string_lossy().into_owned()).unwrap_or_default(),
         };
         let mut manager = Self::build(&cwd, &dir, true);
-        manager.set_session_file(path, options)?;
+        manager.set_session_file(&resolved_path, options)?;
+        drop(opening_hold);
         if !entries.is_empty() {
             manager.file_entries = entries;
             manager.session_id = manager
@@ -808,11 +844,12 @@ impl SessionManager {
     }
 
     pub fn set_session_file(&mut self, session_file: &str, options: Option<NewSessionOptions>) -> Result<(), String> {
+        let session_file = resolve_moved_session_path(session_file);
+        let session_file = session_file.as_str();
         if self.persist {
             crate::session_write_reservation::reserve_session_write(&resolve_path(session_file, session_file, &PathInputOptions::default()));
         }
         self.session_file = Some(resolve_path(session_file, session_file, &PathInputOptions::default()));
-        self.sync_session_file_ownership();
         self.mirror_trimmed = false;
         self.trimmed_entry_count = 0;
         self.resident_store.clear();
@@ -825,6 +862,8 @@ impl SessionManager {
                     return Err(format!("Session file is not a valid {} session: {current}", app_name()));
                 }
                 self.reset_to_new_session(options);
+                self.sync_session_file_ownership();
+                self.check_session_hold()?;
                 self.rewrite_file();
                 self.flushed = true;
                 return Ok(());
@@ -838,6 +877,8 @@ impl SessionManager {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .unwrap_or_else(create_session_id);
+            self.sync_session_file_hold(true);
+            self.check_session_hold()?;
             self.sync_resident_blobs_dir();
             // Blobs left under this id by a process that is gone are a disposable cache: the JSONL
             // is the authority for every entry, so clearing them bounds the directory to one process lifetime.
@@ -851,6 +892,8 @@ impl SessionManager {
         } else {
             let explicit_id = options.as_ref().and_then(|options| options.id.clone());
             self.reset_to_new_session(options);
+            self.sync_session_file_ownership();
+            self.check_session_hold()?;
             if explicit_id.is_some() {
                 self.rewrite_file();
                 self.flushed = true;
@@ -972,6 +1015,10 @@ impl SessionManager {
     }
 
     fn rewrite_file(&mut self) {
+        if let Err(error) = self.check_session_hold() {
+            eprintln!("cannot rewrite session: {error}");
+            return;
+        }
         if !self.persist {
             return;
         }
@@ -986,6 +1033,7 @@ impl SessionManager {
     }
 
     fn persist_entry(&mut self, entry: &Value) -> std::io::Result<()> {
+        self.check_session_hold().map_err(std::io::Error::other)?;
         if !self.persist {
             return Ok(());
         }
@@ -1288,6 +1336,18 @@ impl SessionManager {
 
     pub fn usage_totals(&self) -> &UsageTotals {
         &self.usage_totals
+    }
+
+    pub fn extension_usage_totals(&self) -> Value {
+        let totals = self.usage_totals();
+        serde_json::json!({
+            "input": totals.input,
+            "output": totals.output,
+            "cacheRead": totals.cache_read,
+            "cacheWrite": totals.cache_write,
+            "cost": totals.cost,
+            "latestCacheHitRate": totals.latest_cache_hit_rate,
+        })
     }
 
     /// Exposes the resident store for out-of-band string lifecycles such as the agent's runtime
@@ -1702,6 +1762,7 @@ impl SessionManager {
             self.session_id = new_session_id;
             self.session_file = Some(new_session_file.clone());
             self.sync_session_file_ownership();
+            self.check_session_hold()?;
             self.file_entries = file_entries;
             self.build_index();
             // Defer the write to the first assistant response when the branch has none, matching
@@ -1842,6 +1903,65 @@ pub fn seek_end_of_file(file: &mut std::fs::File) -> std::io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn holder_record(manager: &SessionManager) -> std::path::PathBuf {
+        Path::new(manager.session_file().expect("session file")).parent().expect("parent")
+            .join("session-holders").join(crate::schedule::runner_lease::encode_session_id(manager.session_id()))
+            .join(format!("{}.json", std::process::id()))
+    }
+
+    #[test]
+    fn persisted_manager_publishes_holder_before_first_flush_and_releases_on_drop() {
+        // Given
+        let dir = tempfile::tempdir().expect("session dir");
+        let dir = dir.path().to_string_lossy();
+        // When
+        let manager = SessionManager::create(&dir, Some(&dir), None);
+        let record = holder_record(&manager);
+        // Then
+        assert!(!Path::new(manager.session_file().expect("session file")).exists());
+        let holder: Value = serde_json::from_slice(&std::fs::read(&record).expect("holder record")).expect("holder JSON");
+        assert_eq!(holder["pid"], std::process::id());
+        assert!(holder["processStartedAtMs"].as_u64().is_some_and(|start| start > 0));
+        assert!(holder["bootAtMs"].as_u64().is_some_and(|boot| boot > 0));
+        drop(manager);
+        assert!(!record.exists());
+    }
+
+    #[test]
+    fn switching_session_releases_old_holder_and_dispose_releases_new_holder() {
+        // Given
+        let dir = tempfile::tempdir().expect("session dir");
+        let dir = dir.path().to_string_lossy();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        let old = holder_record(&manager);
+        // When
+        manager.new_session(None);
+        // Then
+        let new = holder_record(&manager);
+        assert_ne!(old, new);
+        assert!(!old.exists());
+        assert!(new.exists());
+        manager.dispose();
+        assert!(!new.exists());
+    }
+
+    #[test]
+    fn separate_managers_share_holder_until_the_last_writer_disposes() {
+        // Given
+        let dir = tempfile::tempdir().expect("session dir");
+        let dir = dir.path().to_string_lossy();
+        let mut first = SessionManager::create(&dir, Some(&dir), None);
+        first.append_message(json!({"role":"assistant", "content":"ready", "timestamp":1}));
+        let record = holder_record(&first);
+        let mut second = SessionManager::open(first.session_file().expect("file"), Some(&dir), Some(&dir), None).expect("open");
+        // When
+        first.dispose();
+        // Then
+        assert!(record.exists());
+        second.dispose();
+        assert!(!record.exists());
+    }
 
     fn header(id: &str, version: Option<i64>, cwd: &str) -> Value {
         let mut header = json!({
@@ -2422,8 +2542,17 @@ mod tests {
         assert_eq!(manager.usage_totals().latest_cache_hit_rate, None);
         manager.append_message(json!({ "role": "assistant", "content": [], "usage": { "input": 10, "output": 1, "cacheRead": 30, "cacheWrite": 0 } }));
         assert_eq!(manager.usage_totals().latest_cache_hit_rate, Some(75.0));
+        let projected = manager.extension_usage_totals();
+        let totals = manager.usage_totals();
+        assert_eq!(projected["latestCacheHitRate"], json!(75.0));
+        assert_eq!(projected["input"], json!(totals.input));
+        assert_eq!(projected["output"], json!(totals.output));
+        assert_eq!(projected["cacheRead"], json!(totals.cache_read));
+        assert_eq!(projected["cacheWrite"], json!(totals.cache_write));
+        assert_eq!(projected["cost"], json!(totals.cost));
         manager.append_message(json!({ "role": "assistant", "content": [], "usage": { "input": 0, "output": 1, "cacheRead": 0, "cacheWrite": 0 } }));
         assert_eq!(manager.usage_totals().latest_cache_hit_rate, None);
+        assert_eq!(manager.extension_usage_totals()["latestCacheHitRate"], Value::Null);
     }
 
     #[test]

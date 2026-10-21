@@ -4,6 +4,12 @@ globalThis.__senpi_reserved_schema_tool__ = globalThis.__senpi_module_context__.
 globalThis.__senpi_call_handle__ = async (operation, fields) => await globalThis.tool(globalThis.__senpi_module_context__.reservedHandleTool)({ operation, ...fields });
 globalThis.__senpi_timeout_pause_op__ = globalThis.__senpi_module_context__.timeoutPauseOp;
 globalThis.__senpi_timeout_resume_op__ = globalThis.__senpi_module_context__.timeoutResumeOp;
+globalThis.packages = Object.freeze({
+  install: async (manager, requirements, options = {}) => {
+    if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('packages.install(): options must be an object');
+    return await globalThis.tool('__packages_install__')({ manager, requirements, ...(options.timeout !== undefined ? { timeout: options.timeout } : {}) });
+  },
+});
 globalThis.__senpi_import__ = async (source, options) => {
   const context = globalThis.__senpi_module_context__;
   const specifier = String(source);
@@ -25,6 +31,9 @@ globalThis.__senpi_import__ = async (source, options) => {
   } else if (specifier.startsWith('/') || /^[A-Za-z]:[\\/]/.test(specifier)) {
     const urlModule = await import('node:url');
     target = urlModule.pathToFileURL(specifier).href;
+  } else {
+    await globalThis.__senpi_package_resolver_ready__;
+    target = globalThis[Symbol.for('senpi.kernel.resolvePackage')](specifier, [context.cwdUrl, context.packageRootUrl]) ?? specifier;
   }
   return options === undefined ? import(target) : import(target, options);
 };

@@ -1,8 +1,8 @@
 //! Port of senpi packages/ai/src/providers/kimi-coding-auth.ts.
 
 use crate::auth::oauth::kimi_region::{
-    KimiCodeEndpointInput, choose_kimi_code_login_endpoints, resolve_kimi_code_endpoints,
-    KIMI_CODE_OAUTH_HOST_ENV, KIMI_CODE_REGION_ENV, KIMI_OAUTH_HOST_ENV,
+    KIMI_CODE_OAUTH_HOST_ENV, KIMI_CODE_REGION_ENV, KIMI_OAUTH_HOST_ENV, KimiCodeEndpointInput,
+    choose_kimi_code_login_endpoints, resolve_kimi_code_endpoints,
 };
 use crate::auth::types::{
     ApiKeyAuth, ApiKeyCredential, AuthContext, AuthPrompt, AuthPromptKind, AuthResult, ModelAuth,
@@ -19,7 +19,9 @@ async fn env_value(
     signal: &AbortSignal,
 ) -> anyhow::Result<Option<String>> {
     let value = ctx.env(name).await;
-    signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
+    signal
+        .throw_if_aborted()
+        .map_err(|reason| anyhow::anyhow!("{reason}"))?;
     Ok(value.filter(|v| !v.is_empty()))
 }
 
@@ -40,18 +42,28 @@ impl ApiKeyAuth for KimiCodeApiKeyAuth {
         true
     }
 
-    async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<ApiKeyCredential> {
+    async fn login(
+        &self,
+        interaction: &ProviderAuthInteraction,
+    ) -> anyhow::Result<ApiKeyCredential> {
         let endpoints = choose_kimi_code_login_endpoints(interaction).await?;
         let key = interaction
             .prompt(AuthPrompt {
-                kind: AuthPromptKind::Secret { message: "Enter Kimi API key".into(), placeholder: None },
+                kind: AuthPromptKind::Secret {
+                    message: "Enter Kimi API key".into(),
+                    placeholder: None,
+                },
                 signal: None,
             })
             .await?;
-        interaction.signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
+        interaction
+            .signal
+            .throw_if_aborted()
+            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
         Ok(ApiKeyCredential {
             key: Some(key),
             env: endpoints.env,
+            ..Default::default()
         })
     }
 
@@ -61,8 +73,13 @@ impl ApiKeyAuth for KimiCodeApiKeyAuth {
         credential: Option<&ApiKeyCredential>,
         signal: &AbortSignal,
     ) -> anyhow::Result<Option<AuthResult>> {
-        signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
-        let key = match credential.and_then(|c| c.key.clone()).filter(|k| !k.is_empty()) {
+        signal
+            .throw_if_aborted()
+            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
+        let key = match credential
+            .and_then(|c| c.key.clone())
+            .filter(|k| !k.is_empty())
+        {
             Some(k) => Some(k),
             None => env_value(ctx, KIMI_API_KEY_ENV, signal).await?,
         };
@@ -70,8 +87,14 @@ impl ApiKeyAuth for KimiCodeApiKeyAuth {
             return Ok(None);
         };
 
-        let stored_region = credential.and_then(|c| c.env.as_ref()).and_then(|e| e.get(KIMI_CODE_REGION_ENV)).cloned();
-        let stored_oauth_host = credential.and_then(|c| c.env.as_ref()).and_then(|e| e.get(KIMI_CODE_OAUTH_HOST_ENV)).cloned();
+        let stored_region = credential
+            .and_then(|c| c.env.as_ref())
+            .and_then(|e| e.get(KIMI_CODE_REGION_ENV))
+            .cloned();
+        let stored_oauth_host = credential
+            .and_then(|c| c.env.as_ref())
+            .and_then(|e| e.get(KIMI_CODE_OAUTH_HOST_ENV))
+            .cloned();
         let env_oauth_host = match env_value(ctx, KIMI_CODE_OAUTH_HOST_ENV, signal).await? {
             Some(h) => Some(h),
             None => env_value(ctx, KIMI_OAUTH_HOST_ENV, signal).await?,
@@ -85,13 +108,17 @@ impl ApiKeyAuth for KimiCodeApiKeyAuth {
             env_region,
         });
 
-        let source = if credential.and_then(|c| c.key.as_ref()).is_some_and(|k| !k.is_empty()) {
+        let source = if credential
+            .and_then(|c| c.key.as_ref())
+            .is_some_and(|k| !k.is_empty())
+        {
             "stored credential".to_string()
         } else {
             KIMI_API_KEY_ENV.to_string()
         };
 
         Ok(Some(AuthResult {
+            ambient: false,
             auth: ModelAuth {
                 api_key: Some(key),
                 headers: None,
@@ -151,7 +178,9 @@ mod tests {
 
     #[tokio::test]
     async fn kimi_auth_resolves_stored_key_with_region() {
-        let ctx = TestAuthContext { env_map: HashMap::new() };
+        let ctx = TestAuthContext {
+            env_map: HashMap::new(),
+        };
         let signal = crate::utils::abort::AbortController::new().signal();
 
         let mut env = ProviderEnv::new();
@@ -159,14 +188,28 @@ mod tests {
         let credential = ApiKeyCredential {
             key: Some("stored-kimi-key".to_string()),
             env: Some(env),
+            ..Default::default()
         };
 
         let auth = kimi_code_api_key_auth();
-        let res = auth.resolve(&ctx, Some(&credential), &signal).await.unwrap().expect("resolved");
+        let res = auth
+            .resolve(&ctx, Some(&credential), &signal)
+            .await
+            .unwrap()
+            .expect("resolved");
         assert_eq!(res.auth.api_key.as_deref(), Some("stored-kimi-key"));
-        assert_eq!(res.auth.base_url.as_deref(), Some("https://api.kimi.ai/coding"));
+        assert_eq!(
+            res.auth.base_url.as_deref(),
+            Some("https://api.kimi.ai/coding")
+        );
         assert_eq!(res.source.as_deref(), Some("stored credential"));
-        assert_eq!(res.env.as_ref().and_then(|e| e.get(KIMI_CODE_REGION_ENV)).map(String::as_str), Some("global"));
+        assert_eq!(
+            res.env
+                .as_ref()
+                .and_then(|e| e.get(KIMI_CODE_REGION_ENV))
+                .map(String::as_str),
+            Some("global")
+        );
     }
 
     #[tokio::test]
@@ -177,7 +220,11 @@ mod tests {
         let signal = crate::utils::abort::AbortController::new().signal();
 
         let auth = kimi_code_api_key_auth();
-        let res = auth.resolve(&ctx, None, &signal).await.unwrap().expect("resolved");
+        let res = auth
+            .resolve(&ctx, None, &signal)
+            .await
+            .unwrap()
+            .expect("resolved");
         assert_eq!(res.auth.api_key.as_deref(), Some("env-kimi-key"));
         // Default mainland-cn region omits base_url override
         assert!(res.auth.base_url.is_none());
@@ -187,7 +234,9 @@ mod tests {
 
     #[tokio::test]
     async fn kimi_auth_returns_none_if_no_key_found() {
-        let ctx = TestAuthContext { env_map: HashMap::new() };
+        let ctx = TestAuthContext {
+            env_map: HashMap::new(),
+        };
         let signal = crate::utils::abort::AbortController::new().signal();
         let auth = kimi_code_api_key_auth();
         assert!(auth.resolve(&ctx, None, &signal).await.unwrap().is_none());
@@ -205,6 +254,9 @@ mod tests {
         let cred = auth.login(&interaction).await.unwrap();
         assert_eq!(cred.key.as_deref(), Some("entered-key"));
         let env = cred.env.expect("env");
-        assert_eq!(env.get(KIMI_CODE_REGION_ENV).map(String::as_str), Some("global"));
+        assert_eq!(
+            env.get(KIMI_CODE_REGION_ENV).map(String::as_str),
+            Some("global")
+        );
     }
 }

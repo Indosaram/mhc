@@ -21,6 +21,7 @@ use crate::schema::model_profile::{
     omo_model_profiles_layer_schema, omo_model_profiles_schema,
 };
 use crate::schema::task::{omo_task_settings_layer_schema, omo_task_settings_schema};
+use crate::schema::side_panel::{omo_side_panel_settings_layer_schema, omo_side_panel_settings_schema};
 use crate::schema::team::{omo_teams_config_layer_schema, omo_teams_config_schema};
 use crate::schema::telemetry::{
     omo_telemetry_settings_layer_schema, omo_telemetry_settings_schema,
@@ -42,6 +43,7 @@ pub fn omo_disabled_skills_schema() -> Node {
 
 pub fn omo_typed_harness_config_schema() -> Node {
     strict_object(vec![
+        optional("side_panel", omo_side_panel_settings_layer_schema()),
         optional("formatOnMutation", omo_format_on_mutation_layer_schema()),
         optional("gateway", omo_gateway_section_schema()),
         optional("categories", omo_categories_config_schema()),
@@ -61,6 +63,7 @@ pub fn omo_typed_harness_config_schema() -> Node {
 
 pub fn omo_config_profile_schema() -> Node {
     strict_object(vec![
+        optional("side_panel", omo_side_panel_settings_layer_schema()),
         optional("formatOnMutation", omo_format_on_mutation_layer_schema()),
         optional("categories", omo_categories_config_schema()),
         optional("agents", omo_agents_config_schema()),
@@ -83,6 +86,7 @@ pub fn omo_config_profile_schema() -> Node {
 
 pub fn omo_config_schema() -> Node {
     strict_object(vec![
+        optional("side_panel", omo_side_panel_settings_schema()),
         optional("formatOnMutation", omo_format_on_mutation_schema()),
         optional("gateway", omo_gateway_section_schema()),
         optional("$schema", string()),
@@ -114,6 +118,7 @@ pub fn omo_config_schema() -> Node {
 
 pub fn omo_config_layer_schema() -> Node {
     strict_object(vec![
+        optional("side_panel", omo_side_panel_settings_layer_schema()),
         optional("formatOnMutation", omo_format_on_mutation_layer_schema()),
         optional("gateway", omo_gateway_section_schema()),
         optional("$schema", string()),

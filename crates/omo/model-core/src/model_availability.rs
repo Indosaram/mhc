@@ -21,7 +21,7 @@ fn normalize_model_name(name: &str) -> String {
 }
 
 fn model_id(model: &str) -> &str {
-    model.split_once('/').map_or(model, |(_, model_id)| model_id)
+    model.split_once('/').map_or("", |(_, model_id)| model_id)
 }
 
 fn provider_rank(model: &str, providers: Option<&[String]>) -> usize {
@@ -98,4 +98,47 @@ pub fn fuzzy_match_model(
 #[must_use]
 pub fn is_model_available(target_model: &str, available_models: &IndexSet<String>) -> bool {
     fuzzy_match_model(target_model, available_models, None).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unqualified_candidates_have_empty_model_id_for_ties() {
+        for candidates in [
+            ["provider/target-short", "target-with-a-long-unqualified-suffix"],
+            ["target-with-a-long-unqualified-suffix", "provider/target-short"],
+        ] {
+            let available = candidates.into_iter().map(str::to_string).collect();
+            assert_eq!(fuzzy_match_model("target", &available, None).as_deref(), Some("target-with-a-long-unqualified-suffix"));
+        }
+    }
+
+    #[test]
+    fn upstream_normalization_and_provider_preference_cases() {
+        for (target, candidate, provider) in [
+            ("kimi-k2.6", "moonshot/kimi-k2-6", "moonshot"),
+            ("glm-5-1", "zai/glm-5.1", "zai"),
+            ("gpt-5.4", "openai/gpt-5-4", "openai"),
+        ] {
+            let available = IndexSet::from([candidate.to_string()]);
+            assert_eq!(fuzzy_match_model(target, &available, Some(&[provider.to_string()])).as_deref(), Some(candidate));
+        }
+        let available = IndexSet::from([
+            "anthropic-subscription/claude-opus-5".to_string(),
+            "opencode/claude-opus-5".to_string(),
+        ]);
+        assert_eq!(fuzzy_match_model("claude-opus-5", &available, None).as_deref(), Some("anthropic-subscription/claude-opus-5"));
+        for providers in [["anthropic-subscription", "opencode"], ["opencode", "anthropic-subscription"]] {
+            let expected = format!("{}/claude-opus-5", providers[0]);
+            let providers = providers.map(str::to_string);
+            assert_eq!(fuzzy_match_model("claude-opus-5", &available, Some(&providers)).as_deref(), Some(expected.as_str()));
+        }
+        let available = IndexSet::from([
+            "opencode/claude-opus-5-2025".to_string(),
+            "anthropic-subscription/claude-opus-5".to_string(),
+        ]);
+        assert_eq!(fuzzy_match_model("claude-opus", &available, None).as_deref(), Some("anthropic-subscription/claude-opus-5"));
+    }
 }

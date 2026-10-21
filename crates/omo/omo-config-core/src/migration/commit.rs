@@ -9,10 +9,11 @@ use crate::internal::validate::safe_parse;
 use crate::issue::PathSegment;
 use crate::loader::paths::resolve_home_dir;
 use crate::migration::merge::{collect_migration_edits, merge_without_clobber};
+use crate::migration::diff_edits::{diff_edits, without_marker};
 use crate::migration::predicate::has_migration_marker;
 use crate::migration::types::{
     MigrationEnvironment, MigrationError, MigrationFileSystem, MigrationTargetWriter,
-    MigrationTargetWriterInput,
+    MigrationTargetWriterInput, MigrationTargetWriteResult,
 };
 use crate::schema::config::omo_config_schema;
 use crate::schema::harness::{
@@ -163,7 +164,7 @@ fn same_resolved_path(a: &str, b: &str) -> bool {
 
 pub fn write_omo_migration_target(
     input: MigrationTargetWriterInput<'_>,
-) -> Result<(), MigrationError> {
+) -> Result<MigrationTargetWriteResult, MigrationError> {
     let options = writer_input(input.target_path, input.env)?;
     write_omo_migration_target_with_options(input, options)
 }
@@ -171,7 +172,7 @@ pub fn write_omo_migration_target(
 fn write_omo_migration_target_with_options(
     input: MigrationTargetWriterInput<'_>,
     options: WriterInput,
-) -> Result<(), MigrationError> {
+) -> Result<MigrationTargetWriteResult, MigrationError> {
     let update_opts = UpdateOmoConfigOptions {
         edits: input.edits.to_vec(),
         env: Some(input.env.clone()),
@@ -191,7 +192,7 @@ fn write_omo_migration_target_with_options(
             result.path, input.target_path
         )));
     }
-    Ok(())
+    Ok(MigrationTargetWriteResult { backup_path: result.backup_path })
 }
 
 #[derive(Debug, Clone)]
@@ -357,26 +358,11 @@ pub fn prepare_target_replacement(
     validate_target(target_path, &full_doc)?;
     let mut edits = target_cleanup.edits.clone();
 
-    if let Some(t_map) = target_cleanup.document.as_object() {
-        for key in t_map.keys() {
-            if key != "_migrations" && document_cleanup.document.get(key).is_none() {
-                edits.push(OmoConfigEdit {
-                    path: vec![PathSegment::Key(key.clone())],
-                    value: None,
-                });
-            }
-        }
-    }
-    if let Some(d_map) = document_cleanup.document.as_object() {
-        for (key, value) in d_map {
-            if key != "_migrations" {
-                edits.push(OmoConfigEdit {
-                    path: vec![PathSegment::Key(key.clone())],
-                    value: Some(value.clone()),
-                });
-            }
-        }
-    }
+    edits.extend(diff_edits(
+        &without_marker(&target_cleanup.document),
+        &without_marker(&document_cleanup.document),
+        &[],
+    ));
     edits.push(OmoConfigEdit {
         path: vec![PathSegment::Key("_migrations".to_string())],
         value: Some(json!(marker)),
@@ -401,7 +387,7 @@ pub fn write_prepared_target<'a>(
     target_path: &'a str,
     write_target: &MigrationTargetWriter<'a>,
     backup_path: Option<&str>,
-) -> Result<(), MigrationError> {
+) -> Result<Option<String>, MigrationError> {
     let input = MigrationTargetWriterInput {
         backup_path,
         edits: &prepared.edits,
@@ -409,19 +395,5 @@ pub fn write_prepared_target<'a>(
         file_system,
         target_path,
     };
-    if let Some(backup_path) = backup_path {
-        let options = writer_input(target_path, env)?;
-        write_omo_migration_target_with_options(
-            MigrationTargetWriterInput {
-                backup_path: Some(backup_path),
-                edits: &prepared.edits,
-                env,
-                file_system,
-                target_path,
-            },
-            options,
-        )
-    } else {
-        write_target(input)
-    }
+    Ok(write_target(input)?.backup_path)
 }

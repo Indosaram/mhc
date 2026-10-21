@@ -149,8 +149,8 @@ fn each_requirement_selects_its_copilot_gpt_model_with_its_configured_variant() 
         (
             "unspecified-low",
             &CATEGORY_MODEL_REQUIREMENTS["unspecified-low"],
-            "github-copilot/gpt-5.6-terra",
-            "high",
+            "github-copilot/gpt-5.6-sol",
+            "medium",
         ),
     ];
     for (name, requirement, expected_model, expected_variant) in cases {

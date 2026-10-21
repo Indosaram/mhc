@@ -285,6 +285,13 @@ impl Extension for SharedExtension {
     fn register(&self, api: &mut ExtensionApi) { self.0.register(api); }
 }
 impl ExtensionRunner {
+    /// Loaded extensions' live memory reporters, in extension load order.
+    /// Report construction keeps the first registration of each name.
+    pub fn get_memory_reporters(&self) -> Vec<NamedMemoryReporter> {
+        self.extensions.iter()
+            .flat_map(|extension| self.runtime.memory_reporters(&extension.identity.path))
+            .collect()
+    }
     pub fn new(extensions: Vec<LoadedExtension>, runtime: ExtensionRuntime, events: EventBus, context: ExtensionContext) -> Self {
         Self { extensions: Arc::new(extensions), runtime, events, factory_context: context.clone(), context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
             shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None, runtime_factory: None, context_session_manager: Arc::new(std::sync::Mutex::new(None)), session_error_listener: None }

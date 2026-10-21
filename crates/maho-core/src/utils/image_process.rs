@@ -13,3 +13,26 @@ pub async fn process_image(bytes: &[u8], mime_type: &str, options: ProcessImageO
         Ok(ProcessedImage { data: result.data, mime_type: result.mime_type, hints })
     } else { let hints = converted.filter(|from| !from.is_empty() && from != mime).map(|from| vec![format!("[Image converted from {from} to {mime}.]")]).unwrap_or_default(); Ok(ProcessedImage { data: base64::engine::general_purpose::STANDARD.encode(bytes), mime_type: mime.to_owned(), hints }) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn partial_model_profile_reaches_native_resize() {
+        // Given a height-only model profile and an in-memory landscape PNG.
+        let bytes = photon_rs::PhotonImage::new(vec![255; 16 * 8 * 4], 16, 8).get_bytes();
+        let profile = maho_ai::model::ModelImageResizeOptions {
+            max_height: Some(4), ..Default::default()
+        };
+        // When the shared model profile is converted at the consumer boundary.
+        let result = process_image(&bytes, "image/png", ProcessImageOptions {
+            resize_options: Some((&profile).into()), ..Default::default()
+        }).await.expect("processed PNG");
+        // Then the native result respects the supplied axis and aspect ratio.
+        let decoded = photon_rs::PhotonImage::new_from_byteslice(
+            base64::engine::general_purpose::STANDARD.decode(&result.data).expect("base64")
+        );
+        assert_eq!((decoded.get_width(), decoded.get_height()), (8, 4));
+    }
+}

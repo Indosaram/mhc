@@ -89,8 +89,8 @@
       "path": "kernels/js/worker-core.js",
       "status": "patched",
       "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "change": "bridge error.data, shell-wait and memory reporting",
-      "sha256": "02cb78dba556e6fcf4e0009defdb8c03b4d0a79471e3544f9f164d44c4fbc968"
+      "change": "bridge error.data, shell-wait and memory reporting; process-mode footprint reporting",
+      "sha256": "0713b0ece63ea041bdb55bc0559cce66c571737ab7201af2cfd8cad73f0d8e21"
     },
     {
       "path": "kernels/js/worker-entry.js",
@@ -239,6 +239,26 @@
       "upstreamCommit": null,
       "change": "native kernel Windows process-tree cleanup with ancestor and system-process protection",
       "sha256": "2b868a633d7ba3a1471f4e3bd0f68769e98205178f89acba2f32c9865c10c343"
+    },
+    {
+      "path": "kernels/js/process-entry.js",
+      "status": "patched",
+      "upstreamCommit": "903b83367545bea516f35fc7f7c7cb692847988d",
+      "change": "Bun-only direct process entry; excludes the separately unported WebView bridge",
+      "sha256": "433bc7df5bbbb0020f346ca6a02882899d4485624f82735061e757908b872ff4"
+    },
+    {
+      "path": "kernels/js/process-drain-scan.js",
+      "status": "verbatim",
+      "upstreamCommit": "903b83367545bea516f35fc7f7c7cb692847988d",
+      "sha256": "90460a2b25b6c50590d230f18e70e3bb0ed4957838d3f2773d60c6a617009b75"
+    },
+    {
+      "path": "kernels/js/process-footprint.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "Bun process footprint readers matching upstream OS counters",
+      "sha256": "f638a5575da1bdc682164f38c79596e4463c07998c3c4595c10c55a999e0e1d2"
     }
   ]
 }

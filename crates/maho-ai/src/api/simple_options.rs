@@ -7,12 +7,14 @@ use serde_json::{Map, Value};
 
 use crate::api::context_room::ContextWindowExhaustedError;
 use crate::types::{
-    Context, Model, ProviderRequestOptions, SimpleStreamOptions, StreamOptions, ThinkingBudgets, ThinkingLevel,
+    Context, Model, ProviderRequestOptions, SimpleStreamOptions, StreamOptions, ThinkingBudgets,
+    ThinkingLevel,
 };
 
 pub use crate::api::context_room::{
-    clamp_max_tokens_to_context, ContextWindowExhaustedError as ContextGuardError, CONTEXT_GUARD_MIN_WINDOW,
-    CONTEXT_SAFETY_TOKENS, MIN_ANSWER_TOKENS,
+    CONTEXT_GUARD_MIN_WINDOW, CONTEXT_SAFETY_TOKENS,
+    ContextWindowExhaustedError as ContextGuardError, MIN_ANSWER_TOKENS,
+    clamp_max_tokens_to_context,
 };
 
 /// Merge user-supplied extraBody fields into a provider request payload, skipping any key the
@@ -35,49 +37,51 @@ fn reserved(keys: &[&'static str]) -> BTreeSet<&'static str> {
     keys.iter().copied().collect()
 }
 
-pub static OPENAI_COMPLETIONS_RESERVED_BODY_KEYS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
-    reserved(&[
-        "model",
-        "messages",
-        "stream",
-        "stream_options",
-        "tools",
-        "tool_choice",
-        "store",
-        "temperature",
-        "max_tokens",
-        "max_completion_tokens",
-        "reasoning_effort",
-        "reasoning",
-        "thinking",
-        "enable_thinking",
-        "chat_template_kwargs",
-        "tool_stream",
-        "provider",
-        "providerOptions",
-    ])
-});
+pub static OPENAI_COMPLETIONS_RESERVED_BODY_KEYS: LazyLock<BTreeSet<&'static str>> =
+    LazyLock::new(|| {
+        reserved(&[
+            "model",
+            "messages",
+            "stream",
+            "stream_options",
+            "tools",
+            "tool_choice",
+            "store",
+            "temperature",
+            "max_tokens",
+            "max_completion_tokens",
+            "reasoning_effort",
+            "reasoning",
+            "thinking",
+            "enable_thinking",
+            "chat_template_kwargs",
+            "tool_stream",
+            "provider",
+            "providerOptions",
+        ])
+    });
 
-pub static OPENAI_RESPONSES_RESERVED_BODY_KEYS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
-    reserved(&[
-        "model",
-        "input",
-        "instructions",
-        "stream",
-        "tools",
-        "tool_choice",
-        "parallel_tool_calls",
-        "reasoning",
-        "max_output_tokens",
-        "temperature",
-        "text",
-        "store",
-        "include",
-        "prompt_cache_key",
-        "prompt_cache_retention",
-        "service_tier",
-    ])
-});
+pub static OPENAI_RESPONSES_RESERVED_BODY_KEYS: LazyLock<BTreeSet<&'static str>> =
+    LazyLock::new(|| {
+        reserved(&[
+            "model",
+            "input",
+            "instructions",
+            "stream",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "max_output_tokens",
+            "temperature",
+            "text",
+            "store",
+            "include",
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "service_tier",
+        ])
+    });
 
 /// Reserved keys for the inner Google `config` object (serialized as the request body's
 /// generationConfig/tools/systemInstruction by the @google/genai SDK). extraBody is merged into
@@ -115,7 +119,16 @@ pub static ANTHROPIC_RESERVED_BODY_KEYS: LazyLock<BTreeSet<&'static str>> = Lazy
 });
 
 pub static MISTRAL_RESERVED_BODY_KEYS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
-    reserved(&["model", "messages", "stream", "tools", "toolChoice", "temperature", "maxTokens", "promptMode"])
+    reserved(&[
+        "model",
+        "messages",
+        "stream",
+        "tools",
+        "toolChoice",
+        "temperature",
+        "maxTokens",
+        "promptMode",
+    ])
 });
 
 pub static BEDROCK_RESERVED_BODY_KEYS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
@@ -158,7 +171,9 @@ pub fn build_base_options(
     let max_tokens = clamp_max_tokens_to_context(
         model,
         context,
-        stream.and_then(|stream| stream.max_tokens).unwrap_or(model.max_tokens),
+        stream
+            .and_then(|stream| stream.max_tokens)
+            .unwrap_or(model.max_tokens),
     )?;
     let resolved_api_key = api_key
         .filter(|key| !key.is_empty())
@@ -166,7 +181,8 @@ pub fn build_base_options(
         .or_else(|| stream.and_then(|stream| stream.request.api_key.clone()));
     let request = ProviderRequestOptions {
         signal: stream.and_then(|stream| stream.request.signal.clone()),
-        abort_server_side_fallback: stream.and_then(|stream| stream.request.abort_server_side_fallback),
+        abort_server_side_fallback: stream
+            .and_then(|stream| stream.request.abort_server_side_fallback),
         telemetry_context: stream.and_then(|stream| stream.request.telemetry_context.clone()),
         api_key: resolved_api_key,
         affinity_session_id: None,
@@ -184,6 +200,9 @@ pub fn build_base_options(
     };
     Ok(StreamOptions {
         request,
+        on_provider_stream_event: stream.and_then(|stream| stream.on_provider_stream_event.clone()),
+        async_on_provider_stream_event: stream
+            .and_then(|stream| stream.async_on_provider_stream_event.clone()),
         temperature: stream.and_then(|stream| stream.temperature),
         sampling_params,
         max_tokens: Some(max_tokens),
@@ -200,7 +219,13 @@ pub fn build_base_options(
 }
 
 pub fn default_thinking_budgets() -> ThinkingBudgets {
-    ThinkingBudgets { minimal: Some(1024), low: Some(2048), medium: Some(8192), high: Some(16384), max: None }
+    ThinkingBudgets {
+        minimal: Some(1024),
+        low: Some(2048),
+        medium: Some(8192),
+        high: Some(16384),
+        max: None,
+    }
 }
 
 pub fn clamp_reasoning(effort: ThinkingLevel) -> Option<ThinkingLevel> {
@@ -237,7 +262,10 @@ fn budget_for_level(budgets: &ThinkingBudgets, level: ThinkingLevel) -> u64 {
     .unwrap_or(0)
 }
 
-pub fn thinking_budget_for_level(reasoning_level: ThinkingLevel, custom_budgets: Option<&ThinkingBudgets>) -> u64 {
+pub fn thinking_budget_for_level(
+    reasoning_level: ThinkingLevel,
+    custom_budgets: Option<&ThinkingBudgets>,
+) -> u64 {
     let mut budgets = default_thinking_budgets();
     if let Some(custom) = custom_budgets {
         if custom.minimal.is_some() {
@@ -279,7 +307,10 @@ pub fn adjust_max_tokens_for_thinking(
 ) -> AdjustedThinking {
     // An absent/unresolvable level means "no thinking", not a NaN budget.
     let Some(level) = clamp_reasoning(reasoning_level) else {
-        return AdjustedThinking { max_tokens: base_max_tokens.unwrap_or(model_max_tokens), thinking_budget: 0 };
+        return AdjustedThinking {
+            max_tokens: base_max_tokens.unwrap_or(model_max_tokens),
+            thinking_budget: 0,
+        };
     };
     let mut thinking_budget = thinking_budget_for_level(level, custom_budgets);
     let max_tokens = match base_max_tokens {
@@ -291,12 +322,63 @@ pub fn adjust_max_tokens_for_thinking(
         thinking_budget = clamp_thinking_budget_to_answer_room(thinking_budget, max_tokens);
     }
 
-    AdjustedThinking { max_tokens, thinking_budget }
+    AdjustedThinking {
+        max_tokens,
+        thinking_budget,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn base_options_preserve_and_await_provider_event_hooks() {
+        let model = crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("models")[0]
+            .clone();
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sync_observed = observed.clone();
+        let async_observed = observed.clone();
+        let mut simple = SimpleStreamOptions::default();
+        simple.stream.on_provider_stream_event = Some(std::sync::Arc::new(move |event, model| {
+            sync_observed.lock().expect("observations").push((
+                "sync",
+                event.clone(),
+                model.id.clone(),
+            ));
+        }));
+        simple.stream.async_on_provider_stream_event =
+            Some(std::sync::Arc::new(move |event, model| {
+                let observed = async_observed.clone();
+                Box::pin(async move {
+                    observed
+                        .lock()
+                        .expect("observations")
+                        .push(("async", event, model.id));
+                    Err("observer failed".into())
+                })
+            }));
+        let options = build_base_options(&model, &Context::default(), Some(&simple), None)
+            .expect("base options");
+        let event = serde_json::json!({"provider": "raw", "sequence": 1});
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            options.observe_provider_stream_event(&event, &model),
+        )
+        .await
+        .expect("observer completes");
+
+        assert_eq!(result, Err("observer failed".into()));
+        assert_eq!(
+            *observed.lock().expect("observations"),
+            vec![
+                ("sync", event.clone(), model.id.clone()),
+                ("async", event, model.id),
+            ]
+        );
+    }
 
     #[test]
     fn extra_body_skips_reserved_keys() {
@@ -312,30 +394,63 @@ mod tests {
 
     #[test]
     fn clamping_matches_the_ts_ladder() {
-        assert_eq!(clamp_reasoning(ThinkingLevel::Xhigh), Some(ThinkingLevel::High));
-        assert_eq!(clamp_reasoning(ThinkingLevel::Max), Some(ThinkingLevel::High));
-        assert_eq!(clamp_reasoning(ThinkingLevel::Low), Some(ThinkingLevel::Low));
-        assert_eq!(clamp_max_for_openai(ThinkingLevel::Max, true), Some(ThinkingLevel::Xhigh));
-        assert_eq!(clamp_max_for_openai(ThinkingLevel::Max, false), Some(ThinkingLevel::High));
+        assert_eq!(
+            clamp_reasoning(ThinkingLevel::Xhigh),
+            Some(ThinkingLevel::High)
+        );
+        assert_eq!(
+            clamp_reasoning(ThinkingLevel::Max),
+            Some(ThinkingLevel::High)
+        );
+        assert_eq!(
+            clamp_reasoning(ThinkingLevel::Low),
+            Some(ThinkingLevel::Low)
+        );
+        assert_eq!(
+            clamp_max_for_openai(ThinkingLevel::Max, true),
+            Some(ThinkingLevel::Xhigh)
+        );
+        assert_eq!(
+            clamp_max_for_openai(ThinkingLevel::Max, false),
+            Some(ThinkingLevel::High)
+        );
     }
 
     #[test]
     fn thinking_budgets_use_the_defaults_and_overrides() {
         assert_eq!(thinking_budget_for_level(ThinkingLevel::Medium, None), 8192);
-        let custom = ThinkingBudgets { minimal: None, low: None, medium: Some(4096), high: None, max: None };
-        assert_eq!(thinking_budget_for_level(ThinkingLevel::Medium, Some(&custom)), 4096);
-        assert_eq!(thinking_budget_for_level(ThinkingLevel::Low, Some(&custom)), 2048);
+        let custom = ThinkingBudgets {
+            minimal: None,
+            low: None,
+            medium: Some(4096),
+            high: None,
+            max: None,
+        };
+        assert_eq!(
+            thinking_budget_for_level(ThinkingLevel::Medium, Some(&custom)),
+            4096
+        );
+        assert_eq!(
+            thinking_budget_for_level(ThinkingLevel::Low, Some(&custom)),
+            2048
+        );
     }
 
     #[test]
     fn adjust_max_tokens_fits_thinking_inside_the_ceiling() {
         assert_eq!(
             adjust_max_tokens_for_thinking(None, 8192, ThinkingLevel::Medium, None),
-            AdjustedThinking { max_tokens: 8192, thinking_budget: 7168 }
+            AdjustedThinking {
+                max_tokens: 8192,
+                thinking_budget: 7168
+            }
         );
         assert_eq!(
             adjust_max_tokens_for_thinking(Some(8192), 200_000, ThinkingLevel::Medium, None),
-            AdjustedThinking { max_tokens: 16384, thinking_budget: 8192 }
+            AdjustedThinking {
+                max_tokens: 16384,
+                thinking_budget: 8192
+            }
         );
     }
 
