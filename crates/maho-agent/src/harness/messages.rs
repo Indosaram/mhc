@@ -9,7 +9,8 @@ use crate::types::{AgentMessage, CustomAgentMessage};
 
 pub const COMPACTION_SUMMARY_PREFIX: &str = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 pub const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>";
-pub const BRANCH_SUMMARY_PREFIX: &str = "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
+pub const BRANCH_SUMMARY_PREFIX: &str =
+    "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
 pub const BRANCH_SUMMARY_SUFFIX: &str = "</summary>";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -104,9 +105,10 @@ pub fn bash_execution_to_text(message: &BashExecutionMessage) -> String {
         ));
     }
     if message.truncated
-        && let Some(path) = &message.full_output_path {
-            text.push_str(&format!("\n\n[Output truncated. Full output: {path}]"));
-        }
+        && let Some(path) = &message.full_output_path
+    {
+        text.push_str(&format!("\n\n[Output truncated. Full output: {path}]"));
+    }
     text
 }
 
@@ -194,10 +196,31 @@ fn parse_iso_millis(value: &str) -> i64 {
 
 fn time_from_iso(value: &str) -> Option<i64> {
     let trimmed = value.trim();
-    let normalized = trimmed.strip_suffix('Z').unwrap_or(trimmed);
+    let normalized = trimmed.strip_suffix(['Z', 'z']).unwrap_or(trimmed);
     let (date, rest) = match normalized.split_once(['T', 't']) {
         Some(parts) => parts,
         None => (normalized, ""),
+    };
+    let (rest, offset_seconds) = match rest.find(['+', '-']) {
+        Some(index) => {
+            let (clock, offset) = rest.split_at(index);
+            let (hours, minutes) = offset[1..].split_once(':')?;
+            let hours: i64 = hours.parse().ok()?;
+            let minutes: i64 = minutes.parse().ok()?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let seconds = hours * 3_600 + minutes * 60;
+            (
+                clock,
+                if offset.starts_with('-') {
+                    -seconds
+                } else {
+                    seconds
+                },
+            )
+        }
+        None => (rest, 0),
     };
     let mut date_parts = date.split('-');
     let year: i64 = date_parts.next()?.parse().ok()?;
@@ -217,7 +240,7 @@ fn time_from_iso(value: &str) -> Option<i64> {
     };
 
     let days = days_from_civil(year, month, day);
-    Some(((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000) + millis)
+    Some(((days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds) * 1_000) + millis)
 }
 
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
@@ -229,6 +252,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
 }
+
 
 impl BranchSummaryMessage {
     pub fn to_llm(&self) -> Message {
@@ -254,7 +278,9 @@ impl CompactionSummaryMessage {
 
 fn summary_to_llm(summary: &str, prefix: &str, suffix: &str, timestamp: i64) -> Message {
     Message::User(UserMessage {
-        content: UserContent::Blocks(vec![ContentBlock::text(format!("{prefix}{summary}{suffix}"))]),
+        content: UserContent::Blocks(vec![ContentBlock::text(format!(
+            "{prefix}{summary}{suffix}"
+        ))]),
         timestamp,
     })
 }
@@ -303,10 +329,55 @@ pub fn convert_to_llm(messages: Vec<AgentMessage>) -> Vec<Message> {
         .filter_map(|message| match message {
             AgentMessage::Llm(message) => Some(message),
             AgentMessage::Custom(custom) => match custom {
-                CustomAgentMessage::BashExecution(bash) if bash.exclude_from_context == Some(true) => None,
+                CustomAgentMessage::BashExecution(bash)
+                    if bash.exclude_from_context == Some(true) =>
+                {
+                    None
+                }
                 custom => Some(custom_agent_message_to_llm(&custom)),
             },
         })
         .collect();
     drop_failed_assistant_turns_owned(converted)
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+
+    #[test]
+    fn constructors_normalize_timezone_offsets() {
+        // Given timestamps representing the same instant across day boundaries.
+        for timestamp in [
+            "1970-01-01T02:00:01.123+02:00",
+            "1969-12-31T18:30:01.123-05:30",
+            "1970-01-01T00:00:01.123Z",
+        ] {
+            // When constructing each timestamp-bearing message.
+            let branch = create_branch_summary_message("", None, timestamp);
+            let compaction = create_compaction_summary_message("", 0, timestamp);
+            let custom = create_custom_message(
+                "",
+                CustomMessageContent::Text(String::new()),
+                false,
+                None,
+                timestamp,
+            );
+            // Then the constructors agree on UTC epoch milliseconds.
+            assert_eq!(
+                [branch.timestamp, compaction.timestamp, custom.timestamp],
+                [1_123; 3]
+            );
+        }
+    }
+
+    #[test]
+    fn parses_timezone_offsets_without_fractional_seconds() {
+        // Given a positive timezone offset without fractional seconds.
+        let timestamp = "1970-01-01T02:00:01+02:00";
+        // When parsing the timestamp.
+        let millis = time_from_iso(timestamp);
+        // Then the offset is subtracted from the local clock.
+        assert_eq!(millis, Some(1_000));
+    }
 }

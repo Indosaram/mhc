@@ -1,6 +1,8 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum EvalLanguage { Js }
+pub enum EvalLanguage {
+    Js,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EvalRuntimeInfo {
@@ -17,7 +19,10 @@ pub const EVAL_LANGUAGE_ORDER: [EvalLanguage; 1] = [EvalLanguage::Js];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum TimeoutBehavior { Detach, Error }
+pub enum TimeoutBehavior {
+    Detach,
+    Error,
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EvalToolInput {
@@ -44,9 +49,24 @@ pub enum EvalToolRequest {
     Stop { cell_id: String },
 }
 
-pub type EvalKernelFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
+pub type EvalKernelFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
 /// Resolves a cell's bridge identity once the kernel starts running it.
-pub type ResolveAtStart = std::sync::Arc<dyn Fn() -> Result<(String, Option<String>), String> + Send + Sync>;
+pub type ResolveAtStart =
+    std::sync::Arc<dyn Fn() -> Result<(String, Option<String>), String> + Send + Sync>;
+pub type PackageRootResolver =
+    std::sync::Arc<dyn Fn() -> Result<Option<std::path::PathBuf>, String> + Send + Sync>;
+pub struct HostCellContext {
+    pub signal: maho_ext_api::AbortSignal,
+    pub emit: crate::kernels::shared::subprocess_run::KernelMessageCallback,
+}
+pub type HostCellExecutor = Box<
+    dyn FnOnce(
+            HostCellContext,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>>
+        + Send,
+>;
 #[derive(Default)]
 pub struct EvalKernelRunInput {
     pub cell_id: String,
@@ -57,37 +77,80 @@ pub struct EvalKernelRunInput {
     pub on_message: Option<crate::kernels::shared::subprocess_run::KernelMessageCallback>,
     pub resolve_at_start: Option<ResolveAtStart>,
     pub bridge_cell_token: Option<String>,
+    pub host_executor: Option<HostCellExecutor>,
+    pub package_root: Option<PackageRootResolver>,
 }
 pub struct KernelInterruptHandle {
     pub state_retained: EvalKernelFuture<'static, bool>,
     pub note: Option<String>,
 }
 pub trait EvalKernel: Send + Sync {
-    fn kernel_tools(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn maho_ext_api::ExtensionKernelTools>> { None }
+    fn kernel_tools(
+        self: std::sync::Arc<Self>,
+    ) -> Option<std::sync::Arc<dyn maho_ext_api::ExtensionKernelTools>> {
+        None
+    }
     fn run(&self, input: EvalKernelRunInput) -> EvalKernelFuture<'_, serde_json::Value>;
-    fn cancel_queued<'a>(&'a self, cell_id: &'a str, reason: &'a str) -> EvalKernelFuture<'a, bool>;
-    fn interrupt<'a>(&'a self, reason: &'a str, cell_id: Option<&'a str>) -> EvalKernelFuture<'a, KernelInterruptHandle>;
+    fn cancel_queued<'a>(&'a self, cell_id: &'a str, reason: &'a str)
+    -> EvalKernelFuture<'a, bool>;
+    fn interrupt<'a>(
+        &'a self,
+        reason: &'a str,
+        cell_id: Option<&'a str>,
+    ) -> EvalKernelFuture<'a, KernelInterruptHandle>;
     fn queue_snapshot(&self) -> (Option<String>, Vec<String>);
     fn deliver_tool_reply(&self, message: serde_json::Value) -> Result<(), String>;
     fn reset(&self) -> EvalKernelFuture<'_, ()>;
     fn close(&self) -> EvalKernelFuture<'_, ()>;
-    fn is_alive(&self) -> bool { true }
-    fn drain_pending(&self) -> Vec<EvalKernelRunInput> { Vec::new() }
+    fn is_alive(&self) -> bool {
+        true
+    }
+    fn drain_pending(&self) -> Vec<EvalKernelRunInput> {
+        Vec::new()
+    }
 }
 
 impl EvalKernel for crate::kernels::js::context_manager::JavaScriptKernel {
-    fn kernel_tools(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn maho_ext_api::ExtensionKernelTools>> { Some(self) }
-    fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {
-        Box::pin(async move {self.run_with_preludes(crate::kernels::shared::subprocess_contract::KernelRunInput {cell_id:input.cell_id,code:input.code,timeout_ms:input.timeout_ms},input.on_message,input.on_started,&input.preludes).await.map_err(|error|error.to_string())})
+    fn kernel_tools(
+        self: std::sync::Arc<Self>,
+    ) -> Option<std::sync::Arc<dyn maho_ext_api::ExtensionKernelTools>> {
+        Some(self)
     }
-    fn cancel_queued<'a>(&'a self,id:&'a str,reason:&'a str)->EvalKernelFuture<'a,bool> {Box::pin(async move {Ok(self.cancel_queued(id,reason).await)})}
-    fn interrupt<'a>(&'a self,reason:&'a str,id:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {
-        Box::pin(async move {let (retained,note)=self.interrupt(reason,id).await?;Ok(KernelInterruptHandle {state_retained:Box::pin(async move {Ok(retained)}),note})})
+    fn run(&self, input: EvalKernelRunInput) -> EvalKernelFuture<'_, serde_json::Value> {
+        Box::pin(async move {
+            self.run_eval(input)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
-    fn queue_snapshot(&self)->(Option<String>,Vec<String>) {self.queue_snapshot()}
-    fn deliver_tool_reply(&self,message:serde_json::Value)->Result<(),String> {self.deliver_tool_reply(message)}
-    fn reset(&self)->EvalKernelFuture<'_,()> {Box::pin(async move {self.reset().await.map_err(|error|error.to_string())})}
-    fn close(&self)->EvalKernelFuture<'_,()> {Box::pin(async move {self.close().await.map_err(|error|error.to_string())})}
+    fn cancel_queued<'a>(&'a self, id: &'a str, reason: &'a str) -> EvalKernelFuture<'a, bool> {
+        Box::pin(async move { Ok(self.cancel_queued(id, reason).await) })
+    }
+    fn interrupt<'a>(
+        &'a self,
+        reason: &'a str,
+        id: Option<&'a str>,
+    ) -> EvalKernelFuture<'a, KernelInterruptHandle> {
+        Box::pin(async move {
+            let (retained, note) = self.interrupt(reason, id).await?;
+            Ok(KernelInterruptHandle {
+                state_retained: Box::pin(async move { Ok(retained) }),
+                note,
+            })
+        })
+    }
+    fn queue_snapshot(&self) -> (Option<String>, Vec<String>) {
+        self.queue_snapshot()
+    }
+    fn deliver_tool_reply(&self, message: serde_json::Value) -> Result<(), String> {
+        self.deliver_tool_reply(message)
+    }
+    fn reset(&self) -> EvalKernelFuture<'_, ()> {
+        Box::pin(async move { self.reset().await.map_err(|error| error.to_string()) })
+    }
+    fn close(&self) -> EvalKernelFuture<'_, ()> {
+        Box::pin(async move { self.close().await.map_err(|error| error.to_string()) })
+    }
 }
 
 pub struct EvalDeadlineSeconds {
@@ -100,16 +163,38 @@ pub struct EvalDeadlineSeconds {
 impl Default for EvalDeadlineSeconds {
     fn default() -> Self {
         use crate::config::settings::*;
-        Self { run_budget_seconds:DEFAULT_RUN_BUDGET_SECONDS,detach_after_seconds:CodemodeSettings::default().cell_timeout_seconds.min(DEFAULT_FOREGROUND_WINDOW_SECONDS),foreground_window_seconds:DEFAULT_FOREGROUND_WINDOW_SECONDS,hard_limit_seconds:DEFAULT_HARD_LIMIT_SECONDS }
+        Self {
+            run_budget_seconds: DEFAULT_RUN_BUDGET_SECONDS,
+            detach_after_seconds: CodemodeSettings::default()
+                .cell_timeout_seconds
+                .min(DEFAULT_FOREGROUND_WINDOW_SECONDS),
+            foreground_window_seconds: DEFAULT_FOREGROUND_WINDOW_SECONDS,
+            hard_limit_seconds: DEFAULT_HARD_LIMIT_SECONDS,
+        }
     }
 }
 
-pub fn create_eval_input_schema(enabled: &crate::config::settings::Languages, deadlines: &EvalDeadlineSeconds) -> Result<serde_json::Value, &'static str> {
+pub fn create_eval_input_schema(
+    enabled: &crate::config::settings::Languages,
+    deadlines: &EvalDeadlineSeconds,
+) -> Result<serde_json::Value, &'static str> {
     use serde_json::json;
-    let languages:Vec<_>=enabled.js.then(||json!({"const":"js","type":"string"})).into_iter().collect();
-    if languages.is_empty() {return Err("eval requires at least one enabled language");}
-    let timeout_description=format!("Run budget in seconds for this cell's own execution (default {}s); time parked in host tool calls such as agent() or tool.* is not charged. When it runs out the cell is killed, and a js cell that cannot settle (a pending timer or Bun.$ command, a synchronous call) restarts its kernel and loses every global. Raise it only for a declared long run; a value above {}s also raises the wall-clock hard limit. It does not move the detach point.",deadlines.run_budget_seconds,deadlines.hard_limit_seconds);
-    let on_timeout_description=format!("'detach' (interactive default): the call returns after {}s of the cell's own work (a host tool call in flight can hold it up to the {}s foreground window) while the cell keeps running; completion arrives as a notification. 'error' (print/json default): the call blocks until the cell settles or a deadline kills it.",deadlines.detach_after_seconds,deadlines.foreground_window_seconds);
+    let languages: Vec<_> = enabled
+        .js
+        .then(|| json!({"const":"js","type":"string"}))
+        .into_iter()
+        .collect();
+    if languages.is_empty() {
+        return Err("eval requires at least one enabled language");
+    }
+    let timeout_description = format!(
+        "Run budget in seconds for this cell's own execution (default {}s); time parked in host tool calls such as agent() or tool.* is not charged. When it runs out the cell is killed, and a js cell that cannot settle (a pending timer or Bun.$ command, a synchronous call) restarts its kernel and loses every global. Raise it only for a declared long run; a value above {}s also raises the wall-clock hard limit. It does not move the detach point.",
+        deadlines.run_budget_seconds, deadlines.hard_limit_seconds
+    );
+    let on_timeout_description = format!(
+        "'detach' (interactive default): the call returns after {}s of the cell's own work (a host tool call in flight can hold it up to the {}s foreground window) while the cell keeps running; completion arrives as a notification. 'error' (print/json default): the call blocks until the cell settles or a deadline kills it.",
+        deadlines.detach_after_seconds, deadlines.foreground_window_seconds
+    );
     Ok(json!({"type":"object","properties":{
         "action":{"anyOf":[{"const":"run","type":"string"},{"const":"peek","type":"string"},{"const":"stop","type":"string"},{"const":"list","type":"string"}],"description":"Defaults to run. peek and stop require cell_id. list: live and recently settled cells."},
         "language":{"anyOf":languages},"code":{"type":"string","description":"Cell body, verbatim."},

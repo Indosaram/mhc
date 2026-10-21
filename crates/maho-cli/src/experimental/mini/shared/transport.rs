@@ -10,6 +10,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> JsonConnection<R, W> {
         Ok(())
     }
     pub async fn receive(&mut self) -> std::io::Result<Option<Value>> {
+        self.receive_typed().await
+    }
+    pub async fn receive_typed<T: serde::de::DeserializeOwned>(&mut self) -> std::io::Result<Option<T>> {
         if self.closed { return Ok(None); }
         loop {
             match self.input.read_until(b'\n', &mut self.buffered).await {

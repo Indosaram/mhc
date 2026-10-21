@@ -361,7 +361,9 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
     crate::cli::setup::register_builtin_apis();
     let context = BACKGROUND_CONTEXT.clone();
     let cwd = options.cwd.clone();
-    let runtime = ModelRuntime::create(model_runtime_options(&maho_core::config::get_agent_dir())).await;
+    let runtime = ModelRuntime::create(model_runtime_options(&maho_core::config::get_agent_dir()))
+        .await
+        .map_err(|error| error.to_string())?;
     let initial = find_initial_model(
         InitialModelOptions {
             cli_provider: None,
@@ -393,15 +395,15 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
 
     let publish_models: Arc<dyn Fn(ModelsEvent) + Send + Sync> = {
         let peer = peer.clone();
-        Arc::new(move |event: ModelsEvent| peer.emit(MODELS, event.into()))
+        Arc::new(move |event: ModelsEvent| peer.emit(&MODELS, event.into()))
     };
-    let models_service = Arc::new(ModelsService::new(runtime.clone(), publish_models).await);
+    let models_service = Arc::new(ModelsService::new(runtime.clone(), publish_models).await.map_err(|error| error.to_string())?);
 
     let publish_lane: LaneEventPublisher = {
         let peer = peer.clone();
         Arc::new(move |subscription_id: &str, to: &str, event: &maho_agent::harness::events::HarnessEvent| {
             let payload = LaneEvent { subscription_id: subscription_id.to_owned(), event: serde_json::Value::from(event) };
-            peer.emit_to(LANE, serde_json::to_value(payload).unwrap_or(Value::Null), to);
+            peer.emit_to(&LANE, serde_json::to_value(payload).unwrap_or(Value::Null), to);
         })
     };
     let lane_service = Arc::new(LaneService::new(LaneServiceOptions {
@@ -416,9 +418,9 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
         publish: publish_lane,
     }));
 
-    peer.provide(LANE, lane_handlers(lane_service.clone()));
-    peer.provide(MODELS, models_handlers(models_service.clone()));
-    peer.provide(WORKER, worker_handlers(session_id));
+    peer.provide(&LANE, lane_handlers(lane_service.clone()));
+    peer.provide(&MODELS, models_handlers(models_service.clone()));
+    peer.provide(&WORKER, worker_handlers(session_id));
 
     let recoveries = spawn_recoveries(&harness, &context).await?;
 

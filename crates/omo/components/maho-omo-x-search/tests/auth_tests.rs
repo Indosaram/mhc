@@ -1,10 +1,10 @@
 //! Port of omo-senpi `components/x-search/auth.test.ts` at latest `455dee62`.
 
+use maho_ext_api::{ExtensionFuture, ModelRegistry};
+use maho_omo_x_search::auth::{XAI_PROVIDER, has_xai_credential, resolve_xai_bearer};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
-use maho_ext_api::{ExtensionFuture, ModelRegistry};
-use maho_omo_x_search::auth::{has_xai_credential, resolve_xai_bearer, XAI_PROVIDER};
 
 struct MockModelRegistry {
     stored_cred_type: Option<maho_ai::auth::types::CredentialType>,
@@ -24,7 +24,10 @@ impl ModelRegistry for MockModelRegistry {
     fn has_configured_auth(&self, _model: &maho_ai::model::Model) -> bool {
         false
     }
-    fn get_api_key_for_provider<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Option<String>> {
+    fn get_api_key_for_provider<'a>(
+        &'a self,
+        _provider: &'a str,
+    ) -> ExtensionFuture<'a, Option<String>> {
         Box::pin(async { Ok(None) })
     }
     fn get_stored_credential_type(
@@ -62,6 +65,7 @@ fn make_registry(
     MockModelRegistry {
         stored_cred_type: stored,
         provider_auth: Some(Ok(api_key.map(|key| maho_ai::models::AuthResolution {
+            ambient: false,
             auth: maho_ai::models::ProviderAuthResult {
                 api_key: Some(key.to_string()),
                 ..Default::default()

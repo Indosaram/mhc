@@ -124,21 +124,43 @@ pub struct CanonicalizationDiagnostics {
     pub rule_id: Option<String>,
 }
 
+fn serialize_source<S: serde::Serializer, T: Serialize>(
+    source: &T,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    struct Source<'a, T> {
+        source: &'a T,
+    }
+    Source { source }.serialize(serializer)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCapabilitiesDiagnostics {
     pub resolution_mode: ResolutionMode,
     pub canonicalization: CanonicalizationDiagnostics,
+    #[serde(serialize_with = "serialize_source")]
     pub snapshot: SnapshotSource,
+    #[serde(serialize_with = "serialize_source")]
     pub family: FamilySource,
+    #[serde(serialize_with = "serialize_source")]
     pub variants: VariantsSource,
+    #[serde(serialize_with = "serialize_source")]
     pub reasoning_efforts: ReasoningEffortsSource,
+    #[serde(serialize_with = "serialize_source")]
     pub reasoning: CapabilitySource,
+    #[serde(serialize_with = "serialize_source")]
     pub supports_thinking: CapabilitySource,
+    #[serde(serialize_with = "serialize_source")]
     pub supports_temperature: CapabilitySource,
+    #[serde(serialize_with = "serialize_source")]
     pub supports_top_p: CapabilitySource,
+    #[serde(serialize_with = "serialize_source")]
     pub max_output_tokens: CapabilitySource,
+    #[serde(serialize_with = "serialize_source")]
     pub tool_call: CapabilitySource,
+    #[serde(serialize_with = "serialize_source")]
     pub modalities: CapabilitySource,
 }
 
@@ -149,15 +171,25 @@ pub struct ModelCapabilities {
     pub requested_model_id: String,
     #[serde(rename = "canonicalModelID")]
     pub canonical_model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub variants: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_efforts: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_temperature: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_top_p: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub modalities: Option<SnapshotModalities>,
     pub diagnostics: ModelCapabilitiesDiagnostics,
 }
@@ -181,4 +213,57 @@ pub struct ModelCapabilityOverride {
     pub supports_thinking: Option<bool>,
     pub supports_temperature: Option<bool>,
     pub supports_top_p: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_capabilities_omit_unset_values_and_wrap_diagnostic_sources() {
+        let result = crate::get_model_capabilities(GetModelCapabilitiesInput {
+            provider_id: "custom", model_id: "unknown", ..Default::default()
+        });
+        let serialized = serde_json::to_value(result).expect("capabilities serialize");
+        assert_eq!(serialized, json!({
+            "requestedModelID": "unknown",
+            "canonicalModelID": "unknown",
+            "diagnostics": {
+                "resolutionMode": "unknown",
+                "canonicalization": {"source": "canonical"},
+                "snapshot": {"source": "none"},
+                "family": {"source": "none"},
+                "variants": {"source": "none"},
+                "reasoningEfforts": {"source": "none"},
+                "reasoning": {"source": "none"},
+                "supportsThinking": {"source": "none"},
+                "supportsTemperature": {"source": "none"},
+                "supportsTopP": {"source": "none"},
+                "maxOutputTokens": {"source": "none"},
+                "toolCall": {"source": "none"},
+                "modalities": {"source": "none"}
+            }
+        }));
+    }
+
+    #[test]
+    fn serialization_retains_false_zero_and_empty_capabilities() {
+        let runtime = json!({"reasoning": false, "temperature": false, "topP": false,
+            "toolCall": false});
+        let mut result = crate::get_model_capabilities(GetModelCapabilitiesInput {
+            provider_id: "custom", model_id: "unknown", runtime_model: Some(&runtime), ..Default::default()
+        });
+        result.max_output_tokens = Some(0);
+        result.variants = Some(Vec::new());
+        let serialized = serde_json::to_value(result).expect("capabilities serialize");
+        assert_eq!(serialized["reasoning"], false);
+        assert_eq!(serialized["supportsThinking"], false);
+        assert_eq!(serialized["supportsTemperature"], false);
+        assert_eq!(serialized["supportsTopP"], false);
+        assert_eq!(serialized["toolCall"], false);
+        assert_eq!(serialized["maxOutputTokens"], 0);
+        assert_eq!(serialized["variants"], json!([]));
+        assert_eq!(serialized["diagnostics"]["reasoning"], json!({"source": "runtime"}));
+    }
 }

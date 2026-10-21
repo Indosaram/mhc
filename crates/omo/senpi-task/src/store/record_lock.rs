@@ -44,7 +44,10 @@ fn acquire_lock(lock_path: &Path) -> Result<(), StoreError> {
                 writeln!(file, "{}\n{now_ms}", std::process::id())?;
                 return Ok(());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    || is_occupied_windows_lock(&error, lock_path) =>
+            {
                 if is_stale_lock(lock_path) {
                     remove_if_present(lock_path)?;
                     continue;
@@ -58,6 +61,25 @@ fn acquire_lock(lock_path: &Path) -> Result<(), StoreError> {
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+fn is_occupied_windows_lock(error: &std::io::Error, lock_path: &Path) -> bool {
+    if !cfg!(windows) || !is_windows_sharing_error(error) {
+        return false;
+    }
+    // A released lock can remain delete-pending while a metadata/scanner handle closes.
+    // CREATE_NEW then reports access denied rather than AlreadyExists. As in upstream
+    // publishLock/lockNameOccupied, retry only when the name is still occupied; an actual
+    // permission failure on an absent name must propagate.
+    match std::fs::metadata(lock_path) {
+        Ok(_) => true,
+        Err(error) => is_windows_sharing_error(&error),
+    }
+}
+
+fn is_windows_sharing_error(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(32 | 33))
 }
 
 fn is_stale_lock(lock_path: &Path) -> bool {

@@ -7,7 +7,7 @@ async fn native_model_registry_projects_reasoning_and_validates_integer_limits()
     let model = maho_ai::providers::all::get_builtin_models("openai").remove(0);
     let id = model.id.clone();
     let mut registry = MethodRegistry::default();
-    register_model_list_method(&mut registry, Arc::new(move || vec![model.clone()]));
+    register_model_list_method(&mut registry, Arc::new(move || Ok(vec![model.clone()])));
     let connection = RegistryConnection { initialized:true, ..Default::default() };
     let response = registry.dispatch(connection.clone(),json!({"id":1,"method":"model/list","params":{"limit":1}})).await;
     assert_eq!(response["result"]["data"][0]["model"],id);
@@ -20,7 +20,7 @@ async fn native_model_registry_projects_reasoning_and_validates_integer_limits()
 #[tokio::test]
 async fn remote_clients_validate_before_reporting_unavailability() {
     let mut registry = MethodRegistry::default();
-    register_model_list_method(&mut registry, Arc::new(Vec::new));
+    register_model_list_method(&mut registry, Arc::new(|| Ok(Vec::new())));
     let connection = RegistryConnection { initialized:true, experimental_api:true, ..Default::default() };
     for params in [json!(null), json!({}), json!({"environmentId":"e","limit":1.5}), json!({"environmentId":"e","order":"invalid"})] {
         let response = registry.dispatch(connection.clone(),json!({"id":1,"method":"remoteControl/client/list","params":params})).await;
@@ -29,6 +29,16 @@ async fn remote_clients_validate_before_reporting_unavailability() {
     let response = registry.dispatch(connection,json!({"id":2,"method":"remoteControl/client/list","params":{"environmentId":"e"}})).await;
     assert_eq!(response["error"]["code"],-32603);
     assert_eq!(response["error"]["message"],"remote control is unavailable for this app-server");
+}
+
+#[tokio::test]
+async fn model_list_propagates_loader_failure() {
+    use maho_server::app_server::registry::JsonRpcError;
+    let mut registry = MethodRegistry::default();
+    register_model_list_method(&mut registry, Arc::new(|| Err(JsonRpcError::new(-32603, "model runtime construction failed"))));
+    let response = registry.dispatch(RegistryConnection { initialized:true, ..Default::default() },json!({"id":1,"method":"model/list","params":{}})).await;
+    assert_eq!(response["error"]["code"],-32603);
+    assert!(response.get("result").is_none());
 }
 
 #[tokio::test]

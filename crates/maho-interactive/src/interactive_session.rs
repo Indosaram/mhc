@@ -572,7 +572,7 @@ mod tests {
 
     fn local_session(directory: &tempfile::TempDir) -> Arc<AgentSession> {
         let cwd = directory.path().to_string_lossy().into_owned();
-        let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() });
+        let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
         let model = provider.get_model(Some("faux-1")).expect("model");
         provider.set_responses(vec![faux_assistant_message("hello", FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]);
         let streams = faux_streams(provider.core.clone());
@@ -586,7 +586,7 @@ mod tests {
             auth_path: Some(directory.path().join("auth.json")),
             providers: Some(vec![provider.provider.clone()]),
             ..Default::default()
-        });
+        }).expect("valid model runtime");
         Arc::new(
             AgentSession::new(AgentSessionConfig {
                 agent: maho_agent::Agent::new(maho_agent::AgentOptions {

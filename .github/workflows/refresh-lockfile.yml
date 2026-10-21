@@ -1,0 +1,29 @@
+name: refresh-lockfile
+
+on:
+  push:
+    branches: ["lockfile/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_NET_RETRY: "10"
+    steps:
+      - uses: actions/checkout@v7
+      - name: resolve final workspace dependencies
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          cargo metadata --format-version 1 > "$RUNNER_TEMP/workspace-metadata.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: resolved-lockfile
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 7

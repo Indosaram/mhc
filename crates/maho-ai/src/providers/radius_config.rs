@@ -101,6 +101,8 @@ pub fn get_radius_models_from_config(provider_id: &str, config: &RadiusGatewayCo
 
 fn typed_radius_model(provider_id: &str, config: &RadiusGatewayConfig, model: &RadiusGatewayModel) -> Model {
     Model {
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         id: model.id.clone(),
         name: model.name.clone(),
         api: "pi-messages".to_owned(),

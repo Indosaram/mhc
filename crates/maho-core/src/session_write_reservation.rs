@@ -16,7 +16,7 @@ pub fn install_session_write_reservation(reservation: impl Fn(&str) + Send + Syn
 /// Synchronous SessionManager entry points must obtain the host grant before touching a writer.
 pub fn reserve_session_write(path: &str) {
     if let Some(reserve) = RESERVE.get() {
-        reserve(path);
+        reserve(&crate::session_manager::resolve_moved_session_path(path));
     }
 }
 
@@ -59,6 +59,7 @@ pub fn unregister_session_writer(owner: &Arc<dyn SessionWriterOwner>) {
 
 /// Whether a persisted writer other than self still owns path; collected writers are pruned here.
 pub fn has_other_live_session_writer(path: &str, self_owner: &Arc<dyn SessionWriterOwner>) -> bool {
+    let path = crate::session_manager::resolve_moved_session_path(path);
     let mut writers = lock();
     writers.retain(|weak| weak.strong_count() > 0);
     for weak in writers.iter() {
@@ -66,7 +67,7 @@ pub fn has_other_live_session_writer(path: &str, self_owner: &Arc<dyn SessionWri
         if same_owner(&owner, self_owner) {
             continue;
         }
-        if owner.is_persisted() && owner.get_session_file().as_deref() == Some(path) {
+        if owner.is_persisted() && owner.get_session_file().is_some_and(|file| crate::session_manager::resolve_moved_session_path(&file) == path) {
             return true;
         }
     }
@@ -83,7 +84,7 @@ pub fn live_session_write_paths() -> Vec<String> {
         if owner.is_persisted()
             && let Some(path) = owner.get_session_file()
         {
-            paths.push(path);
+            paths.push(crate::session_manager::resolve_moved_session_path(&path));
         }
     }
     paths

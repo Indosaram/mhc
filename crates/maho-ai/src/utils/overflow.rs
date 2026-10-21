@@ -5,41 +5,74 @@ use regex::{Regex, RegexBuilder};
 use std::sync::LazyLock;
 
 fn build(pattern: &str, case_insensitive: bool) -> Regex {
-    RegexBuilder::new(pattern).case_insensitive(case_insensitive).build().unwrap_or_else(|e| panic!("overflow pattern: {e}"))
+    RegexBuilder::new(pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+        .unwrap_or_else(|e| panic!("overflow pattern: {e}"))
 }
 
 /// (pattern, case-insensitive) pairs in TS order.
 const OVERFLOW_SOURCES: &[(&str, bool)] = &[
     (r"^Context window exhausted: ", false),
-    (r"^The conversation is too long to resend \(about \d+ tokens, limit \d+\)", false),
+    (
+        r"^The conversation is too long to resend \(about \d+ tokens, limit \d+\)",
+        false,
+    ),
     (r"prompt (?:is )?too long", true),
     (r"prompt exceeds max length", true),
     (r"request_too_large", true),
     (r"input is too long for requested model", true),
-    (r"exceeds (?:(?:the|this) )?(?:model'?s )?context window", true),
-    (r"exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))", true),
+    (
+        r"exceeds (?:(?:the|this) )?(?:model'?s )?context window",
+        true,
+    ),
+    (
+        r"exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))",
+        true,
+    ),
     (r"input token count.*exceeds the maximum", true),
     (r"maximum prompt length is \d+", true),
     (r"reduce the length of the messages", true),
     (r"maximum context length is \d+ tokens", true),
-    (r"exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?", true),
-    (r"input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)", true),
-    (r"model_max_prompt_tokens_exceeded|exceeds the limit of \d+", true),
+    (
+        r"exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?",
+        true,
+    ),
+    (
+        r"input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)",
+        true,
+    ),
+    (
+        r"model_max_prompt_tokens_exceeded|exceeds the limit of \d+",
+        true,
+    ),
     (r"exceeds the available context size", true),
     (r"greater than the context length", true),
     (r"context window exceeds limit", true),
     (r"exceeded model token limit", true),
     (r"too large for model with \d+ maximum context length", true),
-    (r"prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?", true),
+    (
+        r"prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?",
+        true,
+    ),
     (r"model_context_window_exceeded", true),
     (r"prompt too long; exceeded (?:max )?context length", true),
     (r"range of input length should be", true),
     (r"context[_ ]length[_ ]exceeded", true),
     (r"too many tokens", true),
     (r"token limit exceeded", true),
-    (r"(?:request[ _])?(?:body|entity|payload)[_ ]too[_ ]large", true),
-    (r"Request payload is \d+ (?:bytes, over the \d+ byte|tokens, over the \d+ token) limit Kiro accepts\.", false),
-    (r"Model context limit reached\. Conversation size exceeds model capacity\.", false),
+    (
+        r"(?:request[ _])?(?:body|entity|payload)[_ ]too[_ ]large",
+        true,
+    ),
+    (
+        r"Request payload is \d+ (?:bytes, over the \d+ byte|tokens, over the \d+ token) limit Kiro accepts\.",
+        false,
+    ),
+    (
+        r"Model context limit reached\. Conversation size exceeds model capacity\.",
+        false,
+    ),
 ];
 
 const NON_OVERFLOW_SOURCES: &[(&str, bool)] = &[
@@ -56,13 +89,25 @@ const NON_OVERFLOW_SOURCES: &[(&str, bool)] = &[
     (r"overloaded", true),
 ];
 
-static OVERFLOW_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| OVERFLOW_SOURCES.iter().map(|(p, i)| build(p, *i)).collect());
-static NON_OVERFLOW_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| NON_OVERFLOW_SOURCES.iter().map(|(p, i)| build(p, *i)).collect());
-static RESOURCE_EXHAUSTED_PATTERN: LazyLock<Regex> = LazyLock::new(|| build(r"resource.?exhausted", true));
-static CEREBRAS_BODYLESS_OVERFLOW_PATTERN: LazyLock<Regex> = LazyLock::new(|| build(r"^4(?:00|13)\s*(?:status code)?\s*\(no body\)", true));
+static OVERFLOW_PATTERNS: LazyLock<Vec<Regex>> =
+    LazyLock::new(|| OVERFLOW_SOURCES.iter().map(|(p, i)| build(p, *i)).collect());
+static NON_OVERFLOW_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    NON_OVERFLOW_SOURCES
+        .iter()
+        .map(|(p, i)| build(p, *i))
+        .collect()
+});
+static RESOURCE_EXHAUSTED_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| build(r"resource.?exhausted", true));
+static CEREBRAS_BODYLESS_OVERFLOW_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| build(r"^4(?:00|13)\s*(?:status code)?\s*\(no body\)", true));
 
 fn token_count(usage: &Usage) -> u64 {
-    if usage.total_tokens != 0 { usage.total_tokens } else { usage.input + usage.output + usage.cache_read + usage.cache_write }
+    if usage.total_tokens != 0 {
+        usage.total_tokens
+    } else {
+        usage.input + usage.output + usage.cache_read + usage.cache_write
+    }
 }
 
 pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u64>) -> bool {
@@ -73,29 +118,39 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u6
         if !non_overflow && OVERFLOW_PATTERNS.iter().any(|p| p.is_match(error)) {
             return true;
         }
-        if !non_overflow && message.provider == "cerebras" && CEREBRAS_BODYLESS_OVERFLOW_PATTERN.is_match(error) {
+        if !non_overflow
+            && message.provider == "cerebras"
+            && CEREBRAS_BODYLESS_OVERFLOW_PATTERN.is_match(error)
+        {
             return true;
         }
         let tokens = token_count(&message.usage);
         if !non_overflow
             && tokens > 0
             && RESOURCE_EXHAUSTED_PATTERN.is_match(error)
-            && context_window.is_none_or(|window| window == 0 || tokens as f64 >= window as f64 * 0.5)
+            && context_window
+                .is_none_or(|window| window == 0 || tokens as f64 >= window as f64 * 0.5)
         {
             return true;
         }
     }
-    let Some(window) = context_window.filter(|w| *w > 0) else { return false };
+    let Some(window) = context_window.filter(|w| *w > 0) else {
+        return false;
+    };
     let input_tokens = message.usage.input + message.usage.cache_read;
     match message.stop_reason {
         StopReason::Stop => input_tokens > window,
-        StopReason::Length => message.usage.output == 0 && input_tokens as f64 >= window as f64 * 0.99,
+        StopReason::Length => {
+            message.usage.output == 0 && input_tokens as f64 >= window as f64 * 0.99
+        }
         _ => false,
     }
 }
 
 pub fn is_recoverable_length(message: &AssistantMessage, desired_max_output: u64) -> bool {
-    message.stop_reason == StopReason::Length && desired_max_output > 0 && message.usage.output < desired_max_output
+    message.stop_reason == StopReason::Length
+        && desired_max_output > 0
+        && message.usage.output < desired_max_output
 }
 
 pub fn get_overflow_patterns() -> Vec<Regex> {
@@ -121,7 +176,11 @@ impl<'a> CursorExhaustionProbe<'a> {
             StopReason::Pending => "pending",
             StopReason::Deferred => "deferred",
         };
-        Self { stop_reason: Some(stop_reason), error_message: message.error_message.as_deref(), usage: Some(message.usage) }
+        Self {
+            stop_reason: Some(stop_reason),
+            error_message: message.error_message.as_deref(),
+            usage: Some(message.usage),
+        }
     }
 
     fn tokens(&self) -> u64 {
@@ -129,17 +188,27 @@ impl<'a> CursorExhaustionProbe<'a> {
     }
 
     fn is_resource_exhausted_error(&self) -> bool {
-        self.stop_reason == Some("error") && RESOURCE_EXHAUSTED_PATTERN.is_match(self.error_message.unwrap_or_default())
+        self.stop_reason == Some("error")
+            && RESOURCE_EXHAUSTED_PATTERN.is_match(self.error_message.unwrap_or_default())
     }
 }
 
-pub fn is_cursor_payload_resource_exhausted(message: &CursorExhaustionProbe<'_>, _estimate_tokens: u64) -> bool {
+pub fn is_cursor_payload_resource_exhausted(
+    message: &CursorExhaustionProbe<'_>,
+    _estimate_tokens: u64,
+) -> bool {
     message.is_resource_exhausted_error() && message.tokens() == 0
 }
 
-pub fn is_cursor_quota_resource_exhausted(message: &CursorExhaustionProbe<'_>, context_window: u64) -> bool {
+pub fn is_cursor_quota_resource_exhausted(
+    message: &CursorExhaustionProbe<'_>,
+    context_window: u64,
+) -> bool {
     let tokens = message.tokens();
-    message.is_resource_exhausted_error() && context_window > 0 && tokens > 0 && (tokens as f64) < context_window as f64 * 0.5
+    message.is_resource_exhausted_error()
+        && context_window > 0
+        && tokens > 0
+        && (tokens as f64) < context_window as f64 * 0.5
 }
 
 pub fn is_cursor_zero_token_resource_exhausted(message: &CursorExhaustionProbe<'_>) -> bool {
@@ -161,7 +230,11 @@ pub trait CursorCompactionSettings: Clone {
     fn with_cursor_overflow_overrides(self) -> Self;
 }
 
-pub fn cursor_overflow_compaction_settings<T: CursorCompactionSettings>(settings: T, provider: Option<&str>, reason: Option<&str>) -> T {
+pub fn cursor_overflow_compaction_settings<T: CursorCompactionSettings>(
+    settings: T,
+    provider: Option<&str>,
+    reason: Option<&str>,
+) -> T {
     if reason == Some("overflow") && matches!(provider, Some("cursor" | "cursor-cli-oauth")) {
         settings.with_cursor_overflow_overrides()
     } else {
@@ -177,6 +250,10 @@ mod tests {
     /// with zero usage and the given error text.
     fn error_message(error_message: &str) -> AssistantMessage {
         AssistantMessage {
+            error_cause: None,
+            prompt_cache_diagnostics: None,
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "openai-completions".into(),
             provider: "ollama".into(),
@@ -206,8 +283,14 @@ mod tests {
         ] {
             assert!(is_context_overflow(&error_message(text), None), "{text}");
         }
-        assert!(!is_context_overflow(&error_message("rate limit: model_max_prompt_tokens_exceeded"), None));
-        assert!(!is_context_overflow(&error_message("Anthropic cold-seed resend limit exceeded"), None));
+        assert!(!is_context_overflow(
+            &error_message("rate limit: model_max_prompt_tokens_exceeded"),
+            None
+        ));
+        assert!(!is_context_overflow(
+            &error_message("Anthropic cold-seed resend limit exceeded"),
+            None
+        ));
     }
 
     struct LengthStopOptions {
@@ -220,6 +303,10 @@ mod tests {
     /// Port of `createLengthStopMessage` (overflow.test.ts).
     fn length_stop_message(options: LengthStopOptions) -> AssistantMessage {
         AssistantMessage {
+            error_cause: None,
+            prompt_cache_diagnostics: None,
+            thinking_level: None,
+            provider_diagnostic: None,
             content: Vec::new(),
             api: "openai-completions".into(),
             provider: "test-provider".into(),
@@ -235,7 +322,10 @@ mod tests {
                 cache_write: options.cache_write,
                 cache_write_1h: None,
                 reasoning: None,
-                total_tokens: options.input + options.cache_read + options.cache_write + options.output,
+                total_tokens: options.input
+                    + options.cache_read
+                    + options.cache_write
+                    + options.output,
                 cost: Default::default(),
             },
             stop_reason: StopReason::Length,
@@ -258,31 +348,41 @@ mod tests {
         let cases: &[(&str, AssistantMessage, Option<u64>, bool)] = &[
             (
                 "detects the local context exhaustion guard before any provider call",
-                error_message("Context window exhausted: the conversation is estimated at 995154 of 1000000 tokens, leaving fewer than 1024 tokens for a response. Compact the conversation, enable auto-compaction, or start a new session before retrying."),
+                error_message(
+                    "Context window exhausted: the conversation is estimated at 995154 of 1000000 tokens, leaving fewer than 1024 tokens for a response. Compact the conversation, enable auto-compaction, or start a new session before retrying.",
+                ),
                 Some(1_000_000),
                 true,
             ),
             (
                 "detects explicit Ollama prompt-too-long errors",
-                error_message("400 `prompt too long; exceeded max context length by 100918 tokens`"),
+                error_message(
+                    "400 `prompt too long; exceeded max context length by 100918 tokens`",
+                ),
                 Some(32768),
                 true,
             ),
             (
                 "detects Together AI context length errors",
-                error_message("400 The input (516368 tokens) is longer than the model's context length (262144 tokens)."),
+                error_message(
+                    "400 The input (516368 tokens) is longer than the model's context length (262144 tokens).",
+                ),
                 Some(262144),
                 true,
             ),
             (
                 "detects LiteLLM-wrapped OpenAI maximum context length errors",
-                error_message("Error: 503 litellm.ServiceUnavailableError: litellm.MidStreamFallbackError: litellm.APIConnectionError: APIConnectionError: OpenAIException - Requested token count exceeds the model's maximum context length of 131072 tokens."),
+                error_message(
+                    "Error: 503 litellm.ServiceUnavailableError: litellm.MidStreamFallbackError: litellm.APIConnectionError: APIConnectionError: OpenAIException - Requested token count exceeds the model's maximum context length of 131072 tokens.",
+                ),
                 Some(131072),
                 true,
             ),
             (
                 "detects OpenAI-compatible parenthesized maximum context length errors",
-                error_message("Error: 400 Input length (265330) exceeds model's maximum context length (262144)."),
+                error_message(
+                    "Error: 400 Input length (265330) exceeds model's maximum context length (262144).",
+                ),
                 Some(262144),
                 true,
             ),
@@ -306,31 +406,41 @@ mod tests {
             ),
             (
                 "detects OpenRouter Poolside maximum allowed input length errors",
-                error_message("Provider returned error: Input length 131393 exceeds the maximum allowed input length of 131040 tokens."),
+                error_message(
+                    "Provider returned error: Input length 131393 exceeds the maximum allowed input length of 131040 tokens.",
+                ),
                 Some(131072),
                 true,
             ),
             (
                 "detects DS4 configured context size errors",
-                error_message("400 Prompt has 256468 tokens, but the configured context size is 256000 tokens"),
+                error_message(
+                    "400 Prompt has 256468 tokens, but the configured context size is 256000 tokens",
+                ),
                 Some(256000),
                 true,
             ),
             (
                 "detects DS4 configured context size errors",
-                error_message("Prompt has 5,958,968 tokens, but the configured context size is 256,000 tokens"),
+                error_message(
+                    "Prompt has 5,958,968 tokens, but the configured context size is 256,000 tokens",
+                ),
                 Some(256000),
                 true,
             ),
             (
                 "detects gateway 413 body-size rejections as byte-size overflow (OpenAI-style body_too_large)",
-                error_message(r#"413: {"message":"Request body too large","type":"invalid_request_error","code":"body_too_large"}"#),
+                error_message(
+                    r#"413: {"message":"Request body too large","type":"invalid_request_error","code":"body_too_large"}"#,
+                ),
                 Some(200000),
                 true,
             ),
             (
                 "detects gateway 413 body-size rejections as byte-size overflow",
-                error_message(r#"413: {"message":"Request Entity Too Large","type":"AI_APICallError","param":{"error":"Request Entity Too Large","statusCode":413,"name":"AI_APICallError","message":"Request Entity Too Large","isRetryable":false,"type":"AI_APICallError"}}"#),
+                error_message(
+                    r#"413: {"message":"Request Entity Too Large","type":"AI_APICallError","param":{"error":"Request Entity Too Large","statusCode":413,"name":"AI_APICallError","message":"Request Entity Too Large","isRetryable":false,"type":"AI_APICallError"}}"#,
+                ),
                 Some(200000),
                 true,
             ),
@@ -342,37 +452,49 @@ mod tests {
             ),
             (
                 "detects kiro-lb local payload guards across both route wrappers and units",
-                error_message(r#"400 {"type":"error","error":{"type":"invalid_request_error","message":"Request payload is 1095225 bytes, over the 1085435 byte limit Kiro accepts. Shorten the conversation or send fewer tools."}}"#),
+                error_message(
+                    r#"400 {"type":"error","error":{"type":"invalid_request_error","message":"Request payload is 1095225 bytes, over the 1085435 byte limit Kiro accepts. Shorten the conversation or send fewer tools."}}"#,
+                ),
                 Some(666667),
                 true,
             ),
             (
                 "detects kiro-lb local payload guards across both route wrappers and units (OpenAI tokens)",
-                error_message(r#"400 {"detail":"Request payload is 800001 tokens, over the 800000 token limit Kiro accepts."}"#),
+                error_message(
+                    r#"400 {"detail":"Request payload is 800001 tokens, over the 800000 token limit Kiro accepts."}"#,
+                ),
                 Some(666667),
                 true,
             ),
             (
                 "detects Kiro upstream context overflow enhanced by kiro-lb",
-                error_message(r#"400 {"error":{"type":"kiro_api_error","message":"Model context limit reached. Conversation size exceeds model capacity."}}"#),
+                error_message(
+                    r#"400 {"error":{"type":"kiro_api_error","message":"Model context limit reached. Conversation size exceeds model capacity."}}"#,
+                ),
                 Some(666667),
                 true,
             ),
             (
                 "rejects malformed or unrelated Kiro-like payload-size prose",
-                error_message("Request payload is 1,,225 bytes, over the 1,085 byte limit Kiro accepts."),
+                error_message(
+                    "Request payload is 1,,225 bytes, over the 1,085 byte limit Kiro accepts.",
+                ),
                 None,
                 false,
             ),
             (
                 "rejects malformed or unrelated Kiro-like payload-size prose",
-                error_message("Request payload is 1,225 bytes, over the 1,085 byte limit Kiro accepts."),
+                error_message(
+                    "Request payload is 1,225 bytes, over the 1,085 byte limit Kiro accepts.",
+                ),
                 None,
                 false,
             ),
             (
                 "rejects malformed or unrelated Kiro-like payload-size prose",
-                error_message("Payload 1095225 bytes exceeds the 1085435 byte limit; AUTO_TRIM_PAYLOAD is disabled"),
+                error_message(
+                    "Payload 1095225 bytes exceeds the 1085435 byte limit; AUTO_TRIM_PAYLOAD is disabled",
+                ),
                 None,
                 false,
             ),
@@ -390,7 +512,9 @@ mod tests {
             ),
             (
                 "does not treat Bedrock throttling 'Too many tokens' as overflow",
-                error_message("Throttling error: Too many tokens, please wait before trying again."),
+                error_message(
+                    "Throttling error: Too many tokens, please wait before trying again.",
+                ),
                 Some(200000),
                 false,
             ),
@@ -493,7 +617,8 @@ mod tests {
     }
 
     #[test]
-    fn preserves_legacy_token_bearing_resource_exhausted_overflow_detection_without_a_context_window() {
+    fn preserves_legacy_token_bearing_resource_exhausted_overflow_detection_without_a_context_window()
+     {
         let mut message = error_message("Connect error resource_exhausted");
         message.usage.total_tokens = 12;
         assert!(is_context_overflow(&message, None));
@@ -504,22 +629,34 @@ mod tests {
         let mut message = error_message("Connect error resource_exhausted: Error");
         message.usage.total_tokens = 178_626;
         assert!(!is_context_overflow(&message, Some(1_048_576)));
-        assert!(is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&message), 1_048_576));
+        assert!(is_cursor_quota_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&message),
+            1_048_576
+        ));
     }
 
     #[test]
     fn does_not_identify_cursor_context_overflow_as_usage_pool_exhaustion() {
         let mut message = error_message("Connect error resource_exhausted: Error");
         message.usage.total_tokens = 600_000;
-        assert!(!is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&message), 1_048_576));
+        assert!(!is_cursor_quota_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&message),
+            1_048_576
+        ));
     }
 
     #[test]
     fn does_not_identify_zero_token_or_non_resource_exhausted_errors_as_usage_pool_exhaustion() {
         let zero_token = error_message("Connect error resource_exhausted: Error");
         let non_resource_exhausted = error_message("Connect error unavailable");
-        assert!(!is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&zero_token), 1_048_576));
-        assert!(!is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&non_resource_exhausted), 1_048_576));
+        assert!(!is_cursor_quota_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&zero_token),
+            1_048_576
+        ));
+        assert!(!is_cursor_quota_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&non_resource_exhausted),
+            1_048_576
+        ));
     }
 
     #[test]
@@ -530,37 +667,67 @@ mod tests {
 
     #[test]
     fn detects_xiaomi_style_overflow_length_stop_with_zero_output_and_filled_context() {
-        let message = length_stop_message(LengthStopOptions { input: 58, cache_read: 1_048_512, output: 0, cache_write: 0 });
+        let message = length_stop_message(LengthStopOptions {
+            input: 58,
+            cache_read: 1_048_512,
+            output: 0,
+            cache_write: 0,
+        });
         assert!(is_context_overflow(&message, Some(1_048_576)));
     }
 
     #[test]
     fn treats_a_length_stop_below_the_desired_output_limit_as_recoverable() {
-        let message = length_stop_message(LengthStopOptions { input: 3, cache_read: 253_584, cache_write: 25_554, output: 16 });
+        let message = length_stop_message(LengthStopOptions {
+            input: 3,
+            cache_read: 253_584,
+            cache_write: 25_554,
+            output: 16,
+        });
         assert!(is_recoverable_length(&message, 128_000));
     }
 
     #[test]
     fn does_not_recover_a_length_stop_that_reached_the_desired_output_limit() {
-        let message = length_stop_message(LengthStopOptions { input: 4062, cache_read: 0, cache_write: 0, output: 1024 });
+        let message = length_stop_message(LengthStopOptions {
+            input: 4062,
+            cache_read: 0,
+            cache_write: 0,
+            output: 1024,
+        });
         assert!(!is_recoverable_length(&message, 1024));
     }
 
     #[test]
     fn treats_zero_output_length_stops_as_recoverable_without_context_metadata() {
-        let message = length_stop_message(LengthStopOptions { input: 100, cache_read: 0, cache_write: 0, output: 0 });
+        let message = length_stop_message(LengthStopOptions {
+            input: 100,
+            cache_read: 0,
+            cache_write: 0,
+            output: 0,
+        });
         assert!(is_recoverable_length(&message, 128_000));
     }
 
     #[test]
     fn does_not_treat_normal_length_stops_with_output_as_context_overflow() {
-        let message = length_stop_message(LengthStopOptions { input: 1000, cache_read: 0, cache_write: 0, output: 4096 });
+        let message = length_stop_message(LengthStopOptions {
+            input: 1000,
+            cache_read: 0,
+            cache_write: 0,
+            output: 4096,
+        });
         assert!(!is_context_overflow(&message, Some(200_000)));
     }
 
     #[test]
     fn does_not_treat_zero_output_length_stops_far_below_context_as_context_overflow() {
-        let message = length_stop_message(LengthStopOptions { input: 100, cache_read: 0, cache_write: 0, output: 0 });
+        let message = length_stop_message(LengthStopOptions {
+            input: 100,
+            cache_read: 0,
+            cache_write: 0,
+            output: 0,
+        });
         assert!(!is_context_overflow(&message, Some(200_000)));
     }
 
@@ -573,14 +740,29 @@ mod tests {
     fn cursor_resource_exhaustion_helpers() {
         let zero = error_message("resource_exhausted");
         let probe = CursorExhaustionProbe::from_message(&zero);
-        assert!(is_cursor_zero_token_resource_exhausted(&probe) && is_cursor_payload_resource_exhausted(&probe, 5));
+        assert!(
+            is_cursor_zero_token_resource_exhausted(&probe)
+                && is_cursor_payload_resource_exhausted(&probe, 5)
+        );
         let quota = error_message("resource exhausted");
         let mut quota = quota;
         quota.usage.total_tokens = 100;
-        assert!(is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&quota), 1000));
-        assert!(!is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&quota), 100));
-        assert!(should_skip_provider_fallback_for_cursor_zero_re(Some(true)) && !should_skip_provider_fallback_for_cursor_zero_re(None));
-        assert!(should_retry_overflow_without_compact(false, "nothing to compact") && !should_retry_overflow_without_compact(true, "Nothing to compact"));
+        assert!(is_cursor_quota_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&quota),
+            1000
+        ));
+        assert!(!is_cursor_quota_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&quota),
+            100
+        ));
+        assert!(
+            should_skip_provider_fallback_for_cursor_zero_re(Some(true))
+                && !should_skip_provider_fallback_for_cursor_zero_re(None)
+        );
+        assert!(
+            should_retry_overflow_without_compact(false, "nothing to compact")
+                && !should_retry_overflow_without_compact(true, "Nothing to compact")
+        );
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -591,15 +773,31 @@ mod tests {
 
     impl CursorCompactionSettings for Settings {
         fn with_cursor_overflow_overrides(self) -> Self {
-            Settings { keep_recent_tokens: Some(0), restoration_enabled: Some(false) }
+            Settings {
+                keep_recent_tokens: Some(0),
+                restoration_enabled: Some(false),
+            }
         }
     }
 
     #[test]
     fn cursor_overflow_compaction_override() {
-        let base = Settings { keep_recent_tokens: Some(9), restoration_enabled: None };
-        assert_eq!(cursor_overflow_compaction_settings(base.clone(), Some("cursor"), Some("overflow")).keep_recent_tokens, Some(0));
-        assert_eq!(cursor_overflow_compaction_settings(base.clone(), Some("anthropic"), Some("overflow")), base);
-        assert_eq!(cursor_overflow_compaction_settings(base.clone(), Some("cursor"), Some("manual")), base);
+        let base = Settings {
+            keep_recent_tokens: Some(9),
+            restoration_enabled: None,
+        };
+        assert_eq!(
+            cursor_overflow_compaction_settings(base.clone(), Some("cursor"), Some("overflow"))
+                .keep_recent_tokens,
+            Some(0)
+        );
+        assert_eq!(
+            cursor_overflow_compaction_settings(base.clone(), Some("anthropic"), Some("overflow")),
+            base
+        );
+        assert_eq!(
+            cursor_overflow_compaction_settings(base.clone(), Some("cursor"), Some("manual")),
+            base
+        );
     }
 }

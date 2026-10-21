@@ -212,10 +212,10 @@ fn reports_an_unknown_name_once_with_the_known_profiles_sorted() {
         panic!("expected unknown");
     };
     assert_eq!(name, "nope");
-    assert_eq!(known, ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal", "night-shift", "recommended"]);
+    assert_eq!(known, ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal", "night-shift"]);
     assert_eq!(
         message,
-        "model_profile \"nope\" is not defined; known profiles: daily-heavy, daily-normal, geeky-heavy, geeky-normal, night-shift, recommended"
+        "model_profile \"nope\" is not defined; known profiles: daily-heavy, daily-normal, geeky-heavy, geeky-normal, night-shift"
     );
 }
 
@@ -226,7 +226,7 @@ fn reports_a_blank_value_as_unknown_rather_than_silently_doing_nothing() {
         panic!("expected unknown");
     };
     assert_eq!(name, "");
-    assert_eq!(known, ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal", "recommended"]);
+    assert_eq!(known, ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal"]);
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn reports_the_removed_capable_deep_work_and_simple_work_ids_as_unknown() {
             panic!("expected unknown for {name}");
         };
         assert_eq!(reported, name);
-        assert_eq!(known, ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal", "recommended"]);
+        assert_eq!(known, ["daily-heavy", "daily-normal", "geeky-heavy", "geeky-normal"]);
     }
 }
 
@@ -423,30 +423,11 @@ fn keeps_geeky_normal_family_tier_when_a_user_replaces_the_chain_with_an_openai_
 }
 
 #[test]
-fn resolves_recommended_to_gpt_61_sol_medium_when_the_subscription_serves_it_next_to_gpt_6_sol() {
-    let result = resolve("recommended", &["chatgpt-subscription/gpt-6-sol", SOL_61, "zai/glm-5.3"], None);
-    let resolved = resolved(&result);
-    assert_eq!(resolved.provider, "chatgpt-subscription");
-    assert_eq!(resolved.model_id, "gpt-6.1-sol");
-    assert_eq!(resolved.reasoning, Some("medium"));
-}
-
-#[test]
-fn resolves_recommended_to_gpt_6_sol_medium_when_only_copilot_serves_a_gpt_6_sol() {
-    let result = resolve("recommended", &[SOL_COPILOT, "zai/glm-5.3"], None);
-    let resolved = resolved(&result);
-    assert_eq!(resolved.provider, "github-copilot");
-    assert_eq!(resolved.model_id, "gpt-6-sol");
-    assert_eq!(resolved.reasoning, Some("medium"));
-}
-
-#[test]
-fn picks_zai_glm_53_on_recommended_when_only_a_zai_key_serves_glm() {
-    let result = resolve("recommended", &["zai/glm-5.3"], None);
-    let resolved = resolved(&result);
-    assert_eq!(resolved.provider, "zai");
-    assert_eq!(resolved.model_id, "glm-5.3");
-    assert_eq!(resolved.reasoning, Some("max"));
+fn recommended_is_no_longer_a_builtin_but_can_be_user_defined() {
+    assert!(matches!(resolve("recommended", &[OPUS], None), ModelProfileResolution::Unknown { .. }));
+    let result = resolve("recommended", &[OPUS], Some(json!({"recommended": {"models": [OPUS]}})));
+    assert_eq!(resolved(&result).model_id, "claude-opus-5-5");
+    assert_eq!(profile_of(&result).source, ModelProfileSource::User);
 }
 
 #[test]
@@ -459,8 +440,8 @@ fn picks_zai_glm_53_on_daily_normal_when_only_a_zai_key_serves_glm() {
 }
 
 #[test]
-fn does_not_pick_opencode_zai_coding_plan_on_recommended() {
-    let result = resolve("recommended", &["zai-coding-plan/glm-5.3"], None);
+fn does_not_pick_opencode_zai_coding_plan_on_daily_normal() {
+    let result = resolve("daily-normal", &["zai-coding-plan/glm-5.3"], None);
     assert!(matches!(result, ModelProfileResolution::Unavailable { .. }));
 }
 

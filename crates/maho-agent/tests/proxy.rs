@@ -12,8 +12,20 @@ fn serve_sse(body: String) -> String {
     let address = listener.local_addr().expect("addr");
     std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().expect("accept");
-        let mut buffer = [0_u8; 4096];
-        let _ = socket.read(&mut buffer);
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).expect("request headers");
+            request.push(byte[0]);
+        }
+        let request = String::from_utf8(request).expect("request headers UTF-8");
+        let length = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().expect("content length"))
+        }).expect("request body length");
+        let mut request_body = vec![0; length];
+        socket.read_exact(&mut request_body).expect("complete request body");
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
@@ -49,7 +61,12 @@ fn proxy_options(base_url: String) -> ProxyStreamOptions {
 }
 
 fn context() -> Context {
-    Context { system_prompt: Some(String::new()), messages: Vec::new(), tools: None }
+    Context {
+        active_tool_names: None,
+        system_prompt: Some(String::new()),
+        messages: Vec::new(),
+        tools: None,
+    }
 }
 
 async fn collect_events(
@@ -87,7 +104,12 @@ async fn preserves_tool_call_metadata_received_only_on_toolcall_end() {
 
     let end_event = events
         .iter()
-        .find(|event| matches!(event, maho_ai::types::AssistantMessageEvent::ToolcallEnd { .. }))
+        .find(|event| {
+            matches!(
+                event,
+                maho_ai::types::AssistantMessageEvent::ToolcallEnd { .. }
+            )
+        })
         .expect("toolcall_end event");
     match end_event {
         maho_ai::types::AssistantMessageEvent::ToolcallEnd { tool_call, .. } => {
@@ -97,7 +119,10 @@ async fn preserves_tool_call_metadata_received_only_on_toolcall_end() {
     }
     match &result.content[0] {
         ContentBlock::ToolCall(call) => {
-            assert_eq!(call.arguments.get("value"), Some(&serde_json::Value::String("hello".to_owned())));
+            assert_eq!(
+                call.arguments.get("value"),
+                Some(&serde_json::Value::String("hello".to_owned()))
+            );
             assert_eq!(call.namespace.as_deref(), Some("dynamic_tools"));
         }
         other => panic!("expected tool call, got {}", other.type_name()),
@@ -125,7 +150,10 @@ async fn processes_terminal_metadata_when_the_event_is_not_newline_terminated() 
 
 #[tokio::test]
 async fn emits_an_error_instead_of_hanging_when_the_stream_ends_without_a_terminal_event() {
-    let base_url = serve_sse(format!("data: {}\n\n", serde_json::json!({ "type": "start" })));
+    let base_url = serve_sse(format!(
+        "data: {}\n\n",
+        serde_json::json!({ "type": "start" })
+    ));
 
     let stream = stream_proxy(&test_model(), &context(), proxy_options(base_url));
     let events = collect_events(&stream).await;
