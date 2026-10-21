@@ -30,19 +30,94 @@ $asset = "mhc-$target.zip"
 $base = if ($version -eq 'latest') { "https://github.com/$repo/releases/latest/download" } else { "https://github.com/$repo/releases/download/$version" }
 
 function Get-PayloadVersion([string]$exe) {
-    if (-not (Test-Path -LiteralPath $exe)) { return $null }
-    # Windows PowerShell 5.1: `2>$null` under $ErrorActionPreference 'Stop' makes the first native
-    # stderr line a terminating error, and piping into Select-Object -First 1 stops the process
-    # before $LASTEXITCODE is set. $null -ne 0, so a successful `--version` comes back empty.
-    $ErrorActionPreference = 'Continue'
+    # Windows PowerShell 5.1's `& $exe 2>$null` path drops stdout and hides native stderr, so a
+    # failed `--version` is only an empty string. On failure this still returns $null (unknown)
+    # and sets $script:PayloadVersionError to "exit <code>; stderr: <trimmed text>".
+    $script:PayloadVersionError = $null
+    $setVersionError = {
+        param($exitCode, $stderr)
+        $text = ''
+        if ($null -ne $stderr) { $text = ([string]$stderr).Trim() }
+        $code = 'n/a'
+        if ($null -ne $exitCode -and "$exitCode" -ne '') { $code = [string]$exitCode }
+        $script:PayloadVersionError = "exit $code; stderr: $text"
+    }
+    $readVersionTask = {
+        param($task, [int]$timeoutMs)
+        if (-not $task.Wait($timeoutMs)) { return $null }
+        return [string]$task.Result
+    }
+
+    $proc = $null
     try {
-        $output = & $exe --version 2>$null
-        $code = $LASTEXITCODE
-    } catch { return $null }
-    if ($code -ne 0 -or -not $output) { return $null }
-    $line = @($output) | Select-Object -First 1
-    if (-not $line) { return $null }
-    return ([string]$line).Trim() -replace '^[vV]', ''
+        if (-not (Test-Path -LiteralPath $exe)) {
+            & $setVersionError 'n/a' 'executable not found'
+            return $null
+        }
+
+        $workDir = [System.IO.Path]::GetDirectoryName($exe)
+        if (-not $workDir) { $workDir = [System.IO.Directory]::GetCurrentDirectory() }
+
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.UseShellExecute = $false
+        $psi.FileName = $exe
+        $psi.Arguments = '--version'
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.WorkingDirectory = $workDir
+
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        if (-not $proc.Start()) {
+            & $setVersionError 'n/a' 'failed to start process'
+            return $null
+        }
+
+        # Both reads must start before WaitForExit; a full pipe deadlocks the child.
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit(60000)) {
+            try { $proc.Kill() } catch { }
+            try { [void]$proc.WaitForExit(5000) } catch { }
+            & $setVersionError 'timeout' (& $readVersionTask $stderrTask 5000)
+            return $null
+        }
+
+        $stdoutText = & $readVersionTask $stdoutTask 15000
+        $stderrText = & $readVersionTask $stderrTask 15000
+        if ($null -eq $stdoutText -or $null -eq $stderrText) {
+            & $setVersionError 'timeout' $stderrText
+            return $null
+        }
+
+        $code = $proc.ExitCode
+        $line = $null
+        foreach ($candidate in ($stdoutText -split '\n')) {
+            $trimmed = ([string]$candidate).Trim()
+            if ($trimmed) {
+                $line = $trimmed
+                break
+            }
+        }
+        if ($code -ne 0 -or -not $line) {
+            & $setVersionError $code $stderrText
+            return $null
+        }
+        $version = $line -replace '^[vV]', ''
+        if (-not $version) {
+            & $setVersionError $code $stderrText
+            return $null
+        }
+        return $version
+    } catch {
+        & $setVersionError 'n/a' "$_"
+        return $null
+    } finally {
+        if ($null -ne $proc) {
+            try { $proc.Dispose() } catch { }
+        }
+    }
 }
 
 function Test-VersionName([string]$name) {
@@ -63,7 +138,7 @@ function Write-Pointer([string]$root, [string]$current, $previous) {
     [System.IO.File]::WriteAllText($temporary, "$json`n", (New-Object System.Text.UTF8Encoding($false)))
     $destination = Join-Path $root 'current.json'
     if (Test-Path -LiteralPath $destination) {
-        [System.IO.File]::Replace($temporary, $destination, $null)
+        [System.IO.File]::Replace($temporary, $destination, [NullString]::Value)
     } else {
         [System.IO.File]::Move($temporary, $destination)
     }
@@ -100,7 +175,11 @@ try {
     }
 
     $new = Get-PayloadVersion (Join-Path $staged 'mhc.exe')
-    if (-not $new -or -not (Test-VersionName $new)) { throw "mhc install: cannot determine the packaged mhc version (got '$new')" }
+    if (-not $new -or -not (Test-VersionName $new)) {
+        $reason = ''
+        if ($script:PayloadVersionError) { $reason = "; $script:PayloadVersionError" }
+        throw "mhc install: cannot determine the packaged mhc version (got '$new'$reason)"
+    }
 
     $oldPointer = Read-Pointer $installDir
     if ($oldPointer) {
@@ -132,7 +211,9 @@ try {
             foreach ($entry in $flatEntries) { Move-Item -LiteralPath $entry.FullName -Destination (Join-Path $flatDir $entry.Name) }
             $previous = $flat
         } else {
-            throw "mhc install: cannot safely migrate the existing flat installation; use a separate MHC_INSTALL_DIR"
+            $reason = ''
+            if ($script:PayloadVersionError) { $reason = " ($script:PayloadVersionError)" }
+            throw "mhc install: cannot safely migrate the existing flat installation$reason; use a separate MHC_INSTALL_DIR"
         }
     }
     if ($previous -eq $new) { $previous = $null }
@@ -156,7 +237,9 @@ try {
     $installed = Get-PayloadVersion $launcher
     if ($installed -ne $new) {
         if ($hadPointer) { Write-Pointer $installDir ([string]$oldPointer.current) $oldPointer.previous }
-        throw "mhc install: installed launcher reports '$installed', expected '$new'"
+        $reason = ''
+        if ($script:PayloadVersionError) { $reason = "; $script:PayloadVersionError" }
+        throw "mhc install: installed launcher reports '$installed', expected '$new'$reason"
     }
 } finally {
     if ($updateLock) { $updateLock.Dispose() }

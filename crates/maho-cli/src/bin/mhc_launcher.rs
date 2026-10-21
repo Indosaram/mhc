@@ -68,8 +68,9 @@ fn launch(mut command: Command, target: &Path) -> Result<i32, String> {
         .build()
         .map_err(|error| error.to_string())?;
     let _runtime = runtime.enter();
-    let _ctrl_c = tokio::signal::windows::ctrl_c().map_err(|error| error.to_string())?;
-    let _ctrl_break = tokio::signal::windows::ctrl_break().map_err(|error| error.to_string())?;
+    // without a console there is no Ctrl+C to forward.
+    let _ctrl_c = tokio::signal::windows::ctrl_c().ok();
+    let _ctrl_break = tokio::signal::windows::ctrl_break().ok();
     let status = command
         .status()
         .map_err(|error| format!("cannot run {}: {error}", target.display()))?;
