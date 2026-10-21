@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::{Arc, Mutex, PoisonError}};
+use std::{collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex, PoisonError}};
 use maho_ext_api::{ExtensionApi, ExtensionFailure};
 use serde_json::{Value, json};
 use senpi_task::{manager::{TaskManager, Unsubscribe, types::ListScope}, state::{TaskStatus, ResidencyState}, progress::{create_child_progress, ChildProgressTarget}, tools::{control::{cancel::run_task_cancel, send::run_task_send}, output::{output::run_task_output, types::TaskOutputDeps}}};
@@ -39,8 +39,8 @@ impl TaskRpcBridge {
         let Some(session) = self.state.lock().unwrap_or_else(PoisonError::into_inner).session.clone() else { return; };
         let all: Vec<_> = self.manager.list(&ListScope::ParentSession(session)).into_iter().map(|entry| entry.record).collect(); let truncated = all.len().saturating_sub(256);
         let records = if truncated == 0 { all } else { let live: Vec<_> = all.iter().filter(|record| matches!(record.status,TaskStatus::Pending|TaskStatus::Running)).cloned().collect(); let live: Vec<_> = live.into_iter().rev().take(256).collect::<Vec<_>>().into_iter().rev().collect(); let slots = 256-live.len(); let terminal: Vec<_> = all.into_iter().filter(|record| !matches!(record.status,TaskStatus::Pending|TaskStatus::Running)).collect(); live.into_iter().chain(terminal.into_iter().rev().take(slots).collect::<Vec<_>>().into_iter().rev()).collect() };
-        let wanted: Vec<_> = records.iter().filter(|record| matches!(record.status,TaskStatus::Pending|TaskStatus::Running) && record.residency_state == ResidencyState::Resident).map(|record| record.task_id.clone()).collect();
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); let stale: Vec<_> = state.subscriptions.keys().filter(|id| !wanted.contains(id)).cloned().collect();
+        let wanted: BTreeSet<String> = records.iter().filter(|record| matches!(record.status,TaskStatus::Pending|TaskStatus::Running) && record.residency_state == ResidencyState::Resident).map(|record| record.task_id.clone()).collect();
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); let stale: Vec<_> = state.subscriptions.keys().filter(|id| !wanted.contains(*id)).cloned().collect();
         let mut removed = Vec::new(); for id in stale { if let Some(unsubscribe) = state.subscriptions.remove(&id) { removed.push(unsubscribe); } state.progress.remove(&id); } drop(state); for unsubscribe in removed { unsubscribe(); }
         for record in &records {
             if !wanted.contains(&record.task_id) || self.state.lock().unwrap_or_else(PoisonError::into_inner).subscriptions.contains_key(&record.task_id) { continue; }

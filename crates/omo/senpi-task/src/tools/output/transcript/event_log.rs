@@ -31,6 +31,7 @@ pub fn read_event_log_transcript_result(state_dir: &str, task_id: &str) -> io::R
     let entries = raw
         .text
         .split('\n')
+        .filter(|line| may_carry_transcript_event(line))
         .filter_map(|line| transcript_entry_of(parse_line(line).as_ref()))
         .collect();
     Ok(TranscriptReadResult {
@@ -38,6 +39,19 @@ pub fn read_event_log_transcript_result(state_dir: &str, task_id: &str) -> io::R
         source: TranscriptSource::EventLog,
         truncated: Some(raw.truncated),
     })
+}
+
+// Lifecycle/audit lines dominate the log; a line without one of the lifted event-type names cannot
+// yield an entry, so skip the full JSON parse for it.
+fn may_carry_transcript_event(line: &str) -> bool {
+    [
+        TRANSCRIPT_ASSISTANT_EVENT,
+        TRANSCRIPT_TOOL_EVENT,
+        TRANSCRIPT_ERROR_EVENT,
+        "team_message_waited",
+    ]
+    .iter()
+    .any(|name| line.contains(*name))
 }
 
 fn parse_line(line: &str) -> Option<Value> {

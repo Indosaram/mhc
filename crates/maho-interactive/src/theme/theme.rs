@@ -287,8 +287,10 @@ pub struct Theme {
     pub appearance: Option<ThemeAppearance>,
     pub source_path: Option<std::path::PathBuf>,
     mode: ColorMode,
-    colors: BTreeMap<String, ColorValue>,
-    export_colors: BTreeMap<String, String>,
+    // Shared: a `Theme` is cloned into every status indicator, tool card and closure, and the
+    // resolved color tables are immutable after construction.
+    colors: std::sync::Arc<BTreeMap<String, ColorValue>>,
+    export_colors: std::sync::Arc<BTreeMap<String, String>>,
 }
 fn resolve(
     value: &ColorValue,
@@ -427,8 +429,8 @@ impl Theme {
             appearance: json.appearance,
             source_path: None,
             mode,
-            colors,
-            export_colors,
+            colors: std::sync::Arc::new(colors),
+            export_colors: std::sync::Arc::new(export_colors),
         })
     }
     pub fn builtin(name: &str, mode: ColorMode) -> Result<Self, ThemeError> {

@@ -37,6 +37,8 @@ impl DagRpcBridge {
         self.schedule_heartbeat(); self.notify_store_mutation();
     }
     fn schedule_heartbeat(self: &Arc<Self>) {
+        // An armed (or detached) bridge needs no run listing; skip the directory scan in that case.
+        { let state = self.state.lock().unwrap_or_else(PoisonError::into_inner); if !state.attached || state.heartbeat.is_some() { return; } }
         let live = self.owned_runs().into_iter().any(|run| !matches!(run.status.as_str(), "completed" | "failed" | "cancelled"));
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !state.attached || state.heartbeat.is_some() || !live { return; }

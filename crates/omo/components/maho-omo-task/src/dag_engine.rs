@@ -108,8 +108,10 @@ impl DagSurfaces {
                 if !progress.accept(event) { return; }
                 progress.details()
             };
-            let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-            if let Some(bridge) = bridge.upgrade() { bridge.publish_activity(crate::dag_runtime::dag_activity_payload(&run, &node, &task, &at, &details)); }
+            if let Some(bridge) = bridge.upgrade() {
+                let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                bridge.publish_activity(crate::dag_runtime::dag_activity_payload(&run, &node, &task, &at, &details));
+            }
             if let Some(status) = status.upgrade() { status.on_activity(&run, &node, details.current_tool.as_deref().or(details.last_assistant_line.as_deref()).unwrap_or(&details.progress.activity)); }
         }));
         let duplicate = {
@@ -449,7 +451,8 @@ let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::
 
     /// TS `publishSchedulerEvent`.
     fn publish_scheduler_event(self: &Arc<Self>, event: &DagRunEvent) {
-        let listeners = lock(&self.run_listeners).clone();
+        // Only this run's listeners are consulted below; cloning the whole registry per event is waste.
+        let listeners: BTreeMap<DagRunId, Vec<DurableDagListener>> = lock(&self.run_listeners).get(&event.run_id).map(|run_listeners| (event.run_id.clone(), run_listeners.clone())).into_iter().collect();
         let on_event = self.durable_listener();
         let mut delivered = lock(&self.delivered);
         // A lagging ring subscriber coalesces dropped events into a StreamOverflow it appends and

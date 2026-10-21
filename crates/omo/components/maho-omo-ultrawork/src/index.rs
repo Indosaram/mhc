@@ -64,10 +64,18 @@ fn strip_quoted_spans(text:&str)->String{
 }
 /// Every visible keyword invocation as (start, end, is_full_word) byte offsets into `text`.
 fn visible_invocations(text:&str)->Vec<(usize,usize,bool)>{
+    if cannot_contain_keyword(text){return Vec::new();}
     let visible=strip_quoted_regions(text);
     ULTRAWORK_CURRENT_PROMPT_PATTERN.find_iter(&visible).flatten()
         .filter(|found|!visible[found.end()..].starts_with("--"))
         .map(|found|(found.start(),found.end(),!found.as_str().eq_ignore_ascii_case("ulw"))).collect()
+}
+/// Fast negative for the keyword pattern: pure-ASCII text with neither `ulw` nor `ultrawork` (any case)
+/// cannot match `(?i)\b(?:ultrawork|ulw)\b` after masking, which only removes characters. Non-ASCII text
+/// takes the full path because Unicode case folding (e.g. the Kelvin sign) can match ASCII letters.
+fn cannot_contain_keyword(text:&str)->bool{
+    let has=|needle:&[u8]|text.as_bytes().windows(needle.len()).any(|window|window.eq_ignore_ascii_case(needle));
+    text.is_ascii()&&!has(b"ulw")&&!has(b"ultrawork")
 }
 pub fn already_embedded(text:&str)->bool{text.contains("<ultrawork-mode>")&&text.contains("</ultrawork-mode>")}
 
@@ -76,7 +84,7 @@ pub fn already_embedded(text:&str)->bool{text.contains("<ultrawork-mode>")&&text
 pub fn arming_snapshot(id:Option<&str>)->ArmingSnapshot{let a=shared_session_arming();let a=a.lock().unwrap_or_else(std::sync::PoisonError::into_inner);ArmingSnapshot{was_armed:a.is_armed(id),compact_rearm_pending:a.is_compact_rearm_pending(id)}}
 pub fn classify_ultrawork_input(text:&str,source:InputSource,snapshot:ArmingSnapshot)->UltraworkClassification{
     let visible=visible_invocations(text);let mut result=UltraworkClassification{matched_ulw:visible.iter().any(|(_,_,full)|!*full),matched_ultrawork:visible.iter().any(|(_,_,full)|*full),occurrence_count:visible.len(),effective:false,stage:"none",route:"none",suppression_reason:"none"};if source==InputSource::Extension{result.suppression_reason="extension_source";return result;}
-    if visible.is_empty(){result.suppression_reason=if ULTRAWORK_KEYWORD.is_match(&strip_quoted_regions(text)).unwrap_or(false){"identifier_reference"}else if ULTRAWORK_KEYWORD.is_match(&strip_quoted_spans(text)).unwrap_or(false){"negated_mention"}else{"no_keyword"};return result;}
+    if visible.is_empty(){result.suppression_reason=if cannot_contain_keyword(text){"no_keyword"}else if ULTRAWORK_KEYWORD.is_match(&strip_quoted_regions(text)).unwrap_or(false){"identifier_reference"}else if ULTRAWORK_KEYWORD.is_match(&strip_quoted_spans(text)).unwrap_or(false){"negated_mention"}else{"no_keyword"};return result;}
     if already_embedded(text){result.route="embedded_directive";result.suppression_reason="embedded_directive";return result;}result.route="direct";if let Some(rest)=text.strip_prefix("/skill:"){let(name,_)=rest.split_once(' ').unwrap_or((rest,""));if name=="ultrawork"{result.route="skill_expansion";result.suppression_reason="skill_expansion";return result;}let args=text.find(' ').map_or(text.len(),|i|i+1);if !visible.iter().any(|(i,_,_)|*i>=args){result.route="none";result.suppression_reason="skill_name_only";return result;}result.route="skill_args";}result.effective=true;result.stage=if snapshot.compact_rearm_pending{"post_compact_rearm"}else if snapshot.was_armed{"remention"}else{"first_arm"};result
 }
 pub fn skill_invocation_suppressed(text:&str)->bool{let Some(rest)=text.strip_prefix("/skill:")else{return false;};let(name,args)=rest.split_once(' ').unwrap_or((rest,""));name=="ultrawork"||!is_ultrawork_input(args)}
@@ -91,5 +99,5 @@ impl Extension for UltraworkComponent{
 }
 pub fn reselect_context_directive(messages:&mut Vec<AgentMessage>,model_id:Option<&str>)->bool{let directive=directive_for_model(model_id);let mut selected=false;for message in messages{if let AgentMessage::Llm(maho_ai::types::Message::User(user))=message{match &mut user.content{maho_ai::types::UserContent::Text(text)=>if let Some(next)=select_directive_text(text,directive){*text=next;selected=true;},maho_ai::types::UserContent::Blocks(blocks)=>for block in blocks{if let maho_ai::types::ContentBlock::Text(text)=block&&let Some(next)=select_directive_text(&text.text,directive){text.text=next;selected=true;}}}}}selected}
 pub fn directive_for_model(model_id:Option<&str>)->&'static str{let astra=model_id.is_some_and(|id|{let id=id.rsplit('/').next().unwrap_or(id).to_ascii_lowercase();let(base,variant)=id.rsplit_once(':').map_or((id.as_str(),None),|(base,variant)|(base,Some(variant)));matches!(base,"gpt-6-astra"|"gpt-6-astra-fast")&&variant.is_none_or(|v|matches!(v,"off"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"auto"))});if astra{SENPI_ASTRA_ULTRAWORK_DIRECTIVE}else{SENPI_ULTRAWORK_DIRECTIVE}}
-pub fn select_directive_text(text:&str,directive:&str)->Option<String>{let clean=strip_astra_markers(text);let selected=directive.trim_end();let baseline=SENPI_ULTRAWORK_DIRECTIVE.trim_end();let astra=SENPI_ASTRA_ULTRAWORK_DIRECTIVE.trim_end();if !clean.contains(baseline)&&!clean.contains(astra){return None;}Some(clean.replace(baseline,selected).replace(astra,selected))}
+pub fn select_directive_text(text:&str,directive:&str)->Option<String>{let baseline=SENPI_ULTRAWORK_DIRECTIVE.trim_end();let astra=SENPI_ASTRA_ULTRAWORK_DIRECTIVE.trim_end();if !text.contains("<!-- omo-ultrawork-astra:")&&!text.contains(baseline)&&!text.contains(astra){return None;}let clean=strip_astra_markers(text);let selected=directive.trim_end();if !clean.contains(baseline)&&!clean.contains(astra){return None;}Some(clean.replace(baseline,selected).replace(astra,selected))}
 fn strip_astra_markers(text:&str)->String{let mut out=String::with_capacity(text.len());for line in text.split_inclusive('\n'){if !(line.starts_with("<!-- omo-ultrawork-astra:")&&line.trim_end_matches(['\r','\n']).ends_with(" -->")){out.push_str(line);}}out}

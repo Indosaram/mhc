@@ -234,6 +234,10 @@ fn finalize_truncated(prefix: &str, ellipsis: &str) -> String {
 }
 
 fn visible_width(text: &str) -> usize {
+    // Printable ASCII has no escapes or tabs and every char is one cell wide: skip the `Vec<char>` build.
+    if is_printable_ascii(text) {
+        return text.len();
+    }
     renderer_visible_width(text)
 }
 

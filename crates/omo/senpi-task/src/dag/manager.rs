@@ -238,6 +238,11 @@ impl DagJournalCheckpoint for DagRunRecordV1 {
             ..self.clone()
         }
     }
+
+    fn with_checkpoint_seq_owned(mut self, checkpoint_seq: u64) -> Self {
+        self.checkpoint_seq = checkpoint_seq;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

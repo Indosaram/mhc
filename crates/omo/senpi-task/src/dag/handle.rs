@@ -236,7 +236,7 @@ impl Inner {
     fn wait(self_arc: &Arc<Self>, run_id: &DagRunId, parent_session_id: &str) -> Result<DagRunResult, DagWaitError> {
         let record = self_arc.owned_record(run_id, parent_session_id)?;
         if is_terminal_run_status(record.status) {
-            return Ok(self_arc.project_result(&record));
+            return Ok(self_arc.project_result(record));
         }
         let slot = self_arc.slot(run_id);
         {
@@ -263,14 +263,19 @@ impl Inner {
             let run_id = run_id.clone();
             let weak = weak.clone();
             move || {
+                // The commit and live listeners both see the terminal event: the one that loses the
+                // race finds the slot already settled and skips a second checkpoint read + projection.
+                let Some(inner) = weak.upgrade() else { return };
+                if !inner.has_slot(&run_id) {
+                    return;
+                }
                 let Ok(Some(current)) = store.read_checkpoint::<DagRunRecordV1>(&run_id) else {
                     return;
                 };
                 if !is_terminal_run_status(current.status) {
                     return;
                 }
-                let Some(inner) = weak.upgrade() else { return };
-                let result = inner.project_result(&current);
+                let result = inner.project_result(current);
                 inner.settle(&run_id, result);
             }
         };
@@ -302,9 +307,13 @@ impl Inner {
         if let Ok(Some(now)) = self_arc.store.read_checkpoint::<DagRunRecordV1>(run_id)
             && is_terminal_run_status(now.status)
         {
-            let result = self_arc.project_result(&now);
+            let result = self_arc.project_result(now);
             self_arc.settle(run_id, result);
         }
+    }
+
+    fn has_slot(&self, run_id: &DagRunId) -> bool {
+        self.waiters.lock().unwrap_or_else(PoisonError::into_inner).contains_key(run_id)
     }
 
     fn waiter_count(&self, run_id: &DagRunId) -> usize {
@@ -320,7 +329,7 @@ impl Inner {
             .unwrap_or(0)
     }
 
-    fn project_result(&self, record: &DagRunRecordV1) -> DagRunResult {
+    fn project_result(&self, record: DagRunRecordV1) -> DagRunResult {
         let cancel_reason = if record.status == DagRunStatus::Cancelled {
             self.read_cancel_reason(&record.run_id)
         } else {
@@ -335,7 +344,7 @@ impl Inner {
         DagRunResult {
             run_id: record.run_id.clone(),
             status: record.status,
-            snapshot: project_snapshot(record.clone()),
+            snapshot: project_snapshot(record),
             nodes,
         }
     }

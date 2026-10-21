@@ -7,6 +7,13 @@ pub const ELLIPSIS: &str = "...";
 
 /// pi-tui `visibleWidth`: ANSI escape sequences occupy no cells and a tab counts as 3.
 pub fn renderer_visible_width(value: &str) -> usize {
+    if !value.contains('\x1b') {
+        // No escape means ansi_code_length never matches, so skip the Vec<char> copy.
+        return value
+            .chars()
+            .map(|ch| if ch == '\t' { 3 } else { char_width(ch) })
+            .sum();
+    }
     let chars: Vec<char> = value.chars().collect();
     let mut width = 0;
     let mut index = 0;
@@ -127,6 +134,12 @@ fn clip_to_width(text: &str, target_width: usize) -> String {
 }
 
 fn strip_terminal_controls(value: &str) -> String {
+    if !value
+        .chars()
+        .any(|ch| matches!(u32::from(ch), 0x00..=0x1f | 0x7f..=0x9f))
+    {
+        return value.to_string();
+    }
     let chars: Vec<char> = value.chars().collect();
     let mut text = String::new();
     let mut index = 0;

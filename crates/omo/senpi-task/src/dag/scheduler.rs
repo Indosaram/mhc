@@ -220,7 +220,8 @@ pub fn create_dag_scheduler(
     });
     for (node_id, task_id) in pre_attached_tasks {
         context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).insert(node_id.clone(), task_id.clone());
-        let node = node_by_id(&context.journal.snapshot(), &node_id).ok();
+        let snapshot = context.journal.snapshot();
+        let node = node_by_id(&snapshot, &node_id).ok();
         if let Some(node) = node && node.task_id.as_deref() != Some(&task_id) {
             let _ = context.journal.append(DagRunEventPayload::NodeTaskAttached { node_id: node_id.clone(), task_id: task_id.clone(), attempt: node.attempt });
         }
@@ -317,8 +318,9 @@ fn apply_dag_scheduler_event_with_results(
             node_id,
             task_id,
             attempt,
-        } => DagRunRecordV1 {
-            nodes: record
+        } => with_nodes(
+            record,
+            record
                 .nodes
                 .iter()
                 .map(|node| {
@@ -333,26 +335,71 @@ fn apply_dag_scheduler_event_with_results(
                     }
                 })
                 .collect(),
-            updated_at: event.at.clone(),
-            ..record.clone()
-        },
-        DagRunEventPayload::NodeSteered { node_id, task_id, delivery } => DagRunRecordV1 {
-            nodes: record.nodes.iter().map(|node| if &node.id == node_id && *delivery == crate::dag::types::DagNodeDelivery::Revive { DagNode { task_id: Some(task_id.clone()), ..node.clone() } } else { node.clone() }).collect(),
-            updated_at: event.at.clone(), ..record.clone()
-        },
-        DagRunEventPayload::NodeRetried { node_id, exec_attempt, .. } => DagRunRecordV1 {
-            nodes: record.nodes.iter().map(|node| if &node.id == node_id { DagNode { state: DagNodeState::Pending, exec_attempt: Some(*exec_attempt), error: None, completed_at: None, output: None, output_bytes: None, run_stats: None, ..node.clone() } } else { node.clone() }).collect(),
-            updated_at: event.at.clone(), ..record.clone()
-        },
-        DagRunEventPayload::DefinitionAmended { fingerprint, invalidated_node_ids, .. } => DagRunRecordV1 {
-            definition_fingerprint: fingerprint.clone(),
-            nodes: record.nodes.iter().map(|node| if invalidated_node_ids.contains(&node.id) { DagNode { state: DagNodeState::Pending, error: None, completed_at: None, output: None, output_bytes: None, run_stats: None, ..node.clone() } } else { node.clone() }).collect(),
-            updated_at: event.at.clone(), ..record.clone()
-        },
+            record.diagnostics.clone(),
+            event.at.clone(),
+        ),
+        DagRunEventPayload::NodeSteered { node_id, task_id, delivery } => with_nodes(
+            record,
+            record.nodes.iter().map(|node| if &node.id == node_id && *delivery == crate::dag::types::DagNodeDelivery::Revive { DagNode { task_id: Some(task_id.clone()), ..node.clone() } } else { node.clone() }).collect(),
+            record.diagnostics.clone(),
+            event.at.clone(),
+        ),
+        DagRunEventPayload::NodeRetried { node_id, exec_attempt, .. } => with_nodes(
+            record,
+            record.nodes.iter().map(|node| if &node.id == node_id { DagNode { state: DagNodeState::Pending, exec_attempt: Some(*exec_attempt), error: None, completed_at: None, output: None, output_bytes: None, run_stats: None, ..node.clone() } } else { node.clone() }).collect(),
+            record.diagnostics.clone(),
+            event.at.clone(),
+        ),
+        DagRunEventPayload::DefinitionAmended { fingerprint, invalidated_node_ids, .. } => {
+            let mut amended = with_nodes(
+                record,
+                record.nodes.iter().map(|node| if invalidated_node_ids.contains(&node.id) { DagNode { state: DagNodeState::Pending, error: None, completed_at: None, output: None, output_bytes: None, run_stats: None, ..node.clone() } } else { node.clone() }).collect(),
+                record.diagnostics.clone(),
+                event.at.clone(),
+            );
+            amended.definition_fingerprint = fingerprint.clone();
+            amended
+        }
         _ => DagRunRecordV1 {
             updated_at: event.at.clone(),
             ..record.clone()
         },
+    }
+}
+
+/// The next record with replaced nodes/diagnostics: field-by-field so the superseded `nodes` and
+/// `diagnostics` are not cloned only to be dropped (`..record.clone()` would copy them first).
+fn with_nodes(
+    record: &DagRunRecordV1,
+    nodes: Vec<DagNode>,
+    diagnostics: Vec<DagDiagnostic>,
+    updated_at: String,
+) -> DagRunRecordV1 {
+    DagRunRecordV1 {
+        schema_version: record.schema_version,
+        checkpoint_seq: record.checkpoint_seq,
+        run_id: record.run_id.clone(),
+        run_key: record.run_key.clone(),
+        name: record.name.clone(),
+        parent_session_id: record.parent_session_id.clone(),
+        root_session_id: record.root_session_id.clone(),
+        definition_fingerprint: record.definition_fingerprint.clone(),
+        definition: record.definition.clone(),
+        status: record.status,
+        generation: record.generation,
+        created_at: record.created_at.clone(),
+        updated_at,
+        started_at: record.started_at.clone(),
+        completed_at: record.completed_at.clone(),
+        nodes,
+        edges: record.edges.clone(),
+        waves: record.waves.clone(),
+        critical_path: record.critical_path.clone(),
+        bottlenecks: record.bottlenecks.clone(),
+        diagnostics,
+        amend_history: record.amend_history.clone(),
+        lease_holder_pid: record.lease_holder_pid,
+        previous_lease_holder_pid: record.previous_lease_holder_pid,
     }
 }
 
@@ -368,12 +415,13 @@ fn reduce_node_transitioned(
     now: Option<&Arc<dyn Fn() -> i64 + Send + Sync>>,
 ) -> DagRunRecordV1 {
     let terminal_result = if is_terminal_node_state(to) {
+        // Taken, not cloned: the entry is removed below either way, and it carries the full
+        // `final_response`.
         pending_terminal_results.and_then(|results| {
             results
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .get(node_id)
-                .cloned()
+                .remove(node_id)
         })
     } else {
         None
@@ -454,12 +502,7 @@ fn reduce_node_transitioned(
             transitioned
         })
         .collect();
-    DagRunRecordV1 {
-        nodes,
-        diagnostics,
-        updated_at: event.at.clone(),
-        ..record.clone()
-    }
+    with_nodes(record, nodes, diagnostics, event.at.clone())
 }
 
 fn task_run_stats_of(terminal_result: &Option<TaskRecord>) -> Option<TaskRunStats> {
@@ -721,7 +764,7 @@ fn perform_cancellation(context: &DagSchedulerContext, reason: Option<&str>) -> 
         if is_terminal_node_state(node.state) {
             continue;
         }
-        transition(context, &node.id, DagNodeState::Cancelled, DagNodeTransitionReason::Cancelled);
+        transition_from(context, &node.id, node.state, DagNodeState::Cancelled, DagNodeTransitionReason::Cancelled);
     }
     let cancelled = context.journal.snapshot();
     context
@@ -783,11 +826,12 @@ fn cancellation_started(context: &DagSchedulerContext) -> bool {
 }
 
 fn run_frontier(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::dag::store::DagStoreError> {
-    if admission_stopped(context) || context.journal.snapshot().status.is_terminal() {
-        return Ok(context.journal.snapshot());
+    let initial = context.journal.snapshot();
+    if admission_stopped(context) || initial.status.is_terminal() {
+        return Ok(initial);
     }
-    if context.journal.snapshot().status == crate::dag::types::DagRunStatus::Pending {
-        let generation = context.journal.snapshot().generation;
+    if initial.status == crate::dag::types::DagRunStatus::Pending {
+        let generation = initial.generation;
         context
             .journal
             .append(DagRunEventPayload::RunStarted { generation })?;
@@ -910,8 +954,12 @@ fn admit_frontier(context: &DagSchedulerContext, emitted: &mut std::collections:
             .map(|node| node.id.clone())
             .collect();
         if denied.is_empty() && runnable.is_empty() { return Ok(true); }
-        for node_id in &runnable { transition(context, node_id, DagNodeState::Scheduled, DagNodeTransitionReason::Scheduled); }
-        emit_wave_admissions(context, &runnable, emitted)?;
+        for node_id in &runnable {
+            if let Ok(from) = node_by_id(&snapshot, node_id).map(|node| node.state) {
+                transition_from(context, node_id, from, DagNodeState::Scheduled, DagNodeTransitionReason::Scheduled);
+            }
+        }
+        emit_wave_admissions(&snapshot, context, &runnable, emitted)?;
         let mut residency_released = arm_residency_release(context, &snapshot.parent_session_id);
         *context.state.admission_in_progress.lock().unwrap_or_else(PoisonError::into_inner) = true;
         let mut next_denied = Vec::new();
@@ -920,8 +968,8 @@ fn admit_frontier(context: &DagSchedulerContext, emitted: &mut std::collections:
         // attachments and failures land after the whole admission batch.
         let awaiting: Vec<_> = denied.into_iter().chain(runnable).collect();
         let results: Vec<_> = awaiting.into_iter().map(|node_id| {
-            let (spec, policy_failure) = start_spec(context, &node_id);
-            let result = if let Some(message) = policy_failure { Err(message) } else { start_owned(context, &spec, &owner(context, &node_id)) };
+            let (spec, policy_failure) = start_spec(context, &snapshot, &node_id);
+            let result = if let Some(message) = policy_failure { Err(message) } else { start_owned(context, &spec, &owner_of(&snapshot, &node_id)) };
             (node_id, result)
         }).collect();
         if admission_stopped(context) && !cancellation_started(context) {
@@ -975,9 +1023,8 @@ fn admit_frontier(context: &DagSchedulerContext, emitted: &mut std::collections:
 
 // dag.wave.started is informational: one event per wave index touched by this admission pass,
 // listing exactly the nodes the pass scheduled.
-fn emit_wave_admissions(context: &DagSchedulerContext, scheduled: &[DagNodeId], emitted: &mut std::collections::BTreeSet<usize>) -> Result<(), crate::dag::store::DagStoreError> {
+fn emit_wave_admissions(snapshot: &DagRunRecordV1, context: &DagSchedulerContext, scheduled: &[DagNodeId], emitted: &mut std::collections::BTreeSet<usize>) -> Result<(), crate::dag::store::DagStoreError> {
     if scheduled.is_empty() { return Ok(()); }
-    let snapshot = context.journal.snapshot();
     let mut groups: BTreeMap<usize, Vec<DagNodeId>> = BTreeMap::new();
     for node_id in scheduled {
         if let Some(wave) = snapshot.waves.iter().find(|wave| wave.node_ids.contains(node_id)) { groups.entry(wave.index).or_default().push(node_id.clone()); }
@@ -992,7 +1039,8 @@ fn emit_wave_admissions(context: &DagSchedulerContext, scheduled: &[DagNodeId], 
 // dag.wave.completed is informational and once per instance per wave index: it fires when EVERY
 // member of the compiled wave holds a terminal state. Waves this instance never admitted stay silent.
 fn emit_completed_waves(context: &DagSchedulerContext, admitted: &std::collections::BTreeSet<usize>, completed: &mut std::collections::BTreeSet<usize>) -> Result<(), crate::dag::store::DagStoreError> {
-    if admitted.is_empty() { return Ok(()); }
+    // `completed` only ever holds admitted indices, so equal sizes mean no wave can newly complete.
+    if completed.len() >= admitted.len() { return Ok(()); }
     let snapshot = context.journal.snapshot();
     for wave in &snapshot.waves {
         if !admitted.contains(&wave.index) || completed.contains(&wave.index) { continue; }
@@ -1031,8 +1079,11 @@ fn attach_started(
     task: &crate::manager::types::StartedTask,
     reused: bool,
 ) -> Result<(), crate::dag::store::DagStoreError> {
-    let node = node_by_id(&context.journal.snapshot(), node_id)?;
-    let attempt = node.attempt + 1;
+    let (attempt, from) = {
+        let snapshot = context.journal.snapshot();
+        let node = node_by_id(&snapshot, node_id)?;
+        (node.attempt + 1, node.state)
+    };
     context.journal.append(DagRunEventPayload::NodeTaskAttached {
         node_id: node_id.clone(),
         task_id: task.task_id.clone(),
@@ -1052,9 +1103,11 @@ fn attach_started(
             })?;
         }
     } else if task.status == TaskStatus::Running {
-        transition(
+        // `NodeTaskAttached` leaves the node state untouched, so `from` read above still holds.
+        transition_from(
             context,
             node_id,
+            from,
             DagNodeState::Running,
             if reused {
                 DagNodeTransitionReason::Resumed
@@ -1208,7 +1261,7 @@ fn apply_dependent_skip_cascade(
                     .unwrap_or(false)
             });
             if should_skip {
-                transition(context, &node.id, DagNodeState::Skipped, DagNodeTransitionReason::Skipped);
+                transition_from(context, &node.id, node.state, DagNodeState::Skipped, DagNodeTransitionReason::Skipped);
                 changed = true;
             }
         }
@@ -1234,12 +1287,24 @@ fn transition(
     to: DagNodeState,
     reason: DagNodeTransitionReason,
 ) {
-    let Ok(node) = node_by_id(&context.journal.snapshot(), node_id) else {
+    let Ok(from) = node_by_id(&context.journal.snapshot(), node_id).map(|node| node.state) else {
         return;
     };
+    transition_from(context, node_id, from, to, reason);
+}
+
+/// `transition` for a caller that already read the node's current state from a snapshot: skips the
+/// full-record snapshot clone `transition` pays per call.
+fn transition_from(
+    context: &DagSchedulerContext,
+    node_id: &DagNodeId,
+    from: DagNodeState,
+    to: DagNodeState,
+    reason: DagNodeTransitionReason,
+) {
     let _ = context.journal.append(DagRunEventPayload::NodeTransitioned {
         node_id: node_id.clone(),
-        from: node.state,
+        from,
         to,
         reason,
     });
@@ -1267,9 +1332,8 @@ fn fail_node(
     Ok(())
 }
 
-fn start_spec(context: &DagSchedulerContext, node_id: &DagNodeId) -> (ManagerStartSpec, Option<String>) {
-    let record = context.journal.snapshot();
-    let node = node_by_id(&record, node_id).expect("scheduled node exists");
+fn start_spec(context: &DagSchedulerContext, record: &DagRunRecordV1, node_id: &DagNodeId) -> (ManagerStartSpec, Option<String>) {
+    let node = node_by_id(record, node_id).expect("scheduled node exists");
     let parent_session_id = record.parent_session_id.clone();
     let root_session_id = record.root_session_id.clone();
     let policy_parent_session_id = parent_session_id.clone();
@@ -1316,12 +1380,16 @@ fn start_spec(context: &DagSchedulerContext, node_id: &DagNodeId) -> (ManagerSta
     (spec, policy_failure)
 }
 
+#[cfg(test)]
 fn owner(context: &DagSchedulerContext, node_id: &DagNodeId) -> DagTaskOwner {
-    let record = context.journal.snapshot();
-    let exec_attempt = node_by_id(&record, node_id).ok().and_then(|node| node.exec_attempt);
+    owner_of(&context.journal.snapshot(), node_id)
+}
+
+fn owner_of(record: &DagRunRecordV1, node_id: &DagNodeId) -> DagTaskOwner {
+    let exec_attempt = node_by_id(record, node_id).ok().and_then(|node| node.exec_attempt);
     DagTaskOwner {
         kind: DagOwnerKind::Dag,
-        run_id: record.run_id,
+        run_id: record.run_id.clone(),
         node_id: node_id.clone(),
         fingerprint: dag_fingerprint(&serde_json::json!({
             "definitionFingerprint": record.definition_fingerprint,
@@ -1368,26 +1436,27 @@ fn transitioned_node(
     error: Option<&DagNodeError>,
 ) -> DagNode {
     let clear_terminal = state == DagNodeState::Running && is_terminal_node_state(node.state);
-    DagNode {
-        state,
-        started_at: if state == DagNodeState::Running && node.started_at.is_none() {
-            Some(at.to_string())
-        } else {
-            node.started_at.clone()
-        },
-        completed_at: if is_terminal_node_state(state) {
-            Some(at.to_string())
-        } else if clear_terminal {
-            None
-        } else {
-            node.completed_at.clone()
-        },
-        error: if clear_terminal { None } else { error.cloned().or_else(|| node.error.clone()) },
-        output: if clear_terminal { None } else { node.output.clone() },
-        output_bytes: if clear_terminal { None } else { node.output_bytes },
-        run_stats: if clear_terminal { None } else { node.run_stats.clone() },
-        ..node.clone()
+    // One clone, mutated in place: struct-update over `node.clone()` copied every overwritten field
+    // (output, run_stats, error) just to drop it.
+    let mut next = node.clone();
+    next.state = state;
+    if state == DagNodeState::Running && next.started_at.is_none() {
+        next.started_at = Some(at.to_string());
     }
+    if is_terminal_node_state(state) {
+        next.completed_at = Some(at.to_string());
+    } else if clear_terminal {
+        next.completed_at = None;
+    }
+    if clear_terminal {
+        next.error = None;
+        next.output = None;
+        next.output_bytes = None;
+        next.run_stats = None;
+    } else if let Some(error) = error {
+        next.error = Some(error.clone());
+    }
+    next
 }
 
 fn node_error(
@@ -1410,19 +1479,18 @@ fn primary_failure(record: &DagRunRecordV1) -> Option<DagNode> {
             if let Ok(node) = node_by_id(record, node_id)
                 && node.state == DagNodeState::Failed
             {
-                return Some(node);
+                return Some(node.clone());
             }
         }
     }
     None
 }
 
-fn node_by_id(record: &DagRunRecordV1, node_id: &DagNodeId) -> Result<DagNode, crate::dag::store::DagStoreError> {
+fn node_by_id<'a>(record: &'a DagRunRecordV1, node_id: &DagNodeId) -> Result<&'a DagNode, crate::dag::store::DagStoreError> {
     record
         .nodes
         .iter()
         .find(|node| &node.id == node_id)
-        .cloned()
         .ok_or_else(|| crate::dag::store::DagStoreError::Message(format!("unknown DAG node \"{node_id}\"")))
 }
 

@@ -45,13 +45,14 @@ pub fn read_yield_events(tasks: &TaskRecordStore, pool_id: &str, task_id: &str, 
     let path = tasks.state_dir().join("logs").join(format!("{task_id}.jsonl"));
     let bytes = match std::fs::read_to_string(path) { Ok(bytes) => bytes, Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]), Err(error) => return Err(error) };
     let mut events = Vec::new();
+    let last_index = bytes.split('\n').count() - 1;
     for (index, line) in bytes.split('\n').enumerate() {
         if line.is_empty() { continue; }
         // Most log lines are unrelated task events: validate their envelope without building a Value.
         if !line.contains("workpool_yield") {
-            match serde_json::from_str::<EventEnvelopeShape>(line) { Ok(_) => continue, Err(_) if index == bytes.split('\n').count() - 1 => break, Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)) }
+            match serde_json::from_str::<EventEnvelopeShape>(line) { Ok(_) => continue, Err(_) if index == last_index => break, Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)) }
         }
-        let envelope: EventEnvelope = match serde_json::from_str(line) { Ok(raw) => raw, Err(_) if index == bytes.split('\n').count() - 1 => break, Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)) };
+        let envelope: EventEnvelope = match serde_json::from_str(line) { Ok(raw) => raw, Err(_) if index == last_index => break, Err(error) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)) };
         if envelope.event_type != "workpool_yield" { continue; }
         let Ok(event) = serde_json::from_value::<WorkpoolYieldEvent>(envelope.payload) else { continue };
         if event.pool_id == pool_id && event.task_id == task_id && event.run_epoch == run_epoch && event.generation == generation { events.push(event); }

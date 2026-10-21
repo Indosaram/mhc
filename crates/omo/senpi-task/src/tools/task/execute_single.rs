@@ -496,9 +496,11 @@ pub fn run_spawn(
                 listener_emitter.schedule();
             }
         });
-    let unsubscribe = deps
-        .manager
-        .subscribe_child(started.task_id(), listener.into());
+    // Progress only feeds `on_update`; without a consumer the per-event accept/schedule is waste.
+    let unsubscribe = emitter.on_update.is_some().then(|| {
+        deps.manager
+            .subscribe_child(started.task_id(), listener.into())
+    });
     if started.status() == "pending" {
         if emitter.on_update.is_some() {
             let details = emitter.queued_details(started.task_id(), started_at);
@@ -559,6 +561,8 @@ pub fn run_spawn(
         }
     };
     emitter.close();
-    unsubscribe();
+    if let Some(unsubscribe) = unsubscribe {
+        unsubscribe();
+    }
     outcome
 }

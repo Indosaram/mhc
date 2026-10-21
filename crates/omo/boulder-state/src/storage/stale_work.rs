@@ -92,12 +92,18 @@ fn reconcile_stale_works_inner(
     let state = read_boulder_state(directory).ok()??;
 
     let now_ms = options.now.unwrap_or_else(now_millis);
-    let threshold_ms = options.threshold_ms.unwrap_or_else(|| {
-        let env = options
-            .env
-            .clone()
-            .unwrap_or_else(process_env);
-        resolve_stale_work_threshold_ms(&env)
+    let threshold_ms = options.threshold_ms.unwrap_or_else(|| match &options.env {
+        Some(env) => resolve_stale_work_threshold_ms(env),
+        None => {
+            // Only the one knob is read; snapshotting the whole process environment on every
+            // read-path call is wasted work.
+            let env: BTreeMap<String, String> = std::env::var_os(STALE_WORK_THRESHOLD_ENV_KEY)
+                .and_then(|value| value.into_string().ok())
+                .map(|value| (STALE_WORK_THRESHOLD_ENV_KEY.to_string(), value))
+                .into_iter()
+                .collect();
+            resolve_stale_work_threshold_ms(&env)
+        }
     });
     let works = work_docs(&state.doc);
     let stale_since = format_iso_millis(now_ms);
@@ -286,13 +292,15 @@ pub fn find_newest_session_transcript_ms_precise(
 }
 
 fn is_transcript_of(file_name: &str, session_ids: &[String]) -> bool {
-    if !file_name.ends_with(SESSION_TRANSCRIPT_SUFFIX) {
+    let Some(stem) = file_name.strip_suffix(SESSION_TRANSCRIPT_SUFFIX) else {
         return false;
-    }
+    };
 
     session_ids.iter().any(|session_id| {
-        file_name == format!("{session_id}{SESSION_TRANSCRIPT_SUFFIX}")
-            || file_name.ends_with(&format!("_{session_id}{SESSION_TRANSCRIPT_SUFFIX}"))
+        stem == session_id.as_str()
+            || stem
+                .strip_suffix(session_id.as_str())
+                .is_some_and(|head| head.ends_with('_'))
     })
 }
 
@@ -340,10 +348,3 @@ fn newest_ms(values: impl IntoIterator<Item = Option<f64>>) -> Option<f64> {
     newest
 }
 
-/// `process.env` as a string map. `vars()` panics on a non-Unicode entry, so the OsString form is
-/// read and entries that cannot be represented are dropped; the threshold knob is ASCII.
-fn process_env() -> BTreeMap<String, String> {
-    std::env::vars_os()
-        .filter_map(|(key, value)| Some((key.to_str()?.to_string(), value.to_str()?.to_string())))
-        .collect()
-}

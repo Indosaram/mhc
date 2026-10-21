@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 
 use regex::Regex;
 use serde_json::json;
@@ -124,10 +124,90 @@ fn trailing_chars(value: &str, limit: usize) -> String {
     value.chars().skip(count.saturating_sub(limit)).collect()
 }
 
+type CatalogResult = Result<(BTreeSet<String>, String), RunnerFailure>;
+
 #[derive(Clone)]
 struct CachedCatalog {
-    catalog: Result<(BTreeSet<String>, String), RunnerFailure>,
+    catalog: CatalogResult,
     cached_at: i64,
+}
+
+/// One catalog probe in progress: concurrent admissions of the same profile wait for its result
+/// instead of each spawning their own `--list-models` child.
+#[derive(Default)]
+struct InFlightProbe {
+    result: Mutex<Option<ModelCatalogProbeResult>>,
+    ready: Condvar,
+}
+
+impl InFlightProbe {
+    fn wait(&self) -> ModelCatalogProbeResult {
+        let mut slot = self.result.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(result) = slot.as_ref() {
+                return result.clone();
+            }
+            slot = self
+                .ready
+                .wait(slot)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+type InFlightProbes = Mutex<HashMap<String, Arc<InFlightProbe>>>;
+
+/// Publishes the leader's probe result to its waiters and retires the in-flight slot, also when
+/// the probe unwinds (waiters then see an aborted-probe failure instead of hanging).
+struct ProbeLeader {
+    in_flight: Arc<InFlightProbes>,
+    key: String,
+    flight: Arc<InFlightProbe>,
+    outcome: Option<ModelCatalogProbeResult>,
+}
+
+impl Drop for ProbeLeader {
+    fn drop(&mut self) {
+        let outcome = self.outcome.take().unwrap_or_else(|| ModelCatalogProbeResult {
+            stderr: "catalog probe aborted".to_string(),
+            ..ModelCatalogProbeResult::default()
+        });
+        *self
+            .flight
+            .result
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+        self.in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.key);
+        self.flight.ready.notify_all();
+    }
+}
+
+fn build_catalog(model: &str, result: &ModelCatalogProbeResult) -> CatalogResult {
+    if result.timed_out {
+        Err(admission_failure(model, "catalog probe timed out"))
+    } else if result.code != Some(0) {
+        let detail = trailing_chars(result.stderr.trim(), 2_000);
+        let code = result
+            .code
+            .map_or_else(|| "null".to_string(), |code| code.to_string());
+        let suffix = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        };
+        Err(admission_failure(
+            model,
+            &format!("catalog probe exited {code}{suffix}"),
+        ))
+    } else {
+        Ok((
+            parse_model_catalog(&result.stdout),
+            trailing_chars(result.stderr.trim(), 1_000),
+        ))
+    }
 }
 
 pub fn create_rpc_model_admission(options: RpcModelAdmissionOptions) -> RpcModelAdmission {
@@ -142,6 +222,7 @@ pub fn create_rpc_model_admission(options: RpcModelAdmissionOptions) -> RpcModel
         .now
         .unwrap_or_else(|| Arc::new(|| chrono::Utc::now().timestamp_millis()));
     let catalogs: Arc<Mutex<HashMap<String, CachedCatalog>>> = Arc::default();
+    let in_flight: Arc<InFlightProbes> = Arc::default();
     Arc::new(move |spec| {
         let Some(model) = spec
             .model
@@ -162,43 +243,48 @@ pub fn create_rpc_model_admission(options: RpcModelAdmissionOptions) -> RpcModel
         let catalog = match fresh {
             Some(cached) => cached.catalog,
             None => {
-                let result = probe(&descriptor);
-                let catalog = if result.timed_out {
-                    Err(admission_failure(model, "catalog probe timed out"))
-                } else if result.code != Some(0) {
-                    let detail = trailing_chars(result.stderr.trim(), 2_000);
-                    let code = result
-                        .code
-                        .map_or_else(|| "null".to_string(), |code| code.to_string());
-                    let suffix = if detail.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {detail}")
-                    };
-                    Err(admission_failure(
-                        model,
-                        &format!("catalog probe exited {code}{suffix}"),
-                    ))
-                } else {
-                    Ok((
-                        parse_model_catalog(&result.stdout),
-                        trailing_chars(result.stderr.trim(), 1_000),
-                    ))
+                let (flight, leads) = {
+                    let mut slots = in_flight.lock().unwrap_or_else(PoisonError::into_inner);
+                    match slots.get(&key) {
+                        Some(flight) => (Arc::clone(flight), false),
+                        None => {
+                            let flight = Arc::new(InFlightProbe::default());
+                            slots.insert(key.clone(), Arc::clone(&flight));
+                            (flight, true)
+                        }
+                    }
                 };
-                let cached_at = now();
-                let mut cache = catalogs.lock().unwrap_or_else(PoisonError::into_inner);
-                // Expired entries are already ignored by lookups; evict them so distinct
-                // profiles (per-task cwd) do not accumulate for the runner's lifetime.
-                cache.retain(|_, cached| cached_at - cached.cached_at < MODEL_CATALOG_CACHE_TTL_MS);
-                cache.insert(
-                    key.clone(),
-                    CachedCatalog {
-                        catalog: catalog.clone(),
-                        cached_at,
-                    },
-                );
-                drop(cache);
-                catalog
+                if leads {
+                    let mut leader = ProbeLeader {
+                        in_flight: Arc::clone(&in_flight),
+                        key: key.clone(),
+                        flight,
+                        outcome: None,
+                    };
+                    let result = probe(&descriptor);
+                    let catalog = build_catalog(model, &result);
+                    let cached_at = now();
+                    let mut cache = catalogs.lock().unwrap_or_else(PoisonError::into_inner);
+                    // Expired entries are already ignored by lookups; evict them so distinct
+                    // profiles (per-task cwd) do not accumulate for the runner's lifetime.
+                    cache.retain(|_, cached| {
+                        cached_at - cached.cached_at < MODEL_CATALOG_CACHE_TTL_MS
+                    });
+                    cache.insert(
+                        key.clone(),
+                        CachedCatalog {
+                            catalog: catalog.clone(),
+                            cached_at,
+                        },
+                    );
+                    drop(cache);
+                    // The cache is filled before the slot is retired, so a later arrival hits it.
+                    leader.outcome = Some(result);
+                    drop(leader);
+                    catalog
+                } else {
+                    build_catalog(model, &flight.wait())
+                }
             }
         };
         let verdict = catalog.and_then(|(models, stderr_tail)| {

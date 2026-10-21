@@ -1,5 +1,6 @@
 //! Session-start reconciliation (`lifecycle/reconcile.ts`).
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde_json::json;
@@ -11,7 +12,7 @@ use super::port::{
     DestroyCause, ReattachFailureKind, ReattachResult, RespawnResult, get_lifecycle_reattach_ports,
 };
 use super::reconcile_crashed_resident::{lost_reason, reconcile_lost_event};
-use super::reconcile_reclamation::{begin_local_reclamation, has_live_handle};
+use super::reconcile_reclamation::begin_local_reclamation;
 use super::reconcile_revival::reconcile_scoped_revival;
 use super::residency::{ResidencyClaimResult, is_suspended_residency, reclaim_orphaned_resident};
 use super::ttl::parse_iso_ms;
@@ -36,8 +37,10 @@ pub fn reconcile_on_session_start(
 ) -> Result<ReconcileResult, LifecycleError> {
     let mut outcomes = Vec::new();
     let mut candidates = Vec::new();
+    let mut owner_liveness: HashMap<i64, bool> = HashMap::new();
+    let mut registry_ids: Option<HashSet<String>> = None;
     for record in context.store.list()?.records {
-        if has_foreign_live_owner(context, &record) {
+        if has_foreign_live_owner(context, &record, &mut owner_liveness) {
             outcomes.push(match parent_session_id {
                 None => outcome(
                     &record.task_id,
@@ -51,7 +54,7 @@ pub fn reconcile_on_session_start(
             });
             continue;
         }
-        if has_live_handle(context, &record.task_id) {
+        if has_registered_handle(context, &record.task_id, &mut registry_ids) {
             outcomes.push(outcome(&record.task_id, Resumed, "owned by this process"));
             continue;
         }
@@ -365,10 +368,38 @@ fn reattach_legacy_record(
     ))
 }
 
-fn has_foreign_live_owner(context: &LifecycleContext, record: &TaskRecord) -> bool {
-    record
-        .host_pid
-        .is_some_and(|pid| pid != context.host_pid && context.signaller.is_alive(pid))
+/// Probes each distinct foreign owner pid once per pass: many records share one live owner.
+fn has_foreign_live_owner(
+    context: &LifecycleContext,
+    record: &TaskRecord,
+    liveness: &mut HashMap<i64, bool>,
+) -> bool {
+    record.host_pid.is_some_and(|pid| {
+        pid != context.host_pid
+            && *liveness
+                .entry(pid)
+                .or_insert_with(|| context.signaller.is_alive(pid))
+    })
+}
+
+/// `has_live_handle` with the registry's `entries()` fallback snapshotted once per pass instead of
+/// rebuilt for every record that misses the point lookup.
+fn has_registered_handle(
+    context: &LifecycleContext,
+    task_id: &str,
+    entry_ids: &mut Option<HashSet<String>>,
+) -> bool {
+    context.registry.get(task_id).is_some()
+        || entry_ids
+            .get_or_insert_with(|| {
+                context
+                    .registry
+                    .entries()
+                    .iter()
+                    .map(|handle| handle.task_id().to_string())
+                    .collect()
+            })
+            .contains(task_id)
 }
 
 /// `<stateDir>/children/<id>/sessions/<id>/` (`resolveChildSessionDir` in `runners/rpc/spawn.ts`).

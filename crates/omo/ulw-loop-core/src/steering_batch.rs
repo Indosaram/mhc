@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::domain_types::{UlwLoopLedgerEntry, UlwLoopPlan};
 use crate::paths::UlwLoopScope;
 use crate::plan_commit::{commit, CommitMutation};
-use crate::plan_io::{find_accepted_steering_ledger_entry, read_ulw_loop_plan, with_ulw_loop_mutation_lock};
+use crate::plan_io::{find_accepted_steering_entry, read_ledger, read_ulw_loop_plan, with_ulw_loop_mutation_lock};
 use crate::runtime::{iso, UlwLoopError};
 use crate::steering::{apply_steering_mutation, validate_ulw_loop_steering_proposal};
 use crate::steering_snapshot::{build_steering_plan_snapshot, changed_goal_ids_between};
@@ -88,6 +88,8 @@ pub fn steer_ulw_loop_batch(
         let mut items = Vec::new();
         let mut results = Vec::new();
         let mut current = plan.clone();
+        // The ledger cannot change before the final commit, so read it once, on first use.
+        let mut ledger: Option<Vec<UlwLoopLedgerEntry>> = None;
 
         for proposal in proposals {
             let key = proposal
@@ -95,7 +97,14 @@ pub fn steer_ulw_loop_batch(
                 .as_deref()
                 .or(proposal.prompt_signature.as_deref());
 
-            let prior = key.and_then(|k| find_accepted_steering_ledger_entry(&repo_root, k, scope));
+            let prior = match key {
+                Some(k) => find_accepted_steering_entry(
+                    ledger.get_or_insert_with(|| read_ledger(&repo_root, scope)),
+                    k,
+                )
+                .cloned(),
+                None => None,
+            };
 
             if let Some(p) = prior {
                 if let Some(mut st) = p.steering {

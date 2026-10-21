@@ -34,7 +34,7 @@ pub fn render_transcript(entries: &[TranscriptEntry], options: &RenderOptions) -
     };
     let tail: Vec<String> = kept.iter().map(render_entry).collect();
     let joined = tail.join("\n");
-    let (text, elided) = cap_text(&joined);
+    let (text, elided) = cap_text(joined);
     RenderedTranscript {
         text,
         truncated: cut || elided,
@@ -66,10 +66,14 @@ fn marker(elided: usize) -> String {
 }
 
 /// Lengths and slicing follow JS semantics (UTF-16 code units).
-fn cap_text(text: &str) -> (String, bool) {
+fn cap_text(text: String) -> (String, bool) {
+    // UTF-16 units never outnumber UTF-8 bytes, so a short string needs no unit buffer or copy.
+    if text.len() <= TRANSCRIPT_MAX_CHARS {
+        return (text, false);
+    }
     let units: Vec<u16> = text.encode_utf16().collect();
     if units.len() <= TRANSCRIPT_MAX_CHARS {
-        return (text.to_string(), false);
+        return (text, false);
     }
     let budget = TRANSCRIPT_MAX_CHARS.saturating_sub(marker(units.len()).encode_utf16().count());
     let head_len = budget / 2;

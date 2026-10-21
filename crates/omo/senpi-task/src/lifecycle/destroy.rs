@@ -84,7 +84,7 @@ pub(crate) fn term_then_kill(
         return Ok(true);
     }
     signal_and_record(context, task_id, pid, OrphanSignal::Term)?;
-    context.delay_orphan_kill();
+    context.delay_orphan_kill(pid);
     if context.signaller.is_alive(pid) {
         signal_and_record(context, task_id, pid, OrphanSignal::Kill)?;
     }

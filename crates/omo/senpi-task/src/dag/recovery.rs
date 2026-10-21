@@ -88,6 +88,11 @@ impl crate::dag::journal::DagJournalCheckpoint for RecoverableRecord {
             ..self.clone()
         }
     }
+
+    fn with_checkpoint_seq_owned(mut self, checkpoint_seq: u64) -> Self {
+        self.record.checkpoint_seq = checkpoint_seq;
+        self
+    }
 }
 
 pub struct DagRecoveryOptions {

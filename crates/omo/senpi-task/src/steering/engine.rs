@@ -139,13 +139,11 @@ impl SteeringEngine {
         if let Some(record) = self.try_load(id_or_name) {
             return Ok(Some(record));
         }
+        // Same sorted order as `list`, but stops at the match and clones only that record.
         Ok(self
             .port
             .store
-            .list()?
-            .records
-            .into_iter()
-            .find(|record| record.name.as_deref() == Some(id_or_name)))
+            .find_record(|record| record.name.as_deref() == Some(id_or_name))?)
     }
 
     pub fn send_to_task(&self, input: &SendInput) -> Result<SendOutcome, SteeringError> {

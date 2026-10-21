@@ -111,7 +111,7 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
                 return;
             }
             if !request.bind(&task_id, u32::try_from(epoch).unwrap_or_default()) { manager.release_reserved_slot(&task_id, &model, epoch); return; }
-            let pool = request.pool().clone();
+            let pool = request.pool();
             let mut spec = pool.worker_spec.clone();
             spec.start.prompt = format!("{}\n\n{}", request.item().input, crate::workpool::worker_turn::WORKPOOL_TURN_MESSAGE);
             if pool.kernel_tool_names.as_ref().is_some_and(|names| !names.is_empty()) {

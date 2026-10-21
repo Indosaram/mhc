@@ -1,5 +1,6 @@
 //! isolation/settle.ts: merge (or retain) an isolated child's clone at the end of its run.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use isolation_core::{IsolationHandle, WorktreeBaseline};
@@ -35,9 +36,9 @@ pub fn settle_isolation(input: &SettleIsolationInput<'_>) -> IsolationMergeResul
     let elapsed = |now: u64| now.saturating_sub(started);
 
     let baseline = match input.baseline {
-        Some(baseline) => baseline.clone(),
+        Some(baseline) => Cow::Borrowed(baseline),
         None => match read_baseline(input.state_dir, input.task_id) {
-            Ok(Some(baseline)) => baseline,
+            Ok(Some(baseline)) => Cow::Owned(baseline),
             Ok(None) => {
                 return IsolationMergeResult::retained(
                     Some(
@@ -81,7 +82,7 @@ pub fn settle_isolation(input: &SettleIsolationInput<'_>) -> IsolationMergeResul
         apply: input.merge && input.isolation.apply,
         repo_root: baseline.root.repo_root.clone(),
         isolation_dir: PathBuf::from(&input.isolation.merged_dir),
-        baseline: baseline.clone(),
+        baseline: baseline.into_owned(),
         delta: Some(delta),
     };
     let core = match input.runtime.merge(options) {

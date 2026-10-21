@@ -57,7 +57,8 @@ impl TaskStatusUi {
         let active: Vec<_> = records.iter().filter(|record| !is_terminal(record.status) && self.manager.was_background(&record.task_id)).map(|record| record.task_id.clone()).collect();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.records = records;
-        let stale: Vec<_> = state.subscriptions.keys().filter(|id| !active.contains(id)).cloned().collect();
+        let active_ids: std::collections::HashSet<&str> = active.iter().map(String::as_str).collect();
+        let stale: Vec<_> = state.subscriptions.keys().filter(|id| !active_ids.contains(id.as_str())).cloned().collect();
         for id in stale { if let Some(unsubscribe) = state.subscriptions.remove(&id) { unsubscribe(); } state.activity.remove(&id); }
         for id in active {
             if state.subscriptions.contains_key(&id) { continue }

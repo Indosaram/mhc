@@ -56,6 +56,8 @@ pub struct ChildProgressTarget {
 
 pub struct ChildProgress<C: Fn() -> u64> {
     task_id: String,
+    // Name, description, summary and id never change after creation, so the label is built once.
+    identity: String,
     target: ChildProgressTarget,
     started_at: u64,
     now: C,
@@ -74,8 +76,15 @@ pub fn create_child_progress<C: Fn() -> u64 + Clone>(
     started_at: u64,
     now: C,
 ) -> ChildProgress<C> {
+    let identity = task_identity_label(&TaskIdentityInput {
+        task_id,
+        name: target.name.as_deref(),
+        description: target.description.as_deref(),
+        task_summary: target.task_summary.as_deref(),
+    });
     ChildProgress {
         task_id: task_id.to_string(),
+        identity,
         target,
         started_at,
         tracker: create_run_stats_tracker(started_at, now.clone()),
@@ -171,12 +180,6 @@ impl<C: Fn() -> u64> ChildProgress<C> {
 
     fn activity(&self, stats: &TaskRunStats) -> String {
         let target = &self.target;
-        let identity = task_identity_label(&TaskIdentityInput {
-            task_id: &self.task_id,
-            name: target.name.as_deref(),
-            description: target.description.as_deref(),
-            task_summary: target.task_summary.as_deref(),
-        });
         let status_target = format_status_target(&StatusTargetInput {
             category: target.category.as_deref(),
             agent_type: target.agent_type.as_deref(),
@@ -202,7 +205,7 @@ impl<C: Fn() -> u64> ChildProgress<C> {
             self.awaiting_input,
         );
         compose_status_line(&StatusLineInput {
-            identity: &identity,
+            identity: &self.identity,
             target: status_target.as_deref(),
             stats: Some(&line_stats),
             verb: Some(&verb),
@@ -324,6 +327,10 @@ fn last_non_empty_line(text: &str) -> String {
 }
 
 fn truncate(text: &str, maximum: usize) -> String {
+    // UTF-16 units never exceed UTF-8 bytes, so a short byte length skips the unit scan.
+    if text.len() <= maximum {
+        return text.to_string();
+    }
     let units: Vec<u16> = text.encode_utf16().collect();
     if units.len() <= maximum {
         return text.to_string();

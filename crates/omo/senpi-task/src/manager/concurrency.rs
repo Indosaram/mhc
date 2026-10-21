@@ -66,14 +66,19 @@ impl TaskConcurrency {
     }
 
     pub fn get_key(&self, model: &str) -> String {
+        self.key_of(model).to_string()
+    }
+
+    /// The slot key borrowed from `model`, so the per-dispatch capacity probes never allocate.
+    fn key_of<'a>(&self, model: &'a str) -> &'a str {
         if own(self.config.model_concurrency.as_ref(), model).is_some() {
-            return model.to_string();
+            return model;
         }
         let provider = provider_of(model);
         if own(self.config.provider_concurrency.as_ref(), provider).is_some() {
-            return provider.to_string();
+            return provider;
         }
-        model.to_string()
+        model
     }
 
     pub fn has_free_slot(&self, model: &str) -> bool {
@@ -87,7 +92,13 @@ impl TaskConcurrency {
         if self.get_limit(model).is_none() {
             return;
         }
-        *self.counts.entry(self.get_key(model)).or_default() += 1;
+        let key = self.key_of(model);
+        match self.counts.get_mut(key) {
+            Some(count) => *count += 1,
+            None => {
+                self.counts.insert(key.to_string(), 1);
+            }
+        }
     }
 
     pub fn enqueue(&mut self, model: &str, task_id: &str, grant: Grant) -> usize {
@@ -101,14 +112,14 @@ impl TaskConcurrency {
 
     pub fn queue_position(&self, model: &str, task_id: &str) -> Option<usize> {
         self.queues
-            .get(&self.get_key(model))?
+            .get(self.key_of(model))?
             .iter()
             .position(|waiter| waiter.task_id == task_id)
             .map(|index| index + 1)
     }
 
     pub fn remove(&mut self, model: &str, task_id: &str) -> bool {
-        let Some(queue) = self.queues.get_mut(&self.get_key(model)) else {
+        let Some(queue) = self.queues.get_mut(self.key_of(model)) else {
             return false;
         };
         match queue.iter().position(|waiter| waiter.task_id == task_id) {
@@ -120,11 +131,11 @@ impl TaskConcurrency {
     /// Hands the slot to the next waiter, returning its grant for the caller to run outside any
     /// lock; with no waiter the count drops instead.
     pub fn release(&mut self, model: &str) -> Option<Grant> {
-        let key = self.get_key(model);
-        if let Some(next) = self.queues.get_mut(&key).and_then(VecDeque::pop_front) {
+        let key = self.key_of(model);
+        if let Some(next) = self.queues.get_mut(key).and_then(VecDeque::pop_front) {
             return Some(next.grant);
         }
-        if let Some(count) = self.counts.get_mut(&key)
+        if let Some(count) = self.counts.get_mut(key)
             && *count > 0
         {
             *count -= 1;
@@ -133,6 +144,6 @@ impl TaskConcurrency {
     }
 
     pub fn get_count(&self, model: &str) -> usize {
-        self.counts.get(&self.get_key(model)).copied().unwrap_or(0)
+        self.counts.get(self.key_of(model)).copied().unwrap_or(0)
     }
 }
