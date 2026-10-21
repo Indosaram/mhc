@@ -18,38 +18,28 @@ use crate::types::{BoulderWorkResumeOption, BoulderWorkStatus, WorkLookupOptions
 /// Read `<directory>/.omo/boulder.json`, normalize session ids and project the active
 /// work onto the root mirror.
 ///
-/// A missing file or an empty `{}` document is `Ok(None)`. A file that exists but is not
-/// a JSON object whose `works` entries are objects is an error.
+/// Unreadable, malformed, empty and non-object documents yield `Ok(None)`.
 pub fn read_boulder_state(directory: &Path) -> Result<Option<BoulderState>, BoulderStateError> {
     let path = get_boulder_file_path(directory);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(BoulderStateError::Read { path, source }),
+        Err(_) => return Ok(None),
     };
     let content = String::from_utf8_lossy(&bytes);
-    let parsed: Value =
-        serde_json::from_str(&content).map_err(|source| BoulderStateError::InvalidJson {
-            path: path.clone(),
-            source,
-        })?;
+    let Ok(parsed) = serde_json::from_str::<Value>(&content) else {
+        return Ok(None);
+    };
     let mut state = match Js::from_value(parsed) {
         Js::Object(state) => state,
         Js::Undefined | Js::Value(_) => {
-            return Err(BoulderStateError::InvalidShape {
-                path,
-                reason: "root is not a JSON object",
-            });
+            return Ok(None);
         }
     };
     if state.is_empty() {
         return Ok(None);
     }
     if !has_valid_works(&state) {
-        return Err(BoulderStateError::InvalidShape {
-            path,
-            reason: "`works` is not an object of work objects",
-        });
+        return Ok(None);
     }
 
     normalize_state(&mut state);
@@ -61,13 +51,12 @@ pub fn read_boulder_state(directory: &Path) -> Result<Option<BoulderState>, Boul
 }
 
 /// Shapes of `works` on which the TypeScript reader throws (and reports "no state"):
-/// `Object.values(works)` yielding a non-object entry. Arrays of work objects are also
-/// rejected here (see `parity.md`).
+/// `Object.values(works)` yielding a non-object entry.
 fn has_valid_works(state: &JsObj) -> bool {
     match state.get("works") {
         None | Some(Js::Value(Value::Null | Value::Bool(_) | Value::Number(_))) => true,
         Some(Js::Value(Value::String(text))) => text.is_empty(),
-        Some(Js::Value(Value::Array(items))) => items.is_empty(),
+        Some(Js::Value(Value::Array(items))) => items.iter().all(Value::is_object),
         Some(Js::Object(works)) => works.values().all(|work| matches!(work, Js::Object(_))),
         Some(Js::Undefined | Js::Value(Value::Object(_))) => false,
     }
@@ -133,11 +122,10 @@ pub fn get_boulder_works(state: &BoulderState) -> Vec<BoulderWorkState> {
 }
 
 pub(crate) fn work_docs(state: &JsObj) -> Vec<JsObj> {
-    if state.get_obj("works").is_some() {
+    if state.get_obj("works").is_some()
+        || matches!(state.get("works"), Some(Js::Value(Value::Array(_))))
+    {
         return work_objects(state);
-    }
-    if matches!(state.get("works"), Some(Js::Value(Value::Array(_)))) {
-        return Vec::new();
     }
     let legacy_fields_present = ["active_plan", "plan_name", "started_at"]
         .iter()

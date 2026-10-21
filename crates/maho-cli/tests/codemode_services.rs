@@ -6,16 +6,16 @@ async fn configured_completion_callback_consumes_native_sdk_context() {
     let cwd = dir.path().to_string_lossy().into_owned();
     // senpi test/suite/harness.ts:124-175: an API-registry faux stream with the provider registered over it
     // and a configured key; a native faux base would resolve its own `{ auth: {} }` (faux.ts:798) instead.
-    let provider = maho_ai::providers::faux::register_faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
+    let provider = maho_ai::compat::register_faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
         api: Some("codemode-services-faux".into()), tokens_per_second: Some(0.0), models: Some(["first", "second"].map(|id|
             maho_ai::providers::faux::FauxModelDefinition { id: id.into(), cost: Some(maho_ai::types::ModelCost {
                 input: 1.0, output: 2.0, ..Default::default()
             }), ..Default::default() }).to_vec()), ..Default::default()
-    });
+    }).expect("registered faux API");
     provider.set_responses((0..3).map(|_| maho_ai::providers::faux::faux_assistant_message("native completion", Default::default()).into()).collect());
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         providers: Some(Vec::new()), ..Default::default()
-    });
+    }).expect("valid model runtime");
     runtime.register_provider("faux", maho_core::provider_composer::ProviderConfigInput {
         config: maho_core::model_config_schema::ModelsJsonProvider {
             api_key: Some("fixture-key".into()), api: Some(provider.api.clone()), base_url: Some(provider.models[0].base_url.clone()),

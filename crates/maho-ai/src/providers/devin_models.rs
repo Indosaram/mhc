@@ -12,6 +12,8 @@ fn devin_model(id: &str, name: &str, context_window: u64) -> Model {
     let mut compat = Map::new();
     compat.insert("supportsParallelToolCalls".to_owned(), Value::Bool(true));
     Model {
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         id: id.to_owned(),
         name: name.to_owned(),
         api: "devin-agent".to_owned(),

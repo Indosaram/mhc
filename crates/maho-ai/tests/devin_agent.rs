@@ -15,18 +15,18 @@ use axum::routing::any;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use maho_ai::api::devin_agent::r#gen::cascade_pb::{
-    AssignModelRequest, AssignModelResponse, ChatMessageSource, GetChatMessageRequest, GetChatMessageResponse,
-    GetUserJwtRequest, GetUserJwtResponse, ModelAssignment, StopReason,
+    AssignModelRequest, AssignModelResponse, ChatMessageSource, GetChatMessageRequest,
+    GetChatMessageResponse, GetUserJwtRequest, GetUserJwtResponse, ModelAssignment, StopReason,
 };
 use maho_ai::api::devin_agent::wire::{
-    build_devin_chat_request, build_devin_router_prompt, decode_devin_frames, devin_cli_metadata,
-    devin_discovery_metadata, encode_devin_request_frame, normalize_devin_session_token, read_devin_trailer_error,
-    DevinChatRequestInput, DevinFrame, DEVIN_ASSIGN_MODEL_PATH, DEVIN_CHAT_MESSAGE_PATH, DEVIN_CLI_MODEL_CONFIGS_PATH,
-    DEVIN_USER_JWT_PATH,
+    DEVIN_ASSIGN_MODEL_PATH, DEVIN_CHAT_MESSAGE_PATH, DEVIN_CLI_MODEL_CONFIGS_PATH,
+    DEVIN_USER_JWT_PATH, DevinChatRequestInput, DevinFrame, build_devin_chat_request,
+    build_devin_router_prompt, decode_devin_frames, devin_cli_metadata, devin_discovery_metadata,
+    encode_devin_request_frame, normalize_devin_session_token, read_devin_trailer_error,
 };
 use maho_ai::types::{
-    AssistantMessageEvent, Context, ContentBlock, ImageContent, Message, Model, ModelCost, StopReason as MessageStopReason,
-    StreamOptions, Tool, ToolCall, UserContent, UserMessage,
+    AssistantMessageEvent, ContentBlock, Context, ImageContent, Message, Model, ModelCost,
+    StopReason as MessageStopReason, StreamOptions, Tool, ToolCall, UserContent, UserMessage,
 };
 use maho_ai::utils::abort::{AbortController, AbortReason};
 use prost::Message as ProstMessage;
@@ -42,6 +42,8 @@ fn model(base_url: &str) -> Model {
         base_url: base_url.into(),
         reasoning: true,
         thinking_level_map: None,
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         input: vec![maho_ai::types::InputModality::Text],
         cost: ModelCost::default(),
         context_window: 200_000,
@@ -60,16 +62,24 @@ fn model(base_url: &str) -> Model {
 
 fn context() -> Context {
     Context {
+        active_tool_names: None,
         system_prompt: Some("sys".into()),
-        messages: vec![Message::User(UserMessage { content: UserContent::Text("hi".into()), timestamp: 0 })],
+        messages: vec![Message::User(UserMessage {
+            content: UserContent::Text("hi".into()),
+            timestamp: 0,
+        })],
         tools: None,
     }
 }
 
 fn wire_context() -> Context {
     Context {
+        active_tool_names: None,
         system_prompt: Some("You are senpi.\n\nBe precise.".into()),
-        messages: vec![Message::User(UserMessage { content: UserContent::Text("hello".into()), timestamp: 0 })],
+        messages: vec![Message::User(UserMessage {
+            content: UserContent::Text("hello".into()),
+            timestamp: 0,
+        })],
         tools: None,
     }
 }
@@ -117,23 +127,40 @@ fn find_string_field(bytes: &[u8], field_number: u32) -> Option<String> {
 fn is_uuid_shape(value: &str) -> bool {
     value.len() == UUID_SHAPE_LEN
         && value.split('-').map(str::len).collect::<Vec<_>>() == vec![8, 4, 4, 4, 12]
-        && value.chars().all(|character| character.is_ascii_hexdigit() || character == '-')
+        && value
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
 }
 
 // ---------------------------------------------------------------- wire
 
 #[test]
 fn pins_the_cascade_rpc_paths_the_released_cli_calls() {
-    assert_eq!(DEVIN_CHAT_MESSAGE_PATH, "/exa.api_server_pb.ApiServerService/GetChatMessage");
-    assert_eq!(DEVIN_CLI_MODEL_CONFIGS_PATH, "/exa.api_server_pb.ApiServerService/GetCliModelConfigs");
+    assert_eq!(
+        DEVIN_CHAT_MESSAGE_PATH,
+        "/exa.api_server_pb.ApiServerService/GetChatMessage"
+    );
+    assert_eq!(
+        DEVIN_CLI_MODEL_CONFIGS_PATH,
+        "/exa.api_server_pb.ApiServerService/GetCliModelConfigs"
+    );
     assert_eq!(DEVIN_USER_JWT_PATH, "/exa.auth_pb.AuthService/GetUserJwt");
-    assert_eq!(DEVIN_ASSIGN_MODEL_PATH, "/exa.api_server_pb.ApiServerService/AssignModel");
+    assert_eq!(
+        DEVIN_ASSIGN_MODEL_PATH,
+        "/exa.api_server_pb.ApiServerService/AssignModel"
+    );
 }
 
 #[test]
 fn prefixes_the_session_token_exactly_once() {
-    assert_eq!(normalize_devin_session_token(Some("abc")), "devin-session-token$abc");
-    assert_eq!(normalize_devin_session_token(Some("devin-session-token$abc")), "devin-session-token$abc");
+    assert_eq!(
+        normalize_devin_session_token(Some("abc")),
+        "devin-session-token$abc"
+    );
+    assert_eq!(
+        normalize_devin_session_token(Some("devin-session-token$abc")),
+        "devin-session-token$abc"
+    );
     assert_eq!(normalize_devin_session_token(None), "");
 }
 
@@ -201,13 +228,19 @@ async fn frames_a_request_as_one_gzipped_connect_frame() {
     })
     .await
     .expect("frames decode");
-    let DevinFrame::Message(message) = &decoded[0] else { panic!("expected a message frame") };
+    let DevinFrame::Message(message) = &decoded[0] else {
+        panic!("expected a message frame")
+    };
     assert_eq!(message.prompt, "You are senpi.\n\nBe precise.");
 }
 
 #[tokio::test]
 async fn decodes_a_streamed_response_and_surfaces_the_end_of_stream_trailer() {
-    let first = frame_of(GetChatMessageResponse { message_id: "m1".into(), delta_text: "he".into(), ..Default::default() });
+    let first = frame_of(GetChatMessageResponse {
+        message_id: "m1".into(),
+        delta_text: "he".into(),
+        ..Default::default()
+    });
     let second = frame_of(GetChatMessageResponse {
         message_id: "m1".into(),
         delta_text: "llo".into(),
@@ -235,7 +268,9 @@ async fn decodes_a_streamed_response_and_surfaces_the_end_of_stream_trailer() {
         })
         .collect();
     assert_eq!(deltas, vec![Some("he".into()), Some("llo".into()), None]);
-    let Some(DevinFrame::Trailer(trailer)) = decoded.last() else { panic!("expected a trailer frame") };
+    let Some(DevinFrame::Trailer(trailer)) = decoded.last() else {
+        panic!("expected a trailer frame")
+    };
     assert_eq!(trailer, "{\"metadata\":{}}");
 }
 
@@ -262,21 +297,27 @@ async fn rejects_a_frame_whose_length_prefix_exceeds_the_payload_cap() {
     let error = decode_devin_frames::<GetChatMessageResponse, _, _>(one_shot(bogus), |_| Ok(()))
         .await
         .expect_err("a hostile length prefix must be rejected");
-    assert!(error.to_string().contains("cap"), "unexpected error: {error}");
+    assert!(
+        error.to_string().contains("cap"),
+        "unexpected error: {error}"
+    );
 }
 
 // ---------------------------------------------------------------- request
 
 fn request_context() -> Context {
     Context {
+        active_tool_names: None,
         system_prompt: Some("You are senpi.\n\nBe precise.".into()),
         messages: vec![
             Message::User(UserMessage {
-                content: UserContent::Blocks(vec![ContentBlock::Text(maho_ai::types::TextContent {
-                    text: "hello".into(),
-                    audience: None,
-                    text_signature: None,
-                })]),
+                content: UserContent::Blocks(vec![ContentBlock::Text(
+                    maho_ai::types::TextContent {
+                        text: "hello".into(),
+                        audience: None,
+                        text_signature: None,
+                    },
+                )]),
                 timestamp: 0,
             }),
             Message::Assistant(Box::new(foreign_assistant_message(vec![
@@ -287,11 +328,17 @@ fn request_context() -> Context {
                     thinking_signature: Some("sig-1".into()),
                     redacted: None,
                 }),
-                ContentBlock::Text(maho_ai::types::TextContent { text: "hi".into(), audience: None, text_signature: None }),
+                ContentBlock::Text(maho_ai::types::TextContent {
+                    text: "hi".into(),
+                    audience: None,
+                    text_signature: None,
+                }),
                 ContentBlock::ToolCall(ToolCall {
                     id: "call-1".into(),
                     name: "read".into(),
-                    arguments: [("path".to_owned(), serde_json::json!("a.ts"))].into_iter().collect(),
+                    arguments: [("path".to_owned(), serde_json::json!("a.ts"))]
+                        .into_iter()
+                        .collect(),
                     incomplete: None,
                     error_message: None,
                     thought_signature: None,
@@ -308,6 +355,7 @@ fn request_context() -> Context {
                 })],
                 details: None,
                 usage: None,
+                nested_calls: None,
                 added_tool_names: None,
                 is_error: false,
                 timestamp: 0,
@@ -336,6 +384,10 @@ fn foreign_assistant_message(content: Vec<ContentBlock>) -> maho_ai::types::Assi
 
 fn assistant_message(content: Vec<ContentBlock>) -> maho_ai::types::AssistantMessage {
     maho_ai::types::AssistantMessage {
+        thinking_level: None,
+        provider_diagnostic: None,
+        prompt_cache_diagnostics: None,
+        error_cause: None,
         content,
         api: "devin-agent".into(),
         provider: "devin".into(),
@@ -356,7 +408,11 @@ fn assistant_message(content: Vec<ContentBlock>) -> maho_ai::types::AssistantMes
     }
 }
 
-fn build_request(model: &Model, context: &Context, assignment: Option<&maho_ai::api::devin_agent::wire::DevinModelAssignment>) -> GetChatMessageRequest {
+fn build_request(
+    model: &Model,
+    context: &Context,
+    assignment: Option<&maho_ai::api::devin_agent::wire::DevinModelAssignment>,
+) -> GetChatMessageRequest {
     build_devin_chat_request(&DevinChatRequestInput {
         model,
         context,
@@ -373,7 +429,11 @@ fn build_request(model: &Model, context: &Context, assignment: Option<&maho_ai::
 
 #[test]
 fn flattens_the_system_prompt_and_orders_history_with_cascade_roles() {
-    let request = build_request(&model("https://server.codeium.com"), &request_context(), None);
+    let request = build_request(
+        &model("https://server.codeium.com"),
+        &request_context(),
+        None,
+    );
 
     assert_eq!(request.prompt, "You are senpi.\n\nBe precise.");
     assert_eq!(request.chat_model_uid, "swe-1-6");
@@ -384,7 +444,11 @@ fn flattens_the_system_prompt_and_orders_history_with_cascade_roles() {
     assert_eq!(metadata.api_key, "devin-session-token$abc");
     assert_eq!(metadata.user_jwt, "jwt-1");
     assert_eq!(metadata.ide_name, "devin-cli");
-    let sources: Vec<i32> = request.chat_message_prompts.iter().map(|prompt| prompt.source).collect();
+    let sources: Vec<i32> = request
+        .chat_message_prompts
+        .iter()
+        .map(|prompt| prompt.source)
+        .collect();
     assert_eq!(sources, vec![1, 2, 4]);
     assert_eq!(request.chat_message_prompts[0].prompt, "hello");
     assert_eq!(request.chat_message_prompts[1].thinking, "considering");
@@ -400,9 +464,17 @@ fn flattens_the_system_prompt_and_orders_history_with_cascade_roles() {
     assert_eq!(tool.name, "read");
     assert_eq!(tool.description, "Read a file");
     assert!(!tool.strict);
-    let schema: serde_json::Value = serde_json::from_str(&tool.json_schema_string).expect("schema json");
+    let schema: serde_json::Value =
+        serde_json::from_str(&tool.json_schema_string).expect("schema json");
     assert_eq!(schema["type"], "object");
-    assert_eq!(request.system_prompt_cache_options.as_ref().expect("cache options").r#type, 1);
+    assert_eq!(
+        request
+            .system_prompt_cache_options
+            .as_ref()
+            .expect("cache options")
+            .r#type,
+        1
+    );
     assert!(request.disable_parallel_tool_calls);
     assert!(request.model_assignment_jwt.is_none());
 }
@@ -425,14 +497,26 @@ fn mints_uuid_shaped_message_ids_that_are_stable_per_cascade_and_index() {
         stop_sequences: None,
     });
 
-    let ids: Vec<String> = first.chat_message_prompts.iter().map(|prompt| prompt.message_id.clone()).collect();
+    let ids: Vec<String> = first
+        .chat_message_prompts
+        .iter()
+        .map(|prompt| prompt.message_id.clone())
+        .collect();
     assert!(is_uuid_shape(&ids[0]));
     assert!(ids[1].starts_with("bot-"));
     assert!(is_uuid_shape(ids[1].trim_start_matches("bot-")));
     assert!(is_uuid_shape(&ids[2]));
-    let again_ids: Vec<String> = again.chat_message_prompts.iter().map(|prompt| prompt.message_id.clone()).collect();
+    let again_ids: Vec<String> = again
+        .chat_message_prompts
+        .iter()
+        .map(|prompt| prompt.message_id.clone())
+        .collect();
     assert_eq!(again_ids, ids);
-    let other_ids: Vec<String> = other.chat_message_prompts.iter().map(|prompt| prompt.message_id.clone()).collect();
+    let other_ids: Vec<String> = other
+        .chat_message_prompts
+        .iter()
+        .map(|prompt| prompt.message_id.clone())
+        .collect();
     assert_ne!(other_ids, ids);
     assert_ne!(first.execution_id, again.execution_id);
 }
@@ -447,13 +531,21 @@ fn replays_a_native_devin_assistant_turn_under_its_own_response_id_and_thinking_
             thinking_signature: Some("sig-native".into()),
             redacted: None,
         }),
-        ContentBlock::Text(maho_ai::types::TextContent { text: "yo".into(), audience: None, text_signature: None }),
+        ContentBlock::Text(maho_ai::types::TextContent {
+            text: "yo".into(),
+            audience: None,
+            text_signature: None,
+        }),
     ]);
     native.response_id = Some("msg-native-1".into());
     let context = Context {
+        active_tool_names: None,
         system_prompt: Some("sys".into()),
         messages: vec![
-            Message::User(UserMessage { content: UserContent::Text("hi".into()), timestamp: 0 }),
+            Message::User(UserMessage {
+                content: UserContent::Text("hi".into()),
+                timestamp: 0,
+            }),
             Message::Assistant(Box::new(native)),
             Message::Assistant(Box::new(assistant_message(Vec::new()))),
         ],
@@ -470,21 +562,33 @@ fn replays_a_native_devin_assistant_turn_under_its_own_response_id_and_thinking_
 #[test]
 fn carries_inline_images_on_user_prompts_and_tool_results() {
     let context = Context {
+        active_tool_names: None,
         system_prompt: Some("sys".into()),
         messages: vec![
             Message::User(UserMessage {
                 content: UserContent::Blocks(vec![
-                    ContentBlock::Text(maho_ai::types::TextContent { text: "look".into(), audience: None, text_signature: None }),
-                    ContentBlock::Image(ImageContent { data: "AAAA".into(), mime_type: "image/png".into() }),
+                    ContentBlock::Text(maho_ai::types::TextContent {
+                        text: "look".into(),
+                        audience: None,
+                        text_signature: None,
+                    }),
+                    ContentBlock::Image(ImageContent {
+                        data: "AAAA".into(),
+                        mime_type: "image/png".into(),
+                    }),
                 ]),
                 timestamp: 0,
             }),
             Message::ToolResult(maho_ai::types::ToolResultMessage {
                 tool_call_id: "call-1".into(),
                 tool_name: "shot".into(),
-                content: vec![ContentBlock::Image(ImageContent { data: "BBBB".into(), mime_type: "image/jpeg".into() })],
+                content: vec![ContentBlock::Image(ImageContent {
+                    data: "BBBB".into(),
+                    mime_type: "image/jpeg".into(),
+                })],
                 details: None,
                 usage: None,
+                nested_calls: None,
                 added_tool_names: None,
                 is_error: true,
                 timestamp: 0,
@@ -494,10 +598,22 @@ fn carries_inline_images_on_user_prompts_and_tool_results() {
     };
     let request = build_request(&model("https://server.codeium.com"), &context, None);
     assert_eq!(request.chat_message_prompts[0].prompt, "look");
-    assert_eq!(request.chat_message_prompts[0].images[0].base64_data, "AAAA");
-    assert_eq!(request.chat_message_prompts[0].images[0].mime_type, "image/png");
-    assert_eq!(request.chat_message_prompts[1].images[0].base64_data, "BBBB");
-    assert_eq!(request.chat_message_prompts[1].images[0].mime_type, "image/jpeg");
+    assert_eq!(
+        request.chat_message_prompts[0].images[0].base64_data,
+        "AAAA"
+    );
+    assert_eq!(
+        request.chat_message_prompts[0].images[0].mime_type,
+        "image/png"
+    );
+    assert_eq!(
+        request.chat_message_prompts[1].images[0].base64_data,
+        "BBBB"
+    );
+    assert_eq!(
+        request.chat_message_prompts[1].images[0].mime_type,
+        "image/jpeg"
+    );
     assert!(request.chat_message_prompts[1].tool_result_is_error);
 }
 
@@ -516,7 +632,13 @@ fn sends_the_released_cli_completion_configuration_and_never_a_zero_temperature(
     assert_eq!(configuration.fim_eot_prob_threshold, 1.0);
     assert_eq!(
         configuration.stop_patterns,
-        vec!["<|user|>", "<|bot|>", "<|context_request|>", "<|endoftext|>", "<|end_of_turn|>"]
+        vec![
+            "<|user|>",
+            "<|bot|>",
+            "<|context_request|>",
+            "<|endoftext|>",
+            "<|end_of_turn|>"
+        ]
     );
 
     let tuned = build_devin_chat_request(&DevinChatRequestInput {
@@ -538,7 +660,14 @@ fn sends_the_released_cli_completion_configuration_and_never_a_zero_temperature(
     assert_eq!(tuned.top_p, 0.9);
     assert_eq!(
         tuned.stop_patterns,
-        vec!["<|user|>", "<|bot|>", "<|context_request|>", "<|endoftext|>", "<|end_of_turn|>", "END"]
+        vec![
+            "<|user|>",
+            "<|bot|>",
+            "<|context_request|>",
+            "<|endoftext|>",
+            "<|end_of_turn|>",
+            "END"
+        ]
     );
 }
 
@@ -550,7 +679,10 @@ fn honors_the_upstream_wire_id_parallel_tool_calls_and_a_router_assignment() {
     routed.compat = Some(maho_ai::model::ModelCompat(
         [
             ("modelRouter".to_owned(), serde_json::json!(true)),
-            ("supportsParallelToolCalls".to_owned(), serde_json::json!(true)),
+            (
+                "supportsParallelToolCalls".to_owned(),
+                serde_json::json!(true),
+            ),
         ]
         .into_iter()
         .collect(),
@@ -604,7 +736,12 @@ struct EdgeOptions {
 
 impl Default for EdgeOptions {
     fn default() -> Self {
-        Self { user_jwt: None, user_jwt_status: 200, custom_api_server_url: None, assignment: None }
+        Self {
+            user_jwt: None,
+            user_jwt_status: 200,
+            custom_api_server_url: None,
+            assignment: None,
+        }
     }
 }
 
@@ -624,12 +761,18 @@ async fn serve_edge(options: EdgeOptions, chat: ChatHandler) -> Edge {
     let seen = Arc::new(SeenRequests::default());
     let state = Arc::new((options, chat, seen.clone()));
     let router = Router::new().fallback(any(handle_edge)).with_state(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind stub edge");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stub edge");
     let addr: SocketAddr = listener.local_addr().expect("stub edge addr");
     let shutdown = tokio::spawn(async move {
         let _ = axum::serve(listener, router.into_make_service()).await;
     });
-    Edge { base_url: format!("http://{addr}"), seen, shutdown }
+    Edge {
+        base_url: format!("http://{addr}"),
+        seen,
+        shutdown,
+    }
 }
 
 async fn handle_edge(
@@ -640,7 +783,10 @@ async fn handle_edge(
 ) -> Response {
     let (options, chat, seen) = state.as_ref();
     let path = uri.path().to_owned();
-    seen.seen.lock().expect("seen lock").push((path.clone(), headers.clone(), body.clone()));
+    seen.seen
+        .lock()
+        .expect("seen lock")
+        .push((path.clone(), headers.clone(), body.clone()));
 
     if path == DEVIN_USER_JWT_PATH {
         if options.user_jwt_status != 200 {
@@ -655,24 +801,38 @@ async fn handle_edge(
             user_jwt: options.user_jwt.clone().unwrap_or_else(|| "jwt-1".into()),
             custom_api_server_url: options.custom_api_server_url.clone().unwrap_or_default(),
         };
-        return (StatusCode::OK, [("content-type", "application/proto")], Bytes::from(response.encode_to_vec()))
+        return (
+            StatusCode::OK,
+            [("content-type", "application/proto")],
+            Bytes::from(response.encode_to_vec()),
+        )
             .into_response();
     }
     if path == DEVIN_ASSIGN_MODEL_PATH {
         let response = AssignModelResponse {
-            assignment: options.assignment.as_ref().map(|(model_uid, assignment_jwt)| ModelAssignment {
-                assignment_jwt: assignment_jwt.clone(),
-                model_uid: model_uid.clone(),
-                harness_uids: Vec::new(),
-            }),
+            assignment: options
+                .assignment
+                .as_ref()
+                .map(|(model_uid, assignment_jwt)| ModelAssignment {
+                    assignment_jwt: assignment_jwt.clone(),
+                    model_uid: model_uid.clone(),
+                    harness_uids: Vec::new(),
+                }),
         };
-        return (StatusCode::OK, [("content-type", "application/proto")], Bytes::from(response.encode_to_vec()))
+        return (
+            StatusCode::OK,
+            [("content-type", "application/proto")],
+            Bytes::from(response.encode_to_vec()),
+        )
             .into_response();
     }
 
     let reply = chat(&headers, body.clone());
     if let Some(controller) = reply.abort {
-        controller.abort(Some(AbortReason::new("AbortError", "The operation was aborted")));
+        controller.abort(Some(AbortReason::new(
+            "AbortError",
+            "The operation was aborted",
+        )));
     }
     let status = StatusCode::from_u16(reply.status).expect("status");
     if reply.keep_open {
@@ -689,7 +849,12 @@ async fn handle_edge(
             .body(axum::body::Body::from_stream(tokio_stream(receiver)))
             .expect("stream response");
     }
-    (status, [("content-type", reply.content_type)], Bytes::from(reply.body)).into_response()
+    (
+        status,
+        [("content-type", reply.content_type)],
+        Bytes::from(reply.body),
+    )
+        .into_response()
 }
 
 fn tokio_stream(
@@ -733,20 +898,24 @@ async fn mints_a_user_jwt_first_then_streams_the_chat_with_the_released_cli_head
             }));
             body.extend(frame(GetChatMessageResponse {
                 message_id: "m1".into(),
-                delta_tool_calls: vec![maho_ai::api::devin_agent::r#gen::cascade_pb::ChatToolCall {
-                    id: "call-1".into(),
-                    name: "read".into(),
-                    arguments_json: "{\"path\":\"a.ts\"}".into(),
-                    ..Default::default()
-                }],
+                delta_tool_calls: vec![
+                    maho_ai::api::devin_agent::r#gen::cascade_pb::ChatToolCall {
+                        id: "call-1".into(),
+                        name: "read".into(),
+                        arguments_json: "{\"path\":\"a.ts\"}".into(),
+                        ..Default::default()
+                    },
+                ],
                 stop_reason: StopReason::FunctionCall as i32,
-                usage: Some(maho_ai::api::devin_agent::r#gen::cascade_pb::ModelUsageStats {
-                    input_tokens: 11,
-                    output_tokens: 7,
-                    cache_read_tokens: 3,
-                    cache_write_tokens: 2,
-                    ..Default::default()
-                }),
+                usage: Some(
+                    maho_ai::api::devin_agent::r#gen::cascade_pb::ModelUsageStats {
+                        input_tokens: 11,
+                        output_tokens: 7,
+                        cache_read_tokens: 3,
+                        cache_write_tokens: 2,
+                        ..Default::default()
+                    },
+                ),
                 ..Default::default()
             }));
             body.extend(trailer_frame());
@@ -779,7 +948,10 @@ async fn mints_a_user_jwt_first_then_streams_the_chat_with_the_released_cli_head
         .expect("tool call block");
     assert_eq!(tool_call.id, "call-1");
     assert_eq!(tool_call.name, "read");
-    assert_eq!(tool_call.arguments.get("path"), Some(&serde_json::json!("a.ts")));
+    assert_eq!(
+        tool_call.arguments.get("path"),
+        Some(&serde_json::json!("a.ts"))
+    );
     assert_eq!(message.usage.input, 11);
     assert_eq!(message.usage.output, 7);
     assert_eq!(message.usage.cache_read, 3);
@@ -788,10 +960,26 @@ async fn mints_a_user_jwt_first_then_streams_the_chat_with_the_released_cli_head
 
     let seen = edge.seen.seen.lock().expect("seen lock").clone();
     let paths: Vec<String> = seen.iter().map(|(path, _, _)| path.clone()).collect();
-    assert_eq!(paths, vec![DEVIN_USER_JWT_PATH.to_owned(), DEVIN_CHAT_MESSAGE_PATH.to_owned()]);
+    assert_eq!(
+        paths,
+        vec![
+            DEVIN_USER_JWT_PATH.to_owned(),
+            DEVIN_CHAT_MESSAGE_PATH.to_owned()
+        ]
+    );
     let (_, auth_headers, auth_body) = &seen[0];
-    assert_eq!(auth_headers.get("content-type").and_then(|value| value.to_str().ok()), Some("application/proto"));
-    assert_eq!(auth_headers.get("connect-protocol-version").and_then(|value| value.to_str().ok()), Some("1"));
+    assert_eq!(
+        auth_headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/proto")
+    );
+    assert_eq!(
+        auth_headers
+            .get("connect-protocol-version")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
     assert!(auth_headers.get("authorization").is_none());
     let auth_request = GetUserJwtRequest::decode(auth_body.clone()).expect("user jwt request");
     let auth_metadata = auth_request.metadata.expect("metadata");
@@ -801,11 +989,36 @@ async fn mints_a_user_jwt_first_then_streams_the_chat_with_the_released_cli_head
     assert_eq!(auth_metadata.user_jwt, "");
 
     let (_, chat_headers, chat_body) = &seen[1];
-    assert_eq!(chat_headers.get("content-type").and_then(|value| value.to_str().ok()), Some("application/connect+proto"));
-    assert_eq!(chat_headers.get("connect-content-encoding").and_then(|value| value.to_str().ok()), Some("gzip"));
-    assert_eq!(chat_headers.get("connect-accept-encoding").and_then(|value| value.to_str().ok()), Some("gzip"));
-    assert_eq!(chat_headers.get("accept-encoding").and_then(|value| value.to_str().ok()), Some("identity"));
-    assert_eq!(chat_headers.get("user-agent").and_then(|value| value.to_str().ok()), Some("connect-go/1.18.1 (go1.26.3)"));
+    assert_eq!(
+        chat_headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/connect+proto")
+    );
+    assert_eq!(
+        chat_headers
+            .get("connect-content-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("gzip")
+    );
+    assert_eq!(
+        chat_headers
+            .get("connect-accept-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("gzip")
+    );
+    assert_eq!(
+        chat_headers
+            .get("accept-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("identity")
+    );
+    assert_eq!(
+        chat_headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok()),
+        Some("connect-go/1.18.1 (go1.26.3)")
+    );
     assert!(chat_headers.get("authorization").is_none());
     let chat_request = decode_chat_frame(chat_body);
     let chat_metadata = chat_request.metadata.clone().expect("metadata");
@@ -820,9 +1033,14 @@ async fn mints_a_user_jwt_first_then_streams_the_chat_with_the_released_cli_head
 async fn awaits_response_hook_before_devin_frames_and_stops_on_hook_error_or_cancellation() {
     for cancel in [false, true] {
         let chat: ChatHandler = Arc::new(|_, _| ChatReply {
-            status: 200, content_type: "application/connect+proto",
-            body: frame(GetChatMessageResponse { delta_text: "must not consume".into(), ..Default::default() }),
-            keep_open: false, abort: None,
+            status: 200,
+            content_type: "application/connect+proto",
+            body: frame(GetChatMessageResponse {
+                delta_text: "must not consume".into(),
+                ..Default::default()
+            }),
+            keep_open: false,
+            abort: None,
         });
         let mut edge = serve_edge(EdgeOptions::default(), chat).await;
         let controller = AbortController::new();
@@ -832,9 +1050,9 @@ async fn awaits_response_hook_before_devin_frames_and_stops_on_hook_error_or_can
         options.request.api_key = Some("session-async-hook".into());
         options.request.fetch = Some(reqwest::Client::new());
         options.request.signal = Some(controller.signal());
-        options.request.async_on_payload = Some(Arc::new(|_, _, _| Box::pin(async {
-            panic!("Devin source has no payload hook")
-        })));
+        options.request.async_on_payload = Some(Arc::new(|_, _, _| {
+            Box::pin(async { panic!("Devin source has no payload hook") })
+        }));
         options.request.async_on_response = Some(Arc::new({
             let release = release.clone();
             move |response, _| {
@@ -848,22 +1066,58 @@ async fn awaits_response_hook_before_devin_frames_and_stops_on_hook_error_or_can
                 })
             }
         }));
-        let stream = maho_ai::api::devin_agent::stream(&model(&edge.base_url), &context(), Some(options));
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await.expect("response timeout"), Some(()));
+        let stream =
+            maho_ai::api::devin_agent::stream(&model(&edge.base_url), &context(), Some(options));
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+                .await
+                .expect("response timeout"),
+            Some(())
+        );
         let before_hook_release = stream.queue();
         assert_eq!(before_hook_release.len(), 1);
-        assert!(matches!(before_hook_release[0], AssistantMessageEvent::Start { .. }));
-        if cancel { controller.abort(None); } else { release.add_permits(1); }
-        let result = tokio::time::timeout(std::time::Duration::from_secs(10), stream.result()).await.expect("result timeout").expect("result");
+        assert!(matches!(
+            before_hook_release[0],
+            AssistantMessageEvent::Start { .. }
+        ));
+        if cancel {
+            controller.abort(None);
+        } else {
+            release.add_permits(1);
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), stream.result())
+            .await
+            .expect("result timeout")
+            .expect("result");
         assert!(result.content.is_empty());
-        if !cancel { assert_eq!(result.error_message.as_deref(), Some("devin-response-exact-error")); }
+        if !cancel {
+            assert_eq!(
+                result.error_message.as_deref(),
+                Some("devin-response-exact-error")
+            );
+        }
         let events = stream.collect().await.expect("events");
-        assert!(events.iter().all(|event| matches!(event, AssistantMessageEvent::Start { .. } | AssistantMessageEvent::Error { .. })));
-        let paths: Vec<String> = edge.seen.seen.lock().expect("seen").iter().map(|(path, _, _)| path.clone()).collect();
+        assert!(events.iter().all(|event| matches!(
+            event,
+            AssistantMessageEvent::Start { .. } | AssistantMessageEvent::Error { .. }
+        )));
+        let paths: Vec<String> = edge
+            .seen
+            .seen
+            .lock()
+            .expect("seen")
+            .iter()
+            .map(|(path, _, _)| path.clone())
+            .collect();
         assert_eq!(paths, [DEVIN_USER_JWT_PATH, DEVIN_CHAT_MESSAGE_PATH]);
         edge.shutdown.abort();
-        assert!(tokio::time::timeout(std::time::Duration::from_secs(10), &mut edge.shutdown)
-            .await.expect("cleanup timeout").expect_err("server aborted").is_cancelled());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), &mut edge.shutdown)
+                .await
+                .expect("cleanup timeout")
+                .expect_err("server aborted")
+                .is_cancelled()
+        );
     }
 }
 
@@ -873,7 +1127,11 @@ async fn follows_the_account_host_get_user_jwt_hands_back_instead_of_the_seeded_
         status: 200,
         content_type: "application/connect+proto",
         body: {
-            let mut body = frame(GetChatMessageResponse { message_id: "t1".into(), delta_text: "tenant".into(), ..Default::default() });
+            let mut body = frame(GetChatMessageResponse {
+                message_id: "t1".into(),
+                delta_text: "tenant".into(),
+                ..Default::default()
+            });
             body.extend(trailer_frame());
             body
         },
@@ -890,7 +1148,10 @@ async fn follows_the_account_host_get_user_jwt_hands_back_instead_of_the_seeded_
         abort: None,
     });
     let seeded = serve_edge(
-        EdgeOptions { custom_api_server_url: Some(format!("{}/", tenant.base_url)), ..Default::default() },
+        EdgeOptions {
+            custom_api_server_url: Some(format!("{}/", tenant.base_url)),
+            ..Default::default()
+        },
         seeded_chat,
     )
     .await;
@@ -900,14 +1161,31 @@ async fn follows_the_account_host_get_user_jwt_hands_back_instead_of_the_seeded_
     options.request.api_key = Some("session-abc".into());
     let events = drive(&client, &seeded, &mut options).await;
 
-    assert!(matches!(events.last(), Some(AssistantMessageEvent::Done { .. })));
+    assert!(matches!(
+        events.last(),
+        Some(AssistantMessageEvent::Done { .. })
+    ));
     assert_eq!(deltas(&events, DeltaKind::Text), vec!["tenant"]);
     assert_eq!(
-        seeded.seen.seen.lock().expect("seen lock").iter().map(|(path, _, _)| path.clone()).collect::<Vec<_>>(),
+        seeded
+            .seen
+            .seen
+            .lock()
+            .expect("seen lock")
+            .iter()
+            .map(|(path, _, _)| path.clone())
+            .collect::<Vec<_>>(),
         vec![DEVIN_USER_JWT_PATH.to_owned()]
     );
     assert_eq!(
-        tenant.seen.seen.lock().expect("seen lock").iter().map(|(path, _, _)| path.clone()).collect::<Vec<_>>(),
+        tenant
+            .seen
+            .seen
+            .lock()
+            .expect("seen lock")
+            .iter()
+            .map(|(path, _, _)| path.clone())
+            .collect::<Vec<_>>(),
         vec![DEVIN_CHAT_MESSAGE_PATH.to_owned()]
     );
 }
@@ -923,26 +1201,66 @@ async fn fails_the_turn_before_any_chat_request_when_get_user_jwt_is_rejected_or
         abort: None,
     });
 
-    let rejected = serve_edge(EdgeOptions { user_jwt_status: 401, ..Default::default() }, chat.clone()).await;
+    let rejected = serve_edge(
+        EdgeOptions {
+            user_jwt_status: 401,
+            ..Default::default()
+        },
+        chat.clone(),
+    )
+    .await;
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
     let failed = drive(&client, &rejected, &mut options).await;
-    let Some(AssistantMessageEvent::Error { error, .. }) = failed.last() else { panic!("expected an error event") };
-    assert!(error.error_message.as_deref().unwrap_or_default().contains("401"), "{:?}", error.error_message);
+    let Some(AssistantMessageEvent::Error { error, .. }) = failed.last() else {
+        panic!("expected an error event")
+    };
+    assert!(
+        error
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("401"),
+        "{:?}",
+        error.error_message
+    );
     assert_eq!(
-        rejected.seen.seen.lock().expect("seen lock").iter().map(|(path, _, _)| path.clone()).collect::<Vec<_>>(),
+        rejected
+            .seen
+            .seen
+            .lock()
+            .expect("seen lock")
+            .iter()
+            .map(|(path, _, _)| path.clone())
+            .collect::<Vec<_>>(),
         vec![DEVIN_USER_JWT_PATH.to_owned()]
     );
 
-    let empty = serve_edge(EdgeOptions { user_jwt: Some(String::new()), ..Default::default() }, chat).await;
+    let empty = serve_edge(
+        EdgeOptions {
+            user_jwt: Some(String::new()),
+            ..Default::default()
+        },
+        chat,
+    )
+    .await;
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
     let empty_events = drive(&client, &empty, &mut options).await;
-    let Some(AssistantMessageEvent::Error { error, .. }) = empty_events.last() else { panic!("expected an error event") };
+    let Some(AssistantMessageEvent::Error { error, .. }) = empty_events.last() else {
+        panic!("expected an error event")
+    };
     let message = error.error_message.clone().unwrap_or_default();
     assert!(message.to_lowercase().contains("user jwt"), "{message}");
     assert_eq!(
-        empty.seen.seen.lock().expect("seen lock").iter().map(|(path, _, _)| path.clone()).collect::<Vec<_>>(),
+        empty
+            .seen
+            .seen
+            .lock()
+            .expect("seen lock")
+            .iter()
+            .map(|(path, _, _)| path.clone())
+            .collect::<Vec<_>>(),
         vec![DEVIN_USER_JWT_PATH.to_owned()]
     );
 }
@@ -966,27 +1284,42 @@ async fn resolves_a_router_model_through_assign_model_and_chats_on_the_assigned_
         abort: None,
     });
     let edge = serve_edge(
-        EdgeOptions { assignment: Some(("claude-sonnet-5-medium".into(), "assign-jwt".into())), ..Default::default() },
+        EdgeOptions {
+            assignment: Some(("claude-sonnet-5-medium".into(), "assign-jwt".into())),
+            ..Default::default()
+        },
         chat,
     )
     .await;
     let mut router = model(&edge.base_url);
     router.id = "adaptive".into();
     router.compat = Some(maho_ai::model::ModelCompat(
-        [("modelRouter".to_owned(), serde_json::json!(true))].into_iter().collect(),
+        [("modelRouter".to_owned(), serde_json::json!(true))]
+            .into_iter()
+            .collect(),
     ));
 
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
-    let events = collect(maho_ai::api::devin_agent::stream(&router, &context(), Some(options))).await;
+    let events = collect(maho_ai::api::devin_agent::stream(
+        &router,
+        &context(),
+        Some(options),
+    ))
+    .await;
     let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
         panic!("expected a done event, got {:?}", events.last())
     };
-    assert_eq!(message.response_model.as_deref(), Some("claude-sonnet-5-medium"));
+    assert_eq!(
+        message.response_model.as_deref(),
+        Some("claude-sonnet-5-medium")
+    );
 
     let seen = edge.seen.seen.lock().expect("seen lock").clone();
     assert_eq!(
-        seen.iter().map(|(path, _, _)| path.clone()).collect::<Vec<_>>(),
+        seen.iter()
+            .map(|(path, _, _)| path.clone())
+            .collect::<Vec<_>>(),
         vec![
             DEVIN_USER_JWT_PATH.to_owned(),
             DEVIN_ASSIGN_MODEL_PATH.to_owned(),
@@ -994,15 +1327,29 @@ async fn resolves_a_router_model_through_assign_model_and_chats_on_the_assigned_
         ]
     );
     let (_, assign_headers, assign_body) = &seen[1];
-    assert_eq!(assign_headers.get("content-type").and_then(|value| value.to_str().ok()), Some("application/proto"));
+    assert_eq!(
+        assign_headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/proto")
+    );
     let assign_request = AssignModelRequest::decode(assign_body.clone()).expect("assign request");
     assert_eq!(assign_request.model_router_uid, "adaptive");
-    assert_eq!(assign_request.chat_message_prompt.expect("router prompt").prompt, "hi");
+    assert_eq!(
+        assign_request
+            .chat_message_prompt
+            .expect("router prompt")
+            .prompt,
+        "hi"
+    );
     assert_eq!(assign_request.metadata.expect("metadata").user_jwt, "");
     let chat_request = decode_chat_frame(&seen[2].2);
     assert_eq!(chat_request.cascade_id, assign_request.cascade_id);
     assert_eq!(chat_request.chat_model_uid, "claude-sonnet-5-medium");
-    assert_eq!(chat_request.model_assignment_jwt.as_deref(), Some("assign-jwt"));
+    assert_eq!(
+        chat_request.model_assignment_jwt.as_deref(),
+        Some("assign-jwt")
+    );
 }
 
 #[tokio::test]
@@ -1018,17 +1365,43 @@ async fn fails_a_router_turn_when_assign_model_returns_no_assignment() {
     let mut router = model(&edge.base_url);
     router.id = "adaptive".into();
     router.compat = Some(maho_ai::model::ModelCompat(
-        [("modelRouter".to_owned(), serde_json::json!(true))].into_iter().collect(),
+        [("modelRouter".to_owned(), serde_json::json!(true))]
+            .into_iter()
+            .collect(),
     ));
 
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
-    let events = collect(maho_ai::api::devin_agent::stream(&router, &context(), Some(options))).await;
-    let Some(AssistantMessageEvent::Error { error, .. }) = events.last() else { panic!("expected an error event") };
-    assert!(error.error_message.as_deref().unwrap_or_default().contains("AssignModel"), "{:?}", error.error_message);
+    let events = collect(maho_ai::api::devin_agent::stream(
+        &router,
+        &context(),
+        Some(options),
+    ))
+    .await;
+    let Some(AssistantMessageEvent::Error { error, .. }) = events.last() else {
+        panic!("expected an error event")
+    };
+    assert!(
+        error
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("AssignModel"),
+        "{:?}",
+        error.error_message
+    );
     assert_eq!(
-        edge.seen.seen.lock().expect("seen lock").iter().map(|(path, _, _)| path.clone()).collect::<Vec<_>>(),
-        vec![DEVIN_USER_JWT_PATH.to_owned(), DEVIN_ASSIGN_MODEL_PATH.to_owned()]
+        edge.seen
+            .seen
+            .lock()
+            .expect("seen lock")
+            .iter()
+            .map(|(path, _, _)| path.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            DEVIN_USER_JWT_PATH.to_owned(),
+            DEVIN_ASSIGN_MODEL_PATH.to_owned()
+        ]
     );
 }
 
@@ -1070,7 +1443,9 @@ async fn keeps_one_tool_call_when_later_chunks_carry_the_arguments_without_the_i
     options.request.api_key = Some("session-abc".into());
     let events = drive(&client, &edge, &mut options).await;
 
-    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else { panic!("expected a done event") };
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        panic!("expected a done event")
+    };
     let tool_calls: Vec<&ToolCall> = message
         .content
         .iter()
@@ -1082,10 +1457,28 @@ async fn keeps_one_tool_call_when_later_chunks_carry_the_arguments_without_the_i
     assert_eq!(tool_calls.len(), 1);
     assert_eq!(tool_calls[0].id, "call-1");
     assert_eq!(tool_calls[0].name, "read");
-    assert_eq!(tool_calls[0].arguments.get("path"), Some(&serde_json::json!("a.ts")));
-    assert_eq!(events.iter().filter(|event| matches!(event, AssistantMessageEvent::ToolcallStart { .. })).count(), 1);
-    assert_eq!(deltas(&events, DeltaKind::ToolCall), vec!["{\"pa", "th\":\"a.", "ts\"}"]);
-    assert_eq!(events.iter().filter(|event| matches!(event, AssistantMessageEvent::ToolcallEnd { .. })).count(), 1);
+    assert_eq!(
+        tool_calls[0].arguments.get("path"),
+        Some(&serde_json::json!("a.ts"))
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, AssistantMessageEvent::ToolcallStart { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        deltas(&events, DeltaKind::ToolCall),
+        vec!["{\"pa", "th\":\"a.", "ts\"}"]
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, AssistantMessageEvent::ToolcallEnd { .. }))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -1115,7 +1508,10 @@ async fn emits_only_the_new_suffix_when_a_chunk_repeats_the_accumulated_argument
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
     let events = drive(&client, &edge, &mut options).await;
-    assert_eq!(deltas(&events, DeltaKind::ToolCall), vec!["{\"pa", "th\":\"a.ts\"}"]);
+    assert_eq!(
+        deltas(&events, DeltaKind::ToolCall),
+        vec!["{\"pa", "th\":\"a.ts\"}"]
+    );
 }
 
 #[tokio::test]
@@ -1134,12 +1530,18 @@ async fn surfaces_a_connect_error_trailer_as_an_error_event_instead_of_an_empty_
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
     let events = drive(&client, &edge, &mut options).await;
-    let Some(AssistantMessageEvent::Error { reason, error }) = events.last() else { panic!("expected an error event") };
+    let Some(AssistantMessageEvent::Error { reason, error }) = events.last() else {
+        panic!("expected an error event")
+    };
     assert_eq!(*reason, maho_ai::types::ErrorReason::Error);
     let message = error.error_message.clone().unwrap_or_default();
     assert!(message.contains("invalid_argument"), "{message}");
     assert!(message.contains("an internal error occurred"), "{message}");
-    assert!(!events.iter().any(|event| matches!(event, AssistantMessageEvent::Done { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AssistantMessageEvent::Done { .. }))
+    );
 }
 
 #[tokio::test]
@@ -1148,7 +1550,11 @@ async fn maps_cascade_stop_reasons_that_carry_no_tool_call() {
         status: 200,
         content_type: "application/connect+proto",
         body: {
-            let mut body = frame(GetChatMessageResponse { message_id: "m2".into(), delta_text: "cut".into(), ..Default::default() });
+            let mut body = frame(GetChatMessageResponse {
+                message_id: "m2".into(),
+                delta_text: "cut".into(),
+                ..Default::default()
+            });
             body.extend(frame(GetChatMessageResponse {
                 message_id: "m2".into(),
                 stop_reason: StopReason::MaxTokens as i32,
@@ -1165,7 +1571,9 @@ async fn maps_cascade_stop_reasons_that_carry_no_tool_call() {
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
     let events = drive(&client, &edge, &mut options).await;
-    let Some(AssistantMessageEvent::Done { reason, .. }) = events.last() else { panic!("expected a done event") };
+    let Some(AssistantMessageEvent::Done { reason, .. }) = events.last() else {
+        panic!("expected a done event")
+    };
     assert_eq!(*reason, maho_ai::types::DoneReason::Length);
 }
 
@@ -1175,7 +1583,11 @@ async fn keeps_tool_use_from_the_cascade_stop_reason_even_when_no_tool_call_bloc
         status: 200,
         content_type: "application/connect+proto",
         body: {
-            let mut body = frame(GetChatMessageResponse { message_id: "m3".into(), delta_text: "calling".into(), ..Default::default() });
+            let mut body = frame(GetChatMessageResponse {
+                message_id: "m3".into(),
+                delta_text: "calling".into(),
+                ..Default::default()
+            });
             body.extend(frame(GetChatMessageResponse {
                 message_id: "m3".into(),
                 stop_reason: StopReason::FunctionCall as i32,
@@ -1192,7 +1604,9 @@ async fn keeps_tool_use_from_the_cascade_stop_reason_even_when_no_tool_call_bloc
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
     let events = drive(&client, &edge, &mut options).await;
-    let Some(AssistantMessageEvent::Done { reason, .. }) = events.last() else { panic!("expected a done event") };
+    let Some(AssistantMessageEvent::Done { reason, .. }) = events.last() else {
+        panic!("expected a done event")
+    };
     assert_eq!(*reason, maho_ai::types::DoneReason::ToolUse);
 }
 
@@ -1219,7 +1633,9 @@ async fn keeps_a_truncated_turn_as_length_even_when_a_tool_call_block_arrived() 
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
     let events = drive(&client, &edge, &mut options).await;
-    let Some(AssistantMessageEvent::Done { reason, .. }) = events.last() else { panic!("expected a done event") };
+    let Some(AssistantMessageEvent::Done { reason, .. }) = events.last() else {
+        panic!("expected a done event")
+    };
     assert_eq!(*reason, maho_ai::types::DoneReason::Length);
 }
 
@@ -1229,7 +1645,11 @@ async fn terminates_a_cascade_server_error_stop_as_an_error_event_not_a_done_eve
         status: 200,
         content_type: "application/connect+proto",
         body: {
-            let mut body = frame(GetChatMessageResponse { message_id: "m5".into(), delta_text: "partial".into(), ..Default::default() });
+            let mut body = frame(GetChatMessageResponse {
+                message_id: "m5".into(),
+                delta_text: "partial".into(),
+                ..Default::default()
+            });
             body.extend(frame(GetChatMessageResponse {
                 message_id: "m5".into(),
                 stop_reason: StopReason::Error as i32,
@@ -1246,7 +1666,9 @@ async fn terminates_a_cascade_server_error_stop_as_an_error_event_not_a_done_eve
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
     let events = drive(&client, &edge, &mut options).await;
-    let Some(AssistantMessageEvent::Error { reason, error }) = events.last() else { panic!("expected an error event") };
+    let Some(AssistantMessageEvent::Error { reason, error }) = events.last() else {
+        panic!("expected an error event")
+    };
     assert_eq!(*reason, maho_ai::types::ErrorReason::Error);
     assert!(error.error_message.is_some());
 }
@@ -1265,10 +1687,15 @@ async fn reports_an_http_failure_as_a_typed_error_message_instead_of_throwing() 
     let mut options = StreamOptions::default();
     options.request.api_key = Some("session-abc".into());
     let events = drive(&client, &edge, &mut options).await;
-    let Some(AssistantMessageEvent::Error { reason, error }) = events.last() else { panic!("expected an error event") };
+    let Some(AssistantMessageEvent::Error { reason, error }) = events.last() else {
+        panic!("expected an error event")
+    };
     assert_eq!(*reason, maho_ai::types::ErrorReason::Error);
     let message = error.error_message.clone().unwrap_or_default();
-    assert!(message.contains("403") || message.contains("seat required"), "{message}");
+    assert!(
+        message.contains("403") || message.contains("seat required"),
+        "{message}"
+    );
 }
 
 #[tokio::test]
@@ -1278,7 +1705,11 @@ async fn ends_as_aborted_when_the_caller_aborts_mid_stream() {
     let chat: ChatHandler = Arc::new(move |_headers, _body| ChatReply {
         status: 200,
         content_type: "application/connect+proto",
-        body: frame(GetChatMessageResponse { message_id: "m1".into(), delta_text: "partial".into(), ..Default::default() }),
+        body: frame(GetChatMessageResponse {
+            message_id: "m1".into(),
+            delta_text: "partial".into(),
+            ..Default::default()
+        }),
         keep_open: true,
         abort: Some(abort_handle.clone()),
     });
@@ -1289,18 +1720,28 @@ async fn ends_as_aborted_when_the_caller_aborts_mid_stream() {
     options.request.signal = Some(controller.signal());
     let events = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        collect(maho_ai::api::devin_agent::stream(&model(&edge.base_url), &context(), Some(options))),
+        collect(maho_ai::api::devin_agent::stream(
+            &model(&edge.base_url),
+            &context(),
+            Some(options),
+        )),
     )
     .await
     .expect("bounded wait");
 
-    let Some(AssistantMessageEvent::Error { reason, .. }) = events.last() else { panic!("expected an error event") };
+    let Some(AssistantMessageEvent::Error { reason, .. }) = events.last() else {
+        panic!("expected an error event")
+    };
     assert_eq!(*reason, maho_ai::types::ErrorReason::Aborted);
 }
 
 // ---------------------------------------------------------------- helpers
 
-fn tool_call(id: &str, name: &str, arguments_json: &str) -> maho_ai::api::devin_agent::r#gen::cascade_pb::ChatToolCall {
+fn tool_call(
+    id: &str,
+    name: &str,
+    arguments_json: &str,
+) -> maho_ai::api::devin_agent::r#gen::cascade_pb::ChatToolCall {
     maho_ai::api::devin_agent::r#gen::cascade_pb::ChatToolCall {
         id: id.into(),
         name: name.into(),
@@ -1372,22 +1813,39 @@ fn deltas(events: &[AssistantMessageEvent], kind: DeltaKind) -> Vec<String> {
     events
         .iter()
         .filter_map(|event| match (event, &kind) {
-            (AssistantMessageEvent::TextDelta { delta, .. }, DeltaKind::Text) => Some(delta.clone()),
-            (AssistantMessageEvent::ThinkingDelta { delta, .. }, DeltaKind::Thinking) => Some(delta.clone()),
-            (AssistantMessageEvent::ToolcallDelta { delta, .. }, DeltaKind::ToolCall) => Some(delta.clone()),
+            (AssistantMessageEvent::TextDelta { delta, .. }, DeltaKind::Text) => {
+                Some(delta.clone())
+            }
+            (AssistantMessageEvent::ThinkingDelta { delta, .. }, DeltaKind::Thinking) => {
+                Some(delta.clone())
+            }
+            (AssistantMessageEvent::ToolcallDelta { delta, .. }, DeltaKind::ToolCall) => {
+                Some(delta.clone())
+            }
             _ => None,
         })
         .collect()
 }
 
-async fn collect(stream: maho_ai::types::AssistantMessageEventStream) -> Vec<AssistantMessageEvent> {
+async fn collect(
+    stream: maho_ai::types::AssistantMessageEventStream,
+) -> Vec<AssistantMessageEvent> {
     stream.collect().await.expect("stream events")
 }
 
 /// Drives one devin stream against a stub edge and returns its events.
-async fn drive(client: &reqwest::Client, edge: &Edge, options: &mut StreamOptions) -> Vec<AssistantMessageEvent> {
+async fn drive(
+    client: &reqwest::Client,
+    edge: &Edge,
+    options: &mut StreamOptions,
+) -> Vec<AssistantMessageEvent> {
     options.request.fetch = Some(client.clone());
-    collect(maho_ai::api::devin_agent::stream(&model(&edge.base_url), &context(), Some(options.clone()))).await
+    collect(maho_ai::api::devin_agent::stream(
+        &model(&edge.base_url),
+        &context(),
+        Some(options.clone()),
+    ))
+    .await
 }
 
 #[allow(dead_code)]

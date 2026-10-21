@@ -40,6 +40,7 @@ fn malformed_stdio_line_yields_parse_error_with_parser_data() {
             parent_pid: Some(1),
             poll_interval_ms: Some(0),
             probe_alive: Some(Arc::new(|_| true)),
+            on_poll: None,
         }),
     };
 

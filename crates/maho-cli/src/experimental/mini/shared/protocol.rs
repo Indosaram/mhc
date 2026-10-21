@@ -22,13 +22,43 @@ pub struct ModelsState { pub models: Vec<ModelSummary>, pub accounts: Vec<Provid
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary { pub id: String, pub path: String, pub cwd: String, pub created_at: f64 }
-#[derive(Clone, Copy)]
-pub struct ServiceToken { pub name: &'static str }
-pub const fn define_service(name: &'static str) -> ServiceToken { ServiceToken { name } }
-pub const LANE: ServiceToken = define_service("lane");
-pub const MODELS: ServiceToken = define_service("models");
-pub const WORKER: ServiceToken = define_service("worker");
-pub const SESSIONS: ServiceToken = define_service("sessions");
+pub type ServiceToken = maho_chord::types::Service<()>;
+pub fn define_service(name: &str, local: bool) -> Result<ServiceToken, maho_chord::types::ServiceError> {
+    maho_chord::api::define_service(name, local)
+}
+fn protocol_service(name: &str) -> ServiceToken {
+    #[expect(clippy::expect_used, reason = "mini protocol service IDs are nonempty literals outside the reserved namespace")]
+    define_service(name, false).expect("valid mini protocol service ID")
+}
+pub static LANE: std::sync::LazyLock<ServiceToken> = std::sync::LazyLock::new(|| protocol_service("lane"));
+pub static MODELS: std::sync::LazyLock<ServiceToken> = std::sync::LazyLock::new(|| protocol_service("models"));
+pub static WORKER: std::sync::LazyLock<ServiceToken> = std::sync::LazyLock::new(|| protocol_service("worker"));
+pub static SESSIONS: std::sync::LazyLock<ServiceToken> = std::sync::LazyLock::new(|| protocol_service("sessions"));
+
+#[cfg(test)]
+mod service_token_tests {
+    use super::*;
+
+    #[test]
+    fn validates_service_ids_and_retains_local_flag() {
+        // Given valid remote/local identifiers and invalid namespace boundaries.
+        let remote = define_service("remote", false);
+        let local = define_service("local", true);
+        // When native token construction runs at runtime.
+        let remote = remote.expect("remote token");
+        let local = local.expect("local token");
+        // Then Chord validation and descriptor flags remain observable.
+        assert_eq!(remote.id, "remote");
+        assert!(!remote.local);
+        assert!(local.local);
+        assert!(define_service("", false).is_err());
+        assert!(define_service("$chord.service", false).is_err());
+        assert_eq!(LANE.id, "lane");
+        assert_eq!(MODELS.id, "models");
+        assert_eq!(WORKER.id, "worker");
+        assert_eq!(SESSIONS.id, "sessions");
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub enum CommandResult { Ok, Error(String) }
 impl Serialize for CommandResult {
