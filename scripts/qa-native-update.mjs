@@ -568,7 +568,7 @@ writeFileSync(join(agentDir, "models.json"), JSON.stringify({
 			api: "openai-completions",
 			baseUrl: `http://127.0.0.1:${modelServer.port}/v1`,
 			apiKey: "mock-key",
-			models: [{ id: "mock-model", reasoning: false, input: ["text"], contextWindow: 4096, maxTokens: 1024 }],
+			models: [{ id: "mock-model", reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 8192 }],
 		},
 	},
 }, null, 2));
