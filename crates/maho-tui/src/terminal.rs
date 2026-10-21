@@ -522,6 +522,10 @@ fn read_console_input(timeout_ms: u64) -> Result<Option<Vec<u8>>, TerminalError>
     let console = Console::from(Handle::new(HandleType::InputHandle)?);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if !wait_for_console_input(remaining)? {
+            return Ok(None);
+        }
         if console.number_of_console_input_events()? > 0 {
             let mut units = Vec::new();
             for record in console.read_console_input()? {
@@ -537,16 +541,33 @@ fn read_console_input(timeout_ms: u64) -> Result<Option<Vec<u8>>, TerminalError>
             if !units.is_empty() {
                 return Ok(Some(String::from_utf16_lossy(&units).into_bytes()));
             }
-            // Only focus, mouse, menu or resize records: consumed, keep waiting.
-            continue;
+            // Only focus, mouse, menu or resize records were queued: consumed, wait again.
         }
-        let now = Instant::now();
-        if now >= deadline {
-            return Ok(None);
-        }
-        // The console handle is only waitable through unsafe Win32 calls (workspace forbids
-        // unsafe), so check the queue at a short interval within the caller's budget.
-        std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+    }
+}
+
+/// Blocks until the console input buffer holds a record or `timeout` passes; `Ok(false)` on timeout.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn wait_for_console_input(timeout: std::time::Duration) -> Result<bool, TerminalError> {
+    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    // u32::MAX is INFINITE; every caller passes a bounded budget.
+    let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1).min(u32::MAX - 1);
+    // SAFETY: GetStdHandle has no preconditions. The handle belongs to the process and is not
+    // closed here.
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: `handle` is the process's console input handle, valid and waitable for the life of
+    // the process; it is signaled while unread input records are queued.
+    match unsafe { WaitForSingleObject(handle, millis) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        _ => Err(std::io::Error::last_os_error().into()),
     }
 }
 
