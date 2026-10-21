@@ -24,7 +24,7 @@ async fn minimal_child_resources_do_not_discover_parent_resources_or_run_factori
             Box::pin(async { Ok(()) })
         }),
     };
-    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     let tool = maho_ext_api::ToolDefinition::new("child_fixture", "child tool",
         serde_json::json!({"type":"object","properties":{}}), Arc::new(|call| {
             let id = call.id.to_owned();

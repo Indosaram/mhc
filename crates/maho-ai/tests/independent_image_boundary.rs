@@ -11,6 +11,7 @@ async fn event<T>(f: impl std::future::Future<Output = T>) -> T {
 fn model(url: &str) -> Model {
     Model { id: "probe".into(), name: "probe".into(), api: "openai-completions".into(),
         provider: "openai".into(), base_url: url.into(), reasoning: false,
+        prompt_cache: None, supports_assistant_prefill: None,
         thinking_level_map: None, input: vec![InputModality::Text], cost: ModelCost::default(),
         context_window: 8192, max_tokens: 64, sampling_params: None, headers: None,
         cache_retention: None, upstream_model_id: None, service_tier: None,
@@ -23,7 +24,7 @@ fn image_model(api: &str, url: &str) -> ImagesModel {
         input: vec![InputModality::Text], output: vec![ImagesOutputModality::Image],
         cost: Default::default(), sampling_params: None, headers: None,
         cache_retention: None, upstream_model_id: None, service_tier: None,
-        recover_text_tool_calls: None }
+        recover_text_tool_calls: None, input_limits: None }
 }
 
 struct ServerGuard(tokio::task::JoinHandle<()>);

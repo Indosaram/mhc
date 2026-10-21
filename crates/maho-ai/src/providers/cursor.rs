@@ -57,6 +57,8 @@ fn to_cursor_model(entry: CursorCatalogEntry, max_tokens_by_variant: &BTreeMap<S
         _ => ModelCompat::default(),
     };
     Model {
+        prompt_cache: None,
+        supports_assistant_prefill: None,
         upstream_model_id: entry.representative_variant_id.clone().filter(|id| id != &entry.id),
         context_window: resolve_cursor_context_window(&entry.id, entry.window) as u64,
         input: entry.input.iter().filter_map(|value| to_modality(value)).collect(),
@@ -112,7 +114,7 @@ async fn fetch_cursor_models(credential: Option<Credential>, signal: AbortSignal
 /// Cursor subscription provider (OAuth only). The model catalog is discovered per account through
 /// `GetUsableModels` after login (`Models.refresh` runs automatically after a successful
 /// `/login cursor`).
-pub fn cursor_provider() -> Arc<dyn Provider> {
+pub fn cursor_provider() -> Result<Arc<dyn Provider>, crate::models::ModelsError> {
     let restore: RestoreModels = Arc::new(|models| Ok(regroup_stored_cursor_models(&models)));
     let fetch: FetchModels = Arc::new(|context: &RefreshModelsContext| {
         Box::pin(fetch_cursor_models(context.credential.clone(), context.signal.clone()))
@@ -127,6 +129,7 @@ pub fn cursor_provider() -> Arc<dyn Provider> {
         fetch_models: Some(fetch),
         restore_models: Some(restore),
         filter_models: None,
+        images: indexmap::IndexMap::new(),
         api: ProviderApi::Single(builtin_api_streams("cursor-agent")),
     })
 }
@@ -170,6 +173,8 @@ mod tests {
 
     fn legacy_model(entry: &FixtureEntry) -> Model {
         Model {
+            prompt_cache: None,
+            supports_assistant_prefill: None,
             id: entry.id.clone(),
             name: entry.name.clone(),
             api: "cursor-agent".to_owned(),
@@ -195,7 +200,7 @@ mod tests {
 
     #[test]
     fn refreshes_its_catalog_through_get_usable_models() {
-        assert!(cursor_provider().supports_refresh());
+        assert!(cursor_provider().expect("provider").supports_refresh());
     }
 
     #[test]
@@ -220,7 +225,7 @@ mod tests {
             .expect("seed store");
         let models =
             create_models(Some(CreateModelsOptions { models_store: Some(store), auth: Some(Arc::new(NoCredentialAuth)) }));
-        models.set_provider(cursor_provider());
+        models.set_provider(cursor_provider().expect("provider"));
 
         let result =
             models.refresh(ModelsRefreshOptions { allow_network: Some(false), ..ModelsRefreshOptions::default() }).await;

@@ -10,7 +10,7 @@ impl ModelRegistry for Registry{
     fn get_api_key_and_headers<'a>(&'a self,model:&'a Model)->ExtensionFuture<'a,ResolvedRequestAuth>{Box::pin(async move{
         self.calls.lock().expect("auth call recorder lock").push(model.id.clone());
         if model.id=="gpt-5-denied"{return Err("denied".into());}
-        Ok(ResolvedRequestAuth{auth:maho_ai::models::ProviderAuthResult{api_key:Some(model.id.clone()),headers:None,base_url:None},extra_body:None,upstream_model_id:None,service_tier:None,env:None})
+        Ok(ResolvedRequestAuth{ambient:false,auth:maho_ai::models::ProviderAuthResult{api_key:Some(model.id.clone()),headers:None,base_url:None},extra_body:None,upstream_model_id:None,service_tier:None,env:None})
     })}
 }
 fn model(id:&str,host:&str)->Model{serde_json::from_value(serde_json::json!({"id":id,"name":id,"provider":"openai","api":"openai-responses","baseUrl":format!("https://{host}/v1"),"reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":4096,"maxTokens":1024})).expect("valid native discovery model fixture")}

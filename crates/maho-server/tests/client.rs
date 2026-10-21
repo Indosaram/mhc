@@ -12,7 +12,8 @@ use maho_server::{
         framing::DEFAULT_MAX_FRAME_LENGTH as MAX,
     },
 };
-use serde_json::{Value, json};
+use maho_chord::types::JsonValue as Value;
+use maho_server::transport_json as json;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -25,8 +26,9 @@ const ID: &str = "00000000-0000-4000-8000-000000000001";
 async fn subscription_cancellation_sends_cancel_and_accepts_late_reply() {
     let (memory,mut requests)=Memory::create(json!({"type":"hello","version":8,"serverId":ID}),false);
     let client=Client::new(ID.into(),MAX,Arc::new(MemoryFactory(memory.clone()))).unwrap();client.connect().await.unwrap();requests.recv().await.unwrap();
-    let (abort,signal)=tokio::sync::watch::channel(None);let subscribing=client.subscribe_with_cancellation(json!({"serverId":ID}),"echo","singleton",Some(signal));
-    let server=async {let request=requests.recv().await.unwrap();abort.send_replace(Some(ClientError::Disconnected("cancel subscription".into())));let cancel=requests.recv().await.unwrap();assert_eq!(cancel["type"],"cancel");assert_eq!(cancel["id"],request["id"]);memory.send(json!({"type":"response","id":request["id"],"ok":true,"result":null}));};
+    let service_id = "echo".into();
+    let (abort,signal)=tokio::sync::watch::channel(None);let subscribing=client.subscribe_with_cancellation(json!({"serverId":ID}),&service_id,maho_chord::types::ServiceMode::Singleton,Some(signal));
+    let server=async {let request=requests.recv().await.unwrap();abort.send_replace(Some(ClientError::Disconnected("cancel subscription".into())));let cancel=requests.recv().await.unwrap();assert_eq!(cancel["type"], json!("cancel"));assert_eq!(cancel["id"],request["id"]);memory.send(json!({"type":"response","id":request["id"],"ok":true,"result":null}));};
     let (result,_)=tokio::join!(subscribing,server);assert!(matches!(result,Err(ClientError::Disconnected(_))));assert!(client.connected());client.dispose();
 }
 #[tokio::test]
@@ -119,7 +121,7 @@ impl ByteTransport for MemoryTransport {
                     .outbound
                     .send(message.clone())
                     .map_err(|e| ClientError::Disconnected(e.to_string()))?;
-                if message["type"] == "hello" {
+                if message["type"] == json!("hello") {
                     self.0.send(self.0.hello.clone());
                 }
             }
@@ -152,7 +154,7 @@ fn requires_canonical_server_identity() {
 #[tokio::test]
 async fn connects_only_to_expected_server() {
     let (client, _memory, _requests) = setup();
-    assert_eq!(client.connect().await.unwrap()["serverId"], ID);
+    assert_eq!(client.connect().await.unwrap()["serverId"], json!(ID));
     client.dispose();
     let (memory, _requests) = Memory::create(
         json!({"type":"hello","version":8,"serverId":"00000000-0000-4000-8000-000000000002"}),
@@ -172,7 +174,7 @@ async fn receives_out_of_band_attachment_updates() {
     let mut events = client.attachment_changes();
     memory.send(json!({"type":"attachment","attachment":{"serverId":ID,"sessionId":"s","attachmentId":"a"}}));
     events.changed().await.unwrap();
-    assert_eq!(client.attachment().unwrap()["sessionId"], "s");
+    assert_eq!(client.attachment().unwrap()["sessionId"], json!("s"));
     memory.send(json!({"type":"attachment","attachment":null}));
     events.changed().await.unwrap();
     assert!(client.attachment().is_none());
@@ -257,7 +259,7 @@ async fn cancels_request_without_disconnect() {
         let request = requests.recv().await.unwrap();
         cancel.send_replace(Some(ClientError::Disconnected("stop this request".into())));
         let cancellation = requests.recv().await.unwrap();
-        assert_eq!(cancellation["type"], "cancel");
+        assert_eq!(cancellation["type"], json!("cancel"));
         memory.send(json!({"type":"response","id":request["id"],"ok":false,"error":{"code":"cancelled","message":"cancelled"}}));
     };
     let (result, _) = tokio::join!(request, server);
@@ -307,7 +309,8 @@ async fn callback_close_drains_delivered_updates() {
             Ok(())
         })
     });
-    let opening = transport.subscribe("pi.models", "singleton", listener);
+    let service_id = "pi.models".into();
+    let opening = transport.subscribe(&service_id, maho_chord::types::ServiceMode::Singleton, listener);
     let server = async {
         let request = requests.recv().await.unwrap();
         memory.send(json!({"type":"response","id":request["id"],"ok":true,"result":{"serviceId":"pi.models","mode":"singleton","instances":[{"members":[{"name":"state","kind":"state","sequence":0,"ops":[["r",{"revision":0}]]}]}]}}));
@@ -322,7 +325,7 @@ async fn callback_close_drains_delivered_updates() {
     let server = async {
         gate.send_replace(true);
         let request = requests.recv().await.unwrap();
-        assert_eq!(request["call"]["member"], "unsubscribe");
+        assert_eq!(request["call"]["member"], json!("unsubscribe"));
         memory.send(json!({"type":"response","id":request["id"],"ok":true}));
     };
     let (result, _) = tokio::join!(closing, server);
@@ -384,7 +387,7 @@ async fn reconnects_through_fresh_transport() {
     client.disconnect("Client disconnected");
     assert_eq!(client.connection_state(), ConnectionState::Disconnected);
     client.connect().await.unwrap();
-    assert_eq!(requests.recv().await.unwrap()["type"], "hello");
+    assert_eq!(requests.recv().await.unwrap()["type"], json!("hello"));
     assert!(client.connected());
     assert_eq!(memory.closed.load(Ordering::SeqCst), 1);
     client.dispose();
@@ -425,7 +428,8 @@ async fn buffers_updates_until_snapshot_and_activation() {
     let (client, memory, mut requests) = setup();
     client.connect().await.unwrap();
     requests.recv().await.unwrap();
-    let opening = client.subscribe(json!({"serverId":ID}), "pi.models", "singleton");
+    let service_id = "pi.models".into();
+    let opening = client.subscribe(json!({"serverId":ID}), &service_id, maho_chord::types::ServiceMode::Singleton);
     let server = async {
         let request = requests.recv().await.unwrap();
         memory.send(json!({"type":"service_update","subscriptionId":"service-1","update":{"type":"state","member":"state","sequence":1,"ops":[["s",["revision"],1]]}}));
@@ -447,7 +451,7 @@ async fn buffers_updates_until_snapshot_and_activation() {
     let closing = subscription.dispose();
     let server = async {
         let request = requests.recv().await.unwrap();
-        assert_eq!(request["call"]["member"], "unsubscribe");
+        assert_eq!(request["call"]["member"], json!("unsubscribe"));
         memory.send(json!({"type":"response","id":request["id"],"ok":true}));
     };
     let (result, _) = tokio::join!(closing, server);

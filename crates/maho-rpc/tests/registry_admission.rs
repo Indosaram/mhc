@@ -36,8 +36,8 @@ async fn native_runtime_install_command_and_disposal_keep_scope_until_settled(){
     let OpenAdmission::Create(handle)=registry.admit_open(profile(&cwd,None,None,false),false,0.).unwrap()else{panic!("expected create")};
     let scope=registry.get(&handle).unwrap().scope.clone();let construction_cwd=cwd.clone();
     registry.create_admitted_runtime(&handle,async{
-        let provider=maho_ai::providers::faux::faux_provider(Default::default());let model=provider.get_model(Some("faux-1")).unwrap();
-        let model_runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions{models_path:Some(temp.path().join("models.json")),auth_path:Some(temp.path().join("auth.json")),providers:Some(vec![provider.provider]),..Default::default()});
+        let provider=maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");let model=provider.get_model(Some("faux-1")).unwrap();
+        let model_runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions{models_path:Some(temp.path().join("models.json")),auth_path:Some(temp.path().join("auth.json")),providers:Some(vec![provider.provider]),..Default::default()}).expect("valid model runtime");
         let session=create_agent_session(CreateAgentSessionOptions{cwd:Some(construction_cwd.clone()),agent_dir:Some(construction_cwd.clone()),model_runtime:Some(model_runtime),model:Some(model),session_manager:Some(SessionManager::in_memory(&construction_cwd,None,None)),settings_manager:Some(SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()),false)),no_tools:Some(NoToolsMode::All),auto_title_sessions:Some(false),..Default::default()}).await.map_err(|error|error.to_string())?.session;
         let models=session.model_registry().clone();let services=maho_core::agent_session_services::AgentSessionServices{cwd:construction_cwd.clone(),agent_dir:construction_cwd,auth_storage:std::sync::Arc::clone(&models.auth_storage),model_registry:models,settings_manager:SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()),false),diagnostics:vec![]};
         Ok(maho_core::agent_session_runtime::AgentSessionRuntime::new(session,services,vec![],None,None))
@@ -68,8 +68,8 @@ async fn host_close_waits_for_draining_runtime_disposal_before_acknowledging(){
     let create_runtime:HostRuntimeFactory=Arc::new(move |_profile:RpcSessionLaunchProfile|{
         let cwd=runtime_cwd.clone();let model_path=model_path.clone();let started_tx=started_tx.clone();let release_rx=release_rx.clone();
         Box::pin(async move{
-            let provider=maho_ai::providers::faux::faux_provider(Default::default());let model=provider.get_model(Some("faux-1")).unwrap();
-            let model_runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions{models_path:Some(model_path),auth_path:None,providers:Some(vec![provider.provider]),..Default::default()});
+            let provider=maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");let model=provider.get_model(Some("faux-1")).unwrap();
+            let model_runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions{models_path:Some(model_path),auth_path:None,providers:Some(vec![provider.provider]),..Default::default()}).expect("valid model runtime");
             let session=create_agent_session(CreateAgentSessionOptions{cwd:Some(cwd.clone()),agent_dir:Some(cwd.clone()),model_runtime:Some(model_runtime),model:Some(model),session_manager:Some(SessionManager::in_memory(&cwd,None,None)),settings_manager:Some(SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()),false)),no_tools:Some(NoToolsMode::All),auto_title_sessions:Some(false),..Default::default()}).await.map_err(|error|error.to_string())?.session;
             let mut extension=maho_ext_api::LoadedExtension::new("<inline:held-close>",cwd.clone().into(),Default::default());
             extension.handlers.insert(maho_ext_api::EventKind::SessionShutdown,vec![Arc::new(move |_,_|{

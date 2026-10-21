@@ -11,7 +11,7 @@ async fn session_listing_uses_real_socket_and_closes_peer() {
         let (input, output) = socket.into_split();
         let peer = create_peer(input, output, PeerOptions { dead_ms: 0, ..Default::default() });
         let handler: Handler = Arc::new(|_, _| Box::pin(async { Ok(serde_json::json!([{"id":"session", "path":"/session", "cwd":"/project", "createdAt":42}])) }));
-        peer.provide(SESSIONS, HashMap::from([("list".to_owned(), handler)]));
+        peer.provide(&SESSIONS, HashMap::from([("list".to_owned(), handler)]));
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let sender = std::sync::Mutex::new(Some(sender));
         peer.on_close(move || { if let Some(sender) = sender.lock().expect("close listener").take() { let _ = sender.send(()); } });

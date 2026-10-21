@@ -41,7 +41,7 @@ pub fn models() -> Vec<ProviderModelConfig> {
     maho_ai::models_generated::MODELS["anthropic"].values().map(|model| {
         let mut thinking = model.thinking_level_map.clone().unwrap_or_default();
         thinking.insert(maho_ai::types::ModelThinkingLevel::Minimal, None);
-        ProviderModelConfig { id: model.id.clone(), name: model.name.clone(), reasoning: model.reasoning, input: model.input.clone(), cost: model.cost.clone(), context_window: model.context_window, max_tokens: model.max_tokens, thinking_level_map: Some(thinking), upstream_model_id: None, api: None, base_url: None, recover_text_tool_calls: None, headers: None, extra_body: None, compat: None }
+        ProviderModelConfig { model_type: None, output: None, image_cost: None, input_limits: model.input_limits.clone(), prompt_cache: model.prompt_cache.clone(), supports_assistant_prefill: model.supports_assistant_prefill, default_thinking_level: model.default_thinking_level, id: model.id.clone(), name: model.name.clone(), reasoning: model.reasoning, input: model.input.clone(), cost: model.cost.clone(), context_window: model.context_window, max_tokens: model.max_tokens, thinking_level_map: Some(thinking), upstream_model_id: None, api: None, base_url: None, recover_text_tool_calls: None, headers: None, extra_body: None, compat: None }
     }).collect()
 }
 

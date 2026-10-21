@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::crypto::short_digest;
 use crate::platform;
 pub use crate::runtime_contract::{
-    DaemonRuntime, DaemonRuntimeDefaults, Env, InvalidDaemonVersionError,
+    DaemonRuntime, DaemonRuntimeDefaults, DaemonRuntimeError, Env, InvalidDaemonVersionError,
     InvalidRuntimeOverrideError, OMO_LSP_DAEMON_CLI, OMO_LSP_DAEMON_DIR, OMO_LSP_DAEMON_VERSION,
     resolve_daemon_runtime, validate_daemon_version,
 };
@@ -153,7 +153,7 @@ impl std::error::Error for InvalidDaemonDirectoryError {}
 /// Failures while deriving daemon paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonPathsError {
-    Runtime(InvalidRuntimeOverrideError),
+    Runtime(DaemonRuntimeError),
     Directory(InvalidDaemonDirectoryError),
 }
 

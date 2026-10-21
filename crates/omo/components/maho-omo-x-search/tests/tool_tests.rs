@@ -5,20 +5,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use maho_ext_api::{
-    AgentToolResult, BuildSystemPromptOptions, ExtensionContext, ExtensionFuture,
-    ExtensionMode, ExtensionUi, ExtensionUiDialogOptions, Model, ModelRegistry,
-    NotificationType, SessionEntry, SessionManager, Theme, ToolExecutionMode,
-    ToolExposure, ToolSessionManager, UiFuture,
+    AgentToolResult, BuildSystemPromptOptions, ExtensionContext, ExtensionFuture, ExtensionMode,
+    ExtensionUi, ExtensionUiDialogOptions, Model, ModelRegistry, NotificationType, SessionEntry,
+    SessionManager, Theme, ToolExecutionMode, ToolExposure, ToolSessionManager, UiFuture,
 };
 use maho_omo_x_search::client::{
-    carrier_model, XSearchFetch, XSearchHttpResponse, DEFAULT_CARRIER,
+    DEFAULT_CARRIER, XSearchFetch, XSearchHttpResponse, carrier_model,
 };
 use maho_omo_x_search::format::XSearchErrorCode;
 use maho_omo_x_search::tool::{
-    create_x_search_tool, CreateXSearchToolOptions, XSearchToolDetails,
-    X_SEARCH_MODEL_ENV, X_SEARCH_TOOL_NAME,
+    CreateXSearchToolOptions, X_SEARCH_MODEL_ENV, X_SEARCH_TOOL_NAME, XSearchToolDetails,
+    create_x_search_tool,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn probe_fixture() -> Value {
     let content = include_str!("./__fixtures__/x-search-response.probe.json");
@@ -43,7 +42,10 @@ impl ModelRegistry for MockModelRegistry {
     fn has_configured_auth(&self, _model: &Model) -> bool {
         false
     }
-    fn get_api_key_for_provider<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Option<String>> {
+    fn get_api_key_for_provider<'a>(
+        &'a self,
+        _provider: &'a str,
+    ) -> ExtensionFuture<'a, Option<String>> {
         Box::pin(async { Ok(None) })
     }
     fn get_stored_credential_type(
@@ -64,6 +66,7 @@ impl ModelRegistry for MockModelRegistry {
         Box::pin(async move {
             if provider == "xai" {
                 Ok(key.map(|k| maho_ai::models::AuthResolution {
+                    ambient: false,
                     auth: maho_ai::models::ProviderAuthResult {
                         api_key: Some(k),
                         ..Default::default()
@@ -103,18 +106,39 @@ impl SessionManager for DummySession {
 
 struct DummyUi;
 impl ExtensionUi for DummyUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, _: &str, _: NotificationType) {}
     fn set_status(&self, _: &str, _: Option<&str>) {}
-    fn set_widget(&self, _: &str, _: Option<maho_ext_api::WidgetContent>, _: maho_ext_api::ExtensionWidgetOptions) {}
+    fn set_widget(
+        &self,
+        _: &str,
+        _: Option<maho_ext_api::WidgetContent>,
+        _: maho_ext_api::ExtensionWidgetOptions,
+    ) {
+    }
     fn set_header(&self, _: Option<maho_ext_api::ComponentFactory>) {}
     fn set_footer(&self, _: Option<maho_ext_api::ComponentFactory>) {}
     fn set_title(&self, _: &str) {}
@@ -123,7 +147,11 @@ impl ExtensionUi for DummyUi {
     fn get_editor_text(&self) -> String {
         String::new()
     }
-    fn custom(&self, _: maho_ext_api::ComponentFactory, _: maho_ext_api::CustomUiOptions) -> ExtensionFuture<'_, Value> {
+    fn custom(
+        &self,
+        _: maho_ext_api::ComponentFactory,
+        _: maho_ext_api::CustomUiOptions,
+    ) -> ExtensionFuture<'_, Value> {
         Box::pin(async { Ok(Value::Null) })
     }
     fn theme(&self) -> Theme {
@@ -224,7 +252,11 @@ fn test_tool_definition_metadata() {
 
 #[tokio::test]
 async fn test_execute_given_stored_credential_and_probe_fixture() {
-    let calls = Arc::new(std::sync::Mutex::new(Vec::<(String, BTreeMap<String, String>, String)>::new()));
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<(
+        String,
+        BTreeMap<String, String>,
+        String,
+    )>::new()));
     let calls_clone = calls.clone();
 
     let fetch_impl: XSearchFetch = Arc::new(move |url, headers, body| {
@@ -312,15 +344,9 @@ async fn test_execute_carrier_model_env_override() {
         Some("stored-token"),
     );
 
-    let _result = exec(
-        "call-1",
-        json!({ "query": "Grok CLI" }),
-        None,
-        None,
-        &ctx,
-    )
-    .await
-    .expect("execution succeeds");
+    let _result = exec("call-1", json!({ "query": "Grok CLI" }), None, None, &ctx)
+        .await
+        .expect("execution succeeds");
 
     let body = captured_body.lock().unwrap();
     assert_eq!(body.get("model").and_then(Value::as_str), Some("grok-4.6"));
@@ -351,15 +377,9 @@ async fn test_execute_no_credential_returns_auth_error_without_calling_xai() {
 
     let ctx = make_context(None, None);
 
-    let result = exec(
-        "call-1",
-        json!({ "query": "Grok CLI" }),
-        None,
-        None,
-        &ctx,
-    )
-    .await
-    .expect("execution succeeds");
+    let result = exec("call-1", json!({ "query": "Grok CLI" }), None, None, &ctx)
+        .await
+        .expect("execution succeeds");
 
     let text = text_of(&result);
     assert!(text.contains("x_search error [AUTH]"));
@@ -441,15 +461,9 @@ async fn test_execute_upstream_rate_limit_surfaces_code() {
         Some("stored-token"),
     );
 
-    let result = exec(
-        "call-1",
-        json!({ "query": "Grok CLI" }),
-        None,
-        None,
-        &ctx,
-    )
-    .await
-    .expect("execution succeeds");
+    let result = exec("call-1", json!({ "query": "Grok CLI" }), None, None, &ctx)
+        .await
+        .expect("execution succeeds");
 
     let text = text_of(&result);
     assert!(text.contains("x_search error [RATE_LIMITED]"));
@@ -475,9 +489,8 @@ async fn test_execute_resolve_bearer_override() {
         })
     });
 
-    let resolver: maho_omo_x_search::tool::BearerResolver = Arc::new(|_reg, _env| {
-        Box::pin(async { Some(("injected".to_string(), "env")) })
-    });
+    let resolver: maho_omo_x_search::tool::BearerResolver =
+        Arc::new(|_reg, _env| Box::pin(async { Some(("injected".to_string(), "env")) }));
 
     let (_def, exec) = create_x_search_tool(CreateXSearchToolOptions {
         fetch_impl: Some(fetch_impl),
@@ -487,15 +500,9 @@ async fn test_execute_resolve_bearer_override() {
 
     let ctx = make_context(None, None);
 
-    let _result = exec(
-        "call-1",
-        json!({ "query": "Grok CLI" }),
-        None,
-        None,
-        &ctx,
-    )
-    .await
-    .expect("execution succeeds");
+    let _result = exec("call-1", json!({ "query": "Grok CLI" }), None, None, &ctx)
+        .await
+        .expect("execution succeeds");
 
     let auth_header = captured_auth.lock().unwrap();
     assert_eq!(*auth_header, "Bearer injected");
@@ -562,7 +569,10 @@ fn test_tool_definition_parameters_schema() {
     let (def, _exec) = create_x_search_tool(CreateXSearchToolOptions::default());
     let schema = def.parameters.as_object().expect("schema object");
     assert_eq!(schema.get("type").and_then(Value::as_str), Some("object"));
-    let properties = schema.get("properties").and_then(Value::as_object).expect("properties");
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .expect("properties");
     assert!(properties.contains_key("query"));
     assert!(properties.contains_key("allowed_x_handles"));
     assert!(properties.contains_key("excluded_x_handles"));
