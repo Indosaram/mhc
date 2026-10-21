@@ -300,7 +300,12 @@ pub async fn run(
             while let Ok(notice) = notices.try_recv() {
                 match notice {
                     StartupNotice::NewVersion(release) => {
-                        let action = format!("{} update", maho_core::config::app_name());
+                        // senpi `BRAND?.update?.command ?? `${APP_NAME} update``. The shell
+                        // command is the executable (`app_command`, `mhc`), not the display name.
+                        let action = maho_core::brand::brand_profile()
+                            .update
+                            .map(|channel| channel.command)
+                            .unwrap_or_else(|| format!("{} update", maho_core::config::app_command()));
                         let url = format!("https://github.com/Indosaram/mhc/releases/tag/{}", release.tag);
                         mode.show_new_version_notification(&release.version, &action, &url);
                     }
