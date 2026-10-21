@@ -127,5 +127,9 @@ path = "src/main.rs"
 name = "mhc-launcher"
 path = "src/bin/mhc_launcher.rs"
 
+[[bin]]
+name = "mhc-update-probe"
+path = "src/bin/mhc_update_probe.rs"
+
 [lints]
 workspace = true
