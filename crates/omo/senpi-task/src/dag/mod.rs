@@ -25,3 +25,5 @@ mod store_tests;
 pub mod types;
 #[cfg(test)]
 mod e2e_tests;
+#[cfg(test)]
+mod perf_bench;
